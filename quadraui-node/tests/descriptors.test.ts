@@ -528,6 +528,253 @@ for (const { name, tree, events, expected } of INLINE_LEAF_CASES) {
   });
 }
 
+// The four chrome-bar kinds below each have their own click-routing
+// mechanism (`ExtraPaint::paint_chrome`'s `chrome_hits` for
+// toolbar/status_bar/activity_bar, `render_overlays`'s `sync_menu_bar` for
+// menu_bar) that doesn't fit `INLINE_LEAF_CASES`' generic "one Form event
+// per pushed event" shape above, so each gets its own test here instead of
+// a table row -- proving the same semantic event a flat-slot chrome bar
+// dispatches (ported from `toolbar_interactions.test.ts`'s own
+// `insertExtra`-based toolbar case) still reaches the handler when the bar
+// is painted as a literal inline `{ row: [{ id, <kind>: {...} }] }` leaf.
+
+test("inline tree leaf toolbar click emits Toolbar(ButtonClicked)", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "toolbar:main",
+        toolbar: {
+          id: "toolbar:main",
+          buttons: [
+            {
+              Action: {
+                id: "toolbar:refresh",
+                label: "Refresh",
+                icon: null,
+                key_hint: null,
+                enabled: true,
+                is_active: false,
+                tooltip: "",
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} },
+  });
+  app.run(1);
+
+  assert.equal(received.length, 1, JSON.stringify(received));
+  const [barId, toolbarEvent] = received[0].Toolbar;
+  assert.equal(barId, "toolbar:main");
+  assert.deepStrictEqual(toolbarEvent, {
+    ButtonClicked: { id: "toolbar:refresh", is_active: true },
+  });
+});
+
+test("inline tree leaf status_bar click emits StatusBar(SegmentClicked)", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "status_bar:main",
+        status_bar: {
+          id: "status_bar:main",
+          left_segments: [
+            {
+              text: "main",
+              fg: { r: 255, g: 255, b: 255, a: 255 },
+              bg: { r: 0, g: 0, b: 0, a: 255 },
+              action_id: "status:branch",
+            },
+          ],
+          right_segments: [],
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} },
+  });
+  app.run(1);
+
+  assert.equal(received.length, 1, JSON.stringify(received));
+  const [widgetId, statusEvent] = received[0].StatusBar;
+  assert.equal(widgetId, "status_bar:main");
+  assert.deepStrictEqual(statusEvent, { SegmentClicked: { id: "status:branch" } });
+});
+
+test("inline tree leaf activity_bar click emits ActivityBar(ItemClicked)", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "activity_bar:main",
+        activity_bar: {
+          id: "activity_bar:main",
+          top_items: [
+            {
+              id: "activity:explorer",
+              icon: { glyph: "", fallback: "E" },
+              tooltip: "Explorer",
+              is_active: true,
+            },
+          ],
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 0.0, y: 0.0 }, modifiers: {} },
+  });
+  app.run(1);
+
+  assert.equal(received.length, 1, JSON.stringify(received));
+  const [widgetId, activityEvent] = received[0].ActivityBar;
+  assert.equal(widgetId, "activity_bar:main");
+  assert.deepStrictEqual(activityEvent, { ItemClicked: { id: "activity:explorer" } });
+});
+
+test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", () => {
+  // `render_overlays`'s `sync_menu_bar` call reads the hit map generically
+  // -- it never distinguishes a flat-slot `"menu_bar"` from one painted
+  // through an inline leaf -- so `Alt+F` opens the bar's one top-level menu
+  // and `Enter` activates its sole leaf item exactly as it would for a
+  // slot-painted bar.
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "menu_bar:main",
+        menu_bar: {
+          id: "menu_bar:main",
+          items: [
+            {
+              id: "menu:file",
+              label: "&File",
+              submenu: [
+                {
+                  id: "menu:file:save",
+                  label: { spans: [{ text: "Save", fg: null, bg: null }] },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    KeyPressed: { key: { Char: "f" }, modifiers: { alt: true }, repeat: false },
+  });
+  app.run(1);
+  app.pushEvent({
+    KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false },
+  });
+  app.run(1);
+
+  assert.ok(
+    received.some((event) => event.MenuActivated === "menu:file:save"),
+    `expected a MenuActivated event, got: ${JSON.stringify(received)}`,
+  );
+});
+
+test("inline tree leaf find_replace renders its query text", () => {
+  // `find_replace` has no `insertExtra` test at all today (unlike the
+  // other seven chrome kinds): `FindReplacePanel` carries no `id` field of
+  // its own (see `ExtraPaint::id`'s fixed-sentinel doc), so it only ever
+  // reaches the screen via an inline leaf.
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "fr:1",
+        find_replace: {
+          query: "needle",
+          group_bounds: { x: 0.0, y: 0.0, width: 40.0, height: 20.0 },
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("needle"));
+});
+
+test("inline tree leaf command_line renders its text", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      { id: "command_line:main", command_line: { id: "command_line:main", text: ":wq" } },
+    ],
+  }));
+
+  assert.ok(app.screenContains(":wq"));
+});
+
+test("inline tree leaf command_center renders its search label", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "command_center:main",
+        command_center: {
+          id: "command_center:main",
+          back_enabled: true,
+          forward_enabled: false,
+          search_label: "my-project",
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("my-project"));
+});
+
+test("inline tree leaf palette renders its item text", () => {
+  // Palette's TUI rasteriser refuses to paint anything below a 4x4 area,
+  // and `insertExtra` only ever gives an additive primitive a fixed 3-row
+  // band, so this one routes through a render-callback `row` leaf instead,
+  // which hands the leaf the full viewport -- mirrors
+  // `test_palette_renders_item_text` in `quadraui-py/tests/test_extra_primitives.py`.
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "palette:1",
+        palette: {
+          id: "palette:commands",
+          title: "Commands",
+          query: "",
+          items: [{ text: { spans: [{ text: "Save File", fg: null, bg: null }] } }],
+          selected_idx: 0,
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("Save File"));
+});
+
 test("clearExtra on an empty or unknown kind returns false, not an error", () => {
   const app = new QuiApp(40, 20);
   assert.equal(app.clearExtra("progress"), false);

@@ -1511,9 +1511,204 @@ def test_clicking_an_activity_bar_item_emits_item_clicked():
     assert activity_event == {"ItemClicked": {"id": "activity:explorer"}}
 
 
+# The chrome kinds below (`toolbar`, `status_bar`, `activity_bar`,
+# `menu_bar`) already have dedicated flat-slot click tests above this
+# comment; these four mirror each one through a literal inline
+# `{"row": [{"id", "<kind>": {...}}]}` leaf -- the shape a render callback
+# writes -- instead of `insert_extra`, proving the chrome-bar leaf path
+# (`ExtraPaint::paint_chrome`'s `chrome_hits`, and for `menu_bar`,
+# `render_overlays`'s `sync_menu_bar`) carries the same semantic event all
+# the way to the handler, not just its paint.
+def test_inline_tree_leaf_toolbar_click_emits_toolbar_button_clicked():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "toolbar:main",
+                    "toolbar": {
+                        "id": "toolbar:main",
+                        "buttons": [
+                            {"Action": {"id": "toolbar:refresh", "label": "Refresh"}},
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    event = _click(app, 1.0, 0.0)
+
+    assert "MouseDown" not in event, event
+    bar, payload = event["Toolbar"]
+    assert bar == "toolbar:main"
+    assert payload == {"ButtonClicked": {"id": "toolbar:refresh", "is_active": True}}
+
+
+def test_inline_tree_leaf_status_bar_click_emits_segment_clicked():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "status_bar:main",
+                    "status_bar": {
+                        "id": "status_bar:main",
+                        "left_segments": [
+                            {
+                                "text": "main",
+                                "fg": {"r": 255, "g": 255, "b": 255, "a": 255},
+                                "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
+                                "action_id": "status:branch",
+                            },
+                        ],
+                        "right_segments": [],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    event = _click(app, 1.0, 0.0)
+
+    widget_id, status_event = event["StatusBar"]
+    assert widget_id == "status_bar:main"
+    assert status_event == {"SegmentClicked": {"id": "status:branch"}}
+
+
+def test_inline_tree_leaf_activity_bar_click_emits_item_clicked():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "activity_bar:main",
+                    "activity_bar": {
+                        "id": "activity_bar:main",
+                        "top_items": [
+                            {
+                                "id": "activity:explorer",
+                                "icon": {"glyph": "", "fallback": "E"},
+                                "tooltip": "Explorer",
+                                "is_active": True,
+                            },
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    event = _click(app, 0.0, 0.0)
+
+    widget_id, activity_event = event["ActivityBar"]
+    assert widget_id == "activity_bar:main"
+    assert activity_event == {"ItemClicked": {"id": "activity:explorer"}}
+
+
+def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
+    # `render_overlays`'s `sync_menu_bar` call reads this frame's hit map
+    # generically -- it never distinguishes a flat-slot `"menu_bar"` from
+    # one painted through an inline leaf -- so an `Alt+F` opens the bar's
+    # one top-level menu and `Enter` activates its sole leaf item exactly
+    # as it would for a slot-painted bar.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "menu_bar:main",
+                    "menu_bar": {
+                        "id": "menu_bar:main",
+                        "items": [
+                            {
+                                "id": "menu:file",
+                                "label": "&File",
+                                "submenu": [
+                                    {
+                                        "id": "menu:file:save",
+                                        "label": {
+                                            "spans": [
+                                                {"text": "Save", "fg": None, "bg": None}
+                                            ]
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"KeyPressed": {"key": {"Char": "f"}, "modifiers": {"alt": True}, "repeat": False}}
+    )
+    app.run(1)
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert {"MenuActivated": "menu:file:save"} in received, received
+
+
+def test_inline_tree_leaf_find_replace_renders_query_text():
+    # `find_replace` has no `insert_extra` test at all today (unlike the
+    # other seven chrome kinds): `FindReplacePanel` carries no `id` field
+    # of its own (see `ExtraPaint::id`'s fixed-sentinel doc), so it only
+    # ever reaches the screen via an inline leaf.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "fr:1",
+                    "find_replace": {
+                        "query": "needle",
+                        "group_bounds": {"x": 0.0, "y": 0.0, "width": 40.0, "height": 20.0},
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("needle")
+
+
 def test_command_line_renders_text():
     app = QuiApp(40, 20)
     app.insert_extra("command_line", {"id": "command_line:main", "text": ":wq"})
+    assert app.screen_contains(":wq")
+
+
+def test_inline_tree_leaf_command_line_renders_text():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {"id": "command_line:main", "command_line": {"id": "command_line:main", "text": ":wq"}},
+            ]
+        }
+
+    app.set_render(render)
     assert app.screen_contains(":wq")
 
 
@@ -1528,6 +1723,28 @@ def test_command_center_renders_search_label():
             "search_label": "my-project",
         },
     )
+    assert app.screen_contains("my-project")
+
+
+def test_inline_tree_leaf_command_center_renders_search_label():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "command_center:main",
+                    "command_center": {
+                        "id": "command_center:main",
+                        "back_enabled": True,
+                        "forward_enabled": False,
+                        "search_label": "my-project",
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
     assert app.screen_contains("my-project")
 
 
