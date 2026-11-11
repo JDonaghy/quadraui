@@ -318,12 +318,12 @@ def test_body_divider_drag_updates_the_ratio(ui, fmmod):
     (`BODY_SPLIT_RATIO`) before and after the drag, and the store alone is
     what the next real render actually paints."""
     split = ui.find(id="fm:split")
-    assert split.state["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
+    assert split.ratio == pytest.approx(fmmod.BODY_SPLIT_RATIO)
 
     split.drag_divider(0.6)
 
     split = ui.find(id="fm:split")
-    assert split.state["ratio"] == pytest.approx(0.6)
+    assert split.ratio == pytest.approx(0.6)
     assert split["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
 
 
@@ -334,8 +334,8 @@ def test_outer_divider_drag_persists_but_never_touches_the_body_split(ui, fmmod)
     body split's own ratio: the two ids are tracked independently."""
     ui.find(id="fm:outer").drag_divider(0.9)
 
-    assert ui.find(id="fm:outer").state["ratio"] == pytest.approx(0.9)
-    assert ui.find(id="fm:split").state["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
+    assert ui.find(id="fm:outer").ratio == pytest.approx(0.9)
+    assert ui.find(id="fm:split").ratio == pytest.approx(fmmod.BODY_SPLIT_RATIO)
 
 
 # --- chrome: toolbar legend + live status bar --------------------------------

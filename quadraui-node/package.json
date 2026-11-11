@@ -9,6 +9,7 @@
   "types": "js/index.ts",
   "files": [
     "js/index.ts",
+    "js/testing.ts",
     "js/wire.d.ts",
     "js/app/*.ts",
     "index.js",
