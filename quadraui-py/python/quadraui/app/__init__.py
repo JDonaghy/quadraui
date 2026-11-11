@@ -49,6 +49,13 @@ is registered (see `QuiApp`'s own module doc), so a callback mutating
 app/component state has already made that state visible by the time the
 `step()` that ran it returns. There is no `Reaction` value to return and
 no manual "mark dirty" call in the common case.
+
+**Hot reload.** `App.enable_hot_reload(module, ...)` re-imports edited
+source modules while the app runs and keeps component state, the state on
+a bound-method view's own object, and framework widget state; a broken
+edit leaves the last good code running and is reported on
+`App.reload_error`. `quadraui.app.hot_reload` documents exactly what
+survives a reload.
 """
 
 from .component import Component

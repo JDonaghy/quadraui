@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from . import hot_reload as _hr
 from .component import Component
 from .nodes import Node
 
@@ -46,31 +47,42 @@ def _auto_id(path: Tuple[Any, ...]) -> str:
     return "auto:" + ".".join(str(part) for part in path)
 
 
+def _component_type_key(component: Component) -> str:
+    """The type half of a component's state key: the class's qualified
+    name rather than the class object, so the class a hot reload replaces
+    still maps to the state slot its predecessor filled."""
+    cls = type(component)
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
 def _walk(
     value: Any,
     path: Tuple[Any, ...],
     registry: Dict[str, Dict[str, Callable[..., None]]],
     old_states: Dict[Any, Dict[str, Any]],
     new_states: Dict[Any, Dict[str, Any]],
+    migrate: bool = False,
 ) -> Any:
     if value is None:
         return None
     if isinstance(value, list):
-        return [_walk(item, path + (i,), registry, old_states, new_states) for i, item in enumerate(value)]
+        return [_walk(item, path + (i,), registry, old_states, new_states, migrate) for i, item in enumerate(value)]
     if isinstance(value, Component):
-        state_key = (type(value), value.key if value.key is not None else path)
+        state_key = (_component_type_key(value), value.key if value.key is not None else path)
         state = new_states.get(state_key)
         if state is None:
             state = old_states.get(state_key)
             if state is None:
                 state = value.initial_state()
+            elif migrate:
+                state = value.migrate_state(state)
             new_states[state_key] = state
         child = value.view(state)
-        return _walk(child, path + ("component",), registry, old_states, new_states)
+        return _walk(child, path + ("component",), registry, old_states, new_states, migrate)
     if isinstance(value, Node):
         node_id = value.id if value.id is not None else _auto_id(path)
         children_wire = {
-            slot: _walk(child, path + (slot,), registry, old_states, new_states)
+            slot: _walk(child, path + (slot,), registry, old_states, new_states, migrate)
             for slot, child in value.children.items()
         }
         if value.callbacks:
@@ -180,6 +192,13 @@ class App:
         self._registry: Dict[str, Dict[str, Callable[..., None]]] = {}
         self._component_states: Dict[Any, Dict[str, Any]] = {}
         self._focused_id: Optional[str] = None
+        self._watcher: Optional[_hr.ModuleWatcher] = None
+        self._poller: Optional[_hr._PollThread] = None
+        self._on_reload: Optional[Callable[["App"], None]] = None
+        self._rollback: Optional[Callable[[], None]] = None
+        self._migrate_next_render = False
+        self.reload_error: Optional[BaseException] = None
+        self.reload_count = 0
         self.qui = QuiApp(width, height, render=self._render)
         self.qui.set_handler(self._handle)
         self.actions = self.qui.actions()
@@ -191,17 +210,121 @@ class App:
         private `_on_event` attribute directly."""
         self._on_event = on_event
 
+    # --- hot reload -----------------------------------------------------------
+
+    def enable_hot_reload(
+        self,
+        *modules: Any,
+        interval: Optional[float] = 0.5,
+        on_reload: Optional[Callable[["App"], None]] = None,
+    ) -> None:
+        """Watches `modules` (module objects or dotted names, reloaded in
+        the order given -- list a dependency before the module importing
+        from it) and re-imports them when their source files change,
+        keeping component, app-object and widget state; see
+        `quadraui.app.hot_reload` for exactly what survives.
+
+        With `interval` (seconds) a daemon thread checks the files and
+        wakes the event loop on a change, so `run_tui()`/`run_native()`
+        pick an edit up without any input; with `interval=None` nothing
+        is checked until `reload_if_changed()` is called. `on_reload(app)`
+        runs after every successful reload, before the first render with
+        the new code. Calling this again replaces the watch list."""
+        self.disable_hot_reload()
+        self._watcher = _hr.ModuleWatcher(_hr.resolve_modules(modules))
+        self._on_reload = on_reload
+        if interval is not None:
+            waker = self.qui.waker()
+            self._poller = _hr._PollThread(self._watcher, interval, lambda: waker.post(_hr.HOT_RELOAD_WAKE))
+
+    def disable_hot_reload(self) -> None:
+        """Stops watching (and stops the watcher thread, if any)."""
+        if self._poller is not None:
+            self._poller.stop()
+        self._poller = None
+        self._watcher = None
+
+    def reload_if_changed(self) -> bool:
+        """Reloads the watched modules if any source file changed since the
+        last check; `True` when a reload succeeded. Needs
+        `enable_hot_reload()` first."""
+        if self._watcher is None:
+            raise RuntimeError("enable_hot_reload() has not been called")
+        if not self._watcher.changed():
+            return False
+        return self.reload()
+
+    def reload(self) -> bool:
+        """Re-imports every watched module now, whether or not it changed,
+        and swaps the view/`on_event` over to the new code. On failure the
+        previous code stays in place, the exception is stored on
+        `reload_error`, and this returns `False`."""
+        if self._watcher is None:
+            raise RuntimeError("enable_hot_reload() has not been called")
+        modules = self._watcher.modules
+        self._watcher.snapshot()
+        try:
+            saved = _hr.reload_modules(modules)
+        except Exception as exc:  # a broken edit must not take the app down
+            self.reload_error = exc
+            return False
+        reloaded = {m.__name__: m for m in modules}
+        rebound: Dict[int, Tuple[Any, type]] = {}
+        old_view, old_on_event = self._view, self._on_event
+
+        def rollback() -> None:
+            _hr.restore_modules(saved)
+            for instance, cls in rebound.values():
+                instance.__class__ = cls
+            self._view, self._on_event = old_view, old_on_event
+            self._migrate_next_render = False
+
+        try:
+            self._view = _hr.rebind_callable(self._view, reloaded, rebound)
+            self._on_event = _hr.rebind_callable(self._on_event, reloaded, rebound)
+            if self._on_reload is not None:
+                self._on_reload(self)
+        except Exception as exc:
+            rollback()
+            self.reload_error = exc
+            return False
+        self._rollback = rollback
+        self._migrate_next_render = True
+        self.reload_error = None
+        self.reload_count += 1
+        return True
+
     # --- render / dispatch ---------------------------------------------------
 
     def _render(self) -> Any:
+        if self._rollback is None:
+            return self._render_once()
+        rollback, self._rollback = self._rollback, None
+        try:
+            return self._render_once()
+        except Exception as exc:
+            rollback()
+            self.reload_error = exc
+            self.reload_count -= 1
+            return self._render_once()
+
+    def _render_once(self) -> Any:
         registry: Dict[str, Dict[str, Callable[..., None]]] = {}
         new_states: Dict[Any, Dict[str, Any]] = {}
-        wire = _walk(self._view(), (), registry, self._component_states, new_states)
+        migrate, self._migrate_next_render = self._migrate_next_render, False
+        try:
+            wire = _walk(self._view(), (), registry, self._component_states, new_states, migrate)
+        except BaseException:
+            self._migrate_next_render = migrate
+            raise
         self._registry = registry
         self._component_states = new_states
         return wire
 
     def _handle(self, event: Any) -> None:
+        if isinstance(event, dict) and event.get("User") == _hr.HOT_RELOAD_WAKE and self._watcher is not None:
+            self.reload_if_changed()
+            return
         if isinstance(event, dict) and "FocusChanged" in event:
             self._focused_id = event["FocusChanged"]
         if self._dispatch(event):
