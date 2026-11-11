@@ -347,12 +347,14 @@ class LayoutRowNode(TypedDict):
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     gap: NotRequired[float]
+    wire_version: NotRequired[int]
 
 class LayoutColumnNode(TypedDict):
     column: List[LayoutNode]
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     gap: NotRequired[float]
+    wire_version: NotRequired[int]
 
 class LayoutSplitPayload(TypedDict):
     id: str
@@ -368,6 +370,7 @@ class LayoutSplitNode(TypedDict):
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     gap: NotRequired[float]
+    wire_version: NotRequired[int]
 
 class LayoutTabEntryNode(TypedDict):
     id: str
@@ -392,6 +395,7 @@ class LayoutTabsNode(TypedDict):
     tabs: LayoutTabsPayload
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
+    wire_version: NotRequired[int]
 
 class LayoutPanelPayload(TypedDict):
     """The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`."""
@@ -406,6 +410,7 @@ class LayoutPanelNode(TypedDict):
     panel: LayoutPanelPayload
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
+    wire_version: NotRequired[int]
 
 class LayoutSidebarPanelPayload(TypedDict):
     id: str
@@ -415,6 +420,7 @@ class LayoutSidebarPanelPayload(TypedDict):
 
 class LayoutSidebarPanelNode(TypedDict):
     sidebar_panel: LayoutSidebarPanelPayload
+    wire_version: NotRequired[int]
 
 class _SplitTreeLeaf(TypedDict):
     leaf: LayoutNode
@@ -436,6 +442,7 @@ class LayoutSplitTreePayload(TypedDict):
 
 class LayoutSplitTreeNode(TypedDict):
     split_tree: LayoutSplitTreePayload
+    wire_version: NotRequired[int]
 
 class ProgressBarDescriptor(TypedDict):
     id: WidgetId
@@ -1302,6 +1309,7 @@ class DiffViewDescriptor(TypedDict):
 class LayoutLeafNode(TypedDict):
     """One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed."""
     id: str
+    wire_version: NotRequired[int]
     button: NotRequired[ButtonDescriptor]
     text_display: NotRequired[TextDisplayDescriptor]
     list: NotRequired[ListViewDescriptor]
@@ -1344,6 +1352,7 @@ LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutSplitNode, LayoutTabsN
 
 class RenderFrameDict(TypedDict):
     """The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed."""
+    wire_version: NotRequired[int]
     button: NotRequired[Optional[ButtonDescriptor]]
     text_display: NotRequired[Optional[TextDisplayDescriptor]]
     list: NotRequired[Optional[ListViewDescriptor]]
