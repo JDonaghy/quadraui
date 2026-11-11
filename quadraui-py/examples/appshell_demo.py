@@ -1,15 +1,15 @@
 """AppShell-shaped demo: one `ListView` holding 10,000 rows, scrolled
 smoothly from Python.
 
-`QuiApp` has no in-place "update a slot" call -- a descriptor is immutable
-once inserted, so advancing the scroll position means clearing the slot and
-re-inserting the list with a new `scroll_offset`/`selected_idx` on every
-"frame". `AppShellDemo` below owns that dance; the scroll loop itself is a
-plain Python `for` loop driving it one page at a time, standing in for
-whatever drives real key/scroll-wheel events (a bound handler must not call
-back into the same `QuiApp` it was invoked from -- `QuiApp` rejects that
-reentrant borrow -- so this demo calls `scroll()` directly rather than
-through `set_handler`).
+`AppShellDemo` holds `scroll_offset`/`selected_idx` as plain Python
+attributes and registers a `render` callback that rebuilds the `list`
+layout leaf from them on every frame -- the same "state lives in Python,
+`render` rebuilds the descriptor from scratch" shape `tui_render_state_demo.py`
+uses. The scroll loop itself is a plain Python `for` loop driving it one
+page at a time, standing in for whatever drives real key/scroll-wheel
+events (a bound handler must not call back into the same `QuiApp` it was
+invoked from -- `QuiApp` rejects that reentrant borrow -- so this demo calls
+`scroll()` directly rather than through `set_handler`).
 
 Run headless:
 
@@ -19,14 +19,14 @@ Run headless:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
 from quadraui import QuiApp
 
 if TYPE_CHECKING:
     # `quadraui.wire` is a stub-only module -- see its own module docstring --
     # so this import only runs under a type checker.
-    from quadraui.wire import ListItemDescriptor, ListViewDescriptor
+    from quadraui.wire import ListItemDescriptor
 
 WIDTH = 80
 HEIGHT = 24
@@ -42,32 +42,32 @@ def make_rows(count: int) -> "list[ListItemDescriptor]":
 
 
 class AppShellDemo:
-    """Drives the single `ListView` slot of a `QuiApp`, re-inserting it with
-    an updated `scroll_offset`/`selected_idx` each time the list scrolls."""
+    """Owns the plain-Python `scroll_offset`/`selected_idx` state a `render`
+    callback reads to rebuild the `list` layout leaf on every frame."""
 
     def __init__(self, app: QuiApp, rows: "list[ListItemDescriptor]") -> None:
         self.app = app
         self.rows = rows
         self.selected_idx = 0
         self.scroll_offset = 0
-        self.slot = app.insert_list(self._descriptor())
+        app.set_render(self._render)
 
-    def _descriptor(self) -> "ListViewDescriptor":
+    def _render(self) -> "Dict[str, Any]":
         return {
-            "id": "list:appshell",
-            "items": self.rows,
-            "selected_idx": self.selected_idx,
-            "scroll_offset": self.scroll_offset,
-            "has_focus": True,
-            "show_v_scrollbar": True,
+            "list": {
+                "id": "list:appshell",
+                "items": self.rows,
+                "selected_idx": self.selected_idx,
+                "scroll_offset": self.scroll_offset,
+                "has_focus": True,
+                "show_v_scrollbar": True,
+            }
         }
 
     def scroll(self, delta: int) -> None:
         last = len(self.rows) - 1
         self.selected_idx = max(0, min(last, self.selected_idx + delta))
         self.scroll_offset = max(0, min(last, self.scroll_offset + delta))
-        self.app.slot_clear(self.slot)
-        self.slot = self.app.insert_list(self._descriptor())
 
 
 def run_demo(steps: int = 20) -> "tuple[QuiApp, AppShellDemo, list[int]]":

@@ -138,7 +138,7 @@ use std::thread;
 use std::time::Duration;
 
 use pyo3::create_exception;
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyDeprecationWarning, PyException};
 use pyo3::prelude::*;
 #[cfg(test)]
 use pyo3::types::PyTuple;
@@ -3690,7 +3690,12 @@ impl QuiApp {
     /// Inserts a `Button` descriptor from a Python dict, returning its slot
     /// handle. Raises `RuntimeError` if the button slot is already
     /// occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `button` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_button(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_button", "button")?;
         self.insert(
             SLOT_BUTTON,
             "insert_button",
@@ -3704,7 +3709,12 @@ impl QuiApp {
     /// Inserts a `TextDisplay` descriptor from a Python dict, returning its
     /// slot handle. Raises `RuntimeError` if the text-display slot is
     /// already occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `text_display` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_text_display(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_text_display", "text_display")?;
         self.insert(
             SLOT_TEXT_DISPLAY,
             "insert_text_display",
@@ -3718,7 +3728,12 @@ impl QuiApp {
     /// Inserts a `ListView` descriptor from a Python dict, returning its
     /// slot handle. Raises `RuntimeError` if the list slot is already
     /// occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `list` layout leaf as the replacement; removal is a later breaking
+    /// release.
     fn insert_list(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_list", "list")?;
         self.insert(
             SLOT_LIST,
             "insert_list",
@@ -3732,7 +3747,12 @@ impl QuiApp {
     /// Inserts a `TreeView` descriptor from a Python dict, returning its
     /// slot handle. Raises `RuntimeError` if the tree slot is already
     /// occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `tree` layout leaf as the replacement; removal is a later breaking
+    /// release.
     fn insert_tree(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_tree", "tree")?;
         self.insert(
             SLOT_TREE,
             "insert_tree",
@@ -3746,7 +3766,12 @@ impl QuiApp {
     /// Inserts a `DataTable` descriptor from a Python dict, returning its
     /// slot handle. Raises `RuntimeError` if the data-table slot is
     /// already occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `data_table` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_data_table(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_data_table", "data_table")?;
         self.insert(
             SLOT_DATA_TABLE,
             "insert_data_table",
@@ -3760,7 +3785,12 @@ impl QuiApp {
     /// Inserts a `TabBar` descriptor from a Python dict, returning its slot
     /// handle. Raises `RuntimeError` if the tab-bar slot is already
     /// occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `tab_bar` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_tab_bar(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_tab_bar", "tab_bar")?;
         self.insert(
             SLOT_TAB_BAR,
             "insert_tab_bar",
@@ -3775,7 +3805,12 @@ impl QuiApp {
     /// `"progress"` back. Raises `RuntimeError` if `"progress"` is already
     /// occupied — call `clear_extra("progress")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `progress` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_progress(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        warn_insert_deprecated(descriptor.py(), "insert_progress", "progress")?;
         self.store_extra("progress", "insert_progress", descriptor)
     }
 
@@ -3783,7 +3818,12 @@ impl QuiApp {
     /// `"spinner"` back. Raises `RuntimeError` if `"spinner"` is already
     /// occupied — call `clear_extra("spinner")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `spinner` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_spinner(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        warn_insert_deprecated(descriptor.py(), "insert_spinner", "spinner")?;
         self.store_extra("spinner", "insert_spinner", descriptor)
     }
 
@@ -3791,7 +3831,12 @@ impl QuiApp {
     /// `"image"` back. Raises `RuntimeError` if `"image"` is already
     /// occupied — call `clear_extra("image")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `image` layout leaf as the replacement; removal is a later breaking
+    /// release.
     fn insert_image(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        warn_insert_deprecated(descriptor.py(), "insert_image", "image")?;
         self.store_extra("image", "insert_image", descriptor)
     }
 
@@ -3802,7 +3847,12 @@ impl QuiApp {
     /// if `kind` is already occupied — call `clear_extra(kind)` first.
     /// Lets a consumer insert a future additive primitive by name alone,
     /// with no new pymethod needed on this class.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `kind` layout leaf as the replacement; removal is a later breaking
+    /// release.
     fn insert_extra(&mut self, kind: &str, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        warn_insert_deprecated(descriptor.py(), "insert_extra", kind)?;
         self.store_extra(kind, "insert_extra", descriptor)
     }
 
@@ -3812,7 +3862,12 @@ impl QuiApp {
     /// Returns whether the slot held anything; an unrecognized `kind`
     /// simply has nothing to clear (unlike `slot_clear`, this never raises
     /// for an unknown key).
-    fn clear_extra(&mut self, kind: &str) -> PyResult<bool> {
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming omitting
+    /// `kind`'s layout leaf from the next `render` callback as the
+    /// replacement; removal is a later breaking release.
+    fn clear_extra(&mut self, py: Python<'_>, kind: &str) -> PyResult<bool> {
+        warn_clear_extra_deprecated(py, kind)?;
         self.guarded(|app| {
             let cleared = app.driver.app_mut().clear_extra_slot(kind);
             if cleared {
@@ -4208,12 +4263,17 @@ impl QuiApp {
     /// re-rendering so `screen()` no longer shows it. Returns whether the
     /// slot held anything. Raises `UnknownSlotError` if `slot` doesn't name
     /// one of this app's six fixed primitive slots.
-    fn slot_clear(&mut self, slot: i64) -> PyResult<bool> {
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming omitting the
+    /// relevant fixed-slot layout leaf from the next `render` callback as
+    /// the replacement; removal is a later breaking release.
+    fn slot_clear(&mut self, py: Python<'_>, slot: i64) -> PyResult<bool> {
         if !PyAppLogic::is_known_slot(slot) {
             return Err(UnknownSlotError::new_err(format!(
                 "unknown slot id: {slot}"
             )));
         }
+        warn_slot_clear_deprecated(py, slot)?;
         self.guarded(|app| {
             let cleared = app.driver.app_mut().clear_slot(slot);
             if cleared {
@@ -5457,6 +5517,69 @@ fn ratatui_rgb(color: quadraui::tui::testing::Color) -> (u8, u8, u8) {
 /// callback's exception is never silently swallowed.
 fn take_pending_error(app: &mut PyAppLogic) -> PyResult<()> {
     core_take_pending_error(&mut app.pending_error.borrow_mut())
+}
+
+/// Raises the shared slot/extra-API `DeprecationWarning` --
+/// [`BindingHost::slot_deprecation_message`]'s own doc -- naming `what`
+/// (this binding's own `snake_case` spelling of the deprecated method) and
+/// `guidance` (a clause naming the inline replacement). Every deprecated
+/// `QuiApp` slot/extra pymethod reaches this (via
+/// [`warn_insert_deprecated`]/[`warn_clear_extra_deprecated`]/
+/// [`warn_slot_clear_deprecated`] below) before doing its own work,
+/// unconditionally on every call -- see
+/// [`BindingHost::first_deprecation_report`]'s own doc for why only
+/// `quadraui-node` needs the per-app "have I already reported this" dedup.
+/// Raises only if Python's own warning filters have escalated
+/// `DeprecationWarning` to an error (`-W error::DeprecationWarning` or an
+/// equivalent `simplefilter`), in which case the slot/extra call itself
+/// never runs.
+fn warn_slot_deprecated(py: Python<'_>, what: &str, guidance: &str) -> PyResult<()> {
+    let message = BindingHost::slot_deprecation_message(what, guidance);
+    let message =
+        std::ffi::CString::new(message).expect("deprecation message has no interior NUL bytes");
+    PyErr::warn(py, &py.get_type::<PyDeprecationWarning>(), &message, 1)
+}
+
+/// [`warn_slot_deprecated`] for inserting primitive `leaf_kind` via the
+/// deprecated `what` method -- the one call every `insert_*`/`insert_extra`
+/// pymethod makes, naming the inline layout leaf of that same kind as the
+/// replacement.
+fn warn_insert_deprecated(py: Python<'_>, what: &str, leaf_kind: &str) -> PyResult<()> {
+    warn_slot_deprecated(
+        py,
+        what,
+        &format!("render an inline `{leaf_kind}` layout leaf from a `render` callback instead"),
+    )
+}
+
+/// [`warn_slot_deprecated`] for `clear_extra`, naming omitting `kind`'s
+/// layout leaf from the next `render` callback as the replacement.
+fn warn_clear_extra_deprecated(py: Python<'_>, kind: &str) -> PyResult<()> {
+    warn_slot_deprecated(
+        py,
+        "clear_extra",
+        &format!(
+            "omit the `{kind}` layout leaf from the next `render` callback's \
+             returned layout instead of calling `clear_extra`"
+        ),
+    )
+}
+
+/// [`warn_slot_deprecated`] for `slot_clear`, naming omitting `slot`'s
+/// fixed-primitive layout leaf from the next `render` callback as the
+/// replacement. `slot` is assumed already validated by
+/// [`PyAppLogic::is_known_slot`] -- see [`BindingHost::slot_kind_name`]'s
+/// own doc for why this never actually sees an unrecognized slot.
+fn warn_slot_clear_deprecated(py: Python<'_>, slot: i64) -> PyResult<()> {
+    let kind = BindingHost::slot_kind_name(slot).unwrap_or("fixed-slot");
+    warn_slot_deprecated(
+        py,
+        "slot_clear",
+        &format!(
+            "omit the `{kind}` layout leaf from the next `render` callback's \
+             returned layout instead of calling `slot_clear`"
+        ),
+    )
 }
 
 impl QuiApp {
