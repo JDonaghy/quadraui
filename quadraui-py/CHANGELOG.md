@@ -18,8 +18,18 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   kind, or `None` if the store has nothing for it yet. Only callable from
   outside any active `render`/`handle` callback (it borrows the app the same
   way `step()`/`screen()` do). `examples/file_manager.py` relies on the store
-  for its tree's scroll offset and its body split's ratio instead of
-  hand-tracking either.
+  for its tree's scroll offset, its body split's ratio, and its details
+  tabs' active index instead of hand-tracking any of the three; the outer
+  chrome/status split's ratio is also now store-derived (previously fixed),
+  so dragging that divider persists too — there is no "this split is fixed"
+  opt-out yet.
+- `QuiAppActions.apply_tab_activated(id, index)` — makes tab `index` of
+  `TabBar`/`LayoutTabs` widget `id` active in the engine's own widget-state
+  store directly, the same persisted change a real click on that tab makes,
+  for a handler that needs to activate a tab programmatically (e.g.
+  `examples/file_manager.py`'s "open this folder as a new tab and focus
+  it") without pinning the descriptor's own active index, which would make
+  every later render controlled and defeat click-driven switching.
 - `quadraui.wire` — a `py.typed` `.pyi` stub (no runtime body; import names
   from it inside `if TYPE_CHECKING:`) with a `TypedDict`/`Literal` for every
   layout-tree node, the six core leaf descriptors, `status_bar`, the
@@ -187,6 +197,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Fixed
 
+- `QuiApp.widget_state(id)`'s `expanded` field is now actually reachable: a
+  `Tree` leaf's render path now resolves its per-row expand/collapse set
+  against the engine's own widget-state store (via
+  `quadraui_binding_core::resolve_tree_expansion`) before painting, the
+  same way its cursor/scroll already did. Previously nothing in this
+  binding's render path ever called `resolve_tree_expansion`, so an
+  uncontrolled tree's toggled rows never persisted (expand/collapse only
+  worked when the descriptor pinned `is_expanded` itself every frame) and
+  the store's `TreeExpandedState` entry was swept by the next frame's GC
+  before `widget_state()` could ever read it back — `expanded` was always
+  `None`.
 - `QuiApp.run_native()` now swaps `QuiApp.waker()`'s shared cell onto the
   live `GtkRunner`/`MacRunner`/`WinRunner` backend's own waker for as long
   as the native window is open, restoring it once `run_native` returns —

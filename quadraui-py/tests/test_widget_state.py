@@ -86,7 +86,8 @@ def _press(app: QuiApp, event: dict) -> None:
 # key events needs one -- a no-op is enough; `examples/file_manager.py`
 # always has a real one (`set_handler`), so this is purely a test-harness
 # detail, not something the real example needs to work around.
-_NOOP_HANDLER = lambda event: None  # noqa: E731
+def _NOOP_HANDLER(event):
+    return None
 
 
 def test_widget_state_is_none_for_an_untracked_id():
@@ -143,6 +144,60 @@ def test_uncontrolled_tree_cursor_moves_and_scrolls_via_the_flat_frame_path():
     state = app.widget_state("widget-state-test:tree")
     assert state["selected_path"] == [4]
     assert 0 <= state["selected_path"][0] - state["scroll_offset"]
+
+
+def _branch_tree_rows(n: int) -> list[dict]:
+    """Like `_tree_rows`, but every row starts collapsed (`is_expanded`
+    `False` rather than `None`) -- a `RowToggleExpand` only has something to
+    toggle on a branch row, never a leaf one."""
+    rows = _tree_rows(n)
+    for row in rows:
+        row["is_expanded"] = False
+    return rows
+
+
+def test_uncontrolled_tree_expansion_toggles_via_the_layout_tree_path():
+    """A layout-tree render callback that never pins any row's `is_expanded`
+    away from its own starting value still has a `RowToggleExpand` persist
+    in the store -- `resolve_tree_expansion`'s own layout-tree call site,
+    read back through the `expanded` key `widget_state` exposes."""
+    rows = _branch_tree_rows(3)
+
+    def render():
+        return {"row": [{"id": "widget-state-test:tree", "tree": _tree_descriptor(rows)}]}
+
+    app = QuiApp(20, 6, render=render, on_event=_NOOP_HANDLER)
+    # Every row starts collapsed and untouched -- nothing expanded yet.
+    assert app.widget_state("widget-state-test:tree")["expanded"] == []
+
+    app.push_event({"Tree": ["widget-state-test:tree", {"RowToggleExpand": {"path": [1]}}]})
+    app.step()
+
+    state = app.widget_state("widget-state-test:tree")
+    assert state["expanded"] == [[1]]
+    # The cursor/scroll fields the two tests above cover are still present
+    # in the same snapshot -- `widget_state_snapshot` merges every shape
+    # that applies to one id, not just whichever a caller asked about.
+    assert state["scroll_offset"] == 0
+
+
+def test_uncontrolled_tree_expansion_toggles_via_the_flat_frame_path():
+    """The same behavior as the layout-tree test above, through the flat
+    six-slot render shape (`RenderOutput::Flat`) instead --
+    `resolve_render_frame_state`'s own call site."""
+    rows = _branch_tree_rows(3)
+
+    def render():
+        return {"tree": _tree_descriptor(rows)}
+
+    app = QuiApp(20, 6, render=render, on_event=_NOOP_HANDLER)
+    assert app.widget_state("widget-state-test:tree")["expanded"] == []
+
+    app.push_event({"Tree": ["widget-state-test:tree", {"RowToggleExpand": {"path": [2]}}]})
+    app.step()
+
+    state = app.widget_state("widget-state-test:tree")
+    assert state["expanded"] == [[2]]
 
 
 def test_controlled_scroll_offset_still_pins_the_scroll():
