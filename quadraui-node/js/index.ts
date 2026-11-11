@@ -288,11 +288,14 @@ exports.installCrashHandler = installCrashHandler;
 /**
  * A headless quadraui app, driven entirely from JavaScript/TypeScript.
  *
- * Construct it with a `width`/`height` cell grid, insert descriptors with
- * `insertButton`/`insertTextDisplay`/.../`insertExtra`, and inspect the
- * rendered frame with `screen()`/`screenContains()`. See the native
- * binding's own doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the
- * full method list and panic/poison behaviour.
+ * Construct it with a `width`/`height` cell grid, call `setRender` with a
+ * callback that returns a layout tree of inline leaves, and inspect the
+ * rendered frame with `screen()`/`screenContains()`. The fixed-slot
+ * `insertButton`/`insertTextDisplay`/.../`insertExtra`/`clearExtra`/
+ * `slotClear` methods still work but are deprecated -- each one warns once,
+ * naming the inline layout leaf that replaces it. See the native binding's
+ * own doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the full
+ * method list and panic/poison behaviour.
  *
  * A thin subclass of the native constructor rather than a bare re-export:
  * every other method is already wrapped in place on

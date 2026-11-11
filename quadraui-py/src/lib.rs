@@ -5519,66 +5519,65 @@ fn take_pending_error(app: &mut PyAppLogic) -> PyResult<()> {
     core_take_pending_error(&mut app.pending_error.borrow_mut())
 }
 
-/// Raises the shared slot/extra-API `DeprecationWarning` --
-/// [`BindingHost::slot_deprecation_message`]'s own doc -- naming `what`
-/// (this binding's own `snake_case` spelling of the deprecated method) and
-/// `guidance` (a clause naming the inline replacement). Every deprecated
-/// `QuiApp` slot/extra pymethod reaches this (via
+/// Raises a `DeprecationWarning` carrying `message` -- the one call
 /// [`warn_insert_deprecated`]/[`warn_clear_extra_deprecated`]/
-/// [`warn_slot_clear_deprecated`] below) before doing its own work,
-/// unconditionally on every call -- see
-/// [`BindingHost::first_deprecation_report`]'s own doc for why only
-/// `quadraui-node` needs the per-app "have I already reported this" dedup.
-/// Raises only if Python's own warning filters have escalated
+/// [`warn_slot_clear_deprecated`] below make, each having already built
+/// `message` from a `BindingHost::*_deprecation_message` call, unconditionally
+/// on every call -- see [`BindingHost::first_deprecation_report`]'s own doc
+/// for why only `quadraui-node` needs the per-app "have I already reported
+/// this" dedup. Raises only if Python's own warning filters have escalated
 /// `DeprecationWarning` to an error (`-W error::DeprecationWarning` or an
 /// equivalent `simplefilter`), in which case the slot/extra call itself
 /// never runs.
-fn warn_slot_deprecated(py: Python<'_>, what: &str, guidance: &str) -> PyResult<()> {
-    let message = BindingHost::slot_deprecation_message(what, guidance);
-    let message =
-        std::ffi::CString::new(message).expect("deprecation message has no interior NUL bytes");
+///
+/// `message` can embed caller-supplied data (`insert_extra`/`clear_extra`'s
+/// own `kind` argument is an arbitrary Python `str`, which may legally
+/// contain a NUL byte), and a C string can't carry an interior NUL. Rather
+/// than asserting that invariant with an `.expect()` a caller can actually
+/// violate, a NUL byte is stripped before building the `CString` -- the
+/// warning still names the kind (minus any NUL) instead of the whole call
+/// panicking on previously-valid input.
+fn emit_deprecation_warning(py: Python<'_>, message: String) -> PyResult<()> {
+    let message = if message.contains('\0') {
+        message.replace('\0', "")
+    } else {
+        message
+    };
+    let message = std::ffi::CString::new(message)
+        .unwrap_or_else(|_| std::ffi::CString::new("deprecation warning").unwrap());
     PyErr::warn(py, &py.get_type::<PyDeprecationWarning>(), &message, 1)
 }
 
-/// [`warn_slot_deprecated`] for inserting primitive `leaf_kind` via the
+/// [`emit_deprecation_warning`] for inserting primitive `leaf_kind` via the
 /// deprecated `what` method -- the one call every `insert_*`/`insert_extra`
 /// pymethod makes, naming the inline layout leaf of that same kind as the
-/// replacement.
+/// replacement. Builds the shared message via
+/// [`BindingHost::insert_deprecation_message`] so the wording lives once,
+/// shared with `quadraui-node`'s own forward.
 fn warn_insert_deprecated(py: Python<'_>, what: &str, leaf_kind: &str) -> PyResult<()> {
-    warn_slot_deprecated(
-        py,
-        what,
-        &format!("render an inline `{leaf_kind}` layout leaf from a `render` callback instead"),
-    )
+    emit_deprecation_warning(py, BindingHost::insert_deprecation_message(what, leaf_kind))
 }
 
-/// [`warn_slot_deprecated`] for `clear_extra`, naming omitting `kind`'s
-/// layout leaf from the next `render` callback as the replacement.
+/// [`emit_deprecation_warning`] for `clear_extra`, naming omitting `kind`'s
+/// layout leaf from the next `render` callback as the replacement. Builds
+/// the shared message via [`BindingHost::clear_extra_deprecation_message`].
 fn warn_clear_extra_deprecated(py: Python<'_>, kind: &str) -> PyResult<()> {
-    warn_slot_deprecated(
+    emit_deprecation_warning(
         py,
-        "clear_extra",
-        &format!(
-            "omit the `{kind}` layout leaf from the next `render` callback's \
-             returned layout instead of calling `clear_extra`"
-        ),
+        BindingHost::clear_extra_deprecation_message("clear_extra", kind),
     )
 }
 
-/// [`warn_slot_deprecated`] for `slot_clear`, naming omitting `slot`'s
+/// [`emit_deprecation_warning`] for `slot_clear`, naming omitting `slot`'s
 /// fixed-primitive layout leaf from the next `render` callback as the
 /// replacement. `slot` is assumed already validated by
 /// [`PyAppLogic::is_known_slot`] -- see [`BindingHost::slot_kind_name`]'s
-/// own doc for why this never actually sees an unrecognized slot.
+/// own doc for why this never actually sees an unrecognized slot. Builds
+/// the shared message via [`BindingHost::slot_clear_deprecation_message`].
 fn warn_slot_clear_deprecated(py: Python<'_>, slot: i64) -> PyResult<()> {
-    let kind = BindingHost::slot_kind_name(slot).unwrap_or("fixed-slot");
-    warn_slot_deprecated(
+    emit_deprecation_warning(
         py,
-        "slot_clear",
-        &format!(
-            "omit the `{kind}` layout leaf from the next `render` callback's \
-             returned layout instead of calling `slot_clear`"
-        ),
+        BindingHost::slot_clear_deprecation_message("slot_clear", slot),
     )
 }
 

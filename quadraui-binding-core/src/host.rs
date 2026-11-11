@@ -257,6 +257,53 @@ impl BindingHost {
         )
     }
 
+    /// [`Self::slot_deprecation_message`] for inserting primitive
+    /// `leaf_kind` via the deprecated `what` method -- the one call every
+    /// binding's own `insert_*`/`insert_extra` leaf makes, naming the
+    /// inline layout leaf of that same kind as the replacement. Shared here
+    /// (rather than built up by each binding's own `warn_insert_deprecated`
+    /// forward) so the exact wording lives in one place instead of being
+    /// copy-pasted per binding. Note this only names the *first* `leaf_kind`
+    /// a given app warns about for a dynamic `what` like `insert_extra` --
+    /// see [`Self::first_deprecation_report`]'s own doc for why the dedup
+    /// key is `what` alone.
+    pub fn insert_deprecation_message(what: &str, leaf_kind: &str) -> String {
+        Self::slot_deprecation_message(
+            what,
+            &format!("render an inline `{leaf_kind}` layout leaf from a `render` callback instead"),
+        )
+    }
+
+    /// [`Self::slot_deprecation_message`] for `clear_extra`/`clearExtra`,
+    /// naming omitting `kind`'s layout leaf from the next `render`
+    /// callback's returned layout as the replacement.
+    pub fn clear_extra_deprecation_message(what: &str, kind: &str) -> String {
+        Self::slot_deprecation_message(
+            what,
+            &format!(
+                "omit the `{kind}` layout leaf from the next `render` callback's \
+                 returned layout instead of calling `{what}`"
+            ),
+        )
+    }
+
+    /// [`Self::slot_deprecation_message`] for `slot_clear`/`slotClear`,
+    /// naming omitting `slot`'s fixed-primitive layout leaf from the next
+    /// `render` callback's returned layout as the replacement. Falls back
+    /// to the generic `"fixed-slot"` name for an unrecognized `slot` --
+    /// see [`Self::slot_kind_name`]'s own doc for when that fallback
+    /// actually fires.
+    pub fn slot_clear_deprecation_message(what: &str, slot: i64) -> String {
+        let kind = Self::slot_kind_name(slot).unwrap_or("fixed-slot");
+        Self::slot_deprecation_message(
+            what,
+            &format!(
+                "omit the `{kind}` layout leaf from the next `render` callback's \
+                 returned layout instead of calling `{what}`"
+            ),
+        )
+    }
+
     /// The layout-leaf kind name for fixed slot id `slot` -- `"button"` for
     /// [`SLOT_BUTTON`], `"text_display"` for [`SLOT_TEXT_DISPLAY`], and so
     /// on through [`SLOT_TAB_BAR`] -- or `None` if `slot` doesn't name one

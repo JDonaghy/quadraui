@@ -1,16 +1,22 @@
 """Python bindings over quadraui's TUI driver, headless or real.
 
-``QuiApp`` is a cell-grid app: insert one dict-shaped descriptor per core
-primitive (button, text display, list, tree, data table, tab bar), then
-either read the rendered frame back headlessly with ``screen()`` /
-``screen_contains()``, or call ``run_tui()`` to hand the same descriptors to
-a real terminal -- raw mode, alternate screen, live redraw on real
-keyboard/resize events -- until a registered handler raises to quit.
-Any number of further primitives (``progress``, ``spinner``, ``image``, ...)
-insert additively through ``insert_extra(kind, descriptor)`` /
-``clear_extra(kind)`` alongside the six core ones, with no fixed slot table
-to grow; ``insert_progress``/``insert_spinner``/``insert_image`` are typed
-convenience wrappers over the same mechanism.
+``QuiApp`` is a cell-grid app: register a ``render`` callback with
+``set_render(callback)`` that returns a layout tree of dict-shaped
+descriptors (button, text display, list, tree, data table, tab bar,
+``progress``/``spinner``/``image``/..., or a ``"row"``/``"column"``
+container nesting any number of them), then either read the rendered frame
+back headlessly with ``screen()`` / ``screen_contains()``, or call
+``run_tui()`` to hand the same descriptors to a real terminal -- raw mode,
+alternate screen, live redraw on real keyboard/resize events -- until a
+registered handler raises to quit.
+
+The older fixed-slot ``insert_button``/``insert_text_display``/
+``insert_list``/``insert_tree``/``insert_data_table``/``insert_tab_bar``,
+the additive ``insert_extra(kind, descriptor)``/``clear_extra(kind)`` (and
+its typed ``insert_progress``/``insert_spinner``/``insert_image``
+convenience wrappers), and ``slot_clear`` still work but are **deprecated**:
+each one raises a ``DeprecationWarning`` naming the inline layout leaf that
+replaces it, and is scheduled for removal in a future breaking release.
 
 Every error ``QuiApp`` raises itself (as opposed to one a registered
 Python callback raised, which passes through unchanged) is a

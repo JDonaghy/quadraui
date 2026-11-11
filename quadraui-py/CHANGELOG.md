@@ -280,6 +280,16 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   (`"start"`/`"center"`/`"end"`/`"stretch"`) key. None of the five keys
   is required; a tree with none of them lays out exactly as before
   (every child an equal share, `Justify::Start`, `Align::Stretch`).
+### Deprecated
+
+- `QuiApp.insert_button`/`insert_text_display`/`insert_list`/`insert_tree`/
+  `insert_data_table`/`insert_tab_bar`/`insert_progress`/`insert_spinner`/
+  `insert_image`/`insert_extra`/`clear_extra`/`slot_clear` -- every kind is
+  reachable as an inline layout leaf from a `render` callback now, so the
+  fixed-slot/additive-slot API is no longer the only way onto the screen.
+  Each deprecated method still works exactly as before, but raises a
+  `DeprecationWarning` naming the inline leaf kind that replaces it.
+  Removal is a later breaking release.
 
 ### Fixed
 
