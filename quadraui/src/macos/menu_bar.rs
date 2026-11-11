@@ -233,10 +233,10 @@ mod tests {
         // the bar to the mnemonic character's own advance, so on a
         // monospaced 14pt face that is ~8px; the threshold sits below
         // that but comfortably above the widest contiguous horizontal
-        // stroke "File"'s glyphs can lay down at full coverage (the
-        // bowl of "e", 3-4px), so neither a false alarm nor a real
-        // regression lands between the two.
-        const UNDERLINE_RUN: u32 = 6;
+        // stroke "File"'s glyphs can lay down at full coverage at the
+        // 13pt chrome font (the bowl of "e", up to 6px), so neither a
+        // false alarm nor a real regression lands between the two.
+        const UNDERLINE_RUN: u32 = 8;
         let target = (
             theme.tab_active_fg.r,
             theme.tab_active_fg.g,
