@@ -17,6 +17,7 @@ import pytest
 from quadraui import QuiApp
 from quadraui.app import App, Button, Column, SidebarPanel, Split, Tab, Table, Tabs, TextDisplay, Toolbar, Tree, key_name
 from quadraui.testing import Harness, WidgetNotFound, harness
+from quadraui.testing.pytest_plugin import harness_factory
 
 
 def _line(text):
@@ -332,3 +333,44 @@ def test_a_plain_qui_app_is_driven_through_the_same_api():
 def test_wrapping_a_plain_qui_app_without_its_render_is_refused():
     with pytest.raises(TypeError, match="render="):
         Harness(QuiApp(10, 3))
+
+
+# --- the pytest packaging -----------------------------------------------------
+
+
+def test_the_quadraui_harness_fixture_is_registered_by_the_package(quadraui_harness):
+    """No `conftest.py` in this directory defines `quadraui_harness`: it
+    arrives through the distribution's own `pytest11` entry point, which is
+    what "packaged for pytest" has to mean for a consumer testing their own
+    app in their own repo."""
+    ui = quadraui_harness(Demo().app)
+
+    assert isinstance(ui, Harness)
+    ui.assert_text("alpha")
+
+
+def test_the_fixture_closes_every_harness_it_built():
+    """A test that enabled hot reload must not leak its watcher thread into
+    the rest of the session: the fixture's teardown closes every harness it
+    handed out, and a closed app is no longer watching anything.
+
+    Drives the fixture's own generator (`harness_factory`) rather than the
+    fixture, which pytest refuses to call directly."""
+    factory = harness_factory()
+    build = next(factory)
+
+    ui = build(Demo().app)
+    ui.app.enable_hot_reload("quadraui.app.nodes", interval=None)
+    assert ui.app.reload_if_changed() is False  # watching, nothing changed
+
+    with pytest.raises(StopIteration):
+        next(factory)  # runs the teardown
+
+    with pytest.raises(RuntimeError, match="enable_hot_reload"):
+        ui.app.reload_if_changed()
+
+
+def test_close_is_a_no_op_for_an_app_with_no_hot_reload(ui):
+    ui.close()
+    ui.close()
+    ui.assert_text("alpha")

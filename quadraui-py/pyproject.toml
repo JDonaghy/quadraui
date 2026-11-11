@@ -26,6 +26,14 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
+# Registers `quadraui.testing`'s `quadraui_harness` fixture with `pytest`,
+# so a consumer testing their own app gets it without a `conftest.py`. The
+# module `pytest` imports for this is pure Python and imports nothing from
+# the compiled extension (see its own docstring) — loading it must never be
+# able to break an unrelated `pytest` run in the same environment.
+[project.entry-points.pytest11]
+quadraui = "quadraui.testing.pytest_plugin"
+
 [project.urls]
 Homepage = "https://jdonaghy.github.io/quadraui/"
 Documentation = "https://jdonaghy.github.io/quadraui/"

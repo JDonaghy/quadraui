@@ -21,11 +21,24 @@ const { App } = require("../js/app/index.ts");
 const { harness } = require("../js/testing.ts");
 
 const createdTmpDirs: string[] = [];
+const builtHarnesses: any[] = [];
 after(() => {
+  // `close()` stops a watcher timer the test enabled, so no suite below
+  // leaves one running for the rest of the process.
+  for (const built of builtHarnesses) {
+    built.close();
+  }
   for (const dir of createdTmpDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** `harness(app)`, registered for the `close()` the `after` hook above runs. */
+function wrap(app: any): any {
+  const built = harness(app);
+  builtHarnesses.push(built);
+  return built;
+}
 
 /** A throwaway module written to a temp dir and required for real. */
 class Fixture {
@@ -102,7 +115,7 @@ function build(fixture: Fixture, options: any = {}): [any, any] {
   const shell = new fixture.exports.Shell();
   const app = new App(60, 10, { view: () => shell.view() });
   app.enableHotReload([fixture.path], { interval: null, preserve: [shell], ...options });
-  return [harness(app), shell];
+  return [wrap(app), shell];
 }
 
 test("reload picks up the edited view and keeps component and app-object state", () => {
@@ -195,7 +208,7 @@ exports.view = () => Tree([0, 1, 2].map((i) => row(i, "%LABEL%")), { id: "t:tree
   const fixture = new Fixture(source.replace("%LABEL%", "old"));
   const app = new App(40, 6, { view: () => fixture.exports.view() });
   app.enableHotReload([fixture.path], { interval: null });
-  const ui = harness(app);
+  const ui = wrap(app);
   assert.ok(ui.contains("old row 0"));
 
   ui.find({ id: "t:tree" }).row("old row 2").click();
@@ -226,7 +239,7 @@ test("the watcher timer wakes the event loop on an edit", async () => {
   const unclaimed: unknown[] = [];
   const app = new App(60, 10, { view: () => shell.view(), onEvent: (event: unknown) => unclaimed.push(event) });
   app.enableHotReload([fixture.path], { interval: 20, preserve: [shell] });
-  const ui = harness(app);
+  const ui = wrap(app);
   try {
     fixture.write(COUNTER_V2);
     const deadline = Date.now() + 5000;
@@ -285,7 +298,7 @@ function bumpMtime(file: string): void {
 test("a demo edit repaints and keeps the counter, notes and selection", () => {
   const [demo, viewFile] = loadDemo();
   const [app] = demo.build(60, 24, null);
-  const ui = harness(app);
+  const ui = wrap(app);
   try {
     assert.ok(ui.contains("Hot reload demo"));
     click(ui, "hr:add");
@@ -314,7 +327,7 @@ test("a demo edit repaints and keeps the counter, notes and selection", () => {
 test("the demo shows a broken edit in the status bar", () => {
   const [demo, viewFile] = loadDemo();
   const [app] = demo.build(60, 24, null);
-  const ui = harness(app);
+  const ui = wrap(app);
   try {
     click(ui, "hr:add");
     fs.writeFileSync(viewFile, `${fs.readFileSync(viewFile, "utf8")}\nfunction broken( {\n`);

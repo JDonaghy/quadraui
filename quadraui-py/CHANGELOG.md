@@ -27,6 +27,13 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   given the same `render` callable it was built with.
   `tests/test_file_manager_app.py` is written entirely against it.
 
+- A `pytest` plugin (`quadraui.testing.pytest_plugin`, registered by this
+  distribution's own `pytest11` entry point) providing a
+  `quadraui_harness` factory fixture: `quadraui_harness(app)` builds a
+  `Harness` and `Harness.close()`s it when the test ends, so a test that
+  enabled hot reload cannot leak its watcher thread into the rest of the
+  session. No `conftest.py` needed in a consumer's own repo.
+
 - Hot reload for `quadraui.app.App`: `enable_hot_reload(*modules,
   interval=0.5, on_reload=None)` watches the given modules' source files and
   re-imports them on change (a daemon thread wakes the event loop through
