@@ -247,7 +247,7 @@ def test_focus_moves_focus_and_a_split_divider_drag_persists(ui):
 
     split.drag_divider(0.75)
 
-    assert ui.find(id="d:split").state["ratio"] == pytest.approx(0.75)
+    assert ui.find(id="d:split").ratio == pytest.approx(0.75)
     # The app keeps declaring its own literal; the store holds the drag.
     assert ui.find(id="d:split")["ratio"] == pytest.approx(0.4)
 

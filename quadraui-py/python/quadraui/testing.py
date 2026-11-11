@@ -390,7 +390,15 @@ class Widget:
     @property
     def scroll_offset(self) -> int:
         """How far this widget has scrolled, from the engine's own store."""
-        return int(self.state.get("scroll_offset", 0))
+        return int(self.state.get("scroll_offset") or 0)
+
+    @property
+    def ratio(self) -> Optional[float]:
+        """A split's divider position as the engine resolved it -- which is
+        where an uncontrolled divider's dragged position actually lives,
+        not in the `"ratio"` the app keeps re-declaring."""
+        value = self.state.get("ratio")
+        return None if value is None else float(value)
 
     # --- rows ----------------------------------------------------------------
 
@@ -443,9 +451,9 @@ class Widget:
                 if row.path == wanted:
                     return row
             return None
-        selected = self.state.get("selected")
+        selected = self.state.get("selected_idx")
         if selected is None and isinstance(self.descriptor, dict):
-            selected = self.descriptor.get("selected")
+            selected = self.descriptor.get("selected_idx")
         if selected is None:
             return None
         rows = self.rows
