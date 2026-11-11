@@ -65,6 +65,17 @@ only a push to `main` runs this workflow.
   retune a button's own rounding independently of every other rounded-rect
   overlay (hover card, quick-pick, notification, context menu, dialog box)
   that stays on `corner_radius`.
+### Fixed
+- `Split`/`SplitTree`'s pixel-path divider paint (#2371): the shared
+  `native_surface_paint::paint` for both primitives now paints a 1px sash
+  line, snapped to the device pixel grid and centred inside the 4px
+  divider band (`layout_metrics::pixel::DIVIDER`), matching VS Code's thin
+  resize-sash convention — the painted line is purely cosmetic and no
+  longer equals the full 4px band. `SplitLayout::divider_bounds`/
+  `divider_hit_bounds()` and `SplitTreeDivider::thickness` are unchanged,
+  so the drag hit target stays the full 4px; only the pixel backends
+  (GTK/win/macOS) are affected, TUI's 1-cell-thick divider already painted
+  (and still paints) at its full thickness.
 
 ### Changed
 - `ButtonMetrics::resolve`'s corner radius (#2368): every pixel-backend

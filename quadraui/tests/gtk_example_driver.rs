@@ -849,10 +849,10 @@ fn separator_run_in_col(driver: &mut GtkDriver<SplitApp>, x: i32) -> Option<(i32
     best
 }
 
-/// The shared paint fills exactly `SplitLayout::divider_bounds` in
-/// `theme.separator` and nothing else — a vertical band, one divider thickness
-/// wide, roughly centred for the app's default 0.5 ratio, with both panes left
-/// untouched.
+/// The shared paint fills a thin sash — one visual pixel wide — centred
+/// inside `SplitLayout::divider_bounds`'s wider (`GTK_DIVIDER_PX = 4`) hit
+/// band, in `theme.separator` and nothing else: a vertical line, roughly
+/// centred for the app's default 0.5 ratio, with both panes left untouched.
 #[test]
 fn split_divider_paints_a_separator_band_through_the_shared_paint_surface_path() {
     let mut driver = GtkDriver::new(SplitApp::new(), W, H);
@@ -861,11 +861,11 @@ fn split_divider_paints_a_separator_band_through_the_shared_paint_surface_path()
     let row = H / 2;
 
     let (x, len) = separator_run_in_row(&mut driver, row)
-        .expect("GtkBackend::draw_split should paint a separator-coloured divider band");
+        .expect("GtkBackend::draw_split should paint a separator-coloured divider sash");
 
     assert!(
-        (3..=6).contains(&len),
-        "divider band should be one divider thickness wide (GTK_DIVIDER_PX = 4), got {len}px",
+        (1..=2).contains(&len),
+        "divider sash should paint as a thin ~1px line, got {len}px",
     );
     // Default ratio is 0.5, so the band sits near the middle — asserted as
     // a broad window, not an exact pixel, so font metrics can't break it.
@@ -901,8 +901,8 @@ fn split_toggling_direction_repaints_the_divider_as_a_horizontal_band() {
     let (y, len) = separator_run_in_col(&mut driver, 20)
         .expect("a Vertical split's divider spans the full width, so column x=20 crosses it");
     assert!(
-        (3..=6).contains(&len),
-        "divider band should be one divider thickness tall, got {len}px",
+        (1..=2).contains(&len),
+        "divider sash should paint as a thin ~1px line, got {len}px",
     );
     assert!(
         y > 0 && y < H - 40,

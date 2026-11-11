@@ -831,6 +831,39 @@ pub(crate) mod native_surface_paint {
             assert!(thumb_rect.width > 0.0 && thumb_rect.width <= track.width);
         }
 
+        /// Regression lock for the VS Code overlay-scrollbar convention:
+        /// the thumb paints *inside* the track column (same x/width for a
+        /// vertical bar), not as a separate column beside it — the track
+        /// itself paints at exactly the width the caller gave it (e.g.
+        /// `Style::scrollbar_width`'s 10px default), so no extra width is
+        /// added for the thumb.
+        #[test]
+        fn thumb_rect_is_contained_within_track_rect_at_the_given_track_width() {
+            let track = Rect::new(0.0, 0.0, 10.0, 200.0);
+            let sb = Scrollbar::vertical(WidgetId::new("sb"), track, 50.0, 200.0, 50.0, 20.0);
+            let mut surface = RecordingSurface::default();
+            paint(&sb, &mut surface, &Theme::default());
+
+            let (track_rect, _) = surface.fills[0];
+            let (thumb_rect, _) = surface.fills[1];
+
+            assert_eq!(
+                track_rect.width, 10.0,
+                "track paints at exactly the given width, not a wider column"
+            );
+            assert!(
+                thumb_rect.x >= track_rect.x
+                    && thumb_rect.x + thumb_rect.width <= track_rect.x + track_rect.width,
+                "thumb must sit inside the track horizontally, not beside it: \
+                 track={track_rect:?}, thumb={thumb_rect:?}"
+            );
+            assert!(
+                thumb_rect.y >= track_rect.y
+                    && thumb_rect.y + thumb_rect.height <= track_rect.y + track_rect.height,
+                "thumb must sit inside the track vertically: track={track_rect:?}, thumb={thumb_rect:?}"
+            );
+        }
+
         #[test]
         fn zero_opacity_paints_nothing() {
             let sb = vertical_bar(0.0, 200.0, 50.0);
