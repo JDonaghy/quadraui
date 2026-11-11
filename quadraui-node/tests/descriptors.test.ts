@@ -327,6 +327,193 @@ test("clearExtra empties a slot and a later insert can reuse it", () => {
   assert.ok(app.screenContains("Booting"));
 });
 
+// Table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry that has a
+// dedicated `FormEvent` round-trips through a literal inline layout-tree
+// leaf -- a `{ row: [{ id, <kind>: {...} }] }` object, the exact shape a
+// render callback returns -- not just through `insertExtra`'s flat-slot
+// path. Each case dispatches the events a real app would push (a focusing
+// click, then a key/char where the kind needs one) and asserts the final
+// event the handler receives. `switch` already has its own dedicated
+// tree-leaf test; `progress`/`spinner`/`image` have no event at all, so
+// neither appears here.
+const INLINE_LEAF_CASES: Array<{
+  name: string;
+  tree: unknown;
+  events: unknown[];
+  expected: Array<null | Record<string, unknown> | [string, unknown]>;
+}> = [
+  {
+    name: "number_input",
+    tree: {
+      row: [{ id: "ni:1", number_input: { id: "ni:1", min: 0.0, max: 100.0, value: 42.0 } }],
+    },
+    events: [{ MouseDown: { button: "Left", position: { x: 38.0, y: 0.0 }, modifiers: {} } }],
+    expected: [
+      { FocusChanged: "ni:1" },
+      ["ni:1", { TextInputChanged: { id: "ni:1", value: "43" } }],
+    ],
+  },
+  {
+    name: "radio_group",
+    tree: {
+      row: [
+        {
+          id: "rg:1",
+          radio_group: {
+            id: "rg:1",
+            options: [
+              { id: "opt:a", label: "Alpha" },
+              { id: "opt:b", label: "Beta" },
+            ],
+            focused: true,
+          },
+        },
+      ],
+    },
+    events: [
+      { MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} } },
+      { KeyPressed: { key: { Named: "Down" }, modifiers: {}, repeat: false } },
+    ],
+    expected: [
+      { FocusChanged: "rg:1" },
+      null, // the focusing click itself falls through unclaimed
+      ["rg:1", { SegmentedControlChanged: { id: "rg:1", selected_idx: 0 } }],
+    ],
+  },
+  {
+    name: "date_picker",
+    tree: {
+      row: [
+        {
+          id: "dp:1",
+          date_picker: {
+            id: "dp:1",
+            visible_month: { year: 2024, month: 3, day: 1 },
+            focused: { year: 2024, month: 3, day: 15 },
+            locale: { first_weekday: "Sunday", format: "Iso8601" },
+            has_focus: true,
+          },
+        },
+      ],
+    },
+    events: [
+      { MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} } },
+      { KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false } },
+    ],
+    expected: [
+      { FocusChanged: "dp:1" },
+      null,
+      [
+        "dp:1",
+        { DateChanged: { id: "dp:1", value: { year: 2024, month: 3, day: 15 } } },
+      ],
+    ],
+  },
+  {
+    name: "combo_box",
+    tree: {
+      row: [
+        {
+          id: "cb:1",
+          combo_box: {
+            id: "cb:1",
+            options: ["alpha", "beta"],
+            text: "",
+            focused: true,
+            open: false,
+          },
+        },
+      ],
+    },
+    events: [
+      { MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} } },
+      { KeyPressed: { key: { Char: "a" }, modifiers: {}, repeat: false } },
+    ],
+    expected: [
+      { FocusChanged: "cb:1" },
+      null,
+      ["cb:1", { ComboBoxTextChanged: { id: "cb:1", value: "a" } }],
+    ],
+  },
+  {
+    name: "form",
+    tree: {
+      row: [
+        {
+          id: "settings",
+          form: {
+            id: "settings",
+            fields: [
+              {
+                id: "wrap",
+                label: { spans: [{ text: "Word wrap", fg: null, bg: null }] },
+                kind: { Toggle: { value: false } },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    events: [{ MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} } }],
+    expected: [
+      { FocusChanged: "settings" },
+      ["settings", { ToggleChanged: { id: "wrap", value: true } }],
+    ],
+  },
+  {
+    name: "text_input",
+    tree: { row: [{ id: "ti:1", text_input: { id: "ti:1", lines: ["hello"] } }] },
+    events: [
+      { MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} } },
+      { CharTyped: "!" },
+    ],
+    expected: [
+      { FocusChanged: "ti:1" },
+      null,
+      ["ti:1", { TextInputChanged: { id: "ti:1", value: "!hello" } }],
+    ],
+  },
+];
+
+for (const { name, tree, events, expected } of INLINE_LEAF_CASES) {
+  test(`inline tree leaf round-trips a semantic event: ${name}`, () => {
+    const app = new QuiApp(40, 20);
+    app.setRender(() => tree);
+    // `setRender` itself never repaints -- force the first render so the
+    // hit map actually reflects this leaf before the events below.
+    app.screen();
+
+    const received: any[] = [];
+    app.setHandler((event: unknown) => received.push(event));
+    for (const event of events) {
+      app.pushEvent(event);
+    }
+    app.run(events.length);
+
+    assert.equal(
+      received.length,
+      expected.length,
+      `unexpected event count for ${name}: ${JSON.stringify(received)}`,
+    );
+    for (let i = 0; i < expected.length; i += 1) {
+      const want = expected[i];
+      const got = received[i];
+      if (want === null) {
+        // The focusing click itself lands as a raw, unclaimed hit -- only
+        // its `FocusChanged` precursor and the later key/char's semantic
+        // event are asserted precisely.
+        assert.ok(!got.Form, `expected no Form event at index ${i} for ${name}: ${JSON.stringify(got)}`);
+        continue;
+      }
+      if (Array.isArray(want)) {
+        assert.deepStrictEqual(got.Form, want, `${name} at index ${i}: ${JSON.stringify(got)}`);
+      } else {
+        assert.deepStrictEqual(got, want, `${name} at index ${i}: ${JSON.stringify(got)}`);
+      }
+    }
+  });
+}
+
 test("clearExtra on an empty or unknown kind returns false, not an error", () => {
   const app = new QuiApp(40, 20);
   assert.equal(app.clearExtra("progress"), false);

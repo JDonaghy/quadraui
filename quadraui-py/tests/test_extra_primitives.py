@@ -251,6 +251,177 @@ def test_render_callback_tree_leaf_rejects_two_extra_descriptors_together():
         app.screen()
 
 
+# Parametrised table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry
+# that has a dedicated `FormEvent` (`switch` already has its own dedicated
+# test above the slot-path block below, and `progress`/`spinner`/`image`
+# have no event at all) round-trips through a literal inline layout-tree
+# leaf -- a `{"row": [{"id": ..., "<kind>": {...}}]}` dict, the exact shape
+# a render callback writes -- not just through `insert_extra`'s flat-slot
+# path. Each case pushes the events a real app would dispatch (a focusing
+# click, then a key/char where the kind needs one) and asserts the final
+# dispatched event the handler receives.
+_INLINE_LEAF_CASES = [
+    pytest.param(
+        {"row": [{"id": "ni:1", "number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}]},
+        [{"MouseDown": {"button": "Left", "position": {"x": 38.0, "y": 0.0}, "modifiers": {}}}],
+        [
+            {"FocusChanged": "ni:1"},
+            ("ni:1", {"TextInputChanged": {"id": "ni:1", "value": "43"}}),
+        ],
+        id="number_input",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "rg:1",
+                    "radio_group": {
+                        "id": "rg:1",
+                        "options": [
+                            {"id": "opt:a", "label": "Alpha"},
+                            {"id": "opt:b", "label": "Beta"},
+                        ],
+                        "focused": True,
+                    },
+                }
+            ]
+        },
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 1.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Down"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "rg:1"},
+            None,  # the focusing click itself falls through unclaimed
+            ("rg:1", {"SegmentedControlChanged": {"id": "rg:1", "selected_idx": 0}}),
+        ],
+        id="radio_group",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "dp:1",
+                    "date_picker": {
+                        "id": "dp:1",
+                        "visible_month": {"year": 2024, "month": 3, "day": 1},
+                        "focused": {"year": 2024, "month": 3, "day": 15},
+                        "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
+                        "has_focus": True,
+                    },
+                }
+            ]
+        },
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 1.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "dp:1"},
+            None,
+            (
+                "dp:1",
+                {"DateChanged": {"id": "dp:1", "value": {"year": 2024, "month": 3, "day": 15}}},
+            ),
+        ],
+        id="date_picker",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "cb:1",
+                    "combo_box": {
+                        "id": "cb:1",
+                        "options": ["alpha", "beta"],
+                        "text": "",
+                        "focused": True,
+                        "open": False,
+                    },
+                }
+            ]
+        },
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 1.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Char": "a"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "cb:1"},
+            None,
+            ("cb:1", {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}),
+        ],
+        id="combo_box",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "settings",
+                    "form": {
+                        "id": "settings",
+                        "fields": [
+                            {
+                                "id": "wrap",
+                                "label": {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]},
+                                "kind": {"Toggle": {"value": False}},
+                            },
+                        ],
+                    },
+                }
+            ]
+        },
+        [{"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}],
+        [
+            {"FocusChanged": "settings"},
+            ("settings", {"ToggleChanged": {"id": "wrap", "value": True}}),
+        ],
+        id="form",
+    ),
+    pytest.param(
+        {"row": [{"id": "ti:1", "text_input": {"id": "ti:1", "lines": ["hello"]}}]},
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}},
+            {"CharTyped": "!"},
+        ],
+        [
+            {"FocusChanged": "ti:1"},
+            None,
+            ("ti:1", {"TextInputChanged": {"id": "ti:1", "value": "!hello"}}),
+        ],
+        id="text_input",
+    ),
+]
+
+
+@pytest.mark.parametrize("leaf_tree, events, expected", _INLINE_LEAF_CASES)
+def test_inline_tree_leaf_round_trips_semantic_event_per_kind(leaf_tree, events, expected):
+    app = QuiApp(40, 20)
+    app.set_render(lambda: leaf_tree)
+    # `set_render` itself never repaints -- force the first render so the
+    # hit map actually reflects this leaf before the events below.
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for event in events:
+        app.push_event(event)
+    app.run(len(events))
+
+    assert len(received) == len(expected), received
+    for actual, want in zip(received, expected):
+        if want is None:
+            # The focusing click itself lands as a raw, unclaimed hit --
+            # only its `FocusChanged` precursor and the later key/char's
+            # semantic event are asserted precisely.
+            assert "Form" not in actual, actual
+            continue
+        if isinstance(want, tuple):
+            widget_id, form_event = actual["Form"]
+            assert (widget_id, form_event) == want, actual
+        else:
+            assert actual == want, actual
+
+
 def test_insert_extra_text_input_renders_value():
     app = QuiApp(40, 20)
     app.insert_extra("text_input", {"id": "ti:1", "lines": ["hello"]})
