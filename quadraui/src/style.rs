@@ -30,9 +30,10 @@
 //!
 //! - **No-op** — the token has no effect because the TUI rasteriser
 //!   for that primitive doesn't read [`Style`] at all. [`Self::focus_ring_width`]
-//!   is this: [`crate::tui::draw_focus_ring`] always paints a 1-cell
-//!   box-drawing border regardless of what a GUI backend's style carries
-//!   (its own doc already says so — this struct doesn't change that).
+//!   is this: `crate::tui::draw_focus_ring` (`#[doc(hidden)]`, so not
+//!   linked here) always paints a 1-cell box-drawing border regardless
+//!   of what a GUI backend's style carries (its own doc already says so
+//!   — this struct doesn't change that).
 //! - **Cell-quantised** — a spacing/padding token rounds to whole cells
 //!   rather than being dropped outright, the same way
 //!   `LayoutMetrics::cell_quantum` already quantises hit-test geometry
@@ -41,8 +42,9 @@
 //!   their own docs for the exact rounding rule.
 //! - **Pre-blend** — a token whose pixel-backend refinement is alpha
 //!   compositing, which ratatui's `Buffer` has no primitive for.
-//!   [`Self::backdrop_opacity`] is this: [`crate::tui::draw_palette`]
-//!   pre-mixes the backdrop colour on the CPU via [`crate::Color::blend`]
+//!   [`Self::backdrop_opacity`] is this: `crate::tui::draw_palette`
+//!   (`#[doc(hidden)]`, so not linked here) pre-mixes the backdrop
+//!   colour on the CPU via [`crate::Color::blend`]
 //!   before writing opaque cells, the same technique
 //!   [`crate::tui::draw_minimap`] already uses to simulate a translucent
 //!   highlight tint.
@@ -142,7 +144,8 @@ pub struct Style {
     /// — see that trait's module doc for why this reaches `GtkBackend`,
     /// `MacBackend` and `WinBackend` from one call site.
     ///
-    /// **TUI story: no-op.** [`crate::tui::draw_focus_ring`] always
+    /// **TUI story: no-op.** `crate::tui::draw_focus_ring`
+    /// (`#[doc(hidden)]`, so not linked here) always
     /// paints a 1-cell box-drawing border; there is no sub-cell stroke
     /// weight on a terminal grid to refine. See the module doc's *Where
     /// each token maps on TUI* section.

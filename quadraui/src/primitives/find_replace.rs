@@ -5,7 +5,8 @@
 //! target enum, plus (as of #809, `PaintSurface` Phase 2b) the shared
 //! [`native_surface_paint::paint`] rasteriser every pixel backend
 //! (GTK/macOS/Win) calls through `Backend::draw_find_replace`. TUI
-//! stays a separate rasteriser, [`crate::tui::draw_find_replace`] —
+//! stays a separate rasteriser, `crate::tui::draw_find_replace`
+//! (`#[doc(hidden)]`, so not linked here) —
 //! see `paint_surface.rs`'s module doc for why TUI never implements
 //! `PaintSurface` (a cell grid has no sub-cell `Rect`).
 //!
@@ -424,8 +425,9 @@ impl FindReplacePanel {
 // `crate::gtk::set_source`, which is `cr.set_source_rgb`) — so an
 // opaque fill is the only shape that reads correctly on all three
 // pixel backends. It also matches how
-// [`crate::tui::draw_find_replace`] already renders this: a solid
-// `sel_bg` cell background, never blended.
+// `crate::tui::draw_find_replace` (`#[doc(hidden)]`, so not linked
+// here) already renders this: a solid `sel_bg` cell background, never
+// blended.
 //
 // `#[allow(dead_code)]`: exercised by each backend's own
 // `Backend::draw_find_replace` call site once compiled in, and by this

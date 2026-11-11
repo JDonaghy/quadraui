@@ -545,8 +545,9 @@ pub unsafe fn draw_text(
 /// Like [`draw_text`], but additionally scales the glyph run horizontally
 /// by `scale_x` around its own origin `(x, y)`.
 ///
-/// Used by [`crate::macos::terminal::draw_terminal_cells`] to stretch or
-/// shrink a double-width glyph (CJK / emoji) so it fills its two-column
+/// Used by `crate::macos::terminal::draw_terminal_cells` (`#[doc(hidden)]`,
+/// so not linked here) to stretch or shrink a double-width glyph (CJK /
+/// emoji) so it fills its two-column
 /// cell box exactly — the scale factor comes from
 /// [`crate::terminal_style::wide_glyph_x_scale`], the same decision GTK's
 /// `cr.scale(scale_x, 1.0)` applies via Cairo's CTM. Core

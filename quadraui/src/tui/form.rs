@@ -1264,8 +1264,9 @@ fn draw_field_combo_box(
 }
 
 /// Renders the embedded [`crate::primitives::number_input::NumberInput`]
-/// through the real [`crate::tui::draw_number_input`] rasteriser — the
-/// bordered box plus stepper buttons, not a compact summary, since
+/// through the real `crate::tui::draw_number_input` (`#[doc(hidden)]`, so
+/// not linked here) rasteriser — the bordered box plus stepper buttons,
+/// not a compact summary, since
 /// (unlike `DatePicker`/`ComboBox`) there is no popup to keep collapsed.
 /// `visible_field.item_bounds`'s single entry (populated by
 /// `tui_form_layout_with_label_width`'s `FieldKind::NumberInput` arm) is
@@ -1322,8 +1323,9 @@ fn draw_field_number_input(
 }
 
 /// Renders the embedded [`crate::primitives::radio_group::RadioGroup`]
-/// through the real [`crate::tui::draw_radio_group`] rasteriser, one row
-/// per option — `visible_field.item_bounds` (populated by
+/// through the real `crate::tui::draw_radio_group` (`#[doc(hidden)]`, so
+/// not linked here) rasteriser, one row per option —
+/// `visible_field.item_bounds` (populated by
 /// `tui_form_layout_with_label_width`'s `FieldKind::RadioGroup` arm, one
 /// entry per [`crate::primitives::radio_group::RadioOption`]) gives the
 /// control's on-screen rect via its first entry; `FormController`'s click

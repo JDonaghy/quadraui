@@ -9,6 +9,15 @@
 //! Mirrors the layout of [`crate::gtk`] and [`crate::tui`]: a `run`
 //! entry point owns window + run-loop bootstrap, and per-primitive
 //! rasterisers live as sibling modules.
+//!
+//! The per-primitive rasteriser submodules, and most of the free functions
+//! re-exported at the bottom of this module, are painter internals, not a
+//! documented API: **unstable, not covered by semver** — they can move,
+//! split, or disappear between any two 0.1.x releases with no version
+//! bump. `backend`/`events`/`services`/`shell_runner`/`testing`/`text` and
+//! the handful of re-exports with doc comments on this page (`MacBackend`,
+//! `run`, …) are the stable, consumer-depended-on subset; everything else
+//! is `#[doc(hidden)]`.
 
 // Per-primitive rasteriser modules below stay `pub mod` (not `pub(crate)`)
 // so every existing `crate::macos::<module>::<item>` path keeps compiling —
@@ -143,43 +152,90 @@ pub mod tree;
 // mirroring `menu_bar_install`'s visibility above.
 pub(crate) mod tray;
 
+// The flat re-exports below split into two groups, verified by grepping
+// `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
+// (`quadraui/examples`, `quadraui/benches`, `quadraui/tests`, `kubeui*`) for
+// `quadraui::macos::<name>` / `crate::macos::<name>`: the handful a real
+// caller reaches by this exact flat path stay documented; everything else
+// is a painter internal duplicating what `Backend::draw_*` already
+// exposes, with zero reachers, so it is `#[doc(hidden)]` — unstable, not
+// covered by semver, free to move or disappear without a version bump
+// (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
+#[doc(hidden)]
 pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, mac_activity_bar_layout};
 pub use backend::MacBackend;
+#[doc(hidden)]
 pub use board::mac_board_layout;
+#[doc(hidden)]
 pub use button::mac_button_layout;
+#[doc(hidden)]
 pub use chart::mac_chart_layout;
+#[doc(hidden)]
 pub use command_center::{draw_command_center, mac_command_center_layout};
+#[doc(hidden)]
 pub use command_line::draw_command_line;
+#[doc(hidden)]
 pub use completions::draw_completions;
+#[doc(hidden)]
 pub use context_menu::draw_context_menu;
+#[doc(hidden)]
 pub use data_table::{draw_data_table, mac_data_table_layout};
+#[doc(hidden)]
 pub use dialog::draw_dialog;
+#[doc(hidden)]
 pub use editor::draw_editor;
+#[doc(hidden)]
 pub use form::{draw_settings_chrome, mac_form_layout};
+#[doc(hidden)]
 pub use list::{draw_list, mac_list_layout};
+#[doc(hidden)]
 pub use menu_bar::{draw_menu_bar, mac_menu_bar_layout};
+#[doc(hidden)]
 pub use message_list::draw_message_list;
+#[doc(hidden)]
 pub use minimap::mac_minimap_layout;
+#[doc(hidden)]
 pub use multi_section_view::{draw_multi_section_view, mac_msv_layout, mac_msv_metrics};
+#[doc(hidden)]
 pub use palette::{draw_palette, mac_palette_layout};
+#[doc(hidden)]
 pub use panel::mac_panel_layout;
+#[doc(hidden)]
 pub use pipeline_view::mac_pipeline_view_layout;
+#[doc(hidden)]
 pub use progress::mac_progress_layout;
+#[doc(hidden)]
 pub use radio_group::mac_radio_group_layout;
+#[doc(hidden)]
 pub use rich_text_popup::draw_rich_text_popup;
-pub use run::{run, run_with, MacRunner, RunConfig, StepOutcome};
+#[doc(hidden)]
+pub use run::run_with;
+pub use run::{run, MacRunner, RunConfig, StepOutcome};
+#[doc(hidden)]
 pub use services::MacPlatformServices;
+#[doc(hidden)]
 pub use sidebar_panel::mac_sidebar_panel_layout;
+#[doc(hidden)]
 pub use spinner::{draw_spinner, mac_spinner_layout};
+#[doc(hidden)]
 pub use split::mac_split_layout;
+#[doc(hidden)]
 pub use split_tree::mac_split_tree_layout;
+#[doc(hidden)]
 pub use status_bar::mac_status_bar_layout;
+#[doc(hidden)]
 pub use switch::mac_switch_layout;
+#[doc(hidden)]
 pub use tab_bar::{draw_tab_bar, mac_tab_bar_layout};
+#[doc(hidden)]
 pub use text_display::mac_text_display_layout;
+#[doc(hidden)]
 pub use toast::mac_toast_stack_layout;
+#[doc(hidden)]
 pub use toolbar::{draw_toolbar, draw_toolbar_with_options, mac_toolbar_layout};
+#[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
+#[doc(hidden)]
 pub use tree::{draw_tree, mac_tree_layout};
 
 /// Serialises every `#[test]` fn in this module tree that drives the

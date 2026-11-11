@@ -64,12 +64,26 @@ only a push to `main` runs this workflow.
   `quadraui::{gtk,tui,win}` backends, which already keep their equivalent
   submodules private. Every path a consumer previously used still compiles
   unchanged: the backend struct, `events`, `services`, `shell_runner`,
-  `testing`, and `text` stay `pub` and documented, and the flat
-  `crate::macos::<item>` re-exports (`draw_tab_bar`, `mac_tree_layout`, …)
-  are untouched. `quadraui/Cargo.toml`'s new
+  `testing`, and `text` stay `pub` and documented.
+- `quadraui::{gtk,tui,win,macos}` (#2355): the flat `crate::<backend>::
+  <item>` re-exports at the bottom of each module — `draw_*`/`*_layout`
+  painter internals that duplicate what `Backend::draw_*` already exposes —
+  are now `#[doc(hidden)]` unless a real caller in `~/src/vimcode/src`,
+  `~/src/coord-tui/src`, or an in-tree consumer (`quadraui/examples`,
+  `quadraui/benches`, `quadraui/tests`, `kubeui*`) reaches that exact flat
+  path today (`GtkBackend`, `run`/`run_with`, `draw_data_table`, …; see
+  `quadraui/tests/backend_module_doc_hidden.rs` for the enforced list).
+  `win`'s `run` module (the one backend where it was `pub mod` instead of
+  crate-private, unlike its `gtk`/`tui`/`macos` siblings) and `gtk`'s unused
+  `menu_overlay`/`tui`'s unused `caps`/`color` modules get the same
+  treatment. Every path a consumer previously used still compiles
+  unchanged — nothing is renamed, narrowed, or removed, only hidden from
+  rustdoc's module index. `quadraui/Cargo.toml`'s
   `[package.metadata.cargo-semver-checks.lints]` table downgrades the
-  `*_now_doc_hidden` lint family to `allow`, so hiding (or later splitting)
-  a painter internal no longer registers as a breaking change.
+  `*_now_doc_hidden` lint family to `allow` (every lint name verified
+  against a real `cargo semver-checks --list`, v0.51.0), so hiding — or
+  later moving/splitting — a painter internal no longer registers as a
+  breaking change.
 
 ## [0.10.0] - 2026-11-10
 ### Added
