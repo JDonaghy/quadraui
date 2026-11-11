@@ -212,6 +212,40 @@ exclude = [
 # instead comes from `.github/workflows/macos.yml`'s `Doc (macos feature)`
 # step, which runs `cargo doc --features macos` for real on a `macos-latest`
 # runner.
+# Every per-primitive rasteriser submodule under `src/macos/` stays `pub
+# mod` (see that module's own comment for why `pub(crate)` is a separate,
+# breaking step) but carries `#[doc(hidden)]` — unstable, not covered by
+# semver. `cargo-semver-checks` ships a dedicated, individually
+# configurable lint for each item kind's "became `#[doc(hidden)]`"
+# transition (`function_now_doc_hidden`, `struct_now_doc_hidden`, …); its
+# built-in default for every one of them is `deny` + `required-update =
+# "major"`, the same severity as outright removing the item. Downgraded to
+# `allow` here so hiding — or later moving/splitting — a painter internal
+# never requires a version bump; the few re-exports a consumer actually
+# depends on (`crate::macos::MacBackend`, `draw_tab_bar`, …) are untouched
+# by `#[doc(hidden)]` on their source module and stay fully tracked.
+[package.metadata.cargo-semver-checks.lints]
+enum_now_doc_hidden = "allow"
+enum_struct_variant_field_now_doc_hidden = "allow"
+enum_tuple_variant_field_now_doc_hidden = "allow"
+exhaustive_struct_with_doc_hidden_fields_added = "allow"
+function_now_doc_hidden = "allow"
+inherent_associated_const_now_doc_hidden = "allow"
+inherent_method_now_doc_hidden = "allow"
+macro_now_doc_hidden = "allow"
+proc_macro_now_doc_hidden = "allow"
+pub_module_level_const_now_doc_hidden = "allow"
+pub_static_became_hidden_const = "allow"
+pub_static_now_doc_hidden = "allow"
+struct_now_doc_hidden = "allow"
+struct_pub_field_now_doc_hidden = "allow"
+trait_associated_const_now_doc_hidden = "allow"
+trait_associated_type_now_doc_hidden = "allow"
+trait_method_now_doc_hidden = "allow"
+trait_now_doc_hidden = "allow"
+union_now_doc_hidden = "allow"
+union_pub_field_now_doc_hidden = "allow"
+
 [package.metadata.docs.rs]
 features = ["tui", "gtk", "win", "terminal", "macos", "layout", "a11y"]
 rustdoc-args = ["--cfg", "docsrs"]
