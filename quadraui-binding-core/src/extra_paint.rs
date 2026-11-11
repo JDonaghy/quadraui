@@ -920,6 +920,25 @@ mod tests {
     use quadraui::{AppLogic, PaletteItem, Reaction, UiEvent};
     use std::cell::RefCell;
 
+    /// Records every event an [`EventSink`] receives, in order, for a
+    /// chrome-leaf test to assert against without any host-language
+    /// callback in scope.
+    #[derive(Default)]
+    struct RecordingSink {
+        dispatched: Vec<UiEvent>,
+    }
+
+    impl crate::engine::EventSink for RecordingSink {
+        fn dispatch(
+            &mut self,
+            event: &UiEvent,
+            _hit_detail: Option<&crate::hit::HitDetail>,
+        ) -> Reaction {
+            self.dispatched.push(event.clone());
+            Reaction::Continue
+        }
+    }
+
     fn palette(create_label: Option<&str>) -> Palette {
         Palette {
             id: WidgetId::new("pal"),
@@ -1021,26 +1040,10 @@ mod tests {
     /// semantic event all the way to the handler, not just its paint.
     #[test]
     fn switch_leaf_click_toggles_through_the_interaction_engine() {
-        use crate::engine::{EventSink, InteractionEngine};
+        use crate::engine::InteractionEngine;
         use crate::layout::{LayoutContainer, LayoutNode, Spacing};
         use crate::render::paint_layout;
         use quadraui::{FormEvent, Modifiers, MouseButton};
-
-        #[derive(Default)]
-        struct RecordingSink {
-            dispatched: Vec<UiEvent>,
-        }
-
-        impl EventSink for RecordingSink {
-            fn dispatch(
-                &mut self,
-                event: &UiEvent,
-                _hit_detail: Option<&crate::hit::HitDetail>,
-            ) -> Reaction {
-                self.dispatched.push(event.clone());
-                Reaction::Continue
-            }
-        }
 
         struct SwitchLeafApp {
             engine: InteractionEngine,
@@ -1129,26 +1132,10 @@ mod tests {
     /// semantic click all the way to the handler, not just its paint.
     #[test]
     fn toolbar_leaf_click_emits_button_clicked_through_the_interaction_engine() {
-        use crate::engine::{EventSink, InteractionEngine};
+        use crate::engine::InteractionEngine;
         use crate::layout::{LayoutContainer, LayoutNode, Spacing};
         use crate::render::paint_layout;
         use quadraui::{Modifiers, MouseButton, ToolbarEvent};
-
-        #[derive(Default)]
-        struct RecordingSink {
-            dispatched: Vec<UiEvent>,
-        }
-
-        impl EventSink for RecordingSink {
-            fn dispatch(
-                &mut self,
-                event: &UiEvent,
-                _hit_detail: Option<&crate::hit::HitDetail>,
-            ) -> Reaction {
-                self.dispatched.push(event.clone());
-                Reaction::Continue
-            }
-        }
 
         struct ToolbarLeafApp {
             engine: InteractionEngine,
@@ -1185,7 +1172,11 @@ mod tests {
                 paint_layout(backend, area, &tree, &mut hits, &|id| {
                     self.engine.chrome_interaction(id)
                 });
-                self.engine.set_hits(hits);
+                crate::host::render_overlays(&self.engine, backend, hits);
+            }
+
+            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+                self.engine.tab_stops()
             }
 
             fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -1245,26 +1236,10 @@ mod tests {
     /// `UiEvent::MenuActivated` a slot-painted menu bar dispatches.
     #[test]
     fn menu_bar_leaf_activation_reaches_the_interaction_engine() {
-        use crate::engine::{EventSink, InteractionEngine};
+        use crate::engine::InteractionEngine;
         use crate::layout::{LayoutContainer, LayoutNode, Spacing};
         use crate::render::paint_layout;
         use quadraui::{ContextMenuItem, Key, Modifiers, NamedKey, StyledText};
-
-        #[derive(Default)]
-        struct RecordingSink {
-            dispatched: Vec<UiEvent>,
-        }
-
-        impl EventSink for RecordingSink {
-            fn dispatch(
-                &mut self,
-                event: &UiEvent,
-                _hit_detail: Option<&crate::hit::HitDetail>,
-            ) -> Reaction {
-                self.dispatched.push(event.clone());
-                Reaction::Continue
-            }
-        }
 
         struct MenuBarLeafApp {
             engine: InteractionEngine,
@@ -1305,6 +1280,10 @@ mod tests {
                     self.engine.chrome_interaction(id)
                 });
                 crate::host::render_overlays(&self.engine, backend, hits);
+            }
+
+            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+                self.engine.tab_stops()
             }
 
             fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

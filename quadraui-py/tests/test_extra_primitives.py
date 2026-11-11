@@ -1669,10 +1669,16 @@ def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
 
 
 def test_inline_tree_leaf_find_replace_renders_query_text():
-    # `find_replace` has no `insert_extra` test at all today (unlike the
-    # other seven chrome kinds): `FindReplacePanel` carries no `id` field
-    # of its own (see `ExtraPaint::id`'s fixed-sentinel doc), so it only
-    # ever reaches the screen via an inline leaf.
+    # `FindReplacePanel` carries no `id` field of its own (see
+    # `ExtraPaint::id`'s fixed-sentinel doc); `test_missing_primitives.py`
+    # already covers it via `insert_extra`, so this proves the same
+    # painter also works from an inline layout leaf. `hit_regions` drives
+    # both click routing AND which content the TUI rasteriser paints
+    # (`tui::draw_find_replace` walks it to place the find/replace input
+    # text) -- a real host builds it via `compute_find_replace_hit_regions`;
+    # this test supplies just the one entry it needs directly. An inline
+    # leaf gets the full 40-column viewport rather than `insert_extra`'s
+    # narrower band, so a `width` of 20 keeps the region inside it.
     app = QuiApp(40, 20)
 
     def render():
@@ -1683,6 +1689,7 @@ def test_inline_tree_leaf_find_replace_renders_query_text():
                     "find_replace": {
                         "query": "needle",
                         "group_bounds": {"x": 0.0, "y": 0.0, "width": 40.0, "height": 20.0},
+                        "hit_regions": [[{"col": 0, "row": 0, "width": 20}, {"FindInput": 0}]],
                     },
                 },
             ]
@@ -1704,7 +1711,10 @@ def test_inline_tree_leaf_command_line_renders_text():
     def render():
         return {
             "row": [
-                {"id": "command_line:main", "command_line": {"id": "command_line:main", "text": ":wq"}},
+                {
+                    "id": "command_line:main",
+                    "command_line": {"id": "command_line:main", "text": ":wq"},
+                },
             ]
         }
 
