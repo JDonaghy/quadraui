@@ -5,7 +5,8 @@
 //! (`┌─┐`/`│`/`└─┘`, the same glyph set `tui::tooltip`/
 //! `tui::context_menu` already use). Content is the host's
 //! responsibility — it draws into `layout.content_bounds`, same
-//! contract as [`crate::tui::draw_panel`].
+//! contract as `crate::tui::draw_panel` (`#[doc(hidden)]`, so not
+//! linked here).
 
 use ratatui::buffer::Buffer;
 

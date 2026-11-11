@@ -5,11 +5,12 @@
 //! for implementation details. This module carries [`draw_status_bar`] over the
 //! shared [`super::surface::CairoSurface`] adapter.
 //!
-//! `draw_status_bar` remains public and un-deprecated: [`super::surface::CairoSurface`]
-//! is `pub(crate)`, so `kubeui-gtk/src/main.rs`'s `draw` closure (a bare `cr`/`layout`
-//! with no `GtkBackend` in scope) has no other way to reach the shared paint.
-//! `MIN_GAP_PX` stays put — it is still `GtkBackend::status_bar_layout`'s own
-//! no-paint measurer constant.
+//! `draw_status_bar`/`MIN_GAP_PX` are `#[doc(hidden)]` at their `crate::gtk`
+//! re-export: every in-tree `Backend::draw_status_bar_interactive` call site
+//! goes through [`crate::gtk::backend::GtkBackend`] instead, which owns its
+//! own `CairoSurface`, and no out-of-tree caller reaches either name by the
+//! flat path. `MIN_GAP_PX` stays put — it is still
+//! `GtkBackend::status_bar_layout`'s own no-paint measurer constant.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -18,15 +19,14 @@ use crate::primitives::status_bar::{StatusBar, StatusBarLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
-/// The sanctioned entry point for a caller holding a bare `cr`/`layout`
-/// with no [`crate::gtk::backend::GtkBackend`] in scope —
-/// [`super::surface::CairoSurface`] is `pub(crate)`, so this free
-/// function is how `kubeui-gtk/src/main.rs` (and any future such
-/// caller) reaches the shared
-/// [`crate::primitives::status_bar::native_surface_paint::paint`].
-/// Every in-tree `Backend::draw_status_bar_interactive` call site goes
-/// through [`crate::gtk::backend::GtkBackend`] instead, which owns its
-/// own `CairoSurface`.
+/// The entry point for a caller holding a bare `cr`/`layout` with no
+/// [`crate::gtk::backend::GtkBackend`] in scope —
+/// [`super::surface::CairoSurface`] is `pub(crate)`, so this free function
+/// is how such a caller would reach the shared
+/// [`crate::primitives::status_bar::native_surface_paint::paint`]. Every
+/// in-tree `Backend::draw_status_bar_interactive` call site goes through
+/// [`crate::gtk::backend::GtkBackend`] instead, which owns its own
+/// `CairoSurface`.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_status_bar(
     cr: &Context,

@@ -7,6 +7,13 @@
 //! Primitives own layout, backends rasterise. Each rasteriser takes a
 //! pre-computed `*Layout` from the primitive's `.layout()` method along
 //! with the primitive itself and a [`crate::Theme`] for default colours.
+//!
+//! Most of the free functions re-exported at the bottom of this module are
+//! painter internals, not a documented API: **unstable, not covered by
+//! semver** — they can move, split, or disappear between any two 0.1.x
+//! releases with no version bump. The few re-exports with doc comments on
+//! this page (`TuiBackend`, `run`, …) are the stable, consumer-depended-on
+//! subset; everything else is `#[doc(hidden)]`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -20,8 +27,14 @@ mod board;
 mod braille;
 mod button;
 mod canvas;
+// No reacher in `~/src/vimcode/src`, `~/src/coord-tui/src`, or any in-tree
+// consumer reaches either module-qualified (`crate::tui::caps::…`) —
+// `#[doc(hidden)]`: unstable, not covered by semver, like the flat
+// re-exports in the `pub use` block below.
+#[doc(hidden)]
 pub mod caps;
 mod chart;
+#[doc(hidden)]
 pub mod color;
 mod combo_box;
 mod command_center;
@@ -81,80 +94,140 @@ mod tree;
 #[cfg(feature = "terminal")]
 pub mod vt_testing;
 
+// The flat re-exports below split into two groups, verified by grepping
+// `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
+// (`quadraui/examples`, `quadraui/benches`, `quadraui/tests`, `kubeui*`) for
+// `quadraui::tui::<name>` / `crate::tui::<name>`: the handful a real caller
+// reaches by this exact flat path stay documented; everything else is a
+// painter internal duplicating what `Backend::draw_*` already exposes, with
+// zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
+// semver, free to move or disappear without a version bump (see
+// `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
+#[doc(hidden)]
 pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::TuiBackend;
+#[doc(hidden)]
 pub use board::{draw_board, tui_board_layout};
+#[doc(hidden)]
 pub use button::{draw_button, draw_button_interactive, tui_button_layout};
+#[doc(hidden)]
 pub use canvas::{draw_canvas, tui_canvas_layout};
+#[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
+#[doc(hidden)]
 pub use combo_box::draw_combo_box;
+#[doc(hidden)]
 pub use command_center::{draw_command_center, tui_command_center_layout};
+#[doc(hidden)]
 pub use completions::draw_completions;
+#[doc(hidden)]
 pub use context_menu::{
     draw_context_menu, draw_context_menu_with_glyphs, draw_context_menu_with_submenus,
     BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
 };
-pub use data_table::{
-    data_table_layout, draw_data_table, draw_data_table_with_glyphs, draw_data_table_with_state,
-};
+pub use data_table::draw_data_table;
+#[doc(hidden)]
+pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
+#[doc(hidden)]
 pub use date_picker::draw_date_picker;
+#[doc(hidden)]
 pub use dialog::{draw_dialog, draw_dialog_with_nerd_fonts, tui_dialog_layout};
+#[doc(hidden)]
 pub use diff_view::draw_diff_view;
+#[doc(hidden)]
 pub use drop_overlay::draw_drop_overlay;
-pub use editor::{draw_editor, draw_editor_with_reserve, EditorPaintResult};
+pub use editor::draw_editor;
+#[doc(hidden)]
+pub use editor::{draw_editor_with_reserve, EditorPaintResult};
+#[doc(hidden)]
 pub use find_replace::draw_find_replace;
+#[doc(hidden)]
 pub use float::draw_float;
+#[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
-pub use form::{draw_form, draw_settings_chrome, tui_form_layout};
+pub use form::draw_form;
+#[doc(hidden)]
+pub use form::{draw_settings_chrome, tui_form_layout};
+#[doc(hidden)]
 pub use image::draw_image;
+#[doc(hidden)]
 pub use list::{
     draw_list, draw_list_with_scroll_px, tui_list_layout, tui_list_layout_with_scroll_px,
 };
+#[doc(hidden)]
 pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
+#[doc(hidden)]
 pub use message_list::draw_message_list;
+pub use minimap::draw_minimap;
+#[doc(hidden)]
 pub use minimap::{
-    draw_minimap, draw_minimap_with_scale, draw_minimap_with_sizing, tui_minimap_layout,
+    draw_minimap_with_scale, draw_minimap_with_sizing, tui_minimap_layout,
     tui_minimap_layout_with_sizing, COLS_PER_CELL, LINES_PER_ROW,
 };
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
+#[doc(hidden)]
 pub use number_input::draw_number_input;
 pub(crate) use palette::draw_palette_with_style;
+#[doc(hidden)]
 pub use palette::{draw_palette, tui_palette_layout};
+#[doc(hidden)]
 pub use panel::{draw_panel, tui_panel_layout};
+#[doc(hidden)]
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
+#[doc(hidden)]
 pub use progress::{draw_progress, tui_progress_layout};
+#[doc(hidden)]
 pub use radio_group::{draw_radio_group, tui_radio_group_layout};
+#[doc(hidden)]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig, StepOutcome, TuiRunner};
+#[doc(hidden)]
 pub use scrollbar::draw_scrollbar;
+#[doc(hidden)]
 pub use services::TuiPlatformServices;
+#[doc(hidden)]
 pub use sidebar_panel::{draw_sidebar_panel, tui_sidebar_panel_layout};
+#[doc(hidden)]
 pub use solid_fill::draw_solid_fill;
+#[doc(hidden)]
 pub use spinner::{draw_spinner, tui_spinner_layout};
+#[doc(hidden)]
 pub use split::{draw_split, tui_split_layout};
+#[doc(hidden)]
 pub use split_tree::{draw_split_tree, tui_split_tree_layout};
+#[doc(hidden)]
 pub use status_bar::draw_status_bar;
+#[doc(hidden)]
 pub use switch::{draw_switch, tui_switch_layout};
+#[doc(hidden)]
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome,
     draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome, TAB_CLOSE_CHAR,
     TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
 };
+#[doc(hidden)]
 pub use terminal::{draw_terminal, draw_terminal_divider};
-pub use text::{char_cell_width, display_width, truncate_to_width, truncate_to_width_ellipsis};
+#[doc(hidden)]
+pub use text::truncate_to_width_ellipsis;
+pub use text::{char_cell_width, display_width, truncate_to_width};
+#[doc(hidden)]
 pub use text_display::{draw_text_display, tui_text_display_layout};
+#[doc(hidden)]
 pub use text_input::{draw_text_input, tui_text_input_layout};
+#[doc(hidden)]
 pub use toast::{draw_toast_stack, tui_toast_stack_layout};
+pub use toolbar::tui_toolbar_layout;
+#[doc(hidden)]
 pub use toolbar::{
-    draw_toolbar, draw_toolbar_oriented, draw_toolbar_with_options, tui_toolbar_layout,
-    tui_toolbar_layout_with_options,
+    draw_toolbar, draw_toolbar_oriented, draw_toolbar_with_options, tui_toolbar_layout_with_options,
 };
+#[doc(hidden)]
 pub use tooltip::{
     draw_tooltip, draw_tooltip_with_chrome, painted_bounds as tooltip_painted_bounds,
 };
-pub use tree::{
-    draw_tree, draw_tree_with_scroll_px, tui_tree_layout, tui_tree_layout_with_scroll_px,
-};
+pub use tree::{draw_tree, tui_tree_layout};
+#[doc(hidden)]
+pub use tree::{draw_tree_with_scroll_px, tui_tree_layout_with_scroll_px};
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by
 /// `set_cell`. Public so apps adopting these rasterisers can mirror the

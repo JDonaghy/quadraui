@@ -3376,8 +3376,9 @@ impl Backend for GtkBackend {
     /// `pressed_tab` indices naming the whole tab (not its close glyph)
     /// the mouse is over/held down on. Paints a tinted background behind
     /// the hovered or pressed tab — `Theme::list_hover_bg`/`list_pressed_bg`,
-    /// the same derivation [`crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs`]'s
-    /// own doc explains — rather than only tinting the close glyph the
+    /// the same derivation `crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs`'s
+    /// (`#[doc(hidden)]`, so not linked here) own doc explains — rather
+    /// than only tinting the close glyph the
     /// way [`Self::draw_tab_bar`] already does.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_with_state(

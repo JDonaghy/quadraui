@@ -321,7 +321,8 @@ pub struct TuiBackend {
     /// Row-pitch strategy [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
     /// resolve from, set via [`Backend::set_minimap_sizing`]. `None` (the
     /// default) means "use this rasteriser's own hardcoded default" —
-    /// [`crate::tui::tui_minimap_layout`]'s `FixedPitch(1.0)` — so a host
+    /// `crate::tui::tui_minimap_layout`'s `FixedPitch(1.0)`
+    /// (`#[doc(hidden)]`, so not linked here) — so a host
     /// that never calls the setter sees byte-for-byte the same layout and
     /// paint as before this field existed.
     minimap_sizing: Option<crate::primitives::minimap::MinimapSizing>,
@@ -334,7 +335,8 @@ pub struct TuiBackend {
     /// pixel unit here, so this is a no-op for already-integral input),
     /// which is what keeps this value's two readers in agreement:
     /// [`Backend::editor_layout`]'s default body folds the raw `f32` in
-    /// directly, while [`crate::tui::draw_editor_with_reserve`] takes a
+    /// directly, while `crate::tui::draw_editor_with_reserve`
+    /// (`#[doc(hidden)]`, so not linked here) takes a
     /// `u16` and would otherwise round independently (and possibly
     /// differently, for a non-integral input) from what `editor_layout`
     /// saw.
@@ -2416,7 +2418,8 @@ impl Backend for TuiBackend {
         crate::tui::draw_tree(frame.buffer_mut(), area, tree, &theme, nerd_fonts);
     }
 
-    /// Honours `state.scroll_px` via [`crate::tui::draw_tree_with_scroll_px`]
+    /// Honours `state.scroll_px` via `crate::tui::draw_tree_with_scroll_px`
+    /// (`#[doc(hidden)]`, so not linked here)
     /// — TUI quantises it to a whole row (never a partial one); see that
     /// function's doc. Hover/press tinting (`state.hovered_idx`/
     /// `pressed_idx`) isn't painted on TUI today, the same gap
@@ -2462,7 +2465,8 @@ impl Backend for TuiBackend {
         crate::tui::draw_list(frame.buffer_mut(), area, list, &theme, nerd_fonts);
     }
 
-    /// Honours `state.scroll_px` via [`crate::tui::draw_list_with_scroll_px`]
+    /// Honours `state.scroll_px` via `crate::tui::draw_list_with_scroll_px`
+    /// (`#[doc(hidden)]`, so not linked here)
     /// — TUI quantises it to a whole row (never a partial one); see that
     /// function's doc. Hover/press tinting (`state.hovered_idx`/
     /// `pressed_idx`) isn't painted on TUI today, the same gap
@@ -2541,7 +2545,8 @@ impl Backend for TuiBackend {
     }
 
     /// Honours `state.scroll_px` via
-    /// [`crate::tui::draw_data_table_with_state`] — TUI quantises it to
+    /// `crate::tui::draw_data_table_with_state` (`#[doc(hidden)]`, so not
+    /// linked here) — TUI quantises it to
     /// a whole row (never a partial one); see
     /// [`DataTable::effective_scroll_offset`](crate::DataTable::effective_scroll_offset)'s
     /// doc.
@@ -2824,10 +2829,11 @@ impl Backend for TuiBackend {
         crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme)
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// `TabBarLayout`-returning counterpart to
     /// [`Self::draw_tab_bar_icons`] above. Computes the identical
     /// `layout` that method's paint loop consumes, paints from it via
-    /// the same [`crate::tui::draw_tab_bar_icons`] call (discarding its
+    /// the same `crate::tui::draw_tab_bar_icons` (`#[doc(hidden)]`, so
+    /// not linked here) call (discarding its
     /// `TabBarHits` return value — this method's contract is the
     /// `TabBarLayout` it hands back instead), and caches it under
     /// `bar.id` exactly as [`Self::draw_tab_bar_icons`] does, so

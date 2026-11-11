@@ -12,6 +12,13 @@
 //! separate phases. The result the layout would have produced is
 //! returned alongside any per-frame hit regions so callers can dispatch
 //! clicks.
+//!
+//! Most of the free functions re-exported at the bottom of this module are
+//! painter internals, not a documented API: **unstable, not covered by
+//! semver** — they can move, split, or disappear between any two 0.1.x
+//! releases with no version bump. The few re-exports with doc comments on
+//! this page (`GtkBackend`, …) are the stable, consumer-depended-on subset;
+//! everything else is `#[doc(hidden)]`.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -124,6 +131,13 @@ mod form;
 mod image;
 mod list;
 mod menu_bar;
+// `MenuOverlay` is the module's only `pub` item and has zero reachers —
+// see the `pub use` block below for the full unused-flat-re-export
+// inventory this mirrors. `pub mod` (not `mod`): narrowing to `pub(crate)`
+// is the separate, breaking visibility step `CLAUDE.md`'s "Downstream
+// consumers" rule 8 calls out — `#[doc(hidden)]` gets the same "unstable,
+// not covered by semver" result without it.
+#[doc(hidden)]
 pub mod menu_overlay;
 mod message_list;
 mod minimap;
@@ -162,25 +176,52 @@ mod tree;
 // four-backend swap to `TabBarLayout` lands.
 #[allow(deprecated)]
 pub use crate::primitives::tab_bar::TabBarHits;
-pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, ACTIVITY_ROW_PX};
+// The flat re-exports below split into two groups, verified by grepping
+// `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
+// (`quadraui/examples`, `quadraui/benches`, `quadraui/tests`, `kubeui*`) for
+// `quadraui::gtk::<name>` / `crate::gtk::<name>`: the handful a real caller
+// reaches by this exact flat path stay documented; everything else is a
+// painter internal duplicating what `Backend::draw_*` already exposes, with
+// zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
+// semver, free to move or disappear without a version bump (see
+// `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
+pub use activity_bar::ACTIVITY_ROW_PX;
+#[doc(hidden)]
+pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::GtkBackend;
+#[doc(hidden)]
 pub use board::gtk_board_layout;
+#[doc(hidden)]
 pub use chart::gtk_chart_layout;
+#[doc(hidden)]
 pub use command_center::{draw_command_center, gtk_command_center_layout};
+#[doc(hidden)]
 pub use completions::draw_completions;
+#[doc(hidden)]
 pub use context_menu::draw_context_menu;
+pub use data_table::draw_data_table;
+#[doc(hidden)]
 pub use data_table::{
-    draw_data_table, draw_data_table_with_glyphs, draw_data_table_with_state, gtk_data_table_layout,
+    draw_data_table_with_glyphs, draw_data_table_with_state, gtk_data_table_layout,
 };
+#[doc(hidden)]
 pub use dialog::draw_dialog;
 pub use editor::{draw_editor, editor_col_at_x};
+#[doc(hidden)]
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
+#[doc(hidden)]
 pub use form::draw_settings_chrome;
+#[doc(hidden)]
 pub use image::draw_image;
+#[doc(hidden)]
 pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
+#[doc(hidden)]
 pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
+#[doc(hidden)]
 pub use menu_overlay::MenuOverlay;
+#[doc(hidden)]
 pub use message_list::draw_message_list;
+pub use minimap::draw_minimap;
 // The legibility/render-mode thresholds (`is_legible`, `render_mode`,
 // `minimap_font_px`, `MinimapRenderMode`) and the shared `ROW_PITCH_PX` /
 // `COLUMN_CAPACITY` geometry constants moved to `primitives::minimap` so
@@ -189,48 +230,76 @@ pub use message_list::draw_message_list;
 // names in `~/src/coord-tui/src` or `~/src/vimcode/src`, so they're
 // dropped from this re-export list rather than kept as a stale alias
 // (CLAUDE.md's "Downstream consumers" rule 8: zero hits ⇒ free to move).
-pub use minimap::{draw_minimap, gtk_minimap_layout};
+#[doc(hidden)]
+pub use minimap::gtk_minimap_layout;
+#[doc(hidden)]
 pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };
+#[doc(hidden)]
 pub use palette::{draw_palette, gtk_palette_layout};
+#[doc(hidden)]
 pub use panel::gtk_panel_layout;
+#[doc(hidden)]
 pub use pipeline_view::gtk_pipeline_view_layout;
+#[doc(hidden)]
 pub use progress::gtk_progress_layout;
+#[doc(hidden)]
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };
-pub use run::{
-    app_id_is_valid, display_available, run, run_with, GtkRunner, RunConfig, StepOutcome,
-};
+#[doc(hidden)]
+pub use run::run_with;
+pub use run::{app_id_is_valid, display_available, run, GtkRunner, RunConfig, StepOutcome};
+#[doc(hidden)]
 pub use sidebar_panel::gtk_sidebar_panel_layout;
+#[doc(hidden)]
 pub use spinner::{draw_spinner, gtk_spinner_layout};
+#[doc(hidden)]
 pub use split::gtk_split_layout;
+#[doc(hidden)]
 pub use split_tree::gtk_split_tree_layout;
-// `draw_status_bar` stays public: `kubeui-gtk/src/main.rs` calls it
-// directly with no alternative — see `status_bar.rs`'s module doc.
+// `draw_status_bar`/`MIN_GAP_PX` have zero reachers (vimcode migrated its
+// last direct caller onto `Backend::draw_status_bar_interactive` — see
+// `status_bar.rs`'s module doc) — `#[doc(hidden)]` like their siblings
+// above.
+#[doc(hidden)]
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};
+#[doc(hidden)]
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome,
     draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome,
     draw_tab_bar_with_chrome_and_glyphs,
 };
+#[doc(hidden)]
 pub use text_display::{draw_text_display, gtk_text_display_layout};
+#[doc(hidden)]
 pub use text_input::{draw_text_input, gtk_text_input_layout};
+#[doc(hidden)]
 pub use toast::gtk_toast_stack_layout;
+#[doc(hidden)]
 pub use toolbar::{draw_toolbar, draw_toolbar_with_options, gtk_toolbar_layout};
+#[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
-pub use tree::{draw_tree, draw_tree_with_state, gtk_tree_layout, gtk_tree_layout_measured};
+pub use tree::draw_tree;
+#[doc(hidden)]
+pub use tree::{draw_tree_with_state, gtk_tree_layout, gtk_tree_layout_measured};
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
 /// `(r, g, b)` tuple. Alpha is dropped — Cairo supports
 /// `set_source_rgba` if a future primitive needs it.
+///
+/// Called only by this crate's own rasterisers — no reacher in
+/// `~/src/vimcode/src`, `~/src/coord-tui/src`, or any in-tree consumer —
+/// so `#[doc(hidden)]`: unstable, not covered by semver.
+#[doc(hidden)]
 pub fn cairo_rgb(c: Color) -> (f64, f64, f64) {
     (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0)
 }
 
-/// `set_source_rgb` shortcut used internally by the rasterisers and
-/// available to apps that want their auxiliary draws to colour-match.
+/// `set_source_rgb` shortcut used internally by the rasterisers.
+/// `#[doc(hidden)]` for the same reason as [`cairo_rgb`].
+#[doc(hidden)]
 pub fn set_source(cr: &Context, c: Color) {
     let (r, g, b) = cairo_rgb(c);
     cr.set_source_rgb(r, g, b);
@@ -244,6 +313,8 @@ pub fn set_source(cr: &Context, c: Color) {
 /// against whatever is already on the target instead of rendering opaque.
 /// Every existing caller passes an opaque (`a: 255`) `Color`, so this
 /// only starts honouring alpha for colours that actually carry it.
+/// `#[doc(hidden)]` for the same reason as [`cairo_rgb`].
+#[doc(hidden)]
 pub fn set_source_rgba(cr: &Context, c: Color) {
     cr.set_source_rgba(
         c.r as f64 / 255.0,
@@ -267,7 +338,10 @@ pub(crate) fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, r:
 }
 
 /// Re-export so apps can name the Pango layout type without depending
-/// on `gtk4::pango` directly.
+/// on `gtk4::pango` directly. No reacher in `~/src/vimcode/src`,
+/// `~/src/coord-tui/src`, or any in-tree consumer — `#[doc(hidden)]`:
+/// unstable, not covered by semver.
+#[doc(hidden)]
 pub use pango::Layout as PangoLayout;
 
 /// Default font family GTK chrome text falls back to for Nerd-Font

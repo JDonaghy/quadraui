@@ -4,7 +4,8 @@
 //! (multi-tab) that own the PTY process, background reader thread,
 //! vt100 screen parser, and scrollback ring buffer. Paint output is a
 //! [`crate::Terminal`] snapshot — directly consumable by the existing
-//! [`crate::tui::draw_terminal`] / `Backend::draw_terminal` rasterisers.
+//! `crate::tui::draw_terminal` (`#[doc(hidden)]`, so not linked here) /
+//! `Backend::draw_terminal` rasterisers.
 //!
 //! # Feature gate
 //!

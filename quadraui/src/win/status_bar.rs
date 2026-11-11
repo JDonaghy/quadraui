@@ -32,7 +32,8 @@ use crate::theme::Theme;
 use crate::{StatusBar, StatusBarLayout};
 
 /// Minimum gap (DIPs) reserved between the left and right segment
-/// groups — the DirectWrite twin of [`crate::gtk::MIN_GAP_PX`]. Still
+/// groups — the DirectWrite twin of `crate::gtk::MIN_GAP_PX`
+/// (`#[doc(hidden)]`, so not linked here). Still
 /// used by [`win_status_bar_layout`] — the shared
 /// [`crate::primitives::status_bar::native_surface_paint::paint`] carries
 /// its own independent copy of the same value (see that module's doc).
