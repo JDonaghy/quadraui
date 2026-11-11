@@ -4519,6 +4519,41 @@ mod tests {
         assert_eq!(container.spacing.margin, 4.0);
     }
 
+    /// A row child's own `"size"`/`"min"`/`"max"` keys are siblings of
+    /// whatever key names its node kind, in the same child dict, decoded
+    /// into [`quadraui::SectionSize`] alongside the row's own
+    /// `"justify"`/`"align"` keys -- see
+    /// [`decode_layout_node_round_trips_a_row_of_leaves`]'s doc for why
+    /// this needs no live napi `Env`.
+    #[test]
+    fn decode_layout_node_round_trips_row_child_sizing_and_container_justify_align() {
+        use quadraui_binding_core::layout::{Align, Justify};
+
+        let value = serde_json::json!({
+            "row": [
+                {"id": "left", "text_display": {"id": "text:left", "lines": []}, "size": {"Fixed": 40}, "min": 10, "max": 50},
+                {"id": "right", "text_display": {"id": "text:right", "lines": []}},
+            ],
+            "justify": "center",
+            "align": "end",
+        });
+        let node = decode_layout_node("test", &value).expect("valid layout tree");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row");
+        };
+        assert_eq!(container.children[0].size, quadraui::SectionSize::Fixed(40));
+        assert_eq!(container.children[0].min, Some(10.0));
+        assert_eq!(container.children[0].max, Some(50.0));
+        // A child with no "size" key defaults to `EqualShare`, with no
+        // min/max -- the pre-per-child-sizing shape.
+        assert_eq!(
+            container.children[1].size,
+            quadraui::SectionSize::EqualShare
+        );
+        assert_eq!(container.justify, Justify::Center);
+        assert_eq!(container.align, Align::End);
+    }
+
     /// `decode_render_output` round-trips a flat render-callback payload
     /// into [`RenderOutput::Flat`] -- the shape [`to_descriptor_value`]
     /// would feed it once a render callback exists to call it from. See

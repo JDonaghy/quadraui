@@ -37,16 +37,16 @@ use serde_json::Value;
 #[allow(deprecated)]
 use quadraui::{
     Backend, BackendWidget, BottomPanelConfig, BottomPanelTab, Color, Panel, PanelDefinition, Rect,
-    ShellConfig, ShellPosition, SidebarPanel, Split, SplitDirection, SplitTree, TabBar,
-    TabBarSegment, TabItem, WidgetId,
+    SectionSize, ShellConfig, ShellPosition, SidebarPanel, Split, SplitDirection, SplitTree,
+    TabBar, TabBarSegment, TabItem, WidgetId,
 };
 
 use crate::extra_paint::{decode_extra_primitive, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 use crate::host::text_display_from_lines;
 use crate::layout::{
-    validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode, LayoutPanel,
-    LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor,
-    Spacing, LEAF_KIND_KEYS,
+    validate_unique_leaf_ids, Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutLeaf,
+    LayoutNode, LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry,
+    LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS,
 };
 use crate::render::RenderFrame;
 use crate::{decode_value, DecodeError};
@@ -370,12 +370,26 @@ fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, Decod
     if let Some(v) = obj_get(value, "row") {
         let children = layout_children_from_value(what, v)?;
         let spacing = spacing_from_value(what, value, "\"row\"", true)?;
-        return Ok(LayoutNode::Row(LayoutContainer { children, spacing }));
+        let justify = justify_from_value(what, value, "\"row\"")?;
+        let align = align_from_value(what, value, "\"row\"")?;
+        return Ok(LayoutNode::Row(LayoutContainer {
+            children,
+            spacing,
+            justify,
+            align,
+        }));
     }
     if let Some(v) = obj_get(value, "column") {
         let children = layout_children_from_value(what, v)?;
         let spacing = spacing_from_value(what, value, "\"column\"", true)?;
-        return Ok(LayoutNode::Column(LayoutContainer { children, spacing }));
+        let justify = justify_from_value(what, value, "\"column\"")?;
+        let align = align_from_value(what, value, "\"column\"")?;
+        return Ok(LayoutNode::Column(LayoutContainer {
+            children,
+            spacing,
+            justify,
+            align,
+        }));
     }
     if let Some(v) = obj_get(value, "split") {
         // `gap` is meaningful here -- the space between the split's two
@@ -447,15 +461,18 @@ fn reject_unsupported_spacing_keys(
 }
 
 /// Decodes a `"row"`/`"column"` container's children: a `list` of child
-/// dicts, each recursively decoded by [`layout_node_from_value`]. Accepts
-/// any `[Value::Array]`-shaped input, not only a `list` in the strict
+/// dicts, each recursively decoded by [`layout_node_from_value`] into a
+/// [`LayoutChild`], picking up that child's own optional `"size"`/`"min"`/
+/// `"max"` keys (siblings of whatever key names the child's own node kind,
+/// in the same child dict) via [`child_size_from_value`]. Accepts any
+/// `[Value::Array]`-shaped input, not only a `list` in the strict
 /// Python-type sense — `materialize`'s own `visit_seq` already folds a
 /// Python `tuple`, `set`, or `frozenset` into the same `Value::Array`
 /// shape, so a tuple or (nondeterministically ordered) set of children is
 /// accepted here too. Tightening that back to "a real `list`" needs a
 /// pyo3-aware check this crate can't make; it would live in a binding's
 /// own decode adapter instead.
-fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutNode>, DecodeError> {
+fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutChild>, DecodeError> {
     let list = value
         .as_array()
         .ok_or_else(|| DecodeError(format!("{what}: row/column children must be an array")))?;
@@ -466,9 +483,94 @@ fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutNod
                     "{what}: each row/column child must be an object"
                 )));
             }
-            layout_node_from_value(what, child)
+            let node = layout_node_from_value(what, child)?;
+            let context = format!("{what}: row/column child");
+            let size = child_size_from_value(child, &context)?;
+            let min = opt_f32(child, "min", &context)?;
+            let max = opt_f32(child, "max", &context)?;
+            Ok(LayoutChild {
+                node,
+                size,
+                min,
+                max,
+            })
         })
         .collect()
+}
+
+/// Decodes a row/column child's optional `"size"` key: `"EqualShare"`/
+/// `"Content"` (bare strings) or `{"Fixed": n}`/`{"Percent": p}`/
+/// `{"Weight": w}` (object wrappers) — [`quadraui::SectionSize`]'s own
+/// serde representation, the same wire shape `quadraui::MultiSectionView`'s
+/// own per-section `"size"` key already uses, reused here rather than
+/// inventing a second vocabulary for the same concept. Missing defaults to
+/// [`SectionSize::default`] (`EqualShare`), matching every child's
+/// pre-per-child-sizing behaviour.
+fn child_size_from_value(value: &Value, context: &str) -> Result<SectionSize, DecodeError> {
+    match obj_get(value, "size") {
+        None => Ok(SectionSize::default()),
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|err| DecodeError(format!("{context} \"size\": {err}"))),
+    }
+}
+
+/// The lowercase, Python-idiomatic spellings `"justify"` accepts —
+/// [`SPLIT_ORIENTATIONS`]'s own convention, independent of
+/// [`crate::layout::Justify`]'s PascalCase Rust variant names.
+const JUSTIFY_VALUES: [&str; 4] = ["start", "center", "end", "space_between"];
+
+/// Decodes a `"row"`/`"column"` node's optional `"justify"` key — the
+/// main-axis distribution of any leftover space once every child's size is
+/// resolved. Missing defaults to [`Justify::default`] (`Start`), matching
+/// every container's pre-`justify` behaviour.
+fn justify_from_value(what: &str, value: &Value, label: &str) -> Result<Justify, DecodeError> {
+    let context = format!("{what}: {label}");
+    match obj_get(value, "justify") {
+        None => Ok(Justify::default()),
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| DecodeError(format!("{context} \"justify\" must be a string")))?;
+            match s {
+                "start" => Ok(Justify::Start),
+                "center" => Ok(Justify::Center),
+                "end" => Ok(Justify::End),
+                "space_between" => Ok(Justify::SpaceBetween),
+                _ => Err(DecodeError(format!(
+                    "{context} \"justify\" must be one of {JUSTIFY_VALUES:?}, got {s:?}"
+                ))),
+            }
+        }
+    }
+}
+
+/// [`JUSTIFY_VALUES`]'s counterpart for `"align"`.
+const ALIGN_VALUES: [&str; 4] = ["start", "center", "end", "stretch"];
+
+/// Decodes a `"row"`/`"column"` node's optional `"align"` key — the
+/// cross-axis treatment of each child. Missing defaults to
+/// [`Align::default`] (`Stretch`), matching every container's
+/// pre-`align` behaviour (every child filled the container's full
+/// cross-axis extent).
+fn align_from_value(what: &str, value: &Value, label: &str) -> Result<Align, DecodeError> {
+    let context = format!("{what}: {label}");
+    match obj_get(value, "align") {
+        None => Ok(Align::default()),
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| DecodeError(format!("{context} \"align\" must be a string")))?;
+            match s {
+                "start" => Ok(Align::Start),
+                "center" => Ok(Align::Center),
+                "end" => Ok(Align::End),
+                "stretch" => Ok(Align::Stretch),
+                _ => Err(DecodeError(format!(
+                    "{context} \"align\" must be one of {ALIGN_VALUES:?}, got {s:?}"
+                ))),
+            }
+        }
+    }
 }
 
 /// Decodes a layout node's optional `"padding"`/`"margin"`/`"gap"` spacing
@@ -562,9 +664,12 @@ fn edge_insets_from_value(value: &Value, context: &str) -> Result<EdgeInsets, De
 
 /// Decodes a `"split"` node: `{"id", "orientation", "ratio", "first",
 /// "second"}`, with `"first_min"`/`"second_min"` optional (defaulting to
-/// `0.0`, a portable line count — [`crate::render::paint_layout`]'s
-/// `LayoutNode::Split` arm scales them by the backend's line height before
-/// painting). `"first"`/`"second"` are full child node dicts, recursively
+/// `0.0`, in the same portable surface-native-pixel unit [`Spacing`]'s own
+/// fields use — [`crate::render::paint_layout`]'s `LayoutNode::Split` arm
+/// quantises each into the backend's native unit on the axis it actually
+/// bounds, `char_width` for a `Horizontal` split's width-bounding minimum
+/// or `line_height` for a `Vertical` one's height-bounding minimum, right
+/// before painting). `"first"`/`"second"` are full child node dicts, recursively
 /// decoded by [`layout_node_from_value`]. `spacing` is the node's own
 /// `"padding"`/`"margin"`/`"gap"` siblings, already decoded by
 /// [`spacing_from_value`] in the caller (its `"gap"` is the space between
@@ -1412,6 +1517,133 @@ mod tests {
             panic!("expected a row node");
         };
         assert_eq!(container.spacing, Spacing::default());
+    }
+
+    /// A row child's own `"size"`/`"min"`/`"max"` keys are siblings of
+    /// whatever key names its node kind, in the same child dict -- round
+    /// trips every [`SectionSize`] wire shape (bare string for the two
+    /// unit variants, `{"Fixed": n}`/`{"Percent": p}`/`{"Weight": w}` for
+    /// the three data-carrying ones), the same representation
+    /// `quadraui::MultiSectionView`'s own per-section `"size"` key uses.
+    #[test]
+    fn round_trips_a_row_childs_size_min_max_keys() {
+        let value = json!({
+            "row": [
+                {"id": "a", "button": {"id": "a", "label": "A"}, "size": {"Fixed": 40}, "min": 10, "max": 50},
+                {"id": "b", "button": {"id": "b", "label": "B"}, "size": "Content"},
+                {"id": "c", "button": {"id": "c", "label": "C"}, "size": {"Percent": 0.3}},
+                {"id": "d", "button": {"id": "d", "label": "D"}, "size": {"Weight": 2.0}},
+                {"id": "e", "button": {"id": "e", "label": "E"}},
+            ],
+        });
+        let node = decode(&value).expect("valid row with per-child sizing");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row node");
+        };
+        assert_eq!(container.children[0].size, SectionSize::Fixed(40));
+        assert_eq!(container.children[0].min, Some(10.0));
+        assert_eq!(container.children[0].max, Some(50.0));
+        assert_eq!(container.children[1].size, SectionSize::Content);
+        assert_eq!(container.children[2].size, SectionSize::Percent(0.3));
+        assert_eq!(container.children[3].size, SectionSize::Weight(2.0));
+        // No `"size"` key at all defaults to `EqualShare`, with no
+        // min/max -- the pre-per-child-sizing shape.
+        assert_eq!(container.children[4].size, SectionSize::EqualShare);
+        assert_eq!(container.children[4].min, None);
+        assert_eq!(container.children[4].max, None);
+    }
+
+    /// A `"row"`/`"column"` node's `"justify"`/`"align"` keys are siblings
+    /// of the `"row"`/`"column"` key, same as `"padding"`/`"margin"`/
+    /// `"gap"`.
+    #[test]
+    fn round_trips_a_row_nodes_justify_and_align_keys() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+            "justify": "space_between",
+            "align": "center",
+        });
+        let node = decode(&value).expect("valid row with justify/align");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row node");
+        };
+        assert_eq!(container.justify, Justify::SpaceBetween);
+        assert_eq!(container.align, Align::Center);
+    }
+
+    /// Missing `"justify"`/`"align"` default to `Start`/`Stretch` -- the
+    /// pre-`justify`/`align` behaviour (every child filled the full
+    /// cross-axis extent, leftover main-axis space went after the last
+    /// child -- a no-op when every child is `EqualShare`).
+    #[test]
+    fn row_with_no_justify_or_align_key_decodes_to_the_default() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        });
+        let node = decode(&value).expect("valid row");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row node");
+        };
+        assert_eq!(container.justify, Justify::Start);
+        assert_eq!(container.align, Align::Stretch);
+    }
+
+    /// An unrecognized `"justify"` value is a decode error naming the
+    /// offending string, not a silent fallback to the default.
+    #[test]
+    fn rejects_an_unknown_justify_value() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+            "justify": "spread",
+        });
+        let err = match decode(&value) {
+            Ok(_) => panic!("expected an unknown justify value to be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.0.contains("justify"), "{}", err.0);
+    }
+
+    /// [`rejects_an_unknown_justify_value`]'s counterpart for `"align"`.
+    #[test]
+    fn rejects_an_unknown_align_value() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+            "align": "top",
+        });
+        let err = match decode(&value) {
+            Ok(_) => panic!("expected an unknown align value to be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.0.contains("align"), "{}", err.0);
+    }
+
+    /// A `"split"` node is itself a valid row/column child, so it takes
+    /// the same sibling `"size"`/`"min"`/`"max"` keys a leaf child does --
+    /// unrelated to (and not rejected alongside) its own `"padding"`/
+    /// `"margin"`/`"gap"` spacing keys.
+    #[test]
+    fn a_split_child_of_a_row_accepts_size_min_max() {
+        let value = json!({
+            "row": [
+                {
+                    "split": {
+                        "id": "s1",
+                        "orientation": "horizontal",
+                        "ratio": 0.5,
+                        "first": {"id": "a", "button": {"id": "a", "label": "A"}},
+                        "second": {"id": "b", "button": {"id": "b", "label": "B"}},
+                    },
+                    "size": {"Fixed": 30},
+                },
+                {"id": "c", "button": {"id": "c", "label": "C"}},
+            ],
+        });
+        let node = decode(&value).expect("valid row with a sized split child");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row node");
+        };
+        assert_eq!(container.children[0].size, SectionSize::Fixed(30));
+        assert!(matches!(container.children[0].node, LayoutNode::Split(_)));
     }
 
     /// A `"panel"` node's `"padding"`/`"margin"` keys are siblings of the

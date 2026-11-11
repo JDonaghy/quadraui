@@ -347,14 +347,24 @@ class LayoutRowNode(TypedDict):
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     gap: NotRequired[float]
+    justify: NotRequired[Literal['start', 'center', 'end', 'space_between']]
+    align: NotRequired[Literal['start', 'center', 'end', 'stretch']]
     wire_version: NotRequired[int]
+    size: NotRequired[SectionSize]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 class LayoutColumnNode(TypedDict):
     column: List[LayoutNode]
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     gap: NotRequired[float]
+    justify: NotRequired[Literal['start', 'center', 'end', 'space_between']]
+    align: NotRequired[Literal['start', 'center', 'end', 'stretch']]
     wire_version: NotRequired[int]
+    size: NotRequired[SectionSize]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 class LayoutSplitPayload(TypedDict):
     id: str
@@ -371,6 +381,9 @@ class LayoutSplitNode(TypedDict):
     margin: NotRequired[float]
     gap: NotRequired[float]
     wire_version: NotRequired[int]
+    size: NotRequired[SectionSize]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 class LayoutTabEntryNode(TypedDict):
     id: str
@@ -396,6 +409,9 @@ class LayoutTabsNode(TypedDict):
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     wire_version: NotRequired[int]
+    size: NotRequired[SectionSize]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 class LayoutPanelPayload(TypedDict):
     """The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`."""
@@ -411,6 +427,9 @@ class LayoutPanelNode(TypedDict):
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     wire_version: NotRequired[int]
+    size: NotRequired[SectionSize]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 class LayoutSidebarPanelPayload(TypedDict):
     id: str
@@ -421,6 +440,9 @@ class LayoutSidebarPanelPayload(TypedDict):
 class LayoutSidebarPanelNode(TypedDict):
     sidebar_panel: LayoutSidebarPanelPayload
     wire_version: NotRequired[int]
+    size: NotRequired[SectionSize]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 class _SplitTreeLeaf(TypedDict):
     leaf: LayoutNode
@@ -443,6 +465,9 @@ class LayoutSplitTreePayload(TypedDict):
 class LayoutSplitTreeNode(TypedDict):
     split_tree: LayoutSplitTreePayload
     wire_version: NotRequired[int]
+    size: NotRequired[SectionSize]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 class ProgressBarDescriptor(TypedDict):
     id: WidgetId
@@ -1346,6 +1371,9 @@ class LayoutLeafNode(TypedDict):
     canvas: NotRequired[CanvasDescriptor]
     scroll_view: NotRequired[ScrollViewDescriptor]
     find_replace: NotRequired[FindReplacePanelDescriptor]
+    size: NotRequired[SectionSize]
+    min: NotRequired[float]
+    max: NotRequired[float]
 
 # One node of a render callback's returned layout tree.
 LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutSplitNode, LayoutTabsNode, LayoutPanelNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutLeafNode]
