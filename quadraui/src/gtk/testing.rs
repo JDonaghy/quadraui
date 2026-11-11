@@ -129,7 +129,8 @@ impl<A: AppLogic> GtkDriver<A> {
         backend.set_painted_text_recording(true);
         // Seed the backend's persistent Pango context, exactly as
         // `gtk::run::activate` does from the realized `DrawingArea`
-        // (same `"Sans 11"` UI font it sets there). Without this, every
+        // (same default UI font it sets there, via
+        // `super::backend::default_ui_font_desc`). Without this, every
         // `*_layout()` method called *outside* a frame scope — which is
         // where all click hit-testing happens, since `AppLogic::handle`
         // runs between frames — had no Pango layout at all and silently
@@ -149,7 +150,9 @@ impl<A: AppLogic> GtkDriver<A> {
 
             let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
             let pctx = pangocairo::functions::create_context(&cr);
-            pctx.set_font_description(&pangocairo::pango::FontDescription::from_string("Sans 11"));
+            pctx.set_font_description(&pangocairo::pango::FontDescription::from_string(
+                &super::backend::default_ui_font_desc(),
+            ));
             backend.set_pango_context(pctx);
         }
         // Seed the viewport from the driver's surface size BEFORE setup,
@@ -694,7 +697,7 @@ mod tests {
     /// should be [`KNOWN_BG`].
     ///
     /// The sample is taken near the bar's right edge, not its left.
-    /// #624 made chrome paint in [`GtkBackend`]'s `ui_font` (`"Sans 11"`)
+    /// Chrome paints in [`GtkBackend`]'s `ui_font` (the default UI font)
     /// rather than the editor font the shared Pango layout happened to
     /// carry, which widened the left-aligned `"known-pixel"` label to
     /// ~86px — wide enough that the old `pixel(4, H / 2)` sample landed
@@ -1278,7 +1281,7 @@ mod tests {
 
         // Generous first pass, just to read off tab 0's own (untruncated)
         // painted width — avoids hardcoding a pixel budget that would
-        // drift with the host's "Sans 11" metrics.
+        // drift with the host's default UI font metrics.
         const GENEROUS_W: i32 = 2000;
         let probe = GtkDriver::new(
             NarrowBoundaryTabBarApp {
