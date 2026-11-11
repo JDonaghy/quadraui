@@ -58,6 +58,21 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+- `Style::button_radius` (#2368): a button-specific corner radius,
+  defaulting to `2.0` (VS Code's own button radius) and read by
+  `ButtonMetrics::resolve` instead of `Style::corner_radius`, so a host can
+  retune a button's own rounding independently of every other rounded-rect
+  overlay (hover card, quick-pick, notification, context menu, dialog box)
+  that stays on `corner_radius`.
+
+### Fixed
+- `MessageDialogController`'s OK/Cancel button row (#2368): on a pixel
+  backend, the button row is now sized at `Style::control_height` with
+  VS Code-like horizontal label padding, instead of the raw chrome line
+  height/char-width estimate that rendered an undersized pill. TUI's
+  char-cell geometry is unchanged.
+
 ### Changed
 - `quadraui::macos`'s ~40 per-primitive painter submodules (#2355) are now
   `#[doc(hidden)]` — unstable, not covered by semver — matching the
