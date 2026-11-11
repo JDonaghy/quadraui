@@ -28,7 +28,8 @@ class Component:
 
     `key`, if given, identifies this component's state slot directly,
     instead of the (type, tree-position) pair `quadraui.app.runtime._walk`
-    otherwise derives -- needed only when a list of components can reorder
+    otherwise derives (the type part is the class's qualified name, so a
+    hot-reloaded class keeps its slots) -- needed only when a list of components can reorder
     (state should follow the item, not the slot it happened to render into
     this frame)."""
 
@@ -42,3 +43,15 @@ class Component:
 
     def view(self, state: Dict[str, Any]) -> Any:
         raise NotImplementedError
+
+    def migrate_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Called once per surviving state slot on the first render after
+        `App` hot-reloads this component's code (see
+        `quadraui.app.hot_reload`); returns the state dict the reloaded
+        `view(state)` sees from then on. The default keeps every existing
+        value and adds any key the current `initial_state()` has that
+        `state` lacks; override it to rename or reshape keys an edit
+        changed."""
+        for name, value in self.initial_state().items():
+            state.setdefault(name, value)
+        return state

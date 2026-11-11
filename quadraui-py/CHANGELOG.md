@@ -12,6 +12,22 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- Hot reload for `quadraui.app.App`: `enable_hot_reload(*modules,
+  interval=0.5, on_reload=None)` watches the given modules' source files and
+  re-imports them on change (a daemon thread wakes the event loop through
+  `QuiApp.waker()`, so `run_tui()`/`run_native()` repaint with no input),
+  plus `reload_if_changed()`, `reload()`, `disable_hot_reload()`,
+  `reload_error` and `reload_count`. Component state, the state on a
+  bound-method view's own object (its class is swapped for the reloaded
+  one in place) and framework widget state (scroll, selection, focus) all
+  survive. `Component.migrate_state(state)` runs once per surviving slot
+  after a reload and by default merges in keys a new `initial_state()`
+  added. A broken edit — import error or a view that raises on its first
+  render — rolls back to the last good code and is reported on
+  `reload_error`. Component state slots are now keyed by the class's
+  qualified name rather than the class object. `examples/hot_reload_demo.py`
+  demonstrates it.
+
 - `QuiApp.widget_state(id)` — a read of a widget's current state in the
   engine's widget-state store: `selected_path`/`selected_idx`, `scroll_offset`,
   `ratio`, `active_tab` and `expanded`, whichever apply to the id's widget
