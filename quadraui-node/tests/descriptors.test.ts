@@ -781,6 +781,282 @@ test("inline tree leaf palette renders its item text", () => {
   assert.ok(app.screenContains("Save File"));
 });
 
+// The data-view kinds below (`message_list`, `board`, `diff_view`,
+// `minimap`, `multi_section_view`, `chart`, `pipeline_view`) are pure
+// display -- no `insertExtra` method or dedicated semantic event of their
+// own -- so each gets a paint-only inline leaf proof: a literal
+// `{ row: [{ id, <kind>: {...} }] }` object, the exact shape a render
+// callback returns, decodes through `layout_leaf_from_value`'s generic
+// `EXTRA_PRIMITIVE_KINDS` loop and paints through the matching
+// `ExtraPaint` impl, same as it already does for the eight chrome-bar
+// kinds just above.
+test("inline tree leaf message_list renders a row's text", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "messages:1",
+        message_list: {
+          id: "messages:1",
+          rows: [{ text: "Build succeeded", fg: { r: 0, g: 200, b: 0, a: 255 } }],
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("Build succeeded"));
+});
+
+test("inline tree leaf board renders a column title", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "board:1",
+        board: {
+          id: "board:1",
+          columns: [
+            {
+              id: "col:backlog",
+              title: "Backlog",
+              cards: [{ id: "card:1", title: "Fix flaky test" }],
+            },
+          ],
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("Backlog"));
+});
+
+test("inline tree leaf diff_view renders a unified hunk header", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "diff:1",
+        diff_view: {
+          id: "diff:1",
+          left: "foo\n",
+          right: "foo\nbar\n",
+          left_label: null,
+          right_label: null,
+          hunks: [
+            {
+              left_start: 1,
+              right_start: 1,
+              rows: [
+                { left: "foo", right: "foo", kind: "Same" },
+                { left: null, right: "bar", kind: "Added" },
+              ],
+            },
+          ],
+          mode: "Unified",
+          editability: "ReadOnly",
+          scroll_offset: 0,
+          focused_pane: "Left",
+          has_focus: false,
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("@@"));
+});
+
+test("inline tree leaf minimap renders braille cells", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "minimap:1",
+        minimap: {
+          id: "minimap:1",
+          lines: [{ text: "fn main() {}", line_idx: 0 }],
+          syntax_spans: [],
+          visible_row_start: 0,
+          visible_row_count: 1,
+          total_buffer_lines: 1,
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("⠀"));
+});
+
+test("inline tree leaf multi_section_view renders a section header title", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "sections:1",
+        multi_section_view: {
+          id: "sections:1",
+          sections: [
+            {
+              id: "section:explorer",
+              header: {
+                icon: null,
+                title: { spans: [{ text: "Explorer", fg: null, bg: null }] },
+                badge: null,
+              },
+              body: { Text: [] },
+              size: "EqualShare",
+            },
+          ],
+          axis: "Vertical",
+          scroll_mode: "PerSection",
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("Explorer"));
+});
+
+test("inline tree leaf pipeline_view renders stage labels", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "pl:1",
+        pipeline_view: {
+          id: "pipeline:1",
+          stages: [
+            { label: "Build", status: "Done" },
+            { label: "Deploy", status: "Pending" },
+          ],
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("Build"));
+  assert.ok(app.screenContains("Deploy"));
+});
+
+test("inline tree leaf chart renders its x_label", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "c:1",
+        chart: {
+          id: "chart:cpu",
+          kind: "Line",
+          series: [{ label: "cpu", data: [1.0, 2.0, 3.0] }],
+          x_label: "Time",
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("Time"));
+});
+
+// `editor`/`terminal`/`canvas` are each a tab stop (the first two) or a
+// bare hit target (`canvas`, which `ExtraPaint::tab_stop` leaves
+// non-focusable) with no dedicated semantic event of their own -- a click
+// reaches the handler as the raw `MouseDown` with `widget` resolved to the
+// leaf's id, same as `insertExtra`'s flat-slot path.
+test("inline tree leaf editor focuses it and routes the hit", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "editor:main",
+        editor: {
+          id: "editor:main",
+          rect: { x: 0.0, y: 0.0, width: 40.0, height: 10.0 },
+          lines: [{ raw_text: "fn main() {}", gutter_text: "1", spans: [], line_idx: 0 }],
+          scroll_top: 0,
+          total_lines: 1,
+          is_active: true,
+          show_active_bg: false,
+          has_git_diff: false,
+          has_breakpoints: false,
+          tabstop: 4,
+          cursorline: false,
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} },
+  });
+  app.run(1);
+
+  assert.equal(received.length, 2, JSON.stringify(received));
+  assert.equal(received[0].FocusChanged, "editor:main");
+  assert.equal(received[1].MouseDown.widget, "editor:main");
+});
+
+test("inline tree leaf terminal focuses it and routes the hit", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "terminal:shell",
+        terminal: {
+          id: "terminal:shell",
+          cells: [[{ text: "$", fg: { r: 200, g: 200, b: 200, a: 255 }, bg: { r: 0, g: 0, b: 0, a: 255 } }]],
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} },
+  });
+  app.run(1);
+
+  assert.equal(received.length, 2, JSON.stringify(received));
+  assert.equal(received[0].FocusChanged, "terminal:shell");
+  assert.equal(received[1].MouseDown.widget, "terminal:shell");
+});
+
+test("inline tree leaf canvas routes the hit without focusing", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "canvas:sparkline",
+        canvas: {
+          id: "canvas:sparkline",
+          ops: [
+            {
+              Rect: {
+                rect: { x: 0.0, y: 0.0, width: 10.0, height: 1.0 },
+                color: { r: 0, g: 200, b: 0, a: 255 },
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} },
+  });
+  app.run(1);
+
+  assert.equal(received.length, 1, JSON.stringify(received));
+  assert.equal(received[0].MouseDown.widget, "canvas:sparkline");
+});
+
 test("clearExtra on an empty or unknown kind returns false, not an error", () => {
   const app = new QuiApp(40, 20);
   assert.equal(app.clearExtra("progress"), false);
