@@ -257,36 +257,40 @@ mod tests {
         }
     }
 
-    /// A title punches a background-coloured gap through the top stroke so it
-    /// reads as embedded in the border, not a content row. The punch is local to
-    /// the title, not the whole edge, leaving the rest of the top stroke intact.
+    /// A title renders as a bold first line *inside* the card — the top
+    /// border stroke is identical with or without a title (no punched
+    /// gap), and the title's glyph ink shows up a few pixels below that
+    /// stroke, inside the card bounds.
     #[test]
-    fn full_border_title_punches_a_gap_but_leaves_the_rest_of_the_top_edge_stroked() {
+    fn full_border_title_renders_inside_the_card_without_punching_the_border() {
         let tooltip = sample_tooltip();
-        let (layout, chrome) = sample_layout(TooltipBorder::Full, Some("Hi"));
-        let (data, stride) = paint(&tooltip, &layout, &chrome);
+        let (layout, chrome_with) = sample_layout(TooltipBorder::Full, Some("Hi"));
+        let (_, chrome_without) = sample_layout(TooltipBorder::Full, None);
+        let (with_data, stride) = paint(&tooltip, &layout, &chrome_with);
+        let (without_data, _) = paint(&tooltip, &layout, &chrome_without);
         let b = layout.bounds;
         let (bx, by, bw) = (b.x as i32, b.y as i32, b.width as i32);
 
-        let inner = bg_reference(&data, stride, b);
-        let margin = 3; // stay clear of the corner glyphs (┌/┐ equivalent stroke joins)
-        let interior: Vec<(u8, u8, u8)> = (bx + margin..bx + bw - margin)
-            .map(|x| pixel(&data, stride, x, by))
-            .collect();
+        for x in bx..bx + bw {
+            let with_px = pixel(&with_data, stride, x, by);
+            let without_px = pixel(&without_data, stride, x, by);
+            assert_eq!(
+                with_px, without_px,
+                "top edge at x={x} must be unaffected by a title — the title renders \
+                 inside the card, not punched into the border (with={with_px:?}, \
+                 without={without_px:?})"
+            );
+        }
 
+        // A few pixels below the top edge — inside the card, where the
+        // bold title row now sits — there is glyph ink the title-less
+        // tooltip doesn't have.
+        let inner = bg_reference(&with_data, stride, b);
+        let has_title_ink = (by + 1..by + 14)
+            .any(|y| (bx + 1..bx + bw - 1).any(|x| pixel(&with_data, stride, x, y) != inner));
         assert!(
-            interior.contains(&inner),
-            "the title's short label + padding should punch at least one background-\
-             coloured pixel into the top edge somewhere in its interior (inner={inner:?}, \
-             top-edge interior samples={interior:?})"
-        );
-
-        let top_near_corner = pixel(&data, stride, bx + 1, by);
-        assert_ne!(
-            top_near_corner, inner,
-            "the top edge right at the corner should still show the plain border stroke, \
-             i.e. the punch must not swallow the whole edge \
-             (top_near_corner={top_near_corner:?}, inner={inner:?})"
+            has_title_ink,
+            "expected the title's glyph ink a few pixels below the top edge, inside the card"
         );
     }
 
@@ -469,8 +473,10 @@ mod tests {
         /// Anchor rect the tooltip is shown for — matches both the
         /// hover hit-test target and the tooltip's own bounds, so a
         /// `MouseMoved` anywhere inside it hovers the one tracked item.
+        /// Tall enough to clear the VS-Code-card's vertical content inset
+        /// plus one text row at any UI font size this test runs at.
         fn anchor() -> QRect {
-            QRect::new(10.0, 10.0, 60.0, 20.0)
+            QRect::new(10.0, 10.0, 60.0, 36.0)
         }
 
         /// Minimal [`AppLogic`] wiring a single-widget
