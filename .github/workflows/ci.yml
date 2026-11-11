@@ -604,9 +604,9 @@ jobs:
     # regenerating would change any committed output
     # (`quadraui-py/python/quadraui/wire.pyi`, `quadraui-node/js/wire.d.ts`,
     # `quadraui-py/python/quadraui/_quadraui.pyi`), if the "good" fixture
-    # scripts (`scripts/fixtures/wire_types_sample.{py,ts}`, or
-    # `quadraui-py/examples/file_manager.py` for the `_quadraui.pyi` side)
-    # fail to type-check under `mypy --strict`/`tsc --strict`, or if the
+    # scripts (`scripts/fixtures/wire_types_sample.{py,ts}`, or every real
+    # example under `quadraui-py/examples/` for the `_quadraui.pyi` side)
+    # fail to type-check under `mypy --strict`/`pyright`/`tsc --strict`, or if the
     # "bad" misspelled-key fixtures
     # (`scripts/fixtures/wire_types_sample_bad.{py,ts}`) type-check clean
     # when they should not. `gen_wire_types.py` builds its wire-data schema

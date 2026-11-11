@@ -35,9 +35,8 @@ argument or a pythonized `Py<PyAny>` return is narrowed to one of this
 file's own `wire.pyi` `TypedDict`s instead of a bare `Mapping[str, Any]`/
 `Any`. A method whose Rust type this parser can't map raises instead of
 silently emitting `Any` -- the same "new shape needs a table entry" contract
-`wire_schema.rs`'s own coverage guard has, and the reason this generator
-replaces `_quadraui.pyi`'s old `__getattr__ -> Any` fallback entirely rather
-than leaving it as a safety net.
+`wire_schema.rs`'s own coverage guard has, so every exported method's shape
+is accounted for rather than falling back to an opaque `Any`.
 
 Usage:
 
@@ -662,14 +661,41 @@ def _parse_impl_block(src: str, open_brace_idx: int) -> List[RustMethod]:
     return methods
 
 
-def parse_pymethods(src: str) -> "Dict[str, List[RustMethod]]":
+# The four `#[pymethods]` classes `lib.rs` has always declared. Any one of
+# them parsing to zero methods is this parser's own signal that something
+# went wrong upstream of it (a brace inside a string/char literal or
+# comment confusing `_find_matching`'s raw-text brace count, an attribute
+# between `#[pymethods]` and `impl` the detection regex doesn't expect) --
+# [`parse_pymethods`] asserts this floor so that kind of silent truncation
+# fails generation loudly instead of quietly shipping a thinner stub.
+_EXPECTED_PYMETHODS_CLASSES = ("QuiApp", "QuiShellApp", "QuiAppWaker", "QuiAppActions")
+
+
+def parse_pymethods(src: str, check_floor: bool = True) -> "Dict[str, List[RustMethod]]":
     """Every `#[pymethods] impl ClassName { ... }` block in `src`, in
-    source order (so `_quadraui.pyi`'s class order mirrors `lib.rs`'s)."""
+    source order (so `_quadraui.pyi`'s class order mirrors `lib.rs`'s).
+
+    `check_floor` enforces [`_EXPECTED_PYMETHODS_CLASSES`] all parsed a
+    non-empty method list -- the default, since every real caller (this
+    script's own `main`) parses the whole real `lib.rs` and should always
+    see all four. A unit test parsing a small synthetic snippet missing
+    most of them on purpose passes `check_floor=False`."""
     out: Dict[str, List[RustMethod]] = {}
-    for m in re.finditer(r"#\[pymethods\]\s*\nimpl\s+(\w+)\b[^{]*\{", src):
+    # An attribute (e.g. `#[cfg(...)]`) between `#[pymethods]` and `impl`
+    # is allowed and skipped, rather than making the whole `impl` block
+    # silently vanish from the match.
+    for m in re.finditer(r"#\[pymethods\]\s*\n(?:#\[[^\]]*\]\s*\n)*impl\s+(\w+)\b[^{]*\{", src):
         cls = m.group(1)
         open_brace_idx = m.end() - 1
         out.setdefault(cls, []).extend(_parse_impl_block(src, open_brace_idx))
+    if check_floor:
+        for cls in _EXPECTED_PYMETHODS_CLASSES:
+            if not out.get(cls):
+                raise ValueError(
+                    f"gen_wire_types.py: parsed zero methods for #[pymethods] impl {cls} -- "
+                    "likely a brace inside a string/char literal or comment confusing the "
+                    "brace-matching scan, or an attribute between #[pymethods] and impl"
+                )
     return out
 
 
@@ -685,6 +711,27 @@ def parse_pyfunctions(src: str) -> List[RustMethod]:
         out.append(
             RustMethod(name=name, params=_parse_params(params_text, {}), return_type=return_type)
         )
+    return out
+
+
+# PyO3's own built-in exception types, as named in a `create_exception!`
+# call's base position, map to the plain Python name a `.pyi` stub
+# actually names (`class Foo(Exception): ...`, never `class Foo
+# (PyException): ...`). Extend this if `lib.rs` ever bases a
+# `create_exception!` on another PyO3 built-in.
+_PYO3_EXCEPTION_BASE_ALIASES = {"PyException": "Exception"}
+
+
+def parse_create_exceptions(src: str) -> List[Tuple[str, str]]:
+    """Every `create_exception!(_quadraui, Name, Base, "doc...")` call in
+    `src`, as `(name, base)` pairs in source order. Parsed the same way
+    `#[pymethods]`/`#[pyfunction]` are, so a new exception always shows up
+    in the regenerated stub without a hand-maintained list to forget to
+    update."""
+    out = []
+    for m in re.finditer(r"create_exception!\(\s*_quadraui\s*,\s*(\w+)\s*,\s*(\w+)\s*,", src):
+        name, base = m.group(1), m.group(2)
+        out.append((name, _PYO3_EXCEPTION_BASE_ALIASES.get(base, base)))
     return out
 
 
@@ -772,13 +819,21 @@ def _strip_rust_ref(t: str) -> str:
     return re.sub(r"^&(mut\s+)?('[A-Za-z_0-9]+\s+)?", "", t).strip()
 
 
-def rust_type_to_py(rust_type: str) -> str:
+def rust_type_to_py(rust_type: str, is_param: bool = False) -> str:
     """Maps one Rust parameter/return type (already stripped of any
     wrapping `PARAM_OVERRIDES`/`RETURN_OVERRIDES` entry) to its `.pyi`
     rendering. Raises on a shape this parser has never seen rather than
-    falling back to `Any` -- the whole point of replacing `_quadraui.pyi`'s
-    old `__getattr__ -> Any` escape hatch is that an unmapped shape fails
-    generation loudly instead of silently typing as `Any` again."""
+    falling back to `Any`: an unmapped shape fails generation loudly
+    instead of silently typing as `Any`.
+
+    `is_param` widens a couple of shapes PyO3 accepts more loosely on the
+    way in than it ever hands back on the way out: `Vec<T>` extracts from
+    any Python sequence, not just a `list` (so a parameter renders
+    `Sequence[T]`, while a return value -- always a concrete `list` once
+    pythonized -- stays `List[T]`), and `Vec<u8>` extracts from `bytes`,
+    `bytearray`, or a `list[int]` alike (so a parameter renders that
+    union, while a `Vec<u8>` return value -- always pythonized to `bytes`
+    -- stays `bytes`)."""
     t = _strip_rust_ref(rust_type)
     if t == "()":
         return "None"
@@ -796,21 +851,25 @@ def rust_type_to_py(rust_type: str) -> str:
         return t
     m = re.match(r"^PyResult<(.+)>$", t)
     if m:
-        return rust_type_to_py(m.group(1))
+        return rust_type_to_py(m.group(1), is_param=is_param)
     m = re.match(r"^Option<(.+)>$", t)
     if m:
-        return f"Optional[{rust_type_to_py(m.group(1))}]"
+        inner_py = rust_type_to_py(m.group(1), is_param=is_param)
+        # `Optional[Any]` says nothing `Any` doesn't already say -- collapse
+        # it rather than rendering a redundant wrapper.
+        return inner_py if inner_py == "Any" else f"Optional[{inner_py}]"
     m = re.match(r"^Vec<(.+)>$", t)
     if m:
         inner = m.group(1).strip()
         if inner == "u8":
-            return "bytes"
-        return f"List[{rust_type_to_py(inner)}]"
+            return "Union[bytes, bytearray, Sequence[int]]" if is_param else "bytes"
+        inner_py = rust_type_to_py(inner, is_param=is_param)
+        return f"Sequence[{inner_py}]" if is_param else f"List[{inner_py}]"
     if t.startswith("(") and t.endswith(")"):
         parts = _split_top_level(t[1:-1])
         if not parts:
             return "None"
-        return f"Tuple[{', '.join(rust_type_to_py(p) for p in parts)}]"
+        return f"Tuple[{', '.join(rust_type_to_py(p, is_param=is_param) for p in parts)}]"
     if t.startswith("Bound<") and t.endswith(">"):
         inner_parts = _split_top_level(t[len("Bound<") : -1])
         pyo3_type = inner_parts[-1].strip() if inner_parts else ""
@@ -827,11 +886,16 @@ def rust_type_to_py(rust_type: str) -> str:
 
 
 def _default_literal(rust_default: str) -> str:
+    """Renders one `#[pyo3(signature = (...))]` default for the `.pyi`
+    stub. A mutable literal (`Vec::new()` -> an empty list) renders as the
+    stub-file convention `...` (flake8-pyi Y011) rather than the literal
+    itself -- a stub's default never actually executes, so spelling out
+    `[]` there would just be a misleading, lint-flagged mutable default."""
     v = rust_default.strip()
     if v in ("None", "true", "false"):
         return {"None": "None", "true": "True", "false": "False"}[v]
     if v == "Vec::new()":
-        return "[]"
+        return "..."
     if re.match(r"^-?\d+(\.\d+)?$", v):
         return v
     if v.startswith('"') and v.endswith('"'):
@@ -853,7 +917,7 @@ def _param_py_type(cls: Optional[str], method: str, p: RustParam) -> Optional[st
     if inner == "Py<PyAny>" and p.name in CALLABLE_PARAM_NAMES:
         callable_ty = "Callable[..., Any]"
         return f"Optional[{callable_ty}]" if is_optional else callable_ty
-    return rust_type_to_py(p.rust_type)
+    return rust_type_to_py(p.rust_type, is_param=True)
 
 
 def _render_method(cls: str, meth: RustMethod) -> List[str]:
@@ -897,30 +961,6 @@ def _render_function(meth: RustMethod) -> str:
     return f"def {meth.name}({', '.join(rendered)}) -> {ret_py}: ..."
 
 
-# Hand-maintained: PyO3 exceptions are declared via `create_exception!`, not
-# a `#[pymethods]`/`#[pyfunction]` this script's parser can see -- the
-# hierarchy itself is the contract here, not a method surface, so there is
-# nothing for [`parse_pymethods`]/[`parse_pyfunctions`] to regenerate it
-# from. Grep `create_exception!` in `quadraui-py/src/lib.rs` before editing
-# this list; it must name exactly the same exceptions.
-STUB_EXCEPTIONS = [
-    ("QuadrauiError", "Exception"),
-    ("InvalidDescriptorError", "QuadrauiError"),
-    ("SlotOccupiedError", "QuadrauiError"),
-    ("UnknownSlotError", "QuadrauiError"),
-    ("InvalidDimensionsError", "QuadrauiError"),
-    ("InvalidCharError", "QuadrauiError"),
-    ("PanicError", "QuadrauiError"),
-    ("PoisonedError", "QuadrauiError"),
-    ("InternalError", "QuadrauiError"),
-    ("NativeAlreadyRunError", "QuadrauiError"),
-    ("NoDisplayError", "QuadrauiError"),
-    ("NotOnMainThreadError", "QuadrauiError"),
-    ("InvalidAppIdError", "QuadrauiError"),
-    ("InvalidFontRoleError", "QuadrauiError"),
-    ("UnsupportedError", "QuadrauiError"),
-]
-
 STUB_GENERATED_BANNER = (
     "Generated by `scripts/gen_wire_types.py` from the `#[pymethods]`/"
     "`#[pyfunction]` declarations in `quadraui-py/src/lib.rs` -- do not "
@@ -943,7 +983,7 @@ stub for module", before it even reaches application code.
 {STUB_GENERATED_BANNER}
 """
 
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from .wire import (
     Accelerator,
@@ -965,12 +1005,49 @@ from .wire import (
 '''
 
 
-def render_pyi_stub(src: str) -> str:
-    pymethods = parse_pymethods(src)
+def _check_overrides_resolve(
+    pymethods: "Dict[str, List[RustMethod]]", pyfunctions: List[RustMethod]
+) -> None:
+    """Fails loudly if a `PARAM_OVERRIDES`/`RETURN_OVERRIDES` key doesn't
+    name a method/parameter the parser actually found in `lib.rs` (e.g. a
+    stale entry left behind by a Rust parameter rename). A key like that
+    simply stops firing and the affected method silently reverts to its
+    generic mapping, with nothing but a wider `--check` diff (easy to
+    rubber-stamp) to notice."""
+    param_keys = set()
+    return_keys = set()
+    for cls, methods in pymethods.items():
+        for meth in methods:
+            return_keys.add((cls, meth.name))
+            for p in meth.params:
+                param_keys.add((cls, meth.name, p.name))
+    for meth in pyfunctions:
+        for p in meth.params:
+            param_keys.add((None, meth.name, p.name))
+
+    stale_params = sorted(set(PARAM_OVERRIDES) - param_keys)
+    stale_returns = sorted(set(RETURN_OVERRIDES) - return_keys)
+    if stale_params or stale_returns:
+        lines = ["gen_wire_types.py: override table entries matching nothing in lib.rs:"]
+        lines.extend(f"  PARAM_OVERRIDES{key!r}" for key in stale_params)
+        lines.extend(f"  RETURN_OVERRIDES{key!r}" for key in stale_returns)
+        raise ValueError("\n".join(lines))
+
+
+def render_pyi_stub(src: str, check_floor: bool = True) -> str:
+    """Renders the full `_quadraui.pyi` text from `lib.rs`'s source.
+    `check_floor` is threaded straight to [`parse_pymethods`] and also
+    gates [`_check_overrides_resolve`] -- both floor checks assume `src`
+    is the real, whole `lib.rs`, which a unit test's small synthetic
+    snippet is not."""
+    pymethods = parse_pymethods(src, check_floor=check_floor)
     pyfunctions = parse_pyfunctions(src)
+    exceptions = parse_create_exceptions(src)
+    if check_floor:
+        _check_overrides_resolve(pymethods, pyfunctions)
 
     lines = [STUB_HEADER.rstrip() + "\n"]
-    for name, base in STUB_EXCEPTIONS:
+    for name, base in exceptions:
         lines.append(f"class {name}({base}): ...")
     lines.append("")
 

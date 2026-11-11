@@ -2,8 +2,8 @@
 # Staleness + acceptance check for the generated wire types and native-
 # extension stub (`scripts/gen_wire_types.py`): fails if regenerating would
 # change any committed output (`wire.pyi`, `wire.d.ts`, `_quadraui.pyi`), if
-# the "good" fixture scripts (or `quadraui-py/examples/file_manager.py`, the
-# one real Python example checked here) fail to type-check, or if the "bad"
+# the "good" fixture scripts (or every real Python example under
+# `quadraui-py/examples/`) fail to type-check, or if the "bad"
 # (misspelled-key) fixture scripts type-check clean when they should not.
 # Installs `mypy`/`pyright`/`typescript` into throwaway
 # locations under `$CHECK_WIRE_TYPES_TMP` (default: a fresh `mktemp -d`,
@@ -49,9 +49,9 @@ echo "-- good fixture must type-check clean --"
 MYPYPATH="quadraui-py/python" "$venv/bin/mypy" --strict --ignore-missing-imports \
   scripts/fixtures/wire_types_sample.py
 
-echo "-- file_manager.py example must type-check clean --"
+echo "-- every quadraui-py/examples/ example must type-check clean --"
 MYPYPATH="quadraui-py/python" "$venv/bin/mypy" --strict --ignore-missing-imports \
-  quadraui-py/examples/file_manager.py
+  quadraui-py/examples
 
 echo "-- bad (misspelled-key) fixture must fail to type-check --"
 if MYPYPATH="quadraui-py/python" "$venv/bin/mypy" --strict --ignore-missing-imports \
@@ -70,8 +70,8 @@ echo "== pyright (Python) =="
 echo "-- good fixture must type-check clean --"
 PYTHONPATH="quadraui-py/python" "$venv/bin/pyright" scripts/fixtures/wire_types_sample.py
 
-echo "-- file_manager.py example must type-check clean --"
-PYTHONPATH="quadraui-py/python" "$venv/bin/pyright" quadraui-py/examples/file_manager.py
+echo "-- every quadraui-py/examples/ example must type-check clean --"
+PYTHONPATH="quadraui-py/python" "$venv/bin/pyright" quadraui-py/examples
 
 echo "-- bad (misspelled-key) fixture must fail to type-check --"
 if PYTHONPATH="quadraui-py/python" "$venv/bin/pyright" scripts/fixtures/wire_types_sample_bad.py; then

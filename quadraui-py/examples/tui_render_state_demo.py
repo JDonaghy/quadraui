@@ -28,7 +28,16 @@ keyboard events, driven by the same `render`/`set_handler` pair above with
     python quadraui-py/examples/tui_render_state_demo.py --interactive
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Dict, List
+
 from quadraui import QuiApp
+
+if TYPE_CHECKING:
+    # `quadraui.wire` is a stub-only module -- see its own module docstring --
+    # so this import only runs under a type checker.
+    from quadraui.wire import Key, ListItemDescriptor, Modifiers, UiEvent
 
 WIDTH = 20
 HEIGHT = 10
@@ -38,12 +47,12 @@ HEIGHT = 10
 # orthogonal to what this demo is about.
 ROW_COUNT = 4
 
-_DOWN_KEY = {"Named": "Down"}
-_UP_KEY = {"Named": "Up"}
-_NO_MODIFIERS = {"shift": False, "ctrl": False, "alt": False, "meta": False}
+_DOWN_KEY: "Key" = {"Named": "Down"}
+_UP_KEY: "Key" = {"Named": "Up"}
+_NO_MODIFIERS: "Modifiers" = {"shift": False, "ctrl": False, "alt": False, "cmd": False}
 
 
-def _key_event(key):
+def _key_event(key: "Key") -> "UiEvent":
     return {
         "KeyPressed": {
             "key": key,
@@ -53,7 +62,7 @@ def _key_event(key):
     }
 
 
-def make_rows(count):
+def make_rows(count: int) -> "list[ListItemDescriptor]":
     return [
         {"text": {"spans": [{"text": f"Row {i}", "fg": None, "bg": None}]}}
         for i in range(count)
@@ -65,13 +74,13 @@ class RenderStateDemo:
     `set_handler` handler mutates -- the two callbacks never touch each
     other or `QuiApp` directly, only this shared `state`."""
 
-    def __init__(self, rows):
+    def __init__(self, rows: "list[ListItemDescriptor]") -> None:
         self.rows = rows
-        self.state = {"selected_idx": 0}
+        self.state: Dict[str, int] = {"selected_idx": 0}
         self.app = QuiApp(WIDTH, HEIGHT, render=self._render)
         self.app.set_handler(self._handle)
 
-    def _render(self):
+    def _render(self) -> Dict[str, Any]:
         return {
             "list": {
                 "id": "list:render_state_demo",
@@ -83,7 +92,7 @@ class RenderStateDemo:
             }
         }
 
-    def _handle(self, event):
+    def _handle(self, event: "UiEvent") -> None:
         if not (isinstance(event, dict) and "KeyPressed" in event):
             return
         key = event["KeyPressed"]["key"]
@@ -93,16 +102,16 @@ class RenderStateDemo:
         elif key == _UP_KEY:
             self.state["selected_idx"] = max(0, self.state["selected_idx"] - 1)
 
-    def press_down(self):
+    def press_down(self) -> None:
         self.app.push_event(_key_event(_DOWN_KEY))
         self.app.step()
 
-    def press_up(self):
+    def press_up(self) -> None:
         self.app.push_event(_key_event(_UP_KEY))
         self.app.step()
 
 
-def run_demo():
+def run_demo() -> "tuple[RenderStateDemo, List[int]]":
     """Builds the demo, presses Down `ROW_COUNT - 1` times, and returns
     `(demo, selections)` -- `selections[i]` is `state["selected_idx"]`
     after the i-th Down press."""
@@ -121,11 +130,11 @@ class _Quit(Exception):
     `run_tui()` to return."""
 
 
-def _is_quit_key(key):
+def _is_quit_key(key: "Key") -> bool:
     return key == {"Char": "q"} or key == {"Named": "Escape"}
 
 
-def _run_interactive():
+def _run_interactive() -> None:
     """Builds the same `RenderStateDemo` the headless path uses, but drives
     it from the real controlling terminal via `run_tui()` instead of
     `step()`. `q`/Escape raise `_Quit` to exit; every other key is handed to
@@ -135,7 +144,7 @@ def _run_interactive():
     demo = RenderStateDemo(make_rows(ROW_COUNT))
     original_handle = demo._handle
 
-    def handler(event):
+    def handler(event: "UiEvent") -> None:
         if isinstance(event, dict) and "KeyPressed" in event:
             if _is_quit_key(event["KeyPressed"]["key"]):
                 raise _Quit
