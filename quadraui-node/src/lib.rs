@@ -1417,55 +1417,68 @@ fn slot_occupied_error(detail: impl std::fmt::Display) -> Error {
 /// this is the first time this app has reported `what` -- see
 /// [`BindingHost::first_deprecation_report`]'s own doc for why the dedup is
 /// per-app rather than process-wide.
-fn emit_slot_deprecation_warning(env: Env, message: &str) -> Result<()> {
-    let global = env.get_global()?;
-    let process: Object = global.get_named_property_unchecked("process")?;
-    let emit_warning: Function<FnArgs<(String, String)>, Unknown> =
-        process.get_named_property_unchecked("emitWarning")?;
-    emit_warning.call(FnArgs {
-        data: (message.to_string(), "DeprecationWarning".to_string()),
-    })?;
-    Ok(())
+///
+/// A missing or replaced `process.emitWarning` (an embedder, an unusual
+/// host, a test stubbing `process`) is swallowed rather than propagated: a
+/// deprecation notice must never turn a previously-working call into a hard
+/// error just because the notice itself couldn't be delivered.
+fn emit_slot_deprecation_warning(env: Env, message: &str) {
+    let report = || -> Result<()> {
+        let global = env.get_global()?;
+        let process: Object = global.get_named_property_unchecked("process")?;
+        let emit_warning: Function<FnArgs<(String, String)>, Unknown> =
+            process.get_named_property_unchecked("emitWarning")?;
+        emit_warning.call(FnArgs {
+            data: (message.to_string(), "DeprecationWarning".to_string()),
+        })?;
+        Ok(())
+    };
+    let _ = report();
 }
 
 /// The shared slot/extra-API deprecation report every `QuiApp` slot/extra
-/// method calls before doing its own work: builds
-/// [`BindingHost::slot_deprecation_message`]'s message for `what`/
-/// `guidance`, then -- only on the first call for `what` this app has made,
-/// per [`BindingHost::first_deprecation_report`] -- reports it via
-/// [`emit_slot_deprecation_warning`].
-fn warn_slot_deprecated(host: &BindingHost, env: Env, what: &str, guidance: &str) -> Result<()> {
+/// method calls before doing its own work: -- only on the first call for
+/// `what` this app has made, per [`BindingHost::first_deprecation_report`]
+/// -- reports `message` via [`emit_slot_deprecation_warning`]. `message` is
+/// built by the caller from a `BindingHost::*_deprecation_message` call, so
+/// the wording lives once, shared with `quadraui-py`'s own forward.
+fn warn_slot_deprecated(host: &BindingHost, env: Env, what: &str, message: String) {
     if !host.first_deprecation_report(what) {
-        return Ok(());
+        return;
     }
-    let message = BindingHost::slot_deprecation_message(what, guidance);
     emit_slot_deprecation_warning(env, &message)
 }
 
 /// [`warn_slot_deprecated`] for inserting primitive `leaf_kind` via the
 /// deprecated `what` method -- the one call every `insert*`/`insertExtra`
 /// method makes, naming the inline layout leaf of that same kind as the
-/// replacement.
-fn warn_insert_deprecated(host: &BindingHost, env: Env, what: &str, leaf_kind: &str) -> Result<()> {
+/// replacement. Builds the shared message via
+/// [`BindingHost::insert_deprecation_message`].
+///
+/// The dedup key passed to [`BindingHost::first_deprecation_report`] is
+/// `what` alone, so for `insertExtra` specifically -- where `leaf_kind` is
+/// a caller-supplied `kind` string, not fixed by `what` -- only the first
+/// `kind` a given app passes is ever named: `insertExtra("progress", ...)`
+/// followed by `insertExtra("spinner", ...)` warns once, naming only
+/// `progress`.
+fn warn_insert_deprecated(host: &BindingHost, env: Env, what: &str, leaf_kind: &str) {
     warn_slot_deprecated(
         host,
         env,
         what,
-        &format!("render an inline `{leaf_kind}` layout leaf from a `render` callback instead"),
+        BindingHost::insert_deprecation_message(what, leaf_kind),
     )
 }
 
 /// [`warn_slot_deprecated`] for `clearExtra`, naming omitting `kind`'s
-/// layout leaf from the next `render` callback as the replacement.
-fn warn_clear_extra_deprecated(host: &BindingHost, env: Env, kind: &str) -> Result<()> {
+/// layout leaf from the next `render` callback as the replacement. Builds
+/// the shared message via [`BindingHost::clear_extra_deprecation_message`].
+fn warn_clear_extra_deprecated(host: &BindingHost, env: Env, kind: &str) {
     warn_slot_deprecated(
         host,
         env,
         "clearExtra",
-        &format!(
-            "omit the `{kind}` layout leaf from the next `render` callback's \
-             returned layout instead of calling `clearExtra`"
-        ),
+        BindingHost::clear_extra_deprecation_message("clearExtra", kind),
     )
 }
 
@@ -1473,17 +1486,14 @@ fn warn_clear_extra_deprecated(host: &BindingHost, env: Env, kind: &str) -> Resu
 /// fixed-primitive layout leaf from the next `render` callback as the
 /// replacement. `slot` is assumed already validated by
 /// [`NodeAppLogic::is_known_slot`] -- see [`BindingHost::slot_kind_name`]'s
-/// own doc for why this never actually sees an unrecognized slot.
-fn warn_slot_clear_deprecated(host: &BindingHost, env: Env, slot: i64) -> Result<()> {
-    let kind = BindingHost::slot_kind_name(slot).unwrap_or("fixed-slot");
+/// own doc for why this never actually sees an unrecognized slot. Builds
+/// the shared message via [`BindingHost::slot_clear_deprecation_message`].
+fn warn_slot_clear_deprecated(host: &BindingHost, env: Env, slot: i64) {
     warn_slot_deprecated(
         host,
         env,
         "slotClear",
-        &format!(
-            "omit the `{kind}` layout leaf from the next `render` callback's \
-             returned layout instead of calling `slotClear`"
-        ),
+        BindingHost::slot_clear_deprecation_message("slotClear", slot),
     )
 }
 
@@ -2589,7 +2599,7 @@ impl QuiApp {
         if !NodeAppLogic::is_known_slot(slot) {
             return Err(unknown_slot_error(format!("unknown slot id: {slot}")));
         }
-        warn_slot_clear_deprecated(&self.driver.app().host, env, slot)?;
+        warn_slot_clear_deprecated(&self.driver.app().host, env, slot);
         self.guarded(env, |app| {
             let cleared = app.driver.app_mut().clear_slot(slot);
             if cleared {
@@ -2723,7 +2733,8 @@ impl QuiApp {
     /// breaking release.
     #[napi(js_name = "insertButton")]
     pub fn insert_button(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        warn_insert_deprecated(&self.driver.app().host, env, "insertButton", "button")?;
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertButton", "button");
         self.insert_fixed(
             env,
             SLOT_BUTTON,
@@ -2742,12 +2753,13 @@ impl QuiApp {
     /// later breaking release.
     #[napi(js_name = "insertTextDisplay")]
     pub fn insert_text_display(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.check_not_live()?;
         warn_insert_deprecated(
             &self.driver.app().host,
             env,
             "insertTextDisplay",
             "text_display",
-        )?;
+        );
         self.insert_fixed(
             env,
             SLOT_TEXT_DISPLAY,
@@ -2766,7 +2778,8 @@ impl QuiApp {
     /// breaking release.
     #[napi(js_name = "insertList")]
     pub fn insert_list(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        warn_insert_deprecated(&self.driver.app().host, env, "insertList", "list")?;
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertList", "list");
         self.insert_fixed(
             env,
             SLOT_LIST,
@@ -2785,7 +2798,8 @@ impl QuiApp {
     /// breaking release.
     #[napi(js_name = "insertTree")]
     pub fn insert_tree(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        warn_insert_deprecated(&self.driver.app().host, env, "insertTree", "tree")?;
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertTree", "tree");
         self.insert_fixed(
             env,
             SLOT_TREE,
@@ -2804,12 +2818,13 @@ impl QuiApp {
     /// later breaking release.
     #[napi(js_name = "insertDataTable")]
     pub fn insert_data_table(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.check_not_live()?;
         warn_insert_deprecated(
             &self.driver.app().host,
             env,
             "insertDataTable",
             "data_table",
-        )?;
+        );
         self.insert_fixed(
             env,
             SLOT_DATA_TABLE,
@@ -2828,7 +2843,8 @@ impl QuiApp {
     /// breaking release.
     #[napi(js_name = "insertTabBar")]
     pub fn insert_tab_bar(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        warn_insert_deprecated(&self.driver.app().host, env, "insertTabBar", "tab_bar")?;
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertTabBar", "tab_bar");
         self.insert_fixed(
             env,
             SLOT_TAB_BAR,
@@ -2848,7 +2864,8 @@ impl QuiApp {
     /// breaking release.
     #[napi(js_name = "insertProgress")]
     pub fn insert_progress(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
-        warn_insert_deprecated(&self.driver.app().host, env, "insertProgress", "progress")?;
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertProgress", "progress");
         self.store_extra(env, "progress", "insertProgress", descriptor)
     }
 
@@ -2862,7 +2879,8 @@ impl QuiApp {
     /// breaking release.
     #[napi(js_name = "insertSpinner")]
     pub fn insert_spinner(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
-        warn_insert_deprecated(&self.driver.app().host, env, "insertSpinner", "spinner")?;
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertSpinner", "spinner");
         self.store_extra(env, "spinner", "insertSpinner", descriptor)
     }
 
@@ -2876,7 +2894,8 @@ impl QuiApp {
     /// breaking release.
     #[napi(js_name = "insertImage")]
     pub fn insert_image(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
-        warn_insert_deprecated(&self.driver.app().host, env, "insertImage", "image")?;
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertImage", "image");
         self.store_extra(env, "image", "insertImage", descriptor)
     }
 
@@ -2893,7 +2912,8 @@ impl QuiApp {
     /// breaking release.
     #[napi(js_name = "insertExtra")]
     pub fn insert_extra(&mut self, env: Env, kind: String, descriptor: Unknown) -> Result<String> {
-        warn_insert_deprecated(&self.driver.app().host, env, "insertExtra", &kind)?;
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertExtra", &kind);
         self.store_extra(env, &kind, "insertExtra", descriptor)
     }
 
@@ -2910,7 +2930,7 @@ impl QuiApp {
     #[napi(js_name = "clearExtra")]
     pub fn clear_extra(&mut self, env: Env, kind: String) -> Result<bool> {
         self.check_not_live()?;
-        warn_clear_extra_deprecated(&self.driver.app().host, env, &kind)?;
+        warn_clear_extra_deprecated(&self.driver.app().host, env, &kind);
         self.guarded(env, |app| {
             let cleared = app.driver.app_mut().clear_extra_slot(&kind);
             if cleared {
