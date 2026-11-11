@@ -538,14 +538,21 @@ pub(crate) mod native_surface_paint {
     /// Shared geometry for a focus-visible ring drawn around `bounds`:
     /// an outset stroke rect ([`FOCUS_RING_GAP`] clear of `bounds` on
     /// every side), `style.corner_radius` (read from `style` itself, so
-    /// there is no separate radius argument for a call site to drift
-    /// from the primitive's own fill/border radius), and the stroke
-    /// width [`Style::focus_ring_width`] configures. This module's own
-    /// [`paint`] below computes its ring through here; a per-backend
-    /// `TextInput` rasteriser that adds a ring stroke should too, rather
-    /// than re-deriving the outset gap independently, so widening
-    /// `Style::focus_ring_width` widens every primitive's ring
-    /// identically instead of drifting through hand-tuned literals.
+    /// a caller whose own fill/border also radiuses at
+    /// `style.corner_radius` — [`TextInput`] via `crate::primitives::text_input`,
+    /// every per-backend rasteriser listed below — gets a matching ring
+    /// for free without a separate radius argument to drift), and the
+    /// stroke width [`Style::focus_ring_width`] configures. This
+    /// module's own [`paint`] below computes its ring through here but
+    /// then overwrites [`FocusRingGeometry::corner_radius`] with its own
+    /// [`ButtonMetrics::corner_radius`] (`Style::button_radius`, not
+    /// `style.corner_radius`) before stroking, since `Button`'s body
+    /// radiuses narrower than the shared overlay default. A per-backend
+    /// `TextInput` rasteriser that adds a ring stroke should call
+    /// through here too, rather than re-deriving the outset gap
+    /// independently, so widening `Style::focus_ring_width` widens every
+    /// primitive's ring identically instead of drifting through
+    /// hand-tuned literals.
     ///
     /// Distinct from [`crate::backend::Backend::draw_focus_ring`], which
     /// every backend already implements by stroking the bare rect with
@@ -666,7 +673,15 @@ pub(crate) mod native_surface_paint {
         // `focused` itself on click rather than on Tab — see
         // `crate::compose::FocusRing::is_focus_visible`.
         if button.focused && !button.disabled {
-            let ring = focus_ring_geometry(rect, style);
+            let mut ring = focus_ring_geometry(rect, style);
+            // `focus_ring_geometry` reads `style.corner_radius` by
+            // default (the radius every other rounded-rect overlay's
+            // ring shares), but a `Button`'s own body paints at
+            // `metrics.corner_radius` (`Style::button_radius`) above —
+            // overridden here so the ring traces the same corner the
+            // fill/border just drew, rather than a wider `corner_radius`
+            // ring sitting visibly outside a tighter body.
+            ring.corner_radius = metrics.corner_radius;
             surface.surface_stroke_rounded_rect(
                 ring.rect,
                 ring.corner_radius,
@@ -897,6 +912,40 @@ pub(crate) mod native_surface_paint {
             // The ring surrounds the button rather than tracing it exactly.
             assert!(ring.0.x < RECT.x && ring.0.y < RECT.y);
             assert!(ring.0.width > RECT.width && ring.0.height > RECT.height);
+        }
+
+        /// The ring traces the button's own body radius
+        /// (`Style::button_radius`), not the wider `Style::corner_radius`
+        /// every other overlay's ring shares — otherwise a radius-6
+        /// ring would sit visibly outside a radius-2 body.
+        #[test]
+        fn focused_button_ring_radius_matches_button_radius_not_corner_radius() {
+            let mut button = Button::new(WidgetId::new("b"), "OK");
+            button.focused = true;
+            let theme = Theme::default();
+            let style = Style::default()
+                .with_button_radius(2.0)
+                .with_corner_radius(6.0);
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let body = surface
+                .fills
+                .iter()
+                .find(|(_, _, c)| *c == theme.accent_bg)
+                .expect("the button body must fill theme.accent_bg");
+            assert_eq!(body.1, 2.0, "the body must fill at button_radius");
+
+            let ring = surface
+                .strokes
+                .iter()
+                .find(|(_, _, color, _)| *color == theme.focus_ring_color())
+                .expect("a focused button must paint a ring stroke");
+            assert_eq!(
+                ring.1, 2.0,
+                "the ring must stroke at button_radius, not corner_radius"
+            );
         }
 
         #[test]
