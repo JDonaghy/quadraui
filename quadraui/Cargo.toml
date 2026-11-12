@@ -117,6 +117,15 @@ rust-version = "1.92.0"
 #   reasons about this workspace's own path dependencies and a hypothetical
 #   future repo split, and the crate it is about is not published at all, so
 #   a consumer of `quadraui` can neither depend on it nor act on the note.
+# - `docs/decisions/BINDING_VERSION_POLICY.md` — how the binding packages'
+#   own version numbers track this crate's minor, and the
+#   `scripts/release_decide.py check-binding-versions` CI step that enforces
+#   it. Same audience again: it is a rule for this repo's own `develop` ->
+#   `main` promotion gate, written in terms of manifests
+#   (`quadraui-py/pyproject.toml`, `quadraui-node/package.json`,
+#   `quadraui-binding-core/Cargo.toml`) that live outside this crate dir and
+#   so cannot ship here anyway. The compat table a *consumer* needs is in
+#   each binding's own `README.md`, not here.
 #
 # `docs/decisions/` is therefore classified per file, not wholesale.
 # `DECISIONS.md` and `BACKEND_TRAIT_PROPOSAL.md` are *not* in the list
@@ -183,6 +192,7 @@ exclude = [
     "docs/audits/",
     "docs/decisions/BINDING_CORE_PUBLISH_POLICY.md",
     "docs/decisions/BINDING_STRATEGY.md",
+    "docs/decisions/BINDING_VERSION_POLICY.md",
 ]
 
 # docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`/
