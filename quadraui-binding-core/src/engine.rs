@@ -23,14 +23,15 @@ use quadraui::{
     CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, EditOp,
     Float, FloatLayout, FloatMeasure, Form, InteractionState, Key, MenuBar, MessageDialogButton,
     Modifiers, NamedKey, Point, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout,
-    RichTextPopupMeasure, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit,
-    ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, UiEvent,
-    WidgetId,
+    RichTextPopupMeasure, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput,
+    Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout,
+    TooltipMeasure, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{
-    find_data_table_layout, find_split_layout, find_split_tree_layout, text_display_scroll_state,
-    tree_scroll_state, ActiveDrag, DataTableColumnDrag, ScrollbarDrag,
+    enclosing_scroll_child, find_data_table_layout, find_split_layout, find_split_tree_layout,
+    scroll_scrollbar, scroll_view_at, text_display_scroll_state, tree_scroll_state, ActiveDrag,
+    DataTableColumnDrag, ScrollDrag, ScrollbarDrag,
 };
 use crate::extra_paint::extra_as;
 use crate::hit::{
@@ -38,8 +39,8 @@ use crate::hit::{
     list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, HitDetail, PaintedHit,
 };
 use crate::host::{
-    apply_data_table_nav_key, apply_list_nav_key, apply_split_divider_drag, apply_tab_activated,
-    apply_tab_closed, apply_tree_nav_key, apply_tree_toggle_expand,
+    apply_data_table_nav_key, apply_list_nav_key, apply_scroll_offset, apply_split_divider_drag,
+    apply_tab_activated, apply_tab_closed, apply_tree_nav_key, apply_tree_toggle_expand,
 };
 use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
@@ -65,6 +66,35 @@ fn continue_or_tooltip_redraw(tooltip_dismissed: bool) -> quadraui::Reaction {
         quadraui::Reaction::Redraw
     } else {
         quadraui::Reaction::Continue
+    }
+}
+
+/// The minimal [`ScrollViewEvent::Scrolled`] that brings `[start, start +
+/// len)` fully inside `view`'s own [`ScrollView::visible_range`] — scrolls
+/// backward just enough when the child starts before it, forward just
+/// enough when it ends after, through [`ScrollView::scroll_by`] rather
+/// than computing a raw offset by hand (so the result is still clamped by
+/// that primitive's own math). `None` when the child is already fully
+/// visible, including when `len` alone is larger than `view`'s own
+/// [`ScrollView::visible_len`] (it can never be made fully visible either
+/// way, so there's nothing to scroll toward). Called when a click moves
+/// keyboard focus to a child painted only partly inside its enclosing
+/// `Scroll`'s viewport (straddling an edge, not scrolled fully out — a
+/// child scrolled fully out of view never gets painted in the first
+/// place, hence is never a click target at all).
+fn scroll_child_into_view(
+    view: &quadraui::ScrollView,
+    start: f32,
+    len: f32,
+) -> Option<ScrollViewEvent> {
+    let visible_start = view.scroll_offset;
+    let visible_end = visible_start + view.visible_len();
+    if start < visible_start {
+        view.scroll_by(start - visible_start)
+    } else if start + len > visible_end {
+        view.scroll_by(start + len - visible_end)
+    } else {
+        None
     }
 }
 
@@ -119,6 +149,17 @@ pub struct InteractionEngine {
     /// forwarding the raw move, mirroring [`Self::active_drag`]'s divider
     /// handling for a `DataTable`'s own column dividers.
     column_drag: RefCell<Option<DataTableColumnDrag>>,
+    /// Armed by a `MouseDown` landing on `HitDetail::ScrollScrollbarThumb`
+    /// (per [`Self::hit_map`]'s [`PaintedHit::Scroll`] hit-testing) and
+    /// cleared on the matching `MouseUp`. While armed,
+    /// [`InteractionEngine::handle`] turns every `MouseMoved` into a
+    /// synthesized `UiEvent::ScrollOffsetChanged` instead of forwarding the
+    /// raw move, mirroring [`Self::scrollbar_drag`]'s own thumb-drag
+    /// handling for a `LayoutNode::Scroll` container's scrollbar instead of
+    /// a `Tree`'s — kept as its own field rather than reused because a
+    /// `Scroll` can scroll along either axis (see [`ScrollDrag::axis`]'s
+    /// own doc), unlike a `Tree`'s always-vertical one.
+    scroll_drag: RefCell<Option<ScrollDrag>>,
     /// Per-`TextInput` [`quadraui::TextEditor`] session, keyed by
     /// `WidgetId`, that survives across keystrokes — see
     /// [`crate::text_input::apply_text_input_edit`]'s own doc for why a
@@ -696,10 +737,10 @@ impl InteractionEngine {
                 | PaintedHit::SplitTree { .. }
                 | PaintedHit::Panel { .. }
                 | PaintedHit::SidebarPanel { .. } => None,
-                // Not a tab stop yet -- keyboard focus/scroll on a `Scroll`
-                // container arrives with its wheel/keyboard input handling,
-                // a separate follow-up to this container's own decode/
-                // measure/paint/hit-test.
+                // A `Scroll` is chrome around its own content, like
+                // `Split`/`Panel`/`SidebarPanel` above -- its content's own
+                // leaves are the tab stops, reached via their own
+                // `PaintedHit` arms once scrolled into view.
                 PaintedHit::Scroll { .. } => None,
                 PaintedHit::Extra {
                     id, area, extra, ..
@@ -935,6 +976,7 @@ impl InteractionEngine {
             *self.active_drag.borrow_mut() = None;
             *self.scrollbar_drag.borrow_mut() = None;
             *self.column_drag.borrow_mut() = None;
+            *self.scroll_drag.borrow_mut() = None;
             self.chrome_pressed.borrow_mut().clear();
             // Mirrors the resets above for a `"form"` extra's own
             // scrollbar-thumb drag: `FormController::handle_event`'s `MouseUp`
@@ -1395,7 +1437,8 @@ impl InteractionEngine {
         let mut hover_reaction = Reaction::Continue;
         let drag_armed = self.active_drag.borrow().is_some()
             || self.scrollbar_drag.borrow().is_some()
-            || self.column_drag.borrow().is_some();
+            || self.column_drag.borrow().is_some()
+            || self.scroll_drag.borrow().is_some();
         if let UiEvent::MouseMoved { position, .. } = &event {
             if !drag_armed {
                 let hit_now = hit_test_painted(&self.hit_map.borrow(), *position);
@@ -1429,10 +1472,15 @@ impl InteractionEngine {
         // checked before the hit-test below, since `MouseMoved` has no
         // `widget` field for `event_position`/`set_event_widget` to touch.
         // A move while a tree scrollbar thumb drag is armed instead becomes
-        // a `ScrollOffsetChanged`, and a move while a `DataTable` column
-        // divider drag is armed becomes a `ColumnResized`, mirroring the
-        // divider case; all three drags are mutually exclusive, so only one
-        // of these branches ever fires for a given move.
+        // a `ScrollOffsetChanged`, a move while a `DataTable` column
+        // divider drag is armed becomes a `ColumnResized`, and a move while
+        // a `Scroll` scrollbar thumb drag is armed becomes another
+        // `ScrollOffsetChanged` (this one also persisted via
+        // `apply_scroll_offset`, so an uncontrolled `Scroll` actually moves
+        // — see `ScrollDrag`'s own doc for why it needs its own branch
+        // rather than reusing the tree's); all four drags are mutually
+        // exclusive, so only one of these branches ever fires for a given
+        // move.
         if let UiEvent::MouseMoved { position, .. } = &event {
             if let Some(drag) = self.active_drag.borrow().as_ref() {
                 if let Some(new_ratio) = drag.ratio_at(*position) {
@@ -1458,6 +1506,18 @@ impl InteractionEngine {
                         width: drag.width_at(*position),
                     },
                 );
+            } else if let Some(drag) = self.scroll_drag.borrow().as_ref() {
+                let pos = match drag.axis {
+                    ScrollAxis::Vertical => position.y,
+                    ScrollAxis::Horizontal => position.x,
+                };
+                if let Some(new_offset) = drag.drag.offset_at(pos) {
+                    apply_scroll_offset(&self.widget_state, drag.widget, new_offset);
+                    event = UiEvent::ScrollOffsetChanged {
+                        widget: drag.widget,
+                        new_offset: new_offset.round() as usize,
+                    };
+                }
             }
         }
 
@@ -1502,6 +1562,51 @@ impl InteractionEngine {
                         viewport_rows,
                         key,
                     )
+                } else if matches!(
+                    key,
+                    Key::Named(NamedKey::PageUp)
+                        | Key::Named(NamedKey::PageDown)
+                        | Key::Named(NamedKey::Home)
+                        | Key::Named(NamedKey::End)
+                ) {
+                    // The focused leaf has none of `Tree`/`List`/`DataTable`'s
+                    // own page/home/end cursor handling (those already
+                    // claimed the key above, so this never double-handles
+                    // one of them) — if it's a direct child of a `Scroll`,
+                    // route the key to that `Scroll`'s own
+                    // `ScrollView::handle_key` instead, mirroring the wheel
+                    // handling below but for the keyboard, and returning
+                    // straight away with a `ScrollOffsetChanged` rather than
+                    // falling into the generic `focus_scoped_key_event`
+                    // substitution below — unlike the tree/list/data-table
+                    // cases, this key has no OTHER semantic meaning for a
+                    // plain `Button`/`TextDisplay`/… to still receive.
+                    // `false` (not applied) when there's no enclosing
+                    // `Scroll`, or its content already fits/is already at
+                    // that bound — the key then falls through unchanged to
+                    // `focus_scoped_key_event`, same as any other key with
+                    // no navigation meaning here.
+                    let scrolled = enclosing_scroll_child(&self.hit_map.borrow(), focused)
+                        .and_then(|(scroll_id, ..)| {
+                            let mut view = scroll_view_at(&self.hit_map.borrow(), scroll_id)?;
+                            view.focused = true;
+                            let step = match view.axis {
+                                ScrollAxis::Vertical => backend.line_height(),
+                                ScrollAxis::Horizontal => backend.char_width(),
+                            };
+                            let ScrollViewEvent::Scrolled { offset: new_offset } =
+                                view.handle_key(key, modifiers, step)?;
+                            Some((scroll_id, new_offset))
+                        });
+                    if let Some((scroll_id, new_offset)) = scrolled {
+                        apply_scroll_offset(&self.widget_state, scroll_id, new_offset);
+                        event = UiEvent::ScrollOffsetChanged {
+                            widget: scroll_id,
+                            new_offset: new_offset.round() as usize,
+                        };
+                        return Reaction::Redraw.merge(sink.dispatch(&event, None));
+                    }
+                    false
                 } else {
                     false
                 };
@@ -1574,7 +1679,14 @@ impl InteractionEngine {
         // through untouched. A `TextDisplay` scrolls the same way, but
         // into its own `TextDisplayEvent::Scrolled` — the primitive
         // already has a typed scroll event, unlike `Tree`, so there is no
-        // need for the generic `ScrollOffsetChanged` substitute.
+        // need for the generic `ScrollOffsetChanged` substitute. A
+        // `LayoutNode::Scroll` container (its body or its own scrollbar)
+        // scrolls through `quadraui::ScrollView::handle_wheel` instead —
+        // this crate's own math never re-derives what that primitive
+        // already computes — persisting the result via
+        // `apply_scroll_offset` the same way the drag/key handling below
+        // does, so an uncontrolled `Scroll` actually moves on the next
+        // render.
         let mut scroll_translated = false;
         if let UiEvent::Scroll { delta, .. } = &event {
             if let Some((id, detail)) = &hit {
@@ -1593,6 +1705,25 @@ impl InteractionEngine {
                         | HitDetail::TextDisplayScrollbarTrackBefore
                         | HitDetail::TextDisplayScrollbarTrackAfter
                 );
+                // Either landed on the `Scroll` itself (its empty body or
+                // its own scrollbar) or on a direct child with no wheel
+                // behavior of its own (a plain `Button`, say) that happens
+                // to be inside one — `over_tree`/`over_text_display` above
+                // already claimed every kind that scrolls itself, so a
+                // child reaching here never double-handles a wheel notch
+                // its own primitive would otherwise have consumed.
+                let scroll_target = if matches!(
+                    detail,
+                    HitDetail::ScrollBody
+                        | HitDetail::ScrollScrollbarThumb
+                        | HitDetail::ScrollScrollbarTrackBefore
+                        | HitDetail::ScrollScrollbarTrackAfter
+                ) {
+                    Some(*id)
+                } else {
+                    enclosing_scroll_child(&self.hit_map.borrow(), *id)
+                        .map(|(scroll_id, ..)| scroll_id)
+                };
                 if over_tree {
                     if let Some((_, total_rows, viewport_rows, scroll_offset)) =
                         tree_scroll_state(&self.hit_map.borrow(), *id)
@@ -1616,6 +1747,23 @@ impl InteractionEngine {
                         event =
                             UiEvent::TextDisplay(*id, TextDisplayEvent::Scrolled { new_offset });
                         scroll_translated = true;
+                    }
+                } else if let Some(scroll_id) = scroll_target {
+                    if let Some(view) = scroll_view_at(&self.hit_map.borrow(), scroll_id) {
+                        let step = match view.axis {
+                            ScrollAxis::Vertical => backend.line_height(),
+                            ScrollAxis::Horizontal => backend.char_width(),
+                        };
+                        if let Some(ScrollViewEvent::Scrolled { offset: new_offset }) =
+                            view.handle_wheel(*delta, step)
+                        {
+                            apply_scroll_offset(&self.widget_state, scroll_id, new_offset);
+                            event = UiEvent::ScrollOffsetChanged {
+                                widget: scroll_id,
+                                new_offset: new_offset.round() as usize,
+                            };
+                            scroll_translated = true;
+                        }
                     }
                 }
             }
@@ -1643,6 +1791,23 @@ impl InteractionEngine {
                     focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(*id)), None);
                     if matches!(focus_reaction, Reaction::Exit) {
                         return focus_reaction;
+                    }
+                    // The newly-focused child may be a direct child of a
+                    // `Scroll`, painted only partly inside its viewport
+                    // (straddling an edge) — scroll it fully into view, the
+                    // same way a focused `Tree`/`List`/`DataTable` row
+                    // scrolls itself into view on cursor navigation.
+                    if let Some((scroll_id, start, len)) =
+                        enclosing_scroll_child(&self.hit_map.borrow(), *id)
+                    {
+                        if let Some(view) = scroll_view_at(&self.hit_map.borrow(), scroll_id) {
+                            if let Some(ScrollViewEvent::Scrolled { offset: new_offset }) =
+                                scroll_child_into_view(&view, start, len)
+                            {
+                                apply_scroll_offset(&self.widget_state, scroll_id, new_offset);
+                                focus_reaction = focus_reaction.merge(Reaction::Redraw);
+                            }
+                        }
                     }
                 }
             }
@@ -1802,6 +1967,63 @@ impl InteractionEngine {
                         };
                     }
                     attach_hit = false;
+                } else if !double_click && matches!(detail, HitDetail::ScrollScrollbarThumb) {
+                    // Mirrors the `TreeScrollbarThumb` arm above: a press on
+                    // the thumb itself arms a drag (consumed by the
+                    // `MouseMoved` branch above on later moves) rather than
+                    // scrolling immediately.
+                    if let UiEvent::MouseDown { position, .. } = &event {
+                        if let Some(scrollbar) = scroll_scrollbar(&self.hit_map.borrow(), *id) {
+                            if let Some(view) = scroll_view_at(&self.hit_map.borrow(), *id) {
+                                let max_offset = view.max_offset();
+                                if max_offset > 0.0 {
+                                    let pos = match scrollbar.axis {
+                                        ScrollAxis::Vertical => position.y,
+                                        ScrollAxis::Horizontal => position.x,
+                                    };
+                                    *self.scroll_drag.borrow_mut() = Some(ScrollDrag {
+                                        widget: *id,
+                                        axis: scrollbar.axis,
+                                        drag: ThumbDrag::begin(
+                                            pos,
+                                            view.scroll_offset,
+                                            scrollbar.travel(),
+                                            max_offset,
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    attach_hit = false;
+                } else if !double_click
+                    && matches!(
+                        detail,
+                        HitDetail::ScrollScrollbarTrackBefore
+                            | HitDetail::ScrollScrollbarTrackAfter
+                    )
+                {
+                    // Mirrors the `TreeScrollbarTrackBefore`/`TreeScrollbarTrackAfter`
+                    // arm above: a press on the bare track pages by one
+                    // viewport, through `ScrollView::scroll_by` rather than
+                    // re-deriving the page delta.
+                    if let Some(view) = scroll_view_at(&self.hit_map.borrow(), *id) {
+                        let page = if matches!(detail, HitDetail::ScrollScrollbarTrackBefore) {
+                            -view.visible_len()
+                        } else {
+                            view.visible_len()
+                        };
+                        if let Some(ScrollViewEvent::Scrolled { offset: new_offset }) =
+                            view.scroll_by(page)
+                        {
+                            apply_scroll_offset(&self.widget_state, *id, new_offset);
+                            event = UiEvent::ScrollOffsetChanged {
+                                widget: *id,
+                                new_offset: new_offset.round() as usize,
+                            };
+                        }
+                    }
+                    attach_hit = false;
                 } else if let Some(semantic) = semantic_event_for_hit(
                     *id,
                     detail,
@@ -1934,20 +2156,21 @@ mod tests {
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
         AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, MouseButton, NamedKey,
-        Point, Reaction, Rect, Split, TabBar, TabBarEvent, TabBarHit, ToolbarEvent, TreeEvent,
-        TreeView, UiEvent, WidgetId,
+        Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split, TabBar, TabBarEvent, TabBarHit,
+        ToolbarEvent, TreeEvent, TreeView, UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
-    use crate::hit::HitDetail;
+    use crate::hit::{HitDetail, PaintedHit};
     use crate::host::{
-        resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
-        resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
+        resolve_data_table_cursor, resolve_layout_node, resolve_layout_tabs_active,
+        resolve_list_cursor, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
+        resolve_tree_expansion,
     };
     use crate::layout::{
-        LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry,
-        LayoutTabs, LeafDescriptor, Spacing,
+        LayoutContainer, LayoutLeaf, LayoutNode, LayoutPanel, LayoutScroll, LayoutSplit,
+        LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing,
     };
     use crate::render::{
         draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
@@ -4828,5 +5051,284 @@ mod tests {
         )
         .expect("no tint set — must be accepted");
         assert_eq!(opts.buttons[0].spec, None);
+    }
+
+    /// A column of `count` buttons, labelled `"0"`..`"{count - 1}"` by
+    /// index — mirrors `crate::render::tests::button_column` /
+    /// `crate::host::tests::ScrollLeafLogic`'s own content builder, the
+    /// shared content every `LayoutNode::Scroll` input test below stacks.
+    fn button_column(count: usize) -> LayoutNode {
+        LayoutNode::Column(LayoutContainer::new(
+            (0..count)
+                .map(|i| {
+                    let label = i.to_string();
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: label.clone(),
+                        descriptor: LeafDescriptor::Button(Button::new(
+                            WidgetId::new(label.clone()),
+                            label,
+                        )),
+                        scroll_px: None,
+                    })
+                })
+                .collect(),
+            Spacing::default(),
+        ))
+    }
+
+    /// An [`AppLogic`] whose `render`/`handle` go through
+    /// [`InteractionEngine`] exactly the way [`MinimalLogic`] does, hosting
+    /// a `LayoutNode::Scroll` around [`button_column`] instead of a bare
+    /// `Button` — the issue's own acceptance scenario (40 buttons, a
+    /// 10-row viewport) driven through the full `event -> hit -> semantic`
+    /// pipeline, not just [`crate::render::paint_layout`]/
+    /// [`crate::host::resolve_layout_node`] called directly the way
+    /// `crate::render::tests::ScrollButtonsLogic`/
+    /// `crate::host::tests::ScrollLeafLogic` already cover.
+    struct ScrollLogic {
+        button_count: usize,
+        offset: Option<f32>,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ScrollLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let mut node = LayoutNode::Scroll(LayoutScroll {
+                id: "scroll".to_string(),
+                axis: ScrollAxis::Vertical,
+                offset: self.offset,
+                content: Box::new(button_column(self.button_count)),
+                spacing: Spacing::default(),
+            });
+            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a `button_count`-button `Scroll` (vertical, `offset` as
+    /// given — `None` for uncontrolled) and drives it through a 10-row
+    /// [`TuiDriver`], mirroring [`tree_driver`]/`data_table_driver`.
+    fn scroll_driver(button_count: usize, offset: Option<f32>) -> TuiDriver<ScrollLogic> {
+        let logic = ScrollLogic {
+            button_count,
+            offset,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 20, 10)
+    }
+
+    fn painted_button_ids(hits: &[PaintedHit]) -> Vec<String> {
+        hits.iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Button { id, .. } => Some(id.as_str().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A wheel `Scroll` over an uncontrolled `Scroll` container moves its
+    /// own stored offset — 40 buttons, a 10-row viewport, 5 notches down
+    /// (`ScrollDelta::new(0.0, 5.0)`, one row per notch at TUI's
+    /// `line_height() == 1.0`) must bring button `"5"` to the top of the
+    /// viewport.
+    #[test]
+    fn wheel_scroll_over_an_uncontrolled_scroll_container_moves_its_own_offset() {
+        let mut driver = scroll_driver(40, None);
+        driver.render();
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: ScrollDelta::new(0.0, 5.0),
+            position: Point { x: 0.0, y: 0.0 },
+        });
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let want: Vec<String> = (5..15).map(|i| i.to_string()).collect();
+        assert_eq!(painted_button_ids(&hits), want);
+    }
+
+    /// PageDown with focus on a button inside an uncontrolled `Scroll`
+    /// scrolls the container by one viewport (10 rows), landing button
+    /// `"10"` at the top — then a `MouseDown` at the viewport's own
+    /// top-left row resolves to that same button, matching the issue's
+    /// own "click the button now at the top, and see the right id"
+    /// acceptance step.
+    #[test]
+    fn page_down_scrolls_the_container_and_the_button_now_on_top_is_clickable() {
+        let mut driver = scroll_driver(40, None);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("0"))),
+                "button \"0\" is a tab stop and must accept focus"
+            );
+        }
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::PageDown),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        driver.render();
+        {
+            let hits = driver.app().engine.hit_map();
+            let want: Vec<String> = (10..20).map(|i| i.to_string()).collect();
+            assert_eq!(painted_button_ids(&hits), want);
+        }
+
+        driver.app().sink.borrow_mut().dispatched.clear();
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            position: Point { x: 0.0, y: 0.0 },
+        });
+        let clicked =
+            driver
+                .app()
+                .sink
+                .borrow()
+                .dispatched
+                .iter()
+                .find_map(|(event, detail)| match (event, detail) {
+                    (
+                        UiEvent::MouseDown {
+                            widget: Some(id), ..
+                        },
+                        Some(HitDetail::ButtonBody),
+                    ) => Some(id.as_str().to_string()),
+                    _ => None,
+                });
+        assert_eq!(
+            clicked,
+            Some("10".to_string()),
+            "the button now painted at the viewport's top must be the one that gets clicked"
+        );
+    }
+
+    /// Dragging an uncontrolled `Scroll`'s scrollbar thumb all the way to
+    /// the bottom of its track brings the LAST button into view, matching
+    /// the issue's own "drag the thumb to the bottom and get the last
+    /// button visible" acceptance step.
+    #[test]
+    fn dragging_the_scroll_thumb_to_the_bottom_reveals_the_last_button() {
+        let mut driver = scroll_driver(40, None);
+        driver.render();
+        let track = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Scroll {
+                        id,
+                        scrollbar: Some(scrollbar),
+                        ..
+                    } if *id == WidgetId::new("scroll") => Some(scrollbar.track),
+                    _ => None,
+                })
+                .expect("40 buttons in a 10-row viewport must paint a scrollbar")
+        };
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            position: Point {
+                x: track.x,
+                y: track.y,
+            },
+        });
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point {
+                x: track.x,
+                y: track.y + track.height,
+            },
+            buttons: quadraui::ButtonMask {
+                left: true,
+                ..Default::default()
+            },
+        });
+        driver.dispatch(UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point {
+                x: track.x,
+                y: track.y + track.height,
+            },
+        });
+        driver.render();
+
+        let hits = driver.app().engine.hit_map();
+        let painted = painted_button_ids(&hits);
+        assert_eq!(
+            painted.last(),
+            Some(&"39".to_string()),
+            "dragging the thumb to the bottom of the track must reveal the last button: {painted:?}"
+        );
+    }
+
+    /// A controlled `Scroll` (descriptor pins `offset`) never actually
+    /// moves from a wheel `Scroll` — the pinned value wins again the
+    /// moment the next frame re-resolves it — but the engine still emits
+    /// `ScrollOffsetChanged` for the app to see, matching the issue's own
+    /// "a controlled offset does not move without the app's say-so but
+    /// still emits `ScrollOffsetChanged`" acceptance step.
+    #[test]
+    fn controlled_scroll_offset_is_pinned_but_still_emits_scroll_offset_changed() {
+        let mut driver = scroll_driver(40, Some(20.0));
+        driver.render();
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: ScrollDelta::new(0.0, 5.0),
+            position: Point { x: 0.0, y: 0.0 },
+        });
+
+        let emitted =
+            driver
+                .app()
+                .sink
+                .borrow()
+                .dispatched
+                .iter()
+                .find_map(|(event, _)| match event {
+                    UiEvent::ScrollOffsetChanged { widget, new_offset }
+                        if *widget == WidgetId::new("scroll") =>
+                    {
+                        Some(*new_offset)
+                    }
+                    _ => None,
+                });
+        assert_eq!(
+            emitted,
+            Some(25),
+            "a wheel scroll over a controlled Scroll must still emit ScrollOffsetChanged: {:?}",
+            emitted
+        );
+
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let want: Vec<String> = (20..30).map(|i| i.to_string()).collect();
+        assert_eq!(
+            painted_button_ids(&hits),
+            want,
+            "a controlled offset must stay pinned at the descriptor's own value"
+        );
     }
 }

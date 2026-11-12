@@ -8,9 +8,10 @@ use std::rc::Rc;
 
 use quadraui::{
     ButtonHit, ButtonLayout, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, PanelHit,
-    PanelLayout, Point, PressZone, Rect, Scrollbar, SidebarPanelHit, SidebarPanelLayout, SplitHit,
-    SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout, TextDisplayHit, TextDisplayLayout,
-    Toolbar, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    PanelLayout, Point, PressZone, Rect, ScrollAxis, Scrollbar, SidebarPanelHit,
+    SidebarPanelLayout, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout,
+    TextDisplayHit, TextDisplayLayout, Toolbar, TreePath, TreeRowEditState, TreeViewHit,
+    TreeViewLayout, UiEvent, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -240,7 +241,32 @@ pub enum PaintedHit {
     /// for this entry to mask; it exists so a click or wheel landing on
     /// empty space inside the viewport (nothing painted under the pointer)
     /// still resolves to the `Scroll` itself, via [`HitDetail::ScrollBody`].
-    Scroll { id: WidgetId, viewport: Rect },
+    /// `axis`/`content_len`/`offset` are the same values
+    /// [`crate::render::paint_scroll`] fed its own [`quadraui::ScrollView`]
+    /// this frame — read back by the engine's wheel/page-key/drag handling
+    /// to resolve a new offset without re-measuring the content. `scrollbar`
+    /// is `None` when the content fits without scrolling, mirroring
+    /// [`Self::Tree`]'s own `scrollbar` field; its `track` is an absolute
+    /// rect, outside `viewport` (reserved alongside it, not inside it), so
+    /// [`clip_hits_to_viewport`] never needs to narrow it the way it
+    /// narrows [`Self::Tree`]'s. `children` is the `(id, start, len)` of
+    /// every direct [`crate::layout::LayoutNode::Leaf`] child when this
+    /// scroll's content is a `Column`/`Row` matching its own axis —
+    /// `start`/`len` are main-axis content-relative (not yet offset by
+    /// `offset`, and not clamped to `viewport` the way the child's own
+    /// painted rect may be) — read by the engine to scroll a child that
+    /// just received focus fully into view. Empty for `Atomic` content or
+    /// a non-`Leaf` direct child (a nested `Row`/`Column`/`Split`/…),
+    /// where that scroll-into-view isn't implemented yet.
+    Scroll {
+        id: WidgetId,
+        viewport: Rect,
+        axis: ScrollAxis,
+        content_len: f32,
+        offset: f32,
+        scrollbar: Option<Scrollbar>,
+        children: Vec<(WidgetId, f32, f32)>,
+    },
 }
 
 /// Intersects `hits[start..]` — one [`crate::render::paint_scroll`] call's
@@ -486,10 +512,18 @@ pub enum HitDetail {
     /// Landed inside a [`crate::layout::LayoutNode::Scroll`]'s viewport but
     /// on no more specific descendant hit — e.g. empty space between
     /// stacked content items. Carries no sub-region detail, mirroring
-    /// [`Self::ExtraBody`]; a binding's own wheel/keyboard routing (not
-    /// this crate's job yet) uses this to resolve which `Scroll` a pointer
-    /// event targets.
+    /// [`Self::ExtraBody`]; the binding's own wheel routing uses this to
+    /// resolve which `Scroll` a wheel event targets.
     ScrollBody,
+    /// Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone)
+    /// — mirrors [`Self::TreeScrollbarTrackBefore`].
+    ScrollScrollbarTrackBefore,
+    /// Landed on a `Scroll`'s own scrollbar thumb — mirrors
+    /// [`Self::TreeScrollbarThumb`].
+    ScrollScrollbarThumb,
+    /// Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone)
+    /// — mirrors [`Self::TreeScrollbarTrackAfter`].
+    ScrollScrollbarTrackAfter,
 }
 
 /// Hit-tests `point` (in the backend's native absolute coordinate space,
@@ -702,7 +736,28 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     return Some((*id, HitDetail::ExtraBody));
                 }
             }
-            PaintedHit::Scroll { id, viewport } => {
+            PaintedHit::Scroll {
+                id,
+                viewport,
+                scrollbar,
+                ..
+            } => {
+                if let Some(scrollbar) = scrollbar {
+                    if scrollbar.track.contains(point) {
+                        let pos = match scrollbar.axis {
+                            ScrollAxis::Vertical => point.y,
+                            ScrollAxis::Horizontal => point.x,
+                        };
+                        return Some((
+                            *id,
+                            match scrollbar.press_zone(pos) {
+                                PressZone::Before => HitDetail::ScrollScrollbarTrackBefore,
+                                PressZone::Thumb => HitDetail::ScrollScrollbarThumb,
+                                PressZone::After => HitDetail::ScrollScrollbarTrackAfter,
+                            },
+                        ));
+                    }
+                }
                 if viewport.contains(point) {
                     return Some((*id, HitDetail::ScrollBody));
                 }
@@ -964,6 +1019,11 @@ mod tests {
         let scroll = PaintedHit::Scroll {
             id: WidgetId::new("scroll"),
             viewport,
+            axis: ScrollAxis::Vertical,
+            content_len: 0.0,
+            offset: 0.0,
+            scrollbar: None,
+            children: Vec::new(),
         };
         let mut hits = vec![button, scroll];
         let hits_before = hits.len();
