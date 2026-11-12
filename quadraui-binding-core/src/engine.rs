@@ -696,6 +696,11 @@ impl InteractionEngine {
                 | PaintedHit::SplitTree { .. }
                 | PaintedHit::Panel { .. }
                 | PaintedHit::SidebarPanel { .. } => None,
+                // Not a tab stop yet -- keyboard focus/scroll on a `Scroll`
+                // container arrives with its wheel/keyboard input handling,
+                // a separate follow-up to this container's own decode/
+                // measure/paint/hit-test.
+                PaintedHit::Scroll { .. } => None,
                 PaintedHit::Extra {
                     id, area, extra, ..
                 } => extra.tab_stop().then_some((*id, *area)),

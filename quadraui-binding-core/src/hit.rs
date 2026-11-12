@@ -206,6 +206,19 @@ pub enum PaintedHit {
         /// on the bar".
         chrome_hits: Vec<(Rect, WidgetId)>,
     },
+    /// A [`crate::layout::LayoutNode::Scroll`]'s own viewport, in the
+    /// ABSOLUTE frame (matching [`Self::Split`]) — `viewport` already
+    /// excludes the scrollbar gutter `crate::render::paint_layout`'s
+    /// `LayoutNode::Scroll` arm reserves. Pushed BEFORE that arm recurses
+    /// into its (culled, offset) content, same ordering as [`Self::Panel`]/
+    /// [`Self::SidebarPanel`]'s own chrome hit — a descendant content hit
+    /// (pushed after, so checked first in reverse order) wins over this
+    /// one. Content scrolled out of view never gets its own
+    /// [`PaintedHit`] at all (culled before painting), so there is nothing
+    /// for this entry to mask; it exists so a click or wheel landing on
+    /// empty space inside the viewport (nothing painted under the pointer)
+    /// still resolves to the `Scroll` itself, via [`HitDetail::ScrollBody`].
+    Scroll { id: WidgetId, viewport: Rect },
 }
 
 /// The sub-region of a primitive an incoming pointer event landed on,
@@ -321,6 +334,13 @@ pub enum HitDetail {
     ExtraChrome {
         bar: WidgetId,
     },
+    /// Landed inside a [`crate::layout::LayoutNode::Scroll`]'s viewport but
+    /// on no more specific descendant hit — e.g. empty space between
+    /// stacked content items. Carries no sub-region detail, mirroring
+    /// [`Self::ExtraBody`]; a binding's own wheel/keyboard routing (not
+    /// this crate's job yet) uses this to resolve which `Scroll` a pointer
+    /// event targets.
+    ScrollBody,
 }
 
 /// Hit-tests `point` (in the backend's native absolute coordinate space,
@@ -515,6 +535,11 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 }
                 if extra.hit_test(*area, point) {
                     return Some((*id, HitDetail::ExtraBody));
+                }
+            }
+            PaintedHit::Scroll { id, viewport } => {
+                if viewport.contains(point) {
+                    return Some((*id, HitDetail::ScrollBody));
                 }
             }
         }

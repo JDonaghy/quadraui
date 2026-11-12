@@ -10,16 +10,16 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataTable, FontRole, InteractionState, ListView, Rect, Scrollbar, SectionSize,
-    Split, SplitDirection, SplitHit, SplitLayout, TabBar, TabChrome, TextDisplay,
-    TextDisplayLayout, TextRegion, TreeView, WidgetId,
+    Backend, Button, DataTable, FontRole, InteractionState, ListView, Rect, ScrollAxis, ScrollView,
+    Scrollbar, SectionSize, Split, SplitDirection, SplitHit, SplitLayout, TabBar, TabChrome,
+    TextDisplay, TextDisplayLayout, TextRegion, TreeView, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::layout::{
     align_cross, justify_starts, quantise_horizontal, quantise_vertical, resolve_main_axis_sizes,
-    Align, LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor, MainAxisSpec,
+    Align, LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LeafDescriptor, MainAxisSpec,
 };
 
 /// Owned decode of a render callback's returned descriptor set — one
@@ -569,6 +569,358 @@ pub fn paint_layout(
                 paint_layout(backend, *rect, content, hits, chrome_interaction);
             }
         }
+        LayoutNode::Scroll(scroll_node) => {
+            paint_scroll(backend, area, scroll_node, hits, chrome_interaction);
+        }
+    }
+}
+
+/// Paints a [`LayoutNode::Scroll`]: measures `scroll_node.content`'s
+/// natural length along its own axis ([`natural_main_length`]), resolves
+/// the scrollbar gutter + content viewport ([`scroll_viewport_and_track`]),
+/// clips to that viewport via `Backend::push_clip`/`Backend::pop_clip`
+/// (belt-and-suspenders against a partially-visible boundary slot's own
+/// chrome overflowing by a sub-unit rounding — [`scroll_content_slots`]'s
+/// own per-slot culling already keeps a fully-invisible slot from being
+/// painted, hence from getting a [`PaintedHit`], at all), and paints the
+/// shared scrollbar ([`quadraui::ScrollView::scrollbar`] +
+/// `Backend::draw_scrollbar`, the same geometry
+/// `crate::extra_paint`'s standalone `ScrollView` leaf paints into its own
+/// fixed `line_height`-wide track). `scroll_node.offset` is read as-is —
+/// already resolved against [`crate::widget_state::WidgetState`] by
+/// [`crate::host::resolve_layout_node`], which must run on this tree before
+/// this function does (same ordering [`crate::layout`]'s own `Split`/
+/// `Tabs` resolution already requires).
+fn paint_scroll(
+    backend: &mut dyn Backend,
+    area: Rect,
+    scroll_node: &LayoutScroll,
+    hits: &mut Vec<PaintedHit>,
+    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
+) {
+    let metrics = ScrollMetrics {
+        char_width: backend.char_width(),
+        line_height: backend.line_height(),
+    };
+    let inner = scroll_node
+        .spacing
+        .inset(area, metrics.char_width, metrics.line_height);
+    let (viewport, track) = scroll_viewport_and_track(inner, scroll_node.axis, metrics.line_height);
+    let content_len = natural_main_length(backend, &scroll_node.content, scroll_node.axis, metrics);
+    let mut scroll_view = scroll_view_at(
+        WidgetId::new(scroll_node.id.as_str()),
+        scroll_node.axis,
+        viewport,
+        content_len,
+        scroll_node.offset.unwrap_or(0.0),
+    );
+    // Clamped here (not just relied on from `crate::host::resolve_layout_node`,
+    // which already clamps before writing `scroll_node.offset` back) so a
+    // caller that paints straight off a raw, never-resolved offset (a bare
+    // `paint_layout` call with no `resolve_layout_node` pass first, e.g. a
+    // `render` that doesn't go through `crate::host::BindingHost` at all)
+    // still gets a `scroll_content_slots` call whose own visibility checks
+    // (which already clamp internally -- `ScrollView::is_visible`'s own
+    // `clamped_offset()`) and whose rect positioning (which does not --
+    // see that function's own doc) agree on the same offset.
+    scroll_view.clamp_offset();
+    let offset = scroll_view.scroll_offset;
+
+    hits.push(PaintedHit::Scroll {
+        id: scroll_view.id,
+        viewport,
+    });
+
+    backend.push_clip(viewport);
+    match scroll_content_slots(
+        backend,
+        viewport,
+        scroll_node.axis,
+        offset,
+        &scroll_node.content,
+        content_len,
+        metrics,
+    ) {
+        ScrollSlots::Children(rects) => {
+            if let LayoutNode::Row(container) | LayoutNode::Column(container) =
+                scroll_node.content.as_ref()
+            {
+                for (child, (rect, visible)) in container.children.iter().zip(rects) {
+                    if visible {
+                        paint_layout(backend, rect, &child.node, hits, chrome_interaction);
+                    }
+                }
+            }
+        }
+        ScrollSlots::Atomic(rect, visible) => {
+            if visible {
+                paint_layout(
+                    backend,
+                    rect,
+                    &scroll_node.content,
+                    hits,
+                    chrome_interaction,
+                );
+            }
+        }
+    }
+    backend.pop_clip();
+
+    if let Some(scrollbar) = scroll_view.scrollbar(track, metrics.line_height) {
+        backend.draw_scrollbar(track, &scrollbar);
+    }
+}
+
+/// Builds a [`quadraui::ScrollView`] with every field this crate needs to
+/// set — [`quadraui::ScrollView`] is `#[non_exhaustive]`, so an external
+/// crate (this one) cannot use its own struct-literal syntax even listing
+/// every current field; [`quadraui::ScrollView::vertical`]/
+/// [`quadraui::ScrollView::horizontal`] are the only constructors, so
+/// `scroll_offset` is set via its own `pub` field afterwards (mutating an
+/// already-constructed instance's field is unaffected by
+/// `#[non_exhaustive]`, unlike construction syntax).
+fn scroll_view_at(
+    id: WidgetId,
+    axis: ScrollAxis,
+    viewport: Rect,
+    content_len: f32,
+    offset: f32,
+) -> ScrollView {
+    let mut scroll_view = match axis {
+        ScrollAxis::Vertical => ScrollView::vertical(id, viewport, content_len),
+        ScrollAxis::Horizontal => ScrollView::horizontal(id, viewport, content_len),
+    };
+    scroll_view.scroll_offset = offset;
+    scroll_view
+}
+
+/// Splits a [`LayoutNode::Scroll`]'s own inset area into the content
+/// viewport and the scrollbar gutter: a fixed `line_height`-wide strip
+/// along the scrolling axis's trailing edge, same convention
+/// `crate::extra_paint`'s standalone `ScrollView` leaf already paints its
+/// own track into. Reserved unconditionally (not only when
+/// [`quadraui::ScrollView::scrollbar`] actually returns `Some`) so the
+/// viewport a frame paints into never changes shape between a frame with
+/// nothing to scroll and one with something to — [`ScrollView::scrollbar`]
+/// itself still returns `None` for the former, so nothing paints into the
+/// reserved strip either way.
+pub(crate) fn scroll_viewport_and_track(
+    inner: Rect,
+    axis: ScrollAxis,
+    line_height: f32,
+) -> (Rect, Rect) {
+    match axis {
+        ScrollAxis::Vertical => {
+            let track_width = line_height.max(0.0).min(inner.width);
+            let track = Rect::new(
+                inner.x + inner.width - track_width,
+                inner.y,
+                track_width,
+                inner.height,
+            );
+            let viewport = Rect::new(inner.x, inner.y, inner.width - track_width, inner.height);
+            (viewport, track)
+        }
+        ScrollAxis::Horizontal => {
+            let track_height = line_height.max(0.0).min(inner.height);
+            let track = Rect::new(
+                inner.x,
+                inner.y + inner.height - track_height,
+                inner.width,
+                track_height,
+            );
+            let viewport = Rect::new(inner.x, inner.y, inner.width, inner.height - track_height);
+            (viewport, track)
+        }
+    }
+}
+
+/// The two per-backend metrics every `Scroll`-content measurement/layout
+/// function needs ([`Backend::char_width`]/[`Backend::line_height`]),
+/// bundled into one `Copy` value so a function threading both through a
+/// recursive call stays under clippy's `too_many_arguments` limit.
+#[derive(Clone, Copy)]
+pub(crate) struct ScrollMetrics {
+    pub(crate) char_width: f32,
+    pub(crate) line_height: f32,
+}
+
+/// Natural main-axis length of `node` along `axis`: for a `Leaf`, its own
+/// per-kind intrinsic size via [`natural_size`] (falling back to one
+/// `line_height`/`char_width`-scaled unit when that reports `None` — every
+/// `LeafDescriptor::Extra` and a `List`/`Tree`/`DataTable`'s width); for a
+/// `Row`/`Column` whose own main axis matches `axis` (a `Column` under a
+/// vertical scroll, a `Row` under a horizontal one), the sum of every
+/// child's own natural length along `axis` plus the quantised gap between
+/// them — this container's `padding`/`margin`/`justify`/`align` and each
+/// child's own `size`/`min`/`max` are NOT applied here, unlike
+/// [`layout_container_rects`]'s equal-share division: a `Scroll`'s content
+/// stacks every child at its own natural size, not flexed to fill a fixed
+/// viewport, which is the entire point of putting it in a `Scroll`. For a
+/// `Row`/`Column` on the cross axis, the max over its children's own
+/// natural length along `axis`. For anything else (`Split`/`Tabs`/`Panel`/
+/// `SidebarPanel`/`SplitTree`, or a nested `Scroll`), the same one-unit
+/// fallback a `Leaf` with no intrinsic size gets — deeper measurement of
+/// those node kinds as `Scroll` content is unimplemented today.
+pub(crate) fn natural_main_length(
+    backend: &mut dyn Backend,
+    node: &LayoutNode,
+    axis: ScrollAxis,
+    metrics: ScrollMetrics,
+) -> f32 {
+    let horizontal = matches!(axis, ScrollAxis::Horizontal);
+    let fallback = if horizontal {
+        metrics.char_width.max(1.0) * 4.0
+    } else {
+        metrics.line_height.max(1.0)
+    };
+    match node {
+        LayoutNode::Row(container) => {
+            container_natural_main_length(backend, container, true, axis, metrics)
+        }
+        LayoutNode::Column(container) => {
+            container_natural_main_length(backend, container, false, axis, metrics)
+        }
+        _ => natural_size(backend, node, metrics.line_height)
+            .main(horizontal)
+            .unwrap_or(fallback),
+    }
+}
+
+/// [`natural_main_length`]'s `Row`/`Column` case: `container_is_row` is
+/// `true` for a `Row` (own main axis = width), `false` for a `Column` (own
+/// main axis = height) — compared against `axis` to decide "stack and sum"
+/// (own main axis matches `axis`) vs. "cross-stack and take the max" (it
+/// doesn't).
+fn container_natural_main_length(
+    backend: &mut dyn Backend,
+    container: &LayoutContainer,
+    container_is_row: bool,
+    axis: ScrollAxis,
+    metrics: ScrollMetrics,
+) -> f32 {
+    if container.children.is_empty() {
+        return 0.0;
+    }
+    let horizontal = matches!(axis, ScrollAxis::Horizontal);
+    let lengths: Vec<f32> = container
+        .children
+        .iter()
+        .map(|child| natural_main_length(backend, &child.node, axis, metrics))
+        .collect();
+    if container_is_row == horizontal {
+        let gap_metric = if horizontal {
+            metrics.char_width
+        } else {
+            metrics.line_height
+        };
+        let gap = if horizontal {
+            quantise_horizontal(container.spacing.gap, gap_metric)
+        } else {
+            quantise_vertical(container.spacing.gap, gap_metric)
+        };
+        lengths.iter().sum::<f32>() + gap * (lengths.len() - 1) as f32
+    } else {
+        lengths.into_iter().fold(0.0_f32, f32::max)
+    }
+}
+
+/// One [`LayoutNode::Scroll`]'s content, resolved into paintable/
+/// hit-testable slots by [`scroll_content_slots`] — see that function's
+/// own doc.
+pub(crate) enum ScrollSlots {
+    /// `content` is a `Column` (vertical axis) or `Row` (horizontal axis)
+    /// matching the scroll's own axis: one slot per top-level child, in
+    /// the same order as [`LayoutContainer::children`], each sized to its
+    /// own natural main-axis length and positioned by the running sum of
+    /// every earlier sibling's — never
+    /// [`layout_container_rects`]'s equal-share division, which would
+    /// defeat natural-size scrolling (see [`natural_main_length`]'s own
+    /// doc). The `bool` is whether [`quadraui::ScrollView::is_visible`]
+    /// says this slot overlaps the current scroll position — `false`
+    /// means skip painting/recursing/resolving it entirely, which is this
+    /// container's whole mechanism for "no cell or pixel outside the
+    /// viewport is painted" and "anything scrolled out of view gets no
+    /// hits": an invisible slot never gets a [`PaintedHit`] (or a
+    /// resolved `WidgetState` entry) in the first place, rather than one
+    /// that exists and is masked out afterwards.
+    Children(Vec<(Rect, bool)>),
+    /// Anything else: the whole subtree is one atomic unit sized to its
+    /// own overall natural length (`content_len`) — same visibility
+    /// semantics as [`Self::Children`]'s own `bool`.
+    Atomic(Rect, bool),
+}
+
+/// Resolves a [`LayoutNode::Scroll`]'s content into paintable/
+/// hit-testable [`ScrollSlots`], at `offset` inside `viewport` — the
+/// shared geometry [`paint_scroll`] and
+/// [`crate::host::resolve_layout_node`]'s own `LayoutNode::Scroll` arm both
+/// walk, so a click always resolves against the exact rects just painted
+/// (mirroring [`layout_container_rects`]'s own shared-geometry role for a
+/// plain `Row`/`Column`). `content_len` is the same value
+/// [`natural_main_length`] already computed for `content` — passed in
+/// rather than recomputed, since the caller needs it before this call to
+/// build the `ScrollView` the offset/visibility checks run against.
+pub(crate) fn scroll_content_slots(
+    backend: &mut dyn Backend,
+    viewport: Rect,
+    axis: ScrollAxis,
+    offset: f32,
+    content: &LayoutNode,
+    content_len: f32,
+    metrics: ScrollMetrics,
+) -> ScrollSlots {
+    let horizontal = matches!(axis, ScrollAxis::Horizontal);
+    let scroll = scroll_view_at(WidgetId::new(""), axis, viewport, content_len, offset);
+    let matching_container = match (axis, content) {
+        (ScrollAxis::Vertical, LayoutNode::Column(c)) => Some(c),
+        (ScrollAxis::Horizontal, LayoutNode::Row(c)) => Some(c),
+        _ => None,
+    };
+    if let Some(container) = matching_container {
+        let gap_metric = if horizontal {
+            metrics.char_width
+        } else {
+            metrics.line_height
+        };
+        let gap = if horizontal {
+            quantise_horizontal(container.spacing.gap, gap_metric)
+        } else {
+            quantise_vertical(container.spacing.gap, gap_metric)
+        };
+        let mut cursor = 0.0_f32;
+        let mut rects = Vec::with_capacity(container.children.len());
+        for child in &container.children {
+            let len = natural_main_length(backend, &child.node, axis, metrics);
+            let start = cursor;
+            cursor += len + gap;
+            let visible = scroll.is_visible(start, len);
+            let rect = if horizontal {
+                Rect::new(
+                    viewport.x + start - offset,
+                    viewport.y,
+                    len,
+                    viewport.height,
+                )
+            } else {
+                Rect::new(viewport.x, viewport.y + start - offset, viewport.width, len)
+            };
+            rects.push((rect, visible));
+        }
+        ScrollSlots::Children(rects)
+    } else {
+        let visible = scroll.is_visible(0.0, content_len);
+        let rect = if horizontal {
+            Rect::new(
+                viewport.x - offset,
+                viewport.y,
+                content_len,
+                viewport.height,
+            )
+        } else {
+            Rect::new(viewport.x, viewport.y - offset, viewport.width, content_len)
+        };
+        ScrollSlots::Atomic(rect, visible)
     }
 }
 
@@ -1096,6 +1448,7 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
                 collect_leaf_tooltips(leaf, out);
             }
         }
+        LayoutNode::Scroll(scroll_node) => collect_leaf_tooltips(&scroll_node.content, out),
     }
 }
 
@@ -1975,5 +2328,184 @@ mod tests {
                 assert!((g.height - w.height).abs() < 0.001);
             }
         }
+    }
+
+    /// A column of `count` buttons, labelled `"0"`..`"{count - 1}"` by
+    /// index, each a one-line-tall `LayoutLeaf` — the shared content
+    /// builder every `LayoutNode::Scroll` acceptance test below stacks.
+    fn button_column(count: usize) -> LayoutNode {
+        LayoutNode::Column(LayoutContainer::new(
+            (0..count)
+                .map(|i| {
+                    let label = i.to_string();
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: label.clone(),
+                        descriptor: LeafDescriptor::Button(Button::new(
+                            WidgetId::new(label.clone()),
+                            label,
+                        )),
+                        scroll_px: None,
+                    })
+                })
+                .collect(),
+            Spacing::default(),
+        ))
+    }
+
+    /// Minimal [`quadraui::AppLogic`] around a `LayoutNode::Scroll` hosting
+    /// [`button_column`] — drives [`paint_layout`]'s `Scroll` arm through a
+    /// real [`quadraui::tui::testing::TuiDriver`] frame, the issue's own
+    /// acceptance scenario: a column of 40 buttons in a 10-row viewport, at
+    /// a pinned (controlled) offset.
+    struct ScrollButtonsLogic {
+        button_count: usize,
+        offset: f32,
+        engine: crate::engine::InteractionEngine,
+    }
+
+    impl quadraui::AppLogic for ScrollButtonsLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Scroll(LayoutScroll {
+                id: "scroll".to_string(),
+                axis: ScrollAxis::Vertical,
+                offset: Some(self.offset),
+                content: Box::new(button_column(self.button_count)),
+                spacing: Spacing::default(),
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(
+            &mut self,
+            _event: quadraui::UiEvent,
+            _backend: &mut dyn Backend,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+    }
+
+    fn painted_button_ids(hits: &[PaintedHit]) -> Vec<String> {
+        hits.iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Button { id, .. } => Some(id.as_str().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The issue's own acceptance scenario: a column of 40 buttons in a
+    /// 10-row viewport at offset 20 -- the button at the top of the
+    /// viewport is id `"20"`, and nothing outside `[20, 30)` ever gets a
+    /// [`PaintedHit`] at all (this container's whole mechanism for "no
+    /// cell or pixel outside the viewport is painted" / "anything
+    /// scrolled out of view gets no hits" -- see [`ScrollSlots`]'s own
+    /// doc).
+    #[test]
+    fn scroll_at_offset_twenty_paints_exactly_the_ten_visible_buttons() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = ScrollButtonsLogic {
+            button_count: 40,
+            offset: 20.0,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let ids = painted_button_ids(&hits);
+        let want: Vec<String> = (20..30).map(|i| i.to_string()).collect();
+        assert_eq!(ids, want);
+    }
+
+    /// A click at the top-left cell of the viewport -- where button `"20"`
+    /// is now painted -- hits id `"20"`, not whatever would have been
+    /// there unscrolled (button `"0"`).
+    #[test]
+    fn scroll_at_offset_twenty_click_at_viewport_top_hits_button_twenty() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = ScrollButtonsLogic {
+            button_count: 40,
+            offset: 20.0,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let found = hit_test_painted_for_test(&hits, quadraui::Point { x: 0.0, y: 0.0 });
+        assert_eq!(
+            found,
+            Some((WidgetId::new("20"), "button_body".to_string()))
+        );
+    }
+
+    /// Thin wrapper around [`crate::hit::hit_test_painted`] that stringifies
+    /// the matched [`crate::hit::HitDetail`] by its own serde `"kind"` tag,
+    /// so this test module doesn't need to match every `HitDetail` variant
+    /// by hand just to assert which one came back.
+    fn hit_test_painted_for_test(
+        hits: &[PaintedHit],
+        point: quadraui::Point,
+    ) -> Option<(WidgetId, String)> {
+        crate::hit::hit_test_painted(hits, point).map(|(id, detail)| {
+            let value = serde_json::to_value(&detail).expect("HitDetail serializes");
+            let kind = value
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .expect("HitDetail has a \"kind\" tag")
+                .to_string();
+            (id, kind)
+        })
+    }
+
+    /// Scrolled all the way to `max_offset` (`30`, since `40 - 10 = 30`):
+    /// the last ten buttons (`30`..`39`) paint, and nothing past the clamp
+    /// is reachable even if a caller pins an offset beyond it.
+    #[test]
+    fn scroll_offset_beyond_max_still_paints_exactly_the_last_ten_buttons() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = ScrollButtonsLogic {
+            button_count: 40,
+            // Pinned well past `max_offset()` (30.0) -- `ScrollView`'s own
+            // clamp (not this module's) is what keeps this from painting
+            // past the end.
+            offset: 999.0,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let ids = painted_button_ids(&hits);
+        let want: Vec<String> = (30..40).map(|i| i.to_string()).collect();
+        assert_eq!(ids, want);
+    }
+
+    /// At `offset: 0.0` (nothing scrolled), the same column paints its
+    /// first ten buttons -- the baseline this module's offset math is
+    /// measured against.
+    #[test]
+    fn scroll_at_offset_zero_paints_the_first_ten_buttons() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = ScrollButtonsLogic {
+            button_count: 40,
+            offset: 0.0,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let ids = painted_button_ids(&hits);
+        let want: Vec<String> = (0..10).map(|i| i.to_string()).collect();
+        assert_eq!(ids, want);
     }
 }

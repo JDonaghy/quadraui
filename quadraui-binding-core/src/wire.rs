@@ -37,16 +37,16 @@ use serde_json::Value;
 #[allow(deprecated)]
 use quadraui::{
     Backend, BackendWidget, BottomPanelConfig, BottomPanelTab, Color, Panel, PanelDefinition, Rect,
-    SectionSize, ShellConfig, ShellPosition, SidebarPanel, Split, SplitDirection, SplitTree,
-    TabBar, TabBarSegment, TabItem, WidgetId,
+    ScrollAxis, SectionSize, ShellConfig, ShellPosition, SidebarPanel, Split, SplitDirection,
+    SplitTree, TabBar, TabBarSegment, TabItem, WidgetId,
 };
 
 use crate::extra_paint::{decode_extra_primitive, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 use crate::host::text_display_from_lines;
 use crate::layout::{
     validate_unique_leaf_ids, Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutLeaf,
-    LayoutNode, LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry,
-    LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS,
+    LayoutNode, LayoutPanel, LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree,
+    LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS,
 };
 use crate::render::RenderFrame;
 use crate::{decode_value, DecodeError};
@@ -339,9 +339,10 @@ fn split_direction(context: &str, orientation: &str) -> Result<SplitDirection, D
 
 /// The dispatch keys [`decode_layout_node`] checks, in check order — a
 /// `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/`"sidebar_panel"`/
-/// `"split_tree"` node, else a leaf. Shared with [`is_layout_tree`]'s
-/// flat-vs-tree sniff so the two can't drift onto different key lists.
-pub const LAYOUT_NODE_KEYS: [&str; 7] = [
+/// `"split_tree"`/`"scroll"` node, else a leaf. Shared with
+/// [`is_layout_tree`]'s flat-vs-tree sniff so the two can't drift onto
+/// different key lists.
+pub const LAYOUT_NODE_KEYS: [&str; 8] = [
     "row",
     "column",
     "split",
@@ -349,6 +350,7 @@ pub const LAYOUT_NODE_KEYS: [&str; 7] = [
     "panel",
     "sidebar_panel",
     "split_tree",
+    "scroll",
 ];
 
 /// Decodes one layout tree node from `deserializer`: a `"row"` or `"column"`
@@ -356,7 +358,8 @@ pub const LAYOUT_NODE_KEYS: [&str; 7] = [
 /// divider, a `"tabs"` key holds a tab strip plus per-tab content, a
 /// `"panel"`/`"sidebar_panel"` key holds one chrome descriptor plus a
 /// single content subtree, a `"split_tree"` key holds an arbitrarily
-/// nested divider tree; any other shape is decoded as a leaf.
+/// nested divider tree, a `"scroll"` key holds one content subtree hosted
+/// in a scrollable viewport; any other shape is decoded as a leaf.
 pub fn decode_layout_node<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
@@ -434,6 +437,15 @@ fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, Decod
             split_tree_value,
         )?));
     }
+    if let Some(v) = obj_get(value, "scroll") {
+        let spacing = spacing_from_value(what, value, "\"scroll\"", false)?;
+        let scroll_value = must_be_dict(what, v, "\"scroll\"")?;
+        return Ok(LayoutNode::Scroll(layout_scroll_from_value(
+            what,
+            scroll_value,
+            spacing,
+        )?));
+    }
     Ok(LayoutNode::Leaf(layout_leaf_from_value(what, value)?))
 }
 
@@ -453,7 +465,7 @@ fn reject_unsupported_spacing_keys(
     for key in ["padding", "margin", "gap"] {
         if obj_get(value, key).is_some() {
             return Err(DecodeError(format!(
-                "{what}: {label} does not support \"{key}\" yet -- only \"row\"/\"column\"/\"split\"/\"tabs\"/\"panel\" nodes do"
+                "{what}: {label} does not support \"{key}\" yet -- only \"row\"/\"column\"/\"split\"/\"tabs\"/\"panel\"/\"scroll\" nodes do"
             )));
         }
     }
@@ -773,6 +785,70 @@ fn layout_sidebar_panel_from_value(
     Ok(LayoutSidebarPanel {
         sidebar_panel,
         content: Box::new(content),
+    })
+}
+
+/// The lowercase, Python-idiomatic spellings `"scroll"`'s own `"axis"` key
+/// accepts — [`SPLIT_ORIENTATIONS`]'s own convention, independent of
+/// [`quadraui::ScrollAxis`]'s own (PascalCase, serde-default) wire form,
+/// which the standalone `"scroll_view"` additive-primitive leaf still uses
+/// via generic [`decode_value`].
+const SCROLL_AXES: [&str; 2] = ["vertical", "horizontal"];
+
+fn scroll_axis_from_value(context: &str, value: &Value) -> Result<ScrollAxis, DecodeError> {
+    match obj_get(value, "axis") {
+        None => Ok(ScrollAxis::Vertical),
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| DecodeError(format!("{context} \"axis\" must be a string")))?;
+            match s {
+                "vertical" => Ok(ScrollAxis::Vertical),
+                "horizontal" => Ok(ScrollAxis::Horizontal),
+                _ => Err(DecodeError(format!(
+                    "{context} \"axis\" must be one of {SCROLL_AXES:?}, got {s:?}"
+                ))),
+            }
+        }
+    }
+}
+
+/// Decodes a `"scroll"` node: `{"id", "axis", "offset", "content"}`.
+/// `"axis"` is optional (defaulting to `"vertical"`); `"offset"` is
+/// optional and, when present, pins the controlled scroll position (see
+/// [`LayoutScroll::offset`]'s own doc for the controlled/uncontrolled
+/// policy); `"content"` is a required child node, recursively decoded by
+/// [`layout_node_from_value`]. `spacing` is the node's own `"padding"`/
+/// `"margin"` siblings, already decoded by [`spacing_from_value`] in the
+/// caller (`"gap"` is rejected there — a scroll has no second sibling to
+/// space it from).
+fn layout_scroll_from_value(
+    what: &str,
+    value: &Value,
+    spacing: Spacing,
+) -> Result<LayoutScroll, DecodeError> {
+    let id = match obj_get(value, "id") {
+        Some(v) => v
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| DecodeError(format!("{what}: scroll \"id\" must be a string")))?,
+        None => {
+            return Err(DecodeError(format!(
+                "{what}: scroll is missing required \"id\""
+            )));
+        }
+    };
+    let context = format!("{what}: scroll {id:?}");
+    let axis = scroll_axis_from_value(&context, value)?;
+    let offset = opt_f32(value, "offset", &context)?;
+    let content_value = required_dict(value, "content", &context)?;
+    let content = layout_node_from_value(what, content_value)?;
+    Ok(LayoutScroll {
+        id,
+        axis,
+        offset,
+        content: Box::new(content),
+        spacing,
     })
 }
 
@@ -1989,6 +2065,113 @@ mod tests {
         assert_eq!(split_tree.tree.leaf_count(), 2);
         assert_eq!(split_tree.tree.split_count(), 1);
         assert_eq!(split_tree.leaves.len(), 2);
+    }
+
+    /// A `"scroll"` node with no `"axis"`/`"offset"` key defaults to a
+    /// vertical, uncontrolled scroll -- the shape every pre-`"offset"`
+    /// caller would decode to.
+    #[test]
+    fn round_trips_a_minimal_scroll_node() {
+        let value = json!({
+            "scroll": {
+                "id": "sc1",
+                "content": {"id": "sc1-leaf", "button": {"id": "sc1-leaf", "label": "Go"}},
+            }
+        });
+        let node = decode(&value).expect("valid scroll");
+        let LayoutNode::Scroll(scroll) = node else {
+            panic!("expected a scroll node");
+        };
+        assert_eq!(scroll.id, "sc1");
+        assert_eq!(scroll.axis, ScrollAxis::Vertical);
+        assert_eq!(scroll.offset, None);
+        assert!(matches!(*scroll.content, LayoutNode::Leaf(_)));
+    }
+
+    /// A `"scroll"` node's `"axis"`/`"offset"` keys round-trip -- `"offset"`
+    /// present pins the controlled scroll position (see
+    /// `crate::layout::LayoutScroll::offset`'s own doc).
+    #[test]
+    fn round_trips_a_horizontal_scroll_node_with_a_controlled_offset() {
+        let value = json!({
+            "scroll": {
+                "id": "sc1",
+                "axis": "horizontal",
+                "offset": 20.0,
+                "content": {"id": "sc1-leaf", "button": {"id": "sc1-leaf", "label": "Go"}},
+            }
+        });
+        let node = decode(&value).expect("valid scroll");
+        let LayoutNode::Scroll(scroll) = node else {
+            panic!("expected a scroll node");
+        };
+        assert_eq!(scroll.axis, ScrollAxis::Horizontal);
+        assert_eq!(scroll.offset, Some(20.0));
+    }
+
+    /// A `"scroll"` node's `"padding"`/`"margin"` keys decode the same way
+    /// a `"panel"` node's do.
+    #[test]
+    fn round_trips_a_scroll_node_s_padding_and_margin() {
+        let value = json!({
+            "scroll": {
+                "id": "sc1",
+                "content": {"id": "sc1-leaf", "button": {"id": "sc1-leaf", "label": "Go"}},
+            },
+            "padding": 12,
+            "margin": 4,
+        });
+        let node = decode(&value).expect("valid scroll with spacing");
+        let LayoutNode::Scroll(scroll) = node else {
+            panic!("expected a scroll node");
+        };
+        assert_eq!(scroll.spacing.padding, EdgeInsets::uniform(12.0));
+        assert_eq!(scroll.spacing.margin, 4.0);
+        assert_eq!(scroll.spacing.gap, 0.0);
+    }
+
+    /// `"gap"` has no meaning on a `"scroll"` node -- there's no second
+    /// sibling to space it from -- so it's a decode error, same as
+    /// `"panel"`'s own.
+    #[test]
+    fn scroll_rejects_a_gap_key_it_does_not_support() {
+        let value = json!({
+            "scroll": {
+                "id": "sc1",
+                "content": {"id": "sc1-leaf", "button": {"id": "sc1-leaf", "label": "Go"}},
+            },
+            "gap": 8,
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("gap"), "{}", error.0);
+    }
+
+    /// An unrecognized `"axis"` value is a decode error naming the
+    /// accepted ones, not a silent fall-back to vertical.
+    #[test]
+    fn scroll_rejects_an_unknown_axis_value() {
+        let value = json!({
+            "scroll": {
+                "id": "sc1",
+                "axis": "diagonal",
+                "content": {"id": "sc1-leaf", "button": {"id": "sc1-leaf", "label": "Go"}},
+            }
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("axis"), "{}", error.0);
+    }
+
+    /// A scroll node missing its required `"id"` key is rejected, same as
+    /// `"split"`'s own.
+    #[test]
+    fn rejects_a_scroll_missing_id() {
+        let value = json!({
+            "scroll": {
+                "content": {"id": "sc1-leaf", "button": {"id": "sc1-leaf", "label": "Go"}},
+            }
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("id"), "{}", error.0);
     }
 
     /// A split node missing its required `"id"` key is rejected.

@@ -53,7 +53,8 @@ use crate::layout::{
 };
 use crate::render::{
     apply_split_gap, data_table_viewport_rows, layout_container_rects, list_viewport_rows,
-    shrink_main_axis, tree_viewport_rows, RenderFrame, RenderRefs,
+    natural_main_length, scroll_content_slots, scroll_viewport_and_track, shrink_main_axis,
+    tree_viewport_rows, RenderFrame, RenderRefs, ScrollMetrics, ScrollSlots,
 };
 use crate::widget_state::WidgetState;
 
@@ -1282,6 +1283,34 @@ pub fn resolve_split_ratio(widget_state: &WidgetState, split: &Split) -> Split {
     }
 }
 
+// ─── Scroll offset, uncontrolled by default ────────────────────────────────
+//
+// Unlike `Split::ratio` above (a bare `f32` with no "unset" sentinel),
+// `LayoutScroll::offset` is already `Option<f32>` -- see that field's own
+// doc for why -- so [`WidgetState::resolve`]'s own controlled/uncontrolled
+// policy (its module doc's "Controlled / uncontrolled resolution" section)
+// applies directly here, with no baseline-latch struct of this module's
+// own to maintain.
+
+/// Resolves a [`crate::layout::LayoutNode::Scroll`]'s offset for painting
+/// — the `ScrollView` counterpart of [`resolve_split_ratio`]. `offset` is
+/// `scroll_node.offset` as decoded this frame (`Some` pins the controlled
+/// position, `None` leaves it to whatever this id's own [`WidgetState`]
+/// entry already holds, seeded at `0.0` the first time `id` is seen).
+/// The resolved value is clamped into `[0, max_offset]` on every call
+/// (not persisted pre-clamped) so a later frame whose content grows back
+/// out doesn't stay stuck at a smaller clamp than the one in effect when
+/// a previous, shorter-content frame stored it.
+pub fn resolve_scroll_offset(
+    widget_state: &WidgetState,
+    id: WidgetId,
+    offset: Option<f32>,
+    max_offset: f32,
+) -> f32 {
+    let raw = widget_state.resolve(id, offset, || 0.0_f32);
+    raw.clamp(0.0, max_offset.max(0.0))
+}
+
 // ─── TabBar active tab, uncontrolled by default ────────────────────────────
 //
 // Same "compare against the last-seen descriptor, not a fixed sentinel"
@@ -1866,6 +1895,55 @@ pub fn resolve_layout_node(
         LayoutNode::SplitTree(split_tree) => {
             for leaf in &mut split_tree.leaves {
                 resolve_layout_node(widget_state, backend, area, leaf);
+            }
+        }
+        LayoutNode::Scroll(scroll_node) => {
+            let metrics = ScrollMetrics {
+                char_width: backend.char_width(),
+                line_height: backend.line_height(),
+            };
+            let inner = scroll_node
+                .spacing
+                .inset(area, metrics.char_width, metrics.line_height);
+            let (viewport, _track) =
+                scroll_viewport_and_track(inner, scroll_node.axis, metrics.line_height);
+            let content_len =
+                natural_main_length(backend, &scroll_node.content, scroll_node.axis, metrics);
+            let visible_len = match scroll_node.axis {
+                quadraui::ScrollAxis::Vertical => viewport.height,
+                quadraui::ScrollAxis::Horizontal => viewport.width,
+            };
+            let max_offset = (content_len - visible_len).max(0.0);
+            let id = WidgetId::new(scroll_node.id.as_str());
+            let offset = resolve_scroll_offset(widget_state, id, scroll_node.offset, max_offset);
+            scroll_node.offset = Some(offset);
+
+            let slots = scroll_content_slots(
+                backend,
+                viewport,
+                scroll_node.axis,
+                offset,
+                &scroll_node.content,
+                content_len,
+                metrics,
+            );
+            match slots {
+                ScrollSlots::Children(rects) => {
+                    if let LayoutNode::Row(container) | LayoutNode::Column(container) =
+                        scroll_node.content.as_mut()
+                    {
+                        for (child, (rect, visible)) in container.children.iter_mut().zip(rects) {
+                            if visible {
+                                resolve_layout_node(widget_state, backend, rect, &mut child.node);
+                            }
+                        }
+                    }
+                }
+                ScrollSlots::Atomic(rect, visible) => {
+                    if visible {
+                        resolve_layout_node(widget_state, backend, rect, &mut scroll_node.content);
+                    }
+                }
             }
         }
     }
@@ -3370,6 +3448,113 @@ mod tests {
         );
     }
 
+    /// An [`AppLogic`] whose `render` resolves then paints a
+    /// `LayoutNode::Scroll` hosting a column of buttons -- drives
+    /// [`resolve_layout_node`]'s own `LayoutNode::Scroll` arm through a
+    /// real [`TuiDriver`] frame, the way a binding's own `render` would
+    /// (resolve, then paint, never paint alone).
+    struct ScrollLeafLogic {
+        button_count: usize,
+        offset: Option<f32>,
+        engine: InteractionEngine,
+    }
+
+    impl AppLogic for ScrollLeafLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let content = LayoutNode::Column(LayoutContainer::new(
+                (0..self.button_count)
+                    .map(|i| {
+                        let label = i.to_string();
+                        LayoutNode::Leaf(LayoutLeaf {
+                            id: label.clone(),
+                            descriptor: LeafDescriptor::Button(Button::new(
+                                WidgetId::new(label.clone()),
+                                label,
+                            )),
+                            scroll_px: None,
+                        })
+                    })
+                    .collect(),
+                Default::default(),
+            ));
+            let mut node = LayoutNode::Scroll(crate::layout::LayoutScroll {
+                id: "scroll".to_string(),
+                axis: quadraui::ScrollAxis::Vertical,
+                offset: self.offset,
+                content: Box::new(content),
+                spacing: Default::default(),
+            });
+            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    fn painted_button_ids(hits: &[PaintedHit]) -> Vec<String> {
+        hits.iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Button { id, .. } => Some(id.as_str().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A controlled offset resolved through [`resolve_layout_node`] (not
+    /// just [`crate::render::paint_layout`] called alone, as
+    /// `crate::render::tests` already covers) still paints exactly the
+    /// ten buttons the issue's own acceptance scenario names.
+    #[test]
+    fn resolve_layout_node_scroll_paints_the_ten_buttons_at_a_controlled_offset() {
+        let logic = ScrollLeafLogic {
+            button_count: 40,
+            offset: Some(20.0),
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let want: Vec<String> = (20..30).map(|i| i.to_string()).collect();
+        assert_eq!(painted_button_ids(&hits), want);
+    }
+
+    /// An uncontrolled (`None`) offset resolves to `0.0` the first frame,
+    /// and — unlike a bare [`crate::render::paint_layout`] call with no
+    /// `resolve_layout_node` pass first — persists across a further
+    /// uncontrolled render rather than being swept by
+    /// [`crate::widget_state::WidgetState::gc`], mirroring
+    /// [`resolve_layout_node_keys_a_leaf_whose_descriptor_id_differs_from_its_own_on_the_outer_leaf_id`]'s
+    /// own "survives a further render" assertion for a `Tree` leaf.
+    #[test]
+    fn resolve_layout_node_scroll_uncontrolled_offset_persists_across_renders() {
+        let logic = ScrollLeafLogic {
+            button_count: 40,
+            offset: None,
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let want: Vec<String> = (0..10).map(|i| i.to_string()).collect();
+        assert_eq!(painted_button_ids(&driver.app().engine.hit_map()), want);
+
+        driver.render();
+        assert_eq!(
+            painted_button_ids(&driver.app().engine.hit_map()),
+            want,
+            "an uncontrolled scroll offset must survive a further render unchanged"
+        );
+    }
+
     /// An [`AppLogic`] whose `render` paints a focused, bordered
     /// [`TextInput`] across the whole viewport directly (not through a
     /// [`BindingHost`] slot — `TextInput` is a `"text_input"` additive
@@ -4685,6 +4870,48 @@ mod tests {
             resolved.ratio, 0.3,
             "an app explicitly supplying a new ratio must override the stored drag"
         );
+    }
+
+    /// Uncontrolled (`None`) resolves to `0.0` the first time an id is
+    /// seen, same "never touched = default" rule every other
+    /// uncontrolled-by-default field in this module follows.
+    #[test]
+    fn resolve_scroll_offset_defaults_to_zero_when_never_set() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:scroll");
+        assert_eq!(resolve_scroll_offset(&widget_state, id, None, 100.0), 0.0);
+    }
+
+    /// `Some(offset)` pins the controlled position outright, and is
+    /// written back so a later uncontrolled frame resumes from it rather
+    /// than re-seeding `0.0` -- mirroring
+    /// [`apply_split_divider_drag_persists_across_an_uncontrolled_render`]'s
+    /// own contract for `Split::ratio`.
+    #[test]
+    fn resolve_scroll_offset_controlled_value_is_written_back() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:scroll");
+        assert_eq!(
+            resolve_scroll_offset(&widget_state, id, Some(20.0), 100.0),
+            20.0
+        );
+        assert_eq!(
+            resolve_scroll_offset(&widget_state, id, None, 100.0),
+            20.0,
+            "an uncontrolled frame right after must resume from the pinned offset"
+        );
+    }
+
+    /// The resolved offset is clamped into `[0, max_offset]` on every
+    /// call, even for an already-stored (previously valid) value whose
+    /// content has since shrunk -- `resolve_scroll_offset` re-clamps
+    /// rather than trusting a stale stored clamp.
+    #[test]
+    fn resolve_scroll_offset_clamps_a_stored_value_whose_max_offset_shrank() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:scroll");
+        resolve_scroll_offset(&widget_state, id, Some(90.0), 100.0);
+        assert_eq!(resolve_scroll_offset(&widget_state, id, None, 30.0), 30.0);
     }
 
     fn test_tab_bar(tabs: Vec<bool>) -> TabBar {
