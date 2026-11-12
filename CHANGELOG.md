@@ -67,6 +67,14 @@ only a push to `main` runs this workflow.
   chrome text size (`size_pt * 96 / 72`) — list/tree row height (22px) is
   derived from the editor font and `Style::row_height`, not this constant,
   so it is unaffected.
+- GTK: `GtkBackend::new` now installs the chrome (UI) font at `9.75pt`
+  (#2384), matching the `ui_size_pt` `Backend::default_fonts` already
+  advertised — previously it installed at `11pt`. Pango point sizes are
+  DPI-scaled (unlike macOS/Win-GUI, where 1pt == 1px), so `9.75pt`, not
+  `13.0pt`, is the value that renders chrome at VS Code's 13px UI-font
+  target at a standard 96 DPI. `Style::row_height`'s `22px` token is
+  resolved from the *editor* font's line height, independent of `ui_font`,
+  so list/tree row heights are unaffected.
 
 ## [0.10.1] - 2026-11-11
 ### Added
@@ -130,14 +138,6 @@ only a push to `main` runs this workflow.
   `default_fonts()` promised. `TreeStyle`'s default row pitch is a fixed
   `22px`, independent of chrome line height, so list/tree row heights are
   unaffected.
-- GTK: `GtkBackend::new` now installs the chrome (UI) font at `9.75pt`
-  (#2384), matching the `ui_size_pt` `Backend::default_fonts` already
-  advertised — previously it installed at `11pt`. Pango point sizes are
-  DPI-scaled (unlike macOS/Win-GUI, where 1pt == 1px), so `9.75pt`, not
-  `13.0pt`, is the value that renders chrome at VS Code's 13px UI-font
-  target at a standard 96 DPI. `Style::row_height`'s `22px` token is
-  resolved from the *editor* font's line height, independent of `ui_font`,
-  so list/tree row heights are unaffected.
 
 ### Fixed
 - `MessageDialogController`'s OK/Cancel button row (#2368): on a pixel
