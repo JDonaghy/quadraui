@@ -169,14 +169,17 @@ pub struct MainAxisSpec {
 /// Clamps `raw` between `spec.min`/`spec.max` (either bound optional),
 /// then floors at `0.0` — a negative resolved size never reaches a
 /// [`Rect`], regardless of how aggressively a caller-supplied `max` or a
-/// `Percent`/`Weight` overflow squeezed it.
+/// `Percent`/`Weight` overflow squeezed it. `max` is applied first, then
+/// `min` — so a child declaring a conflicting `min > max` resolves to
+/// `min`, the same precedence CSS's own `min-width`/`max-width` conflict
+/// resolution uses.
 fn apply_min_max(spec: &MainAxisSpec, raw: f32) -> f32 {
     let mut v = raw;
-    if let Some(min) = spec.min {
-        v = v.max(min);
-    }
     if let Some(max) = spec.max {
         v = v.min(max);
+    }
+    if let Some(min) = spec.min {
+        v = v.max(min);
     }
     v.max(0.0)
 }
@@ -265,7 +268,15 @@ pub fn resolve_main_axis_sizes(
                 weights.push(1.0);
             }
             SectionSize::Fixed(_) | SectionSize::Content | SectionSize::Percent(_) => {
-                unreachable!("already resolved in pass 1/2")
+                // Every `done[i]` slot from pass 1/2 is skipped above, so
+                // this arm is unreachable today. `debug_assert!` instead
+                // of `unreachable!` so a future `SectionSize` variant
+                // this match hasn't been taught yet degrades to an
+                // `EqualShare`-like flex share in a release build rather
+                // than panicking the per-frame layout path.
+                debug_assert!(false, "already resolved in pass 1/2");
+                flex_indices.push(i);
+                weights.push(1.0);
             }
         }
     }
@@ -978,6 +989,20 @@ mod tests {
     #[test]
     fn align_cross_with_no_natural_size_degrades_to_stretch() {
         assert_eq!(align_cross(40.0, None, Align::Center), (0.0, 40.0));
+    }
+
+    /// `align_cross`/`justify_starts` dispose of an odd leftover with a
+    /// fractional (half-cell) offset -- unlike every resolved *size*,
+    /// which is `ceil`-quantised to a whole native unit before either
+    /// function ever sees it (see `crate::render::layout_container_rects`).
+    /// A real TUI paint still renders at an integer cell, so a half-cell
+    /// `x`/`y` origin biases one way or the other when it's eventually
+    /// floored/rounded -- a known rounding hazard pinned here rather than
+    /// fixed, since hit-testing reads the same geometry and stays
+    /// internally consistent either way.
+    #[test]
+    fn align_cross_with_an_odd_leftover_yields_a_fractional_offset() {
+        assert_eq!(align_cross(41.0, Some(10.0), Align::Center), (15.5, 10.0));
     }
 
     #[test]

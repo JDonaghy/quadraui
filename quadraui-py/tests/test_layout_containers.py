@@ -646,6 +646,29 @@ def test_row_justify_space_between_spreads_leftover_between_fixed_children():
     assert line.index("R") == 30
 
 
+def test_row_justify_end_with_a_nonzero_gap_still_reaches_the_far_edge():
+    # Two 80px (10-column-wide) `Fixed` children plus an 8px (1-column)
+    # `"gap"` in a 40-column row: `"justify": "end"` must push the second
+    # child's 10-column-wide rect flush with the row's right edge (so it
+    # starts at column 30, filling 30..40), not one column short of it --
+    # the gap between children is reserved once, not twice.
+    app = QuiApp(40, 1)
+
+    def render():
+        return {
+            "row": [
+                {**_text("text:left", "L"), "size": {"Fixed": 80}},
+                {**_text("text:right", "R"), "size": {"Fixed": 80}},
+            ],
+            "gap": 8,
+            "justify": "end",
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("R") == 30
+
+
 def test_column_align_center_centers_a_narrower_than_stretch_child():
     # `"align": "center"` sizes a child to its own natural cross-axis
     # extent (here, a one-character button's measured width) and centers

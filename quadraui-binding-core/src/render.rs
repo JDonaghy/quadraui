@@ -19,7 +19,7 @@ use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::layout::{
     align_cross, justify_starts, quantise_horizontal, quantise_vertical, resolve_main_axis_sizes,
-    LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor, MainAxisSpec,
+    Align, LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor, MainAxisSpec,
 };
 
 /// Owned decode of a render callback's returned descriptor set — one
@@ -653,7 +653,11 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
                 .map(|line| {
                     let line_text: String =
                         line.spans.iter().map(|span| span.text.as_str()).collect();
-                    backend.measure_text(&line_text, FontRole::Chrome).0
+                    // `TextDisplay` is an `EditorClassPrimitive` (see
+                    // `quadraui::font_role`) -- its own lines paint in
+                    // `FontRole::Editor`, not the chrome font a `Button`/
+                    // `TabBar` label uses.
+                    backend.measure_text(&line_text, FontRole::Editor).0
                 })
                 .fold(0.0_f32, f32::max);
             NaturalSize {
@@ -679,9 +683,14 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
                 .iter()
                 .map(|tab| backend.measure_text(&tab.label, FontRole::Chrome).0)
                 .sum::<f32>();
+            // Top border + one row of labels + bottom border, TUI's own
+            // `quadraui::tui::tab_bar` chrome frame -- three line-heights
+            // regardless of backend, since no pixel backend reports a
+            // narrower natural height for the same chrome today.
+            const BORDER_LABEL_BORDER_ROWS: f32 = 3.0;
             NaturalSize {
                 width: Some(width),
-                height: Some(3.0 * line_height),
+                height: Some(BORDER_LABEL_BORDER_ROWS * line_height),
             }
         }
         LeafDescriptor::Extra(_) => NaturalSize {
@@ -755,7 +764,12 @@ pub fn layout_container_rects(
         .collect();
 
     let sizes = resolve_main_axis_sizes(&specs, container_main, usable_main);
-    let starts = justify_starts(&sizes, usable_main, gap, container.justify);
+    // `justify_starts` wants the container's full main-axis extent, not
+    // `usable_main` (already gap-reduced for `resolve_main_axis_sizes`'s
+    // own budget) — it reinserts the full gap total itself when computing
+    // its own `leftover`, so passing the gap-reduced value here would
+    // subtract the gap twice.
+    let starts = justify_starts(&sizes, container_main, gap, container.justify);
 
     let cross_extent = if horizontal { area.height } else { area.width };
     container
@@ -764,7 +778,17 @@ pub fn layout_container_rects(
         .zip(sizes.iter())
         .zip(starts.iter())
         .map(|((child, &size), &start)| {
-            let natural_cross = natural_size(backend, &child.node, line_height).cross(horizontal);
+            // `align_cross` ignores `natural_cross` entirely under the
+            // default `Align::Stretch` -- skip the measurement (a `String`
+            // allocation plus a `Backend::measure_text` call for a
+            // `TextDisplay`) so the pre-`align` default path stays free of
+            // it, the same way the main-axis `Content` size already skips
+            // `natural_size` for every other `SectionSize`.
+            let natural_cross = if container.align == Align::Stretch {
+                None
+            } else {
+                natural_size(backend, &child.node, line_height).cross(horizontal)
+            };
             let (cross_offset, cross_size) =
                 align_cross(cross_extent, natural_cross, container.align);
             if horizontal {
@@ -1830,6 +1854,44 @@ mod tests {
             assert_eq!(rects[0].x, 0.0);
             assert_eq!(rects[1].x, width - 10.0);
         }
+    }
+
+    /// `justify` must dispose of the leftover main-axis space against the
+    /// container's *full* extent, not an already gap-reduced one — a
+    /// non-zero `gap` is exactly the case that caught a regression where
+    /// the gap total got subtracted twice (once by `layout_container_rects`
+    /// feeding an already-reduced extent to `justify_starts`, once more by
+    /// `justify_starts` itself). Both `End` and `SpaceBetween` must still
+    /// land the last child flush with the container's far edge.
+    #[test]
+    fn justify_with_a_nonzero_gap_still_reaches_the_far_edge() {
+        let width = 40.0_f32;
+        let area = Rect::new(0.0, 0.0, width, 10.0);
+        // `80` quantises to `10` cells; `"gap": 8` quantises to `1` cell.
+        let fixed_with_gap = || LayoutContainer {
+            children: vec![
+                leaf_child("a", SectionSize::Fixed(80), None, None),
+                leaf_child("b", SectionSize::Fixed(80), None, None),
+            ],
+            spacing: Spacing {
+                gap: 8.0,
+                ..Spacing::default()
+            },
+            justify: Justify::End,
+            align: Align::Stretch,
+        };
+
+        let end = fixed_with_gap();
+        let rects = layout_container_rects(&mut tui(), area, &end, true);
+        assert_eq!(rects[1].x + rects[1].width, width);
+
+        let space_between = LayoutContainer {
+            justify: Justify::SpaceBetween,
+            ..fixed_with_gap()
+        };
+        let rects = layout_container_rects(&mut tui(), area, &space_between, true);
+        assert_eq!(rects[0].x, 0.0);
+        assert_eq!(rects[1].x + rects[1].width, width);
     }
 
     #[test]

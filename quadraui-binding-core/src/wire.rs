@@ -505,13 +505,26 @@ fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutChi
 /// own per-section `"size"` key already uses, reused here rather than
 /// inventing a second vocabulary for the same concept. Missing defaults to
 /// [`SectionSize::default`] (`EqualShare`), matching every child's
-/// pre-per-child-sizing behaviour.
+/// pre-per-child-sizing behaviour. `{"Percent": p}` is additionally
+/// range-checked to `0.0..=1.0` — `quadraui::SectionSize::Percent`'s own
+/// documented "share of the original container" contract — so a plausible
+/// typo like `{"Percent": 25}` (meaning "25 percent") is rejected here
+/// rather than silently read as `2500%` and clamped to `100%` by
+/// `crate::layout::resolve_main_axis_sizes`.
 fn child_size_from_value(value: &Value, context: &str) -> Result<SectionSize, DecodeError> {
-    match obj_get(value, "size") {
-        None => Ok(SectionSize::default()),
-        Some(v) => serde_json::from_value(v.clone())
-            .map_err(|err| DecodeError(format!("{context} \"size\": {err}"))),
+    let size = match obj_get(value, "size") {
+        None => return Ok(SectionSize::default()),
+        Some(v) => serde_json::from_value::<SectionSize>(v.clone())
+            .map_err(|err| DecodeError(format!("{context} \"size\": {err}")))?,
+    };
+    if let SectionSize::Percent(p) = size {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(DecodeError(format!(
+                "{context} \"size\": {{\"Percent\": ..}} must be between 0.0 and 1.0, got {p}"
+            )));
+        }
     }
+    Ok(size)
 }
 
 /// The lowercase, Python-idiomatic spellings `"justify"` accepts —
@@ -1551,6 +1564,23 @@ mod tests {
         assert_eq!(container.children[4].size, SectionSize::EqualShare);
         assert_eq!(container.children[4].min, None);
         assert_eq!(container.children[4].max, None);
+    }
+
+    /// `{"Percent": 25}` is a plausible "25 percent" typo -- rejected at
+    /// decode rather than silently read as `2500%` and clamped to `100%`
+    /// by `crate::layout::resolve_main_axis_sizes`.
+    #[test]
+    fn rejects_a_child_percent_size_outside_zero_to_one() {
+        let value = json!({
+            "row": [
+                {"id": "a", "button": {"id": "a", "label": "A"}, "size": {"Percent": 25}},
+            ],
+        });
+        let err = match decode(&value) {
+            Ok(_) => panic!("expected an out-of-range Percent size to be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.0.contains("Percent"), "{}", err.0);
     }
 
     /// A `"row"`/`"column"` node's `"justify"`/`"align"` keys are siblings
