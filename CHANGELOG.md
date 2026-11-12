@@ -66,8 +66,9 @@ only a push to `main` runs this workflow.
   `tui::canvas`'s cell-quantised clip bookkeeping; `GtkBackend` forwards to
   its own `PaintSurface::surface_push_clip`/`surface_pop_clip` (cairo's
   save/clip/restore); `WinBackend` forwards to the same seam backed by
-  Direct2D's `PushAxisAlignedClip`/`PopAxisAlignedClip` stack. macOS gets
-  its own follow-up issue.
+  Direct2D's `PushAxisAlignedClip`/`PopAxisAlignedClip` stack; `MacBackend`
+  forwards to the same seam backed by Core Graphics'
+  `CGContextSaveGState`/clip/`CGContextRestoreGState` stack.
 
 ### Fixed
 - TUI `Button`: a leaf painted into a cell taller than its one row of

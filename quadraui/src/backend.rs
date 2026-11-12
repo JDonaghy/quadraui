@@ -2382,6 +2382,9 @@ pub trait Backend: sealed::Sealed {
     /// [`crate::win::backend::WinBackend`] overrides this too, forwarding
     /// to its own [`crate::PaintSurface::surface_push_clip`] (Direct2D's
     /// push/pop clip stack) instead of a second clip stack.
+    /// [`crate::macos::backend::MacBackend`] overrides this too, forwarding
+    /// to its own [`crate::PaintSurface::surface_push_clip`] (Core
+    /// Graphics' save/clip/restore stack) instead of a second clip stack.
     fn push_clip(&mut self, _rect: Rect) {}
 
     /// Pop the clip most recently pushed by [`Self::push_clip`],
