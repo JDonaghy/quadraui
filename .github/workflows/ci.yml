@@ -614,6 +614,9 @@ jobs:
     # baseline in the same PR instead, so the increase is a visible line in
     # the diff rather than something this gate papers over.
     name: Backend line-count ratchet
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
     runs-on: ubuntu-latest
     # Two Python-script steps reading local files, normally well under a
     # minute.
