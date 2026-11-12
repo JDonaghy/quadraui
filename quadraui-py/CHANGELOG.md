@@ -252,6 +252,16 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   scroll/selection bookkeeping (both stay framework-owned widget state).
   `examples/file_manager_app.py` ports `examples/file_manager.py` onto it.
 
+- A `"row"`/`"column"` child dict may now carry its own `"size"` key
+  (`"EqualShare"`/`"Content"`, or `{"Fixed": n}`/`{"Percent": p}`/
+  `{"Weight": w}` — the same vocabulary `MultiSectionView`'s own
+  per-section `"size"` key already uses) plus optional `"min"`/`"max"`
+  clamps, and the `"row"`/`"column"` node itself may carry a `"justify"`
+  (`"start"`/`"center"`/`"end"`/`"space_between"`) and/or `"align"`
+  (`"start"`/`"center"`/`"end"`/`"stretch"`) key. None of the five keys
+  is required; a tree with none of them lays out exactly as before
+  (every child an equal share, `Justify::Start`, `Align::Stretch`).
+
 ### Fixed
 
 - `QuiApp.widget_state(id)`'s `expanded` field is now actually reachable: a
@@ -277,6 +287,16 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- A `"split"` node's `"first_min"`/`"second_min"` are now read in the same
+  portable surface-native-pixel unit `"padding"`/`"margin"`/`"gap"` already
+  use, not backend-native rows/columns. `"first_min": 10` previously
+  reserved 10 TUI rows/columns outright; it now reserves `ceil(10 / 8)`
+  TUI columns on a `Horizontal` split, or `ceil(10 / 16)` TUI rows on a
+  `Vertical` one (the same `char_width`/`line_height` nominal-cell-px
+  conversion `"padding"`/`"margin"`/`"gap"` use). An app pinning a
+  `first_min`/`second_min` value sized for the old row/column reading
+  needs to multiply it up (by roughly 8 for a `Horizontal` split, 16 for a
+  `Vertical` one) to reserve the same TUI space as before.
 - A `list` event dict can now carry an `"ItemDoubleClicked"` key (double
   click, distinct from a plain click's `"SelectionChanged"`) alongside the
   existing `"SelectionChanged"`/`"ItemActivated"`/`"KeyPressed"`/
