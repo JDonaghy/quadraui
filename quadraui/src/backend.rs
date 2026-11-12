@@ -2379,6 +2379,12 @@ pub trait Backend: sealed::Sealed {
     /// (a cairo save/clip pair) instead of a second clip stack — note
     /// that call panics outside the backend's frame scope (see that
     /// method's own doc), unlike this trait method's no-op default.
+    /// [`crate::win::backend::WinBackend`] overrides this too, forwarding
+    /// to its own [`crate::PaintSurface::surface_push_clip`] (Direct2D's
+    /// push/pop clip stack) instead of a second clip stack.
+    /// [`crate::macos::backend::MacBackend`] overrides this too, forwarding
+    /// to its own [`crate::PaintSurface::surface_push_clip`] (Core
+    /// Graphics' save/clip/restore stack) instead of a second clip stack.
     fn push_clip(&mut self, _rect: Rect) {}
 
     /// Pop the clip most recently pushed by [`Self::push_clip`],
