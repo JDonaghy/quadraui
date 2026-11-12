@@ -2568,6 +2568,23 @@ impl Backend for WinBackend {
         }
     }
 
+    // ─── Clipping ────────────────────────────────────────────────────────
+    //
+    // Direct2D already owns a push/pop clip stack reached through
+    // `surface_push_clip`/`surface_pop_clip` (this module's own `impl
+    // PaintSurface for WinBackend`, below). These two forward to that same
+    // stack instead of layering a second one on top, so a caller that mixes
+    // `Backend::push_clip` (binding-core's layout painter) and
+    // `PaintSurface::surface_push_clip` (in-tree primitive paint code) on
+    // the same frame nests correctly either way.
+    fn push_clip(&mut self, rect: Rect) {
+        self.surface_push_clip(rect);
+    }
+
+    fn pop_clip(&mut self) {
+        self.surface_pop_clip();
+    }
+
     // ─── Tray / status-bar icon ─────────────────────────────────────────
     /// Gated on `self.hwnd` for the same reason as [`Self::window`]:
     /// `Shell_NotifyIconW` needs a real `HWND` to own the icon and
@@ -12133,6 +12150,128 @@ mod tests {
         let _ = backend.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
 
         backend.surface_end_frame();
+    }
+
+    // ── Backend::push_clip/pop_clip ─────────────────────────────────────
+    //
+    // `WinBackend::push_clip`/`pop_clip` forward straight to this same
+    // module's `surface_push_clip`/`surface_pop_clip` (Direct2D's own
+    // `PushAxisAlignedClip`/`PopAxisAlignedClip` stack). These two
+    // exercise the `Backend` trait entry point itself — the seam a
+    // backend-generic caller (binding-core's layout painter, a future
+    // `ScrollContainer`) reaches for — rather than the `PaintSurface` one
+    // in-tree primitives call directly, and pin both that an overflowing
+    // fill is confined to the clip's exact pixel edge and that a nested
+    // pop restores the outer clip rather than dropping it.
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_push_clip_confines_an_overflowing_fill_to_the_clipped_pixels() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let background = cleared_frame_background(W, H);
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let red = Color::rgb(200, 20, 20);
+        assert_ne!(
+            background,
+            (red.r, red.g, red.b),
+            "the fill colour must differ from the frame's clear colour, or \
+             'this pixel stayed untouched' is unprovable"
+        );
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        Backend::push_clip(&mut backend, Rect::new(0.0, 0.0, 10.0, 10.0));
+        backend.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), red);
+        Backend::pop_clip(&mut backend);
+        backend.end_frame();
+
+        let inside = surface.pixel_at(9, 9);
+        assert_eq!(
+            (inside.r, inside.g, inside.b),
+            (red.r, red.g, red.b),
+            "the last pixel inside the pushed clip must keep the overflowing fill"
+        );
+        let outside = surface.pixel_at(10, 10);
+        assert_eq!(
+            (outside.r, outside.g, outside.b),
+            background,
+            "the first pixel outside the pushed clip must stay untouched by the \
+             fill, which reaches well past it"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_nested_pop_clip_restores_the_outer_clip() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let background = cleared_frame_background(W, H);
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let green = Color::rgb(0, 200, 0);
+        let white = Color::rgb(255, 255, 255);
+        assert_ne!(background, (green.r, green.g, green.b));
+        assert_ne!(background, (white.r, white.g, white.b));
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        // Outer clip: pixels (0,0)..(20,20).
+        Backend::push_clip(&mut backend, Rect::new(0.0, 0.0, 20.0, 20.0));
+        // Inner clip, nested inside the outer one: pixels (5,5)..(15,15).
+        Backend::push_clip(&mut backend, Rect::new(5.0, 5.0, 10.0, 10.0));
+        Backend::pop_clip(&mut backend);
+        // Paint only after the inner pop: if it restored the outer clip,
+        // this reaches (0,0)..(20,20) but not past it; if it dropped
+        // clipping entirely, it would reach the whole 40x40 surface,
+        // including (30,30) checked below.
+        backend.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), green);
+        Backend::pop_clip(&mut backend);
+        // Paint only after the outer pop, confined to pixels
+        // (20,20)..(40,40) — entirely outside the now-popped outer clip,
+        // so this fill can only land there if the outer pop actually
+        // cleared clipping rather than leaving the outer rect active.
+        backend.draw_solid_fill(Rect::new(20.0, 20.0, 20.0, 20.0), white);
+        backend.end_frame();
+
+        let inside_outer = surface.pixel_at(17, 17);
+        assert_eq!(
+            (inside_outer.r, inside_outer.g, inside_outer.b),
+            (green.r, green.g, green.b),
+            "inside the outer clip but outside the inner one, the inner pop must have \
+             restored the outer clip rather than leaving it narrowed to the inner rect, \
+             letting the post-pop fill land here"
+        );
+        let outside_outer = surface.pixel_at(35, 5);
+        assert_eq!(
+            (outside_outer.r, outside_outer.g, outside_outer.b),
+            background,
+            "outside the outer clip entirely, the fill painted after the inner pop \
+             must not have reached here — proving that pop restored the outer clip \
+             rather than dropping clipping entirely"
+        );
+        let after_outer_pop = surface.pixel_at(30, 30);
+        assert_eq!(
+            (after_outer_pop.r, after_outer_pop.g, after_outer_pop.b),
+            (white.r, white.g, white.b),
+            "the fill painted after the outer pop must reach here, proving that pop \
+             cleared the clip rather than leaving the outer rect active"
+        );
     }
 
     // ── #810: draw_chart real-pixel driver tests ──────────────────────────────

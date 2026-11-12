@@ -1022,12 +1022,13 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     // ── push_clip / pop_clip: the backend-neutral clip-rect seam.
     // `TuiBackend` overrides both, reusing `tui::canvas`'s own
-    // cell-quantised clip bookkeeping; `GtkBackend` overrides both too,
-    // forwarding to its own `PaintSurface::surface_push_clip`/
-    // `surface_pop_clip` (cairo's save/clip/restore). macOS and Win each
-    // have their own real pixel-clip equivalent already (the
+    // cell-quantised clip bookkeeping; `GtkBackend` and `WinBackend`
+    // override both too, forwarding to their own
+    // `PaintSurface::surface_push_clip`/`surface_pop_clip` (cairo's
+    // save/clip/restore on GTK, Direct2D's clip stack on Win). macOS has
+    // its own real pixel-clip equivalent already (the
     // `PaintSurface::surface_push_clip` seam), but wiring the
-    // `Backend`-level seam onto it is each backend's own follow-up.
+    // `Backend`-level seam onto it is macOS's own follow-up.
     (
         "macos",
         "push_clip",
@@ -1036,17 +1037,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     (
         "macos",
-        "pop_clip",
-        "same follow-up as push_clip above — `PaintSurface::surface_pop_clip` already exists",
-    ),
-    (
-        "win",
-        "push_clip",
-        "Win-GUI's pixel-clip equivalent already exists on `PaintSurface::surface_push_clip`; \
-         wiring `Backend::push_clip` onto it is Win-GUI's own follow-up issue",
-    ),
-    (
-        "win",
         "pop_clip",
         "same follow-up as push_clip above — `PaintSurface::surface_pop_clip` already exists",
     ),
