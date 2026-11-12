@@ -1020,6 +1020,45 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          verifying it against TUI's own tree row pitch is a TUI pixel-smooth-tree-scroll \
          sibling issue's job",
     ),
+    // ── push_clip / pop_clip: the backend-neutral clip-rect seam.
+    // `TuiBackend` overrides both, reusing `tui::canvas`'s own
+    // cell-quantised clip bookkeeping. GTK, macOS and Win each have a
+    // real pixel-clip equivalent already (`PaintSurface::surface_push_clip`/
+    // `surface_pop_clip`), but wiring the `Backend`-level seam onto it is
+    // each backend's own follow-up — scoped to TUI only for now.
+    (
+        "gtk",
+        "push_clip",
+        "GTK's pixel-clip equivalent already exists on `PaintSurface::surface_push_clip`; \
+         wiring `Backend::push_clip` onto it is GTK's own follow-up issue",
+    ),
+    (
+        "gtk",
+        "pop_clip",
+        "same follow-up as push_clip above — `PaintSurface::surface_pop_clip` already exists",
+    ),
+    (
+        "macos",
+        "push_clip",
+        "macOS's pixel-clip equivalent already exists on `PaintSurface::surface_push_clip`; \
+         wiring `Backend::push_clip` onto it is macOS's own follow-up issue",
+    ),
+    (
+        "macos",
+        "pop_clip",
+        "same follow-up as push_clip above — `PaintSurface::surface_pop_clip` already exists",
+    ),
+    (
+        "win",
+        "push_clip",
+        "Win-GUI's pixel-clip equivalent already exists on `PaintSurface::surface_push_clip`; \
+         wiring `Backend::push_clip` onto it is Win-GUI's own follow-up issue",
+    ),
+    (
+        "win",
+        "pop_clip",
+        "same follow-up as push_clip above — `PaintSurface::surface_pop_clip` already exists",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.
