@@ -134,7 +134,7 @@ mod tests {
         }
     }
 
-    fn paint_via_backend(bar: &MenuBar) -> (BitmapSurface, MenuBarLayout) {
+    fn paint_via_backend(bar: &MenuBar) -> (BitmapSurface, MenuBarLayout, MacBackend) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
@@ -150,7 +150,7 @@ mod tests {
             *layout.borrow_mut() = Some(l);
         });
         backend.end_frame();
-        (surface, layout.into_inner().unwrap())
+        (surface, layout.into_inner().unwrap(), backend)
     }
 
     #[test]
@@ -158,7 +158,7 @@ mod tests {
         // First item (File) is the open menu — its bg should be
         // tab_active_bg, distinct from tab_bar_bg.
         let bar = sample_bar();
-        let (surface, layout) = paint_via_backend(&bar);
+        let (surface, layout, _backend) = paint_via_backend(&bar);
         let theme = Theme::default();
         let file = &layout.visible_items[0];
         // Probe column 1 (inside the leading padding so no glyph
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn inactive_item_paints_bar_bg() {
         let bar = sample_bar();
-        let (surface, layout) = paint_via_backend(&bar);
+        let (surface, layout, _backend) = paint_via_backend(&bar);
         let theme = Theme::default();
         // Second item (Edit) is inactive — its bg should still be
         // tab_bar_bg (not painted over).
@@ -197,46 +197,58 @@ mod tests {
     /// must never paint the underline bar beneath an item's activation
     /// character, even for the open item. Mirrors `gtk::menu_bar::tests::
     /// draw_menu_bar_paints_alt_underline_beneath_activation_char`'s
-    /// scan shape (a long contiguous run of `tab_active_fg` pixels in
-    /// the lower half of the item is what an underline bar looks like),
-    /// but asserts the run's *absence* — proving the backend routes
-    /// through `native_surface_paint::paint_without_mnemonics`, not
-    /// `paint`.
+    /// scan shape (a long contiguous run of `tab_active_fg` pixels where
+    /// an underline bar would sit is what one looks like), but asserts
+    /// the run's *absence* — proving the backend routes through
+    /// `native_surface_paint::paint_without_mnemonics`, not `paint`.
     ///
-    /// Deliberately does **not** recompute `text_x`/`text_y` via its own
-    /// `measure_text(&font(), ..)` call — that assumes the test's font
-    /// matches whatever the backend actually painted with, which drifted
-    /// after per-backend platform font defaults started
-    /// overriding `set_current_font`. Instead it scans directly inside
-    /// the item's *layout* bounds (which the real paint call already
-    /// resolved) for a horizontal run of contiguous `tab_active_fg`
-    /// pixels in the lower half of the item — individual glyph strokes
-    /// (same colour) are far too narrow to produce a run that long, and
-    /// the threshold below sits above the widest one a label like "File"
-    /// can draw, yet below one mnemonic character's advance.
+    /// Recomputes `text_y`/the alarm threshold through
+    /// `Backend::measure_text(.., FontRole::Chrome)` rather than a
+    /// literal: that resolves to the exact same `chrome_font`
+    /// `draw_menu_bar_painted` hands the `CgSurface` `native_surface_paint`
+    /// measures and paints through (`&self.chrome_font`, never the
+    /// editor font), so the two can't drift apart the way a test-local
+    /// `Menlo`/hardcoded-px constant did across chrome-font size bumps.
     #[test]
     fn open_item_paints_no_alt_underline_beneath_activation_char() {
         let bar = sample_bar();
-        let (surface, layout) = paint_via_backend(&bar);
+        let (surface, layout, backend) = paint_via_backend(&bar);
         let theme = Theme::default();
 
-        // File ("&File") is the open item.
+        // File ("&File") is the open item; its mnemonic is the first
+        // display character, "F".
         let file = &layout.visible_items[0];
+        let text = display_text(&bar.items[0].label);
+        let mnemonic = text.chars().next().expect("File has a label");
         let x0 = file.bounds.x.floor() as u32;
         let x1 = ((file.bounds.x + file.bounds.width).ceil() as u32).min(W);
-        let y_mid = (file.bounds.y + file.bounds.height / 2.0).floor() as u32;
-        let y1 = ((file.bounds.y + file.bounds.height).ceil() as u32).min(H);
+
+        // Mirrors `native_surface_paint`'s own layout: the label is
+        // vertically centred in the item, and a real underline bar (its
+        // private `UNDERLINE_HEIGHT = 2.0`) sits flush with the label's
+        // bottom edge. Narrowing the scan to that band — rather than the
+        // whole lower half of the item — keeps glyph ink from elsewhere
+        // in "File" (e.g. the ascender on the first "l") out of the scan
+        // entirely, instead of merely keeping its width below a threshold.
+        // A 1px pad on each side absorbs the sub-pixel/anti-aliasing edge
+        // the real fill rect's own fractional `text_y` can bleed into.
+        const UNDERLINE_HEIGHT: f32 = 2.0;
+        let (_, text_h) = backend.measure_text(&text, crate::FontRole::Chrome);
+        let text_y = file.bounds.y + (file.bounds.height - text_h) / 2.0;
+        let y0 =
+            ((text_y + text_h - UNDERLINE_HEIGHT - 1.0).floor() as u32).max(file.bounds.y as u32);
+        let y1 = ((text_y + text_h + 1.0).ceil() as u32).min(H);
 
         // What an underline bar would look like, if one were painted —
         // a run at least this long, of exactly this colour, is not
         // explainable by glyph ink alone. `native_surface_paint` sizes
-        // the bar to the mnemonic character's own advance, so on a
-        // monospaced 14pt face that is ~8px; the threshold sits below
-        // that but comfortably above the widest contiguous horizontal
-        // stroke "File"'s glyphs can lay down at full coverage at the
-        // 13pt chrome font (the bowl of "e", up to 6px), so neither a
-        // false alarm nor a real regression lands between the two.
-        const UNDERLINE_RUN: u32 = 8;
+        // the bar to the mnemonic character's own measured advance
+        // (`char_w.max(1.0)`), through this same `chrome_font`; a 1px
+        // tolerance absorbs float-to-pixel rounding between this
+        // measurement and the real fill's, without reaching the ~6px
+        // ceiling glyph-stroke ink alone can reach at this font.
+        let (mnemonic_w, _) = backend.measure_text(&mnemonic.to_string(), crate::FontRole::Chrome);
+        let underline_run = ((mnemonic_w - 1.0).floor().max(1.0)) as u32;
         let target = (
             theme.tab_active_fg.r,
             theme.tab_active_fg.g,
@@ -244,7 +256,7 @@ mod tests {
         );
 
         let mut best_run = 0u32;
-        for row in y_mid..y1 {
+        for row in y0..y1 {
             let mut run = 0u32;
             for x in x0..x1 {
                 let (r, g, b, _) = surface.pixel(x, row);
@@ -258,11 +270,12 @@ mod tests {
         }
 
         assert!(
-            best_run < UNDERLINE_RUN,
+            best_run < underline_run,
             "macOS has no Alt-mnemonic convention and must paint no underline bar — found a \
-             contiguous run of {best_run} {target:?} pixels in the lower half of the File \
-             item (columns {x0}..{x1}, rows {y_mid}..{y1}), as long as an underline bar's own \
-             {UNDERLINE_RUN}px minimum",
+             contiguous run of {best_run} {target:?} pixels in the underline band of the File \
+             item (columns {x0}..{x1}, rows {y0}..{y1}), as long as an underline bar's own \
+             {underline_run}px minimum (derived from the live chrome font's {mnemonic:?} \
+             advance of {mnemonic_w:.1}px)",
         );
     }
 
@@ -280,14 +293,14 @@ mod tests {
     #[ignore = "writes /tmp/quadraui_menu_bar.ppm — opt in with --ignored"]
     fn dump_smoke_ppm() {
         let bar = sample_bar();
-        let (surface, _) = paint_via_backend(&bar);
+        let (surface, _, _backend) = paint_via_backend(&bar);
         surface.write_ppm_and_open("/tmp/quadraui_menu_bar.ppm");
     }
 
     #[test]
     fn hit_test_resolves_clickable_items_via_layout() {
         let bar = sample_bar();
-        let (_surface, layout) = paint_via_backend(&bar);
+        let (_surface, layout, _backend) = paint_via_backend(&bar);
         // Clickable items (File, Edit) resolve as Item(i). Disabled
         // View falls through to Bar — matches the primitive contract.
         for (i, vi) in layout.visible_items.iter().enumerate() {
