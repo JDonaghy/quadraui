@@ -80,18 +80,6 @@ save/clip/restore); `WinBackend` forwards to the same seam backed by
   the container is a follow-up.
 
 ### Fixed
-- `quadraui-binding-core`'s `"scroll"` container: `clip_hits_to_viewport`
-  now narrows a local-frame hit kind's (`Tree`/`List`/`DataTable`/`TabBar`/
-  `TextDisplay`) own new `clip` field to the enclosing viewport instead of
-  moving its `area`, so a click's translation into that primitive's own
-  layout frame still uses the rect it was actually painted at — mutating
-  `area` in place desynced that translation on every non-cell-grid
-  (GTK/macOS/Win) backend. The same pass also narrows a `Tree`'s own
-  `scrollbar.track` and an `Extra`'s `chrome_hits` entries, which it
-  previously left unbounded. An atomic `List`/`Tree`/`DataTable` leaf — not
-  just `TextDisplay` — scrolled as a `Scroll`'s whole content now paints a
-  shadow clone with `scroll_offset` advanced to the right row, the same
-  shape `TextDisplay` already got.
 - TUI `Button`: a leaf painted into a cell taller than its one row of
   chrome (an `EqualShare`-sized `Column` slot, say) now centres its label
   row vertically within that cell instead of pinning it to the top (#2394).
