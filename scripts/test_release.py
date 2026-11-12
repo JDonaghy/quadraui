@@ -187,6 +187,25 @@ class ReleaseFixtureRepo:
     def current_branch(self) -> str:
         return run_git(["branch", "--show-current"], self.root).stdout.strip()
 
+    def write_fragment(self, name: str, body: str) -> None:
+        fragment_dir = self.root / "changelog.d"
+        fragment_dir.mkdir(exist_ok=True)
+        (fragment_dir / name).write_text(body, encoding="utf-8")
+
+    def commit_fragment(self, name: str, body: str) -> None:
+        """`write_fragment` plus the commit `prepare` expects -- a fragment
+        is already tracked and committed on `develop` by the time a release
+        branch runs; `prepare`'s own first check refuses a dirty tree."""
+        self.write_fragment(name, body)
+        run_git(["add", "-A"], self.root)
+        run_git(["commit", "-q", "-m", f"add changelog.d/{name}"], self.root)
+
+    def fragment_names(self) -> list[str]:
+        fragment_dir = self.root / "changelog.d"
+        if not fragment_dir.is_dir():
+            return []
+        return sorted(p.name for p in fragment_dir.glob("*.md"))
+
 
 class PureFunctionTests(unittest.TestCase):
     def test_parse_version_accepts_x_y_z(self):
@@ -231,6 +250,138 @@ class PureFunctionTests(unittest.TestCase):
         # The fresh [Unreleased] section (before [0.2.0]) is empty.
         fresh_section = new_text[: new_text.index("## [0.2.0]")]
         self.assertEqual(release.unreleased_body(fresh_section + "\n## [0.2.0]\n").strip(), "")
+
+    def test_retitle_changelog_with_fragments_assembles_into_new_version(self):
+        text = CHANGELOG_TEMPLATE.format(unreleased_body="### Added\n\n- a new thing")
+        fragments = [(100, "added", "- a fragment-based addition.\n")]
+        new_text = release.retitle_changelog(text, "0.2.0", "2026-10-11", fragments=fragments)
+
+        self.assertIn("## [Unreleased]\n\n## [0.2.0] - 2026-10-11", new_text)
+        idx_0_2_0 = new_text.index("## [0.2.0]")
+        idx_a_new_thing = new_text.index("a new thing")
+        idx_fragment = new_text.index("a fragment-based addition")
+        idx_0_1_0 = new_text.index("## [0.1.0]")
+        # Existing bullet, then the fragment's, both inside [0.2.0], before [0.1.0].
+        self.assertTrue(idx_0_2_0 < idx_a_new_thing < idx_fragment < idx_0_1_0)
+        # The fresh [Unreleased] section (before [0.2.0]) is still empty.
+        fresh_section = new_text[: new_text.index("## [0.2.0]")]
+        self.assertEqual(release.unreleased_body(fresh_section + "\n## [0.2.0]\n").strip(), "")
+
+    def test_retitle_changelog_without_fragments_is_byte_for_byte_unchanged(self):
+        text = CHANGELOG_TEMPLATE.format(unreleased_body="### Added\n\n- a new thing")
+        self.assertEqual(
+            release.retitle_changelog(text, "0.2.0", "2026-10-11"),
+            release.retitle_changelog(text, "0.2.0", "2026-10-11", fragments=[]),
+        )
+
+    def test_parse_fragment_filename_accepts_known_kinds(self):
+        for kind in release.FRAGMENT_KINDS:
+            self.assertEqual(
+                release.parse_fragment_filename(f"2419.{kind}.md"), (2419, kind)
+            )
+
+    def test_parse_fragment_filename_rejects_malformed(self):
+        self.assertIsNone(release.parse_fragment_filename("not-a-number.added.md"))
+        self.assertIsNone(release.parse_fragment_filename("2419.security.md"))
+        self.assertIsNone(release.parse_fragment_filename("README.md"))
+        self.assertIsNone(release.parse_fragment_filename("2419.added.txt"))
+
+    def test_parse_unreleased_sections_merges_duplicate_headings(self):
+        # Mirrors #2409/#2416's hand-merge-conflict shape: the same heading
+        # appearing twice must merge into one entry, not stay split.
+        body = (
+            "\n### Added\n- first added bullet.\n\n"
+            "### Fixed\n- a fixed bullet.\n\n"
+            "### Fixed\n- a second, separately-appended fixed bullet.\n\n"
+        )
+        preamble, sections = release.parse_unreleased_sections(body)
+        self.assertEqual(preamble, "")
+        self.assertEqual(list(sections.keys()), ["Added", "Fixed"])
+        self.assertIn("a fixed bullet.", sections["Fixed"])
+        self.assertIn("a second, separately-appended fixed bullet.", sections["Fixed"])
+
+    def test_render_unreleased_body_empty_sections_is_blank(self):
+        self.assertEqual(release.render_unreleased_body([]), "\n\n")
+
+    def test_assemble_unreleased_body_creates_missing_heading_in_canonical_order(self):
+        old_body = "\n### Added\n- an existing added bullet.\n\n"
+        fragments = [
+            (10, "fixed", "- a new fixed bullet.\n"),
+            (20, "added", "- a new added bullet.\n"),
+        ]
+        assembled = release.assemble_unreleased_body(old_body, fragments)
+        idx_added_heading = assembled.index("### Added")
+        idx_existing = assembled.index("an existing added bullet")
+        idx_new_added = assembled.index("a new added bullet")
+        idx_fixed_heading = assembled.index("### Fixed")
+        idx_new_fixed = assembled.index("a new fixed bullet")
+        # Added's own bullets stay together, existing first; Fixed (newly
+        # created, since old_body had none) comes after Added, canonically.
+        self.assertTrue(
+            idx_added_heading < idx_existing < idx_new_added < idx_fixed_heading < idx_new_fixed
+        )
+
+    def test_assemble_unreleased_body_sorts_fragments_by_issue_within_heading(self):
+        fragments = [
+            (200, "added", "- entry two hundred.\n"),
+            (50, "added", "- entry fifty.\n"),
+        ]
+        assembled = release.assemble_unreleased_body("", fragments)
+        self.assertLess(assembled.index("entry fifty"), assembled.index("entry two hundred"))
+
+    def test_assemble_unreleased_body_no_fragments_reproduces_old_body(self):
+        old_body = "\n### Added\n- an existing bullet.\n\n"
+        self.assertEqual(release.assemble_unreleased_body(old_body, []), old_body)
+
+    def test_discover_fragment_paths_excludes_readme_and_sorts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fragment_dir = root / "changelog.d"
+            fragment_dir.mkdir()
+            (fragment_dir / "README.md").write_text("# changelog.d\n")
+            (fragment_dir / "200.added.md").write_text("- b.\n")
+            (fragment_dir / "10.fixed.md").write_text("- a.\n")
+
+            names = [p.name for p in release.discover_fragment_paths(root)]
+            self.assertEqual(names, ["10.fixed.md", "200.added.md"])
+
+    def test_discover_fragment_paths_missing_dir_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(release.discover_fragment_paths(Path(tmp)), [])
+
+    def test_read_fragments_parses_issue_kind_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fragment_dir = root / "changelog.d"
+            fragment_dir.mkdir()
+            (fragment_dir / "2419.changed.md").write_text("- a changed fragment.\n")
+
+            fragments = release.read_fragments(root)
+            self.assertEqual(len(fragments), 1)
+            issue, kind, content, path = fragments[0]
+            self.assertEqual((issue, kind), (2419, "changed"))
+            self.assertIn("a changed fragment.", content)
+            self.assertEqual(path.name, "2419.changed.md")
+
+    def test_read_fragments_raises_on_malformed_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fragment_dir = root / "changelog.d"
+            fragment_dir.mkdir()
+            (fragment_dir / "not-an-issue.added.md").write_text("- content.\n")
+
+            with self.assertRaises(release.ReleaseError):
+                release.read_fragments(root)
+
+    def test_read_fragments_raises_on_empty_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fragment_dir = root / "changelog.d"
+            fragment_dir.mkdir()
+            (fragment_dir / "2419.added.md").write_text("   \n")
+
+            with self.assertRaises(release.ReleaseError):
+                release.read_fragments(root)
 
     def test_latest_release_version_skips_unreleased(self):
         text = CHANGELOG_TEMPLATE.format(unreleased_body="### Added\n\n- a new thing")
@@ -400,6 +551,81 @@ class PrepareCommandTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn("empty", result.stderr)
+
+    def test_prepare_assembles_fragments_of_mixed_kinds_and_deletes_them(self):
+        with ReleaseFixtureRepo() as repo:
+            repo.commit_fragment("200.added.md", "- a fragment-added thing.\n")
+            repo.commit_fragment("50.fixed.md", "- a fragment-fixed thing.\n")
+
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            changelog = repo.changelog_text()
+            idx_0_2_0 = changelog.index("## [0.2.0]")
+            idx_existing = changelog.index("a new thing")  # pre-existing [Unreleased] bullet
+            idx_added_fragment = changelog.index("a fragment-added thing")
+            idx_fixed_heading = changelog.index("### Fixed")
+            idx_fixed_fragment = changelog.index("a fragment-fixed thing")
+            idx_0_1_0 = changelog.index("## [0.1.0]")
+            self.assertTrue(
+                idx_0_2_0 < idx_existing < idx_added_fragment
+                < idx_fixed_heading < idx_fixed_fragment < idx_0_1_0
+            )
+
+            # Fragments are deleted and the deletion is part of the commit.
+            self.assertEqual(repo.fragment_names(), [])
+            log_files = run_git(
+                ["show", "--stat", "--format=", "HEAD"], repo.root
+            ).stdout
+            self.assertIn("200.added.md", log_files)
+            self.assertIn("50.fixed.md", log_files)
+
+    def test_prepare_with_only_fragments_and_empty_unreleased_succeeds(self):
+        with ReleaseFixtureRepo(unreleased_body="") as repo:
+            repo.commit_fragment("300.added.md", "- the only thing to release.\n")
+
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            changelog = repo.changelog_text()
+            self.assertIn("the only thing to release.", changelog)
+            self.assertEqual(repo.fragment_names(), [])
+
+    def test_prepare_refuses_when_unreleased_and_fragments_are_both_empty(self):
+        with ReleaseFixtureRepo(unreleased_body="") as repo:
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root)], repo.root
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("empty", result.stderr)
+            self.assertIn("changelog.d", result.stderr)
+
+    def test_prepare_refuses_malformed_fragment_name(self):
+        with ReleaseFixtureRepo() as repo:
+            repo.commit_fragment("not-an-issue.added.md", "- content.\n")
+
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root)], repo.root
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("not-an-issue.added.md", result.stderr)
+            self.assertEqual(repo.current_branch(), "develop")
+
+    def test_prepare_refuses_empty_fragment(self):
+        with ReleaseFixtureRepo() as repo:
+            repo.commit_fragment("200.added.md", "   \n")
+
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root)], repo.root
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("200.added.md", result.stderr)
+            self.assertEqual(repo.current_branch(), "develop")
 
     def test_prepare_reuses_existing_branch_already_bumped(self):
         """A re-run from develop after the release branch already exists

@@ -114,8 +114,9 @@ three load-bearing properties** (`working-directory:` not `--manifest-path`,
 4. **One breaking change per PR.** Don't batch unrelated removals.
 5. **Declare it.** A PR touching a `pub` item has a `## Downstream impact` section
    naming each consumer file that must move (or "no consumer hits" + the grep), and
-   a `CHANGELOG.md` `[Unreleased]` entry (`Added` / `Deprecated` / `Removed` /
-   `Fixed`). Review sends back a public-API PR missing either.
+   a `changelog.d/<issue>.<kind>.md` fragment (`kind` one of `added` / `deprecated` /
+   `removed` / `fixed`; see `changelog.d/README.md`). Review sends back a public-API
+   PR missing either.
 
 Mechanics and shim patterns: `quadraui/docs/PRIMITIVE_RULES.md` rule 8.
 
@@ -152,12 +153,18 @@ cargo test  -p quadraui --features win
 cargo fmt --all --check
 ```
 
-**CHANGELOG enforcement (#1500).** CI rejects PRs that change non-test
-`quadraui/src/**` Rust files without adding a line inside `CHANGELOG.md`'s
-`## [Unreleased]` section. Add an entry under the appropriate `### Added` /
-`### Fixed` / `### Changed` / `### Deprecated` / `### Removed` heading.
-Comment-only and test-only (`#[cfg(test)]` block) diffs are exempt
-automatically; the `no-changelog` label skips the check entirely.
+**CHANGELOG enforcement (#1500, #2419).** CI rejects PRs that change
+non-test `quadraui/src/**` Rust files without adding a new
+`changelog.d/<issue>.<kind>.md` fragment (`kind` one of `added` /
+`changed` / `deprecated` / `removed` / `fixed`) — see `changelog.d/README.md`
+for the authoring convention. **Don't edit `CHANGELOG.md`'s `[Unreleased]`
+section directly**; CI rejects that diff shape too, pointing back at
+`changelog.d/`, since every PR's entry landing on the same lines is the
+merge-conflict problem fragments exist to avoid. Comment-only and
+test-only (`#[cfg(test)]` block) diffs are exempt automatically; the
+`no-changelog` label skips the check entirely. `scripts/release.py
+prepare` assembles every fragment into `[Unreleased]` and deletes them in
+the version-bump commit — nothing in `changelog.d/` survives a release.
 
 ## Win-GUI: building and testing for real
 

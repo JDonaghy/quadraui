@@ -4,8 +4,9 @@
 A release today is several hand steps: bump `quadraui/Cargo.toml`'s
 version, refresh `Cargo.lock`, rewrite the hard-coded version strings in
 `README.md` and `quadraui/src/lib.rs` that `quadraui/tests/readme_truth.rs`
-cross-checks against `CARGO_PKG_VERSION`, retitle `CHANGELOG.md`'s
-`[Unreleased]` section with a date and add a fresh empty one, commit, open
+cross-checks against `CARGO_PKG_VERSION`, assemble every `changelog.d/`
+fragment (#2419) into `CHANGELOG.md`'s `[Unreleased]` section, retitle it
+with a date and add a fresh empty one, delete the fragments, commit, open
 a bump PR against `develop` — then, separately, hand-open a `develop` ->
 `main` promotion PR that must land as a **merge commit** (never
 squash/rebase, or `main` and `develop` diverge). This script automates the
@@ -30,8 +31,8 @@ Two subcommands:
   1. refuses if the working tree is dirty (`git status --porcelain`);
   2. refuses if `X.Y.Z` is not strictly greater than the version currently
      in `quadraui/Cargo.toml`;
-  3. refuses if `CHANGELOG.md`'s `## [Unreleased]` section is empty (nothing
-     to release);
+  3. refuses if `CHANGELOG.md`'s `## [Unreleased]` section is empty AND
+     `changelog.d/` has no fragments (nothing to release);
   4. creates and checks out branch `release-X.Y.Z`;
   5. sets `quadraui/Cargo.toml`'s version to `X.Y.Z`;
   6. refreshes `Cargo.lock` via `cargo update -p quadraui --offline` and
@@ -42,10 +43,16 @@ Two subcommands:
      and `quadraui/src/lib.rs`'s crate-doc `## Status` section
      (`` `X.Y.x` ``), to match the new version — the exact strings
      `tests/readme_truth.rs` cross-checks against `CARGO_PKG_VERSION`;
-  8. retitles `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and inserts a
-     fresh empty `## [Unreleased]` above it;
-  9. commits the five files;
-  10. prints the `git push` and `gh pr create --base develop` commands for
+  8. assembles every `changelog.d/*.md` fragment into `[Unreleased]`'s own
+     body (grouped by `### Kind` heading in Keep-a-Changelog order, sorted
+     by issue number within each heading, appended below whatever bullets
+     that heading already had), then retitles `## [Unreleased]` to
+     `## [X.Y.Z] - YYYY-MM-DD` and inserts a fresh empty `## [Unreleased]`
+     above it;
+  9. deletes every fragment file `changelog.d/*.md` (except `README.md`)
+     it just assembled;
+  10. commits the five version-string files plus the deleted fragments;
+  11. prints the `git push` and `gh pr create --base develop` commands for
       a human to run.
 
 `--with-py` additionally releases the `quadraui` PyPI wheel (`quadraui-py`)
@@ -101,6 +108,166 @@ PRE_1_0_STATUS_RE = re.compile(r"`\d+\.\d+\.x`")
 # leads with, e.g. `quadraui = { version = "0.3"`. Matches
 # `tests/readme_truth.rs`'s `major_minor()`.
 DEPENDENCY_SNIPPET_RE = re.compile(r'(quadraui = \{ version = )"\d+\.\d+"')
+
+# -- changelog.d/ fragments (#2419) ------------------------------------
+#
+# A fragment is one file, `changelog.d/<issue>.<kind>.md`, whose content is
+# the bullet text that belongs under `[Unreleased]`'s matching `### Kind`
+# heading -- see `changelog.d/README.md` for the authoring convention.
+# `tools/changelog_check.py` enforces this shape at PR time; `prepare`
+# assembles every fragment into `[Unreleased]` and deletes them in the same
+# version-bump commit, so `develop` never carries a stale fragment past a
+# release.
+FRAGMENT_DIR = "changelog.d"
+FRAGMENT_README_NAME = "README.md"
+FRAGMENT_KINDS = ("added", "changed", "deprecated", "removed", "fixed")
+# Keep-a-Changelog's own section order (minus `Security`, which no fragment
+# kind maps to); also the order `assemble_unreleased_body` emits headings in.
+CANONICAL_HEADING_ORDER = ["Added", "Changed", "Deprecated", "Removed", "Fixed"]
+FRAGMENT_KIND_HEADINGS: dict[str, str] = dict(
+    zip(FRAGMENT_KINDS, CANONICAL_HEADING_ORDER)
+)
+HEADING_TO_FRAGMENT_KIND: dict[str, str] = {
+    heading: kind for kind, heading in FRAGMENT_KIND_HEADINGS.items()
+}
+FRAGMENT_NAME_RE = re.compile(
+    r"^(?P<issue>\d+)\.(?P<kind>" + "|".join(FRAGMENT_KINDS) + r")\.md$"
+)
+
+
+def parse_fragment_filename(name: str) -> tuple[int, str] | None:
+    """`(issue, kind)` for a `changelog.d/<issue>.<kind>.md` filename, or
+    None if `name` doesn't match that shape (including `README.md`, which
+    is never a fragment)."""
+    match = FRAGMENT_NAME_RE.match(name)
+    if not match:
+        return None
+    return int(match.group("issue")), match.group("kind")
+
+
+def discover_fragment_paths(repo_dir: Path) -> list[Path]:
+    """Every `changelog.d/*.md` fragment file under `repo_dir`, sorted by
+    filename, excluding `changelog.d/README.md`. Returns `[]` if
+    `changelog.d/` doesn't exist."""
+    fragment_dir = repo_dir / FRAGMENT_DIR
+    if not fragment_dir.is_dir():
+        return []
+    return sorted(
+        p for p in fragment_dir.glob("*.md") if p.name != FRAGMENT_README_NAME
+    )
+
+
+def read_fragments(repo_dir: Path) -> list[tuple[int, str, str, Path]]:
+    """`(issue, kind, content, path)` for every fragment `discover_fragment_paths`
+    finds under `repo_dir`. Raises `ReleaseError` naming the offending file if
+    its name doesn't match `<issue>.<kind>.md` or its content is empty --
+    the same two checks `tools/changelog_check.py` enforces per-PR, re-run
+    here defensively since `prepare` is the step that actually deletes
+    these files."""
+    fragments = []
+    for path in discover_fragment_paths(repo_dir):
+        parsed = parse_fragment_filename(path.name)
+        if parsed is None:
+            raise ReleaseError(
+                f"{path.relative_to(repo_dir)}: fragment filename must be "
+                f"`<issue>.<kind>.md` with kind one of "
+                f"{', '.join(FRAGMENT_KINDS)} (got {path.name!r})"
+            )
+        issue, kind = parsed
+        content = path.read_text(encoding="utf-8")
+        if not content.strip():
+            raise ReleaseError(f"{path.relative_to(repo_dir)}: fragment is empty")
+        fragments.append((issue, kind, content, path))
+    return fragments
+
+
+def parse_unreleased_sections(body: str) -> tuple[str, dict[str, str]]:
+    """Split a `[Unreleased]` (or any version section's) raw body text into
+    `(preamble, sections)`: any text before the first `### ` heading
+    (normally empty) and an *ordered* dict of heading name -> that
+    heading's own body text (not including the `### ` line itself), in
+    first-appearance order. Two occurrences of the same heading name (the
+    duplicated-section shape a hand-resolved merge conflict has produced
+    before, e.g. #2409/#2416) merge into that heading's one entry rather
+    than staying split."""
+    lines = body.splitlines()
+    preamble_lines: list[str] = []
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in lines:
+        if line.startswith("### "):
+            current = line[len("### "):].strip()
+            sections.setdefault(current, [])
+            continue
+        if current is None:
+            preamble_lines.append(line)
+        else:
+            sections[current].append(line)
+    preamble = "\n".join(preamble_lines).strip("\n")
+    return preamble, {
+        name: "\n".join(section_lines).strip("\n")
+        for name, section_lines in sections.items()
+    }
+
+
+def render_unreleased_body(sections_in_order: list[tuple[str, str]]) -> str:
+    """Render `(heading, body_text)` pairs (`body_text` already trimmed of
+    its own leading/trailing blank lines) back into the exact raw shape
+    `CHANGELOG.md` uses for a version section's body: a leading newline,
+    each `### Heading\\n<body>` block separated by one blank line, and a
+    trailing blank line before the next `## [` header. `[]` renders as the
+    same bare `"\\n\\n"` a fresh, still-empty `[Unreleased]` section has."""
+    if not sections_in_order:
+        return "\n\n"
+    blocks = [f"### {heading}\n{body}" if body else f"### {heading}" for heading, body in sections_in_order]
+    return "\n" + "\n\n".join(blocks) + "\n\n"
+
+
+def assemble_unreleased_body(
+    old_body: str, fragments: list[tuple[int, str, str]]
+) -> str:
+    """Merge `fragments` (`(issue, kind, content)`) into `old_body` (the
+    raw text currently sitting between `[Unreleased]`'s header and the next
+    `## [` header): each fragment's content is grouped under its matching
+    `### Kind` heading -- created, in `CANONICAL_HEADING_ORDER` position,
+    if `old_body` didn't already have one -- sorted by issue number within
+    that heading, and appended below whatever bullets the heading already
+    had. A heading already present in `old_body` keeps its existing
+    position when no canonical slot claims it first. Returns the same raw
+    shape `old_body` itself was in (see `render_unreleased_body`), so
+    passing `fragments=[]` reproduces `old_body` byte-for-byte modulo any
+    duplicate-heading merge `parse_unreleased_sections` already performs."""
+    preamble, sections = parse_unreleased_sections(old_body)
+
+    by_kind: dict[str, list[tuple[int, str]]] = {}
+    for issue, kind, content in fragments:
+        by_kind.setdefault(kind, []).append((issue, content.strip()))
+
+    heading_order = list(sections.keys())
+    for kind in FRAGMENT_KINDS:
+        heading = FRAGMENT_KIND_HEADINGS[kind]
+        if by_kind.get(kind) and heading not in heading_order:
+            heading_order.append(heading)
+
+    ordered = [h for h in CANONICAL_HEADING_ORDER if h in heading_order]
+    ordered += [h for h in heading_order if h not in ordered]
+
+    rendered_sections: list[tuple[str, str]] = []
+    for heading in ordered:
+        existing = sections.get(heading, "")
+        kind = HEADING_TO_FRAGMENT_KIND.get(heading)
+        new_bullets = (
+            sorted(by_kind.get(kind, []), key=lambda pair: pair[0]) if kind else []
+        )
+        block_parts = ([existing] if existing else []) + [
+            content for _issue, content in new_bullets
+        ]
+        rendered_sections.append((heading, "\n".join(block_parts)))
+
+    body = render_unreleased_body(rendered_sections)
+    if preamble:
+        body = f"\n{preamble}\n{body[1:]}"
+    return body
 
 
 class ReleaseError(RuntimeError):
@@ -206,16 +373,44 @@ def unreleased_body(changelog_text: str) -> str:
     return rest[: next_header.start()] if next_header else rest
 
 
-def retitle_changelog(changelog_text: str, new_version: str, date: str) -> str:
-    """Retitle `## [Unreleased]` to `## [X.Y.Z] - date`, adding a fresh one above it."""
+def retitle_changelog(
+    changelog_text: str,
+    new_version: str,
+    date: str,
+    *,
+    fragments: list[tuple[int, str, str]] | None = None,
+) -> str:
+    """Retitle `## [Unreleased]` to `## [X.Y.Z] - date`, adding a fresh
+    empty one above it.
+
+    `fragments` not given (or empty) leaves the retitled section's own body
+    byte-for-byte as it was -- this function's pre-fragment behavior. When
+    given (every `changelog.d/*.md` fragment discovered by
+    `read_fragments`, as `(issue, kind, content)`), the retitled section's
+    body is re-assembled via `assemble_unreleased_body` first: each
+    fragment is grouped under its matching `### Kind` heading, in
+    Keep-a-Changelog order and sorted by issue number, appended below
+    whatever bullets that heading already had.
+    """
     matches = list(UNRELEASED_HEADER_RE.finditer(changelog_text))
     if len(matches) != 1:
         raise ReleaseError(
             f"expected exactly one '## [Unreleased]' header in CHANGELOG.md, found {len(matches)}"
         )
     match = matches[0]
-    replacement = f"## [Unreleased]\n\n## [{new_version}] - {date}"
-    return changelog_text[: match.start()] + replacement + changelog_text[match.end():]
+
+    if not fragments:
+        replacement = f"## [Unreleased]\n\n## [{new_version}] - {date}"
+        return changelog_text[: match.start()] + replacement + changelog_text[match.end():]
+
+    rest = changelog_text[match.end():]
+    next_header = re.search(r"(?m)^## \[", rest)
+    old_body = rest[: next_header.start()] if next_header else rest
+    tail = rest[next_header.start():] if next_header else ""
+
+    assembled_body = assemble_unreleased_body(old_body, fragments)
+    replacement = f"## [Unreleased]\n\n## [{new_version}] - {date}{assembled_body}"
+    return changelog_text[: match.start()] + replacement + tail
 
 
 def latest_release_version(changelog_text: str) -> str:
@@ -362,9 +557,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
                 )
 
         changelog_text = changelog_path.read_text(encoding="utf-8")
-        if not unreleased_body(changelog_text).strip():
+        fragments = read_fragments(repo_dir)
+        if not unreleased_body(changelog_text).strip() and not fragments:
             raise ReleaseError(
-                "CHANGELOG.md's '## [Unreleased]' section is empty; nothing to release"
+                "CHANGELOG.md's '## [Unreleased]' section is empty and "
+                "changelog.d/ has no fragments; nothing to release"
             )
 
         branch = f"release-{args.version}"
@@ -446,9 +643,21 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         lib_rs_path.write_text(lib_rs_text, encoding="utf-8")
 
         date = args.date or datetime.date.today().isoformat()
+        fragment_triples = [
+            (issue, kind, content) for issue, kind, content, _path in fragments
+        ]
         changelog_path.write_text(
-            retitle_changelog(changelog_text, args.version, date), encoding="utf-8"
+            retitle_changelog(
+                changelog_text, args.version, date, fragments=fragment_triples
+            ),
+            encoding="utf-8",
         )
+
+        fragment_rel_paths = []
+        for _issue, _kind, _content, path in fragments:
+            rel_path = str(path.relative_to(repo_dir))
+            path.unlink()
+            fragment_rel_paths.append(rel_path)
 
         paths_to_add = [
             "quadraui/Cargo.toml",
@@ -456,6 +665,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             "README.md",
             "quadraui/src/lib.rs",
             "CHANGELOG.md",
+            *fragment_rel_paths,
         ]
         if args.with_py:
             paths_to_add += ["quadraui-py/pyproject.toml", "quadraui-py/Cargo.toml"]
