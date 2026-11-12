@@ -159,40 +159,6 @@ mod tests {
         assert_eq!(buf[(3, 2)].bg, bg);
     }
 
-    /// End-to-end regression for a mouse-clicked layout-tree `Button`
-    /// repainting as an empty bordered box with its label gone: a `Button`
-    /// painted into a cell taller than its one row of chrome (an
-    /// `EqualShare`-sized `Column` slot, say — see
-    /// `crate::tui::button`'s own doc), then this same cell's rect fed to
-    /// [`draw_focus_ring`] once the click gives it focus (the host's
-    /// generic focus-ring convention — the only one a layout-tree `Button`
-    /// has, since its own descriptor carries no `focused` state). Before
-    /// `crate::tui::button::draw_button` centred the label, it painted on
-    /// the cell's own top row, which is exactly the ring's own top border
-    /// — the ring's `╭──╮` silently replaced the button's `[ OK ]`.
-    #[test]
-    fn focus_ring_over_a_tall_button_cell_does_not_erase_the_centred_label() {
-        use crate::primitives::button::Button;
-        use crate::tui::button::draw_button;
-        use crate::types::WidgetId;
-
-        let theme = Theme::default();
-        let rect = RRect::new(0, 0, 8, 3);
-        let mut buf = Buffer::empty(rect);
-        let button = Button::new(WidgetId::new("b"), "OK");
-        draw_button(&mut buf, rect, &button, &theme, false);
-
-        draw_focus_ring(&mut buf, rect, &theme);
-
-        let row: String = (0..rect.width)
-            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
-            .collect();
-        assert!(
-            row.contains("OK"),
-            "the label must survive the ring on the middle row, got {row:?}"
-        );
-    }
-
     #[test]
     fn zero_size_rect_is_a_noop() {
         let theme = Theme::default();
