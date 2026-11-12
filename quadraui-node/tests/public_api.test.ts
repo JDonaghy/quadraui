@@ -14,6 +14,8 @@
 //     npm test
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const quadraui = require("../js/index.ts");
 
@@ -94,4 +96,23 @@ test("QuiApp's own constructor raises a catchable InvalidDimensionsError", () =>
   // separately.
   const { QuiApp, InvalidDimensionsError } = quadraui;
   assert.throws(() => new QuiApp(0, 4), (err: unknown) => err instanceof InvalidDimensionsError);
+});
+
+test("js/index.d.ts declares exactly the value exports js/index.ts actually has at runtime", () => {
+  // `index.ts`'s own header doc explains why `index.d.ts` is a hand-
+  // maintained sibling rather than a `tsc --declaration` output: nothing
+  // stops the two drifting apart by hand. This reads `index.d.ts` as text
+  // rather than importing it (a `.d.ts` has nothing to `require()`) and
+  // collects every name declared `export declare class|const|function` --
+  // the three runtime-value forms the file uses throughout, as opposed to
+  // its type-only `export type`/`export interface` lines -- then checks
+  // that set against what `index.ts` itself exports at runtime.
+  const declPath = path.join(__dirname, "..", "js", "index.d.ts");
+  const declared = new Set<string>();
+  for (const match of fs.readFileSync(declPath, "utf8").matchAll(/^export declare (?:class|const|function) (\w+)/gm)) {
+    declared.add(match[1]);
+  }
+
+  const actual = new Set(Object.keys(quadraui));
+  assert.deepEqual([...declared].sort(), [...actual].sort());
 });
