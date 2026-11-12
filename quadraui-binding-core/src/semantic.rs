@@ -592,6 +592,7 @@ mod tests {
         PaintedHit::TabBar {
             id,
             area: Rect::new(0.0, 0.0, 40.0, 1.0),
+            clip: Rect::new(0.0, 0.0, 40.0, 1.0),
             layout: TabBarLayout {
                 bar_width: 40.0,
                 bar_height: 1.0,

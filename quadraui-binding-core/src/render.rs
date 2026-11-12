@@ -190,6 +190,7 @@ pub fn draw_bands(
             hits.push(PaintedHit::List {
                 id: list.id,
                 area: rect,
+                clip: rect,
                 layout,
                 selected_idx: list.selected_idx,
                 total_items: list.items.len(),
@@ -206,6 +207,7 @@ pub fn draw_bands(
             hits.push(PaintedHit::Tree {
                 id: tree.id,
                 area: content_rect,
+                clip: content_rect,
                 layout,
                 row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
                 scrollbar,
@@ -227,6 +229,7 @@ pub fn draw_bands(
             hits.push(PaintedHit::DataTable {
                 id: data_table.id,
                 area: rect,
+                clip: rect,
                 layout,
                 scroll_offset: data_table.scroll_offset,
                 total_rows: data_table.rows.len(),
@@ -241,6 +244,7 @@ pub fn draw_bands(
             hits.push(PaintedHit::TabBar {
                 id: tab_bar.id,
                 area: rect,
+                clip: rect,
                 layout,
                 focused_index: None,
                 tab_count: tab_bar.tabs.len(),
@@ -310,6 +314,7 @@ fn draw_text_display_hit(
     PaintedHit::TextDisplay {
         id,
         area,
+        clip: area,
         layout,
         body_offset,
         total_lines: td.lines.len(),
@@ -497,6 +502,7 @@ pub fn paint_layout(
             hits.push(PaintedHit::TabBar {
                 id: tabs.tab_bar.id,
                 area: strip_rect,
+                clip: strip_rect,
                 layout,
                 focused_index: tabs.focused_index,
                 tab_count: tabs.tab_bar.tabs.len(),
@@ -664,33 +670,24 @@ fn paint_scroll(
         }
         ScrollSlots::Atomic(rect, visible) => {
             if visible {
-                // `TextDisplay` renders `lines[scroll_offset..]` regardless
-                // of where its own rect sits on screen (see
-                // `quadraui::TextDisplay`'s own doc) -- unlike every other
-                // `Atomic` leaf kind, shifting its rect by `-offset` the
-                // way `scroll_content_slots` positions them would just
-                // repaint line `0` wherever that shifted rect landed,
-                // never the `offset`th line, on every backend. Paint a
-                // shadow clone with `scroll_offset` advanced to match
-                // instead, into `rect` (already the viewport itself here
-                // -- see `scroll_content_slots`'s own `TextDisplay` arm),
-                // so it continues from the right line.
-                let text_display = match scroll_node.content.as_ref() {
-                    LayoutNode::Leaf(leaf) => match &leaf.descriptor {
-                        LeafDescriptor::TextDisplay(td) => Some((leaf, td)),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                match text_display {
-                    Some((leaf, td)) => {
-                        let shadow = text_display_scrolled_to_offset(
-                            &leaf.id,
-                            leaf.scroll_px,
-                            td,
-                            offset,
-                            metrics.line_height,
-                        );
+                // `TextDisplay`/`List`/`Tree`/`DataTable` each render their
+                // own `scroll_offset..` window into their data regardless
+                // of where their rect sits on screen (see
+                // `offset_windowed_leaf_scrolled_to_offset`'s own doc) --
+                // shifting their rect by `-offset` the way every other
+                // `Atomic` leaf kind is positioned below would just
+                // repaint from row/line `0` wherever that shifted rect
+                // landed, never the `offset`th one, on every backend.
+                // Paint a shadow clone with `scroll_offset` advanced to
+                // match instead, into `rect` (already the viewport itself
+                // here -- see `scroll_content_slots`'s own
+                // `is_offset_windowed_leaf` branch).
+                match offset_windowed_leaf_scrolled_to_offset(
+                    scroll_node.content.as_ref(),
+                    offset,
+                    metrics.line_height,
+                ) {
+                    Some(shadow) => {
                         paint_layout(backend, rect, &shadow, hits, chrome_interaction);
                     }
                     None => {
@@ -714,32 +711,67 @@ fn paint_scroll(
     }
 }
 
-/// A locally mutated clone of `td` with `scroll_offset` advanced to the
-/// whole line `offset` native units lands on and `auto_scroll` disabled
-/// (so it can't override that) — [`paint_scroll`]'s own `ScrollSlots::Atomic`
-/// arm paints this instead of `td` itself when a `Scroll`'s content is a
-/// bare `LeafDescriptor::TextDisplay`, into the viewport-sized rect
-/// `scroll_content_slots`'s own `TextDisplay` arm already hands back for
-/// it. `leaf_id`/`leaf_scroll_px` are threaded through unchanged from the
-/// original [`LayoutLeaf`] so the shadow node keeps the same hit-map id
-/// and `scroll_px` (always `None` for a `TextDisplay` descriptor today,
-/// per [`LayoutLeaf::scroll_px`]'s own doc, but kept rather than
-/// hard-coded so this helper doesn't quietly drop a future use of it).
-fn text_display_scrolled_to_offset(
-    leaf_id: &str,
-    leaf_scroll_px: Option<f32>,
-    td: &TextDisplay,
+/// `content`, when it is a bare `TextDisplay`/`List`/`Tree`/`DataTable`
+/// leaf — the same four kinds [`scroll_content_slots`]'s own
+/// `is_offset_windowed_leaf` singles out — with a locally mutated clone of
+/// its own descriptor whose `scroll_offset` is advanced to the whole row/
+/// line `offset` native units lands on (`TextDisplay` also gets
+/// `auto_scroll` disabled, so it can't override that). `None` for any
+/// other leaf kind, or a non-leaf node (a `Row`/`Column` reaches
+/// [`ScrollSlots::Children`] instead, never `Atomic`).
+///
+/// Each of these four kinds renders its own `scroll_offset`-relative
+/// window into its data regardless of where its own rect sits on screen
+/// (`quadraui::TextDisplay`/`ListView`/`TreeView`/`DataTable`'s own doc:
+/// render `items`/`rows`/`lines[scroll_offset..]`) — unlike every other
+/// `Atomic` leaf kind, whose rect `scroll_content_slots` positions by
+/// shifting it `-offset` along the scroll axis, repainting a shadow of
+/// this shape instead is what lets [`paint_scroll`]'s own
+/// `ScrollSlots::Atomic` arm show the right row/line first. `leaf`'s own
+/// `id`/`scroll_px` are threaded through unchanged, so the shadow node
+/// keeps the same hit-map id and (for `List`/`Tree`/`DataTable`, whose
+/// `with_scroll_px` paint states already read it) the same pixel-smooth
+/// sub-row remainder a plain, unscrolled leaf would get.
+fn offset_windowed_leaf_scrolled_to_offset(
+    content: &LayoutNode,
     offset: f32,
     line_height: f32,
-) -> LayoutNode {
-    let mut shadow = td.clone();
-    shadow.scroll_offset = (offset / line_height.max(1.0)).floor().max(0.0) as usize;
-    shadow.auto_scroll = false;
-    LayoutNode::Leaf(LayoutLeaf {
-        id: leaf_id.to_string(),
-        descriptor: LeafDescriptor::TextDisplay(shadow),
-        scroll_px: leaf_scroll_px,
-    })
+) -> Option<LayoutNode> {
+    let LayoutNode::Leaf(leaf) = content else {
+        return None;
+    };
+    let row = (offset / line_height.max(1.0)).floor().max(0.0) as usize;
+    let descriptor = match &leaf.descriptor {
+        LeafDescriptor::TextDisplay(td) => {
+            let mut shadow = td.clone();
+            shadow.scroll_offset = row;
+            shadow.auto_scroll = false;
+            LeafDescriptor::TextDisplay(shadow)
+        }
+        LeafDescriptor::List(list) => {
+            let mut shadow = list.clone();
+            shadow.scroll_offset = row;
+            LeafDescriptor::List(shadow)
+        }
+        LeafDescriptor::Tree(tree) => {
+            let mut shadow = tree.clone();
+            shadow.scroll_offset = row;
+            LeafDescriptor::Tree(shadow)
+        }
+        LeafDescriptor::DataTable(table) => {
+            let mut shadow = table.clone();
+            shadow.scroll_offset = row;
+            LeafDescriptor::DataTable(shadow)
+        }
+        LeafDescriptor::Button(_) | LeafDescriptor::TabBar(_) | LeafDescriptor::Extra(_) => {
+            return None
+        }
+    };
+    Some(LayoutNode::Leaf(LayoutLeaf {
+        id: leaf.id.clone(),
+        descriptor,
+        scroll_px: leaf.scroll_px,
+    }))
 }
 
 /// Builds a [`quadraui::ScrollView`] with every field this crate needs to
@@ -1000,18 +1032,18 @@ pub(crate) fn scroll_content_slots(
         ScrollSlots::Children(rects)
     } else {
         let visible = scroll.is_visible(0.0, content_len);
-        // `TextDisplay` renders `lines[scroll_offset..]` regardless of
-        // where its own rect sits on screen (see `quadraui::TextDisplay`'s
-        // own doc) — shifting its rect by `-offset` the way every other
-        // `Atomic` leaf kind is positioned below would just repaint line
-        // `0` wherever that shifted rect landed, never the `offset`th
-        // line, on every backend. Hand it the viewport itself instead;
+        // `TextDisplay`/`List`/`Tree`/`DataTable` each render their own
+        // `scroll_offset..` window into their data regardless of where
+        // their own rect sits on screen (see
+        // `offset_windowed_leaf_scrolled_to_offset`'s own doc) — shifting
+        // their rect by `-offset` the way every other `Atomic` leaf kind
+        // is positioned below would just repaint from row/line `0`
+        // wherever that shifted rect landed, never the `offset`th one, on
+        // every backend. Hand them the viewport itself instead;
         // `paint_scroll`'s own `ScrollSlots::Atomic` arm is what actually
         // advances a painted shadow clone's `scroll_offset` to match.
-        if let LayoutNode::Leaf(leaf) = content {
-            if matches!(leaf.descriptor, LeafDescriptor::TextDisplay(_)) {
-                return ScrollSlots::Atomic(viewport, visible);
-            }
+        if is_offset_windowed_leaf(content) {
+            return ScrollSlots::Atomic(viewport, visible);
         }
         let rect = if horizontal {
             let raw_x = viewport.x - offset;
@@ -1032,6 +1064,27 @@ pub(crate) fn scroll_content_slots(
         };
         ScrollSlots::Atomic(rect, visible)
     }
+}
+
+/// Whether `content` is a bare leaf kind that renders its own
+/// `scroll_offset`-relative window into its data regardless of where its
+/// own rect sits on screen — a `TextDisplay`/`List`/`Tree`/`DataTable`.
+/// [`scroll_content_slots`]'s own `Atomic` branch hands these the
+/// viewport itself rather than a rect shifted `-offset` along the scroll
+/// axis (which would just repaint from the first row/line every time);
+/// [`offset_windowed_leaf_scrolled_to_offset`] is what actually advances
+/// the shadow clone `paint_scroll` paints into it to show the right one.
+fn is_offset_windowed_leaf(content: &LayoutNode) -> bool {
+    let LayoutNode::Leaf(leaf) = content else {
+        return false;
+    };
+    matches!(
+        leaf.descriptor,
+        LeafDescriptor::TextDisplay(_)
+            | LeafDescriptor::List(_)
+            | LeafDescriptor::Tree(_)
+            | LeafDescriptor::DataTable(_)
+    )
 }
 
 /// Clips a scroll slot's main-axis span (`origin`, `extent`) to fit
@@ -1608,6 +1661,7 @@ pub fn paint_leaf(
             hits.push(PaintedHit::List {
                 id,
                 area,
+                clip: area,
                 layout,
                 selected_idx: list.selected_idx,
                 total_items: list.items.len(),
@@ -1622,6 +1676,7 @@ pub fn paint_leaf(
             hits.push(PaintedHit::Tree {
                 id,
                 area: content_rect,
+                clip: content_rect,
                 layout,
                 row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
                 scrollbar,
@@ -1640,6 +1695,7 @@ pub fn paint_leaf(
             hits.push(PaintedHit::DataTable {
                 id,
                 area,
+                clip: area,
                 layout,
                 scroll_offset: data_table.scroll_offset,
                 total_rows: data_table.rows.len(),
@@ -1652,6 +1708,7 @@ pub fn paint_leaf(
             hits.push(PaintedHit::TabBar {
                 id,
                 area,
+                clip: area,
                 layout,
                 focused_index: None,
                 tab_count: tab_bar.tabs.len(),
@@ -2718,9 +2775,10 @@ mod tests {
     /// (rows `[2, 4)` globally) straddles the viewport's own top edge
     /// (global row `3`): its painted `area` is cut to the one row still
     /// inside the viewport, not the full two, and doesn't overlap `"2"`'s
-    /// own area painted right after it. Before the fix this pins down, a
-    /// cell-grid backend would instead paint `"1"` at its full two-row
-    /// height starting at the viewport's own top edge, overlapping `"2"`.
+    /// own area painted right after it — `clip_main_axis`'s own
+    /// `cell_grid` clamp-and-shrink, not just a plain clamp to the
+    /// viewport's top edge, which would paint `"1"` at its full two-row
+    /// height there and overlap `"2"`.
     #[test]
     fn scroll_multi_row_child_at_non_boundary_offset_is_cut_not_overlapping() {
         use quadraui::tui::testing::TuiDriver;
@@ -2809,15 +2867,15 @@ mod tests {
 
     /// A single 20-line `TextDisplay` AS the scroll's entire content (not
     /// wrapped in a `Row`/`Column` — `scroll_content_slots`'s `Atomic`
-    /// branch) in a 5-row viewport at offset `7`: the issue's own atomic-
-    /// content acceptance scenario. Before the fix this pins down, a
-    /// cell-grid backend always repainted line `0` at the viewport's top
-    /// regardless of offset (every `Atomic` leaf kind's rect, sized to
-    /// the full `content_len` and shifted by `-offset`, clamps to the
-    /// viewport's origin without shrinking); the content's own backend
-    /// contract (`quadraui::TextDisplay`'s doc: render
-    /// `lines[scroll_offset..]`) is what lets this fix show the right
-    /// line instead.
+    /// branch) in a 5-row viewport at offset `7`: a cell-grid backend's
+    /// `Atomic` leaf rect clamps a negative main-axis origin to `0`
+    /// without shrinking (`q_rect_to_ratatui`'s own `.max(0.0)`), so
+    /// shifting the rect by `-offset` the way a plain leaf is positioned
+    /// would always repaint line `0` at the viewport's top regardless of
+    /// `offset`. `TextDisplay`'s own backend contract
+    /// (`quadraui::TextDisplay`'s doc: render `lines[scroll_offset..]`) is
+    /// what lets the shadow clone `offset_windowed_leaf_scrolled_to_offset`
+    /// builds show the right line instead.
     #[test]
     fn scroll_atomic_text_display_at_offset_shows_the_offset_line_first() {
         use quadraui::tui::testing::TuiDriver;
@@ -2837,5 +2895,332 @@ mod tests {
             _ => None,
         });
         assert_eq!(first_visible_line, Some(7));
+    }
+
+    /// [`ScrollTextAtomicLogic`]'s `List` counterpart: a 20-item `List` AS
+    /// the scroll's entire content, in a 5-row viewport at offset `7` —
+    /// the issue's own acceptance scenario for the kind it names
+    /// explicitly. Mirrors [`scroll_atomic_text_display_at_offset_shows_the_offset_line_first`]
+    /// for the same reason: `ListView`'s own backend contract renders
+    /// `items[scroll_offset..]` regardless of where its rect sits on
+    /// screen, so the shadow clone must show item `7` first, not item `0`.
+    struct ScrollListAtomicLogic {
+        offset: f32,
+        item_count: usize,
+        engine: crate::engine::InteractionEngine,
+    }
+
+    impl quadraui::AppLogic for ScrollListAtomicLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let list = ListView {
+                id: WidgetId::new("list"),
+                title: None,
+                items: (0..self.item_count)
+                    .map(|i| quadraui::ListItem {
+                        text: quadraui::StyledText::plain(format!("item {i}")),
+                        icon: None,
+                        detail: None,
+                        decoration: Decoration::default(),
+                    })
+                    .collect(),
+                selected_idx: 0,
+                scroll_offset: 0,
+                has_focus: true,
+                bordered: false,
+                h_scroll: 0,
+                max_content_width: None,
+                show_v_scrollbar: false,
+            };
+            let node = LayoutNode::Scroll(LayoutScroll {
+                id: "scroll".to_string(),
+                axis: ScrollAxis::Vertical,
+                offset: Some(self.offset),
+                content: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "list".to_string(),
+                    descriptor: LeafDescriptor::List(list),
+                    scroll_px: None,
+                })),
+                spacing: Spacing::default(),
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(
+            &mut self,
+            _event: quadraui::UiEvent,
+            _backend: &mut dyn Backend,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+    }
+
+    #[test]
+    fn scroll_atomic_list_at_offset_shows_the_offset_item_first() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = ScrollListAtomicLogic {
+            offset: 7.0,
+            item_count: 20,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let painted_scroll_offset = hits.iter().find_map(|hit| match hit {
+            PaintedHit::List { scroll_offset, .. } => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(painted_scroll_offset, Some(7));
+        let first_visible_item = hits.iter().find_map(|hit| match hit {
+            PaintedHit::List { layout, .. } => {
+                layout.visible_items.first().map(|item| item.item_idx)
+            }
+            _ => None,
+        });
+        assert_eq!(first_visible_item, Some(7));
+    }
+
+    /// [`ScrollListAtomicLogic`]'s `Tree` counterpart — same scenario, a
+    /// 20-row `Tree` AS the scroll's entire content, in a 5-row viewport
+    /// at offset `7`.
+    struct ScrollTreeAtomicLogic {
+        offset: f32,
+        row_count: usize,
+        engine: crate::engine::InteractionEngine,
+    }
+
+    impl quadraui::AppLogic for ScrollTreeAtomicLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let tree = TreeView {
+                id: WidgetId::new("tree"),
+                rows: (0..self.row_count)
+                    .map(|i| quadraui::TreeRow {
+                        path: vec![i as u16],
+                        indent: 0,
+                        icon: None,
+                        text: quadraui::StyledText::plain(format!("row {i}")),
+                        badge: None,
+                        is_expanded: None,
+                        decoration: Decoration::default(),
+                        edit: None,
+                    })
+                    .collect(),
+                selection_mode: quadraui::SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: quadraui::TreeStyle::default(),
+                has_focus: true,
+            };
+            let node = LayoutNode::Scroll(LayoutScroll {
+                id: "scroll".to_string(),
+                axis: ScrollAxis::Vertical,
+                offset: Some(self.offset),
+                content: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "tree".to_string(),
+                    descriptor: LeafDescriptor::Tree(tree),
+                    scroll_px: None,
+                })),
+                spacing: Spacing::default(),
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(
+            &mut self,
+            _event: quadraui::UiEvent,
+            _backend: &mut dyn Backend,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+    }
+
+    #[test]
+    fn scroll_atomic_tree_at_offset_shows_the_offset_row_first() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = ScrollTreeAtomicLogic {
+            offset: 7.0,
+            row_count: 20,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let painted_scroll_offset = hits.iter().find_map(|hit| match hit {
+            PaintedHit::Tree { scroll_offset, .. } => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(painted_scroll_offset, Some(7));
+        let first_visible_row_idx = hits.iter().find_map(|hit| match hit {
+            PaintedHit::Tree { layout, .. } => layout.visible_rows.first().map(|r| r.row_idx),
+            _ => None,
+        });
+        assert_eq!(first_visible_row_idx, Some(7));
+    }
+
+    /// [`ScrollListAtomicLogic`]'s `DataTable` counterpart — same scenario,
+    /// a 20-row `DataTable` AS the scroll's entire content, in a 5-row
+    /// viewport at offset `7`.
+    struct ScrollDataTableAtomicLogic {
+        offset: f32,
+        row_count: usize,
+        engine: crate::engine::InteractionEngine,
+    }
+
+    impl quadraui::AppLogic for ScrollDataTableAtomicLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            use quadraui::{Column, ColumnWidth, DataRow};
+
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let table = DataTable {
+                id: WidgetId::new("table"),
+                columns: vec![Column {
+                    title: "col".to_string(),
+                    width: ColumnWidth::FixedCells(10.0),
+                    align: Default::default(),
+                }],
+                rows: (0..self.row_count)
+                    .map(|i| DataRow {
+                        cells: vec![quadraui::StyledText::plain(format!("row {i}"))],
+                        decoration: Decoration::default(),
+                    })
+                    .collect(),
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: true,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+            };
+            let node = LayoutNode::Scroll(LayoutScroll {
+                id: "scroll".to_string(),
+                axis: ScrollAxis::Vertical,
+                offset: Some(self.offset),
+                content: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "table".to_string(),
+                    descriptor: LeafDescriptor::DataTable(table),
+                    scroll_px: None,
+                })),
+                spacing: Spacing::default(),
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(
+            &mut self,
+            _event: quadraui::UiEvent,
+            _backend: &mut dyn Backend,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+    }
+
+    #[test]
+    fn scroll_atomic_data_table_at_offset_shows_the_offset_row_first() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = ScrollDataTableAtomicLogic {
+            offset: 7.0,
+            row_count: 20,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let painted_scroll_offset = hits.iter().find_map(|hit| match hit {
+            PaintedHit::DataTable { scroll_offset, .. } => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(painted_scroll_offset, Some(7));
+    }
+
+    /// A single-line `TextDisplay` child, labelled `id` — `natural_size`'s
+    /// `TextDisplay` arm sizes it to `lines.len() as f32 * line_height`
+    /// using the `line_height` it's PASSED (unlike its `Button`/`TabBar`
+    /// arms, which measure through `Backend::measure_text` against
+    /// whatever real backend is driving the call) — so under a faked
+    /// pixel `ScrollMetrics` this is `1.0 * 16.0 = 16.0` regardless of
+    /// `tui()`'s own real `line_height` of `1.0`.
+    fn one_line_text_display(id: &str) -> LayoutNode {
+        let mut td = TextDisplay::new(WidgetId::new(id));
+        td.append_line(TextDisplayLine {
+            spans: vec![StyledSpan::plain("x")],
+            decoration: Decoration::default(),
+            timestamp: None,
+        });
+        LayoutNode::Leaf(LayoutLeaf {
+            id: id.to_string(),
+            descriptor: LeafDescriptor::TextDisplay(td),
+            scroll_px: None,
+        })
+    }
+
+    /// A pixel backend's own metrics (`char_width`/`line_height` both
+    /// `> 1.0`) keep [`scroll_content_slots`]'s unclipped, negative-origin
+    /// rect for a `Children` slot — the contract
+    /// [`crate::hit::clip_hits_to_viewport`]'s own pixel-metrics
+    /// regression test (`hit::tests::clip_hits_to_viewport_keeps_a_local_frame_hits_translation_origin_unmoved`)
+    /// relies on `scroll_content_slots` itself upholding. A `Column` of
+    /// two 16px-tall children in a 50px viewport at `offset: 10.0`: the
+    /// second child's rect keeps its real (not yet negative, but still
+    /// un-clamped) `y`, `16.0 - 10.0 = 6.0`, computed the same way
+    /// whether or not it happens to land inside `viewport` — a
+    /// `cell_grid` backend's slot would instead clamp/shrink a span that
+    /// does stick out past the viewport's own edge, which this one, at
+    /// this particular offset, does not; `scroll_multi_row_child_at_non_boundary_offset_is_cut_not_overlapping`
+    /// above already covers that clamp on the `cell_grid` side.
+    #[test]
+    fn scroll_content_slots_keeps_the_unclipped_rect_on_a_pixel_backend() {
+        let viewport = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let metrics = ScrollMetrics {
+            char_width: 8.0,
+            line_height: 16.0,
+        };
+        let content = LayoutNode::Column(LayoutContainer::new(
+            vec![one_line_text_display("a"), one_line_text_display("b")],
+            Spacing::default(),
+        ));
+        let mut tui = tui();
+        let content_len = natural_main_length(&mut tui, &content, ScrollAxis::Vertical, metrics);
+        assert_eq!(content_len, 32.0);
+        let slots = scroll_content_slots(
+            &mut tui,
+            viewport,
+            ScrollAxis::Vertical,
+            10.0,
+            &content,
+            content_len,
+            metrics,
+        );
+        let ScrollSlots::Children(rects) = slots else {
+            panic!("a Column matching the scroll's own axis yields Children slots");
+        };
+        assert_eq!(rects[1].0, Rect::new(0.0, 6.0, 100.0, 16.0));
     }
 }
