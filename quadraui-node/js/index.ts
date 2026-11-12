@@ -1,20 +1,32 @@
 // Hand-maintained facade over the native napi-rs addon this package builds
 // at `../index.js`/`../index.d.ts`/`../*.node` (via `npm run build`, which
 // runs `napi build --platform --release` -- see package.json's `build`
-// script). Those three are generated build artifacts, not checked in; this
-// file is this package's actual `main`/`types` entry, so a consumer's
-// import path never names the generated loader directly, and any future
-// TS-only ergonomics (overloads, a narrower public type) have exactly one
-// place to be added without touching the generated file.
+// script). Those three are generated build artifacts, not checked in; a
+// consumer's import path never names the generated loader directly, and
+// any future TS-only ergonomics (overloads, a narrower public type) have
+// exactly one place to be added without touching the generated file.
+//
+// This package's published `main`/`types` entry is `dist/index.js`/
+// `dist/index.d.ts` instead of this file directly: `npm pack`/`npm
+// publish`'s own `prepack` hook (`package.json`'s `build:dist` script)
+// compiles this file with `tsc` into `dist/index.js`, and copies
+// `index.d.ts` -- this file's own hand-maintained sibling declaration,
+// not a `tsc --declaration` output; see that file's own header doc for
+// why -- next to it as `dist/index.d.ts`. In-repo, every direct consumer
+// (`js/app/runtime.ts`, every example, every test) still `require()`s
+// this file by its own `.ts` path unchanged, so it still needs to run
+// standalone under Node's native TypeScript support with no compile step
+// at all; the paragraph below's constraint exists for that path, not the
+// packaged one.
 //
 // Runtime exports go through `require`/`exports` rather than `import`/
 // `export`: Node's native TypeScript support determines a `.ts` file's
 // module format the same way it would a `.js` file with this package's
 // `"type": "commonjs"`, so top-level `import`/runtime `export` syntax here
-// would be a hard parse error, not silently transpiled -- there is no
-// `tsc`/bundler step between this file and the Node process that runs it.
-// `export type` below is exempt: it is erasable (type-only, no runtime
-// value), so it disappears entirely rather than needing ESM semantics.
+// would be a hard parse error, not silently transpiled, when this file
+// runs standalone (every in-repo consumer's own path). `export type`
+// below is exempt: it is erasable (type-only, no runtime value), so it
+// disappears entirely rather than needing ESM semantics.
 const native: typeof import("../index.js") = require("../index.js");
 
 // ─── Error subclasses ───────────────────────────────────────────────────
