@@ -8,15 +8,20 @@
 //! `TuiBackend` instead snapshots the region a push narrows away from
 //! and restores whatever part of it still sits outside the clip once
 //! the matching `pop_clip` runs — see `tui::canvas::TuiClipFrame`'s doc.
-//! These tests drive the real `Backend` trait methods directly against
-//! a `ratatui::Terminal<TestBackend>`, the same low-level seam a future
-//! `ScrollContainer` rasteriser would call, rather than through
-//! `TuiDriver`'s `AppLogic` event loop — no primitive wires this seam
-//! up yet (that is the follow-up issue), so there is no app-level event
-//! path to drive here.
+//! The first two tests drive the real `Backend` trait methods directly
+//! against a `ratatui::Terminal<TestBackend>`, the same low-level seam a
+//! future `ScrollContainer` rasteriser would call, rather than through
+//! `TuiDriver`'s `AppLogic` event loop — no primitive wires this seam up
+//! yet (that is the follow-up issue), so there is no app-level event
+//! path for most of it. The last test *does* go through `TuiDriver`: it
+//! calls `push_clip`/`draw_solid_fill`/`pop_clip` from inside an
+//! `AppLogic::render`, which is enough to exercise the frame-boundary
+//! invariant (`TuiBackend::begin_frame` clearing `clip_stack`) through
+//! the real `event -> handle -> render` path.
 
+use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::TuiBackend;
-use quadraui::{Backend, Color, Rect as QRect};
+use quadraui::{AppLogic, Backend, Color, Reaction, Rect as QRect, UiEvent};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color as RColor;
 use ratatui::Terminal;
@@ -109,5 +114,68 @@ fn nested_pop_restores_the_outer_clips_own_paint_not_the_pre_push_blank() {
         RColor::Reset,
         "outside the outer clip entirely, the outer pop must roll the red fill all the way \
          back to blank"
+    );
+}
+
+/// `AppLogic` whose `render` pushes an unbalanced clip on its first call
+/// (no matching `pop_clip`) and, on every later call, pushes a clip
+/// sized to the *whole* buffer and pops it properly. Driven through
+/// `TuiDriver`, not a raw `Terminal`, so `begin_frame`'s `clip_stack.clear()`
+/// runs via the real frame-paint path.
+struct ClipLeakApp {
+    frame: std::cell::Cell<u32>,
+}
+
+impl AppLogic for ClipLeakApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let frame = self.frame.get();
+        self.frame.set(frame + 1);
+        if frame == 0 {
+            backend.push_clip(QRect::new(0.0, 0.0, 2.0, 2.0));
+            backend.draw_solid_fill(QRect::new(0.0, 0.0, 10.0, 10.0), Color::rgb(200, 0, 0));
+            // Deliberately no `pop_clip()` — the bug this test guards against.
+        } else {
+            // If `begin_frame` had not cleared frame 0's leaked entry,
+            // this push would intersect against its stale 2x2 clip
+            // instead of the full 10x10 buffer, narrowing this fill to
+            // 2x2 cells instead of the 10x10 this frame actually asks for.
+            backend.push_clip(QRect::new(0.0, 0.0, 10.0, 10.0));
+            backend.draw_solid_fill(QRect::new(0.0, 0.0, 10.0, 10.0), Color::rgb(0, 0, 200));
+            backend.pop_clip();
+        }
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+#[test]
+fn begin_frame_clears_an_unbalanced_push_before_the_next_frame() {
+    // `TuiDriver::new` paints frame 0 (the unbalanced push + red fill).
+    let mut driver = TuiDriver::new(
+        ClipLeakApp {
+            frame: std::cell::Cell::new(0),
+        },
+        10,
+        10,
+    );
+    // Frame 1: a fresh push against what must be a clean `clip_stack`.
+    driver.render();
+
+    let blue = RColor::Rgb(0, 0, 200);
+    assert_eq!(
+        driver.style_at(5, 5).expect("in-bounds").bg,
+        blue,
+        "frame 1's full-buffer push must not be narrowed by frame 0's leaked, \
+         unbalanced push — begin_frame must clear clip_stack between frames"
+    );
+    assert_eq!(
+        driver.style_at(9, 9).expect("in-bounds").bg,
+        blue,
+        "frame 1's fill reaches every corner of the 10x10 buffer, unclipped by \
+         any stale frame-0 state"
     );
 }

@@ -2353,11 +2353,24 @@ pub trait Backend: sealed::Sealed {
     /// draws through `Backend::draw_*`, not through a `PaintSurface`
     /// (which TUI never implements — see that trait's module doc).
     ///
+    /// This only clips *painting*. Hit-testing (`zones`,
+    /// `register_text_region`) and the terminal cursor position recorded
+    /// by anything painted while a clip is active are **not** clipped —
+    /// a caller that routes clicks through those needs its own
+    /// visibility check for a child clipped out of view.
+    ///
+    /// Rect quantisation on a cell/pixel-quantised backend rounds
+    /// *outward* to the nearest whole unit (matching
+    /// [`crate::DrawOp::PushClip`]), not to nearest — a fractional clip
+    /// can let a child bleed up to one unit past it.
+    ///
     /// Default: no-op, so every backend without its own clip bookkeeping
     /// keeps painting exactly as before this method existed.
     /// [`crate::tui::backend::TuiBackend`] overrides this with the same
     /// cell-quantised clip bookkeeping [`crate::tui::canvas`] already
-    /// uses for `Canvas`'s own `PushClip`/`PopClip` ops.
+    /// uses for `Canvas`'s own `PushClip`/`PopClip` ops — see
+    /// [`crate::tui::canvas::TuiClipFrame`]'s doc for that backend's own
+    /// extra caveat (clipping is retroactive there, not a live scissor).
     fn push_clip(&mut self, _rect: Rect) {}
 
     /// Pop the clip most recently pushed by [`Self::push_clip`],
