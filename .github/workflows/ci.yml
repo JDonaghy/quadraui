@@ -598,6 +598,33 @@ jobs:
       - name: introduction.md / README.md hello-world sync check
         run: python3 tools/test_introduction_matches_readme.py
 
+  backend-loc-ratchet:
+    # #2373: the four per-backend directories under `quadraui/src/`
+    # (`tui`, `macos`, `win`, `gtk`) grew by roughly 4.1k lines in three days
+    # while the consolidation epics' shared engines landed *beside* them
+    # instead of replacing code inside them -- "consolidation" quietly added
+    # code instead of removing it. `scripts/backend_loc_ratchet.py` counts
+    # each directory's `.rs` lines and compares against the committed
+    # baseline in `scripts/backend_loc_baseline.json`, the same ratchet shape
+    # as the `comment-lint` job above: it doesn't fail on today's tree, but
+    # fails the instant a directory's count climbs past its baseline by more
+    # than the script's small allowance. A real shrink is expected to lower
+    # the baseline as part of that PR (the script prints the number to
+    # commit); a real growth that needs to cross the allowance raises the
+    # baseline in the same PR instead, so the increase is a visible line in
+    # the diff rather than something this gate papers over.
+    name: Backend line-count ratchet
+    runs-on: ubuntu-latest
+    # Two Python-script steps reading local files, normally well under a
+    # minute.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: backend_loc_ratchet.py unit tests
+        run: python3 scripts/test_backend_loc_ratchet.py
+      - name: Backend line-count ratchet
+        run: python3 scripts/backend_loc_ratchet.py
+
   wire-types-check:
     # Staleness + acceptance gate for the generated wire types and
     # native-extension stub (`scripts/gen_wire_types.py`): fails if
