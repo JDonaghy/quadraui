@@ -629,11 +629,13 @@ jobs:
         run: python3 scripts/backend_loc_ratchet.py
 
   wire-types-check:
-    # Staleness + acceptance gate for the generated wire types and
-    # native-extension stub (`scripts/gen_wire_types.py`): fails if
-    # regenerating would change any committed output
-    # (`quadraui-py/python/quadraui/wire.pyi`, `quadraui-node/js/wire.d.ts`,
-    # `quadraui-py/python/quadraui/_quadraui.pyi`), if the "good" fixture
+    # Staleness + acceptance gate for the generated wire types, native-
+    # extension stub, and Markdown reference page (`scripts/
+    # gen_wire_types.py`): fails if regenerating would change any committed
+    # output (`quadraui-py/python/quadraui/wire.pyi`,
+    # `quadraui-node/js/wire.d.ts`, `quadraui-py/python/quadraui/
+    # _quadraui.pyi`, and the generated section of
+    # `docs/bindings-wire-format.md`), if the "good" fixture
     # scripts (`scripts/fixtures/wire_types_sample.{py,ts}`, or every real
     # example under `quadraui-py/examples/` for the `_quadraui.pyi` side)
     # fail to type-check under `mypy --strict`/`pyright`/`tsc --strict`, or if the

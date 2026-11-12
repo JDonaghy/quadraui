@@ -182,19 +182,29 @@ class DefJsonDecodeTests(unittest.TestCase):
 
 
 class CheckExitCodeTests(unittest.TestCase):
-    """`main(["--check"])`'s exit code against a throwaway pair of output
+    """`main(["--check"])`'s exit code against a throwaway set of output
     paths and a small monkeypatched [`gwt.DEFS`] fixture -- never against
-    the real committed `wire.pyi`/`wire.d.ts`, and never through
-    [`gwt.load_defs_from_rust`]'s own `cargo run` (that's
+    the real committed `wire.pyi`/`wire.d.ts`/`docs/bindings-wire-format.md`,
+    and never through [`gwt.load_defs_from_rust`]'s own `cargo run` (that's
     `scripts/check_wire_types.sh`'s job)."""
 
     def setUp(self) -> None:
-        self._py_out, self._ts_out, self._stub_out = gwt.PY_OUT, gwt.TS_OUT, gwt.STUB_OUT
+        self._py_out, self._ts_out, self._stub_out, self._doc_out = (
+            gwt.PY_OUT,
+            gwt.TS_OUT,
+            gwt.STUB_OUT,
+            gwt.DOC_OUT,
+        )
         self._defs = gwt.DEFS
         gwt.DEFS = [gwt.ObjDef("Foo", [gwt.Field("x", gwt.INT)])]
 
     def tearDown(self) -> None:
-        gwt.PY_OUT, gwt.TS_OUT, gwt.STUB_OUT = self._py_out, self._ts_out, self._stub_out
+        gwt.PY_OUT, gwt.TS_OUT, gwt.STUB_OUT, gwt.DOC_OUT = (
+            self._py_out,
+            self._ts_out,
+            self._stub_out,
+            self._doc_out,
+        )
         gwt.DEFS = self._defs
 
     def test_check_passes_once_outputs_match_generation(self) -> None:
@@ -207,6 +217,8 @@ class CheckExitCodeTests(unittest.TestCase):
             gwt.PY_OUT = Path(tmp) / "wire.pyi"
             gwt.TS_OUT = Path(tmp) / "wire.d.ts"
             gwt.STUB_OUT = Path(tmp) / "_quadraui.pyi"
+            gwt.DOC_OUT = Path(tmp) / "bindings-wire-format.md"
+            gwt.DOC_OUT.write_text(f"{gwt.DOC_GENERATED_BEGIN}\n{gwt.DOC_GENERATED_END}\n")
             self.assertEqual(gwt.main([]), 0)
             self.assertEqual(gwt.main(["--check"]), 0)
 
@@ -217,9 +229,13 @@ class CheckExitCodeTests(unittest.TestCase):
             gwt.PY_OUT = Path(tmp) / "wire.pyi"
             gwt.TS_OUT = Path(tmp) / "wire.d.ts"
             gwt.STUB_OUT = Path(tmp) / "_quadraui.pyi"
+            gwt.DOC_OUT = Path(tmp) / "bindings-wire-format.md"
             gwt.PY_OUT.write_text("stale\n")
             gwt.TS_OUT.write_text("stale\n")
             gwt.STUB_OUT.write_text("stale\n")
+            gwt.DOC_OUT.write_text(
+                f"{gwt.DOC_GENERATED_BEGIN}\nstale\n{gwt.DOC_GENERATED_END}\n"
+            )
             self.assertEqual(gwt.main(["--check"]), 1)
 
 
@@ -465,6 +481,111 @@ class OverridesResolveTests(unittest.TestCase):
         )
         theme_meth = gwt.RustMethod(name="theme", params=[], return_type="Py<PyDict>")
         gwt._check_overrides_resolve({"QuiApp": [meth, theme_meth]}, [])
+
+
+class MarkdownRenderingTests(unittest.TestCase):
+    """[`gwt.render_markdown_reference`] against small throwaway schemas --
+    an ordinary struct, a `flat()`-built discriminated union (with and
+    without a `common` field), and an alias -- mirroring
+    `DiscriminatedRenderingTests`'/`KeywordCollidingFieldTests`' own
+    fixture-based shape above, for the Markdown target instead of the
+    Python/TypeScript ones."""
+
+    def test_ordinary_obj_renders_a_field_table(self) -> None:
+        obj = gwt.ObjDef(
+            "Sample",
+            [
+                gwt.Field("id", gwt.STR, doc="the widget id"),
+                gwt.Field("count", gwt.INT, optional=True),
+            ],
+            doc="Sample's own doc.",
+        )
+        text = gwt.render_markdown_reference([obj])
+        self.assertIn('<a id="wire-sample"></a>', text)
+        self.assertIn("#### `Sample`", text)
+        self.assertIn("Sample's own doc.", text)
+        self.assertIn("| Field | Type | Required | Description |", text)
+        self.assertIn("| `id` | `string` | yes | the widget id |", text)
+        self.assertIn("| `count` | `number` | no |  |", text)
+        # Table of contents links to the same anchor the heading defines.
+        self.assertIn("[`Sample`](#wire-sample)", text)
+
+    def test_obj_with_no_fields_renders_a_placeholder(self) -> None:
+        obj = gwt.ObjDef("Empty", [])
+        text = gwt.render_markdown_reference([obj])
+        self.assertIn("_(no fields)_", text)
+        self.assertNotIn("| Field | Type |", text)
+
+    def test_discriminated_union_renders_a_tag_table_plus_common_fields(self) -> None:
+        obj = gwt.flat(
+            "_Sample",
+            [("Foo", gwt.STR), ("Bar", gwt.INT)],
+            common=[gwt.Field("hit", gwt.STR, optional=True, doc="hit region")],
+        )
+        text = gwt.render_markdown_reference([obj])
+        self.assertIn(
+            "Exactly one of the tags below is present on the wire "
+            "(a discriminated union):",
+            text,
+        )
+        self.assertIn("| Tag | Payload type | Description |", text)
+        self.assertIn("| `Foo` | `string` |  |", text)
+        self.assertIn("| `Bar` | `number` |  |", text)
+        self.assertIn("Present alongside whichever tag above is set:", text)
+        self.assertIn("| `hit` | `string` | no | hit region |", text)
+
+    def test_discriminated_union_without_common_omits_that_section(self) -> None:
+        obj = gwt.flat("_NoCommon", [("Foo", gwt.STR)])
+        text = gwt.render_markdown_reference([obj])
+        self.assertNotIn("Present alongside whichever tag above is set:", text)
+
+    def test_alias_renders_its_target_type(self) -> None:
+        alias = gwt.AliasDef("WidgetId", gwt.STR, doc="A widget's own label.")
+        text = gwt.render_markdown_reference([alias])
+        self.assertIn("A widget's own label.", text)
+        self.assertIn("Alias for `string`.", text)
+
+    def test_pipe_in_a_union_type_is_escaped_so_it_cannot_break_the_table(self) -> None:
+        obj = gwt.ObjDef("Sample2", [gwt.Field("x", gwt.NULLABLE(gwt.STR))])
+        text = gwt.render_markdown_reference([obj])
+        self.assertIn("| `x` | `string \\| null` | yes |  |", text)
+
+    def test_doc_with_embedded_newline_is_collapsed_to_one_line(self) -> None:
+        obj = gwt.ObjDef("Sample3", [gwt.Field("x", gwt.STR, doc="line one\nline two")])
+        text = gwt.render_markdown_reference([obj])
+        self.assertIn("| `x` | `string` | yes | line one line two |", text)
+
+
+class RenderDocPageTests(unittest.TestCase):
+    """[`gwt.render_doc_page`]'s splice between `DOC_GENERATED_BEGIN`/
+    `DOC_GENERATED_END` -- hand-written prose on either side of the markers
+    must survive untouched, and a page missing either marker must raise
+    rather than silently dropping its prose."""
+
+    def test_splices_generated_content_between_markers(self) -> None:
+        template = (
+            "# Prose before\n\n"
+            f"{gwt.DOC_GENERATED_BEGIN}\nstale content\n{gwt.DOC_GENERATED_END}\n\n"
+            "# Prose after\n"
+        )
+        obj = gwt.ObjDef("Sample", [gwt.Field("x", gwt.STR)])
+        text = gwt.render_doc_page(template, [obj])
+        self.assertIn("# Prose before", text)
+        self.assertIn("# Prose after", text)
+        self.assertIn("#### `Sample`", text)
+        self.assertNotIn("stale content", text)
+        # Re-splicing the already-generated page is idempotent.
+        self.assertEqual(text, gwt.render_doc_page(text, [obj]))
+
+    def test_missing_begin_marker_raises(self) -> None:
+        template = f"# Prose\n\nno begin marker here\n{gwt.DOC_GENERATED_END}\n"
+        with self.assertRaises(ValueError):
+            gwt.render_doc_page(template, [])
+
+    def test_missing_end_marker_raises(self) -> None:
+        template = f"# Prose\n\n{gwt.DOC_GENERATED_BEGIN}\nno end marker here\n"
+        with self.assertRaises(ValueError):
+            gwt.render_doc_page(template, [])
 
 
 if __name__ == "__main__":
