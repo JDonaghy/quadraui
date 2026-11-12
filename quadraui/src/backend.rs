@@ -2371,6 +2371,9 @@ pub trait Backend: sealed::Sealed {
     /// uses for `Canvas`'s own `PushClip`/`PopClip` ops — see
     /// [`crate::tui::canvas::TuiClipFrame`]'s doc for that backend's own
     /// extra caveat (clipping is retroactive there, not a live scissor).
+    /// [`crate::gtk::backend::GtkBackend`] overrides this too, forwarding
+    /// straight to its own [`crate::PaintSurface::surface_push_clip`]
+    /// (a cairo save/clip pair) instead of a second clip stack.
     fn push_clip(&mut self, _rect: Rect) {}
 
     /// Pop the clip most recently pushed by [`Self::push_clip`],

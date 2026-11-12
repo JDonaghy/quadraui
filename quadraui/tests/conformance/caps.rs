@@ -1022,21 +1022,11 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     // ── push_clip / pop_clip: the backend-neutral clip-rect seam.
     // `TuiBackend` overrides both, reusing `tui::canvas`'s own
-    // cell-quantised clip bookkeeping. GTK, macOS and Win each have a
-    // real pixel-clip equivalent already (`PaintSurface::surface_push_clip`/
-    // `surface_pop_clip`), but wiring the `Backend`-level seam onto it is
-    // each backend's own follow-up — scoped to TUI only for now.
-    (
-        "gtk",
-        "push_clip",
-        "GTK's pixel-clip equivalent already exists on `PaintSurface::surface_push_clip`; \
-         wiring `Backend::push_clip` onto it is GTK's own follow-up issue",
-    ),
-    (
-        "gtk",
-        "pop_clip",
-        "same follow-up as push_clip above — `PaintSurface::surface_pop_clip` already exists",
-    ),
+    // cell-quantised clip bookkeeping; `GtkBackend` overrides both too,
+    // forwarding to its own `PaintSurface::surface_push_clip`/
+    // `surface_pop_clip` (cairo's save/clip/restore). macOS and Win each
+    // have the same real pixel-clip equivalent already, but wiring the
+    // `Backend`-level seam onto it is each backend's own follow-up.
     (
         "macos",
         "push_clip",

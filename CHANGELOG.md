@@ -62,9 +62,10 @@ only a push to `main` runs this workflow.
 - `Backend::push_clip`/`pop_clip`: a backend-neutral, nested clip-rect seam
   for a compositing container (a scroll view clipping a partly-visible
   child) that paints through `Backend::draw_*` rather than a
-  `PaintSurface`. Default no-op, so this is additive; `TuiBackend` is the
-  only implementor so far, reusing `tui::canvas`'s cell-quantised clip
-  bookkeeping. GTK, macOS and Win each get their own follow-up issue.
+  `PaintSurface`. Default no-op, so this is additive. `TuiBackend` reuses
+  `tui::canvas`'s cell-quantised clip bookkeeping; `GtkBackend` forwards to
+  its own `PaintSurface::surface_push_clip`/`surface_pop_clip` (cairo's
+  save/clip/restore). macOS and Win each get their own follow-up issue.
 
 ### Fixed
 - TUI `Button`: a leaf painted into a cell taller than its one row of
