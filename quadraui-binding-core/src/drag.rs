@@ -2,15 +2,21 @@
 //! ([`find_split_layout`], [`find_data_table_layout`], [`tree_row_path`],
 //! [`tree_scroll_state`], [`tab_bar_for_right_segment`]) that arm and drive
 //! them. A binding arms [`ActiveDrag`]/[`ScrollbarDrag`]/
-//! [`DataTableColumnDrag`] on the matching `MouseDown` and clears it on the
-//! matching `MouseUp`; while armed, every `MouseMoved` becomes a synthesized
-//! `UiEvent::SplitDividerDragged`/`ScrollOffsetChanged`/
-//! `UiEvent::DataTable(.., ColumnResized)` instead of the raw move.
+//! [`DataTableColumnDrag`]/[`ScrollDrag`] on the matching `MouseDown` and
+//! clears it on the matching `MouseUp`; while armed, every `MouseMoved`
+//! becomes a synthesized `UiEvent::SplitDividerDragged`/
+//! `ScrollOffsetChanged`/`UiEvent::DataTable(.., ColumnResized)` instead of
+//! the raw move. [`scroll_view_at`]/[`scroll_scrollbar`]/
+//! [`enclosing_scroll_child`] are the `LayoutNode::Scroll` counterpart of
+//! [`tree_scroll_state`] — a generic container has no row-indexed geometry
+//! of its own, so these rebuild a [`quadraui::ScrollView`] (for the
+//! wheel/keyboard delta math) and hand back the already-painted
+//! [`quadraui::Scrollbar`] separately, rather than one combined tuple.
 
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{
-    DataTableLayout, Point, Rect, Scrollbar, SplitDirection, SplitHit, SplitLayout,
-    SplitTreeLayout, TabBarHit, TreePath, WidgetId,
+    DataTableLayout, Point, Rect, ScrollAxis, ScrollView, Scrollbar, SplitDirection, SplitHit,
+    SplitLayout, SplitTreeLayout, TabBarHit, TreePath, WidgetId,
 };
 
 use crate::hit::PaintedHit;
@@ -270,6 +276,90 @@ pub fn text_display_scroll_state(
             viewport_lines,
             ..
         } if *hit_id == id => Some((*total_lines, *viewport_lines, layout.resolved_scroll_offset)),
+        _ => None,
+    })
+}
+
+/// A `Scroll` scrollbar thumb drag in progress: armed by the binding's own
+/// event handler on a `MouseDown` landing on `HitDetail::ScrollScrollbarThumb`,
+/// and cleared on the matching `MouseUp` — mirrors [`ScrollbarDrag`]'s own
+/// bookkeeping, kept as a separate field/type rather than reused outright
+/// because a `Scroll` can scroll along either axis (a `Tree`'s own
+/// scrollbar is always vertical, so [`ScrollbarDrag`]'s own `MouseMoved`
+/// continuation only ever reads `position.y`). `axis` is the dragged
+/// scrollbar's own [`ScrollAxis`] — [`Self`]'s own `MouseMoved`
+/// continuation reads `position.y` for [`ScrollAxis::Vertical`],
+/// `position.x` for [`ScrollAxis::Horizontal`].
+pub struct ScrollDrag {
+    pub widget: WidgetId,
+    pub axis: ScrollAxis,
+    pub drag: ThumbDrag,
+}
+
+/// Rebuilds the [`quadraui::ScrollView`] [`crate::render::paint_scroll`]
+/// painted this frame for the `Scroll` hit under id `id`, so the engine's
+/// own wheel/keyboard/scrollbar handling can resolve a new offset through
+/// `ScrollView::handle_wheel`/`handle_key`/`scroll_by` — this crate never
+/// re-derives that math itself. `None` if `id` isn't a `Scroll` in the
+/// current hit map.
+pub fn scroll_view_at(hit_map: &[PaintedHit], id: WidgetId) -> Option<ScrollView> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Scroll {
+            id: hit_id,
+            viewport,
+            axis,
+            content_len,
+            offset,
+            ..
+        } if *hit_id == id => {
+            let mut view = match axis {
+                ScrollAxis::Vertical => ScrollView::vertical(id, *viewport, *content_len),
+                ScrollAxis::Horizontal => ScrollView::horizontal(id, *viewport, *content_len),
+            };
+            view.scroll_offset = *offset;
+            Some(view)
+        }
+        _ => None,
+    })
+}
+
+/// The [`Scrollbar`] [`crate::render::paint_scroll`] painted this frame for
+/// the `Scroll` hit under id `id`, or `None` when that scroll isn't in the
+/// current hit map or has nothing to scroll (no scrollbar painted, same as
+/// [`tree_scroll_state`]'s own `None` case) — used both to arm a thumb drag
+/// ([`Scrollbar::travel`], feeding [`ThumbDrag::begin`]'s own `travel`) and
+/// to page the track ([`Scrollbar::press_zone`]).
+pub fn scroll_scrollbar(hit_map: &[PaintedHit], id: WidgetId) -> Option<Scrollbar> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Scroll {
+            id: hit_id,
+            scrollbar: Some(scrollbar),
+            ..
+        } if *hit_id == id => Some(scrollbar.clone()),
+        _ => None,
+    })
+}
+
+/// The enclosing `Scroll`'s own id and `child`'s own `(start, len)` within
+/// it, for whichever `Scroll` hit (if any) lists `child` among its own
+/// [`PaintedHit::Scroll::children`] — used to scroll a child that just
+/// received keyboard focus fully into view, and to decide whether
+/// PageUp/PageDown/Home/End should scroll the enclosing `Scroll` rather
+/// than route to the focused child itself. There is no reverse index from
+/// child to parent, so this scans every `Scroll` hit painted this frame;
+/// `children` is only ever populated for a direct `Leaf` child (see that
+/// field's own doc), so a child nested two `Scroll`s deep, or under a
+/// `Row`/`Column`/`Split`/… inside one, never matches either — out of
+/// scope for now, same as `children` itself.
+pub fn enclosing_scroll_child(
+    hit_map: &[PaintedHit],
+    child: WidgetId,
+) -> Option<(WidgetId, f32, f32)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Scroll { id, children, .. } => children
+            .iter()
+            .find(|(cid, ..)| *cid == child)
+            .map(|(_, start, len)| (*id, *start, *len)),
         _ => None,
     })
 }

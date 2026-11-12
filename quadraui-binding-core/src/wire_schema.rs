@@ -3439,6 +3439,9 @@ mod coverage {
             HitDetail::ExtraBody => {}
             HitDetail::ExtraChrome { bar: _ } => {}
             HitDetail::ScrollBody => {}
+            HitDetail::ScrollScrollbarTrackBefore => {}
+            HitDetail::ScrollScrollbarThumb => {}
+            HitDetail::ScrollScrollbarTrackAfter => {}
         }
     }
 

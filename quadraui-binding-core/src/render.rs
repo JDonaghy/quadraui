@@ -631,10 +631,48 @@ fn paint_scroll(
     // see that function's own doc) agree on the same offset.
     scroll_view.clamp_offset();
     let offset = scroll_view.scroll_offset;
+    let scrollbar = scroll_view.scrollbar(track, metrics.line_height);
+
+    let slots = scroll_content_slots(
+        backend,
+        viewport,
+        scroll_node.axis,
+        offset,
+        &scroll_node.content,
+        content_len,
+        metrics,
+    );
+    // The `(id, start, len)` of every direct `Leaf` child, read straight
+    // off `slots` before it's consumed below — see `PaintedHit::Scroll`'s
+    // own `children` doc for why this has to come from the slot (its
+    // pre-offset, pre-clamp `start`/`len`) rather than the child's own
+    // painted rect.
+    let children: Vec<(WidgetId, f32, f32)> = match (&slots, scroll_node.content.as_ref()) {
+        (
+            ScrollSlots::Children(slots),
+            LayoutNode::Row(container) | LayoutNode::Column(container),
+        ) => container
+            .children
+            .iter()
+            .zip(slots.iter())
+            .filter_map(|(child, slot)| match &child.node {
+                LayoutNode::Leaf(leaf) => {
+                    Some((WidgetId::new(leaf.id.as_str()), slot.start, slot.len))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
 
     hits.push(PaintedHit::Scroll {
         id: scroll_view.id,
         viewport,
+        axis: scroll_node.axis,
+        content_len,
+        offset,
+        scrollbar: scrollbar.clone(),
+        children,
     });
 
     backend.push_clip(viewport);
@@ -648,22 +686,14 @@ fn paint_scroll(
     // never resolve to a point outside this scroll's own viewport, nor
     // mask a sibling painted earlier at that same screen position.
     let hits_before = hits.len();
-    match scroll_content_slots(
-        backend,
-        viewport,
-        scroll_node.axis,
-        offset,
-        &scroll_node.content,
-        content_len,
-        metrics,
-    ) {
-        ScrollSlots::Children(rects) => {
+    match slots {
+        ScrollSlots::Children(slots) => {
             if let LayoutNode::Row(container) | LayoutNode::Column(container) =
                 scroll_node.content.as_ref()
             {
-                for (child, (rect, visible)) in container.children.iter().zip(rects) {
-                    if visible {
-                        paint_layout(backend, rect, &child.node, hits, chrome_interaction);
+                for (child, slot) in container.children.iter().zip(slots) {
+                    if slot.visible {
+                        paint_layout(backend, slot.rect, &child.node, hits, chrome_interaction);
                     }
                 }
             }
@@ -706,8 +736,8 @@ fn paint_scroll(
     crate::hit::clip_hits_to_viewport(hits, hits_before, viewport);
     backend.pop_clip();
 
-    if let Some(scrollbar) = scroll_view.scrollbar(track, metrics.line_height) {
-        backend.draw_scrollbar(track, &scrollbar);
+    if let Some(scrollbar) = &scrollbar {
+        backend.draw_scrollbar(track, scrollbar);
     }
 }
 
@@ -933,25 +963,38 @@ fn container_natural_main_length(
 /// own doc.
 pub(crate) enum ScrollSlots {
     /// `content` is a `Column` (vertical axis) or `Row` (horizontal axis)
-    /// matching the scroll's own axis: one slot per top-level child, in
-    /// the same order as [`LayoutContainer::children`], each sized to its
-    /// own natural main-axis length and positioned by the running sum of
-    /// every earlier sibling's — never
-    /// [`layout_container_rects`]'s equal-share division, which would
-    /// defeat natural-size scrolling (see [`natural_main_length`]'s own
-    /// doc). The `bool` is whether [`quadraui::ScrollView::is_visible`]
-    /// says this slot overlaps the current scroll position — `false`
-    /// means skip painting/recursing/resolving it entirely, which is this
-    /// container's whole mechanism for "no cell or pixel outside the
-    /// viewport is painted" and "anything scrolled out of view gets no
-    /// hits": an invisible slot never gets a [`PaintedHit`] (or a
-    /// resolved `WidgetState` entry) in the first place, rather than one
-    /// that exists and is masked out afterwards.
-    Children(Vec<(Rect, bool)>),
+    /// matching the scroll's own axis: one [`ScrollChildSlot`] per
+    /// top-level child, in the same order as [`LayoutContainer::children`].
+    Children(Vec<ScrollChildSlot>),
     /// Anything else: the whole subtree is one atomic unit sized to its
     /// own overall natural length (`content_len`) — same visibility
-    /// semantics as [`Self::Children`]'s own `bool`.
+    /// semantics as [`Self::Children`]'s own [`ScrollChildSlot::visible`].
     Atomic(Rect, bool),
+}
+
+/// One [`ScrollSlots::Children`] slot: a top-level child's own painted
+/// `rect`, sized to its own natural main-axis length and positioned by the
+/// running sum of every earlier sibling's — never
+/// [`layout_container_rects`]'s equal-share division, which would defeat
+/// natural-size scrolling (see [`natural_main_length`]'s own doc).
+/// `visible` is whether [`quadraui::ScrollView::is_visible`] says this
+/// slot overlaps the current scroll position — `false` means skip
+/// painting/recursing/resolving it entirely, which is this container's
+/// whole mechanism for "no cell or pixel outside the viewport is painted"
+/// and "anything scrolled out of view gets no hits": an invisible slot
+/// never gets a [`PaintedHit`] (or a resolved `WidgetState` entry) in the
+/// first place, rather than one that exists and is masked out afterwards.
+/// `start`/`len` are this slot's own main-axis span within the scroll's
+/// content, BEFORE `offset` is subtracted and before a cell-grid backend's
+/// [`clip_main_axis`] may have clamped `rect` to the viewport — the
+/// un-clamped span [`PaintedHit::Scroll::children`] needs to scroll a
+/// child that just received focus fully into view, which `rect` alone
+/// can't recover once it's been clamped.
+pub(crate) struct ScrollChildSlot {
+    pub(crate) rect: Rect,
+    pub(crate) visible: bool,
+    pub(crate) start: f32,
+    pub(crate) len: f32,
 }
 
 /// Resolves a [`LayoutNode::Scroll`]'s content into paintable/
@@ -1027,7 +1070,12 @@ pub(crate) fn scroll_content_slots(
                 };
                 Rect::new(viewport.x, y, viewport.width, height)
             };
-            rects.push((rect, visible));
+            rects.push(ScrollChildSlot {
+                rect,
+                visible,
+                start,
+                len,
+            });
         }
         ScrollSlots::Children(rects)
     } else {
@@ -3218,9 +3266,9 @@ mod tests {
             content_len,
             metrics,
         );
-        let ScrollSlots::Children(rects) = slots else {
+        let ScrollSlots::Children(slots) = slots else {
             panic!("a Column matching the scroll's own axis yields Children slots");
         };
-        assert_eq!(rects[1].0, Rect::new(0.0, 6.0, 100.0, 16.0));
+        assert_eq!(slots[1].rect, Rect::new(0.0, 6.0, 100.0, 16.0));
     }
 }

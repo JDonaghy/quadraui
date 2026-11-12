@@ -1311,6 +1311,19 @@ pub fn resolve_scroll_offset(
     raw.clamp(0.0, max_offset.max(0.0))
 }
 
+/// Persists `new_offset` as `id`'s own stored scroll offset — call when the
+/// engine's wheel/keyboard/scrollbar-drag handling resolves a `Scroll`
+/// container to a new position. Always writes, mirroring
+/// [`apply_split_divider_drag`]'s own "the next frame's resolve decides
+/// whether this sticks" shape: [`resolve_scroll_offset`]'s own
+/// [`WidgetState::resolve`] call overwrites whatever this stores the
+/// moment the matching `LayoutScroll::offset` is `Some` again, so a
+/// controlled `Scroll` moving here never actually changes what's
+/// painted — only an uncontrolled one does.
+pub fn apply_scroll_offset(widget_state: &WidgetState, id: WidgetId, new_offset: f32) {
+    widget_state.set(id, new_offset);
+}
+
 // ─── TabBar active tab, uncontrolled by default ────────────────────────────
 //
 // Same "compare against the last-seen descriptor, not a fixed sentinel"
@@ -1928,13 +1941,18 @@ pub fn resolve_layout_node(
                 metrics,
             );
             match slots {
-                ScrollSlots::Children(rects) => {
+                ScrollSlots::Children(slots) => {
                     if let LayoutNode::Row(container) | LayoutNode::Column(container) =
                         scroll_node.content.as_mut()
                     {
-                        for (child, (rect, visible)) in container.children.iter_mut().zip(rects) {
-                            if visible {
-                                resolve_layout_node(widget_state, backend, rect, &mut child.node);
+                        for (child, slot) in container.children.iter_mut().zip(slots) {
+                            if slot.visible {
+                                resolve_layout_node(
+                                    widget_state,
+                                    backend,
+                                    slot.rect,
+                                    &mut child.node,
+                                );
                             }
                         }
                     }
