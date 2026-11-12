@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Staleness + acceptance check for the generated wire types and native-
 # extension stub (`scripts/gen_wire_types.py`): fails if regenerating would
-# change any committed output (`wire.pyi`, `wire.d.ts`, `_quadraui.pyi`), if
-# the "good" fixture scripts (or every real Python example under
+# change any committed output (`wire.pyi`, `wire.d.ts`, `_quadraui.pyi`, and
+# the generated half of `docs/bindings-wire-format.md`), if the "good"
+# fixture scripts (or every real Python example under
 # `quadraui-py/examples/`) fail to type-check, or if the "bad"
 # (misspelled-key) fixture scripts type-check clean when they should not.
 # Installs `mypy`/`pyright`/`typescript` into throwaway
