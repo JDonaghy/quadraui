@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Enforce a `CHANGELOG.md` `[Unreleased]` entry for quadraui behavior/API
-changes (#1500).
+"""Enforce a `changelog.d/` fragment for quadraui behavior/API changes
+(#1500, #2419).
 
 Preparing the 0.1.4 release found 3 of the last 5 merged changes had no
 changelog entry at all, and one was filed under the wrong section -- nothing
@@ -9,9 +9,21 @@ here in the same PR", see that file's *Scope* section), so every release
 needed a hand repair of the notes. This script is that enforcement, run as
 a CI job on every PR into `develop`/`main`.
 
+Editing `CHANGELOG.md`'s `[Unreleased]` section directly used to be how a PR
+satisfied that rule, but every PR's entry landed in the same few `###`
+spots, so any two PRs in flight at once all but guaranteed a merge conflict
+on that one file. `changelog.d/` fragments (#2419) fix that: each PR adds
+its own new file instead, so concurrent PRs never touch the same lines.
+`scripts/release.py prepare` assembles every fragment into `[Unreleased]`
+and deletes them in the version-bump commit -- see `changelog.d/README.md`
+for the fragment-authoring convention.
+
 Rule: if the diff between `BASE` and `HEAD` changes any non-test Rust file
-under `quadraui/src/**`, the diff must also add at least one non-blank line
-inside `CHANGELOG.md`'s `## [Unreleased]` section.
+under `quadraui/src/**`, the diff must also add at least one new, valid
+`changelog.d/<issue>.<kind>.md` fragment. Separately, regardless of whether
+an entry is required, the diff must not (a) add a malformed or empty
+fragment, or (b) edit `CHANGELOG.md`'s `[Unreleased]` section directly --
+both fail the PR with a message pointing at `changelog.d/`.
 
 A changed `quadraui/src/**` file is exempt from needing an entry when:
 
@@ -46,12 +58,18 @@ holding that content. This is keyed on diff shape alone, not on which
 branches the PR runs between, so it matches both the `develop -> main`
 promotion PR and the `release-X.Y.Z -> develop` bump PR that precedes it.
 A promotion PR legitimately moves every entry out of `[Unreleased]`
-instead of adding one.
+(and deletes every fragment `prepare` assembled into it) instead of adding
+one -- this exemption is checked first, before the fragment/direct-edit
+checks below, so that assembly/deletion is never mistaken for a malformed
+fragment or a forbidden direct edit.
 
 Usage: tools/changelog_check.py [--labels L1,L2,...] [BASE] [HEAD]
        (default: no labels, origin/develop, HEAD)
-Exit 0 when no entry is required, or a qualifying entry was found.
-Exit 1 when a `quadraui/src/**` behavior change has no `[Unreleased]` entry.
+Exit 0 when no entry is required, or a qualifying fragment was found, and
+no fragment is malformed and no direct `[Unreleased]` edit was made.
+Exit 1 when a `quadraui/src/**` behavior change has no new `changelog.d/`
+fragment, or a new fragment is malformed/empty, or `[Unreleased]` was
+edited directly.
 
 `--print-bump-shape [BASE] [HEAD]` is a second, unrelated mode `ci.yml`'s
 `bump-shape` job uses: prints `bump_shape=true`/`bump_shape=false`
@@ -74,14 +92,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import comment_only_check  # noqa: E402
 
-# release_decide's version/section parsing is reused here rather than
-# reimplemented, which couples this module's imports to scripts/
-# release_decide.py's location.
+# release_decide's version/section parsing, and release's changelog.d/
+# fragment-name parsing, are reused here rather than reimplemented, which
+# couples this module's imports to scripts/'s location.
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import release_decide  # noqa: E402
+import release  # noqa: E402
 
 CHANGELOG_PATH = "CHANGELOG.md"
 MANIFEST_PATH = "quadraui/Cargo.toml"
+FRAGMENT_DIR = release.FRAGMENT_DIR
+FRAGMENT_README = f"{FRAGMENT_DIR}/{release.FRAGMENT_README_NAME}"
 
 NO_CHANGELOG_LABEL = "no-changelog"
 
@@ -121,6 +142,52 @@ def run_git(args: list[str], repo_root: Path) -> str:
 def changed_files(base: str, head: str, repo_root: Path) -> list[str]:
     out = run_git(["diff", "--name-only", f"{base}...{head}"], repo_root)
     return [line for line in out.splitlines() if line]
+
+
+def file_statuses(base: str, head: str, repo_root: Path) -> dict[str, str]:
+    """`path -> git status letter` (`A`, `M`, `D`, `R100`, ...) for every
+    file `base...head` touches. For a rename (`Rnnn\told\tnew`), keyed on
+    the *new* path only -- callers here only ever care about plain
+    additions/deletions, never a rename."""
+    out = run_git(["diff", "--name-status", f"{base}...{head}"], repo_root)
+    statuses: dict[str, str] = {}
+    for line in out.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        statuses[parts[-1]] = parts[0]
+    return statuses
+
+
+def new_fragment_paths(base: str, head: str, repo_root: Path) -> list[str]:
+    """Paths under `changelog.d/` newly added (git status `A`) by this
+    diff, excluding `changelog.d/README.md`."""
+    return [
+        path
+        for path, status in file_statuses(base, head, repo_root).items()
+        if status.startswith("A")
+        and path.startswith(f"{FRAGMENT_DIR}/")
+        and path != FRAGMENT_README
+    ]
+
+
+def validate_fragment(path: str, content: str | None) -> str | None:
+    """An error message if `path`/`content` isn't a valid changelog.d/
+    fragment, else None. `content` is HEAD's content at `path` (from
+    `show`); None (the file doesn't exist at HEAD -- shouldn't happen for
+    a path `new_fragment_paths` reports, but handled defensively) is
+    treated the same as empty."""
+    name = path.rsplit("/", 1)[-1]
+    if release.parse_fragment_filename(name) is None:
+        return (
+            f"{path}: fragment filename must be `<issue>.<kind>.md` with "
+            f"kind one of {', '.join(release.FRAGMENT_KINDS)} (got {name!r})"
+        )
+    if content is None or not content.strip():
+        return f"{path}: fragment is empty"
+    return None
 
 
 def show(rev: str, path: str, repo_root: Path) -> str | None:
@@ -286,9 +353,20 @@ def unreleased_section_bounds(source: str) -> tuple[int, int] | None:
     return start, end
 
 
-def has_unreleased_entry(base: str, head: str, repo_root: Path) -> bool:
+def unreleased_section_edited(base: str, head: str, repo_root: Path) -> bool:
     """True if the diff adds a non-blank line inside HEAD's `[Unreleased]`
-    section body."""
+    section body.
+
+    Before `changelog.d/` fragments (#2419), this was how a PR satisfied
+    the changelog-entry requirement. Now it detects the opposite: a direct
+    edit to `[Unreleased]`, which is forbidden (every PR's entry landing in
+    the same few `###` spots is exactly the merge-conflict problem
+    fragments exist to avoid) -- `main()` fails the PR instead, pointing it
+    at `changelog.d/`. The release-promotion/bump-PR exemptions are
+    checked before this runs, so retitling `[Unreleased]` (and the fresh,
+    still-empty one `prepare` inserts above it) is never mistaken for a
+    direct edit.
+    """
     new_src = show(head, CHANGELOG_PATH, repo_root)
     if new_src is None:
         return False
@@ -415,12 +493,16 @@ def is_release_bump_pr(
     base: str, head: str, repo_root: Path, files: list[str] | None = None
 ) -> bool:
     """True if `base...head` has the release-bump PR shape:
-    every changed file is in `BUMP_FILE_SET`, the diff also carries
-    `release.py prepare`'s version-bump shape (`release_promotion_version`,
-    already proven correct by the changelog gate's own promotion-PR
-    exemption above) -- not just a coincidental README/CHANGELOG-only edit
-    that never actually bumps the version -- and, when `quadraui/src/lib.rs`
-    is among the changed files, its own diff is comment-only.
+    every changed file is either in `BUMP_FILE_SET`, or a deleted
+    `changelog.d/*.md` fragment (`prepare` assembles every fragment into
+    `[Unreleased]` and deletes them in this same commit -- #2419; a
+    fragment that's added or merely modified, not deleted, never matches).
+    The diff must also carry `release.py prepare`'s version-bump shape
+    (`release_promotion_version`, already proven correct by the changelog
+    gate's own promotion-PR exemption above) -- not just a coincidental
+    README/CHANGELOG-only edit that never actually bumps the version -- and,
+    when `quadraui/src/lib.rs` is among the changed files, its own diff is
+    comment-only.
 
     `release.py prepare` only ever rewrites `lib.rs`'s `//!` Status doc
     line, but `BUMP_FILE_SET` alone can't tell that edit apart from a real
@@ -431,7 +513,18 @@ def is_release_bump_pr(
     """
     if files is None:
         files = changed_files(base, head, repo_root)
-    if not files or any(f not in BUMP_FILE_SET for f in files):
+    if not files:
+        return False
+    statuses = file_statuses(base, head, repo_root)
+    for f in files:
+        if f in BUMP_FILE_SET:
+            continue
+        if (
+            f.startswith(f"{FRAGMENT_DIR}/")
+            and f != FRAGMENT_README
+            and statuses.get(f, "").startswith("D")
+        ):
+            continue
         return False
     if LIB_RS_PATH in files and not is_comment_only_change(
         base, head, LIB_RS_PATH, repo_root
@@ -488,27 +581,66 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    fragment_errors = []
+    valid_fragments = []
+    for path in new_fragment_paths(base, head, REPO_ROOT):
+        content = show(head, path, REPO_ROOT)
+        error = validate_fragment(path, content)
+        if error:
+            fragment_errors.append(error)
+        else:
+            valid_fragments.append(path)
+
+    if fragment_errors:
+        print(
+            "::error::changelog.d/ fragment check (#2419): this PR adds a "
+            "malformed or empty fragment. A fragment's filename must be "
+            "`changelog.d/<issue>.<kind>.md` (kind one of "
+            f"{', '.join(release.FRAGMENT_KINDS)}) and its content non-empty "
+            "-- see changelog.d/README.md."
+        )
+        for error in fragment_errors:
+            print(f"  {error}")
+        return 1
+
+    if unreleased_section_edited(base, head, REPO_ROOT):
+        print(
+            "::error::CHANGELOG.md enforcement (#1500, #2419): this PR "
+            "edits CHANGELOG.md's [Unreleased] section directly. Every "
+            "PR's entry landing in the same few `###` spots is exactly "
+            "the merge-conflict problem changelog.d/ fragments exist to "
+            "avoid -- add a changelog.d/<issue>.<kind>.md fragment instead "
+            "(see changelog.d/README.md) and leave [Unreleased] untouched; "
+            "`scripts/release.py prepare` assembles it in at release time."
+        )
+        return 1
+
     required = requires_changelog_entry(base, head, REPO_ROOT)
     if not required:
-        print("ok: no quadraui/src/** behavior change requires a changelog entry")
+        if valid_fragments:
+            print(f"ok: no quadraui/src/** behavior change requires a changelog "
+                  f"entry, but gained fragment(s): {', '.join(valid_fragments)}")
+        else:
+            print("ok: no quadraui/src/** behavior change requires a changelog entry")
         return 0
 
-    print("quadraui/src/** changes requiring a CHANGELOG.md entry:")
+    print("quadraui/src/** changes requiring a changelog.d/ fragment:")
     for path in required:
         print(f"  {path}")
 
-    if has_unreleased_entry(base, head, REPO_ROOT):
-        print("ok: CHANGELOG.md's [Unreleased] section gained an entry")
+    if valid_fragments:
+        print(f"ok: PR adds fragment(s): {', '.join(valid_fragments)}")
         return 0
 
     print(
-        "::error::CHANGELOG.md enforcement (#1500): this PR changes "
-        "quadraui/src/** without adding a line inside CHANGELOG.md's "
-        "[Unreleased] section. Either (1) add an entry under the "
-        "appropriate ### heading inside [Unreleased] describing the "
-        f"change, or (2) apply the '{NO_CHANGELOG_LABEL}' label if this "
-        "change genuinely needs no changelog entry (comment-only and "
-        "test-only changes are already exempt automatically)."
+        "::error::CHANGELOG.md enforcement (#1500, #2419): this PR changes "
+        "quadraui/src/** without adding a new changelog.d/<issue>.<kind>.md "
+        "fragment. Either (1) add one under changelog.d/ describing the "
+        "change (kind one of "
+        f"{', '.join(release.FRAGMENT_KINDS)}; see changelog.d/README.md), "
+        f"or (2) apply the '{NO_CHANGELOG_LABEL}' label if this change "
+        "genuinely needs no changelog entry (comment-only and test-only "
+        "changes are already exempt automatically)."
     )
     return 1
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for `tools/changelog_check.py`'s [Unreleased]-entry enforcement (#1500).
+"""Tests for `tools/changelog_check.py`'s `changelog.d/` fragment
+enforcement (#1500, #2419).
 
 Stdlib-only (`unittest`), mirroring `tools/test_example_coverage.py`'s
 `TempGitRepo` pattern: a throwaway git repo seeded with `quadraui/src/` and
@@ -151,6 +152,11 @@ class TempGitRepo:
     def write_manifest(self, body: str) -> None:
         (self.root / "quadraui" / "Cargo.toml").write_text(body, encoding="utf-8")
 
+    def write_fragment(self, name: str, body: str) -> None:
+        fragment_dir = self.root / "changelog.d"
+        fragment_dir.mkdir(exist_ok=True)
+        (fragment_dir / name).write_text(body, encoding="utf-8")
+
 
 class RequiresChangelogEntryTest(unittest.TestCase):
     def test_src_change_without_entry_is_required(self):
@@ -285,8 +291,12 @@ class TestModuleOnlyChangeShapeTest(unittest.TestCase):
             self.assertEqual(required, [])
 
 
-class HasUnreleasedEntryTest(unittest.TestCase):
-    def test_entry_added_inside_unreleased_passes(self):
+class UnreleasedSectionEditedTest(unittest.TestCase):
+    """`unreleased_section_edited`: detects a direct edit to `[Unreleased]`,
+    which `main()` now forbids (#2419) rather than treats as satisfying the
+    changelog-entry requirement."""
+
+    def test_entry_added_inside_unreleased_is_detected(self):
         with TempGitRepo() as repo:
             base = repo.commit("base")
             repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
@@ -297,11 +307,13 @@ class HasUnreleasedEntryTest(unittest.TestCase):
                     "- `greet::farewell()` (issue #1500) -- adds a farewell helper.",
                 )
             )
-            head = repo.commit("add farewell() with a changelog entry")
+            head = repo.commit("add farewell() with a direct CHANGELOG.md edit")
 
-            self.assertTrue(changelog_check.has_unreleased_entry(base, head, repo.root))
+            self.assertTrue(
+                changelog_check.unreleased_section_edited(base, head, repo.root)
+            )
 
-    def test_entry_added_outside_unreleased_fails(self):
+    def test_entry_added_outside_unreleased_is_not_detected(self):
         with TempGitRepo() as repo:
             base = repo.commit("base")
             repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
@@ -314,15 +326,92 @@ class HasUnreleasedEntryTest(unittest.TestCase):
             )
             head = repo.commit("add farewell() with entry in the WRONG section")
 
-            self.assertFalse(changelog_check.has_unreleased_entry(base, head, repo.root))
+            self.assertFalse(
+                changelog_check.unreleased_section_edited(base, head, repo.root)
+            )
 
-    def test_no_entry_at_all_fails(self):
+    def test_no_entry_at_all_is_not_detected(self):
         with TempGitRepo() as repo:
             base = repo.commit("base")
             repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
             head = repo.commit("add farewell(), no changelog touch at all")
 
-            self.assertFalse(changelog_check.has_unreleased_entry(base, head, repo.root))
+            self.assertFalse(
+                changelog_check.unreleased_section_edited(base, head, repo.root)
+            )
+
+
+class NewFragmentPathsTest(unittest.TestCase):
+    def test_added_fragment_is_found(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_fragment("2419.changed.md", "- a fragment-based entry.\n")
+            head = repo.commit("add a fragment")
+
+            self.assertEqual(
+                changelog_check.new_fragment_paths(base, head, repo.root),
+                ["changelog.d/2419.changed.md"],
+            )
+
+    def test_fragment_readme_is_excluded(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_fragment("README.md", "# changelog.d\n")
+            head = repo.commit("add changelog.d/README.md")
+
+            self.assertEqual(
+                changelog_check.new_fragment_paths(base, head, repo.root), []
+            )
+
+    def test_modified_fragment_is_not_newly_added(self):
+        with TempGitRepo() as repo:
+            repo.write_fragment("2419.changed.md", "- original text.\n")
+            base = repo.commit("base with an existing fragment")
+            repo.write_fragment("2419.changed.md", "- edited text.\n")
+            head = repo.commit("edit, not add, the fragment")
+
+            self.assertEqual(
+                changelog_check.new_fragment_paths(base, head, repo.root), []
+            )
+
+    def test_no_fragment_added_is_empty(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            head = repo.commit("ordinary src change, no fragment")
+
+            self.assertEqual(
+                changelog_check.new_fragment_paths(base, head, repo.root), []
+            )
+
+
+class ValidateFragmentTest(unittest.TestCase):
+    def test_well_formed_fragment_is_valid(self):
+        error = changelog_check.validate_fragment(
+            "changelog.d/2419.changed.md", "- a valid fragment.\n"
+        )
+        self.assertIsNone(error)
+
+    def test_malformed_name_is_invalid(self):
+        error = changelog_check.validate_fragment(
+            "changelog.d/not-an-issue-number.changed.md", "- content.\n"
+        )
+        self.assertIsNotNone(error)
+        self.assertIn("changelog.d/not-an-issue-number.changed.md", error)
+
+    def test_unknown_kind_is_invalid(self):
+        error = changelog_check.validate_fragment(
+            "changelog.d/2419.security.md", "- content.\n"
+        )
+        self.assertIsNotNone(error)
+
+    def test_empty_content_is_invalid(self):
+        error = changelog_check.validate_fragment("changelog.d/2419.changed.md", "   \n")
+        self.assertIsNotNone(error)
+
+    def test_missing_content_is_invalid(self):
+        error = changelog_check.validate_fragment("changelog.d/2419.changed.md", None)
+        self.assertIsNotNone(error)
 
 
 class ReleasePromotionVersionTest(unittest.TestCase):
@@ -535,22 +624,67 @@ class IsReleaseBumpPrTest(unittest.TestCase):
                 changelog_check.is_release_bump_pr(base, head, repo.root)
             )
 
+    def test_bump_that_also_deletes_fragments_is_still_bump_shaped(self):
+        """`release.py prepare` (#2419) assembles every `changelog.d/*.md`
+        fragment into `[Unreleased]` and deletes them in the same commit --
+        those deletions must not disqualify the bump shape even though
+        they're not in `BUMP_FILE_SET`."""
+        with TempGitRepo() as repo:
+            repo.write_fragment("2419.changed.md", "- a fragment entry.\n")
+            repo.write_fragment("2420.fixed.md", "- another fragment entry.\n")
+            base = repo.commit("base with two pending fragments")
+
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            (repo.root / "README.md").write_text("# quadraui\n\n`0.2.x`\n", encoding="utf-8")
+            (repo.root / "changelog.d" / "2419.changed.md").unlink()
+            (repo.root / "changelog.d" / "2420.fixed.md").unlink()
+            head = repo.commit("Release v0.2.0 (version bump + CHANGELOG)")
+
+            self.assertTrue(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
+    def test_bump_that_adds_a_fragment_instead_of_deleting_is_not_bump_shaped(self):
+        """A fragment *added* (not deleted) alongside a bump commit is not
+        the shape `prepare` produces -- must still get the full matrix."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            repo.write_fragment("2421.added.md", "- a fragment added alongside a bump.\n")
+            head = repo.commit("bump plus an added (not deleted) fragment")
+
+            self.assertFalse(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
+    def test_bump_that_modifies_a_fragment_instead_of_deleting_is_not_bump_shaped(self):
+        """A fragment *modified* (not deleted) alongside a bump commit is
+        not the shape `prepare` produces either."""
+        with TempGitRepo() as repo:
+            repo.write_fragment("2419.changed.md", "- original text.\n")
+            base = repo.commit("base with an existing fragment")
+
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            repo.write_fragment("2419.changed.md", "- edited, not deleted, text.\n")
+            head = repo.commit("bump plus a modified (not deleted) fragment")
+
+            self.assertFalse(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
 
 class MainCliTest(unittest.TestCase):
     """End-to-end `main()` exercises, matching the issue's five fixtures."""
 
-    def test_entry_added_passes(self):
+    def test_fragment_added_passes(self):
         with TempGitRepo() as repo:
             base = repo.commit("base")
             repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
-            repo.write_changelog(
-                BASE_CHANGELOG.replace(
-                    "- placeholder entry so the section isn't empty at base.",
-                    "- placeholder entry so the section isn't empty at base.\n"
-                    "- `greet::farewell()` (issue #1500).",
-                )
-            )
-            head = repo.commit("add farewell() with a changelog entry")
+            repo.write_fragment("1500.added.md", "- `greet::farewell()`.\n")
+            head = repo.commit("add farewell() with a changelog.d/ fragment")
 
             exit_code = self._run_main(repo.root, base, head, labels="")
             self.assertEqual(exit_code, 0)
@@ -564,17 +698,58 @@ class MainCliTest(unittest.TestCase):
             exit_code = self._run_main(repo.root, base, head, labels="")
             self.assertEqual(exit_code, 1)
 
-    def test_entry_outside_unreleased_fails(self):
+    def test_malformed_fragment_name_fails(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_fragment("farewell.added.md", "- `greet::farewell()`.\n")
+            head = repo.commit("add farewell() with a malformed fragment name")
+
+            exit_code = self._run_main(repo.root, base, head, labels="")
+            self.assertEqual(exit_code, 1)
+
+    def test_empty_fragment_fails(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_fragment("1500.added.md", "   \n")
+            head = repo.commit("add farewell() with an empty fragment")
+
+            exit_code = self._run_main(repo.root, base, head, labels="")
+            self.assertEqual(exit_code, 1)
+
+    def test_direct_unreleased_edit_fails(self):
         with TempGitRepo() as repo:
             base = repo.commit("base")
             repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
             repo.write_changelog(
                 BASE_CHANGELOG.replace(
-                    "- initial release.",
-                    "- initial release.\n- `greet::farewell()` (issue #1500) -- misplaced.",
+                    "- placeholder entry so the section isn't empty at base.",
+                    "- placeholder entry so the section isn't empty at base.\n"
+                    "- `greet::farewell()` (issue #1500) -- direct edit, not a fragment.",
                 )
             )
-            head = repo.commit("add farewell() with entry in the WRONG section")
+            head = repo.commit("add farewell() with a direct [Unreleased] edit")
+
+            exit_code = self._run_main(repo.root, base, head, labels="")
+            self.assertEqual(exit_code, 1)
+
+    def test_direct_unreleased_edit_fails_even_with_a_valid_fragment(self):
+        """A fragment doesn't buy back a direct edit elsewhere in the same
+        diff -- both are checked, and the direct edit alone is enough to
+        fail."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_fragment("1500.added.md", "- `greet::farewell()`.\n")
+            repo.write_changelog(
+                BASE_CHANGELOG.replace(
+                    "- placeholder entry so the section isn't empty at base.",
+                    "- placeholder entry so the section isn't empty at base.\n"
+                    "- a stray direct edit alongside the fragment.",
+                )
+            )
+            head = repo.commit("fragment plus a stray direct edit")
 
             exit_code = self._run_main(repo.root, base, head, labels="")
             self.assertEqual(exit_code, 1)
