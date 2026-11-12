@@ -59,6 +59,14 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Fixed
+- TUI `Button`: a leaf painted into a cell taller than its one row of
+  chrome (an `EqualShare`-sized `Column` slot, say) now centres its label
+  row vertically within that cell instead of pinning it to the top (#2394).
+  Clicking the button focuses it, and the host's generic focus-ring
+  overlay (`crate::tui::draw_focus_ring`) clears that cell's own top/bottom
+  edge rows — previously those coincided with the top-pinned label row, so
+  the ring's `╭──╮`/`╰──╯` border silently replaced `[ Label ]` the moment
+  the button gained focus from a click.
 - Win-GUI's chrome (UI) font now installs at the same size
   `Backend::default_fonts().ui_size_pt` advertises (#2385): previously the
   installed `DEFAULT_UI_FONT_SIZE_PT` (`11pt`, ≈14.7 DIP) silently diverged
