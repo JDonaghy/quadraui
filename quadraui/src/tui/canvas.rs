@@ -16,9 +16,7 @@
 //!
 //! [`CellClip`]'s quantise-and-intersect math also backs
 //! [`crate::Backend::push_clip`]/[`crate::Backend::pop_clip`] on
-//! [`crate::tui::backend::TuiBackend`] — see [`TuiClipFrame`] for how
-//! the general (non-`Canvas`) seam reuses it against the live screen
-//! buffer instead of a per-canvas dot grid.
+//! [`crate::tui::backend::TuiBackend`] — see [`TuiClipFrame`].
 //!
 //! # Z-order: shapes under text, not strict declared order
 //!
@@ -48,7 +46,7 @@
 //! segments; a future pass could rasterise directly with clipping built
 //! into the stepper instead.
 
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::Rect as RRect;
 
 use super::braille::{interpolate_dots, pack_braille_cell};
@@ -84,13 +82,10 @@ pub fn tui_canvas_layout(canvas: &Canvas, area: RRect) -> CanvasLayout {
     ))
 }
 
-/// Axis-aligned clip in whole cells — the cell-quantised degrade for
-/// [`DrawOp::PushClip`]/[`DrawOp::PopClip`] (module doc). [`Self::full`]
-/// bounds it to a `Canvas`'s own local `0..cols`/`0..rows`;
-/// [`Self::from_bounds`] bounds it to an arbitrary absolute screen-cell
-/// rect instead — [`TuiClipFrame`] (below) uses that form to back
-/// [`crate::Backend::push_clip`], reusing this same quantise-and-intersect
-/// math rather than a second copy of it.
+/// Axis-aligned clip in whole cells, local to a `Canvas` (`0..cols`,
+/// `0..rows`) or to an absolute screen-cell rect ([`Self::from_rrect`]) —
+/// the cell-quantised degrade for [`DrawOp::PushClip`]/[`DrawOp::PopClip`]
+/// (module doc), reused by [`TuiClipFrame`] below.
 #[derive(Clone, Copy)]
 pub(crate) struct CellClip {
     x0: i32,
@@ -109,11 +104,14 @@ impl CellClip {
         }
     }
 
-    /// Bound by `(x0, y0)`..`(x1, y1)` directly, no quantisation — the
-    /// starting point for an absolute screen-cell clip, which (unlike a
-    /// `Canvas`'s own local grid) has no fixed `0, 0` origin to assume.
-    pub(crate) fn from_bounds(x0: i32, y0: i32, x1: i32, y1: i32) -> Self {
-        Self { x0, y0, x1, y1 }
+    /// Bound by an absolute screen-cell `rect`, no quantisation.
+    pub(crate) fn from_rrect(rect: RRect) -> Self {
+        Self {
+            x0: rect.x as i32,
+            y0: rect.y as i32,
+            x1: rect.x as i32 + rect.width as i32,
+            y1: rect.y as i32 + rect.height as i32,
+        }
     }
 
     /// Quantise `rect` (same units as `self`'s own bounds) outward to
@@ -139,23 +137,33 @@ impl CellClip {
 /// One entry in [`crate::tui::backend::TuiBackend`]'s
 /// [`crate::Backend::push_clip`]/[`crate::Backend::pop_clip`] stack.
 ///
-/// TUI has no per-cell scissor every `draw_*` call site already checks,
-/// and threading one through each would touch every rasteriser in the
-/// crate. Instead this snapshots the region a push is about to put
-/// off-limits (`outer`) and, on [`Self::pop`], restores whatever part of
-/// that region still sits outside the narrowed `clip` — undoing anything
-/// a clipped-out paint wrote there while leaving the legitimately
-/// visible interior untouched.
+/// TUI has no per-cell scissor every `draw_*` call site checks, so this
+/// is a retroactive undo rather than a real filter: [`Self::push`]
+/// snapshots the region a push is about to put off-limits (`outer`),
+/// lets painting run unclipped, and [`Self::pop`] restores whatever part
+/// of `outer` still sits outside the narrowed `clip`. A `draw_*` that
+/// reads the buffer between push and pop (a translucent fill blending
+/// against what's "underneath", a test asserting mid-frame) sees
+/// unclipped content — this degrade is only sound for paint that writes
+/// once and is read back after the matching `pop`.
+///
+/// Expected call frequency: one push per visible viewport (a scroll
+/// container clipping one child), not one per row — each push clones a
+/// full `outer`-sized cell snapshot, so a per-row push pays that cost
+/// once per row.
 pub(crate) struct TuiClipFrame {
     /// Absolute screen-cell area active just before this push — what
     /// [`Self::pop`] restores, outside `clip`, to its pre-push contents.
     outer: RRect,
     /// This push's own narrowed clip: `rect` quantised outward to whole
-    /// cells and intersected with `outer`.
+    /// cells (same rounding as [`DrawOp::PushClip`], coarser than the
+    /// `.round()` every `draw_*` rect otherwise gets — a fractional
+    /// clip can let a child bleed up to one cell past it) and
+    /// intersected with `outer`.
     clip: RRect,
     /// `outer`'s cells, snapshotted at push time, row-major
     /// (`outer.width` cells per row).
-    snapshot: Vec<ratatui::buffer::Cell>,
+    snapshot: Vec<Cell>,
 }
 
 impl TuiClipFrame {
@@ -165,16 +173,10 @@ impl TuiClipFrame {
     /// intersect with `outer`, reusing [`CellClip`]'s own math rather
     /// than a second copy of it.
     pub(crate) fn push(buf: &Buffer, outer: RRect, rect: Rect) -> Self {
-        let bound = CellClip::from_bounds(
-            outer.x as i32,
-            outer.y as i32,
-            outer.x as i32 + outer.width as i32,
-            outer.y as i32 + outer.height as i32,
-        )
-        .push(rect);
+        let bound = CellClip::from_rrect(outer).push(rect);
         let clip = RRect::new(
-            bound.x0.max(0) as u16,
-            bound.y0.max(0) as u16,
+            bound.x0 as u16,
+            bound.y0 as u16,
             bound.x1.saturating_sub(bound.x0).max(0) as u16,
             bound.y1.saturating_sub(bound.y0).max(0) as u16,
         );
@@ -192,10 +194,8 @@ impl TuiClipFrame {
     }
 
     /// This push's own narrowed clip — what a nested push intersects
-    /// against, and what [`Backend::push_clip`]'s caller sees as "the
-    /// active clip" until the matching [`Self::pop`].
-    ///
-    /// [`Backend::push_clip`]: crate::Backend::push_clip
+    /// against, and what [`crate::Backend::push_clip`]'s caller sees as
+    /// "the active clip" until the matching [`Self::pop`].
     pub(crate) fn active(&self) -> RRect {
         self.clip
     }
@@ -203,15 +203,9 @@ impl TuiClipFrame {
     /// Restore `buf`'s cells inside `outer` but outside `clip` to their
     /// snapshotted contents — the donut a clipped-out paint could have
     /// reached — leaving cells inside `clip` exactly as whatever painted
-    /// there left them. Returns `outer`: the clip that was active before
-    /// this push, for the caller to resume painting against.
-    pub(crate) fn pop(self, buf: &mut Buffer) -> RRect {
-        let clip = CellClip::from_bounds(
-            self.clip.x as i32,
-            self.clip.y as i32,
-            self.clip.x as i32 + self.clip.width as i32,
-            self.clip.y as i32 + self.clip.height as i32,
-        );
+    /// there left them.
+    pub(crate) fn pop(self, buf: &mut Buffer) {
+        let clip = CellClip::from_rrect(self.clip);
         let mut i = 0;
         for y in self.outer.y..self.outer.y.saturating_add(self.outer.height) {
             for x in self.outer.x..self.outer.x.saturating_add(self.outer.width) {
@@ -221,7 +215,6 @@ impl TuiClipFrame {
                 i += 1;
             }
         }
-        self.outer
     }
 }
 

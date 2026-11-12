@@ -2402,12 +2402,9 @@ impl Backend for TuiBackend {
 
     // ─── Clipping ────────────────────────────────────────────────────────
     fn push_clip(&mut self, rect: QRect) {
-        // Resolved before `current_frame_mut`, not after: its `&mut
-        // Frame<'static>` result reborrows `self` for as long as it (or
-        // anything derived from it, like `buf` below) stays alive —
-        // see that method's doc — so any plain `&self`/`&mut self`
-        // access to `clip_stack` has to happen on either side of it,
-        // never interleaved.
+        // `outer` is read before `current_frame_mut` because its `&mut
+        // Frame<'static>` reborrows `self` for as long as it (or `buf`,
+        // derived from it) stays alive.
         let outer = self
             .clip_stack
             .last()
@@ -2426,17 +2423,24 @@ impl Backend for TuiBackend {
     }
 
     fn pop_clip(&mut self) {
-        let Some(top) = self.clip_stack.pop() else {
-            debug_assert!(false, "TuiBackend::pop_clip called with an empty stack");
-            return;
-        };
-        let Some(frame) = self.current_frame_mut() else {
+        // Checked before popping `clip_stack` (and dropped again right
+        // away, so it doesn't hold `self` borrowed into the pop below):
+        // an out-of-scope call must leave the stack untouched, not
+        // discard an entry it then fails to restore.
+        if self.current_frame_mut().is_none() {
             debug_assert!(
                 false,
                 "TuiBackend::pop_clip called outside enter_frame_scope"
             );
             return;
+        }
+        let Some(top) = self.clip_stack.pop() else {
+            debug_assert!(false, "TuiBackend::pop_clip called with an empty stack");
+            return;
         };
+        let frame = self
+            .current_frame_mut()
+            .expect("checked non-null just above");
         top.pop(frame.buffer_mut());
     }
 
