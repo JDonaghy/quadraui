@@ -66,6 +66,18 @@ only a push to `main` runs this workflow.
   `tui::canvas`'s cell-quantised clip bookkeeping; `GtkBackend` forwards to
   its own `PaintSurface::surface_push_clip`/`surface_pop_clip` (cairo's
   save/clip/restore). macOS and Win each get their own follow-up issue.
+  `PaintSurface`. Default no-op, so this is additive; `TuiBackend` is the
+  only implementor so far, reusing `tui::canvas`'s cell-quantised clip
+  bookkeeping. GTK, macOS and Win each get their own follow-up issue.
+- `quadraui-binding-core`'s `"scroll"` layout node (`LayoutNode::Scroll` /
+  `LayoutScroll`): a generic scrollable container holding one content
+  subtree, measured at its natural length along its own axis, painted at a
+  resolved offset inside a `Backend::push_clip`-clipped viewport with a
+  shared `ScrollView` scrollbar, and hit-tested through
+  `PaintedHit::Scroll`/`HitDetail::ScrollBody`. The offset is uncontrolled
+  by default, resolved against `WidgetState` by `resolve_scroll_offset` the
+  way a `Split`'s divider ratio already is. Wheel and keyboard routing onto
+  the container is a follow-up.
 
 ### Fixed
 - TUI `Button`: a leaf painted into a cell taller than its one row of
