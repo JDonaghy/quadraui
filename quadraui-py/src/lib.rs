@@ -7117,6 +7117,68 @@ def handle(event):
         });
     }
 
+    /// A `MouseDown` on a painted `button` leaf focuses it (see
+    /// `mouse_down_over_a_painted_button_is_enriched_with_its_widget_id`
+    /// above), and the TUI host's generic focus-ring convention repaints a
+    /// border around that leaf's own cell on every frame after. When the
+    /// leaf's cell is taller than its one row of label (this app's bare
+    /// `{'button': ...}` root fills the whole 40x10 viewport, far taller
+    /// than one row), the label must still be on screen next render, not
+    /// silently replaced by the ring's own top/bottom border glyphs.
+    #[test]
+    fn clicking_a_painted_button_leaves_its_label_on_screen_next_render() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'button': {'id': 'btn:ok', 'label': 'OK'}}
+
+def handle(event):
+    pass
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let bounds = app
+                .driver
+                .find_bounds("OK")
+                .expect("button label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                app.screen_contains("OK").expect("render must not raise"),
+                "the button's label must still be on screen after the click that focused it"
+            );
+        });
+    }
+
     /// A `MouseMoved` landing on a painted button's bounds dispatches a
     /// hit-tested `MouseEntered` ahead of the raw move itself, each key
     /// the handler sees carrying the button's own id and `button_body`

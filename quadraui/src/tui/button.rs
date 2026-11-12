@@ -5,7 +5,11 @@
 //! [`ButtonVariant::Warning`], and the bare label for
 //! [`ButtonVariant::Icon`] (no bracket chrome — an icon button typically
 //! carries a single glyph). The whole cell range is one hit target, same
-//! as [`crate::Button::layout`].
+//! as [`crate::Button::layout`]; when that cell is taller than the single
+//! row of chrome, the row is centred vertically within it rather than
+//! pinned to the top, so a focused leaf's generic border overlay
+//! (`crate::tui::draw_focus_ring`, which only clears the cell's own
+//! top/bottom edge rows) never lands on the same row as the label.
 //!
 //! [`ButtonVariant::Danger`]/[`ButtonVariant::Warning`] paint **no**
 //! background fill on TUI — unlike [`ButtonVariant::Primary`]'s solid
@@ -94,10 +98,23 @@ pub fn draw_button_interactive(
         return layout;
     }
 
-    let y = layout.bounds.y.round() as u16;
     let x0 = layout.bounds.x.round() as u16;
     let w = layout.bounds.width.round() as u16;
     let end = x0.saturating_add(w);
+    let area_height = layout.bounds.height.round() as u16;
+    // Centre the single row of chrome within a taller `area` instead of
+    // pinning it to the top — a layout-tree host handing this a multi-row
+    // cell (e.g. an `EqualShare`-sized `Column` slot) still has only one
+    // row of label to paint, and a focused leaf's generic border overlay
+    // (`crate::tui::draw_focus_ring`) only clears top/bottom *edge* rows of
+    // that same cell, not its own interior — so a label pinned to the top
+    // row sits exactly on the ring's top border and gets overwritten by it
+    // the moment this button gains focus. Centring keeps the label on an
+    // interior row the ring never touches for any `area_height >= 3`;
+    // `layout.bounds` itself (the hit-test/tab-stop rect) still reports the
+    // *whole* cell either way — see the module doc's "whole cell range is
+    // one hit target".
+    let y = layout.bounds.y.round() as u16 + area_height.saturating_sub(1) / 2;
 
     // `Danger`/`Warning` intent is carried entirely by foreground colour
     // on TUI — no background fill of their own, unlike `Primary`'s solid
@@ -263,6 +280,42 @@ mod tests {
         let theme = Theme::default();
         draw_button(&mut buf, area, &button, &theme, false);
         assert_eq!(cell_char(&buf, 2, 0), 'O');
+    }
+
+    /// A layout-tree host handing a `Button` a taller cell than its one
+    /// row of chrome needs (an `EqualShare`-sized `Column` slot, say) must
+    /// not pin the label to the cell's own top row — that row is exactly
+    /// where `crate::tui::draw_focus_ring`'s top border lands once the
+    /// button gains focus, see this module's own doc.
+    #[test]
+    fn taller_than_one_row_area_centres_the_label_instead_of_pinning_it_to_the_top() {
+        let area = Rect::new(0, 0, 8, 3);
+        let mut buf = Buffer::empty(area);
+        let button = mk_button("OK");
+        draw_button(&mut buf, area, &button, &Theme::default(), false);
+
+        assert_eq!(cell_char(&buf, 0, 1), '[', "label paints on the middle row");
+        assert_eq!(cell_char(&buf, 0, 0), ' ', "the top row stays blank");
+        assert_eq!(cell_char(&buf, 0, 2), ' ', "the bottom row stays blank");
+    }
+
+    /// The hit-test/tab-stop rect this function returns still covers the
+    /// *whole* cell it was given, unchanged by where the label itself
+    /// paints — see the module doc's "whole cell range is one hit target".
+    #[test]
+    fn taller_than_one_row_area_still_reports_the_whole_cell_as_hit_bounds() {
+        let area = Rect::new(0, 0, 8, 3);
+        let mut buf = Buffer::empty(area);
+        let button = mk_button("OK");
+        let layout = draw_button(&mut buf, area, &button, &Theme::default(), false);
+
+        assert_eq!(layout.bounds.width.round() as u16, area.width);
+        assert_eq!(layout.bounds.height.round() as u16, area.height);
+        assert_eq!(
+            layout.hit_test(Point::new(0.0, 0.0)),
+            ButtonHit::Body,
+            "the cell's own top row (not the label row) must still hit-test as the body"
+        );
     }
 
     #[test]
