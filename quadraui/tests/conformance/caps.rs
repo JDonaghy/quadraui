@@ -1025,7 +1025,8 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // cell-quantised clip bookkeeping; `GtkBackend` overrides both too,
     // forwarding to its own `PaintSurface::surface_push_clip`/
     // `surface_pop_clip` (cairo's save/clip/restore). macOS and Win each
-    // have the same real pixel-clip equivalent already, but wiring the
+    // have their own real pixel-clip equivalent already (the
+    // `PaintSurface::surface_push_clip` seam), but wiring the
     // `Backend`-level seam onto it is each backend's own follow-up.
     (
         "macos",
