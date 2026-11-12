@@ -2337,6 +2337,34 @@ pub trait Backend: sealed::Sealed {
         h
     }
 
+    // ─── Clipping ────────────────────────────────────────────────────────
+    /// Push an axis-aligned clip `rect`, in the same screen-space units
+    /// every `draw_*` method's own `rect` argument already uses.
+    /// Intersects with whatever clip is already active — nested, not
+    /// replaced — so a widget that pushes its own clip inside a caller's
+    /// clip never escapes it. Every push must be balanced by a matching
+    /// [`Self::pop_clip`]; an unbalanced push leaks the narrowed clip
+    /// into painting that runs after it.
+    ///
+    /// The seam a compositing container (e.g. a scroll view) reaches for
+    /// before painting a child that may overflow its own viewport —
+    /// mirrors [`crate::PaintSurface::surface_push_clip`]'s semantics,
+    /// but lives on `Backend` because the binding-core layout painter
+    /// draws through `Backend::draw_*`, not through a `PaintSurface`
+    /// (which TUI never implements — see that trait's module doc).
+    ///
+    /// Default: no-op, so every backend without its own clip bookkeeping
+    /// keeps painting exactly as before this method existed.
+    /// [`crate::tui::backend::TuiBackend`] overrides this with the same
+    /// cell-quantised clip bookkeeping [`crate::tui::canvas`] already
+    /// uses for `Canvas`'s own `PushClip`/`PopClip` ops.
+    fn push_clip(&mut self, _rect: Rect) {}
+
+    /// Pop the clip most recently pushed by [`Self::push_clip`],
+    /// restoring whatever clip (or none) was active before it. Default:
+    /// no-op, mirroring that method.
+    fn pop_clip(&mut self) {}
+
     // ─── Drawing — one method per primitive ────────────────────────────
     //
     // Implementations are thin wrappers around each backend crate's

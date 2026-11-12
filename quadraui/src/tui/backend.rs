@@ -341,6 +341,13 @@ pub struct TuiBackend {
     /// differently, for a non-integral input) from what `editor_layout`
     /// saw.
     editor_right_reserve_w: Option<f32>,
+    /// Active [`Backend::push_clip`]/[`Backend::pop_clip`] stack — see
+    /// [`Self::push_clip`]'s doc for how each frame's snapshot lets
+    /// `pop_clip` roll back anything painted outside the narrowed clip.
+    /// Cleared at the start of every frame by [`Self::begin_frame`] (same
+    /// lifecycle as `zones`): an unbalanced push from a previous frame
+    /// must never narrow the next one's painting.
+    clip_stack: Vec<super::canvas::TuiClipFrame>,
 }
 
 impl TuiBackend {
@@ -381,6 +388,7 @@ impl TuiBackend {
             input_gone: false,
             minimap_sizing: None,
             editor_right_reserve_w: None,
+            clip_stack: Vec::new(),
         }
     }
 
@@ -1931,6 +1939,10 @@ impl Backend for TuiBackend {
         // Clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.borrow_mut().reset_frame_paint();
+        // Clear any unbalanced push_clip left over from the previous
+        // frame — see `clip_stack`'s own doc for why a stale narrowed
+        // clip must never leak into the next frame's painting.
+        self.clip_stack.clear();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -2386,6 +2398,46 @@ impl Backend for TuiBackend {
     /// when the menu is anchored flush against any of them.
     fn context_menu_border_inset(&self) -> f32 {
         super::context_menu::BORDER_INSET
+    }
+
+    // ─── Clipping ────────────────────────────────────────────────────────
+    fn push_clip(&mut self, rect: QRect) {
+        // Resolved before `current_frame_mut`, not after: its `&mut
+        // Frame<'static>` result reborrows `self` for as long as it (or
+        // anything derived from it, like `buf` below) stays alive —
+        // see that method's doc — so any plain `&self`/`&mut self`
+        // access to `clip_stack` has to happen on either side of it,
+        // never interleaved.
+        let outer = self
+            .clip_stack
+            .last()
+            .map(super::canvas::TuiClipFrame::active);
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::push_clip called outside enter_frame_scope"
+            );
+            return;
+        };
+        let buf = frame.buffer_mut();
+        let outer = outer.unwrap_or(buf.area);
+        let clip_frame = super::canvas::TuiClipFrame::push(buf, outer, rect);
+        self.clip_stack.push(clip_frame);
+    }
+
+    fn pop_clip(&mut self) {
+        let Some(top) = self.clip_stack.pop() else {
+            debug_assert!(false, "TuiBackend::pop_clip called with an empty stack");
+            return;
+        };
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::pop_clip called outside enter_frame_scope"
+            );
+            return;
+        };
+        top.pop(frame.buffer_mut());
     }
 
     // ─── Drawing ───────────────────────────────────────────────────────────

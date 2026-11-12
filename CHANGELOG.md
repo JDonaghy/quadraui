@@ -58,6 +58,14 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+- `Backend::push_clip`/`pop_clip`: a backend-neutral, nested clip-rect seam
+  for a compositing container (a scroll view clipping a partly-visible
+  child) that paints through `Backend::draw_*` rather than a
+  `PaintSurface`. Default no-op, so this is additive; `TuiBackend` is the
+  only implementor so far, reusing `tui::canvas`'s cell-quantised clip
+  bookkeeping. GTK, macOS and Win each get their own follow-up issue.
+
 ### Fixed
 - TUI `Button`: a leaf painted into a cell taller than its one row of
   chrome (an `EqualShare`-sized `Column` slot, say) now centres its label
