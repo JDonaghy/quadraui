@@ -1,15 +1,17 @@
 name: quadraui-node build
 
-# Builds `@quadraui/node`'s native addon from source, runs its own
-# black-box `node --test` suite (headless `QuiApp`/`QuiShellApp` surface,
-# plus the `QuadrauiError` subclass export check in
-# `tests/public_api.test.ts`), then `npm pack`s the result and `require()`s
-# the packed tarball from a separate throwaway directory -- proving the
-# package a consumer would actually install loads and raises typed errors,
-# not just that this workspace's own build-tree layout happens to resolve.
-# Mirrors `quadraui-py-tests` (`ci.yml`) for the test half and
-# `quadraui-py-wheels.yml`'s "build artifact, then prove it is loadable"
-# shape for the pack half.
+# Builds `@quadraui/node`'s native addon from source, type-checks
+# `examples/*.ts` under `tsc --strict --noEmit` (`package.json`'s
+# `typecheck:examples` script) and runs each of them headlessly, runs this
+# package's own black-box `node --test` suite (headless
+# `QuiApp`/`QuiShellApp` surface, plus the `QuadrauiError` subclass export
+# check in `tests/public_api.test.ts`), then `npm pack`s the result and
+# `require()`s the packed tarball from a separate throwaway directory --
+# proving the package a consumer would actually install loads and raises
+# typed errors, not just that this workspace's own build-tree layout
+# happens to resolve. Mirrors `quadraui-py-tests` (`ci.yml`) for the test
+# half and `quadraui-py-wheels.yml`'s "build artifact, then prove it is
+# loadable" shape for the pack half.
 #
 # One platform (`ubuntu-latest`), build-from-source only: `@quadraui/node`
 # ships no prebuilt `.node` binary per platform yet (`package.json`'s own
@@ -21,12 +23,22 @@ name: quadraui-node build
 # (and a `quadraui-node-release.yml` publish workflow) once this package
 # has that decision made for it.
 #
-# Node >= 23.6 is pinned below because this package's own `js/index.ts`
-# `main`/`types` entry is a `.ts` file `require()`d directly (see that
-# file's own header doc) -- Node's type-stripping only erases TypeScript
-# syntax from a `.ts` file by default from that version on; an older Node
-# needs `--experimental-strip-types` explicitly, which neither this
-# package's own `npm test` script nor a consumer's plain `require()` pass.
+# `npm pack`'s own `prepack` lifecycle hook (`package.json`'s `build:dist`
+# script) compiles `js/index.ts` to `dist/index.js` and copies its
+# hand-maintained sibling declaration (`js/index.d.ts`) to
+# `dist/index.d.ts` before packing -- this package's `main`/`types` point
+# there, so a consumer's `require("@quadraui/node")` resolves one compiled
+# entry point rather than the `.ts` source tree, reconciled with the
+# native, napi-generated `index.d.ts` (`js/index.d.ts`'s own header doc).
+#
+# Node >= 23.6 is pinned below because every *other* subpath export
+# (`./app`, `./app/*`, `./testing`, `./jsx-runtime`, `./jsx-dev-runtime`)
+# still points straight at its own `.ts` source, `require()`d directly
+# (see `js/index.ts`'s own header doc for why) -- Node's type-stripping
+# only erases TypeScript syntax from a `.ts` file by default from that
+# version on; an older Node needs `--experimental-strip-types` explicitly,
+# which neither this package's own `npm test`/example scripts nor a
+# consumer's plain `require()` pass.
 on:
   push:
     branches: [main, develop]
@@ -114,8 +126,19 @@ jobs:
         run: npm ci
       - name: Build the native addon (plain/debug build)
         run: npm run build:debug
+      - name: Type-check examples (tsc --strict --noEmit)
+        run: npm run typecheck:examples
       - name: npm test
         run: npm test
+      - name: Run every example headlessly
+        shell: bash
+        run: |
+          set -euo pipefail
+          for example in examples/*.ts; do
+            echo "::group::node $example"
+            node "$example"
+            echo "::endgroup::"
+          done
       - name: npm pack
         run: npm pack --pack-destination "$RUNNER_TEMP"
       - name: Verify the packed tarball is loadable and raises typed errors

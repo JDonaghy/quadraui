@@ -22,6 +22,11 @@ quadraui-node/index.d.ts
 quadraui-node/*.node
 quadraui-node/node_modules/
 
+# `package.json`'s `build:dist` script (run by `npm pack`'s own `prepack`
+# hook): compiles `js/index.ts` to `dist/index.js` and copies
+# `js/index.d.ts`/`js/wire.d.ts` alongside it. Regenerated on every pack.
+quadraui-node/dist/
+
 # `tests/jsx_runtime.test.ts`'s own broken-prop fixture, written in-tree
 # (not a tmpdir) so its relative `require`s and `tsconfig.jsx.json`
 # `paths` still resolve; removed in that test's own `finally` block, kept
