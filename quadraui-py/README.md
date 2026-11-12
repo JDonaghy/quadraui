@@ -54,6 +54,23 @@ def test_opening_a_folder(quadraui_harness):      # fixture ships with the packa
     h.assert_text("alpha")
 ```
 
+## Version compatibility
+
+This package's minor version always equals the `quadraui` Rust crate's own
+minor version; the patch component moves independently in either direction
+(see
+[`BINDING_VERSION_POLICY.md`](https://github.com/JDonaghy/quadraui/blob/main/quadraui/docs/decisions/BINDING_VERSION_POLICY.md)).
+A released `quadraui` version is always `pip install`-able as the matching
+`quadraui-py` minor:
+
+| `quadraui` (Rust crate) | `quadraui` (this PyPI package) |
+|---|---|
+| 0.*Y*.x | 0.*Y*.x — any patch |
+
+For example, both `quadraui` crate `0.10.1` and `0.10.3` pair with any
+`quadraui-py` `0.10.x` release; a crate `0.11.0` needs a `quadraui-py`
+`0.11.x` release, not `0.10.x`.
+
 ## Wheels
 
 Prebuilt `abi3` wheels (CPython >= 3.8) are published for Linux, macOS, and

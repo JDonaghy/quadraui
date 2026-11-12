@@ -509,7 +509,11 @@ jobs:
     # quadraui/Cargo.toml's version — the same check `release.yml`'s
     # `check` job runs, but here it runs before the merge instead of after,
     # so a CHANGELOG still titled `## [Unreleased]` fails the PR instead of
-    # `main`.
+    # `main`. Also verifies, via `check-binding-versions`, that
+    # quadraui-py/quadraui-node/quadraui-binding-core's own minor versions
+    # still agree with that same quadraui/Cargo.toml version — see
+    # `quadraui/docs/decisions/BINDING_VERSION_POLICY.md` for why minor
+    # tracking (not an exact match) is the rule.
     #
     # Deliberately NOT the same job as `changelog-check` above: that one
     # enforces (on every PR) that a `quadraui/src/**` change adds a line
@@ -525,15 +529,16 @@ jobs:
     # meaningful advisory signal to show on a non-promotion PR for a check
     # about a version bump that PR likely isn't making.
     #
-    # No toolchain/cache steps: `version` and `notes` both read
-    # `quadraui/Cargo.toml`/`CHANGELOG.md` directly, the same hermetic,
-    # checkout-only design as `check-lock` (see that command's module doc
-    # in `scripts/release_decide.py` for why this matters on a fresh
-    # runner with no registry cache).
-    name: CHANGELOG has a versioned section for this release (develop -> main gate)
+    # No toolchain/cache steps: `version`, `notes`, and
+    # `check-binding-versions` all read local files directly
+    # (`quadraui/Cargo.toml`, `CHANGELOG.md`, the binding manifests), the
+    # same hermetic, checkout-only design as `check-lock` (see each
+    # command's module doc in `scripts/release_decide.py` for why this
+    # matters on a fresh runner with no registry cache).
+    name: CHANGELOG + binding versions are release-ready (develop -> main gate)
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    # Two Python-script steps reading local files, normally a few seconds.
+    # Three Python-script steps reading local files, normally a few seconds.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -548,6 +553,8 @@ jobs:
             --changelog CHANGELOG.md \
             --version "${VERSION}" \
             --out "${RUNNER_TEMP}/notes-preview.md"
+      - name: Verify quadraui-py/quadraui-node/quadraui-binding-core minor versions match quadraui's
+        run: python3 scripts/release_decide.py check-binding-versions
 
   comment-lint:
     # #1112: comments describe the code as it is; history (what it used to

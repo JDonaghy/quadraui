@@ -13,7 +13,7 @@ is the part of that decision worth testing outside a real GitHub Actions run:
   - tag missing and the changelog section is missing/empty -> fail, before
     any tag is pushed or anything is published
 
-Four subcommands, used from `release.yml` and `ci.yml`:
+Five subcommands, used from `release.yml` and `ci.yml`:
 
     python3 scripts/release_decide.py decide \\
         --version 0.1.2 --remote origin --repo-dir .
@@ -24,6 +24,8 @@ Four subcommands, used from `release.yml` and `ci.yml`:
     python3 scripts/release_decide.py check-lock --repo-dir .
 
     python3 scripts/release_decide.py version --repo-dir .
+
+    python3 scripts/release_decide.py check-binding-versions --repo-dir .
 
 `decide` exits 0 and prints `decision=noop` or `decision=publish` (also
 appended to the file named by `$GITHUB_OUTPUT`, if set) and touches the
@@ -57,15 +59,30 @@ registry index for every one of quadraui's dependencies, which a fresh
 CI checkout does not have, so it fails on a perfectly fresh lockfile. Plain
 file reads make this check hermetic, toolchain-free and identical on every
 host.
+
+`check-binding-versions` enforces the policy in
+`quadraui/docs/decisions/BINDING_VERSION_POLICY.md`: a binding's *minor*
+version must equal `quadraui/Cargo.toml`'s minor version; its patch version
+is independent and may move on its own. It reads
+`quadraui-py/pyproject.toml`, `quadraui-py/Cargo.toml`, and
+`quadraui-binding-core/Cargo.toml` (all plain `version = "X.Y.Z"` TOML
+lines, reusing `manifest_version` below) plus `quadraui-node/package.json`'s
+`"version"` field, and fails naming every file whose minor disagrees.
+`ci.yml`'s `changelog-version-check` job runs it on the same `develop` ->
+`main` promotion PR this module's other release-commit checks gate, so a
+binding left behind by a crate minor bump fails before `main` moves, not
+after.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 
 def changelog_section(text: str, version: str) -> str:
@@ -237,6 +254,96 @@ def cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def minor_version(version: str) -> str:
+    """Return the `"X.Y"` minor-version prefix of an `"X.Y.Z[-pre]"` string.
+
+    Falls back to `version` unchanged if it has fewer than two dot-separated
+    components — callers only ever feed this a value `VERSION_FORMAT_RE` (or
+    an equivalent npm/PyPI-style parse) has already accepted, so that path
+    is defensive, not a real input shape.
+    """
+    parts = version.split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else version
+
+
+def package_json_version(text: str) -> str | None:
+    """Return a `package.json` document's top-level `"version"` field.
+
+    `None` if the text isn't valid JSON or has no string `"version"` key —
+    the same "report, don't guess" shape `manifest_version` uses for a
+    missing TOML `version =` line.
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    value = data.get("version") if isinstance(data, dict) else None
+    return value if isinstance(value, str) else None
+
+
+# Binding manifests `check-binding-versions` reads, each paired with the
+# function that extracts its `version` field. `quadraui-py/pyproject.toml`
+# and `quadraui-py/Cargo.toml` are both plain TOML with a top-level
+# `version = "X.Y.Z"` line, the same shape `manifest_version` already
+# parses for `quadraui/Cargo.toml` itself; `quadraui-binding-core/Cargo.toml`
+# is the same shape again. `quadraui-node/package.json` is JSON, so it
+# needs `package_json_version` instead.
+BINDING_MANIFESTS: tuple[tuple[str, Callable[[str], str | None]], ...] = (
+    ("quadraui-py/pyproject.toml", manifest_version),
+    ("quadraui-py/Cargo.toml", manifest_version),
+    ("quadraui-binding-core/Cargo.toml", manifest_version),
+    ("quadraui-node/package.json", package_json_version),
+)
+
+
+def cmd_check_binding_versions(args: argparse.Namespace) -> int:
+    repo_dir = Path(args.repo_dir)
+    crate_path = repo_dir / "quadraui" / "Cargo.toml"
+
+    if not crate_path.is_file():
+        print(f"::error::{crate_path} does not exist", file=sys.stderr)
+        return 1
+
+    crate_version = manifest_version(crate_path.read_text(encoding="utf-8"))
+    if crate_version is None:
+        print(
+            f'::error::{crate_path} has no `version = "..."` line', file=sys.stderr
+        )
+        return 1
+    crate_minor = minor_version(crate_version)
+
+    mismatches: list[tuple[str, str]] = []
+    for rel_path, read_version in BINDING_MANIFESTS:
+        path = repo_dir / rel_path
+        if not path.is_file():
+            print(f"::error::{path} does not exist", file=sys.stderr)
+            return 1
+        version = read_version(path.read_text(encoding="utf-8"))
+        if version is None:
+            print(f"::error::{path} has no readable version", file=sys.stderr)
+            return 1
+        if minor_version(version) != crate_minor:
+            mismatches.append((rel_path, version))
+
+    if mismatches:
+        for rel_path, version in mismatches:
+            print(
+                f"::error::{rel_path} declares version {version} (minor "
+                f"{minor_version(version)}), which disagrees with "
+                f"quadraui/Cargo.toml's version {crate_version} (minor "
+                f"{crate_minor}). Per "
+                "quadraui/docs/decisions/BINDING_VERSION_POLICY.md, a binding's "
+                "minor version must track the crate's; bump this file's "
+                f"version to {crate_minor}.0 or higher — its patch number "
+                "may move independently of the crate's.",
+                file=sys.stderr,
+            )
+        return 1
+
+    print(f"Binding versions agree with quadraui's minor version ({crate_minor}).")
+    return 0
+
+
 def cmd_notes(args: argparse.Namespace) -> int:
     changelog_path = Path(args.changelog)
     text = changelog_path.read_text(encoding="utf-8")
@@ -278,6 +385,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     version.add_argument("--repo-dir", default=".")
     version.set_defaults(func=cmd_version)
+
+    check_binding_versions = sub.add_parser(
+        "check-binding-versions",
+        help="fail if a binding's minor version disagrees with quadraui's",
+    )
+    check_binding_versions.add_argument("--repo-dir", default=".")
+    check_binding_versions.set_defaults(func=cmd_check_binding_versions)
 
     args = parser.parse_args(argv)
     return args.func(args)

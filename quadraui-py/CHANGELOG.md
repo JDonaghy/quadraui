@@ -280,6 +280,31 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   (`"start"`/`"center"`/`"end"`/`"stretch"`) key. None of the five keys
   is required; a tree with none of them lays out exactly as before
   (every child an equal share, `Justify::Start`, `Align::Stretch`).
+
+- **Backfill, `py-v0.8.0` through this file's creation:** this file starts
+  now (see the note at the top), so none of the work below ever got its own
+  entry; rather than leave a silent gap, it is summarized here as one
+  block instead of the dozens of individual PRs it spans. `quadraui-py`'s
+  interaction engine was extracted into the language-neutral
+  `quadraui-binding-core` crate every binding now shares (hit testing,
+  focus, semantic event synthesis, text-input/drag controllers). Every
+  additive primitive went from paint-only to hit-testable and
+  keyboard-focusable: `tree`/`data_table` gained scrollbar drag, wheel
+  scroll, column resize, and focus-scoped arrow-key navigation;
+  `split`/`panel`/`sidebar_panel` gained real divider drag and chrome
+  hits; `toolbar`/`status_bar`/`activity_bar` gained click routing and
+  `text_display` gained scroll; `form`/`combo_box`/`date_picker`/`switch`
+  gained key/char/paste routing through `FormController`; and a `tabs`
+  node gained inline tree-rename and its full field set. The menu bar and
+  context menus were wired to real activation, and
+  `QuiApp.show_message_dialog` added a modal overlay routed ahead of
+  both. Text regions became selectable/copyable with richer clipboard
+  access, `QuiApp.run_shell` added a `ShellApp`-backed app frame, and
+  cross-thread event injection landed alongside a `WindowClose` veto
+  default fix and a waker panic-safety hardening pass. See `git log
+  py-v0.8.0.. -- quadraui-py quadraui-binding-core` for the full,
+  PR-by-PR history.
+
 ### Deprecated
 
 - `QuiApp.insert_button`/`insert_text_display`/`insert_list`/`insert_tree`/
