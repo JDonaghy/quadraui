@@ -1036,6 +1036,29 @@ pub fn schema() -> Vec<DefJson> {
         .concat(),
     ));
 
+    let layout_scroll_payload = b.define(obj(
+        "LayoutScrollPayload",
+        vec![
+            field("id", str_()),
+            field_opt("axis", lit(&["vertical", "horizontal"])),
+            field_opt("offset", float_()),
+            field("content", layout_node.clone()),
+        ],
+    ));
+    let layout_scroll_node = b.define(obj(
+        "LayoutScrollNode",
+        [
+            vec![
+                field("scroll", layout_scroll_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                wire_version_field.clone(),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
+    ));
+
     let split_tree_recursive_node = re("SplitTreeRecursiveNode");
     let split_tree_leaf = b.define(obj(
         "_SplitTreeLeaf",
@@ -2383,6 +2406,7 @@ pub fn schema() -> Vec<DefJson> {
             layout_panel_node,
             layout_sidebar_panel_node,
             layout_split_tree_node,
+            layout_scroll_node,
             layout_leaf_node,
         ],
         "One node of a render callback's returned layout tree.",
@@ -2827,6 +2851,7 @@ pub fn schema() -> Vec<DefJson> {
         ),
         ("_HitDetailExtraBody", "extra_body", &[]),
         ("_HitDetailExtraChrome", "extra_chrome", &[]),
+        ("_HitDetailScrollBody", "scroll_body", &[]),
     ];
     let mut hit_detail_members = Vec::new();
     for (name, kind, extra_fields) in HIT_DETAIL_KINDS {
@@ -3413,6 +3438,7 @@ mod coverage {
             HitDetail::TreeScrollbarTrackAfter => {}
             HitDetail::ExtraBody => {}
             HitDetail::ExtraChrome { bar: _ } => {}
+            HitDetail::ScrollBody => {}
         }
     }
 
@@ -3438,6 +3464,7 @@ mod coverage {
             LayoutNode::Panel(_) => {}
             LayoutNode::SidebarPanel(_) => {}
             LayoutNode::SplitTree(_) => {}
+            LayoutNode::Scroll(_) => {}
         }
     }
 

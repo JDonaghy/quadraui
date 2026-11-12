@@ -215,6 +215,8 @@ only once both `quadraui-py` and `quadraui-node` emit the new value.
 - [`LayoutPanelNode`](#wire-layoutpanelnode)
 - [`LayoutSidebarPanelPayload`](#wire-layoutsidebarpanelpayload)
 - [`LayoutSidebarPanelNode`](#wire-layoutsidebarpanelnode)
+- [`LayoutScrollPayload`](#wire-layoutscrollpayload)
+- [`LayoutScrollNode`](#wire-layoutscrollnode)
 - [`_SplitTreeLeaf`](#wire-_splittreeleaf)
 - [`SplitTreeSplitPayload`](#wire-splittreesplitpayload)
 - [`_SplitTreeSplitWrapper`](#wire-_splittreesplitwrapper)
@@ -470,6 +472,7 @@ only once both `quadraui-py` and `quadraui-node` emit the new value.
 - [`_HitDetailTreeScrollbarTrackAfter`](#wire-_hitdetailtreescrollbartrackafter)
 - [`_HitDetailExtraBody`](#wire-_hitdetailextrabody)
 - [`_HitDetailExtraChrome`](#wire-_hitdetailextrachrome)
+- [`_HitDetailScrollBody`](#wire-_hitdetailscrollbody)
 - [`HitDetail`](#wire-hitdetail)
 - [`_UiKeyPressedPayload`](#wire-_uikeypressedpayload)
 - [`_MouseDownPayload`](#wire-_mousedownpayload)
@@ -1204,6 +1207,29 @@ The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `sidebar_panel` | `LayoutSidebarPanelPayload` | yes |  |
+| `wire_version` | `number` | no |  |
+| `size` | `SectionSize` | no |  |
+| `min` | `number` | no |  |
+| `max` | `number` | no |  |
+
+<a id="wire-layoutscrollpayload"></a>
+#### `LayoutScrollPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | yes |  |
+| `axis` | `"vertical" \| "horizontal"` | no |  |
+| `offset` | `number` | no |  |
+| `content` | `LayoutNode` | yes |  |
+
+<a id="wire-layoutscrollnode"></a>
+#### `LayoutScrollNode`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scroll` | `LayoutScrollPayload` | yes |  |
+| `padding` | `PaddingValue` | no |  |
+| `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
@@ -2775,7 +2801,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 
 One node of a render callback's returned layout tree.
 
-Alias for `LayoutRowNode | LayoutColumnNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutLeafNode`.
+Alias for `LayoutRowNode | LayoutColumnNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode`.
 
 <a id="wire-renderframedict"></a>
 #### `RenderFrameDict`
@@ -3573,12 +3599,19 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `kind` | `"extra_chrome"` | yes |  |
 | `bar` | `WidgetId` | yes |  |
 
+<a id="wire-_hitdetailscrollbody"></a>
+#### `_HitDetailScrollBody`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"scroll_body"` | yes |  |
+
 <a id="wire-hitdetail"></a>
 #### `HitDetail`
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome`.
+Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome | _HitDetailScrollBody`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`

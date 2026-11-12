@@ -14,8 +14,8 @@ use std::rc::Rc;
 // — the `"panel"` wire node itself is a separate breaking change.
 #[allow(deprecated)]
 use quadraui::{
-    Button, DataTable, ListView, Panel, Rect, SectionSize, SidebarPanel, Split, SplitTree, TabBar,
-    TextDisplay, TreeView,
+    Button, DataTable, ListView, Panel, Rect, ScrollAxis, SectionSize, SidebarPanel, Split,
+    SplitTree, TabBar, TextDisplay, TreeView,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -27,8 +27,9 @@ use crate::DecodeError;
 /// draggable ratio, a `Tabs` holding a tab strip plus one content subtree
 /// per tab (of which only the selected one paints), a `Panel` or
 /// `SidebarPanel` holding one chrome descriptor plus a single content
-/// subtree, or a `SplitTree` holding an arbitrarily nested divider tree of
-/// content subtrees.
+/// subtree, a `SplitTree` holding an arbitrarily nested divider tree of
+/// content subtrees, or a `Scroll` holding one content subtree painted at
+/// its own natural size and offset inside a clipped viewport.
 pub enum LayoutNode {
     Row(LayoutContainer),
     Column(LayoutContainer),
@@ -38,6 +39,7 @@ pub enum LayoutNode {
     Panel(LayoutPanel),
     SidebarPanel(LayoutSidebarPanel),
     SplitTree(LayoutSplitTree),
+    Scroll(LayoutScroll),
 }
 
 /// A [`LayoutNode::Row`]/[`LayoutNode::Column`]'s decoded shape: its child
@@ -605,6 +607,35 @@ pub struct LayoutSidebarPanel {
     pub content: Box<LayoutNode>,
 }
 
+/// A [`LayoutNode::Scroll`]'s decoded shape: a generic scrollable region
+/// hosting one content subtree, built on [`quadraui::ScrollView`] for
+/// offset clamping, visible-range, and scrollbar geometry — never
+/// reimplemented here, see that primitive's own module doc. `content`'s
+/// natural size along `axis` becomes `ScrollView::content_len`;
+/// [`crate::render::paint_layout`]/[`crate::host::resolve_layout_node`] lay
+/// it out at that natural size, offset by the resolved scroll position,
+/// and clip to the viewport via `Backend::push_clip`/`Backend::pop_clip`.
+/// `id` is a bare `String`, not a `WidgetId`, matching [`LayoutSplitTree::id`]/
+/// [`LayoutLeaf::id`]'s own convention — wrapped at each use site instead.
+pub struct LayoutScroll {
+    pub id: String,
+    pub axis: ScrollAxis,
+    /// Controlled scroll offset from the wire — `None` means uncontrolled
+    /// (the engine owns it, resolved in [`crate::host::resolve_layout_node`]
+    /// against [`crate::widget_state::WidgetState`] the same way
+    /// [`crate::host::resolve_split_ratio`] resolves a `Split`'s divider).
+    /// Unlike `Split::ratio` (a bare `f32` with no "unset" sentinel), this
+    /// field is already `Option<f32>`, so `WidgetState::resolve`'s own
+    /// controlled/uncontrolled policy applies directly — no baseline latch
+    /// needed.
+    pub offset: Option<f32>,
+    pub content: Box<LayoutNode>,
+    /// Inset around the viewport before scroll content is measured/painted
+    /// — this node's own `padding`/`margin` (no `gap`: there's only one
+    /// content subtree).
+    pub spacing: Spacing,
+}
+
 /// A [`LayoutNode::SplitTree`]'s decoded shape: the `quadraui::SplitTree`
 /// geometry tree (every leaf position holding a synthetic, internal-only
 /// `WidgetId`) paired with `leaves`, the matching content subtree for each
@@ -741,6 +772,15 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
                     walk(what, leaf, seen)?;
                 }
                 Ok(())
+            }
+            LayoutNode::Scroll(scroll_node) => {
+                if !seen.insert(scroll_node.id.clone()) {
+                    return Err(DecodeError(format!(
+                        "{what}: duplicate leaf id {:?}",
+                        scroll_node.id
+                    )));
+                }
+                walk(what, &scroll_node.content, seen)
             }
         }
     }

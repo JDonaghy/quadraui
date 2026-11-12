@@ -1613,6 +1613,14 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
                 resolve_layout_node_state(engine, leaf);
             }
         }
+        // The container's own scroll offset needs the backend metrics this
+        // walker deliberately doesn't take (viewport vs. natural content
+        // length, to clamp against); `paint_layout` clamps whatever
+        // `offset` the wire carried -- `None` painting from the top -- so
+        // only the content subtree's own widget state is resolved here.
+        LayoutNode::Scroll(scroll_node) => {
+            resolve_layout_node_state(engine, &mut scroll_node.content);
+        }
     }
 }
 
@@ -6762,6 +6770,102 @@ def handle(event):
                 !app.screen_contains("AlphaRow")
                     .expect("render must not raise"),
                 "the first tab's content must no longer render once deselected"
+            );
+        });
+    }
+
+    /// A render callback returning `{"scroll": {...}}` paints its `content`
+    /// subtree, and that subtree's own uncontrolled widget state is
+    /// resolved every frame just as it would be outside a scroll: a
+    /// `Tree`/`RowToggleExpand` event the engine stores (no Python state
+    /// involved — the callback keeps sending the same `is_expanded: True`
+    /// descriptor) collapses the branch on the next frame, pruning its
+    /// child row from the screen.
+    #[test]
+    fn scroll_container_content_resolves_its_own_uncontrolled_widget_state() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'scroll': {
+        'id': 'scroll:main',
+        'axis': 'vertical',
+        'content': {'id': 'tree:files', 'tree': {
+            'id': 'tree:files',
+            'rows': [
+                {
+                    'path': [0], 'indent': 0, 'icon': None,
+                    'text': {'spans': [{'text': 'SrcDir', 'fg': None, 'bg': None}]},
+                    'badge': None, 'is_expanded': True,
+                },
+                {
+                    'path': [0, 0], 'indent': 1, 'icon': None,
+                    'text': {'spans': [{'text': 'MainFile', 'fg': None, 'bg': None}]},
+                    'badge': None, 'is_expanded': None,
+                },
+            ],
+            'selection_mode': 'Single', 'selected_path': None,
+            'scroll_offset': 0, 'has_focus': True,
+            'style': {
+                'indent': 2, 'show_chevrons': True,
+                'chevron_expanded': '▾', 'chevron_collapsed': '▸',
+                'row_height': 22,
+            },
+        }},
+    }}
+
+def handle(event):
+    pass
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("SrcDir")
+                    .expect("render must not raise"),
+                "a scroll container must paint its content subtree"
+            );
+            assert!(
+                app.screen_contains("MainFile")
+                    .expect("render must not raise"),
+                "the expanded branch's child row must paint inside the viewport"
+            );
+
+            let event = py
+                .eval(
+                    c"{'Tree': ['tree:files', {'RowToggleExpand': {'path': [0]}}]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate");
+            let event_dict = event.cast::<PyDict>().expect("dict literal must be a dict");
+            app.push_event(event_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                app.screen_contains("SrcDir")
+                    .expect("render must not raise"),
+                "the collapsed branch row itself must stay on screen"
+            );
+            assert!(
+                !app.screen_contains("MainFile")
+                    .expect("render must not raise"),
+                "collapsing the branch must prune its child row from the scroll's content"
             );
         });
     }

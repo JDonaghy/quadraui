@@ -65,10 +65,19 @@ only a push to `main` runs this workflow.
   `PaintSurface`. Default no-op, so this is additive. `TuiBackend` reuses
   `tui::canvas`'s cell-quantised clip bookkeeping; `GtkBackend` forwards to
   its own `PaintSurface::surface_push_clip`/`surface_pop_clip` (cairo's
-  save/clip/restore); `WinBackend` forwards to the same seam backed by
+save/clip/restore); `WinBackend` forwards to the same seam backed by
   Direct2D's `PushAxisAlignedClip`/`PopAxisAlignedClip` stack; `MacBackend`
   forwards to the same seam backed by Core Graphics'
   `CGContextSaveGState`/clip/`CGContextRestoreGState` stack.
+- `quadraui-binding-core`'s `"scroll"` layout node (`LayoutNode::Scroll` /
+  `LayoutScroll`): a generic scrollable container holding one content
+  subtree, measured at its natural length along its own axis, painted at a
+  resolved offset inside a `Backend::push_clip`-clipped viewport with a
+  shared `ScrollView` scrollbar, and hit-tested through
+  `PaintedHit::Scroll`/`HitDetail::ScrollBody`. The offset is uncontrolled
+  by default, resolved against `WidgetState` by `resolve_scroll_offset` the
+  way a `Split`'s divider ratio already is. Wheel and keyboard routing onto
+  the container is a follow-up.
 
 ### Fixed
 - TUI `Button`: a leaf painted into a cell taller than its one row of
