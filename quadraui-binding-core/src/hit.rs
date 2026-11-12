@@ -221,6 +221,99 @@ pub enum PaintedHit {
     Scroll { id: WidgetId, viewport: Rect },
 }
 
+/// Intersects `hits[start..]` — one [`crate::render::paint_scroll`] call's
+/// own descendant content, painted inside `viewport` between its
+/// `Backend::push_clip(viewport)`/`pop_clip` pair — with `viewport`
+/// itself, dropping an entry whose bounds don't overlap it at all.
+///
+/// Without this, a descendant's own recorded bounds can reach past
+/// `viewport` on a backend whose `Rect` carries a negative-origin main
+/// axis correctly (every non-cell-grid one — see
+/// [`crate::render::scroll_content_slots`]'s own `cell_grid` doc, which
+/// already clips a cell-grid backend's bounds before they're ever
+/// painted, making this pass a no-op there), or on any backend whose
+/// `ScrollSlots::Atomic` content is sized to the scroll's full
+/// `content_len` rather than clamped to one viewport's worth (the common
+/// case — see `scroll_content_slots`'s own doc). Checked in reverse paint
+/// order by [`hit_test_painted`], a hit whose bounds leak past its own
+/// scroll's viewport can otherwise mask a sibling painted earlier at that
+/// same screen position (e.g. a button above a scroll whose own
+/// oversized content reaches back up over it) — this keeps every
+/// descendant's bounds inside the viewport it was actually painted into,
+/// so a point outside it never resolves to that scroll's content and a
+/// sibling painted before the scroll keeps its own clicks.
+///
+/// Only the hit kinds whose bounds live in a plain field this module can
+/// reach are narrowed: [`PaintedHit::Button`]'s `layout.bounds`;
+/// [`PaintedHit::Tree`]/[`PaintedHit::List`]/[`PaintedHit::DataTable`]/
+/// [`PaintedHit::TabBar`]/[`PaintedHit::TextDisplay`]/[`PaintedHit::Extra`]'s
+/// `area`; and a nested [`PaintedHit::Scroll`]'s own `viewport`. The
+/// chrome-layout kinds (`Split`/`SplitTree`/`Panel`/`SidebarPanel`) carry
+/// several independent sub-region rects apiece with no single outer
+/// bounds to narrow, and aren't realistic `Scroll` content — left as-is.
+pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, viewport: Rect) {
+    let mut i = start;
+    while i < hits.len() {
+        let bounds = match &hits[i] {
+            PaintedHit::Button { layout, .. } => Some(layout.bounds),
+            PaintedHit::Tree { area, .. }
+            | PaintedHit::List { area, .. }
+            | PaintedHit::DataTable { area, .. }
+            | PaintedHit::TabBar { area, .. }
+            | PaintedHit::TextDisplay { area, .. }
+            | PaintedHit::Extra { area, .. } => Some(*area),
+            PaintedHit::Scroll { viewport, .. } => Some(*viewport),
+            PaintedHit::Split { .. }
+            | PaintedHit::SplitTree { .. }
+            | PaintedHit::Panel { .. }
+            | PaintedHit::SidebarPanel { .. } => None,
+        };
+        let Some(bounds) = bounds else {
+            i += 1;
+            continue;
+        };
+        match intersect_rect(bounds, viewport) {
+            Some(clipped) => {
+                match &mut hits[i] {
+                    PaintedHit::Button { layout, .. } => layout.bounds = clipped,
+                    PaintedHit::Tree { area, .. }
+                    | PaintedHit::List { area, .. }
+                    | PaintedHit::DataTable { area, .. }
+                    | PaintedHit::TabBar { area, .. }
+                    | PaintedHit::TextDisplay { area, .. }
+                    | PaintedHit::Extra { area, .. } => *area = clipped,
+                    PaintedHit::Scroll { viewport, .. } => *viewport = clipped,
+                    PaintedHit::Split { .. }
+                    | PaintedHit::SplitTree { .. }
+                    | PaintedHit::Panel { .. }
+                    | PaintedHit::SidebarPanel { .. } => {
+                        unreachable!("bounds is Some only for the kinds matched above")
+                    }
+                }
+                i += 1;
+            }
+            None => {
+                hits.remove(i);
+            }
+        }
+    }
+}
+
+/// The overlapping region of `a` and `b`, or `None` when they don't
+/// overlap at all (zero-width/height counts as no overlap, matching
+/// [`Rect::contains`]'s own half-open convention).
+fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = (a.x + a.width).min(b.x + b.width);
+    let y1 = (a.y + a.height).min(b.y + b.height);
+    if x1 > x0 && y1 > y0 {
+        Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+    } else {
+        None
+    }
+}
+
 /// The sub-region of a primitive an incoming pointer event landed on,
 /// attached to the enriched event's `"hit"` key (alongside `widget`, the
 /// primitive's own id) so the binding's own event handler can react to
@@ -669,7 +762,8 @@ pub fn set_event_widget(event: &mut UiEvent, id: WidgetId) {
 mod tests {
     use super::*;
     use quadraui::{
-        Decoration, SelectionMode, StyledText, TreeRow, TreeRowMeasure, TreeStyle, TreeView,
+        Decoration, SelectionMode, StyledSpan, StyledText, TextDisplay, TextDisplayLine, TreeRow,
+        TreeRowMeasure, TreeStyle, TreeView,
     };
 
     /// A single-row `Tree` hit, painted at a real `TreeView::layout` call
@@ -745,5 +839,95 @@ mod tests {
         let hit_map = vec![single_row_tree_hit(editing)];
         let id = WidgetId::new("hit-test:tree");
         assert_eq!(tree_rows_and_viewport(&hit_map, id), None);
+    }
+
+    /// A `TextDisplay` hit whose own `area` reaches past `viewport` —
+    /// what [`crate::render::scroll_content_slots`]'s `Atomic` branch
+    /// used to hand back before this module's own clipping pass existed
+    /// (a rect sized to the whole `content_len` and shifted by
+    /// `-offset`, independent of whatever `viewport` it's painted
+    /// inside).
+    fn oversized_text_display_hit(viewport: Rect) -> PaintedHit {
+        let mut td = TextDisplay::new(WidgetId::new("log"));
+        for i in 0..100 {
+            td.append_line(TextDisplayLine {
+                spans: vec![StyledSpan::plain(format!("line {i}"))],
+                decoration: Decoration::default(),
+                timestamp: None,
+            });
+        }
+        td.auto_scroll = false;
+        let area = Rect::new(viewport.x, viewport.y - 4.0, viewport.width, 100.0);
+        let layout = td.layout(area.width, area.height, |_| {
+            quadraui::TextDisplayLineMeasure::new(1.0)
+        });
+        PaintedHit::TextDisplay {
+            id: td.id,
+            area,
+            layout,
+            body_offset: 0.0,
+            total_lines: 100,
+            viewport_lines: viewport.height as usize,
+        }
+    }
+
+    /// [`clip_hits_to_viewport`]'s whole acceptance scenario: a button
+    /// painted above a scroll, whose own descendant content's `area`
+    /// leaked up past the scroll's `viewport` and over the button's own
+    /// row. A click on the button's row still resolves to the button —
+    /// not the leaked content — and a point well above either never
+    /// resolves to anything.
+    #[test]
+    fn clip_hits_to_viewport_keeps_a_sibling_painted_before_the_scroll() {
+        let viewport = Rect::new(0.0, 1.0, 20.0, 9.0);
+        let button = PaintedHit::Button {
+            id: WidgetId::new("above"),
+            layout: ButtonLayout {
+                bounds: Rect::new(0.0, 0.0, 20.0, 1.0),
+            },
+        };
+        let scroll = PaintedHit::Scroll {
+            id: WidgetId::new("scroll"),
+            viewport,
+        };
+        let mut hits = vec![button, scroll];
+        let hits_before = hits.len();
+        hits.push(oversized_text_display_hit(viewport));
+        clip_hits_to_viewport(&mut hits, hits_before, viewport);
+
+        // The button's own row (y=0) sits outside the scroll's
+        // `viewport` (which starts at y=1) and inside the leaked hit's
+        // own pre-clip bounds -- without the fix this is the issue's own
+        // repro: the click lands on the scroll's content instead.
+        assert_eq!(
+            hit_test_painted(&hits, Point { x: 0.0, y: 0.0 }),
+            Some((WidgetId::new("above"), HitDetail::ButtonBody))
+        );
+
+        // Still resolves to the `TextDisplay` for a point genuinely
+        // inside the viewport -- the fix narrows the hit, it doesn't
+        // drop it.
+        let (id, detail) = hit_test_painted(&hits, Point { x: 0.0, y: 5.0 })
+            .expect("a point inside the viewport still hits the text display");
+        assert_eq!(id, WidgetId::new("log"));
+        assert!(matches!(detail, HitDetail::TextDisplayLine { .. }));
+    }
+
+    /// A hit whose bounds don't overlap `viewport` at all is dropped
+    /// outright, not just narrowed to an empty rect that would never
+    /// match any point anyway — so a caller iterating `hits` directly
+    /// (rather than through [`hit_test_painted`]) never sees a
+    /// zero-sized leftover.
+    #[test]
+    fn clip_hits_to_viewport_drops_a_hit_with_no_overlap() {
+        let viewport = Rect::new(0.0, 10.0, 20.0, 5.0);
+        let mut hits = vec![PaintedHit::Button {
+            id: WidgetId::new("far-above"),
+            layout: ButtonLayout {
+                bounds: Rect::new(0.0, 0.0, 20.0, 1.0),
+            },
+        }];
+        clip_hits_to_viewport(&mut hits, 0, viewport);
+        assert!(hits.is_empty());
     }
 }
