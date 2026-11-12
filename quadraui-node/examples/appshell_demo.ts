@@ -101,5 +101,5 @@ exports.PAGE = PAGE;
 if (require.main === module) {
   const { app, offsets } = runDemo();
   console.log(app.screen());
-  console.log(`\nscroll offsets after each step: ${JSON.stringify(offsets)}`);
+  console.log(`scroll offsets after each step: ${JSON.stringify(offsets)}`);
 }

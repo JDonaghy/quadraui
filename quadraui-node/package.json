@@ -24,9 +24,7 @@
   },
   "files": [
     "README.md",
-    "dist/index.js",
-    "dist/index.d.ts",
-    "dist/wire.d.ts",
+    "dist/",
     "js/index.ts",
     "js/testing.ts",
     "js/wire.d.ts",
@@ -44,7 +42,8 @@
     "prepack": "npm run build:dist",
     "test": "node --test tests/*.test.ts",
     "typecheck:jsx": "tsc -p tsconfig.jsx.json",
-    "typecheck:examples": "tsc --strict --noEmit --module commonjs --target es2020 --moduleResolution node --skipLibCheck --types node examples/*.ts"
+    "typecheck:examples": "tsc --strict --noEmit --module commonjs --target es2020 --moduleResolution node --skipLibCheck --types node examples/*.ts",
+    "typecheck:dist-types": "tsc --strict --noEmit --module commonjs --target es2020 --moduleResolution node --skipLibCheck --types node js/index.d.ts"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3",

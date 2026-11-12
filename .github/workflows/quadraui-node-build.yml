@@ -2,10 +2,15 @@ name: quadraui-node build
 
 # Builds `@quadraui/node`'s native addon from source, type-checks
 # `examples/*.ts` under `tsc --strict --noEmit` (`package.json`'s
-# `typecheck:examples` script) and runs each of them headlessly, runs this
+# `typecheck:examples` script) and runs each of them headlessly, separately
+# type-checks the hand-maintained `js/index.d.ts` the package actually
+# publishes (`typecheck:dist-types`) -- `examples/*.ts` only ever reaches
+# it indirectly through an untyped `require()`, so this is the one step
+# that reads it as a real consumer's type checker would -- runs this
 # package's own black-box `node --test` suite (headless
-# `QuiApp`/`QuiShellApp` surface, plus the `QuadrauiError` subclass export
-# check in `tests/public_api.test.ts`), then `npm pack`s the result and
+# `QuiApp`/`QuiShellApp` surface, the `QuadrauiError` subclass export check
+# and the `js/index.d.ts` drift check in `tests/public_api.test.ts`), then
+# `npm pack`s the result and
 # `require()`s the packed tarball from a separate throwaway directory --
 # proving the package a consumer would actually install loads and raises
 # typed errors, not just that this workspace's own build-tree layout
@@ -30,6 +35,12 @@ name: quadraui-node build
 # there, so a consumer's `require("@quadraui/node")` resolves one compiled
 # entry point rather than the `.ts` source tree, reconciled with the
 # native, napi-generated `index.d.ts` (`js/index.d.ts`'s own header doc).
+# `build:dist` depends on that native `index.d.ts` already existing
+# (`js/index.ts`'s own `typeof import("../index.js")`), which only a prior
+# `napi build`/`build:debug`/`build` run produces -- it is gitignored, not
+# checked in -- so `npm pack`/`npm publish` on a clean clone needs one of
+# those run first; this job always runs `build:debug` before `npm pack`
+# for exactly that reason.
 #
 # Node >= 23.6 is pinned below because every *other* subpath export
 # (`./app`, `./app/*`, `./testing`, `./jsx-runtime`, `./jsx-dev-runtime`)
@@ -128,6 +139,8 @@ jobs:
         run: npm run build:debug
       - name: Type-check examples (tsc --strict --noEmit)
         run: npm run typecheck:examples
+      - name: Type-check the published declaration (tsc --strict --noEmit)
+        run: npm run typecheck:dist-types
       - name: npm test
         run: npm test
       - name: Run every example headlessly

@@ -27,7 +27,7 @@
 const { App, Button, Column, Row, SidebarPanel, StatusBar, TextDisplay, keyName } = require("../js/app/index.ts");
 
 import type { Renderable } from "../js/app/index";
-import type { Color, ListItemDescriptor, StatusBarSegment, StyledText } from "../js/wire";
+import type { Color, LayoutLeafNode, ListItemDescriptor, StatusBarSegment, StyledText } from "../js/wire";
 
 interface Setting {
   label: string;
@@ -130,7 +130,7 @@ class SettingsApp {
 
   // --- view --------------------------------------------------------------
 
-  private _listLeaf(): Record<string, unknown> {
+  private _listLeaf(): LayoutLeafNode {
     const items: ListItemDescriptor[] = CATEGORIES.map((name) => ({ text: styledText(name) }));
     return {
       id: "settings:list",
@@ -154,14 +154,14 @@ class SettingsApp {
         {
           id: this._labelFieldId(name),
           text_input: { id: this._labelFieldId(name), lines: [setting.label] },
-        },
+        } satisfies LayoutLeafNode,
       ]),
       Row([
         TextDisplay([{ spans: [{ text: "Enabled", fg: null, bg: null }] }], { id: "detail:enabled-caption" }),
         {
           id: this._enabledFieldId(name),
           switch: { id: this._enabledFieldId(name), value: setting.enabled },
-        },
+        } satisfies LayoutLeafNode,
       ]),
       Button("Reset", { id: "settings:reset", onClick: () => this._reset(name) }),
     ]);
@@ -212,8 +212,17 @@ class SettingsApp {
       return;
     }
 
-    this.message = "";
+    // Everything else that reaches `onEvent` (`_dispatch` returned `false`)
+    // is a keystroke this app has no node callback for, or a mouse/focus
+    // event this app does not react to at all -- a button click's own
+    // `MouseUp` half, in particular, following the `MouseDown` half
+    // `_dispatch` already resolved into an `onClick` call. `keyName` is
+    // `null` for the latter group, so checking it before clearing
+    // `message` keeps a `MouseUp`/`FocusChanged`/etc. from wiping out a
+    // message a node callback (Reset's `onClick`) just set.
     const name = keyName(event);
+    if (name === null) return;
+    this.message = "";
     if (name === "Down") this._select(this.selectedIdx + 1);
     else if (name === "Up") this._select(this.selectedIdx - 1);
     else if (name === "Enter") this.message = `Opened ${this._selectedName}`;
