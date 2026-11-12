@@ -749,6 +749,35 @@ impl InteractionEngine {
             .collect()
     }
 
+    /// If `id` is a direct child of a `Scroll` (per
+    /// [`PaintedHit::Scroll::children`]/[`enclosing_scroll_child`]) that
+    /// isn't already fully inside that `Scroll`'s own visible range,
+    /// scrolls it there and persists the new offset via
+    /// [`apply_scroll_offset`] — the shared "a focused child should be
+    /// fully visible" side effect, called both from [`Self::handle`]'s own
+    /// click-to-focus bookkeeping and for a directly-dispatched
+    /// `UiEvent::FocusChanged` (e.g. a binding's own Tab-cycling, which
+    /// calls `AppLogic::handle` straight through to [`Self::handle`]
+    /// without going through this engine's click-to-focus code at all).
+    /// Returns whether it actually scrolled anything, so a caller can fold
+    /// that into its own `Reaction`.
+    fn scroll_focused_child_into_view(&self, id: WidgetId) -> bool {
+        let Some((scroll_id, start, len)) = enclosing_scroll_child(&self.hit_map.borrow(), id)
+        else {
+            return false;
+        };
+        let Some(view) = scroll_view_at(&self.hit_map.borrow(), scroll_id) else {
+            return false;
+        };
+        let Some(ScrollViewEvent::Scrolled { offset: new_offset }) =
+            scroll_child_into_view(&view, start, len)
+        else {
+            return false;
+        };
+        apply_scroll_offset(&self.widget_state, scroll_id, new_offset);
+        true
+    }
+
     /// The hover/pressed [`InteractionState`] for the chrome-bar extra
     /// painted under id `bar_id` this frame, read from [`Self::chrome_hover`]/
     /// [`Self::chrome_pressed`] — call from `render`, once per chrome-bar
@@ -1014,6 +1043,21 @@ impl InteractionEngine {
             // button) still redraws for the dismissal even when nothing
             // else would have.
             tooltip_dismissed = true;
+        }
+
+        // A directly-dispatched `UiEvent::FocusChanged` — e.g. a binding's
+        // own Tab-cycling, which calls `AppLogic::handle` (hence this
+        // engine, once the binding's own `handle` forwards to it) straight
+        // through with the new focus, never going through the
+        // click-to-focus bookkeeping further down — gets the same
+        // "scroll a child only partly inside its `Scroll` fully into
+        // view" side effect that bookkeeping already applies to a
+        // click-driven focus change.
+        let mut scroll_into_view_reaction = Reaction::Continue;
+        if let UiEvent::FocusChanged(Some(id)) = &event {
+            if self.scroll_focused_child_into_view(*id) {
+                scroll_into_view_reaction = Reaction::Redraw;
+            }
         }
 
         // An open toast stack is non-modal (unlike every overlay below)
@@ -1797,17 +1841,8 @@ impl InteractionEngine {
                     // (straddling an edge) — scroll it fully into view, the
                     // same way a focused `Tree`/`List`/`DataTable` row
                     // scrolls itself into view on cursor navigation.
-                    if let Some((scroll_id, start, len)) =
-                        enclosing_scroll_child(&self.hit_map.borrow(), *id)
-                    {
-                        if let Some(view) = scroll_view_at(&self.hit_map.borrow(), scroll_id) {
-                            if let Some(ScrollViewEvent::Scrolled { offset: new_offset }) =
-                                scroll_child_into_view(&view, start, len)
-                            {
-                                apply_scroll_offset(&self.widget_state, scroll_id, new_offset);
-                                focus_reaction = focus_reaction.merge(Reaction::Redraw);
-                            }
-                        }
+                    if self.scroll_focused_child_into_view(*id) {
+                        focus_reaction = focus_reaction.merge(Reaction::Redraw);
                     }
                 }
             }
@@ -2090,6 +2125,7 @@ impl InteractionEngine {
             Reaction::Continue
         };
         tooltip_reaction
+            .merge(scroll_into_view_reaction)
             .merge(menu_reaction)
             .merge(hover_reaction)
             .merge(focus_reaction)
@@ -5329,6 +5365,33 @@ mod tests {
             painted_button_ids(&hits),
             want,
             "a controlled offset must stay pinned at the descriptor's own value"
+        );
+    }
+
+    /// A directly-dispatched `UiEvent::FocusChanged` — the shape a
+    /// binding's own Tab-cycling sends straight into `AppLogic::handle`,
+    /// never going through this engine's click-to-focus bookkeeping —
+    /// still scrolls an uncontrolled `Scroll` so the newly-focused child
+    /// (button `"25"`, scrolled fully out of the initial `[0, 10)`
+    /// viewport) ends up fully visible.
+    #[test]
+    fn a_direct_focus_changed_event_scrolls_the_newly_focused_child_into_view() {
+        let mut driver = scroll_driver(40, None);
+        driver.render();
+        {
+            let hits = driver.app().engine.hit_map();
+            let want: Vec<String> = (0..10).map(|i| i.to_string()).collect();
+            assert_eq!(painted_button_ids(&hits), want);
+        }
+
+        driver.dispatch(UiEvent::FocusChanged(Some(WidgetId::new("25"))));
+        driver.render();
+
+        let hits = driver.app().engine.hit_map();
+        let painted = painted_button_ids(&hits);
+        assert!(
+            painted.contains(&"25".to_string()),
+            "button \"25\" must now be painted (hence visible) after receiving focus: {painted:?}"
         );
     }
 }
