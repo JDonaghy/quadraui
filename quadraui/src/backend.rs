@@ -2362,7 +2362,10 @@ pub trait Backend: sealed::Sealed {
     /// Rect quantisation on a cell/pixel-quantised backend rounds
     /// *outward* to the nearest whole unit (matching
     /// [`crate::DrawOp::PushClip`]), not to nearest — a fractional clip
-    /// can let a child bleed up to one unit past it.
+    /// can let a child bleed up to one unit past it. This does not hold
+    /// on [`crate::gtk::backend::GtkBackend`]: cairo clips at sub-pixel
+    /// precision, so a fractional rect there antialiases the clip edge
+    /// instead of rounding it outward to a whole pixel.
     ///
     /// Default: no-op, so every backend without its own clip bookkeeping
     /// keeps painting exactly as before this method existed.
@@ -2373,7 +2376,9 @@ pub trait Backend: sealed::Sealed {
     /// extra caveat (clipping is retroactive there, not a live scissor).
     /// [`crate::gtk::backend::GtkBackend`] overrides this too, forwarding
     /// straight to its own [`crate::PaintSurface::surface_push_clip`]
-    /// (a cairo save/clip pair) instead of a second clip stack.
+    /// (a cairo save/clip pair) instead of a second clip stack — note
+    /// that call panics outside the backend's frame scope (see that
+    /// method's own doc), unlike this trait method's no-op default.
     fn push_clip(&mut self, _rect: Rect) {}
 
     /// Pop the clip most recently pushed by [`Self::push_clip`],

@@ -12191,12 +12191,13 @@ mod tests {
     //
     // `GtkBackend::push_clip`/`pop_clip` forward straight to this same
     // module's `surface_push_clip`/`surface_pop_clip` (cairo's own
-    // save/clip/restore), already proven pixel-exact by
-    // `gtk_backend_paint_surface_verbs_do_not_panic` above. These two
-    // exercise the `Backend` trait entry point itself — the seam a
-    // backend-generic caller (binding-core's layout painter, a future
-    // `ScrollContainer`) reaches for — rather than the `PaintSurface`
-    // one in-tree primitives call directly.
+    // save/clip/restore). These two exercise the `Backend` trait entry
+    // point itself — the seam a backend-generic caller (binding-core's
+    // layout painter, a future `ScrollContainer`) reaches for — rather
+    // than the `PaintSurface` one in-tree primitives call directly, and
+    // pin both that an overflowing fill is confined to the clip's exact
+    // pixel edge and that a nested pop restores the outer clip rather
+    // than dropping it.
 
     #[test]
     fn backend_push_clip_confines_an_overflowing_fill_to_the_clipped_pixels() {
@@ -12222,15 +12223,15 @@ mod tests {
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
         assert_eq!(
-            probe_pixel_417(&data, stride, 5, 5),
+            probe_pixel_417(&data, stride, 9, 9),
             (red.r, red.g, red.b),
-            "a pixel inside the pushed clip must keep the overflowing fill"
+            "the last pixel inside the pushed clip must keep the overflowing fill"
         );
         assert_eq!(
-            probe_pixel_417(&data, stride, 20, 20),
+            probe_pixel_417(&data, stride, 10, 10),
             (0, 0, 0),
-            "a pixel outside the pushed clip must stay untouched by the fill, \
-             which reaches well past it"
+            "the first pixel outside the pushed clip must stay untouched by the \
+             fill, which reaches well past it"
         );
     }
 
@@ -12241,8 +12242,8 @@ mod tests {
         let mut surface =
             ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
         let mut backend = GtkBackend::new();
-        let blue = Color::rgb(0, 0, 200);
-        let red = Color::rgb(200, 0, 0);
+        let green = Color::rgb(0, 200, 0);
+        let white = Color::rgb(255, 255, 255);
 
         {
             let cr = Context::new(&surface).expect("Context::new");
@@ -12251,16 +12252,21 @@ mod tests {
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
                 // Outer clip: pixels (0,0)..(20,20).
                 Backend::push_clip(b, QRect::new(0.0, 0.0, 20.0, 20.0));
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 40.0, 40.0), blue);
                 // Inner clip, nested inside the outer one: pixels (5,5)..(15,15).
                 Backend::push_clip(b, QRect::new(5.0, 5.0, 10.0, 10.0));
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 40.0, 40.0), red);
-                // Pop both — the inner pop must land back on the outer
-                // clip (not drop clipping entirely), and the outer pop
-                // must then clear it, each without disturbing either
-                // fill already painted above.
                 Backend::pop_clip(b);
+                // Paint only after the inner pop: if it restored the outer
+                // clip, this reaches (0,0)..(20,20) but not past it; if it
+                // dropped clipping entirely, it would reach the whole
+                // 40x40 surface, including (30,30) checked below.
+                b.draw_solid_fill(QRect::new(0.0, 0.0, 40.0, 40.0), green);
                 Backend::pop_clip(b);
+                // Paint only after the outer pop, confined to pixels
+                // (20,20)..(40,40) — entirely outside the now-popped
+                // outer clip, so this fill can only land there if the
+                // outer pop actually cleared clipping rather than
+                // leaving the outer rect active.
+                b.draw_solid_fill(QRect::new(20.0, 20.0, 20.0, 20.0), white);
             });
         }
 
@@ -12268,20 +12274,24 @@ mod tests {
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
         assert_eq!(
-            probe_pixel_417(&data, stride, 10, 10),
-            (red.r, red.g, red.b),
-            "inside the inner clip, the red fill painted before its pop survives both pops"
+            probe_pixel_417(&data, stride, 17, 17),
+            (green.r, green.g, green.b),
+            "inside the outer clip but outside the inner one, the inner pop must have \
+             restored the outer clip rather than leaving it narrowed to the inner rect, \
+             letting the post-pop fill land here"
         );
         assert_eq!(
-            probe_pixel_417(&data, stride, 17, 17),
-            (blue.r, blue.g, blue.b),
-            "inside the outer clip but outside the inner one, the inner pop must have \
-             restored the outer clip rather than widening it to the red fill's full extent"
+            probe_pixel_417(&data, stride, 35, 5),
+            (0, 0, 0),
+            "outside the outer clip entirely, the fill painted after the inner pop \
+             must not have reached here — proving that pop restored the outer clip \
+             rather than dropping clipping entirely"
         );
         assert_eq!(
             probe_pixel_417(&data, stride, 30, 30),
-            (0, 0, 0),
-            "outside the outer clip entirely, neither fill must have reached here"
+            (white.r, white.g, white.b),
+            "the fill painted after the outer pop must reach here, proving that pop \
+             cleared the clip rather than leaving the outer rect active"
         );
     }
 
