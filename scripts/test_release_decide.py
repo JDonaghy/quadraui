@@ -16,10 +16,13 @@ Covers the three branches `.github/workflows/release.yml` relies on:
     before any tag is created or anything published
 
 Plus `check-lock`, the `Cargo.lock`-vs-`quadraui/Cargo.toml` version guard
-both `ci.yml`'s `lockfile-check` job and `release.yml`'s `check` job run.
+both `ci.yml`'s `lockfile-check` job and `release.yml`'s `check` job run,
+and `check-binding-versions`, the binding-minor-tracks-crate-minor guard
+`ci.yml`'s `changelog-version-check` job runs (#2360).
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -370,6 +373,193 @@ class VersionCommandTests(unittest.TestCase):
             result = run_version(repo.root, env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("version=0.1.7", result.stdout)
+
+
+class BindingVersionFixtureRepo:
+    """The crate manifest + four binding manifests `check-binding-versions`
+    reads, written directly — the same "only the files the command under
+    test touches" shape `LockFixtureRepo` uses.
+
+    Defaults are mutually agreeing (crate minor 10, every binding minor 10,
+    patches all different from the crate's own 0.10.1 to prove patch
+    independence is not itself a failure).
+    """
+
+    def __init__(
+        self,
+        crate: str = "0.10.1",
+        py_pyproject: str = "0.10.3",
+        py_cargo: str = "0.10.3",
+        binding_core: str = "0.10.0",
+        node: str = "0.10.2",
+    ) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        for rel_dir in (
+            "quadraui",
+            "quadraui-py",
+            "quadraui-binding-core",
+            "quadraui-node",
+        ):
+            (self.root / rel_dir).mkdir(parents=True)
+        self.write_crate(crate)
+        self.write_py_pyproject(py_pyproject)
+        self.write_py_cargo(py_cargo)
+        self.write_binding_core(binding_core)
+        self.write_node(node)
+
+    def write_crate(self, version: str) -> None:
+        (self.root / "quadraui" / "Cargo.toml").write_text(
+            f'[package]\nname = "quadraui"\nversion = "{version}"\n',
+            encoding="utf-8",
+        )
+
+    def write_py_pyproject(self, version: str) -> None:
+        (self.root / "quadraui-py" / "pyproject.toml").write_text(
+            f'[project]\nname = "quadraui"\nversion = "{version}"\n',
+            encoding="utf-8",
+        )
+
+    def write_py_cargo(self, version: str) -> None:
+        (self.root / "quadraui-py" / "Cargo.toml").write_text(
+            f'[package]\nname = "quadraui-py"\nversion = "{version}"\n',
+            encoding="utf-8",
+        )
+
+    def write_binding_core(self, version: str) -> None:
+        (self.root / "quadraui-binding-core" / "Cargo.toml").write_text(
+            f'[package]\nname = "quadraui-binding-core"\nversion = "{version}"\n',
+            encoding="utf-8",
+        )
+
+    def write_node(self, version: str) -> None:
+        (self.root / "quadraui-node" / "package.json").write_text(
+            json.dumps({"name": "@quadraui/node", "version": version}),
+            encoding="utf-8",
+        )
+
+    def __enter__(self) -> "BindingVersionFixtureRepo":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._tmp.cleanup()
+
+
+def run_check_binding_versions(repo_dir: Path, env: dict[str, str] | None = None):
+    return subprocess.run(
+        [
+            sys.executable,
+            str(Path(release_decide.__file__)),
+            "check-binding-versions",
+            "--repo-dir",
+            str(repo_dir),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+class CheckBindingVersionsCommandTests(unittest.TestCase):
+    def test_passes_when_minors_match_despite_different_patches(self):
+        with BindingVersionFixtureRepo() as repo:
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("0.10", result.stdout)
+
+    def test_fails_when_py_pyproject_minor_disagrees(self):
+        with BindingVersionFixtureRepo() as repo:
+            repo.write_py_pyproject("0.9.0")
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui-py/pyproject.toml", result.stderr)
+            self.assertIn("0.9.0", result.stderr)
+            self.assertIn("BINDING_VERSION_POLICY.md", result.stderr)
+
+    def test_fails_when_py_cargo_toml_minor_disagrees(self):
+        with BindingVersionFixtureRepo() as repo:
+            repo.write_py_cargo("0.11.0")
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui-py/Cargo.toml", result.stderr)
+
+    def test_fails_when_binding_core_minor_disagrees(self):
+        with BindingVersionFixtureRepo() as repo:
+            repo.write_binding_core("0.1.0")
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui-binding-core/Cargo.toml", result.stderr)
+
+    def test_fails_when_node_package_json_minor_disagrees(self):
+        with BindingVersionFixtureRepo() as repo:
+            repo.write_node("0.1.0")
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui-node/package.json", result.stderr)
+            self.assertIn("0.1.0", result.stderr)
+
+    def test_fails_naming_every_mismatching_binding_at_once(self):
+        with BindingVersionFixtureRepo() as repo:
+            repo.write_node("0.1.0")
+            repo.write_binding_core("0.1.0")
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui-node/package.json", result.stderr)
+            self.assertIn("quadraui-binding-core/Cargo.toml", result.stderr)
+
+    def test_fails_when_crate_manifest_is_missing(self):
+        with BindingVersionFixtureRepo() as repo:
+            (repo.root / "quadraui" / "Cargo.toml").unlink()
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not exist", result.stderr)
+
+    def test_fails_when_a_binding_manifest_is_missing(self):
+        with BindingVersionFixtureRepo() as repo:
+            (repo.root / "quadraui-node" / "package.json").unlink()
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui-node/package.json", result.stderr)
+            self.assertIn("does not exist", result.stderr)
+
+    def test_fails_when_package_json_is_not_valid_json(self):
+        with BindingVersionFixtureRepo() as repo:
+            (repo.root / "quadraui-node" / "package.json").write_text(
+                "{not json", encoding="utf-8"
+            )
+            result = run_check_binding_versions(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no readable version", result.stderr)
+
+    def test_needs_neither_cargo_nor_git_on_path(self):
+        """Matches `check-lock`'s own floor: no toolchain, no registry cache."""
+        with BindingVersionFixtureRepo() as repo:
+            repo.write_node("0.1.0")
+            env = dict(os.environ)
+            env["PATH"] = ""
+            result = run_check_binding_versions(repo.root, env=env)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui-node/package.json", result.stderr)
+
+
+class BindingVersionParsingTests(unittest.TestCase):
+    def test_minor_version_drops_the_patch_component(self):
+        self.assertEqual(release_decide.minor_version("0.10.3"), "0.10")
+
+    def test_minor_version_keeps_a_prerelease_suffix_on_the_patch(self):
+        self.assertEqual(release_decide.minor_version("0.10.3-rc.1"), "0.10")
+
+    def test_package_json_version_reads_the_top_level_field(self):
+        self.assertEqual(
+            release_decide.package_json_version('{"name": "x", "version": "1.2.3"}'),
+            "1.2.3",
+        )
+
+    def test_package_json_version_is_none_without_a_version_field(self):
+        self.assertIsNone(release_decide.package_json_version('{"name": "x"}'))
+
+    def test_package_json_version_is_none_on_invalid_json(self):
+        self.assertIsNone(release_decide.package_json_version("not json"))
 
 
 class ChangelogSectionTests(unittest.TestCase):

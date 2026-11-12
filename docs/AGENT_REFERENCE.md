@@ -13,9 +13,12 @@ is ~150 KB). Open one when the task needs it:
 - `README.md` — workspace shape, primitives, status.
 - `quadraui/docs/decisions/DECISIONS.md` (primitive-distinctness principles) and
   `decisions/BACKEND_TRAIT_PROPOSAL.md` §4 / §9 (Backend trait shape, resolved decisions).
-- `quadraui/docs/decisions/BINDING_STRATEGY.md` (which languages, which bridge) and
+- `quadraui/docs/decisions/BINDING_STRATEGY.md` (which languages, which bridge),
   `decisions/BINDING_CORE_PUBLISH_POLICY.md` (when `quadraui-binding-core` needs a
-  crates.io publish vs. a pinned git dep, if a binding leaf is ever extracted).
+  crates.io publish vs. a pinned git dep, if a binding leaf is ever extracted), and
+  `decisions/BINDING_VERSION_POLICY.md` (binding minor tracks the crate's minor,
+  patch is independent; enforced by `scripts/release_decide.py
+  check-binding-versions`).
 - `quadraui/docs/ARCHITECTURE.md` — workspace layout, two-layer split, compose
   helpers, GTK hosting helpers, backend trait.
 - `quadraui/docs/PRIMITIVE_RULES.md` — the rules for adding/changing primitives
