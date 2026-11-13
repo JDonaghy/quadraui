@@ -3,7 +3,9 @@
 // `showMessageDialog`/`dismissMessageDialog`, `showToast`/`dismissToast`,
 // `showTooltip`/`hideTooltip`, `showCompletions`/`dismissCompletions`,
 // `showFloat`/`dismissFloat`, and
-// `showRichTextPopup`/`dismissRichTextPopup` -- a port of
+// `showRichTextPopup`/`dismissRichTextPopup` -- plus the generic
+// `showOverlay`/`dismissOverlay` pair every one of those 13 methods is a
+// one-line forward onto -- a port of
 // `quadraui-py/tests/test_overlay_primitives.py` and
 // `quadraui-py/tests/test_extra_primitives.py`'s `show_message_dialog`/
 // `show_context_menu` cases. `QuiAppActions.showMessageDialog`
@@ -453,4 +455,100 @@ test("dismissRichTextPopup closes without input", () => {
   );
   assert.equal(app.dismissRichTextPopup(), true);
   assert.equal(app.dismissRichTextPopup(), false);
+});
+
+// ── Generic showOverlay/dismissOverlay ──────────────────────────────────
+//
+// All 13 kind-specific methods above are one-line forwards onto these two;
+// this section exercises the generic pair directly rather than re-covering
+// every behavior already pinned above.
+
+test("showOverlay toast returns its own id and dismissOverlay closes it", () => {
+  const app = new QuiApp(40, 20);
+  const returnedId = app.showOverlay(
+    "toast",
+    { id: "toast:saved", title: "Saved", body: "" },
+    null,
+  );
+  assert.equal(returnedId, "toast:saved");
+  assert.ok(app.screenContains("Saved"));
+
+  assert.equal(app.dismissOverlay(returnedId), true);
+  assert.ok(!app.screenContains("Saved"));
+  // Dismissing the same id again is a no-op, not an error.
+  assert.equal(app.dismissOverlay(returnedId), false);
+});
+
+test("showOverlay message_dialog returns a sentinel and dismissOverlay closes it", () => {
+  const app = new QuiApp(40, 20);
+  const returnedId = app.showOverlay(
+    "message_dialog",
+    { title: "Quit?", body: "", buttons: [{ id: "ok", label: "OK" }] },
+    null,
+  );
+  assert.equal(returnedId, "message_dialog");
+  assert.ok(app.screenContains("Quit?"));
+
+  assert.equal(app.dismissOverlay("message_dialog"), true);
+  assert.ok(!app.screenContains("Quit?"));
+});
+
+test("showOverlay context_menu then dismissOverlay closes it", () => {
+  // `dismissOverlay("context_menu")` is a new capability `dismiss*` never
+  // had: there was no `dismissContextMenu` among the original 13.
+  const app = new QuiApp(40, 20);
+  const returnedId = app.showOverlay(
+    "context_menu",
+    { items: contextMenuItems() },
+    { x: 2.0, y: 2.0 },
+  );
+  assert.equal(returnedId, "context_menu");
+  assert.ok(app.screenContains("Copy"));
+
+  assert.equal(app.dismissOverlay("context_menu"), true);
+  assert.ok(!app.screenContains("Copy"));
+  assert.equal(app.dismissOverlay("context_menu"), false);
+});
+
+test("showOverlay tooltip matches showTooltip's own screen output", () => {
+  // `showTooltip` is itself a one-line forward onto `showOverlay`; this
+  // pins that the generic entry point paints identically to the
+  // kind-specific one it replaces.
+  const direct = new QuiApp(40, 20);
+  direct.showTooltip(
+    { id: "tip:hint", text: "Hello tip" },
+    { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
+  );
+
+  const generic = new QuiApp(40, 20);
+  const returnedId = generic.showOverlay(
+    "tooltip",
+    { id: "tip:hint", text: "Hello tip" },
+    { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
+  );
+
+  assert.equal(returnedId, "tip:hint");
+  assert.equal(generic.screen(), direct.screen());
+});
+
+test("showOverlay rejects an unknown kind", () => {
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () => app.showOverlay("not_a_real_kind", {}, null),
+    /InvalidDescriptorError/,
+  );
+});
+
+test("showOverlay rejects a missing anchor when one is required", () => {
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () =>
+      app.showOverlay("tooltip", { id: "tip:hint", text: "Hello tip" }, null),
+    /InvalidDescriptorError/,
+  );
+});
+
+test("dismissOverlay with an unknown id is a no-op", () => {
+  const app = new QuiApp(40, 20);
+  assert.equal(app.dismissOverlay("not-a-known-overlay-id"), false);
 });
