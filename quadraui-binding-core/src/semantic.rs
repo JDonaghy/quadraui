@@ -12,7 +12,7 @@ use quadraui::{
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
-use crate::extra_paint::{extra_as, Checkbox, PasswordInput, Select, Slider, TextArea};
+use crate::extra_paint::{extra_as, Checkbox, Markdown, PasswordInput, Select, Slider, TextArea};
 use crate::hit::{HitDetail, PaintedHit};
 use crate::text_input::{apply_text_input_edit, text_input_key_event, TextEditorCache};
 use crate::tree_edit::tree_row_rename_key_event;
@@ -609,6 +609,13 @@ pub fn semantic_event_for_hit(
                         *bar,
                         ActivityBarEvent::ItemClicked { id },
                     ))
+                } else if let Some(markdown) = extra_as::<Markdown>(extra) {
+                    // `id` is the per-link chrome-hit id `Markdown::paint_chrome`
+                    // pushed, not `bar` (the leaf's own id) — mirrors
+                    // `Toolbar::click`'s own "look up the clicked child, not the
+                    // bar" resolution just below.
+                    let url = markdown.link_url_for_child(id)?;
+                    Some(UiEvent::RichTextLinkClicked(*bar, url))
                 } else {
                     let toolbar = extra_as::<Toolbar>(extra)?;
                     Some(UiEvent::Toolbar(*bar, toolbar.click(id)?))
