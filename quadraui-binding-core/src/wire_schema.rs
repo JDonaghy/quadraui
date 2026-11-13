@@ -2166,7 +2166,7 @@ pub fn schema() -> Vec<DefJson> {
         vec![
             field("id", re("WidgetId")),
             field("fields", list(form_field_descriptor)),
-            field("focused_field", nullable(re("WidgetId"))),
+            field_opt("focused_field", nullable(re("WidgetId"))),
             field_opt("scroll_offset", int_()),
             field_opt("has_focus", bool_()),
             field_opt("label_position", label_position),

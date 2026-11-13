@@ -1343,7 +1343,7 @@ export interface FormFieldDescriptor {
 export interface FormDescriptor {
   id: WidgetId;
   fields: FormFieldDescriptor[];
-  focused_field: WidgetId | null;
+  focused_field?: WidgetId | null;
   scroll_offset?: number;
   has_focus?: boolean;
   label_position?: LabelPosition;

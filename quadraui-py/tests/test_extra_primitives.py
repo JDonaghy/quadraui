@@ -1157,6 +1157,157 @@ def test_form_wheel_scroll_advances_the_controller_scroll_offset():
     assert app.screen_contains("Field1")
     assert app.screen_contains("Field2")
     assert app.screen_contains("Field3")
+
+
+def test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field():
+    # Acceptance: an app that never sets `focused_field` (the key is
+    # omitted every frame) still gets Tab-driven field focus from the
+    # host itself, and typing afterward lands on the right field.
+    app = QuiApp(40, 20)
+    state = {"name": ""}
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": state["name"]}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+
+    def handler(event):
+        received.append(event)
+        if "Form" not in event:
+            return
+        _, form_event = event["Form"]
+        if "TextInputChanged" in form_event:
+            state["name"] = form_event["TextInputChanged"]["value"]
+
+    app.set_handler(handler)
+
+    # First Tab: nothing is focused anywhere yet, so the generic
+    # app-level cycle (the form is its only stop) lands engine focus on
+    # the form as a whole.
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert received[-1]["FocusChanged"] == "settings"
+
+    # Second Tab: the host's own field cycling takes over from here,
+    # landing on "name".
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    widget_id, form_event = received[-1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"FocusChanged": {"id": "name"}}
+
+    # Typing now lands on "name" even though the app never echoed
+    # `focused_field` back at all -- `None` is no longer a dead form.
+    received.clear()
+    app.push_event({"CharTyped": "x"})
+    app.run(1)
+    widget_id, form_event = received[-1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"TextInputChanged": {"id": "name", "value": "x"}}
+    assert state["name"] == "x"
+
+
+def test_uncontrolled_form_click_focuses_and_types_with_no_focused_field_tracking():
+    # Same "`None` is no longer a dead form" property as the Tab test
+    # above, via a click instead -- the handler never reads or writes
+    # `focused_field` at all, and typing right after a click still lands
+    # on the clicked field.
+    app = QuiApp(40, 20)
+    state = {"name": ""}
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": state["name"]}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    def handler(event):
+        if "Form" not in event:
+            return
+        _, form_event = event["Form"]
+        if "TextInputChanged" in form_event:
+            state["name"] = form_event["TextInputChanged"]["value"]
+
+    app.set_handler(handler)
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 6.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.push_event({"CharTyped": "z"})
+    app.run(2)
+
+    assert state["name"] == "z"
+
+
+def test_controlled_form_focused_field_keeps_app_set_focus_despite_a_click():
+    # An app that sets `focused_field` explicitly stays controlled: a
+    # click that would otherwise move engine-owned focus to a different
+    # field must not change which row the next render paints as focused.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "focused_field": "a",
+                "fields": [
+                    {
+                        "id": "a",
+                        "label": {"spans": [{"text": "A", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": ""}},
+                    },
+                    {
+                        "id": "b",
+                        "label": {"spans": [{"text": "B", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": ""}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.set_handler(lambda event: None)
+    app.screen()
+
+    # Clicking field "b" (row 1) still moves engine focus onto the form
+    # and reports a click internally -- the app's own descriptor just
+    # keeps pinning "a" every frame, so the highlight stays put.
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 6.0, "y": 1.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert app.cell_colors(0, 0)[1] == (50, 60, 90)
+    assert app.cell_colors(0, 1)[1] == (20, 22, 30)
     assert not app.screen_contains("Field0")
 
 

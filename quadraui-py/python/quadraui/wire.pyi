@@ -1267,7 +1267,7 @@ class FormFieldDescriptor(TypedDict):
 class FormDescriptor(TypedDict):
     id: WidgetId
     fields: List[FormFieldDescriptor]
-    focused_field: Optional[WidgetId]
+    focused_field: NotRequired[Optional[WidgetId]]
     scroll_offset: NotRequired[int]
     has_focus: NotRequired[bool]
     label_position: NotRequired[LabelPosition]

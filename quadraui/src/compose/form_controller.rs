@@ -1812,39 +1812,19 @@ fn activate_item_event(field: &crate::primitives::form::FormField, item_id: Widg
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
 
-/// Whether `field` is a Tab stop: not a `Label`, not a non-interactive
-/// `ReadOnly` display field, and not disabled. Mirrors
-/// `primitives/form.rs`'s module doc ("Tab / Shift-Tab moves
-/// focused_field forward/backward through interactive fields (skip
-/// Label)") — VS Code, the stated GUI reference, does not focus a
-/// read-only row either.
-fn field_is_focusable(field: &crate::primitives::form::FormField) -> bool {
-    !matches!(field.kind, FieldKind::Label | FieldKind::ReadOnly { .. }) && !field.disabled
-}
-
-/// Focusable field ids of `form`, in Tab-order: explicit `tab_index`
-/// wins, a field that leaves it `None` keeps its natural position in
-/// `fields` as its sort key (so a form where nobody sets `tab_index`
-/// still traverses in plain `Vec` order — see `FormField::tab_index`'s
-/// doc), and [`field_is_focusable`] filters out `Label`/`ReadOnly`/
-/// disabled fields.
-///
-/// Shared by [`FormController::move_focus`] (which wraps within the
-/// form) and [`crate::compose::form_dialog::FormDialogController`]
-/// (which needs to detect stepping off either end *before* forwarding
-/// a Tab/Shift-Tab keypress into the form, so it can hand focus to its
-/// own button row instead — something `move_focus`'s own wrap-within-
-/// the-form traversal can't signal).
+/// Focusable field ids of `form`, in Tab-order — shared by
+/// [`FormController::move_focus`] (which wraps within the form) and
+/// [`crate::compose::form_dialog::FormDialogController`] (which needs to
+/// detect stepping off either end *before* forwarding a Tab/Shift-Tab
+/// keypress into the form, so it can hand focus to its own button row
+/// instead — something `move_focus`'s own wrap-within-the-form traversal
+/// can't signal). Delegates to [`crate::primitives::form::focus_order`],
+/// the canonical implementation — also used by a `quadraui-py`/
+/// `quadraui-node` host's `InteractionEngine` for the identical "detect
+/// either end" check, to hand focus to the next app-level tab stop
+/// instead of a dialog's buttons.
 pub(crate) fn focus_order(form: &Form) -> Vec<WidgetId> {
-    let mut ordered: Vec<(i32, usize, WidgetId)> = form
-        .fields
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| field_is_focusable(f))
-        .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, f.id))
-        .collect();
-    ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
-    ordered.into_iter().map(|(_, _, id)| id).collect()
+    crate::primitives::form::focus_order(form)
 }
 
 /// The editable text of a `TextInput` / `TextArea` / `PasswordInput`
