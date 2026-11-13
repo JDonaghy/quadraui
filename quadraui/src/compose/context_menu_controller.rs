@@ -899,6 +899,70 @@ mod tests {
     }
 
     #[test]
+    fn rehovering_an_already_open_submenu_parent_preserves_its_selection() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        let menu = ContextMenu {
+            id: WidgetId::new("ctx"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("view")),
+                label: StyledText::plain("View"),
+                submenu: Some(vec![
+                    item("toggle_sidebar", "Toggle Sidebar"),
+                    item("toggle_minimap", "Toggle Minimap"),
+                ]),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        };
+        ctl.open(menu, Point::new(0.0, 0.0), &mut backend);
+
+        // Hover opens the submenu at its first selectable item.
+        ctl.handle(
+            &UiEvent::MouseMoved {
+                position: Point::new(1.0, 1.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(ctl.open.as_ref().unwrap().submenu_selected, vec![0]);
+
+        // Move the keyboard selection to the second nested item.
+        ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        assert_eq!(ctl.open.as_ref().unwrap().submenu_selected, vec![1]);
+
+        // Jitter the mouse back over the still-open parent row — this
+        // must not re-seed the child's selection back to its first item.
+        let outcome = ctl.handle(
+            &UiEvent::MouseMoved {
+                position: Point::new(1.0, 1.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(outcome, ContextMenuOutcome::Consumed);
+        assert_eq!(
+            ctl.open.as_ref().unwrap().submenu_path,
+            vec![0],
+            "the submenu must stay open"
+        );
+        assert_eq!(
+            ctl.open.as_ref().unwrap().submenu_selected,
+            vec![1],
+            "re-hovering an already-open parent must not reset the child's selection"
+        );
+    }
+
+    #[test]
     fn left_arrow_closes_deepest_submenu_without_dismissing_the_menu() {
         let mut backend = TuiBackend::new();
         let mut ctl = ContextMenuController::new();
