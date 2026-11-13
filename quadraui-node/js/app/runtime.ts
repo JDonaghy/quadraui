@@ -482,7 +482,50 @@ class App {
     }
   }
 
-  /** Tries every node-callback dispatch path in turn; `true` means a callback ran (so `_handle` must not also call `onEvent`). */
+  /**
+   * The `{"Form": [id, {"ButtonClicked": ...}]}` half of `_dispatch`: the
+   * semantic activation a `button` leaf emits for *both* a pointer click on
+   * its body and an Enter/Space while it holds keyboard focus.
+   *
+   * Only the keyboard-originated one runs `on_click` here. The
+   * pointer-originated one carries the same `hit` dict as the raw `MouseDown`
+   * that follows it, and that raw event is what `_dispatch` fires `on_click`
+   * from -- keying the callback off the press keeps one `on_click` per press,
+   * where claiming every semantic activation would fire twice for a fast
+   * double-click (whose second press arrives as `DoubleClick`, carrying its
+   * own activation). Either way the semantic event is claimed rather than
+   * left to fall through to `onEvent`, so a button's own activation never
+   * reaches the global escape hatch.
+   *
+   * An id this layer registered no `on_click` for is not one of its `Button`
+   * nodes (an embedded `form` field's button, say), so its event falls
+   * through untouched.
+   */
+  private _dispatchButtonClicked(obj: Record<string, unknown>): boolean {
+    const inner = obj.Form;
+    if (!Array.isArray(inner) || inner.length !== 2) {
+      return false;
+    }
+    const [widgetId, activation] = inner as [string, unknown];
+    if (typeof activation !== "object" || activation === null || !("ButtonClicked" in activation)) {
+      return false;
+    }
+    const callback = this._registry[widgetId]?.on_click;
+    if (callback === undefined) {
+      return false;
+    }
+    if (!("hit" in obj)) {
+      callback();
+    }
+    return true;
+  }
+
+  /**
+   * Tries every node-callback dispatch path in turn; `true` means the event
+   * was claimed -- a callback ran, or (see `_dispatchButtonClicked`) it is
+   * the semantic twin of one that does -- so `_handle` must not also call
+   * `onEvent`.
+   */
   private _dispatch(event: unknown): boolean {
     if (typeof event !== "object" || event === null) {
       return false;
@@ -513,6 +556,10 @@ class App {
         }
       }
       return false;
+    }
+
+    if ("Form" in obj) {
+      return this._dispatchButtonClicked(obj);
     }
 
     for (const [container, variants] of Object.entries(CONTAINER_EVENT_MAP)) {

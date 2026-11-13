@@ -227,6 +227,29 @@ def test_button_on_click_fires_on_enter_while_focused():
     assert clicks == [1]
 
 
+def test_button_on_click_fires_on_enter_after_a_click_moved_real_focus_to_it():
+    # A click leaves the *backend's* own focus on the button, not just this
+    # layer's `_focused_id`, so the Enter that follows resolves to the
+    # button's semantic `Form`/`ButtonClicked` activation instead of a raw
+    # `KeyPressed`. Both routes must reach the same `on_click`.
+    clicks = []
+    fallback = []
+
+    def view():
+        return Button("Save", id="t:save", on_click=lambda: clicks.append(1))
+
+    app = App(20, 5, view=view, on_event=lambda event: fallback.append(event))
+    _click_at(app)
+    assert clicks == [1], "the click itself must fire on_click exactly once"
+    assert not any("Form" in event for event in fallback), (
+        "a button's own activation must never reach the on_event escape hatch"
+    )
+
+    app.push_event(_key_event({"Named": "Enter"}))
+    app.step()
+    assert clicks == [1, 1], "Enter on the clicked (and so really focused) button must fire too"
+
+
 def test_unmatched_event_falls_through_to_on_event():
     seen = []
 
