@@ -34,12 +34,18 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 - Any layout-tree node a render callback returns (`"row"`/`"column"`/
   `"split"`/`"tabs"`/`"panel"`/`"sidebar_panel"`/`"split_tree"`/`"scroll"`,
   or a leaf) may carry an optional `"style"` dict: `"bg"`/`"fg"`/
-  `"border"`/`"accent"` (a `Color` or a `"#rrggbb"`/`"#rrggbbaa"` hex
-  string) override `Theme` colour tokens, `"padding"`/`"corner_radius"`/
-  `"border_width"` override `Style` metric tokens — applied as a derived
-  theme/style scoped to that node's own subtree, so siblings are
-  unaffected and a nested `"style"` only overrides the tokens it names.
-  See `docs/bindings-wire-format.md` for the full token mapping.
+  `"border"`/`"accent"`/`"surface_bg"`/`"accent_bg"` (a `Color` or a
+  `"#rrggbb"`/`"#rrggbbaa"` hex string) override `Theme` colour tokens,
+  `"padding"`/`"corner_radius"`/`"border_width"` override `Style` metric
+  tokens — applied as a derived theme/style scoped to that node's own
+  subtree, so siblings are unaffected and a nested `"style"` only
+  overrides the tokens it names. `"surface_bg"`/`"accent_bg"` are
+  semantic aliases for the fill a `Button`/`List`/`Dialog`/... actually
+  paints — a plain `"bg"` only ever reaches `Theme.background`, which a
+  `Button`'s own fill never reads on any variant but `Icon`. See
+  `docs/bindings-wire-format.md` for the full per-leaf token mapping.
+  Only reachable today from a raw dict/object render tree — not yet
+  wired into `quadraui.app.nodes`' own keyword/prop-list node builders.
 
 - A render callback's returned `dict` may carry an optional top-level
   `"wire_version"` integer key. A tree with no `"wire_version"` key still

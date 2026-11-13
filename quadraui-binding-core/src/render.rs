@@ -11,8 +11,8 @@ use serde::{Deserialize, Deserializer};
 
 use quadraui::{
     Backend, Button, DataTable, FontRole, InteractionState, ListView, Rect, ScrollAxis, ScrollView,
-    Scrollbar, SectionSize, Split, SplitDirection, SplitHit, SplitLayout, TabBar, TabChrome,
-    TextDisplay, TextDisplayLayout, TextRegion, TreeView, WidgetId,
+    Scrollbar, SectionSize, Split, SplitDirection, SplitHit, SplitLayout, Style, TabBar, TabChrome,
+    TextDisplay, TextDisplayLayout, TextRegion, Theme, TreeView, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -585,14 +585,11 @@ pub fn paint_layout(
     }
 }
 
-/// Paints a [`LayoutNode::Styled`] wrapper: derives a scoped
-/// `Theme`/`Style` from whatever `backend.theme()`/`backend.style()`
-/// already are (the parent's own, possibly already derived by an
-/// ancestor `Styled` node) by applying [`StyleOverride::apply_theme`]/
-/// [`StyleOverride::apply_style`], pushes the derived pair onto `backend`
-/// for the wrapped subtree's own paint, then restores the parent's
-/// values once that subtree has finished painting — the same "vary the
-/// theme per-pane" bracketing `quadraui::Backend::set_theme`'s own doc
+/// Paints a [`LayoutNode::Styled`] wrapper: pushes the derived `Theme`/
+/// `Style` via [`push_styled_override`] for the wrapped subtree's own
+/// paint, then restores the parent's values via [`pop_styled_override`]
+/// once that subtree has finished painting — the same "vary the theme
+/// per-pane" bracketing `quadraui::Backend::set_theme`'s own doc
 /// describes, just driven once per `Styled` node instead of once per
 /// host-level render pass. The restore runs even though nothing here can
 /// panic partway through today, matching every other `paint_*` function's
@@ -604,13 +601,100 @@ fn paint_styled(
     hits: &mut Vec<PaintedHit>,
     chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
 ) {
-    let parent_theme = backend.theme();
-    let parent_style = backend.style();
-    backend.set_theme(styled.style.apply_theme(parent_theme));
-    backend.set_style(styled.style.apply_style(parent_style));
+    let push = push_styled_override(backend, &styled.style);
     paint_layout(backend, area, &styled.node, hits, chrome_interaction);
-    backend.set_theme(parent_theme);
-    backend.set_style(parent_style);
+    pop_styled_override(backend, push);
+}
+
+/// What [`push_styled_override`] actually changed on `backend`, so
+/// [`pop_styled_override`] restores only that -- never a blind
+/// `set_theme`/`set_style` back to the parent's values, which would cost a
+/// backend like GTK's (`Backend::set_theme` there also reloads a CSS
+/// provider string and flips `gtk-application-prefer-dark-theme`) a second
+/// unnecessary reload even when this override only ever touched the other
+/// domain (a metric-only `"style"` key touches neither).
+struct StyledPush {
+    parent_theme: Option<Theme>,
+    parent_style: Option<Style>,
+}
+
+/// Applies `style` onto `backend`'s current theme/style, merged via
+/// [`crate::layout::StyleOverride::apply_theme`]/`apply_style`, skipping
+/// the `Backend::set_theme`/`set_style` call entirely when the derived
+/// value equals what's already active -- both `Theme` and `Style`
+/// implement `PartialEq`, so an override that only names metric tokens (or
+/// only colour tokens) never touches the other domain's backend call, and
+/// an override whose named tokens already match the parent's own values
+/// (e.g. a nested `Styled` re-stating a colour an ancestor already set)
+/// touches neither. Returns what (if anything) was actually pushed,
+/// for [`pop_styled_override`] to restore.
+fn push_styled_override(
+    backend: &mut dyn Backend,
+    style: &crate::layout::StyleOverride,
+) -> StyledPush {
+    let current_theme = backend.theme();
+    let derived_theme = style.apply_theme(current_theme);
+    let parent_theme = if derived_theme != current_theme {
+        backend.set_theme(derived_theme);
+        Some(current_theme)
+    } else {
+        None
+    };
+    let current_style = backend.style();
+    let derived_style = style.apply_style(current_style);
+    let parent_style = if derived_style != current_style {
+        backend.set_style(derived_style);
+        Some(current_style)
+    } else {
+        None
+    };
+    StyledPush {
+        parent_theme,
+        parent_style,
+    }
+}
+
+/// Restores whatever [`push_styled_override`] actually changed -- a no-op
+/// `Backend::set_theme`/`set_style` call for whichever domain (or both)
+/// that push skipped.
+fn pop_styled_override(backend: &mut dyn Backend, push: StyledPush) {
+    if let Some(theme) = push.parent_theme {
+        backend.set_theme(theme);
+    }
+    if let Some(style) = push.parent_style {
+        backend.set_style(style);
+    }
+}
+
+/// [`push_styled_override`]'s multi-layer counterpart: walks through every
+/// nested [`LayoutNode::Styled`] wrapper directly wrapping `content` (not
+/// recursing into row/column children -- only the chain of `Styled` layers
+/// sitting directly on top of a `Scroll`'s own content node), pushing each
+/// one's own override in outer-to-inner order -- the same composition
+/// order [`paint_layout`]'s own recursive `Styled` dispatch produces.
+/// [`paint_scroll`] needs this because its `Children`/`Atomic` arms paint
+/// straight off `content.unstyled()`'s own children/leaf rather than
+/// recursing through `paint_layout` on `content` itself, which is the one
+/// call site that would otherwise apply a wrapping `Styled` node's own
+/// bracket. Pop with [`pop_styled_scope`] once that painting is done.
+fn push_styled_scope(backend: &mut dyn Backend, content: &LayoutNode) -> Vec<StyledPush> {
+    let mut pushes = Vec::new();
+    let mut node = content;
+    while let LayoutNode::Styled(styled) = node {
+        pushes.push(push_styled_override(backend, &styled.style));
+        node = &styled.node;
+    }
+    pushes
+}
+
+/// [`push_styled_scope`]'s restore: pops every pushed layer in
+/// inner-to-outer order (the reverse of how they were pushed), so each
+/// [`pop_styled_override`] call restores onto the state its own matching
+/// push saw, not the final outer parent's.
+fn pop_styled_scope(backend: &mut dyn Backend, pushes: Vec<StyledPush>) {
+    for push in pushes.into_iter().rev() {
+        pop_styled_override(backend, push);
+    }
 }
 
 /// Paints a [`LayoutNode::Scroll`]: measures `scroll_node.content`'s
@@ -679,7 +763,7 @@ fn paint_scroll(
     // `children` doc for why this has to come from the slot (its
     // pre-offset, pre-clamp `start`/`len`) rather than the child's own
     // painted rect.
-    let children: Vec<ScrollChildHit> = match (&slots, scroll_node.content.as_ref()) {
+    let children: Vec<ScrollChildHit> = match (&slots, scroll_node.content.unstyled()) {
         (
             ScrollSlots::Children(slots),
             LayoutNode::Row(container) | LayoutNode::Column(container),
@@ -687,7 +771,7 @@ fn paint_scroll(
             .children
             .iter()
             .zip(slots.iter())
-            .filter_map(|(child, slot)| match &child.node {
+            .filter_map(|(child, slot)| match child.node.unstyled() {
                 LayoutNode::Leaf(leaf) => Some(ScrollChildHit {
                     id: WidgetId::new(leaf.id.as_str()),
                     start: slot.start,
@@ -720,11 +804,19 @@ fn paint_scroll(
     // never resolve to a point outside this scroll's own viewport, nor
     // mask a sibling painted earlier at that same screen position.
     let hits_before = hits.len();
+    // `scroll_node.content` may itself be wrapped in one or more
+    // `LayoutNode::Styled` layers (a `"style"` key on the `"scroll"`
+    // node's own `"content"` dict) -- unlike every other node kind, the
+    // arms below paint straight off `content.unstyled()`'s own children/
+    // leaf rather than recursing through `paint_layout` on `content`
+    // itself, so the wrapper's own bracket has to be applied explicitly
+    // here via `push_styled_scope`/`pop_styled_scope` instead of riding
+    // `paint_layout`'s usual `LayoutNode::Styled` dispatch.
+    let styled_scope = push_styled_scope(backend, scroll_node.content.as_ref());
+    let content = scroll_node.content.unstyled();
     match slots {
         ScrollSlots::Children(slots) => {
-            if let LayoutNode::Row(container) | LayoutNode::Column(container) =
-                scroll_node.content.as_ref()
-            {
+            if let LayoutNode::Row(container) | LayoutNode::Column(container) = content {
                 for (child, slot) in container.children.iter().zip(slots) {
                     if slot.visible {
                         paint_layout(backend, slot.rect, &child.node, hits, chrome_interaction);
@@ -746,27 +838,19 @@ fn paint_scroll(
                 // match instead, into `rect` (already the viewport itself
                 // here -- see `scroll_content_slots`'s own
                 // `is_offset_windowed_leaf` branch).
-                match offset_windowed_leaf_scrolled_to_offset(
-                    scroll_node.content.as_ref(),
-                    offset,
-                    metrics.line_height,
-                ) {
+                match offset_windowed_leaf_scrolled_to_offset(content, offset, metrics.line_height)
+                {
                     Some(shadow) => {
                         paint_layout(backend, rect, &shadow, hits, chrome_interaction);
                     }
                     None => {
-                        paint_layout(
-                            backend,
-                            rect,
-                            &scroll_node.content,
-                            hits,
-                            chrome_interaction,
-                        );
+                        paint_layout(backend, rect, content, hits, chrome_interaction);
                     }
                 }
             }
         }
     }
+    pop_styled_scope(backend, styled_scope);
     crate::hit::clip_hits_to_viewport(hits, hits_before, viewport);
     backend.pop_clip();
 
@@ -795,13 +879,18 @@ fn paint_scroll(
 /// `id`/`scroll_px` are threaded through unchanged, so the shadow node
 /// keeps the same hit-map id and (for `List`/`Tree`/`DataTable`, whose
 /// `with_scroll_px` paint states already read it) the same pixel-smooth
-/// sub-row remainder a plain, unscrolled leaf would get.
+/// sub-row remainder a plain, unscrolled leaf would get. Matches via
+/// [`LayoutNode::unstyled`], so a `Styled` leaf gets the same shadow
+/// treatment as an unstyled one -- the returned shadow carries no
+/// `Styled` wrapper of its own, since [`paint_scroll`]'s own
+/// `push_styled_scope` call already has the matching override active on
+/// `backend` by the time this shadow paints.
 fn offset_windowed_leaf_scrolled_to_offset(
     content: &LayoutNode,
     offset: f32,
     line_height: f32,
 ) -> Option<LayoutNode> {
-    let LayoutNode::Leaf(leaf) = content else {
+    let LayoutNode::Leaf(leaf) = content.unstyled() else {
         return None;
     };
     let row = (offset / line_height.max(1.0)).floor().max(0.0) as usize;
@@ -930,7 +1019,11 @@ pub(crate) struct ScrollMetrics {
 /// natural length along `axis`. For anything else (`Split`/`Tabs`/`Panel`/
 /// `SidebarPanel`/`SplitTree`, or a nested `Scroll`), the same one-unit
 /// fallback a `Leaf` with no intrinsic size gets — deeper measurement of
-/// those node kinds as `Scroll` content is unimplemented today.
+/// those node kinds as `Scroll` content is unimplemented today. `node` is
+/// matched via [`LayoutNode::unstyled`] first -- a `"style"` key is purely
+/// cosmetic, so a `Styled(Row|Column)` content node measures exactly like
+/// an unstyled one, rather than falling through to the one-unit fallback
+/// every unmeasurable node kind gets.
 pub(crate) fn natural_main_length(
     backend: &mut dyn Backend,
     node: &LayoutNode,
@@ -943,7 +1036,7 @@ pub(crate) fn natural_main_length(
     } else {
         metrics.line_height.max(1.0)
     };
-    match node {
+    match node.unstyled() {
         LayoutNode::Row(container) => {
             container_natural_main_length(backend, container, true, axis, metrics)
         }
@@ -1066,7 +1159,7 @@ pub(crate) fn scroll_content_slots(
     // same result through a second code path.
     let cell_grid = metrics.char_width <= 1.0;
     let scroll = scroll_view_at(WidgetId::new(""), axis, viewport, content_len, offset);
-    let matching_container = match (axis, content) {
+    let matching_container = match (axis, content.unstyled()) {
         (ScrollAxis::Vertical, LayoutNode::Column(c)) => Some(c),
         (ScrollAxis::Horizontal, LayoutNode::Row(c)) => Some(c),
         _ => None,
@@ -1158,8 +1251,10 @@ pub(crate) fn scroll_content_slots(
 /// axis (which would just repaint from the first row/line every time);
 /// [`offset_windowed_leaf_scrolled_to_offset`] is what actually advances
 /// the shadow clone `paint_scroll` paints into it to show the right one.
+/// Matches via [`LayoutNode::unstyled`] so a `"style"` key on this leaf
+/// never changes which scroll strategy it gets.
 fn is_offset_windowed_leaf(content: &LayoutNode) -> bool {
-    let LayoutNode::Leaf(leaf) = content else {
+    let LayoutNode::Leaf(leaf) = content.unstyled() else {
         return false;
     };
     matches!(
@@ -2301,6 +2396,202 @@ mod tests {
             charlie_fg, red,
             "Charlie (Bravo's sibling) is unaffected by Bravo's own override, \
              and still inherits the outer row's"
+        );
+    }
+
+    /// [`StyledRowLogic`]'s own scenario, but for `"bg"` instead of
+    /// `"fg"`: three `ButtonVariant::Icon` leaves (TUI's `tui::button`
+    /// reads `Theme::background` for that one variant -- see
+    /// [`crate::layout::StyleOverride`]'s own doc table), the middle one
+    /// nested-overridden inside an outer row-level override. Covers the
+    /// acceptance bar's own "overriding bg ... on a container changes
+    /// exactly that subtree's cells" case, which the matching `"fg"` test
+    /// above doesn't exercise.
+    struct StyledBgRowLogic {
+        engine: crate::engine::InteractionEngine,
+    }
+
+    impl quadraui::AppLogic for StyledBgRowLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let icon_button = |id: &str, label: &str| {
+                let mut button = Button::new(WidgetId::new(id), label);
+                button.variant = quadraui::ButtonVariant::Icon;
+                LayoutNode::Leaf(LayoutLeaf {
+                    id: id.to_string(),
+                    descriptor: LeafDescriptor::Button(button),
+                    scroll_px: None,
+                })
+            };
+            let row = LayoutNode::Row(LayoutContainer::new(
+                vec![
+                    icon_button("a", "Alpha"),
+                    LayoutNode::Styled(crate::layout::LayoutStyled {
+                        style: StyleOverride {
+                            bg: Some(quadraui::Color::rgb(0, 255, 0)),
+                            ..StyleOverride::default()
+                        },
+                        node: Box::new(icon_button("b", "Bravo")),
+                    }),
+                    icon_button("c", "Charlie"),
+                ],
+                Spacing::default(),
+            ));
+            let node = LayoutNode::Styled(crate::layout::LayoutStyled {
+                style: StyleOverride {
+                    bg: Some(quadraui::Color::rgb(255, 0, 0)),
+                    ..StyleOverride::default()
+                },
+                node: Box::new(row),
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(
+            &mut self,
+            _event: quadraui::UiEvent,
+            _backend: &mut dyn Backend,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+    }
+
+    #[test]
+    fn styled_wrapper_scopes_a_bg_override_to_its_own_subtree_and_composes_with_nesting() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = StyledBgRowLogic {
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 42, 3);
+        driver.render();
+
+        let (ax, ay) = driver.find("Alpha").expect("Alpha should paint");
+        let (bx, by) = driver.find("Bravo").expect("Bravo should paint");
+        let (cx, cy) = driver.find("Charlie").expect("Charlie should paint");
+
+        let alpha_bg = driver
+            .style_at(ax as u16, ay as u16)
+            .expect("style at Alpha")
+            .bg;
+        let bravo_bg = driver
+            .style_at(bx as u16, by as u16)
+            .expect("style at Bravo")
+            .bg;
+        let charlie_bg = driver
+            .style_at(cx as u16, cy as u16)
+            .expect("style at Charlie")
+            .bg;
+
+        let red = quadraui::tui::ratatui_color(quadraui::Color::rgb(255, 0, 0));
+        let green = quadraui::tui::ratatui_color(quadraui::Color::rgb(0, 255, 0));
+        assert_eq!(
+            alpha_bg, red,
+            "Alpha has no override of its own, so it inherits the outer row's"
+        );
+        assert_eq!(
+            bravo_bg, green,
+            "Bravo's own nested override wins over the outer row's"
+        );
+        assert_eq!(
+            charlie_bg, red,
+            "Charlie (Bravo's sibling) is unaffected by Bravo's own override, \
+             and still inherits the outer row's"
+        );
+    }
+
+    /// The headline case the `"style"` spec page calls out: a plain `bg`
+    /// override does **not** reach a `Button`'s own fill on any variant
+    /// but `Icon` (see the test above) -- `Secondary`/`Danger`/`Warning`/
+    /// disabled read `Theme::surface_bg`, `Primary` reads
+    /// `Theme::accent_bg`, never `Theme::background`. `surface_bg`/
+    /// `accent_bg` are the aliases that actually reach it.
+    #[test]
+    fn surface_bg_and_accent_bg_are_the_aliases_a_button_fill_actually_reads() {
+        use quadraui::tui::testing::TuiDriver;
+
+        struct Logic {
+            engine: crate::engine::InteractionEngine,
+        }
+        impl quadraui::AppLogic for Logic {
+            type AreaId = ();
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                // `Button::new` defaults to `ButtonVariant::Primary`,
+                // which TUI's `tui::button` fills with `Theme::accent_bg`.
+                let primary = |id: &str, label: &str| {
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: id.to_string(),
+                        descriptor: LeafDescriptor::Button(Button::new(WidgetId::new(id), label)),
+                        scroll_px: None,
+                    })
+                };
+                let row = LayoutNode::Row(LayoutContainer::new(
+                    vec![
+                        primary("unstyled", "Unstyled"),
+                        LayoutNode::Styled(crate::layout::LayoutStyled {
+                            style: StyleOverride {
+                                bg: Some(quadraui::Color::rgb(0, 255, 0)),
+                                ..StyleOverride::default()
+                            },
+                            node: Box::new(primary("bg", "BgOnly")),
+                        }),
+                        LayoutNode::Styled(crate::layout::LayoutStyled {
+                            style: StyleOverride {
+                                accent_bg: Some(quadraui::Color::rgb(0, 255, 0)),
+                                ..StyleOverride::default()
+                            },
+                            node: Box::new(primary("accent_bg", "AccentBg")),
+                        }),
+                    ],
+                    Spacing::default(),
+                ));
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &row, &mut hits, &|id| {
+                    self.engine.chrome_interaction(id)
+                });
+                self.engine.set_hits(hits);
+            }
+            fn handle(
+                &mut self,
+                _event: quadraui::UiEvent,
+                _backend: &mut dyn Backend,
+            ) -> quadraui::Reaction {
+                quadraui::Reaction::Continue
+            }
+        }
+
+        let logic = Logic {
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 60, 3);
+        driver.render();
+
+        let (ux, uy) = driver.find("Unstyled").expect("Unstyled should paint");
+        let (bx, by) = driver.find("BgOnly").expect("BgOnly should paint");
+        let (acx, acy) = driver.find("AccentBg").expect("AccentBg should paint");
+
+        let unstyled_bg = driver.style_at(ux as u16, uy as u16).expect("style").bg;
+        let bg_only_bg = driver.style_at(bx as u16, by as u16).expect("style").bg;
+        let accent_bg_bg = driver.style_at(acx as u16, acy as u16).expect("style").bg;
+
+        let green = quadraui::tui::ratatui_color(quadraui::Color::rgb(0, 255, 0));
+        assert_eq!(
+            bg_only_bg, unstyled_bg,
+            "a plain \"bg\" override is a no-op on a Primary button's fill -- \
+             it reads Theme::accent_bg, not Theme::background"
+        );
+        assert_eq!(
+            accent_bg_bg, green,
+            "\"accent_bg\" is the alias that actually reaches a Primary button's fill"
         );
     }
 

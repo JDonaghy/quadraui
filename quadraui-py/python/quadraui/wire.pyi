@@ -346,11 +346,13 @@ PaddingValue = Union[float, PaddingAxis, PaddingSides]
 StyleColorValue = Union[Color, str]
 
 class StyleValue(TypedDict):
-    """A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. See docs/bindings-wire-format.md for the full token mapping."""
+    """A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent"/"surface_bg"/"accent_bg" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping."""
     bg: NotRequired[StyleColorValue]
     fg: NotRequired[StyleColorValue]
     border: NotRequired[StyleColorValue]
     accent: NotRequired[StyleColorValue]
+    surface_bg: NotRequired[StyleColorValue]
+    accent_bg: NotRequired[StyleColorValue]
     padding: NotRequired[float]
     corner_radius: NotRequired[float]
     border_width: NotRequired[float]

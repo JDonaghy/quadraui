@@ -6679,6 +6679,83 @@ mod tests {
         });
     }
 
+    /// The headline `"style"` case: a plain `"bg"` override is a no-op on
+    /// a `"button"` leaf's own fill -- `Button`'s TUI painter reads
+    /// `Theme::surface_bg` (every variant but `Primary`/`Icon`), never
+    /// `Theme::background` -- while `"surface_bg"` (the semantic alias
+    /// `quadraui_binding_core::layout::StyleOverride`'s own doc calls out)
+    /// actually reaches it. Exercised end to end through a real Python
+    /// render callback, the same way
+    /// `render_callback_style_key_scopes_an_override_to_its_own_subtree`
+    /// covers `"fg"`.
+    #[test]
+    fn render_callback_style_key_surface_bg_is_the_alias_a_button_fill_actually_reads() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(60, 3, None, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {\"row\": [\
+                        {\
+                            \"id\": \"plain\", \
+                            \"button\": {\"id\": \"plain\", \"label\": \"Plain\", \"variant\": \"Secondary\"}\
+                        }, \
+                        {\
+                            \"id\": \"bg\", \
+                            \"button\": {\"id\": \"bg\", \"label\": \"BgOnly\", \"variant\": \"Secondary\"}, \
+                            \"style\": {\"bg\": \"#00ff00\"}\
+                        }, \
+                        {\
+                            \"id\": \"surface\", \
+                            \"button\": {\"id\": \"surface\", \"label\": \"SurfaceBg\", \"variant\": \"Secondary\"}, \
+                            \"style\": {\"surface_bg\": \"#00ff00\"}\
+                        }\
+                    ]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+            app.screen().expect("render must not raise");
+
+            let (px, py_) = app.driver.find("Plain").expect("Plain must be on screen");
+            let (bx, by) = app.driver.find("BgOnly").expect("BgOnly must be on screen");
+            let (sx, sy) = app
+                .driver
+                .find("SurfaceBg")
+                .expect("SurfaceBg must be on screen");
+
+            let plain_bg = app
+                .driver
+                .style_at(px as u16, py_ as u16)
+                .expect("style at Plain")
+                .bg;
+            let bg_only_bg = app
+                .driver
+                .style_at(bx as u16, by as u16)
+                .expect("style at BgOnly")
+                .bg;
+            let surface_bg_bg = app
+                .driver
+                .style_at(sx as u16, sy as u16)
+                .expect("style at SurfaceBg")
+                .bg;
+
+            assert_eq!(
+                ratatui_rgb(bg_only_bg),
+                ratatui_rgb(plain_bg),
+                "a plain \"bg\" override must not change a Secondary button's fill \
+                 -- it reads Theme::surface_bg, not Theme::background"
+            );
+            assert_eq!(
+                ratatui_rgb(surface_bg_bg),
+                (0, 255, 0),
+                "\"surface_bg\" is the alias that actually reaches a Secondary \
+                 button's fill"
+            );
+        });
+    }
+
     /// A render callback may place more than one instance of the same
     /// primitive kind in a layout tree -- two `data_table`s in a `Row` both
     /// render, each addressable by its own leaf `id`.
