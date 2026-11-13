@@ -89,6 +89,49 @@ test("showContextMenu escape dismisses without item activation", () => {
   assert.ok(!app.screenContains("Copy"));
 });
 
+test("showContextMenu with a nested submenu opens by Right arrow and activates the nested item", () => {
+  // An item's `submenu` nests through the same `showContextMenu` call;
+  // opening the child popup by Right arrow and activating its leaf
+  // reports that leaf's own id via `ContextMenuItemActivated` -- the
+  // same shape a flat menu's activation already carries, regardless of
+  // nesting depth.
+  const app = new QuiApp(40, 20);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showContextMenu(
+    [
+      {
+        id: "view",
+        label: { spans: [{ text: "View", fg: null, bg: null }] },
+        submenu: [
+          {
+            id: "toggle_sidebar",
+            label: { spans: [{ text: "Toggle Sidebar", fg: null, bg: null }] },
+          },
+        ],
+      },
+    ],
+    { x: 2.0, y: 2.0 },
+  );
+  assert.ok(app.screenContains("View"));
+
+  app.pushEvent({
+    KeyPressed: { key: { Named: "Right" }, modifiers: {}, repeat: false },
+  });
+  app.run(1);
+  assert.ok(app.screenContains("Toggle Sidebar"), "the submenu must now be painted");
+  assert.deepEqual(received, []);
+
+  app.pushEvent({
+    KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false },
+  });
+  app.run(1);
+
+  assert.deepEqual(received, [{ ContextMenuItemActivated: "toggle_sidebar" }]);
+  assert.ok(!app.screenContains("Toggle Sidebar"));
+});
+
 test("showContextMenu item with a codicon icon renders its fallback glyph", () => {
   // `ContextMenuItem.icon` accepts the same `{codicon: "...", fallback:
   // "..."}` wire shape a tree row's `icon` does (see

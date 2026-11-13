@@ -23,7 +23,7 @@
 //! (see [`crate::UiEvent::ContextMenuDismissed`]).
 
 use crate::accelerator::Accelerator;
-use crate::event::Rect;
+use crate::event::{Point, Rect};
 use crate::layout::{Anchor, ResolvedSide, Side};
 use crate::types::{Color, Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -322,6 +322,39 @@ pub struct ContextMenuLayout {
 }
 
 impl ContextMenuLayout {
+    /// Shared positioning rule for a nested submenu opened beside this
+    /// (already-resolved) menu's item `item_idx`: pulls right of this
+    /// menu's own right edge by one unit, flips to the left of this
+    /// menu's own left edge on right-edge overflow, and — when neither
+    /// side fits — clamps fully inside `viewport` as a last resort.
+    /// `y` aligns with `item_idx`'s own row (or this menu's top edge if
+    /// that item isn't in [`Self::visible_items`] — e.g. clipped past
+    /// the bottom edge).
+    ///
+    /// The one shared implementation both [`crate::compose::MenuSystem`]'s
+    /// menu-bar submenus and [`crate::compose::ContextMenuController`]'s
+    /// right-click submenus position through — a consumer that paints a
+    /// nested popup beside a parent item anchors it here instead of
+    /// re-deriving the pull-right/flip-left math itself.
+    pub fn submenu_anchor(&self, item_idx: usize, submenu_width: f32, viewport: Rect) -> Point {
+        let anchor_y = self
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == item_idx)
+            .map(|v| v.bounds.y)
+            .unwrap_or(self.bounds.y);
+        let preferred_x = self.bounds.x + self.bounds.width + 1.0;
+        let flipped_x = self.bounds.x - submenu_width - 1.0;
+        let anchor_x = if preferred_x + submenu_width <= viewport.x + viewport.width {
+            preferred_x
+        } else if flipped_x >= viewport.x {
+            flipped_x
+        } else {
+            (viewport.x + viewport.width - submenu_width).max(viewport.x)
+        };
+        Point::new(anchor_x, anchor_y)
+    }
+
     pub fn hit_test(&self, x: f32, y: f32) -> ContextMenuHit {
         // Inside menu bounds?
         let inside = x >= self.bounds.x
@@ -1359,6 +1392,77 @@ mod tests {
         assert!(!layout.visible_items[0].clickable);
         // Click on disabled item → Inert, not Item.
         assert_eq!(layout.hit_test(50.0, 15.0), ContextMenuHit::Inert);
+    }
+
+    // ── ContextMenuLayout::submenu_anchor ─────────────────────────────
+
+    fn anchor_point_menu(items: Vec<ContextMenuItem>) -> ContextMenu {
+        ContextMenu {
+            id: WidgetId::new("m"),
+            items,
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        }
+    }
+
+    #[test]
+    fn submenu_anchor_pulls_right_of_parent_by_default() {
+        let menu = anchor_point_menu(vec![cm_action("a", "A"), cm_action("b", "B")]);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = menu.layout(10.0, 10.0, viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        // Submenu for item 1 ("b") pulls right of the parent's right edge
+        // (10 + 100 + 1 = 111) and aligns y with item 1's own row
+        // (10 + 20 = 30).
+        let anchor = layout.submenu_anchor(1, 80.0, viewport);
+        assert_eq!(anchor.x, 111.0);
+        assert_eq!(anchor.y, 30.0);
+    }
+
+    #[test]
+    fn submenu_anchor_flips_left_near_right_edge() {
+        let menu = anchor_point_menu(vec![cm_action("a", "A")]);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 600.0);
+        // Parent menu's right edge (150 + 50 = 200) is flush with the
+        // viewport's right edge, so a 80-wide submenu pulled right
+        // (201 + 80 = 281 > 200) overflows and must flip left instead
+        // (150 - 80 - 1 = 69).
+        let layout = menu.layout(150.0, 10.0, viewport, 50.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        let anchor = layout.submenu_anchor(0, 80.0, viewport);
+        assert_eq!(anchor.x, 69.0);
+    }
+
+    #[test]
+    fn submenu_anchor_clamps_inside_viewport_when_neither_side_fits() {
+        let menu = anchor_point_menu(vec![cm_action("a", "A")]);
+        // A viewport too narrow for the 80-wide submenu to fit on either
+        // side of a parent flush against the right edge.
+        let viewport = Rect::new(0.0, 0.0, 100.0, 600.0);
+        let layout = menu.layout(50.0, 10.0, viewport, 50.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        let anchor = layout.submenu_anchor(0, 80.0, viewport);
+        // Clamped flush with the viewport's right edge: 100 - 80 = 20.
+        assert_eq!(anchor.x, 20.0);
+    }
+
+    #[test]
+    fn submenu_anchor_falls_back_to_menu_top_when_item_not_visible() {
+        // A viewport too short to show item 1 at all (clipped past the
+        // bottom edge) — `submenu_anchor` falls back to the menu's own
+        // top edge for `y` instead of panicking or guessing.
+        let menu = anchor_point_menu(vec![cm_action("a", "A"), cm_action("b", "B")]);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 20.0);
+        let layout = menu.layout(0.0, 0.0, viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.visible_items.len(), 1); // item 1 clipped out
+        let anchor = layout.submenu_anchor(1, 80.0, viewport);
+        assert_eq!(anchor.y, layout.bounds.y);
     }
 
     // ── native_surface_paint::shortcut_text ───────────────────────────────

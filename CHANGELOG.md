@@ -78,6 +78,17 @@ save/clip/restore); `WinBackend` forwards to the same seam backed by
   by default, resolved against `WidgetState` by `resolve_scroll_offset` the
   way a `Split`'s divider ratio already is. Wheel and keyboard routing onto
   the container is a follow-up.
+- `ContextMenuLayout::submenu_anchor`: the shared layout rule for
+  positioning a nested submenu beside its parent item (pull-right by
+  default, flip to the parent's left edge near the viewport's right
+  edge, clamp fully inside the viewport as a last resort) — now backs
+  both `MenuSystem`'s menu-bar submenus and `ContextMenuController`'s
+  right-click submenus. `ContextMenuController` (and the
+  `quadraui-binding-core`/`quadraui-py`/`quadraui-node` `show_context_menu`
+  surfaces routed through it) now opens an item's `submenu` by
+  Right-arrow/Enter or by hovering its row, closes the deepest open
+  level on Left/Escape, and reports an activated nested item's own
+  `WidgetId` via `ContextMenuItemActivated` regardless of nesting depth.
 
 ### Fixed
 - TUI `Button`: a leaf painted into a cell taller than its one row of

@@ -59,17 +59,25 @@
 //! uses for menu-bar dropdowns, applied to a single anchored popup with
 //! no bar.
 //!
-//! # Scope (v1)
+//! # Nested submenus
 //!
-//! Single-level menus only — an item's `submenu` field is accepted by
-//! [`crate::ContextMenu`] but this controller doesn't open nested
-//! pull-right popups for it yet (unlike [`crate::compose::MenuSystem`],
-//! which does, for menu-bar dropdowns). A submenu item still renders
-//! (with its `▶` affordance where the rasteriser draws one) but clicking
-//! it is inert — no [`ContextMenuOutcome::Event`], just `Consumed`. Real
-//! nested-submenu support is a follow-up if a consumer's right-click
-//! menu needs one; [`crate::compose::MenuSystem`]'s `submenu_path`/
-//! `submenu_selected` machinery is the pattern to lift when it lands.
+//! An item's [`crate::ContextMenuItem::submenu`] opens a pull-right
+//! child popup beside its parent row, positioned through the same
+//! [`crate::primitives::context_menu::ContextMenuLayout::submenu_anchor`]
+//! shared layout rule [`crate::compose::MenuSystem`]'s menu-bar submenus
+//! use — flips to the parent's left edge near the viewport's right
+//! edge. Right/Enter on a selected submenu-parent opens its child;
+//! Left/Escape closes the deepest open level (Escape with nothing
+//! nested closes the whole menu, same as before); hovering a
+//! submenu-parent row opens its child immediately (no timer — same
+//! "open on hover" shape [`crate::compose::MenuSystem`] already uses for
+//! menu-bar submenus), hovering a leaf closes any deeper level still
+//! open. Activation always reports the activated leaf's own
+//! [`crate::WidgetId`] via [`ContextMenuOutcome::Event`] regardless of
+//! nesting depth — the id uniquely identifies its place in the tree, so
+//! submenu depth is transparent to the caller, the same contract
+//! [`crate::UiEvent::MenuActivated`]'s own doc states for native menu-bar
+//! installers.
 //!
 //! # Call this from event-handling code only — never from `render`
 //!
@@ -84,7 +92,11 @@
 use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::event::{Point, UiEvent};
 use crate::interaction::InteractionState;
-use crate::primitives::context_menu::{ContextMenu, ContextMenuHit, ContextMenuLayout};
+use crate::primitives::context_menu::{
+    ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
+    ContextMenuPlacement,
+};
+use crate::types::WidgetId;
 use crate::{Key, NamedKey};
 
 /// What [`ContextMenuController::handle`] did with an event.
@@ -122,6 +134,14 @@ pub struct ContextMenuController {
 struct OpenMenu {
     menu: ContextMenu,
     anchor: Point,
+    /// Depth-first path of open submenus: `submenu_path[d]` = the
+    /// `item_idx` in the menu at depth `d` whose child submenu is open.
+    /// Empty ⟹ no submenus open. Mirrors [`crate::compose::MenuSystem`]'s
+    /// own field of the same name.
+    submenu_path: Vec<usize>,
+    /// Selected item index at each submenu depth; `submenu_selected[d]`
+    /// corresponds to the submenu opened by `submenu_path[d]`.
+    submenu_selected: Vec<usize>,
 }
 
 /// Item height / separator height in line-height units.
@@ -175,7 +195,12 @@ impl ContextMenuController {
                     .modal_stack_handle()
                     .borrow_mut()
                     .push(id, layout.bounds);
-                self.open = Some(OpenMenu { menu, anchor });
+                self.open = Some(OpenMenu {
+                    menu,
+                    anchor,
+                    submenu_path: Vec::new(),
+                    submenu_selected: Vec::new(),
+                });
             }
         }
     }
@@ -203,19 +228,26 @@ impl ContextMenuController {
         // navigation/selection state still needs its hover/pressed
         // side effect recorded. Gated on the same three event shapes
         // `handle_mouse` itself matches (see `interaction.rs`'s doc) so
-        // every other shape (`KeyPressed`, etc) skips `layout_for`'s
-        // `menu.layout(..)` call rather than paying for it and then
-        // hitting `handle_mouse`'s own no-op match arm.
+        // every other shape (`KeyPressed`, etc) skips the stack-layout
+        // work below rather than paying for it and then hitting
+        // `handle_mouse`'s own no-op match arm.
         if matches!(
             event,
             UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. }
         ) {
-            let layout = self.layout_for(&open.menu, open.anchor, backend);
-            self.interaction
-                .handle_mouse(event, |x, y| match layout.hit_test(x, y) {
-                    ContextMenuHit::Item(id) => Some(id),
-                    ContextMenuHit::Inert | ContextMenuHit::Empty => None,
-                });
+            let stack = self.menu_stack(&open, backend);
+            self.interaction.handle_mouse(event, |x, y| {
+                // Deepest level first — a submenu painted on top of its
+                // parent should win a hover/press hit over whatever the
+                // parent's own (now-covered) row underneath it reports.
+                stack
+                    .iter()
+                    .rev()
+                    .find_map(|(_, layout)| match layout.hit_test(x, y) {
+                        ContextMenuHit::Item(id) => Some(id),
+                        ContextMenuHit::Inert | ContextMenuHit::Empty => None,
+                    })
+            });
         }
 
         match event {
@@ -223,71 +255,152 @@ impl ContextMenuController {
                 key: Key::Named(NamedKey::Escape),
                 ..
             } => {
-                self.close(backend);
-                ContextMenuOutcome::Event(UiEvent::ContextMenuDismissed)
+                if !open.submenu_path.is_empty() {
+                    self.close_deepest_submenu();
+                    ContextMenuOutcome::Consumed
+                } else {
+                    self.close(backend);
+                    ContextMenuOutcome::Event(UiEvent::ContextMenuDismissed)
+                }
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Down),
                 ..
             } => {
-                let next = open.menu.move_selection(open.menu.selected_idx, 1);
-                self.set_selected(next);
+                self.move_selection(&open, 1);
                 ContextMenuOutcome::Consumed
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Up),
                 ..
             } => {
-                let next = open.menu.move_selection(open.menu.selected_idx, -1);
-                self.set_selected(next);
+                self.move_selection(&open, -1);
                 ContextMenuOutcome::Consumed
+            }
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Right),
+                ..
+            } => {
+                let depth = open.submenu_path.len();
+                let sel = Self::current_selected(&open);
+                let has_sub = Self::items_at_depth(&open, depth)
+                    .get(sel)
+                    .is_some_and(|item| item.submenu.is_some());
+                if has_sub {
+                    self.open_submenu(sel);
+                    ContextMenuOutcome::Consumed
+                } else {
+                    ContextMenuOutcome::Ignored
+                }
+            }
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Left),
+                ..
+            } => {
+                if open.submenu_path.is_empty() {
+                    ContextMenuOutcome::Ignored
+                } else {
+                    self.close_deepest_submenu();
+                    ContextMenuOutcome::Consumed
+                }
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Enter),
                 ..
             } => {
-                let item = open.menu.items.get(open.menu.selected_idx);
-                match item.and_then(|i| i.id) {
-                    Some(id) => {
-                        self.close(backend);
-                        ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(id))
+                let depth = open.submenu_path.len();
+                let sel = Self::current_selected(&open);
+                match Self::items_at_depth(&open, depth).get(sel).cloned() {
+                    Some(item) if item.submenu.is_some() => {
+                        self.open_submenu(sel);
+                        ContextMenuOutcome::Consumed
                     }
+                    Some(item) => match item.id {
+                        Some(id) => {
+                            self.close(backend);
+                            ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(id))
+                        }
+                        None => ContextMenuOutcome::Consumed,
+                    },
                     None => ContextMenuOutcome::Consumed,
                 }
             }
             UiEvent::MouseDown { position, .. } => {
-                let layout = self.layout_for(&open.menu, open.anchor, backend);
-                match layout.hit_test(position.x, position.y) {
-                    ContextMenuHit::Item(id) => {
-                        self.close(backend);
-                        ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(id))
-                    }
-                    ContextMenuHit::Inert => ContextMenuOutcome::Consumed,
-                    ContextMenuHit::Empty => {
-                        self.close(backend);
-                        ContextMenuOutcome::Event(UiEvent::ContextMenuDismissed)
+                let stack = self.menu_stack(&open, backend);
+                // Deepest level first — a click inside a submenu must not
+                // fall through and hit whatever the parent's covered row
+                // underneath reports.
+                for (depth_idx, (menu, layout)) in stack.iter().enumerate().rev() {
+                    match layout.hit_test(position.x, position.y) {
+                        ContextMenuHit::Item(id) => {
+                            let item_idx = layout
+                                .visible_items
+                                .iter()
+                                .find(|v| {
+                                    v.clickable && menu.items[v.item_idx].id.as_ref() == Some(&id)
+                                })
+                                .map(|v| v.item_idx);
+                            return match item_idx {
+                                Some(item_idx) if menu.items[item_idx].submenu.is_some() => {
+                                    self.truncate_submenus(depth_idx);
+                                    self.open_submenu(item_idx);
+                                    ContextMenuOutcome::Consumed
+                                }
+                                _ => {
+                                    self.close(backend);
+                                    ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(id))
+                                }
+                            };
+                        }
+                        ContextMenuHit::Inert => return ContextMenuOutcome::Consumed,
+                        ContextMenuHit::Empty => continue,
                     }
                 }
+                // Outside every open level → dismiss.
+                self.close(backend);
+                ContextMenuOutcome::Event(UiEvent::ContextMenuDismissed)
+            }
+            UiEvent::MouseMoved { position, .. } => {
+                let stack = self.menu_stack(&open, backend);
+                for (depth_idx, (menu, layout)) in stack.iter().enumerate() {
+                    for vis in &layout.visible_items {
+                        if !vis.clickable
+                            || position.x < vis.bounds.x
+                            || position.x >= vis.bounds.x + vis.bounds.width
+                            || position.y < vis.bounds.y
+                            || position.y >= vis.bounds.y + vis.bounds.height
+                        {
+                            continue;
+                        }
+                        let item_idx = vis.item_idx;
+                        self.set_selected_at_depth(depth_idx, item_idx);
+                        if menu.items[item_idx].submenu.is_some() {
+                            self.truncate_submenus(depth_idx);
+                            self.open_submenu(item_idx);
+                            return ContextMenuOutcome::Consumed;
+                        } else if open.submenu_path.len() > depth_idx {
+                            self.truncate_submenus(depth_idx);
+                            return ContextMenuOutcome::Consumed;
+                        }
+                        return ContextMenuOutcome::Consumed;
+                    }
+                }
+                ContextMenuOutcome::Ignored
             }
             _ => ContextMenuOutcome::Ignored,
         }
     }
 
-    /// Paint the currently open painted menu, if any. A no-op on the
-    /// `Native` path (nothing to paint — AppKit owns that surface) and
-    /// if nothing is open. Call from `render`, after the app's own
-    /// content so the menu layers on top.
+    /// Paint the currently open painted menu and any open submenu
+    /// levels, if any. A no-op on the `Native` path (nothing to paint —
+    /// AppKit owns that surface) and if nothing is open. Call from
+    /// `render`, after the app's own content so the menu layers on top.
     pub fn render(&self, backend: &mut dyn Backend) {
         let Some(open) = &self.open else {
             return;
         };
-        let layout = self.layout_for(&open.menu, open.anchor, backend);
-        let _ = backend.draw_context_menu_with_state(&open.menu, &layout, &self.interaction);
-    }
-
-    fn set_selected(&mut self, idx: usize) {
-        if let Some(open) = &mut self.open {
-            open.menu.selected_idx = idx;
+        for (menu, layout) in self.menu_stack(open, backend) {
+            let _ = backend.draw_context_menu_with_state(&menu, &layout, &self.interaction);
         }
     }
 
@@ -303,11 +416,152 @@ impl ContextMenuController {
         let vp = backend.context_menu_viewport();
         menu.layout(anchor.x, anchor.y, vp, menu_width, |i| {
             if menu.items[i].is_separator() {
-                crate::primitives::context_menu::ContextMenuItemMeasure::new(sep_h)
+                ContextMenuItemMeasure::new(sep_h)
             } else {
-                crate::primitives::context_menu::ContextMenuItemMeasure::new(item_h)
+                ContextMenuItemMeasure::new(item_h)
             }
         })
+    }
+
+    /// Build the full stack of `(ContextMenu, ContextMenuLayout)` for the
+    /// root popup plus every currently open submenu level, deepest last.
+    /// Each submenu is positioned beside its parent item via
+    /// [`ContextMenuLayout::submenu_anchor`] — the shared layout rule
+    /// [`crate::compose::MenuSystem`]'s own `dropdown_stack` uses for
+    /// menu-bar submenus.
+    fn menu_stack(
+        &self,
+        open: &OpenMenu,
+        backend: &dyn Backend,
+    ) -> Vec<(ContextMenu, ContextMenuLayout)> {
+        let mut stack = Vec::new();
+        let root_layout = self.layout_for(&open.menu, open.anchor, backend);
+        stack.push((open.menu.clone(), root_layout));
+
+        let lh = backend.chrome_line_height();
+        let (item_h, sep_h) = menu_item_heights(lh);
+        let menu_width = 20.0 * lh;
+        let vp = backend.context_menu_viewport();
+
+        for (depth, &path_idx) in open.submenu_path.iter().enumerate() {
+            let sub_items_opt: Option<Vec<ContextMenuItem>> = stack[depth]
+                .0
+                .items
+                .get(path_idx)
+                .and_then(|item| item.submenu.clone());
+            let Some(sub_items) = sub_items_opt else {
+                break;
+            };
+            let anchor = stack[depth].1.submenu_anchor(path_idx, menu_width, vp);
+            let selected = open.submenu_selected.get(depth).copied().unwrap_or(0);
+            let sub_menu = ContextMenu {
+                id: WidgetId::new("context-menu-controller-submenu"),
+                items: sub_items.clone(),
+                selected_idx: selected,
+                bg: None,
+                placement: ContextMenuPlacement::AnchorPoint,
+            };
+            let sub_layout = sub_menu.layout(anchor.x, anchor.y, vp, menu_width, |i| {
+                if sub_items[i].is_separator() {
+                    ContextMenuItemMeasure::new(sep_h)
+                } else {
+                    ContextMenuItemMeasure::new(item_h)
+                }
+            });
+            stack.push((sub_menu, sub_layout));
+        }
+        stack
+    }
+
+    /// Items at depth `depth` (0 = root menu items); `depth > 0` descends
+    /// `open.submenu_path[0..depth]`. Returns an empty `Vec` if a level
+    /// along the path is missing its submenu (stale state).
+    fn items_at_depth(open: &OpenMenu, depth: usize) -> Vec<ContextMenuItem> {
+        let mut items = open.menu.items.clone();
+        for &path_idx in open.submenu_path.iter().take(depth) {
+            match items.into_iter().nth(path_idx).and_then(|i| i.submenu) {
+                Some(sub) => items = sub,
+                None => return Vec::new(),
+            }
+        }
+        items
+    }
+
+    /// Selected item index at the currently deepest open level.
+    fn current_selected(open: &OpenMenu) -> usize {
+        if open.submenu_path.is_empty() {
+            open.menu.selected_idx
+        } else {
+            *open.submenu_selected.last().unwrap_or(&0)
+        }
+    }
+
+    fn move_selection(&mut self, open: &OpenMenu, delta: i32) {
+        let depth = open.submenu_path.len();
+        let current = Self::current_selected(open);
+        let items = Self::items_at_depth(open, depth);
+        if items.is_empty() {
+            return;
+        }
+        let temp = ContextMenu {
+            id: WidgetId::new("_move"),
+            items,
+            selected_idx: current,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+        let new_sel = temp.move_selection(current, delta);
+        self.set_selected_at_depth(depth, new_sel);
+    }
+
+    /// Set the selected index at depth `depth` (0 = root). Depths beyond
+    /// the currently open submenu stack are ignored.
+    fn set_selected_at_depth(&mut self, depth: usize, idx: usize) {
+        let Some(open) = &mut self.open else {
+            return;
+        };
+        if depth == 0 {
+            open.menu.selected_idx = idx;
+        } else if let Some(s) = open.submenu_selected.get_mut(depth - 1) {
+            *s = idx;
+        }
+    }
+
+    /// Open the submenu belonging to `item_idx` at the current deepest
+    /// level. No-op if that item has no submenu.
+    fn open_submenu(&mut self, item_idx: usize) {
+        let Some(open) = &self.open else { return };
+        let depth = open.submenu_path.len();
+        let sub_items = match Self::items_at_depth(open, depth)
+            .get(item_idx)
+            .and_then(|item| item.submenu.clone())
+        {
+            Some(items) => items,
+            None => return,
+        };
+        let first_sel = sub_items
+            .iter()
+            .position(|i| !i.is_separator() && !i.disabled)
+            .unwrap_or(0);
+        let Some(open) = &mut self.open else { return };
+        open.submenu_path.push(item_idx);
+        open.submenu_selected.push(first_sel);
+    }
+
+    /// Close the deepest open submenu (pop one level). No-op if none open.
+    fn close_deepest_submenu(&mut self) {
+        if let Some(open) = &mut self.open {
+            open.submenu_path.pop();
+            open.submenu_selected.pop();
+        }
+    }
+
+    /// Drop every open submenu level at depth `>= depth`.
+    fn truncate_submenus(&mut self, depth: usize) {
+        if let Some(open) = &mut self.open {
+            open.submenu_path.truncate(depth);
+            open.submenu_selected.truncate(depth);
+        }
     }
 }
 
@@ -541,5 +795,231 @@ mod tests {
         backend.set_menu_style(crate::backend::MenuStyle::Custom);
         assert_eq!(backend.menu_style(), crate::backend::MenuStyle::Custom);
         assert_eq!(backend.effective_menu_style(), ResolvedMenuStyle::Custom);
+    }
+
+    // ── Nested submenus ────────────────────────────────────────────────
+
+    fn menu_with_submenu() -> ContextMenu {
+        ContextMenu {
+            id: WidgetId::new("ctx"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("view")),
+                label: StyledText::plain("View"),
+                submenu: Some(vec![item("toggle_sidebar", "Toggle Sidebar")]),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        }
+    }
+
+    #[test]
+    fn right_arrow_opens_submenu_then_enter_activates_nested_item() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        ctl.open(menu_with_submenu(), Point::new(0.0, 0.0), &mut backend);
+
+        let opened = ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Right),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        assert_eq!(opened, ContextMenuOutcome::Consumed);
+        assert!(ctl.is_open());
+
+        let outcome = ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        // Activation reports the nested leaf's own id regardless of
+        // nesting depth.
+        assert_eq!(
+            outcome,
+            ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(WidgetId::new(
+                "toggle_sidebar"
+            )))
+        );
+        assert!(!ctl.is_open());
+    }
+
+    #[test]
+    fn hover_over_submenu_parent_opens_it() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        ctl.open(menu_with_submenu(), Point::new(0.0, 0.0), &mut backend);
+
+        // Same anchored-at-origin geometry other tests document: the
+        // sole item ("View") lands at (1.0, 1.0).
+        let outcome = ctl.handle(
+            &UiEvent::MouseMoved {
+                position: Point::new(1.0, 1.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(outcome, ContextMenuOutcome::Consumed);
+        assert_eq!(ctl.open.as_ref().unwrap().submenu_path, vec![0]);
+
+        // Enter now activates the nested item hover opened, not the
+        // parent — proof the hover-opened submenu is the active level.
+        let outcome = ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        assert_eq!(
+            outcome,
+            ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(WidgetId::new(
+                "toggle_sidebar"
+            )))
+        );
+    }
+
+    #[test]
+    fn left_arrow_closes_deepest_submenu_without_dismissing_the_menu() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        ctl.open(menu_with_submenu(), Point::new(0.0, 0.0), &mut backend);
+        ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Right),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        assert_eq!(ctl.open.as_ref().unwrap().submenu_path, vec![0]);
+
+        let outcome = ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Left),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        assert_eq!(outcome, ContextMenuOutcome::Consumed);
+        assert!(ctl.open.as_ref().unwrap().submenu_path.is_empty());
+        assert!(ctl.is_open(), "the root menu stays open");
+    }
+
+    #[test]
+    fn escape_closes_deepest_submenu_first_then_the_whole_menu() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        ctl.open(menu_with_submenu(), Point::new(0.0, 0.0), &mut backend);
+        ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Right),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+
+        let first_escape = ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Escape),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        assert_eq!(first_escape, ContextMenuOutcome::Consumed);
+        assert!(ctl.is_open(), "only the submenu level closed");
+
+        let second_escape = ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Escape),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        assert_eq!(
+            second_escape,
+            ContextMenuOutcome::Event(UiEvent::ContextMenuDismissed)
+        );
+        assert!(!ctl.is_open());
+    }
+
+    #[test]
+    fn click_on_submenu_parent_opens_child_and_click_on_nested_leaf_activates_it() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        ctl.open(menu_with_submenu(), Point::new(0.0, 0.0), &mut backend);
+
+        let opened = ctl.handle(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(1.0, 1.0),
+                modifiers: Modifiers::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(opened, ContextMenuOutcome::Consumed);
+
+        // The child popup opened beside the parent's right edge
+        // (`ContextMenuLayout::submenu_anchor`'s default pull-right
+        // side), one row down from the parent menu's top (same y as the
+        // parent item it opened from).
+        let stack = ctl.menu_stack(ctl.open.as_ref().unwrap(), &backend);
+        assert_eq!(stack.len(), 2);
+        let child_bounds = stack[1].1.bounds;
+
+        let outcome = ctl.handle(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(child_bounds.x + 1.0, child_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(
+            outcome,
+            ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(WidgetId::new(
+                "toggle_sidebar"
+            )))
+        );
+        assert!(!ctl.is_open());
+    }
+
+    #[test]
+    fn submenu_flips_left_when_parent_is_near_the_right_edge() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        // Anchored far enough right that the parent popup itself clamps
+        // flush against the viewport's right edge, leaving no room for
+        // the child to pull right of it.
+        ctl.open(menu_with_submenu(), Point::new(60.0, 0.0), &mut backend);
+        ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Right),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+
+        let stack = ctl.menu_stack(ctl.open.as_ref().unwrap(), &backend);
+        assert_eq!(stack.len(), 2);
+        let parent_bounds = stack[0].1.bounds;
+        let child_bounds = stack[1].1.bounds;
+        // Flipped left: child's right edge sits at the parent's left
+        // edge (minus the 1-unit gap `submenu_anchor` leaves).
+        assert!(child_bounds.x + child_bounds.width <= parent_bounds.x);
     }
 }

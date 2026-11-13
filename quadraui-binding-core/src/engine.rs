@@ -5175,6 +5175,77 @@ mod tests {
         );
     }
 
+    /// A `ContextMenuItem::submenu` opened via [`InteractionEngine::open_context_menu`]
+    /// — the entry point every binding's own `show_context_menu` routes
+    /// through — opens by Right arrow and reports the activated nested
+    /// leaf's own `WidgetId` regardless of nesting depth, exercised
+    /// end-to-end through [`TuiDriver`] exactly as a Python/Node caller's
+    /// `KeyPressed` events would arrive.
+    #[test]
+    fn open_context_menu_right_arrow_opens_submenu_and_enter_activates_nested_item() {
+        use quadraui::ContextMenuItem;
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        {
+            let (backend, app) = driver.parts_mut();
+            let items = vec![ContextMenuItem {
+                id: Some(WidgetId::new("view")),
+                label: quadraui::types::StyledText::plain("View"),
+                submenu: Some(vec![ContextMenuItem {
+                    id: Some(WidgetId::new("toggle_sidebar")),
+                    label: quadraui::types::StyledText::plain("Toggle Sidebar"),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }];
+            app.engine
+                .open_context_menu(items, Point::new(1.0, 1.0), backend);
+            assert!(app.engine.context_menu_open());
+        }
+        driver.render();
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Right),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        assert!(
+            driver.app().engine.context_menu_open(),
+            "opening the submenu must not close the popup"
+        );
+        assert!(
+            driver.app().sink.borrow().dispatched.is_empty(),
+            "pure navigation dispatches nothing to the app's own handler"
+        );
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        assert!(!driver.app().engine.context_menu_open());
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert_eq!(
+            dispatched.len(),
+            1,
+            "expected one activation: {:?}",
+            dispatched
+        );
+        assert_eq!(
+            dispatched[0].0,
+            UiEvent::ContextMenuItemActivated(WidgetId::new("toggle_sidebar")),
+            "activation must report the nested leaf's own id: {:?}",
+            dispatched[0]
+        );
+    }
+
     /// The overlay stack orders by [`Overlay::rank`], not by push order:
     /// completions outranks a rich-text popup, so opening completions
     /// FIRST and the popup SECOND must still leave completions on top —

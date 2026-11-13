@@ -1008,12 +1008,16 @@ pub enum UiEvent {
     /// (macOS NSMenu; future Win32 `SetMenu`).
     MenuActivated(WidgetId),
 
-    /// A native right-click context menu (shown via
+    /// A right-click context menu — native (via
     /// [`Backend::show_context_menu`][crate::Backend::show_context_menu])
-    /// had one of its items activated. Carries the activated item's
-    /// `WidgetId`. Distinct from [`Self::MenuActivated`] so apps can
-    /// route menu-bar and context-menu activations through different
-    /// handlers when needed.
+    /// or in-window painted (via
+    /// [`crate::compose::ContextMenuController`]) — had one of its items
+    /// activated. Carries the activated item's own `WidgetId` regardless
+    /// of how deep it's nested under [`crate::ContextMenuItem::submenu`]
+    /// parents — the same "nesting depth is transparent to the app"
+    /// contract [`Self::MenuActivated`]'s own doc states. Distinct from
+    /// [`Self::MenuActivated`] so apps can route menu-bar and
+    /// context-menu activations through different handlers when needed.
     ContextMenuItemActivated(WidgetId),
 
     /// A native right-click context menu was dismissed — either after
