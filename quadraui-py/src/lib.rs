@@ -186,14 +186,14 @@ use quadraui_binding_core::{
     add_recent_document, apply_tab_activated, begin_drag_out, begin_power_save_block,
     callback_reaction, caret_shape, clear_recent_documents, click_down_up_events,
     collect_leaf_tooltips, color_depth_name, data_table_rows_and_viewport, decode_extra_primitive,
-    dialog_severity, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
-    is_default_protocol_client, key_pressed_event, list_rows_and_viewport, login_item_enabled,
-    menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout,
-    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
-    resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
-    resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
-    resolve_tree_expansion, set_as_default_protocol_client, set_dock_menu, set_jump_list,
-    set_login_item, step_driver, take_pending_error as core_take_pending_error,
+    dialog_severity, drag::scroll_view_at, draw_bands, end_power_save_block, font_role,
+    guarded as core_guarded, is_default_protocol_client, key_pressed_event, list_rows_and_viewport,
+    login_item_enabled, menu_for_surface, merge_overrides, message_dialog_options_from_buttons,
+    paint_layout, pointer_shape, record_pending_error, remove_as_default_protocol_client,
+    render_overlays, resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active,
+    resolve_list_cursor, resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active,
+    resolve_tree_cursor, resolve_tree_expansion, set_as_default_protocol_client, set_dock_menu,
+    set_jump_list, set_login_item, step_driver, take_pending_error as core_take_pending_error,
     text_display_from_lines, theme_color_value, toast_corner, tree_rows_and_viewport,
     update_apply_on_quit, update_check_for_update, update_download_and_stage,
     widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost,
@@ -1620,21 +1620,33 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
         // exact `quadraui::ScrollView` `crate::render::paint_scroll`
         // painted for this id last frame, straight off its own
         // `PaintedHit::Scroll` fields, so `max_offset()` here is the same
-        // clamp paint already applied, not a re-derived one. `None` (no
-        // hit yet -- the very first render) falls back to `0.0`, the same
-        // "start at the top" default `resolve_scroll_offset`'s own
-        // `WidgetState` entry seeds a never-before-seen id with. Without
-        // this, `InteractionEngine::handle`'s own wheel/key/scrollbar-drag
-        // `apply_scroll_offset` write would sit in `WidgetState` forever
-        // unread, since `scroll_node.offset` -- left `None` (uncontrolled)
-        // by every render callback that doesn't pin it itself -- would
-        // otherwise reach `paint_layout` still unresolved and paint from
-        // `0.0` every frame.
+        // clamp paint already applied, not a re-derived one. Without this
+        // resolve, `InteractionEngine::handle`'s own wheel/key/scrollbar-
+        // drag `apply_scroll_offset` write would sit in `WidgetState`
+        // forever unread, since `scroll_node.offset` -- left `None`
+        // (uncontrolled) by every render callback that doesn't pin it
+        // itself -- would otherwise reach `paint_layout` still unresolved
+        // and paint from `0.0` every frame.
+        //
+        // `None` (no hit yet -- the very first render, or any render
+        // where this id fell out of the hit map, e.g. a `Tabs` entry
+        // that wasn't selected last frame) falls back to
+        // `f32::INFINITY` rather than `0.0`: `resolve_scroll_offset`
+        // clamps into `[0, max_offset]` before returning, so a `0.0`
+        // fallback here would clamp away a *controlled* offset
+        // (`scroll_node.offset` decoded as `Some(50.0)` this frame) back
+        // down to `0.0` on exactly the frame there's no prior paint to
+        // measure against. `paint_scroll` re-clamps against the real,
+        // freshly measured content/viewport regardless (its own
+        // `scroll_view.clamp_offset()` call), so deferring the clamp to
+        // it here is safe -- and for the uncontrolled case this fallback
+        // is never seen anyway, since a never-before-seen id's
+        // `WidgetState` entry is itself seeded at `0.0`.
         LayoutNode::Scroll(scroll_node) => {
             let id = WidgetId::new(scroll_node.id.as_str());
-            let max_offset = quadraui_binding_core::drag::scroll_view_at(&engine.hit_map(), id)
+            let max_offset = scroll_view_at(&engine.hit_map(), id)
                 .map(|view| view.max_offset())
-                .unwrap_or(0.0);
+                .unwrap_or(f32::INFINITY);
             let offset =
                 resolve_scroll_offset(engine.widget_state(), id, scroll_node.offset, max_offset);
             scroll_node.offset = Some(offset);
@@ -6972,6 +6984,65 @@ def handle(event):
                 app.screen_contains("Item04")
                     .expect("render must not raise"),
                 "the resolved offset must actually reach the next paint, not stay at 0"
+            );
+        });
+    }
+
+    /// A **controlled** `Scroll` (`offset` set on every render) must
+    /// paint pinned on the very first frame, before `scroll_view_at`
+    /// has any previous `PaintedHit::Scroll` to measure a real
+    /// `max_offset` from. `resolve_layout_node_state`'s `Scroll` arm
+    /// falls back to `f32::INFINITY` (not `0.0`) for that no-hit case,
+    /// deferring the clamp to `paint_scroll`'s own measured-this-frame
+    /// clamp instead of pre-emptively clamping a controlled 15.0 down
+    /// to 0.0 for lack of prior geometry.
+    #[test]
+    fn scroll_container_with_a_controlled_offset_pins_it_on_the_first_frame() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'scroll': {
+        'id': 'scroll:main',
+        'axis': 'vertical',
+        'offset': 15.0,
+        'content': {'column': [
+            {'id': f'btn:{i}', 'button': {'id': f'btn:{i}', 'label': f'Item{i:02d}'}}
+            for i in range(30)
+        ]},
+    }}
+
+def handle(event):
+    pass
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                !app.screen_contains("Item00")
+                    .expect("render must not raise"),
+                "a controlled offset must pin the very first paint, not clamp to 0 \
+                 for lack of a prior hit"
+            );
+            assert!(
+                app.screen_contains("Item15")
+                    .expect("render must not raise"),
+                "offset 15.0 must actually reach the first paint"
             );
         });
     }

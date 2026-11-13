@@ -725,13 +725,13 @@ def test_scroll_renders_its_content_subtree_and_clips_whatever_overflows_it():
     app = QuiApp(40, 10)
 
     def render():
-        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(30)}}}
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(40)}}}
 
     app.set_render(render)
     assert app.screen_contains("Item00")
     assert app.screen_contains("Item09")
     assert not app.screen_contains(
-        "Item15"
+        "Item10"
     ), "content past the viewport must not paint until the scroll actually moves"
 
 
@@ -739,7 +739,7 @@ def test_scroll_wheel_notch_on_the_scrollbar_dispatches_and_persists_the_new_off
     app = QuiApp(40, 10)
 
     def render():
-        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(30)}}}
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(40)}}}
 
     app.set_render(render)
     # Force the first paint so the scrollbar's own track is on the hit map
@@ -766,20 +766,37 @@ def test_scroll_wheel_notch_on_the_scrollbar_dispatches_and_persists_the_new_off
     ), "the resolved offset must reach the next paint, not stay pinned at 0"
     assert app.screen_contains("Item04")
 
+    # The hit map itself must have moved with the paint, not just the
+    # pixels: clicking row 0 -- Item00's old screen position -- now hits
+    # "btn:3", the child the scroll brought to the top, proving the click
+    # router (not only the repainted text) is offset-aware end to end.
+    received.clear()
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
+    assert mouse_downs, received
+    assert mouse_downs[0]["widget"] == "btn:3", received
+
 
 def test_scroll_page_down_on_a_focused_child_scrolls_the_whole_container():
     app = QuiApp(40, 10)
 
     def render():
-        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(30)}}}
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(40)}}}
 
     app.set_render(render)
     app.screen()
 
     received = []
     app.set_handler(lambda event: received.append(event))
+    # Row 5, not row 1 -- far enough from the row-0 click below (more than
+    # `DoubleClickDetector`'s 1.5-cell radius) that the two don't fold
+    # into a single `DoubleClick`, which would make that second click's
+    # own `MouseDown` assertion vacuous.
     app.push_event(
-        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 1.0}, "modifiers": {}}}
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 5.0}, "modifiers": {}}}
     )
     app.run(1)
     received.clear()
@@ -791,6 +808,44 @@ def test_scroll_page_down_on_a_focused_child_scrolls_the_whole_container():
     assert received == [{"ScrollOffsetChanged": {"widget": "scroll:main", "new_offset": 10}}]
     assert app.screen_contains("Item10")
     assert not app.screen_contains("Item00")
+
+    # Clicking the viewport's top row now resolves to "btn:10" -- the
+    # button PageDown brought there -- not "btn:0", proving the hit map
+    # scrolled along with the paint.
+    received.clear()
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
+    assert mouse_downs, received
+    assert mouse_downs[0]["widget"] == "btn:10", received
+
+
+def test_scroll_with_a_controlled_offset_pins_it_from_the_very_first_paint():
+    # A controlled `Scroll` (`offset` set on every render) must paint
+    # pinned on the FIRST frame, before this id has ever appeared in the
+    # hit map -- `resolve_layout_node_state`'s `Scroll` arm has no prior
+    # frame's `ScrollView` to measure a real `max_offset` from yet, and a
+    # `0.0` fallback there would clamp the controlled 15.0 straight back
+    # down to the top, exactly the frame this mode exists to pin.
+    app = QuiApp(40, 10)
+
+    def render():
+        return {
+            "scroll": {
+                "id": "scroll:main",
+                "axis": "vertical",
+                "offset": 15.0,
+                "content": {"column": _buttons(40)},
+            }
+        }
+
+    app.set_render(render)
+    assert not app.screen_contains(
+        "Item00"
+    ), "a controlled offset must pin the very first paint, not clamp to 0 for lack of a prior hit"
+    assert app.screen_contains("Item15")
 
 
 def test_scroll_node_helper_builds_the_expected_wire_shape_and_omits_defaults():
