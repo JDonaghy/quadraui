@@ -24,7 +24,7 @@ alternative (pinning `offset` from app state on every render).
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any, Callable, List
 
 from quadraui.app import App, Button, Column, Scroll
 
@@ -52,6 +52,12 @@ class ScrollDemo:
     def _on_click(self, button_id: str) -> None:
         self.clicked.append(button_id)
 
+    def _click_handler(self, button_id: str) -> Callable[[], None]:
+        def handler() -> None:
+            self._on_click(button_id)
+
+        return handler
+
     def view(self) -> Any:
         return Scroll(
             Column(
@@ -59,7 +65,7 @@ class ScrollDemo:
                     Button(
                         f"Item{i:02d}",
                         id=f"btn:{i}",
-                        on_click=lambda button_id=f"btn:{i}": self._on_click(button_id),
+                        on_click=self._click_handler(f"btn:{i}"),
                     )
                     for i in range(BUTTON_COUNT)
                 ]
