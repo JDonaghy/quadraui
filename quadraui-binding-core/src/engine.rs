@@ -453,6 +453,16 @@ impl InteractionEngine {
         }
     }
 
+    /// Closes the open context-menu popup without dispatching any event.
+    /// Returns whether one was actually open to close.
+    pub fn dismiss_context_menu(&mut self, backend: &mut dyn Backend) -> bool {
+        let was_open = self.context_menu_open();
+        if was_open {
+            self.close_context_menu(backend);
+        }
+        was_open
+    }
+
     /// Builds an anchored [`ContextMenu`] from `items` and opens it at `at`,
     /// seeding its keyboard selection on the first selectable item — the
     /// full "build the popup, open it" sequence behind a binding's own
