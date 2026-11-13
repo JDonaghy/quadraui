@@ -301,7 +301,10 @@ pub struct ScrollDrag {
 /// own wheel/keyboard/scrollbar handling can resolve a new offset through
 /// `ScrollView::handle_wheel`/`handle_key`/`scroll_by` — this crate never
 /// re-derives that math itself. `None` if `id` isn't a `Scroll` in the
-/// current hit map.
+/// current hit map. The construction itself is
+/// [`crate::render::scroll_view_at`]'s own — shared rather than
+/// re-implemented, so the two never drift apart on how a `ScrollView` is
+/// rebuilt from a `Scroll`'s painted fields.
 pub fn scroll_view_at(hit_map: &[PaintedHit], id: WidgetId) -> Option<ScrollView> {
     hit_map.iter().find_map(|hit| match hit {
         PaintedHit::Scroll {
@@ -311,14 +314,13 @@ pub fn scroll_view_at(hit_map: &[PaintedHit], id: WidgetId) -> Option<ScrollView
             content_len,
             offset,
             ..
-        } if *hit_id == id => {
-            let mut view = match axis {
-                ScrollAxis::Vertical => ScrollView::vertical(id, *viewport, *content_len),
-                ScrollAxis::Horizontal => ScrollView::horizontal(id, *viewport, *content_len),
-            };
-            view.scroll_offset = *offset;
-            Some(view)
-        }
+        } if *hit_id == id => Some(crate::render::scroll_view_at(
+            id,
+            *axis,
+            *viewport,
+            *content_len,
+            *offset,
+        )),
         _ => None,
     })
 }
@@ -358,8 +360,8 @@ pub fn enclosing_scroll_child(
     hit_map.iter().find_map(|hit| match hit {
         PaintedHit::Scroll { id, children, .. } => children
             .iter()
-            .find(|(cid, ..)| *cid == child)
-            .map(|(_, start, len)| (*id, *start, *len)),
+            .find(|c| c.id == child)
+            .map(|c| (*id, c.start, c.len)),
         _ => None,
     })
 }

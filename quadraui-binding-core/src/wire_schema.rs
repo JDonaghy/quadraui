@@ -2852,6 +2852,21 @@ pub fn schema() -> Vec<DefJson> {
         ("_HitDetailExtraBody", "extra_body", &[]),
         ("_HitDetailExtraChrome", "extra_chrome", &[]),
         ("_HitDetailScrollBody", "scroll_body", &[]),
+        (
+            "_HitDetailScrollScrollbarTrackBefore",
+            "scroll_scrollbar_track_before",
+            &[],
+        ),
+        (
+            "_HitDetailScrollScrollbarThumb",
+            "scroll_scrollbar_thumb",
+            &[],
+        ),
+        (
+            "_HitDetailScrollScrollbarTrackAfter",
+            "scroll_scrollbar_track_after",
+            &[],
+        ),
     ];
     let mut hit_detail_members = Vec::new();
     for (name, kind, extra_fields) in HIT_DETAIL_KINDS {
