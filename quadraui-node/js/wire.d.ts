@@ -388,6 +388,9 @@ export interface StyleValue {
   border_width?: number;
 }
 
+/** One or more named style sets (see define_style) applied to this node's own subtree: a single name, a whitespace-separated list of names in one string, or an array of names. Merged left to right, then overridden by this node's own "style" key. A name no set was ever defined under is ignored. */
+export type ClassValue = string | string[];
+
 export interface LayoutRowNode {
   row: LayoutNode[];
   padding?: PaddingValue;
@@ -397,6 +400,7 @@ export interface LayoutRowNode {
   align?: "start" | "center" | "end" | "stretch";
   wire_version?: number;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -411,6 +415,7 @@ export interface LayoutColumnNode {
   align?: "start" | "center" | "end" | "stretch";
   wire_version?: number;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -433,6 +438,7 @@ export interface LayoutSplitNode {
   gap?: number;
   wire_version?: number;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -465,6 +471,7 @@ export interface LayoutTabsNode {
   margin?: number;
   wire_version?: number;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -486,6 +493,7 @@ export interface LayoutPanelNode {
   margin?: number;
   wire_version?: number;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -502,6 +510,7 @@ export interface LayoutSidebarPanelNode {
   sidebar_panel: LayoutSidebarPanelPayload;
   wire_version?: number;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -520,6 +529,7 @@ export interface LayoutScrollNode {
   margin?: number;
   wire_version?: number;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -551,6 +561,7 @@ export interface LayoutSplitTreeNode {
   split_tree: LayoutSplitTreePayload;
   wire_version?: number;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -1600,6 +1611,7 @@ export interface LayoutLeafNode {
   textarea?: TextAreaDescriptor;
   markdown?: MarkdownDescriptor;
   style?: StyleValue;
+  class?: ClassValue;
   size?: SectionSize;
   min?: number;
   max?: number;

@@ -95,6 +95,76 @@ theme/style tokens, where a typo'd key silently doing nothing would be a
 worse failure mode than the data format v1 unknown-key policy a sibling
 key gets.
 
+### Named style sets: `define_style` + `"class"`
+
+Restating the same `"style"` tokens on every node that wants them gets old
+fast, so a host can register a **named style set** once and refer to it by
+name from any node afterwards -- the CSS `class=` analogue of the inline
+`"style"` attribute above:
+
+```python
+app.define_style("card", {"surface_bg": "#1b1f27", "border": "#39404d",
+                          "padding": 2.0})
+```
+
+```js
+app.defineStyle("card", { surface_bg: "#1b1f27", border: "#39404d",
+                          padding: 2.0 });
+```
+
+`overrides` takes exactly the `StyleValue` keys the table above lists, with
+the same closed vocabulary (an unknown key is a decode error). Any node in
+any later frame's tree then names the set through an optional `"class"`
+sibling key (`ClassValue` in the generated reference), valid everywhere
+`"style"` is:
+
+```python
+{"id": "c", "button": {...}, "class": "card"}          # one name
+{"id": "c", "button": {...}, "class": "card danger"}   # whitespace-separated
+{"id": "c", "button": {...}, "class": ["card", "danger"]}  # or a list
+```
+
+**Precedence, lowest to highest:** the classes in list order (a later name
+wins a token an earlier one also named), then the node's own inline
+`"style"` dict. A token no class and no inline `"style"` names falls
+through to whatever the enclosing subtree already had, exactly like a
+partial `"style"` key does. The result is one derived theme/style scoped to
+that node's subtree -- the same mechanism `"style"` alone goes through, so
+everything above about metric overrides not re-running layout, and about
+which token a leaf actually reads, applies unchanged.
+
+**An unknown class *name* is ignored, not an error** -- the data format v1
+unknown-key policy, the opposite of an unknown key *inside* `"style"`. A
+class name is open-ended host data (an app defines its own names at
+runtime), while `"style"`'s keys are a fixed, documented token list where a
+typo can only ever be a typo.
+
+**Four sets exist before any `define_style` call**, each derived from the
+app's live `Theme` (so they follow a `set_theme`/`setTheme` call) rather
+than from fixed colours:
+
+| Name | Tokens | Intent |
+| --- | --- | --- |
+| `"primary"` | `accent_bg`/`surface_bg` = `Theme.accent_bg`, `accent` = `Theme.accent_fg` | a `"button"`'s `Primary` variant fill, extended to every filled surface in the subtree |
+| `"secondary"` | `accent_bg`/`surface_bg` = `Theme.surface_bg`, `fg` = `Theme.surface_fg` | a `"button"`'s `Secondary` variant fill |
+| `"danger"` | `accent_bg`/`surface_bg` = `Theme.error_fg`, `border`/`accent` = `Theme.error_fg` | a `"button"`'s `Danger` variant fill |
+| `"subtle"` | `fg`/`border` = `Theme.muted_fg`, `accent_bg`/`surface_bg` = `Theme.background` | de-emphasised chrome: muted text, no raised surface |
+
+Each sets *both* `accent_bg` and `surface_bg`, because which of the two a
+`"button"` reads depends on its variant (see the token table above);
+naming only one would make `{"class": "danger"}` land on some buttons and
+silently no-op on others. `define_style` under one of those four names
+replaces it.
+
+**Redefining a set applies from the next frame on.** Nothing caches a
+resolved override -- every `"class"` key re-resolves through the registry
+during each frame's own decode -- and `define_style` requests that frame
+immediately, so a running `run_tui`/`startTui` loop repaints rather than
+waiting for the next unrelated event. A built-in set resolves against the
+app-wide theme read at the start of the frame; an ancestor node's own
+`"style"` key narrowing `surface_bg` for its subtree does not re-derive a
+descendant's `{"class": "secondary"}` against that narrowed theme.
+
 ## Leaf kinds
 
 A `"leaf"` node (`LayoutLeafNode`) is `{"id": <str>, "<kind>": <descriptor>}`
@@ -274,6 +344,7 @@ only once both `quadraui-py` and `quadraui-node` emit the new value.
 - [`PaddingValue`](#wire-paddingvalue)
 - [`StyleColorValue`](#wire-stylecolorvalue)
 - [`StyleValue`](#wire-stylevalue)
+- [`ClassValue`](#wire-classvalue)
 - [`LayoutRowNode`](#wire-layoutrownode)
 - [`LayoutColumnNode`](#wire-layoutcolumnnode)
 - [`LayoutSplitPayload`](#wire-layoutsplitpayload)
@@ -1168,6 +1239,13 @@ A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"borde
 | `corner_radius` | `number` | no |  |
 | `border_width` | `number` | no |  |
 
+<a id="wire-classvalue"></a>
+#### `ClassValue`
+
+One or more named style sets (see define_style) applied to this node's own subtree: a single name, a whitespace-separated list of names in one string, or an array of names. Merged left to right, then overridden by this node's own "style" key. A name no set was ever defined under is ignored.
+
+Alias for `string | string[]`.
+
 <a id="wire-layoutrownode"></a>
 #### `LayoutRowNode`
 
@@ -1181,6 +1259,7 @@ A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"borde
 | `align` | `"start" \| "center" \| "end" \| "stretch"` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1198,6 +1277,7 @@ A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"borde
 | `align` | `"start" \| "center" \| "end" \| "stretch"` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1226,6 +1306,7 @@ A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"borde
 | `gap` | `number` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1267,6 +1348,7 @@ A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"borde
 | `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1295,6 +1377,7 @@ The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`
 | `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1317,6 +1400,7 @@ The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`
 | `sidebar_panel` | `LayoutSidebarPanelPayload` | yes |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1341,6 +1425,7 @@ The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`
 | `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1390,6 +1475,7 @@ Alias for `_SplitTreeLeaf | _SplitTreeSplitWrapper`.
 | `split_tree` | `LayoutSplitTreePayload` | yes |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -2978,6 +3064,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `textarea` | `TextAreaDescriptor` | no |  |
 | `markdown` | `MarkdownDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |

@@ -50,6 +50,7 @@ use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::layout::{
     quantise_horizontal, quantise_vertical, LayoutLeaf, LayoutNode, LayoutTabs, LeafDescriptor,
+    StyleSets,
 };
 use crate::render::{
     apply_split_gap, data_table_viewport_rows, layout_container_rects, list_viewport_rows,
@@ -112,6 +113,15 @@ pub struct BindingHost {
     /// Set via a binding's own `set_style` surface; replayed the same way
     /// as [`Self::theme`].
     pub style: Option<Style>,
+    /// The named style sets a binding's own `define_style` surface fills,
+    /// and a layout node's `"class"` key refers to — see [`StyleSets`].
+    /// Unlike [`Self::theme`]/[`Self::style`] there is nothing to replay
+    /// onto a freshly constructed backend: a set is never pushed onto a
+    /// `Backend` at all, it is resolved during each frame's own render
+    /// callback decode (`crate::wire::decode_render_output_with_styles`),
+    /// so moving this host into a `run_tui`/`run_native` runner carries
+    /// every registered set with it for free.
+    pub style_sets: StyleSets,
     /// Set via a binding's own `set_nerd_fonts` surface; replayed the same
     /// way as [`Self::theme`].
     pub nerd_fonts: Option<bool>,

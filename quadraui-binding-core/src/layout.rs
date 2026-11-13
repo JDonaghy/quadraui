@@ -6,7 +6,7 @@
 //! module owns what the decoded shape looks like and how it paints
 //! ([`crate::render::paint_layout`]).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 // `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
@@ -113,6 +113,11 @@ pub struct LayoutStyled {
 /// already set, so a nested override only ever narrows what it names —
 /// never resets a field an ancestor already overrode.
 ///
+/// A node reaches this shape two ways, which merge into one
+/// [`LayoutNode::Styled`] wrapper: its own inline `"style"` dict, and a
+/// `"class"` key naming one or more registered [`StyleSets`] entries.
+/// Inline wins — see [`StyleSets`]'s own precedence doc.
+///
 /// # Token mapping
 ///
 /// | Wire key | Resolved onto | Read by (examples) |
@@ -208,6 +213,209 @@ impl StyleOverride {
             style = style.with_border_width(border_width);
         }
         style
+    }
+}
+
+impl StyleOverride {
+    /// Merges `self` *over* `base`: every token `self` names wins, every
+    /// token it leaves `None` falls through to whatever `base` named (or
+    /// stays `None` if neither did). The merge a `"class"` list and a
+    /// node's own inline `"style"` key resolve through — see
+    /// [`StyleSets::resolve`] for the full precedence chain.
+    pub fn merged_over(&self, base: StyleOverride) -> StyleOverride {
+        StyleOverride {
+            bg: self.bg.or(base.bg),
+            fg: self.fg.or(base.fg),
+            border: self.border.or(base.border),
+            accent: self.accent.or(base.accent),
+            surface_bg: self.surface_bg.or(base.surface_bg),
+            accent_bg: self.accent_bg.or(base.accent_bg),
+            padding: self.padding.or(base.padding),
+            corner_radius: self.corner_radius.or(base.corner_radius),
+            border_width: self.border_width.or(base.border_width),
+        }
+    }
+}
+
+/// The names [`StyleSets::new`] pre-populates, in the order
+/// [`StyleSets::names`] reports them. Each maps onto existing `Theme`
+/// tokens (and, through them, onto an existing `ButtonVariant`'s own
+/// resting fill) rather than onto fixed literal colours, so a built-in
+/// set follows an app's own `set_theme` palette — see [`StyleSets`]'s own
+/// doc table.
+pub const BUILTIN_STYLE_SET_NAMES: [&str; 4] = ["primary", "secondary", "danger", "subtle"];
+
+/// How one named style set produces the [`StyleOverride`] a `"class"`
+/// reference to it resolves to.
+#[derive(Clone, Copy)]
+enum StyleSetDef {
+    /// A set a host defined through its own `define_style` surface: fixed
+    /// tokens, independent of the active [`Theme`].
+    Defined(StyleOverride),
+    /// One of [`BUILTIN_STYLE_SET_NAMES`], derived from whichever `Theme`
+    /// is active when it resolves.
+    Builtin(fn(&Theme) -> StyleOverride),
+}
+
+/// The named style sets a layout node's `"class"` key refers to — the
+/// CSS-class analogue of this wire format's own per-node `"style"` key.
+/// A host registers a set under a name through its binding's own
+/// `define_style(name, overrides)` surface; any node in any later frame's
+/// tree then carries `{"class": "<name>"}` (or a list of names) to pull in
+/// that set's tokens, instead of restating them inline on every node that
+/// wants them.
+///
+/// # Precedence
+///
+/// [`Self::resolve`] merges the named sets left to right (a later name in
+/// the list wins a token an earlier one also named), and
+/// `crate::wire::layout_node_from_value` then merges the node's own inline
+/// `"style"` dict over that result — so inline always wins, exactly like a
+/// CSS `style=` attribute beating a `class=` rule. A name this registry
+/// has never heard of contributes nothing and is **not** an error, the
+/// same data-format-v1 unknown-key policy an unrecognised sibling key on a
+/// node dict already gets.
+///
+/// # Built-in sets
+///
+/// [`Self::new`] starts with four sets, each derived from the live
+/// [`Theme`] rather than from literal colours:
+///
+/// | Name | Tokens | Intent |
+/// |---|---|---|
+/// | `primary` | `accent_bg`/`surface_bg` = [`Theme::accent_bg`], `accent` = [`Theme::accent_fg`] | [`quadraui::ButtonVariant::Primary`]'s own resting fill, extended to every filled surface in the subtree |
+/// | `secondary` | `accent_bg`/`surface_bg` = [`Theme::surface_bg`], `fg` = [`Theme::surface_fg`] | [`quadraui::ButtonVariant::Secondary`]'s own resting fill |
+/// | `danger` | `accent_bg`/`surface_bg` = [`Theme::button_danger_bg`], `border`/`accent` = [`Theme::error_fg`] | [`quadraui::ButtonVariant::Danger`]'s own resting fill |
+/// | `subtle` | `fg`/`border` = [`Theme::muted_fg`], `accent_bg`/`surface_bg` = [`Theme::background`] | de-emphasised chrome: muted text, no raised surface |
+///
+/// Each sets *both* `accent_bg` and `surface_bg` because which of the two
+/// a `Button` reads depends on its variant ([`Theme::accent_bg`] for
+/// `Primary`, [`Theme::surface_bg`] for `Secondary`/`Icon`) — naming only
+/// one would make `{"class": "danger"}` land on some buttons and silently
+/// no-op on others. See [`StyleOverride`]'s own token table for which
+/// other primitives read which.
+///
+/// [`Self::define`] replaces a built-in under the same name, so an app
+/// that wants its own `primary` simply defines one.
+///
+/// # Which theme a built-in resolves against
+///
+/// A built-in resolves against the theme passed to [`Self::resolve`] —
+/// the backend's own app-wide [`Theme`] at the start of the frame, since
+/// `"class"` is resolved during the render callback's decode. An ancestor
+/// node's `"style"` key that changes `surface_bg` for its subtree does
+/// *not* re-derive a descendant's `{"class": "secondary"}` against that
+/// narrowed theme.
+#[derive(Clone)]
+pub struct StyleSets {
+    sets: HashMap<String, StyleSetDef>,
+}
+
+impl Default for StyleSets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StyleSets {
+    /// A registry holding exactly the [`BUILTIN_STYLE_SET_NAMES`] sets.
+    pub fn new() -> Self {
+        let mut sets: HashMap<String, StyleSetDef> = HashMap::new();
+        sets.insert(
+            "primary".to_owned(),
+            StyleSetDef::Builtin(builtin_primary as fn(&Theme) -> StyleOverride),
+        );
+        sets.insert(
+            "secondary".to_owned(),
+            StyleSetDef::Builtin(builtin_secondary),
+        );
+        sets.insert("danger".to_owned(), StyleSetDef::Builtin(builtin_danger));
+        sets.insert("subtle".to_owned(), StyleSetDef::Builtin(builtin_subtle));
+        Self { sets }
+    }
+
+    /// Registers `overrides` under `name`, replacing whatever set (built-in
+    /// or previously defined) that name already held. Redefining a name
+    /// takes effect on the next frame: nothing caches a resolved override,
+    /// so every `"class"` reference in the next tree re-resolves through
+    /// this registry.
+    pub fn define(&mut self, name: impl Into<String>, overrides: StyleOverride) {
+        self.sets
+            .insert(name.into(), StyleSetDef::Defined(overrides));
+    }
+
+    /// Every registered set name, sorted so a caller enumerating them gets
+    /// a stable order out of the underlying [`HashMap`].
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.sets.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// One set's own [`StyleOverride`], resolved against `theme` if it is a
+    /// built-in. `None` for a name this registry has never heard of.
+    pub fn get(&self, name: &str, theme: &Theme) -> Option<StyleOverride> {
+        self.sets.get(name).map(|def| match def {
+            StyleSetDef::Defined(overrides) => *overrides,
+            StyleSetDef::Builtin(derive) => derive(theme),
+        })
+    }
+
+    /// Merges every set `names` refers to into one [`StyleOverride`], left
+    /// to right — a later name wins any token an earlier one also named.
+    /// A name this registry doesn't hold contributes nothing (see this
+    /// type's own doc for why that is not an error).
+    pub fn resolve(&self, names: &[String], theme: &Theme) -> StyleOverride {
+        let mut merged = StyleOverride::default();
+        for name in names {
+            if let Some(overrides) = self.get(name, theme) {
+                merged = overrides.merged_over(merged);
+            }
+        }
+        merged
+    }
+}
+
+/// The `primary` built-in — see [`StyleSets`]'s own table.
+fn builtin_primary(theme: &Theme) -> StyleOverride {
+    StyleOverride {
+        accent_bg: Some(theme.accent_bg),
+        surface_bg: Some(theme.accent_bg),
+        accent: Some(theme.accent_fg),
+        ..StyleOverride::default()
+    }
+}
+
+/// The `secondary` built-in — see [`StyleSets`]'s own table.
+fn builtin_secondary(theme: &Theme) -> StyleOverride {
+    StyleOverride {
+        accent_bg: Some(theme.surface_bg),
+        surface_bg: Some(theme.surface_bg),
+        fg: Some(theme.surface_fg),
+        ..StyleOverride::default()
+    }
+}
+
+/// The `danger` built-in — see [`StyleSets`]'s own table.
+fn builtin_danger(theme: &Theme) -> StyleOverride {
+    let fill = theme.button_danger_bg();
+    StyleOverride {
+        accent_bg: Some(fill),
+        surface_bg: Some(fill),
+        border: Some(theme.error_fg),
+        accent: Some(theme.error_fg),
+        ..StyleOverride::default()
+    }
+}
+
+/// The `subtle` built-in — see [`StyleSets`]'s own table.
+fn builtin_subtle(theme: &Theme) -> StyleOverride {
+    StyleOverride {
+        fg: Some(theme.muted_fg),
+        border: Some(theme.muted_fg),
+        accent_bg: Some(theme.background),
+        surface_bg: Some(theme.background),
+        ..StyleOverride::default()
     }
 }
 

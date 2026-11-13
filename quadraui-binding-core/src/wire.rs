@@ -38,7 +38,7 @@ use serde_json::Value;
 use quadraui::{
     Backend, BackendWidget, BottomPanelConfig, BottomPanelTab, Color, Panel, PanelDefinition, Rect,
     ScrollAxis, SectionSize, ShellConfig, ShellPosition, SidebarPanel, Split, SplitDirection,
-    SplitTree, TabBar, TabBarSegment, TabItem, WidgetId,
+    SplitTree, TabBar, TabBarSegment, TabItem, Theme, WidgetId,
 };
 
 use crate::extra_paint::{decode_extra_primitive, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
@@ -46,7 +46,7 @@ use crate::host::text_display_from_lines;
 use crate::layout::{
     validate_unique_leaf_ids, Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutLeaf,
     LayoutNode, LayoutPanel, LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree,
-    LayoutStyled, LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, StyleOverride,
+    LayoutStyled, LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, StyleOverride, StyleSets,
     LEAF_KIND_KEYS,
 };
 use crate::render::RenderFrame;
@@ -365,34 +365,88 @@ pub fn decode_layout_node<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
 ) -> Result<LayoutNode, DecodeError> {
+    let sets = StyleSets::new();
+    let theme = Theme::default();
+    decode_layout_node_with_styles(what, deserializer, StyleContext::new(&sets, &theme))
+}
+
+/// [`decode_layout_node`] against a caller-supplied [`StyleContext`] — the
+/// entry point a binding's own render pass calls, handing in the
+/// [`StyleSets`] its `define_style` surface has been filling plus the
+/// backend's current [`quadraui::Theme`], so every `"class"` key in the
+/// tree resolves against them.
+pub fn decode_layout_node_with_styles<'de, D: Deserializer<'de>>(
+    what: &str,
+    deserializer: D,
+    styles: StyleContext<'_>,
+) -> Result<LayoutNode, DecodeError> {
     let value = materialize(deserializer)
         .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))?;
-    layout_node_from_value(what, &value)
+    layout_node_from_value(what, &value, styles)
+}
+
+/// The host state a layout-tree decode resolves a node's `"class"` key
+/// against: the [`StyleSets`] registry a binding's own `define_style`
+/// surface fills, plus the [`quadraui::Theme`] a built-in set derives its
+/// tokens from (see [`StyleSets`]'s own doc for which theme that is and
+/// why). Threaded through every node decode rather than resolved in a
+/// later pass, so a decoded [`LayoutNode`] is never half-resolved: by the
+/// time one exists, its `"class"` references have already folded into the
+/// same [`LayoutStyled`] wrapper an inline `"style"` key produces.
+#[derive(Clone, Copy)]
+pub struct StyleContext<'a> {
+    sets: &'a StyleSets,
+    theme: &'a Theme,
+}
+
+impl<'a> StyleContext<'a> {
+    /// Pairs a style-set registry with the theme its built-in sets derive
+    /// against.
+    pub fn new(sets: &'a StyleSets, theme: &'a Theme) -> Self {
+        Self { sets, theme }
+    }
 }
 
 /// Decodes one layout-tree node dict, then wraps it in a
-/// [`LayoutNode::Styled`] if that same dict also carries a `"style"`
-/// sibling key — see [`style_override_from_value`]. Every node kind
-/// dispatches through [`layout_node_from_value_inner`] first, so `"style"`
-/// is handled exactly once here rather than separately in each of that
-/// function's own branches.
-fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, DecodeError> {
-    let node = layout_node_from_value_inner(what, value)?;
-    match style_override_from_value(what, value)? {
-        Some(style) => Ok(LayoutNode::Styled(LayoutStyled {
-            style,
-            node: Box::new(node),
-        })),
-        None => Ok(node),
+/// [`LayoutNode::Styled`] if that same dict also carries a `"class"`
+/// and/or `"style"` sibling key — see [`style_classes_from_value`] and
+/// [`style_override_from_value`]. Every node kind dispatches through
+/// [`layout_node_from_value_inner`] first, so both keys are handled
+/// exactly once here rather than separately in each of that function's own
+/// branches.
+///
+/// The two merge with inline `"style"` winning over the `"class"` list's
+/// own left-to-right merge — [`StyleSets::resolve`]'s own precedence doc.
+/// A node whose classes are all unknown and whose `"style"` is absent or
+/// empty gets no wrapper at all, the same as a node carrying neither key.
+fn layout_node_from_value(
+    what: &str,
+    value: &Value,
+    styles: StyleContext<'_>,
+) -> Result<LayoutNode, DecodeError> {
+    let node = layout_node_from_value_inner(what, value, styles)?;
+    let classes = style_classes_from_value(what, value)?;
+    let inline = style_override_from_value(what, value)?.unwrap_or_default();
+    let style = inline.merged_over(styles.sets.resolve(&classes, styles.theme));
+    if style.is_empty() {
+        return Ok(node);
     }
+    Ok(LayoutNode::Styled(LayoutStyled {
+        style,
+        node: Box::new(node),
+    }))
 }
 
 /// Decodes the node-kind-specific part of a layout-tree node dict --
 /// [`layout_node_from_value`]'s own `"style"`-wrapping is applied around
 /// this function's result, not inside it.
-fn layout_node_from_value_inner(what: &str, value: &Value) -> Result<LayoutNode, DecodeError> {
+fn layout_node_from_value_inner(
+    what: &str,
+    value: &Value,
+    styles: StyleContext<'_>,
+) -> Result<LayoutNode, DecodeError> {
     if let Some(v) = obj_get(value, "row") {
-        let children = layout_children_from_value(what, v)?;
+        let children = layout_children_from_value(what, v, styles)?;
         let spacing = spacing_from_value(what, value, "\"row\"", true)?;
         let justify = justify_from_value(what, value, "\"row\"")?;
         let align = align_from_value(what, value, "\"row\"")?;
@@ -404,7 +458,7 @@ fn layout_node_from_value_inner(what: &str, value: &Value) -> Result<LayoutNode,
         }));
     }
     if let Some(v) = obj_get(value, "column") {
-        let children = layout_children_from_value(what, v)?;
+        let children = layout_children_from_value(what, v, styles)?;
         let spacing = spacing_from_value(what, value, "\"column\"", true)?;
         let justify = justify_from_value(what, value, "\"column\"")?;
         let align = align_from_value(what, value, "\"column\"")?;
@@ -424,13 +478,14 @@ fn layout_node_from_value_inner(what: &str, value: &Value) -> Result<LayoutNode,
             what,
             split_value,
             spacing,
+            styles,
         )?));
     }
     if let Some(v) = obj_get(value, "tabs") {
         let spacing = spacing_from_value(what, value, "\"tabs\"", false)?;
         let tabs_value = must_be_dict(what, v, "\"tabs\"")?;
         return Ok(LayoutNode::Tabs(layout_tabs_from_value(
-            what, tabs_value, spacing,
+            what, tabs_value, spacing, styles,
         )?));
     }
     if let Some(v) = obj_get(value, "panel") {
@@ -440,6 +495,7 @@ fn layout_node_from_value_inner(what: &str, value: &Value) -> Result<LayoutNode,
             what,
             panel_value,
             spacing,
+            styles,
         )?));
     }
     if let Some(v) = obj_get(value, "sidebar_panel") {
@@ -448,6 +504,7 @@ fn layout_node_from_value_inner(what: &str, value: &Value) -> Result<LayoutNode,
         return Ok(LayoutNode::SidebarPanel(layout_sidebar_panel_from_value(
             what,
             sidebar_value,
+            styles,
         )?));
     }
     if let Some(v) = obj_get(value, "split_tree") {
@@ -456,6 +513,7 @@ fn layout_node_from_value_inner(what: &str, value: &Value) -> Result<LayoutNode,
         return Ok(LayoutNode::SplitTree(layout_split_tree_from_value(
             what,
             split_tree_value,
+            styles,
         )?));
     }
     if let Some(v) = obj_get(value, "scroll") {
@@ -465,6 +523,7 @@ fn layout_node_from_value_inner(what: &str, value: &Value) -> Result<LayoutNode,
             what,
             scroll_value,
             spacing,
+            styles,
         )?));
     }
     Ok(LayoutNode::Leaf(layout_leaf_from_value(what, value)?))
@@ -505,7 +564,11 @@ fn reject_unsupported_spacing_keys(
 /// accepted here too. Tightening that back to "a real `list`" needs a
 /// pyo3-aware check this crate can't make; it would live in a binding's
 /// own decode adapter instead.
-fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutChild>, DecodeError> {
+fn layout_children_from_value(
+    what: &str,
+    value: &Value,
+    styles: StyleContext<'_>,
+) -> Result<Vec<LayoutChild>, DecodeError> {
     let list = value
         .as_array()
         .ok_or_else(|| DecodeError(format!("{what}: row/column children must be an array")))?;
@@ -516,7 +579,7 @@ fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutChi
                     "{what}: each row/column child must be an object"
                 )));
             }
-            let node = layout_node_from_value(what, child)?;
+            let node = layout_node_from_value(what, child, styles)?;
             let context = format!("{what}: row/column child");
             let size = child_size_from_value(child, &context)?;
             let min = opt_f32(child, "min", &context)?;
@@ -724,6 +787,44 @@ const STYLE_OVERRIDE_KEYS: [&str; 9] = [
     "border_width",
 ];
 
+/// Decodes an optional `"class"` sibling key found alongside any layout
+/// node dict, in the same place [`style_override_from_value`] reads
+/// `"style"`: a single string, or a list of strings, each naming a
+/// registered [`StyleSets`] entry. A string is split on ASCII whitespace,
+/// so `{"class": "card danger"}` names two sets — the CSS `class=`
+/// attribute's own convention, which this key is the analogue of. Returns
+/// an empty `Vec` when the key is absent.
+///
+/// Rejects a value that is neither a string nor a list of strings (a typed
+/// shape error, like every other wrongly-typed key in this decoder), but
+/// **not** a name no registry holds: an unknown class resolves to nothing
+/// and is silently ignored, the data-format-v1 unknown-key policy an
+/// unrecognised sibling key on a node dict already gets. That is the
+/// opposite of a `"style"` dict's own closed key vocabulary, deliberately
+/// so: a class name is open-ended host data (an app defines its own set
+/// names at runtime), while `"style"`'s keys are a fixed, documented token
+/// list where a typo can only ever be a typo.
+fn style_classes_from_value(what: &str, value: &Value) -> Result<Vec<String>, DecodeError> {
+    let Some(raw) = obj_get(value, "class") else {
+        return Ok(Vec::new());
+    };
+    let context = format!("{what}: \"class\"");
+    match raw {
+        Value::String(names) => Ok(names.split_whitespace().map(str::to_owned).collect()),
+        Value::Array(entries) => entries
+            .iter()
+            .map(|entry| {
+                entry.as_str().map(str::to_owned).ok_or_else(|| {
+                    DecodeError(format!("{context} list entries must all be strings"))
+                })
+            })
+            .collect(),
+        _ => Err(DecodeError(format!(
+            "{context} must be a string or a list of strings"
+        ))),
+    }
+}
+
 /// Decodes an optional `"style"` sibling key found alongside any layout
 /// node dict (any of `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/
 /// `"sidebar_panel"`/`"split_tree"`/`"scroll"`, or a leaf's own `{"id",
@@ -751,11 +852,33 @@ fn style_override_from_value(
     };
     let dict = must_be_dict(what, raw, "\"style\"")?;
     let context = format!("{what}: \"style\"");
-    // `must_be_dict` above already guarantees `dict.is_object()`, so this
-    // is never `None` -- `.as_object()` just gets at the key set to check.
+    let over = style_override_fields(&context, dict)?;
+    Ok(if over.is_empty() { None } else { Some(over) })
+}
+
+/// Decodes a bare overrides dict — the same closed
+/// [`STYLE_OVERRIDE_KEYS`] vocabulary a node's own `"style"` key carries,
+/// but read straight off `value` rather than out of a `"style"` member.
+/// The entry point a binding's `define_style(name, overrides)` surface
+/// decodes its argument through, so a named style set and an inline
+/// `"style"` key accept exactly the same tokens in exactly the same
+/// shapes. `what` names the calling surface in any error raised.
+pub fn decode_style_overrides(what: &str, value: &Value) -> Result<StyleOverride, DecodeError> {
+    let dict = must_be_dict(what, value, "overrides")?;
+    style_override_fields(what, dict)
+}
+
+/// Reads every [`STYLE_OVERRIDE_KEYS`] token off `dict` (already known to
+/// be an object), rejecting any key outside that list — the same "typo is
+/// a decode error, not a silently-dropped key" policy
+/// [`edge_insets_from_value`] already applies to `"padding"`'s own object
+/// shape. `context` prefixes any error raised.
+fn style_override_fields(context: &str, dict: &Value) -> Result<StyleOverride, DecodeError> {
+    // The caller already guaranteed `dict.is_object()`, so this is never
+    // `None` -- `.as_object()` just gets at the key set to check.
     for key in dict
         .as_object()
-        .expect("must_be_dict guarantees an object")
+        .expect("the caller guarantees an object")
         .keys()
     {
         if !STYLE_OVERRIDE_KEYS.contains(&key.as_str()) {
@@ -766,18 +889,17 @@ fn style_override_from_value(
             )));
         }
     }
-    let over = StyleOverride {
-        bg: opt_color(dict, "bg", &context)?,
-        fg: opt_color(dict, "fg", &context)?,
-        border: opt_color(dict, "border", &context)?,
-        accent: opt_color(dict, "accent", &context)?,
-        surface_bg: opt_color(dict, "surface_bg", &context)?,
-        accent_bg: opt_color(dict, "accent_bg", &context)?,
-        padding: opt_f32(dict, "padding", &context)?,
-        corner_radius: opt_f32(dict, "corner_radius", &context)?,
-        border_width: opt_f32(dict, "border_width", &context)?,
-    };
-    Ok(if over.is_empty() { None } else { Some(over) })
+    Ok(StyleOverride {
+        bg: opt_color(dict, "bg", context)?,
+        fg: opt_color(dict, "fg", context)?,
+        border: opt_color(dict, "border", context)?,
+        accent: opt_color(dict, "accent", context)?,
+        surface_bg: opt_color(dict, "surface_bg", context)?,
+        accent_bg: opt_color(dict, "accent_bg", context)?,
+        padding: opt_f32(dict, "padding", context)?,
+        corner_radius: opt_f32(dict, "corner_radius", context)?,
+        border_width: opt_f32(dict, "border_width", context)?,
+    })
 }
 
 /// Reads `value[key]` as an optional colour: a `"#rrggbb"`/`"#rrggbbaa"`
@@ -815,6 +937,7 @@ fn layout_split_from_value(
     what: &str,
     value: &Value,
     spacing: Spacing,
+    styles: StyleContext<'_>,
 ) -> Result<LayoutSplit, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
@@ -836,9 +959,9 @@ fn layout_split_from_value(
     let second_min = opt_f32(value, "second_min", &context)?.unwrap_or(0.0);
 
     let first_value = required_dict(value, "first", &context)?;
-    let first = layout_node_from_value(what, first_value)?;
+    let first = layout_node_from_value(what, first_value, styles)?;
     let second_value = required_dict(value, "second", &context)?;
-    let second = layout_node_from_value(what, second_value)?;
+    let second = layout_node_from_value(what, second_value, styles)?;
 
     Ok(LayoutSplit {
         split: Split {
@@ -868,12 +991,13 @@ fn layout_panel_from_value(
     what: &str,
     value: &Value,
     spacing: Spacing,
+    styles: StyleContext<'_>,
 ) -> Result<LayoutPanel, DecodeError> {
     let panel: Panel = decode_value(what, value)?;
     let id = panel.id.as_str().to_owned();
     let context = format!("{what}: panel {id:?}");
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(what, content_value)?;
+    let content = layout_node_from_value(what, content_value, styles)?;
     Ok(LayoutPanel {
         panel,
         content: Box::new(content),
@@ -888,12 +1012,13 @@ fn layout_panel_from_value(
 fn layout_sidebar_panel_from_value(
     what: &str,
     value: &Value,
+    styles: StyleContext<'_>,
 ) -> Result<LayoutSidebarPanel, DecodeError> {
     let sidebar_panel: SidebarPanel = decode_value(what, value)?;
     let id = sidebar_panel.id.as_str().to_owned();
     let context = format!("{what}: sidebar_panel {id:?}");
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(what, content_value)?;
+    let content = layout_node_from_value(what, content_value, styles)?;
     Ok(LayoutSidebarPanel {
         sidebar_panel,
         content: Box::new(content),
@@ -938,6 +1063,7 @@ fn layout_scroll_from_value(
     what: &str,
     value: &Value,
     spacing: Spacing,
+    styles: StyleContext<'_>,
 ) -> Result<LayoutScroll, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
@@ -954,7 +1080,7 @@ fn layout_scroll_from_value(
     let axis = scroll_axis_from_value(&context, value)?;
     let offset = opt_f32(value, "offset", &context)?;
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(what, content_value)?;
+    let content = layout_node_from_value(what, content_value, styles)?;
     Ok(LayoutScroll {
         id,
         axis,
@@ -973,7 +1099,11 @@ fn layout_scroll_from_value(
 /// content node is pushed onto the matching [`LayoutSplitTree::leaves`] in
 /// the same pre-order, for [`crate::render::paint_layout`] to zip back
 /// against the resolved rects at paint time.
-fn layout_split_tree_from_value(what: &str, value: &Value) -> Result<LayoutSplitTree, DecodeError> {
+fn layout_split_tree_from_value(
+    what: &str,
+    value: &Value,
+    styles: StyleContext<'_>,
+) -> Result<LayoutSplitTree, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
             .as_str()
@@ -989,7 +1119,7 @@ fn layout_split_tree_from_value(what: &str, value: &Value) -> Result<LayoutSplit
     let root_value = required_dict(value, "root", &context)?;
 
     let mut leaves = Vec::new();
-    let tree = split_tree_node_from_value(what, &id, root_value, &mut leaves)?;
+    let tree = split_tree_node_from_value(what, &id, root_value, &mut leaves, styles)?;
     Ok(LayoutSplitTree { id, tree, leaves })
 }
 
@@ -1005,10 +1135,11 @@ fn split_tree_node_from_value(
     tree_id: &str,
     value: &Value,
     leaves: &mut Vec<LayoutNode>,
+    styles: StyleContext<'_>,
 ) -> Result<SplitTree, DecodeError> {
     if let Some(v) = obj_get(value, "leaf") {
         let leaf_value = must_be_dict(what, v, &format!("split_tree {tree_id:?} \"leaf\""))?;
-        let content = layout_node_from_value(what, leaf_value)?;
+        let content = layout_node_from_value(what, leaf_value, styles)?;
         let placeholder = WidgetId::new(format!("{tree_id}::leaf::{}", leaves.len()));
         leaves.push(content);
         return Ok(SplitTree::leaf(placeholder));
@@ -1022,9 +1153,9 @@ fn split_tree_node_from_value(
         let ratio = required_f32(split_value, "ratio", &context)?;
 
         let first_value = required_dict(split_value, "first", &context)?;
-        let first = split_tree_node_from_value(what, tree_id, first_value, leaves)?;
+        let first = split_tree_node_from_value(what, tree_id, first_value, leaves, styles)?;
         let second_value = required_dict(split_value, "second", &context)?;
-        let second = split_tree_node_from_value(what, tree_id, second_value, leaves)?;
+        let second = split_tree_node_from_value(what, tree_id, second_value, leaves, styles)?;
 
         return Ok(SplitTree::split(direction, ratio, first, second));
     }
@@ -1051,6 +1182,7 @@ fn layout_tabs_from_value(
     what: &str,
     value: &Value,
     spacing: Spacing,
+    styles: StyleContext<'_>,
 ) -> Result<LayoutTabs, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
@@ -1076,7 +1208,7 @@ fn layout_tabs_from_value(
         let tab_context = format!("{context} tab {tab_id:?}");
         let title = required_str(entry, "title", &tab_context)?;
         let content_value = required_dict(entry, "content", &tab_context)?;
-        let content = layout_node_from_value(what, content_value)?;
+        let content = layout_node_from_value(what, content_value, styles)?;
         let is_closable = opt_bool(entry, "closable", &tab_context)?.unwrap_or(true);
         let is_dirty = opt_bool(entry, "is_dirty", &tab_context)?.unwrap_or(false);
         let is_preview = opt_bool(entry, "is_preview", &tab_context)?.unwrap_or(false);
@@ -1298,11 +1430,27 @@ pub fn decode_render_output<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
 ) -> Result<RenderOutput, DecodeError> {
+    let sets = StyleSets::new();
+    let theme = Theme::default();
+    decode_render_output_with_styles(what, deserializer, StyleContext::new(&sets, &theme))
+}
+
+/// [`decode_render_output`] against a caller-supplied [`StyleContext`] —
+/// the entry point a binding's own render pass calls, so every `"class"`
+/// key in the returned tree resolves against the [`StyleSets`] that
+/// binding's `define_style` surface has been filling. The flat
+/// (pre-layout-tree) shape carries no nodes, hence no `"class"` keys, and
+/// decodes identically either way.
+pub fn decode_render_output_with_styles<'de, D: Deserializer<'de>>(
+    what: &str,
+    deserializer: D,
+    styles: StyleContext<'_>,
+) -> Result<RenderOutput, DecodeError> {
     let value = materialize(deserializer)
         .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))?;
     check_wire_version(what, &value)?;
     if is_layout_tree(&value) {
-        let node = layout_node_from_value(what, &value)?;
+        let node = layout_node_from_value(what, &value, styles)?;
         validate_unique_leaf_ids(what, &node)?;
         Ok(RenderOutput::Tree(node))
     } else {
@@ -2374,6 +2522,244 @@ mod tests {
         let error = err(decode(&value));
         assert!(error.0.contains("\"style\""), "{}", error.0);
         assert!(error.0.contains("must be an object"), "{}", error.0);
+    }
+
+    /// Decodes `value` against a registry holding exactly `sets` on top of
+    /// the built-ins, with the default theme -- the `"class"` tests'
+    /// counterpart of [`decode`].
+    fn decode_with_sets(value: &Value, sets: &[(&str, StyleOverride)]) -> LayoutNode {
+        let mut registry = StyleSets::new();
+        for (name, overrides) in sets {
+            registry.define(*name, *overrides);
+        }
+        let theme = Theme::default();
+        decode_layout_node_with_styles("test", value, StyleContext::new(&registry, &theme))
+            .expect("valid tree")
+    }
+
+    /// The [`StyleOverride`] a decoded node's own `Styled` wrapper
+    /// carries, panicking if the node isn't wrapped at all.
+    fn styled_override(node: &LayoutNode) -> StyleOverride {
+        let LayoutNode::Styled(styled) = node else {
+            panic!("expected a styled wrapper");
+        };
+        styled.style
+    }
+
+    fn set_with_fg(hex: &str) -> StyleOverride {
+        StyleOverride {
+            fg: Color::from_hex(hex),
+            ..StyleOverride::default()
+        }
+    }
+
+    /// A `"class"` naming one defined set resolves to that set's tokens,
+    /// wrapping the node exactly the way an inline `"style"` key does.
+    #[test]
+    fn a_class_resolves_to_its_defined_sets_tokens() {
+        let value = json!({
+            "row": [],
+            "class": "card",
+        });
+        let node = decode_with_sets(
+            &value,
+            &[(
+                "card",
+                StyleOverride {
+                    bg: Color::from_hex("#112233"),
+                    padding: Some(2.0),
+                    ..StyleOverride::default()
+                },
+            )],
+        );
+        let style = styled_override(&node);
+        assert_eq!(style.bg, Color::from_hex("#112233"));
+        assert_eq!(style.padding, Some(2.0));
+    }
+
+    /// Classes merge left to right: a later name wins a token an earlier
+    /// one also named, while a token only the earlier one named survives.
+    #[test]
+    fn later_classes_win_earlier_ones_token_by_token() {
+        let both = json!({"row": [], "class": ["first", "second"]});
+        let reversed = json!({"row": [], "class": ["second", "first"]});
+        let sets = [
+            (
+                "first",
+                StyleOverride {
+                    fg: Color::from_hex("#ff0000"),
+                    bg: Color::from_hex("#000011"),
+                    ..StyleOverride::default()
+                },
+            ),
+            ("second", set_with_fg("#00ff00")),
+        ];
+        let forward = styled_override(&decode_with_sets(&both, &sets));
+        assert_eq!(forward.fg, Color::from_hex("#00ff00"), "\"second\" wins fg");
+        assert_eq!(
+            forward.bg,
+            Color::from_hex("#000011"),
+            "a token only \"first\" named survives the merge"
+        );
+        let backward = styled_override(&decode_with_sets(&reversed, &sets));
+        assert_eq!(
+            backward.fg,
+            Color::from_hex("#ff0000"),
+            "reversing the list reverses which name wins"
+        );
+    }
+
+    /// A single `"class"` string is whitespace-split into several names,
+    /// the CSS `class=` convention -- same result as the array form.
+    #[test]
+    fn a_whitespace_separated_class_string_names_several_sets() {
+        let sets = [
+            (
+                "first",
+                StyleOverride {
+                    fg: Color::from_hex("#ff0000"),
+                    bg: Color::from_hex("#000011"),
+                    ..StyleOverride::default()
+                },
+            ),
+            ("second", set_with_fg("#00ff00")),
+        ];
+        let as_string = styled_override(&decode_with_sets(
+            &json!({"row": [], "class": "first second"}),
+            &sets,
+        ));
+        let as_array = styled_override(&decode_with_sets(
+            &json!({"row": [], "class": ["first", "second"]}),
+            &sets,
+        ));
+        assert_eq!(as_string, as_array);
+    }
+
+    /// An inline `"style"` key beats every class the same node names --
+    /// a CSS `style=` attribute beating a `class=` rule.
+    #[test]
+    fn an_inline_style_key_wins_over_the_nodes_own_classes() {
+        let value = json!({
+            "row": [],
+            "class": "card",
+            "style": {"fg": "#0000ff"},
+        });
+        let node = decode_with_sets(
+            &value,
+            &[(
+                "card",
+                StyleOverride {
+                    fg: Color::from_hex("#ff0000"),
+                    bg: Color::from_hex("#000011"),
+                    ..StyleOverride::default()
+                },
+            )],
+        );
+        let style = styled_override(&node);
+        assert_eq!(style.fg, Color::from_hex("#0000ff"), "inline wins");
+        assert_eq!(
+            style.bg,
+            Color::from_hex("#000011"),
+            "a class token the inline style didn't name still applies"
+        );
+    }
+
+    /// Redefining a set under a name already in use replaces it wholesale
+    /// -- the very next decode resolves to the new tokens, since nothing
+    /// caches a resolved override.
+    #[test]
+    fn redefining_a_set_changes_what_the_next_decode_resolves_to() {
+        let value = json!({"row": [], "class": "card"});
+        let mut registry = StyleSets::new();
+        let theme = Theme::default();
+        registry.define("card", set_with_fg("#ff0000"));
+        let before =
+            decode_layout_node_with_styles("test", &value, StyleContext::new(&registry, &theme))
+                .expect("valid tree");
+        assert_eq!(styled_override(&before).fg, Color::from_hex("#ff0000"));
+
+        registry.define("card", set_with_fg("#00ff00"));
+        let after =
+            decode_layout_node_with_styles("test", &value, StyleContext::new(&registry, &theme))
+                .expect("valid tree");
+        assert_eq!(styled_override(&after).fg, Color::from_hex("#00ff00"));
+    }
+
+    /// An unknown class name is silently ignored -- the data-format-v1
+    /// unknown-key policy, not the closed-vocabulary error a `"style"`
+    /// key's own unknown token raises. A node whose only class is unknown
+    /// isn't wrapped at all.
+    #[test]
+    fn an_unknown_class_name_is_ignored_rather_than_rejected() {
+        let node = decode_with_sets(&json!({"row": [], "class": "nope"}), &[]);
+        assert!(
+            matches!(node, LayoutNode::Row(_)),
+            "an unknown class resolves to nothing, so nothing wraps the node"
+        );
+        let mixed = decode_with_sets(
+            &json!({"row": [], "class": ["nope", "card"]}),
+            &[("card", set_with_fg("#00ff00"))],
+        );
+        assert_eq!(
+            styled_override(&mixed).fg,
+            Color::from_hex("#00ff00"),
+            "the known name in the list still applies"
+        );
+    }
+
+    /// The built-in sets exist without any `define_style` call, and each
+    /// derives from the theme passed in rather than from a literal colour
+    /// -- a custom palette moves them with it.
+    #[test]
+    fn builtin_sets_derive_from_the_theme_they_resolve_against() {
+        let value = json!({"id": "btn", "button": {"id": "btn", "label": "Go"}, "class": "danger"});
+        let registry = StyleSets::new();
+        let theme = Theme::default();
+        let style = styled_override(
+            &decode_layout_node_with_styles("test", &value, StyleContext::new(&registry, &theme))
+                .expect("valid tree"),
+        );
+        assert_eq!(style.surface_bg, Some(theme.button_danger_bg()));
+        assert_eq!(style.accent_bg, Some(theme.button_danger_bg()));
+
+        let recoloured = Theme {
+            error_fg: Color::rgb(1, 2, 3),
+            ..Theme::default()
+        };
+        let style = styled_override(
+            &decode_layout_node_with_styles(
+                "test",
+                &value,
+                StyleContext::new(&registry, &recoloured),
+            )
+            .expect("valid tree"),
+        );
+        assert_eq!(style.surface_bg, Some(Color::rgb(1, 2, 3)));
+    }
+
+    /// `define_style` under a built-in's own name replaces it.
+    #[test]
+    fn a_defined_set_replaces_a_builtin_of_the_same_name() {
+        let node = decode_with_sets(
+            &json!({"row": [], "class": "danger"}),
+            &[("danger", set_with_fg("#00ff00"))],
+        );
+        let style = styled_override(&node);
+        assert_eq!(style.fg, Color::from_hex("#00ff00"));
+        assert_eq!(
+            style.surface_bg, None,
+            "the replacement's tokens are the only ones left"
+        );
+    }
+
+    /// `"class"` must be a string or a list of strings -- a wrongly typed
+    /// value is a decode error, unlike an unknown *name*.
+    #[test]
+    fn class_rejects_a_wrongly_typed_value() {
+        let error = err(decode(&json!({"row": [], "class": 7})));
+        assert!(error.0.contains("\"class\""), "{}", error.0);
+        let error = err(decode(&json!({"row": [], "class": ["ok", 7]})));
+        assert!(error.0.contains("must all be strings"), "{}", error.0);
     }
 
     /// `"gap"` has no meaning on a `"scroll"` node -- there's no second

@@ -92,6 +92,7 @@ pub use host::{
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree};
 pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
+pub use layout::{StyleOverride, StyleSets, BUILTIN_STYLE_SET_NAMES};
 pub use render::{
     collect_leaf_tooltips, draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf,
     split_rects,
@@ -114,8 +115,9 @@ pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCa
 pub use tree_edit::tree_row_rename_key_event;
 pub use widget_state::WidgetState;
 pub use wire::{
-    decode_layout_node, decode_render_output, decode_shell_config, RenderOutput, StaticTabContent,
-    LAYOUT_NODE_KEYS,
+    decode_layout_node, decode_layout_node_with_styles, decode_render_output,
+    decode_render_output_with_styles, decode_shell_config, decode_style_overrides, RenderOutput,
+    StaticTabContent, StyleContext, LAYOUT_NODE_KEYS,
 };
 
 /// Lift an optional `"scroll_px"` number out of a `list`/`tree`/

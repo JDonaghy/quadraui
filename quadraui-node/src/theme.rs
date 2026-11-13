@@ -25,6 +25,13 @@
 //! `quadraui-binding-core` (`layout::StyleOverride`, `render::paint_layout`'s
 //! `Styled` arm), with no napi-rs method of its own: it rides the same
 //! render callback a tree already returns.
+//!
+//! `defineStyle` is the one method here that is neither a `Backend` leaf
+//! nor a replayed host field: it fills [`BindingHost::style_sets`], the
+//! registry a node's `"class"` key resolves against during each frame's own
+//! render-callback decode (`decode_render_output_with_styles`). Nothing is
+//! ever pushed onto a `Backend` for it, so there is nothing for
+//! [`BindingHost::setup`] to replay.
 
 use super::*;
 
@@ -109,6 +116,72 @@ impl QuiApp {
             backend.set_style(style);
             app_logic.host.style = Some(style);
             Ok(())
+        })
+    }
+
+    /// Registers a named style set under `name` -- the CSS-class analogue
+    /// of [`Self::set_theme`]'s whole-app override, and the napi-rs
+    /// counterpart of `quadraui-py`'s own `define_style`. `overrides`
+    /// takes the same keys a layout node's own `"style"` object does
+    /// (`bg`/`fg`/`border`/`accent`/`surface_bg`/`accent_bg`/`padding`/
+    /// `corner_radius`/`border_width`; an unknown key throws
+    /// `InvalidDescriptorError`). Any node in any later frame's tree then
+    /// names the set through its own `"class"` key -- a single name, a
+    /// whitespace-separated string of them, or an array -- instead of
+    /// restating the same tokens inline on every node that wants them.
+    ///
+    /// Several classes merge left to right (a later name wins a token an
+    /// earlier one also named), and the node's own inline `"style"`
+    /// object beats all of them. A class name no set was ever defined
+    /// under is ignored rather than throwing, the same unknown-key policy
+    /// an unrecognised sibling key on a node object gets.
+    ///
+    /// Four sets exist before any call here -- `primary`, `secondary`,
+    /// `danger`, `subtle` -- each derived from the app's live `Theme` (so
+    /// they follow a [`Self::set_theme`] call) rather than from fixed
+    /// colours. Defining one of those names replaces it.
+    ///
+    /// Redefining a set applies from the next frame on: nothing caches a
+    /// resolved override, and this requests that frame immediately
+    /// ([`Backend::request_frame_in`]) so a running `startTui`/
+    /// `startNative` loop repaints rather than waiting for the next
+    /// unrelated event.
+    #[napi(js_name = "defineStyle")]
+    pub fn define_style(&mut self, env: Env, name: String, overrides: Object) -> Result<()> {
+        self.check_not_dispatching()?;
+        self.check_not_live()?;
+        if name.is_empty() {
+            return Err(invalid_descriptor_error(
+                "defineStyle: \"name\" must not be empty",
+            ));
+        }
+        let json = to_descriptor_value(overrides.to_unknown())
+            .map_err(|detail| invalid_descriptor_error(format!("defineStyle: {detail}")))?;
+        let parsed = decode_style_overrides("defineStyle", &json)
+            .map_err(invalid_descriptor_error)?;
+        self.guarded(env, |app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic.host.style_sets.define(name, parsed);
+            backend.request_frame_in(std::time::Duration::ZERO);
+            Ok(())
+        })
+    }
+
+    /// Every style-set name currently registered, sorted -- the four
+    /// built-ins plus whatever [`Self::define_style`] has added.
+    #[napi(js_name = "styleSetNames")]
+    pub fn style_set_names(&mut self, env: Env) -> Result<Vec<String>> {
+        self.check_not_live()?;
+        self.guarded(env, |app| {
+            Ok(app
+                .driver
+                .app()
+                .host
+                .style_sets
+                .names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect())
         })
     }
 

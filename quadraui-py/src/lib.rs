@@ -178,6 +178,7 @@ use quadraui::{
 // `quadraui-binding-core/src/lib.rs`'s module doc. Imported under their
 // bare names (rather than a `qbc::` path prefix) so this file's own call
 // sites, most of which predate the crate split, need no further change.
+use quadraui_binding_core::decode_style_overrides;
 #[cfg(test)]
 use quadraui_binding_core::tree_scroll_state;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
@@ -199,7 +200,7 @@ use quadraui_binding_core::{
     widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost,
     ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf,
     LayoutNode, LeafDescriptor, OverrideError, PaintedHit, RenderFrame, RenderOutput, ServiceError,
-    UpdateInfoWire, WindowCloseHandling,
+    StyleContext, UpdateInfoWire, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`
@@ -782,7 +783,12 @@ impl AppLogic for PyAppLogic {
             render_overlays(&self.engine, backend, hits);
             return;
         };
-        match render_output_from_callback(callback, &self.pending_error) {
+        // The theme every `"class"` key in this frame's tree resolves its
+        // built-in sets against -- read once, before the callback runs, so
+        // every node in the tree resolves against the same palette.
+        let theme = backend.theme();
+        let styles = StyleContext::new(&self.host.style_sets, &theme);
+        match render_output_from_callback(callback, &self.pending_error, styles) {
             Some(RenderOutput::Flat(mut frame)) => {
                 // Merges the engine's own stored cursor/scroll/active-tab
                 // into whatever the callback's `tree`/`list`/`data_table`/
@@ -1468,6 +1474,7 @@ const RENDER_CALLBACK_WHAT: &str = "render";
 fn render_output_from_callback(
     callback: &Py<PyAny>,
     pending_error: &Rc<RefCell<Option<PyErr>>>,
+    styles: StyleContext<'_>,
 ) -> Option<RenderOutput> {
     Python::attach(|py| {
         let result = match callback.call0(py) {
@@ -1490,7 +1497,11 @@ fn render_output_from_callback(
         };
 
         let mut de = pythonize::Depythonizer::from_object(dict.as_any());
-        match quadraui_binding_core::decode_render_output(RENDER_CALLBACK_WHAT, &mut de) {
+        match quadraui_binding_core::decode_render_output_with_styles(
+            RENDER_CALLBACK_WHAT,
+            &mut de,
+            styles,
+        ) {
             Ok(output) => Some(output),
             Err(err) => {
                 record_error(pending_error, InvalidDescriptorError::new_err(err.0));
@@ -4843,6 +4854,65 @@ impl QuiApp {
             backend.set_style(style);
             app_logic.host.style = Some(style);
             Ok(())
+        })
+    }
+
+    /// Registers a named style set under `name` -- the CSS-class analogue
+    /// of [`Self::set_theme`]'s whole-app override. `overrides` takes the
+    /// same keys a layout node's own `"style"` dict does (`"bg"`/`"fg"`/
+    /// `"border"`/`"accent"`/`"surface_bg"`/`"accent_bg"`/`"padding"`/
+    /// `"corner_radius"`/`"border_width"`; an unknown key raises
+    /// `InvalidDescriptorError`). Any node in any later frame's tree then
+    /// names the set through its own `"class"` key -- a single name, a
+    /// whitespace-separated string of them, or a list -- instead of
+    /// restating the same tokens inline on every node that wants them.
+    ///
+    /// Several classes merge left to right (a later name wins a token an
+    /// earlier one also named), and the node's own inline `"style"` dict
+    /// beats all of them. A class name no set was ever defined under is
+    /// ignored rather than raising, the same unknown-key policy an
+    /// unrecognised sibling key on a node dict gets.
+    ///
+    /// Four sets exist before any call here -- `"primary"`, `"secondary"`,
+    /// `"danger"`, `"subtle"` -- each derived from the app's live `Theme`
+    /// (so they follow a [`Self::set_theme`] call) rather than from fixed
+    /// colours. Defining one of those names replaces it.
+    ///
+    /// Redefining a set applies from the next frame on: nothing caches a
+    /// resolved override, and this requests that frame immediately
+    /// ([`Backend::request_frame_in`]) so a running `run_tui`/`run_native`
+    /// loop repaints rather than waiting for the next unrelated event.
+    fn define_style(&mut self, name: &str, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        if name.is_empty() {
+            return Err(InvalidDescriptorError::new_err(
+                "define_style: \"name\" must not be empty",
+            ));
+        }
+        let json = pyany_to_json(overrides.as_any())
+            .map_err(|err| InvalidDescriptorError::new_err(format!("define_style: {err}")))?;
+        let parsed = decode_style_overrides("define_style", &json)
+            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic.host.style_sets.define(name, parsed);
+            backend.request_frame_in(Duration::ZERO);
+            Ok(())
+        })
+    }
+
+    /// Every style-set name currently registered, sorted -- the four
+    /// built-ins plus whatever [`Self::define_style`] has added.
+    fn style_set_names(&mut self) -> PyResult<Vec<String>> {
+        self.guarded(|app| {
+            Ok(app
+                .driver
+                .app()
+                .host
+                .style_sets
+                .names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect())
         })
     }
 

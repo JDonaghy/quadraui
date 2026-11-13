@@ -307,22 +307,23 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction_for_render,
     caret_shape, clear_recent_documents, click_down_up_events, color_depth_name,
-    decode_extra_primitive, decode_render_output, decode_shell_config, dialog_severity, draw_bands,
-    end_power_save_block, font_role, guarded as core_guarded, install_crash_handler,
-    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
-    merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
-    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
-    resolve_layout_node, resolve_render_refs, set_app_identifier, set_as_default_protocol_client,
-    set_dock_menu, set_jump_list, set_login_item, step_driver,
-    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    toast_corner, update_apply_on_quit, update_check_for_update, update_download_and_stage,
-    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
-    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
-    RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
+    decode_extra_primitive, decode_render_output_with_styles, decode_shell_config,
+    decode_style_overrides, dialog_severity, draw_bands, end_power_save_block, font_role,
+    guarded as core_guarded, install_crash_handler, is_default_protocol_client, key_pressed_event,
+    login_item_enabled, menu_for_surface, merge_overrides, message_dialog_options_from_buttons,
+    paint_layout, pointer_shape, record_pending_error, remove_as_default_protocol_client,
+    render_overlays, resolve_app_path, resolve_layout_node, resolve_render_refs,
+    set_app_identifier, set_as_default_protocol_client, set_dock_menu, set_jump_list,
+    set_login_item, step_driver, take_pending_error as core_take_pending_error,
+    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
+    update_check_for_update, update_download_and_stage, widget_state_snapshot,
+    window_close_reaction, with_tray, with_window, BindingHost, DecodeError, ErasedShellDriver,
+    EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError, RenderOutput,
+    ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
     SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 #[cfg(test)]
-use quadraui_binding_core::{decode_layout_node, LayoutNode};
+use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode};
 
 mod accelerators;
 mod clipboard;
@@ -674,8 +675,9 @@ struct NodeAppLogic {
     on_tick: Option<NodeCallback>,
     /// Registered via `QuiApp::setRender`; called with no meaningful
     /// argument once per frame and expected to return a plain object
-    /// decodable via [`decode_render_output`] (the same flat-vs-tree shape
-    /// every binding's render callback returns). When set, this overrides
+    /// decodable via [`quadraui_binding_core::decode_render_output`] (the
+    /// same flat-vs-tree shape every binding's render callback returns).
+    /// When set, this overrides
     /// [`Self::host`]'s static slots for every render.
     render_callback: Option<NodeCallback>,
     /// Set by [`AppLogic::handle`]/[`AppLogic::tick`]/[`AppLogic::render`]
@@ -832,7 +834,12 @@ impl AppLogic for NodeAppLogic {
             render_overlays(&self.engine, backend, hits);
             return;
         };
-        match render_output_from_callback(env, callback, &self.pending_error) {
+        // The theme every `"class"` key in this frame's tree resolves its
+        // built-in sets against -- read once, before the callback runs, so
+        // every node in the tree resolves against the same palette.
+        let theme = backend.theme();
+        let styles = StyleContext::new(&self.host.style_sets, &theme);
+        match render_output_from_callback(env, callback, &self.pending_error, styles) {
             Some(RenderOutput::Flat(frame)) => {
                 let resolved =
                     resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
@@ -997,7 +1004,8 @@ fn bool_from_return(value: Unknown<'static>) -> Option<bool> {
 }
 
 /// Invokes a registered render callback and decodes its returned plain
-/// object into a [`RenderOutput`] via [`decode_render_output`], through the
+/// object into a [`RenderOutput`] via
+/// [`quadraui_binding_core::decode_render_output_with_styles`], through the
 /// same [`to_descriptor_value`] materialization every other kind-dispatched
 /// decoder in this crate uses -- the napi-rs analog of `quadraui-py`'s own
 /// `render_output_from_callback`. On any failure -- the callback raising,
@@ -1009,6 +1017,7 @@ fn render_output_from_callback(
     env: Env,
     callback: &NodeCallback,
     pending_error: &Rc<RefCell<Option<Error>>>,
+    styles: StyleContext<'_>,
 ) -> Option<RenderOutput> {
     let result = invoke_callback(env, callback, pending_error)?;
     let value = match to_descriptor_value(result) {
@@ -1021,7 +1030,7 @@ fn render_output_from_callback(
             return None;
         }
     };
-    match decode_render_output("render", &value) {
+    match decode_render_output_with_styles("render", &value, styles) {
         Ok(output) => Some(output),
         Err(err) => {
             record_error(pending_error, invalid_descriptor_error(err));
