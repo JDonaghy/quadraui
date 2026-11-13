@@ -10565,6 +10565,80 @@ fn context_menu_style_demo_escape_dismisses() {
     );
 }
 
+/// "More..." carries a nested `submenu`: hovering its row opens the child
+/// popup pulled right of the parent, and clicking a nested leaf activates
+/// it (reporting that leaf's own `WidgetId`, not the parent's).
+#[test]
+fn context_menu_style_demo_submenu_opens_on_hover_and_activates_leaf() {
+    let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 80, 14);
+    driver.right_click(5.0, 4.0);
+    let (mx, my) = driver
+        .find("More...")
+        .unwrap_or_else(|| panic!("root menu must paint 'More...':\n{}", driver.screen()));
+
+    driver.mouse_move(mx, my);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Duplicate") && screen.contains("Rename"),
+        "hovering 'More...' must open its submenu:\n{screen}"
+    );
+
+    let parent_bounds = driver
+        .find_bounds("More...")
+        .expect("'More...' is still painted");
+    let child_bounds = driver
+        .find_bounds("Duplicate")
+        .expect("'Duplicate' is painted");
+    assert!(
+        child_bounds.x > parent_bounds.x,
+        "the child popup should pull right of the parent by default:\n{screen}"
+    );
+
+    let (dx, dy) = driver.find("Duplicate").expect("'Duplicate' is painted");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("Last action: ctx.more.duplicate"),
+        "clicking the nested leaf must report its own id, not the parent's:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Duplicate"),
+        "activation must close the whole stack:\n{}",
+        driver.screen()
+    );
+}
+
+/// Near the viewport's right edge the child popup has no room to pull
+/// right, so it flips to the parent's left edge instead — the same
+/// `ContextMenuLayout::submenu_anchor` rule `MenuSystem`'s menu-bar
+/// submenus use.
+#[test]
+fn context_menu_style_demo_submenu_flips_left_near_right_edge() {
+    let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 14);
+    driver.right_click(34.0, 4.0);
+    let (mx, my) = driver
+        .find("More...")
+        .unwrap_or_else(|| panic!("root menu must paint 'More...':\n{}", driver.screen()));
+
+    driver.mouse_move(mx, my);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Duplicate"),
+        "hovering 'More...' must open its submenu:\n{screen}"
+    );
+
+    let parent_bounds = driver
+        .find_bounds("More...")
+        .expect("'More...' is still painted");
+    let child_bounds = driver
+        .find_bounds("Duplicate")
+        .expect("'Duplicate' is painted");
+    assert!(
+        child_bounds.x < parent_bounds.x,
+        "near the right edge the child popup must flip to the parent's left:\n{screen}"
+    );
+}
+
 /// The example shows switching `MenuStyle` at runtime via
 /// `Backend::set_menu_style` — `m` cycles the requested style even though
 /// TUI's effective style stays `custom` throughout (no native_menu capability).

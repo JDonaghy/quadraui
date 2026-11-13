@@ -362,7 +362,12 @@ impl ContextMenuController {
             }
             UiEvent::MouseMoved { position, .. } => {
                 let stack = self.menu_stack(&open, backend);
-                for (depth_idx, (menu, layout)) in stack.iter().enumerate() {
+                // Deepest level first — same rule as `MouseDown` above: a
+                // narrow viewport can clamp a child popup so it overlaps
+                // its parent, and the pointer must hit the (visually
+                // topmost) child row before it falls through to whatever
+                // parent row is underneath.
+                for (depth_idx, (menu, layout)) in stack.iter().enumerate().rev() {
                     for vis in &layout.visible_items {
                         if !vis.clickable
                             || position.x < vis.bounds.x
@@ -373,10 +378,17 @@ impl ContextMenuController {
                             continue;
                         }
                         let item_idx = vis.item_idx;
+                        let already_open_here = open.submenu_path.get(depth_idx) == Some(&item_idx);
                         self.set_selected_at_depth(depth_idx, item_idx);
                         if menu.items[item_idx].submenu.is_some() {
-                            self.truncate_submenus(depth_idx);
-                            self.open_submenu(item_idx);
+                            if !already_open_here {
+                                // Re-seeding the child's selection on every
+                                // jitter over an already-open parent row
+                                // would clobber a keyboard selection made
+                                // inside it since the last hover.
+                                self.truncate_submenus(depth_idx);
+                                self.open_submenu(item_idx);
+                            }
                             return ContextMenuOutcome::Consumed;
                         } else if open.submenu_path.len() > depth_idx {
                             self.truncate_submenus(depth_idx);
@@ -455,7 +467,7 @@ impl ContextMenuController {
             let anchor = stack[depth].1.submenu_anchor(path_idx, menu_width, vp);
             let selected = open.submenu_selected.get(depth).copied().unwrap_or(0);
             let sub_menu = ContextMenu {
-                id: WidgetId::new("context-menu-controller-submenu"),
+                id: WidgetId::new(format!("context-menu-controller-submenu-{depth}")),
                 items: sub_items.clone(),
                 selected_idx: selected,
                 bg: None,
