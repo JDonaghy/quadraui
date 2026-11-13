@@ -375,12 +375,14 @@ export type PaddingValue = number | PaddingAxis | PaddingSides;
 /** A `"style"` colour token: a `Color` object, or a "#rrggbb"/"#rrggbbaa" hex string. */
 export type StyleColorValue = Color | string;
 
-/** A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. See docs/bindings-wire-format.md for the full token mapping. */
+/** A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent"/"surface_bg"/"accent_bg" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping. */
 export interface StyleValue {
   bg?: StyleColorValue;
   fg?: StyleColorValue;
   border?: StyleColorValue;
   accent?: StyleColorValue;
+  surface_bg?: StyleColorValue;
+  accent_bg?: StyleColorValue;
   padding?: number;
   corner_radius?: number;
   border_width?: number;

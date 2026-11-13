@@ -1942,8 +1942,15 @@ pub fn resolve_layout_node(
             );
             match slots {
                 ScrollSlots::Children(slots) => {
+                    // `scroll_node.content` may be a `LayoutNode::Styled`
+                    // wrapper around the `Row`/`Column` -- a `"style"` key
+                    // is purely cosmetic, so match against
+                    // `LayoutNode::unstyled_mut` here rather than the raw
+                    // node, the same structural match
+                    // `crate::render::scroll_content_slots`'s own
+                    // `matching_container` makes.
                     if let LayoutNode::Row(container) | LayoutNode::Column(container) =
-                        scroll_node.content.as_mut()
+                        scroll_node.content.unstyled_mut()
                     {
                         for (child, slot) in container.children.iter_mut().zip(slots) {
                             if slot.visible {
@@ -3576,6 +3583,162 @@ mod tests {
             painted_button_ids(&driver.app().engine.hit_map()),
             want,
             "an uncontrolled scroll offset must survive a further render unchanged"
+        );
+    }
+
+    /// [`ScrollLeafLogic`]'s own scenario, but with `content` wrapped in a
+    /// `LayoutNode::Styled` (a `"style"` key on the `"scroll"` node's
+    /// `"content"` dict) -- a purely cosmetic `"style"` sibling must not
+    /// change the scroll's own structural behaviour: `resolve_layout_node`
+    /// must still resolve each child's own offset against the wrapped
+    /// `Column`'s children (not fall back to the atomic "whole subtree is
+    /// one leaf" path), `scroll_content_slots` must still report one slot
+    /// per child, and the painted button whose own `style` overrides `fg`
+    /// must show that colour. Covers the review's own "a `Styled` wrapper
+    /// is invisible to the `"scroll"` path's structural matches" finding.
+    struct StyledScrollContentLogic {
+        button_count: usize,
+        offset: Option<f32>,
+        engine: InteractionEngine,
+    }
+
+    impl AppLogic for StyledScrollContentLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let content = LayoutNode::Column(LayoutContainer::new(
+                (0..self.button_count)
+                    .map(|i| {
+                        let label = i.to_string();
+                        let leaf = LayoutNode::Leaf(LayoutLeaf {
+                            id: label.clone(),
+                            descriptor: LeafDescriptor::Button(Button::new(
+                                WidgetId::new(label.clone()),
+                                label,
+                            )),
+                            scroll_px: None,
+                        });
+                        if i == 0 {
+                            LayoutNode::Styled(crate::layout::LayoutStyled {
+                                style: crate::layout::StyleOverride {
+                                    fg: Some(quadraui::Color::rgb(0, 255, 0)),
+                                    ..Default::default()
+                                },
+                                node: Box::new(leaf),
+                            })
+                        } else {
+                            leaf
+                        }
+                    })
+                    .collect(),
+                Default::default(),
+            ));
+            // Wrap the whole content in its own `"style"` override too --
+            // a cosmetic `bg` that must never flip `scroll_content_slots`
+            // from `Children` to `Atomic`.
+            let styled_content = LayoutNode::Styled(crate::layout::LayoutStyled {
+                style: crate::layout::StyleOverride {
+                    bg: Some(quadraui::Color::rgb(255, 0, 0)),
+                    ..Default::default()
+                },
+                node: Box::new(content),
+            });
+            let mut node = LayoutNode::Scroll(crate::layout::LayoutScroll {
+                id: "scroll".to_string(),
+                axis: quadraui::ScrollAxis::Vertical,
+                offset: self.offset,
+                content: Box::new(styled_content),
+                spacing: Default::default(),
+            });
+            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// A `"style"` key on a scroll's `content` node must not change which
+    /// buttons paint at a given offset -- the same ten-of-forty window
+    /// [`resolve_layout_node_scroll_paints_the_ten_buttons_at_a_controlled_offset`]
+    /// asserts for an unstyled `Column`.
+    #[test]
+    fn resolve_layout_node_scroll_paints_the_ten_buttons_when_content_is_styled() {
+        let logic = StyledScrollContentLogic {
+            button_count: 40,
+            offset: Some(20.0),
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let want: Vec<String> = (20..30).map(|i| i.to_string()).collect();
+        assert_eq!(
+            painted_button_ids(&hits),
+            want,
+            "a styled scroll content must resolve/paint the same per-child \
+             slots as an unstyled one"
+        );
+    }
+
+    /// A styled scroll's own `PaintedHit::Scroll::children` must still be
+    /// populated per-child -- a `LayoutNode::Styled` wrapper around the
+    /// content `Column` must not drop `ScrollSlots::Children` down to
+    /// `ScrollSlots::Atomic`, which would report an empty `children` list
+    /// (`crate::render::paint_scroll`'s own `ScrollChildHit` match).
+    #[test]
+    fn resolve_layout_node_scroll_children_hits_survive_a_styled_content_wrapper() {
+        let logic = StyledScrollContentLogic {
+            button_count: 5,
+            offset: Some(0.0),
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let scroll_children = hits.iter().find_map(|hit| match hit {
+            PaintedHit::Scroll { children, .. } => Some(children.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            scroll_children.map(|c| c.len()),
+            Some(5),
+            "a styled scroll content column must still report one \
+             ScrollChildHit per child"
+        );
+    }
+
+    /// The styled first button's own `"fg"` override must still paint --
+    /// proof [`crate::render::paint_scroll`]'s own `push_styled_scope`
+    /// call actually brackets the per-child paint, not just the atomic
+    /// fallback path.
+    #[test]
+    fn resolve_layout_node_scroll_content_child_style_override_still_paints() {
+        let logic = StyledScrollContentLogic {
+            button_count: 5,
+            offset: Some(0.0),
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+
+        let (x, y) = driver.find("0").expect("button \"0\" should paint");
+        let fg = driver
+            .style_at(x as u16, y as u16)
+            .expect("style at button 0")
+            .fg;
+        assert_eq!(
+            fg,
+            quadraui::tui::ratatui_color(quadraui::Color::rgb(0, 255, 0)),
+            "button \"0\"'s own nested \"style\" override must still apply \
+             when painted through a styled scroll content wrapper"
         );
     }
 

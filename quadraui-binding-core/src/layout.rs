@@ -44,6 +44,48 @@ pub enum LayoutNode {
     Styled(LayoutStyled),
 }
 
+impl LayoutNode {
+    /// Peels every nested [`LayoutNode::Styled`] wrapper, returning the
+    /// first node underneath that isn't one. A `"style"` key is purely
+    /// cosmetic — it never changes what a node structurally *is* — so
+    /// every structural match against a node's own kind (a scroll's
+    /// content being a `Row`/`Column` vs. an atomic leaf, a direct scroll
+    /// child being a `Leaf`, a leaf's descriptor kind) must match against
+    /// this, not the raw (possibly `Styled`) node, or a purely cosmetic
+    /// `"style"` sibling key would silently change that structural
+    /// decision — see `crate::render::scroll_content_slots`,
+    /// `natural_main_length`, `is_offset_windowed_leaf`,
+    /// `offset_windowed_leaf_scrolled_to_offset`, and
+    /// `crate::host::resolve_layout_node`'s own `LayoutNode::Scroll` arm,
+    /// each of which calls this (or [`Self::unstyled_mut`]) rather than
+    /// matching the node directly. The override(s) peeled off here still
+    /// apply to the subtree's own *paint* — see
+    /// `crate::render::push_styled_scope`, which brackets
+    /// `Backend::set_theme`/`set_style` around the same nested layers this
+    /// unwraps, so a caller that needs the structural node AND the correct
+    /// paint state calls both.
+    pub fn unstyled(&self) -> &LayoutNode {
+        let mut node = self;
+        while let LayoutNode::Styled(styled) = node {
+            node = &styled.node;
+        }
+        node
+    }
+
+    /// [`Self::unstyled`]'s mutable counterpart, for a resolve pass that
+    /// needs to mutate the real node underneath any `Styled` wrapper(s)
+    /// (`crate::host::resolve_layout_node`'s `LayoutNode::Scroll` arm,
+    /// which writes a resolved cursor/scroll position back onto a content
+    /// child).
+    pub fn unstyled_mut(&mut self) -> &mut LayoutNode {
+        let mut node = self;
+        while let LayoutNode::Styled(styled) = node {
+            node = &mut styled.node;
+        }
+        node
+    }
+}
+
 /// A [`LayoutNode::Styled`]'s decoded shape: a [`StyleOverride`] paired
 /// with the single wrapped subtree it applies to. Every node kind's own
 /// `"style"` wire sibling key decodes to this wrapper around whatever node
@@ -75,34 +117,53 @@ pub struct LayoutStyled {
 ///
 /// | Wire key | Resolved onto | Read by (examples) |
 /// |---|---|---|
-/// | `bg` | [`quadraui::Theme::background`] | container/surface background fills |
-/// | `fg` | [`quadraui::Theme::foreground`] | generic chrome text |
-/// | `border` | [`quadraui::Theme::border_fg`] | bordered-surface border glyphs |
-/// | `accent` | [`quadraui::Theme::accent_fg`] | focus/active-state accents (`Form` toggle, slider fill) |
+/// | `bg` | [`quadraui::Theme::background`] | plain `Row`/`Column`/`Split`/`Tabs`/`SplitTree` areas; `Button`'s `Icon` variant; a non-`bordered` `List`/`Tree` |
+/// | `fg` | [`quadraui::Theme::foreground`] | generic chrome text (`TabBar`'s dirty-tab glyph, `List`/`Tree`/`DataTable` body/header text) |
+/// | `border` | [`quadraui::Theme::border_fg`] | bordered-surface border glyphs (`List`/`Dialog`/bordered `Panel`) |
+/// | `accent` | [`quadraui::Theme::accent_fg`] | focus/active-state accents (`Form` toggle, slider fill, `TabBar`'s active-tab underline) |
+/// | `surface_bg` | [`quadraui::Theme::surface_bg`] | `Button`'s `Secondary`/`Danger`/`Warning` variants and disabled state, a `bordered` `List`, `Dialog`/`Toast`/`Palette`/`Toolbar`/`Float` chrome |
+/// | `accent_bg` | [`quadraui::Theme::accent_bg`] | `Button`'s `Primary` variant's solid fill, `Switch`/`Progress`'s active fill, `Panel`'s active-action fill |
 /// | `padding` | [`quadraui::Style::padding`] | inner inset shared by `Button`/`Toast`/`Tooltip`/`ContextMenu`/`Palette`/`Dialog` |
 /// | `corner_radius` | [`quadraui::Style::corner_radius`] | rounded-rect radius shared by every rounded overlay |
 /// | `border_width` | [`quadraui::Style::border_width`] | border stroke width on a pixel backend (no-op on TUI, same as the token itself) |
 ///
-/// `bg`/`fg`/`border`/`accent` decode from the same shapes
-/// [`quadraui::Color`]'s own `Deserialize` accepts (an `{"r","g","b","a"}`
-/// object or `[r, g, b[, a]]` array), plus a `"#rrggbb"`/`"#rrggbbaa"` hex
-/// string convenience — see `crate::wire::style_override_from_value`.
+/// A generic `bg` override does **not** change a `Button`'s fill on any
+/// variant but `Icon` — `Button`'s own TUI/GTK painters read `surface_bg`
+/// (`Secondary`/`Danger`/`Warning`/disabled) or `accent_bg` (`Primary`),
+/// never `background`, so `{"style": {"bg": "#…"}}` on a `"button"` leaf is
+/// a silent no-op. Use `surface_bg`/`accent_bg` instead — see the table
+/// above for which variant reads which. The same split applies to every
+/// other bordered/filled surface (`List`, `Dialog`, `Toast`, `Palette`,
+/// `Switch`, `Progress`, `Toolbar`, `FindReplace`, `Float`): `bg` only ever
+/// reaches `background`. `TreeView`/`DataTable`/`TabBar`'s own row/header
+/// fill (`Theme::tab_bar_bg`) and `List`'s header fill (`Theme::header_bg`)
+/// have no `"style"` alias yet — overriding either still needs a host-wide
+/// `Backend::set_theme` call.
+///
+/// `bg`/`fg`/`border`/`accent`/`surface_bg`/`accent_bg` decode from the
+/// same shapes [`quadraui::Color`]'s own `Deserialize` accepts (an
+/// `{"r","g","b","a"}` object or `[r, g, b[, a]]` array), plus a
+/// `"#rrggbb"`/`"#rrggbbaa"` hex string convenience — see
+/// `crate::wire::style_override_from_value`.
 ///
 /// # Metric overrides don't re-run layout
 ///
 /// `padding`/`corner_radius`/`border_width` only ever change how this
-/// subtree *paints* this frame — [`crate::render::natural_size`] always
-/// measures a `Styled` leaf by unwrapping straight through to the wrapped
-/// node with whatever theme/style was already active, so a `Content`/
-/// `Align`-sized sibling never shifts because of a metric override deeper
-/// in the tree. A future revision that needs a metric override to affect
-/// sizing would have to thread it into that measurement pass too.
+/// subtree *paints* this frame, never this frame's already-resolved
+/// layout/measurement — [`crate::render::natural_size`] always measures a
+/// `Styled` leaf by unwrapping straight through to the wrapped node with
+/// whatever theme/style was already active, so a `Content`/`Align`-sized
+/// sibling never shifts because of a metric override deeper in the tree. A
+/// future revision that needs a metric override to affect sizing would
+/// have to thread it into that measurement pass too.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StyleOverride {
     pub bg: Option<Color>,
     pub fg: Option<Color>,
     pub border: Option<Color>,
     pub accent: Option<Color>,
+    pub surface_bg: Option<Color>,
+    pub accent_bg: Option<Color>,
     pub padding: Option<f32>,
     pub corner_radius: Option<f32>,
     pub border_width: Option<f32>,
@@ -126,6 +187,8 @@ impl StyleOverride {
             foreground: self.fg.unwrap_or(theme.foreground),
             border_fg: self.border.unwrap_or(theme.border_fg),
             accent_fg: self.accent.unwrap_or(theme.accent_fg),
+            surface_bg: self.surface_bg.unwrap_or(theme.surface_bg),
+            accent_bg: self.accent_bg.unwrap_or(theme.accent_bg),
             ..theme
         }
     }

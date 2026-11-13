@@ -915,11 +915,13 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("fg", style_color_value.clone()),
             field_opt("border", style_color_value.clone()),
             field_opt("accent", style_color_value.clone()),
+            field_opt("surface_bg", style_color_value.clone()),
+            field_opt("accent_bg", style_color_value.clone()),
             field_opt("padding", float_()),
             field_opt("corner_radius", float_()),
             field_opt("border_width", float_()),
         ],
-        "A per-node \"style\" override, scoped to that node's own subtree: \"bg\"/\"fg\"/\"border\"/\"accent\" override Theme colour tokens, \"padding\"/\"corner_radius\"/\"border_width\" override Style metric tokens. See docs/bindings-wire-format.md for the full token mapping.",
+        "A per-node \"style\" override, scoped to that node's own subtree: \"bg\"/\"fg\"/\"border\"/\"accent\"/\"surface_bg\"/\"accent_bg\" override Theme colour tokens, \"padding\"/\"corner_radius\"/\"border_width\" override Style metric tokens. \"surface_bg\"/\"accent_bg\" are the aliases a Button/List/Dialog/... fill needs -- plain \"bg\" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.",
     ));
     let layout_row_node = b.define(obj(
         "LayoutRowNode",

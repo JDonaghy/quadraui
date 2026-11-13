@@ -46,13 +46,54 @@ exactly which it accepts.
 
 Every node kind, including a `"leaf"`, also accepts an optional `"style"`
 key (`StyleValue` in the generated reference): a scoped subset of `Theme`
-colour tokens (`"bg"`, `"fg"`, `"border"`, `"accent"` -- a `Color` object or
-a `"#rrggbb"`/`"#rrggbbaa"` hex string) and `Style` metric tokens
-(`"padding"`, `"corner_radius"`, `"border_width"`), applied as a derived
-theme/style to that node's own subtree only -- siblings, and anything
-above it in the tree, are unaffected. A nested `"style"` composes with an
-ancestor's: it only overrides the tokens it names, and everything it
-doesn't name falls through to whatever the ancestor already set.
+colour tokens (`"bg"`, `"fg"`, `"border"`, `"accent"`, `"surface_bg"`,
+`"accent_bg"` -- a `Color` object or a `"#rrggbb"`/`"#rrggbbaa"` hex
+string) and `Style` metric tokens (`"padding"`, `"corner_radius"`,
+`"border_width"`), applied as a derived theme/style to that node's own
+subtree only -- siblings, and anything above it in the tree, are
+unaffected. A nested `"style"` composes with an ancestor's: it only
+overrides the tokens it names, and everything it doesn't name falls
+through to whatever the ancestor already set.
+
+**`"padding"`/`"corner_radius"`/`"border_width"` affect paint only, never
+this frame's layout.** They change how the styled subtree *paints* this
+frame; they never feed back into measurement, so a `"Content"`-sized
+sibling, or this scroll's own content length, never shifts because of a
+metric override deeper in the tree.
+
+**Which token a leaf actually reads varies by kind and, for `"button"`, by
+variant** -- a `"bg"` override reaches a plain `"row"`/`"column"`/`"split"`/
+`"tabs"`/`"split_tree"` area, a `"button"`'s `Icon` variant, and a
+non-bordered `"list"`/`"tree"`, but **not** a `"button"`'s `Primary`/
+`Secondary`/`Danger`/`Warning` fill, a bordered `"list"`, or
+`"dialog"`/`"toast"`/`"palette"`/`"toolbar"`/`"float"` chrome -- those read
+`"surface_bg"` (`Secondary`/`Danger`/`Warning`/disabled) or `"accent_bg"`
+(`Primary`, and `"switch"`/`"progress"`'s own active fill) instead:
+
+| Wire key | Resolves onto | Read by |
+| --- | --- | --- |
+| `"bg"` | `Theme.background` | plain `"row"`/`"column"`/`"split"`/`"tabs"`/`"split_tree"` areas; a `"button"`'s `Icon` variant; a non-bordered `"list"`/`"tree"` |
+| `"fg"` | `Theme.foreground` | generic chrome text (`"tab_bar"`'s dirty-tab glyph, `"list"`/`"tree"`/`"data_table"` body/header text) |
+| `"border"` | `Theme.border_fg` | bordered-surface border glyphs (`"list"`, `"dialog"`, a bordered `"panel"`) |
+| `"accent"` | `Theme.accent_fg` | focus/active-state accents (a `"form"` toggle, a slider fill, `"tab_bar"`'s active-tab underline) |
+| `"surface_bg"` | `Theme.surface_bg` | a `"button"`'s `Secondary`/`Danger`/`Warning` variants and disabled state, a bordered `"list"`, `"dialog"`/`"toast"`/`"palette"`/`"toolbar"`/`"float"` chrome |
+| `"accent_bg"` | `Theme.accent_bg` | a `"button"`'s `Primary` variant's solid fill, `"switch"`/`"progress"`'s active fill, a `"panel"`'s active-action fill |
+| `"padding"` | `Style.padding` | inner inset shared by `"button"`/`"toast"`/`"tooltip"`/`"context_menu"`/`"palette"`/`"dialog"` |
+| `"corner_radius"` | `Style.corner_radius` | rounded-rect radius shared by every rounded overlay |
+| `"border_width"` | `Style.border_width` | border stroke width on a pixel backend (no-op on TUI) |
+
+`"tree"`/`"data_table"`/`"tab_bar"`'s own row/header fill
+(`Theme.tab_bar_bg`) and `"list"`'s header fill (`Theme.header_bg`) have
+no `"style"` alias yet -- overriding either still needs a host-wide
+`setTheme`/`set_theme` call.
+
+**An unknown key inside `"style"` is always a decode error**, stricter
+than an unrecognised sibling key on the surrounding node dict itself
+(e.g. `{"row": [...], "bogus": 1}` decodes fine, silently ignoring
+`"bogus"`): `"style"`'s whole point is a closed, documented vocabulary of
+theme/style tokens, where a typo'd key silently doing nothing would be a
+worse failure mode than the data format v1 unknown-key policy a sibling
+key gets.
 
 ## Leaf kinds
 
@@ -1098,7 +1139,7 @@ Alias for `Color | string`.
 <a id="wire-stylevalue"></a>
 #### `StyleValue`
 
-A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. See docs/bindings-wire-format.md for the full token mapping.
+A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent"/"surface_bg"/"accent_bg" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1106,6 +1147,8 @@ A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"borde
 | `fg` | `StyleColorValue` | no |  |
 | `border` | `StyleColorValue` | no |  |
 | `accent` | `StyleColorValue` | no |  |
+| `surface_bg` | `StyleColorValue` | no |  |
+| `accent_bg` | `StyleColorValue` | no |  |
 | `padding` | `number` | no |  |
 | `corner_radius` | `number` | no |  |
 | `border_width` | `number` | no |  |

@@ -709,12 +709,16 @@ fn edge_insets_from_value(value: &Value, context: &str) -> Result<EdgeInsets, De
 }
 
 /// Every key a `"style"` dict may carry — see [`StyleOverride`]'s own
-/// token-mapping table for what each resolves onto.
-const STYLE_OVERRIDE_KEYS: [&str; 7] = [
+/// token-mapping table for what each resolves onto. `surface_bg`/
+/// `accent_bg` are the semantic aliases [`StyleOverride`]'s doc calls out
+/// for a `Button`/`List`/`Dialog`/... fill `bg` alone doesn't reach.
+const STYLE_OVERRIDE_KEYS: [&str; 9] = [
     "bg",
     "fg",
     "border",
     "accent",
+    "surface_bg",
+    "accent_bg",
     "padding",
     "corner_radius",
     "border_width",
@@ -731,7 +735,13 @@ const STYLE_OVERRIDE_KEYS: [&str; 7] = [
 ///
 /// Rejects any key outside [`STYLE_OVERRIDE_KEYS`] — the same "typo is a
 /// decode error, not a silently-dropped key" policy [`edge_insets_from_value`]
-/// already applies to `"padding"`'s own object shape.
+/// already applies to `"padding"`'s own object shape. This is stricter
+/// than an unrecognised sibling key on the surrounding node dict itself
+/// (e.g. `{"row": [...], "bogus": 1}` decodes fine, silently ignoring
+/// `"bogus"`) — deliberate, since a `"style"` dict's whole point is a
+/// closed, documented vocabulary of theme/style tokens, where a typo'd key
+/// silently doing nothing is a worse failure mode than the data format v1
+/// unknown-key policy a sibling key gets.
 fn style_override_from_value(
     what: &str,
     value: &Value,
@@ -741,14 +751,19 @@ fn style_override_from_value(
     };
     let dict = must_be_dict(what, raw, "\"style\"")?;
     let context = format!("{what}: \"style\"");
-    if let Some(obj) = dict.as_object() {
-        for key in obj.keys() {
-            if !STYLE_OVERRIDE_KEYS.contains(&key.as_str()) {
-                return Err(DecodeError(format!(
-                    "{context} has unknown key {key:?} -- expected one of \"bg\"/\"fg\"/\
-                     \"border\"/\"accent\"/\"padding\"/\"corner_radius\"/\"border_width\""
-                )));
-            }
+    // `must_be_dict` above already guarantees `dict.is_object()`, so this
+    // is never `None` -- `.as_object()` just gets at the key set to check.
+    for key in dict
+        .as_object()
+        .expect("must_be_dict guarantees an object")
+        .keys()
+    {
+        if !STYLE_OVERRIDE_KEYS.contains(&key.as_str()) {
+            return Err(DecodeError(format!(
+                "{context} has unknown key {key:?} -- expected one of \"bg\"/\"fg\"/\
+                 \"border\"/\"accent\"/\"surface_bg\"/\"accent_bg\"/\"padding\"/\
+                 \"corner_radius\"/\"border_width\""
+            )));
         }
     }
     let over = StyleOverride {
@@ -756,6 +771,8 @@ fn style_override_from_value(
         fg: opt_color(dict, "fg", &context)?,
         border: opt_color(dict, "border", &context)?,
         accent: opt_color(dict, "accent", &context)?,
+        surface_bg: opt_color(dict, "surface_bg", &context)?,
+        accent_bg: opt_color(dict, "accent_bg", &context)?,
         padding: opt_f32(dict, "padding", &context)?,
         corner_radius: opt_f32(dict, "corner_radius", &context)?,
         border_width: opt_f32(dict, "border_width", &context)?,
@@ -2261,6 +2278,25 @@ mod tests {
         assert_eq!(styled.style.accent, Color::from_hex("#ff0000"));
         assert_eq!(styled.style.corner_radius, Some(6.0));
         assert!(matches!(*styled.node, LayoutNode::Leaf(_)));
+    }
+
+    /// `"surface_bg"`/`"accent_bg"` are the semantic aliases a
+    /// `Button`/`List`/`Dialog`/... fill actually reads -- see
+    /// `crate::layout::StyleOverride`'s own doc for why a plain `"bg"`
+    /// doesn't reach those.
+    #[test]
+    fn round_trips_surface_bg_and_accent_bg() {
+        let value = json!({
+            "id": "btn",
+            "button": {"id": "btn", "label": "Go"},
+            "style": {"surface_bg": "#112233", "accent_bg": "#445566"},
+        });
+        let node = decode(&value).expect("valid styled leaf");
+        let LayoutNode::Styled(styled) = node else {
+            panic!("expected a styled wrapper");
+        };
+        assert_eq!(styled.style.surface_bg, Color::from_hex("#112233"));
+        assert_eq!(styled.style.accent_bg, Color::from_hex("#445566"));
     }
 
     /// An empty `"style": {}` is a no-op -- decoding falls through to the
