@@ -10,12 +10,13 @@
 use std::rc::Rc;
 
 use quadraui::{
-    ActivityBar, Backend, BoardModel, Canvas, Chart, ComboBox, CommandCenter, CommandLine,
-    CompletionItemMeasure, DatePicker, DiffView, Editor, FieldKind, FindReplacePanel, Form,
-    FormField, Image, InteractionState, LabelPosition, MenuBar, MessageList, Minimap,
-    MultiSectionView, NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar,
-    RadioGroup, Rect, ScrollAxis, ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit,
-    StyledText, Switch, SwitchHit, Terminal, TextInput, TextRegion, Toolbar, ToolbarButton,
+    render_markdown_to_styled, ActivityBar, Backend, BoardModel, Canvas, Chart, ComboBox,
+    CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor,
+    FieldKind, FindReplacePanel, Form, FormField, Image, InteractionState, LabelPosition, MenuBar,
+    MessageList, Minimap, MultiSectionView, NumberInput, NumberInputHit, Palette, PipelineView,
+    Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar,
+    Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit, Terminal, TextDisplay,
+    TextDisplayLine, TextDisplayLineMeasure, TextInput, TextRegion, Theme, Toolbar, ToolbarButton,
     WidgetId,
 };
 
@@ -825,6 +826,147 @@ impl ExtraPaint for TextArea {
     }
 }
 
+/// A scrollable, read-only markdown viewer — the layout-leaf binding
+/// surface for the shared `quadraui::compose::markdown` adapter
+/// ([`render_markdown_to_styled`]), reached via the `"markdown"` extra
+/// kind. `source` is raw markdown text; [`Markdown::render`] (called fresh
+/// every paint, same "cheap enough to redo" posture [`Select`]/[`Slider`]
+/// already take with their own `as_form` bridge) turns it into the
+/// [`TextDisplay`] this type paints through, so headings/bold/italic/code
+/// spans/lists/links all reuse the one markdown→styled-lines renderer
+/// instead of a second parser. `scroll_top` mirrors
+/// [`TextDisplay::scroll_offset`]'s own controlled-component contract —
+/// the host owns it and feeds the updated value back in on the next
+/// render after a scroll gesture.
+///
+/// Links resolve to an exact clicked line through
+/// [`ExtraPaint::paint_chrome`]'s per-link `chrome_hits` (the same
+/// mechanism [`Toolbar`]'s buttons use), each keyed by
+/// [`link_child_id`] and reported through
+/// [`crate::semantic::semantic_event_for_hit`]'s `ExtraChrome` arm as
+/// `UiEvent::RichTextLinkClicked` — the event `RichTextPopup`'s own link
+/// click already uses, so a host handles both the same way. Hit
+/// resolution stays line-grained (one link per line wins), matching
+/// `TextDisplayHit::Line`'s own granularity — this type adds no
+/// character-column hit-testing `TextDisplay` doesn't already have.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Markdown {
+    pub id: WidgetId,
+    pub source: String,
+    #[serde(default)]
+    pub scroll_top: usize,
+}
+
+/// Builds the `WidgetId` of the `idx`-th link inside `id`'s markdown
+/// leaf — the chrome-hit id [`Markdown::paint_chrome`] pushes and
+/// [`Markdown::link_url_for_child`] parses back.
+fn link_child_id(id: WidgetId, idx: usize) -> WidgetId {
+    WidgetId::new(format!("{}:md-link:{idx}", id.as_str()))
+}
+
+impl Markdown {
+    /// Renders `source` through the shared markdown adapter and wraps the
+    /// result in a [`TextDisplay`] sized to paint identically to a plain
+    /// `"text_display"` leaf — [`ExtraPaint::paint`]/[`ExtraPaint::paint_chrome`]
+    /// both call this rather than duplicating the conversion.
+    fn render(&self, theme: &Theme) -> (TextDisplay, RenderedMarkdown) {
+        let rendered = render_markdown_to_styled(&self.source, theme);
+        let lines = rendered
+            .lines
+            .iter()
+            .cloned()
+            .map(|text| TextDisplayLine {
+                spans: text.spans,
+                decoration: Decoration::default(),
+                timestamp: None,
+            })
+            .collect();
+        let td = TextDisplay {
+            id: self.id,
+            lines,
+            scroll_offset: self.scroll_top,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        (td, rendered)
+    }
+
+    /// Resolves a `paint_chrome`-reported child id back to the
+    /// [`quadraui::RichTextLink`]-style URL it names, by re-deriving the
+    /// same `source` → links mapping [`Markdown::render`] computed when
+    /// the chrome hit was painted. Which theme the re-derive call passes is
+    /// irrelevant here — [`render_markdown_to_styled`]'s `links`
+    /// side-channel (which `(line, byte_range, url)` triples exist) never
+    /// depends on colour, only `self.source`'s own text — so this needs
+    /// no backend/theme in scope, unlike [`Markdown::render`] itself.
+    pub(crate) fn link_url_for_child(&self, child: WidgetId) -> Option<String> {
+        let prefix = format!("{}:md-link:", self.id.as_str());
+        let idx: usize = child.as_str().strip_prefix(&prefix)?.parse().ok()?;
+        let rendered = render_markdown_to_styled(&self.source, &Theme::default());
+        rendered.links.get(idx).map(|(_, _, url)| url.clone())
+    }
+}
+
+impl ExtraPaint for Markdown {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        let theme = backend.theme();
+        let (td, _) = self.render(&theme);
+        backend.draw_text_display(area, &td);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    /// Paints through [`TextDisplay`] (same as [`ExtraPaint::paint`]),
+    /// then reports one clickable chrome region per visible line that
+    /// carries a link — `crate::render::paint_leaf`/`draw_bands` call
+    /// this instead of [`ExtraPaint::paint`] for every `Extra` leaf, so
+    /// this is the one real paint path; [`ExtraPaint::paint`] above stays
+    /// for trait completeness and direct (non-leaf) use.
+    fn paint_chrome(
+        &self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        _interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        let theme = backend.theme();
+        let (td, rendered) = self.render(&theme);
+        backend.draw_text_display(area, &td);
+        if rendered.links.is_empty() {
+            return Vec::new();
+        }
+        let row_height = backend.line_height();
+        let layout = td.layout(area.width, area.height, |_| {
+            TextDisplayLineMeasure::new(row_height)
+        });
+        layout
+            .visible_lines
+            .iter()
+            .filter_map(|visible| {
+                let link_idx = rendered
+                    .links
+                    .iter()
+                    .position(|(line_idx, _, _)| *line_idx == visible.line_idx)?;
+                let bounds = Rect::new(
+                    area.x + visible.bounds.x,
+                    area.y + visible.bounds.y,
+                    visible.bounds.width,
+                    visible.bounds.height,
+                );
+                Some((bounds, link_child_id(self.id, link_idx)))
+            })
+            .collect()
+    }
+}
+
 impl ExtraPaint for Chart {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         // Display-only: no hover/crosshair state is tracked by this
@@ -1377,6 +1519,7 @@ extra_primitives! {
     "select" => Select,
     "password" => PasswordInput,
     "textarea" => TextArea,
+    "markdown" => Markdown,
 }
 
 #[cfg(test)]
@@ -1690,6 +1833,109 @@ mod tests {
                         && *button_id == WidgetId::new("toolbar:save")
             )),
             "expected a ButtonClicked event for the inline toolbar leaf, got {dispatched:?}"
+        );
+    }
+
+    /// A `Markdown` leaf renders headings, bold/italic, an inline code
+    /// span and a list through the shared `render_markdown_to_styled`
+    /// adapter (asserted on the painted screen text, proving the same
+    /// renderer `push_turn_markdown` uses is reused rather than a second
+    /// parser), and a `MouseDown` on the link's painted row round-trips
+    /// through [`crate::engine::InteractionEngine::handle`]'s
+    /// `HitDetail::ExtraChrome` arm into
+    /// `UiEvent::RichTextLinkClicked` — the same event `RichTextPopup`'s
+    /// own link click already dispatches.
+    #[test]
+    fn markdown_leaf_renders_formatting_and_link_click_emits_rich_text_link_clicked() {
+        use crate::engine::InteractionEngine;
+        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::render::paint_layout;
+        use quadraui::{Modifiers, MouseButton};
+
+        struct MarkdownLeafApp {
+            engine: InteractionEngine,
+            sink: RefCell<RecordingSink>,
+        }
+
+        impl AppLogic for MarkdownLeafApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let markdown = Markdown {
+                    id: WidgetId::new("md:1"),
+                    source: "# Title\n**bold** *italic* `code`\n- item\n[docs](https://example.com/docs)".to_string(),
+                    scroll_top: 0,
+                };
+                let tree = LayoutNode::Row(LayoutContainer::new(
+                    vec![LayoutNode::Leaf(LayoutLeaf {
+                        id: "md:1".into(),
+                        descriptor: LeafDescriptor::Extra(Rc::new(markdown)),
+                        scroll_px: None,
+                    })],
+                    Spacing::default(),
+                ));
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &tree, &mut hits, &|id| {
+                    self.engine.chrome_interaction(id)
+                });
+                self.engine.set_hits(hits);
+            }
+
+            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+                self.engine.tab_stops()
+            }
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                self.engine
+                    .handle(event, backend, &mut *self.sink.borrow_mut())
+            }
+        }
+
+        let app = MarkdownLeafApp {
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(app, 40, 10);
+        driver.render();
+
+        assert!(driver.screen_contains("Title"), "heading text missing");
+        assert!(driver.screen_contains("bold"), "bold text missing");
+        assert!(driver.screen_contains("italic"), "italic text missing");
+        assert!(driver.screen_contains("code"), "code span text missing");
+        assert!(driver.screen_contains("item"), "list item text missing");
+        assert!(driver.screen_contains("docs"), "link text missing");
+
+        let link_point = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Extra {
+                        id, chrome_hits, ..
+                    } if *id == WidgetId::new("md:1") => chrome_hits
+                        .first()
+                        .map(|(rect, _)| Point::new(rect.x, rect.y)),
+                    _ => None,
+                })
+                .expect("markdown leaf should have painted a chrome hit for its link")
+        };
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: link_point,
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::RichTextLinkClicked(id, url)
+                    if *id == WidgetId::new("md:1") && url == "https://example.com/docs"
+            )),
+            "expected a RichTextLinkClicked event for the inline markdown leaf, got {dispatched:?}"
         );
     }
 

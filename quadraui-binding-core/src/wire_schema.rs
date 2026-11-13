@@ -1257,6 +1257,20 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("visible_rows", int_()),
         ],
     ));
+    // `source` is raw markdown text re-rendered through
+    // `quadraui::compose::markdown::render_markdown_to_styled` on every
+    // paint (see `extra_paint::Markdown::render`) -- there is no separate
+    // `lines`/styling key here the way `TextInputDescriptor` has, since the
+    // adapter is the single source of truth for turning `source` into
+    // styled rows.
+    let markdown_descriptor = b.define(obj(
+        "MarkdownDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("source", str_()),
+            field_opt("scroll_top", int_()),
+        ],
+    ));
     let scroll_axis = b.define(alias("ScrollAxis", lit(&["Vertical", "Horizontal"])));
     let scrollbar_descriptor = b.define(obj(
         "ScrollbarDescriptor",
@@ -2444,6 +2458,7 @@ pub fn schema() -> Vec<DefJson> {
             "select" => select_descriptor.clone(),
             "password" => password_descriptor.clone(),
             "textarea" => textarea_descriptor.clone(),
+            "markdown" => markdown_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
