@@ -14,8 +14,8 @@ use std::rc::Rc;
 // — the `"panel"` wire node itself is a separate breaking change.
 #[allow(deprecated)]
 use quadraui::{
-    Button, DataTable, ListView, Panel, Rect, ScrollAxis, SectionSize, SidebarPanel, Split,
-    SplitTree, TabBar, TextDisplay, TreeView,
+    Button, Color, DataTable, ListView, Panel, Rect, ScrollAxis, SectionSize, SidebarPanel, Split,
+    SplitTree, Style, TabBar, TextDisplay, Theme, TreeView,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -28,8 +28,9 @@ use crate::DecodeError;
 /// per tab (of which only the selected one paints), a `Panel` or
 /// `SidebarPanel` holding one chrome descriptor plus a single content
 /// subtree, a `SplitTree` holding an arbitrarily nested divider tree of
-/// content subtrees, or a `Scroll` holding one content subtree painted at
-/// its own natural size and offset inside a clipped viewport.
+/// content subtrees, a `Scroll` holding one content subtree painted at
+/// its own natural size and offset inside a clipped viewport, or a `Styled`
+/// wrapper applying a [`StyleOverride`] to one wrapped subtree.
 pub enum LayoutNode {
     Row(LayoutContainer),
     Column(LayoutContainer),
@@ -40,6 +41,111 @@ pub enum LayoutNode {
     SidebarPanel(LayoutSidebarPanel),
     SplitTree(LayoutSplitTree),
     Scroll(LayoutScroll),
+    Styled(LayoutStyled),
+}
+
+/// A [`LayoutNode::Styled`]'s decoded shape: a [`StyleOverride`] paired
+/// with the single wrapped subtree it applies to. Every node kind's own
+/// `"style"` wire sibling key decodes to this wrapper around whatever node
+/// the rest of that same dict already decoded to — see
+/// `crate::wire::layout_node_from_value`'s own wrapping, applied uniformly
+/// after the row/column/split/tabs/panel/sidebar_panel/split_tree/scroll/
+/// leaf dispatch, so every node kind gets the same `"style"` key for free
+/// rather than each needing its own decode of it.
+pub struct LayoutStyled {
+    pub style: StyleOverride,
+    pub node: Box<LayoutNode>,
+}
+
+/// A scoped subset of the backend-wide [`quadraui::Theme`] colour tokens
+/// and [`quadraui::Style`] metric tokens a `"style"` wire key may override
+/// for one [`LayoutNode::Styled`] subtree — merged onto whichever theme/
+/// style were already in effect above that node (see
+/// [`crate::render::paint_layout`]'s `LayoutNode::Styled` arm, which
+/// brackets `Backend::set_theme`/`set_style` around the wrapped subtree's
+/// own paint and restores the outer values once it returns — the same
+/// "vary the theme per-pane" contract [`quadraui::Backend::set_theme`]'s
+/// own doc already documents, just driven by the wire format instead of a
+/// host's own render code). Every field left `None` (the default,
+/// [`StyleOverride::is_empty`]) falls through to whatever the parent
+/// already set, so a nested override only ever narrows what it names —
+/// never resets a field an ancestor already overrode.
+///
+/// # Token mapping
+///
+/// | Wire key | Resolved onto | Read by (examples) |
+/// |---|---|---|
+/// | `bg` | [`quadraui::Theme::background`] | container/surface background fills |
+/// | `fg` | [`quadraui::Theme::foreground`] | generic chrome text |
+/// | `border` | [`quadraui::Theme::border_fg`] | bordered-surface border glyphs |
+/// | `accent` | [`quadraui::Theme::accent_fg`] | focus/active-state accents (`Form` toggle, slider fill) |
+/// | `padding` | [`quadraui::Style::padding`] | inner inset shared by `Button`/`Toast`/`Tooltip`/`ContextMenu`/`Palette`/`Dialog` |
+/// | `corner_radius` | [`quadraui::Style::corner_radius`] | rounded-rect radius shared by every rounded overlay |
+/// | `border_width` | [`quadraui::Style::border_width`] | border stroke width on a pixel backend (no-op on TUI, same as the token itself) |
+///
+/// `bg`/`fg`/`border`/`accent` decode from the same shapes
+/// [`quadraui::Color`]'s own `Deserialize` accepts (an `{"r","g","b","a"}`
+/// object or `[r, g, b[, a]]` array), plus a `"#rrggbb"`/`"#rrggbbaa"` hex
+/// string convenience — see `crate::wire::style_override_from_value`.
+///
+/// # Metric overrides don't re-run layout
+///
+/// `padding`/`corner_radius`/`border_width` only ever change how this
+/// subtree *paints* this frame — [`crate::render::natural_size`] always
+/// measures a `Styled` leaf by unwrapping straight through to the wrapped
+/// node with whatever theme/style was already active, so a `Content`/
+/// `Align`-sized sibling never shifts because of a metric override deeper
+/// in the tree. A future revision that needs a metric override to affect
+/// sizing would have to thread it into that measurement pass too.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StyleOverride {
+    pub bg: Option<Color>,
+    pub fg: Option<Color>,
+    pub border: Option<Color>,
+    pub accent: Option<Color>,
+    pub padding: Option<f32>,
+    pub corner_radius: Option<f32>,
+    pub border_width: Option<f32>,
+}
+
+impl StyleOverride {
+    /// `true` when every field is `None` — an override that changes
+    /// nothing, equivalent to no `"style"` key at all.
+    /// `crate::wire::style_override_from_value` folds an all-empty
+    /// `{"style": {}}` down to `None` via this check, rather than
+    /// threading a no-op [`LayoutNode::Styled`] wrapper through the tree.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Applies this override onto `theme`, leaving every field this
+    /// override didn't name unchanged.
+    pub fn apply_theme(&self, theme: Theme) -> Theme {
+        Theme {
+            background: self.bg.unwrap_or(theme.background),
+            foreground: self.fg.unwrap_or(theme.foreground),
+            border_fg: self.border.unwrap_or(theme.border_fg),
+            accent_fg: self.accent.unwrap_or(theme.accent_fg),
+            ..theme
+        }
+    }
+
+    /// [`Self::apply_theme`]'s [`quadraui::Style`] counterpart. `Style` is
+    /// `#[non_exhaustive]`, so this goes through its own `with_*` builder
+    /// methods rather than struct-update syntax.
+    pub fn apply_style(&self, style: Style) -> Style {
+        let mut style = style;
+        if let Some(padding) = self.padding {
+            style = style.with_padding(padding);
+        }
+        if let Some(corner_radius) = self.corner_radius {
+            style = style.with_corner_radius(corner_radius);
+        }
+        if let Some(border_width) = self.border_width {
+            style = style.with_border_width(border_width);
+        }
+        style
+    }
 }
 
 /// A [`LayoutNode::Row`]/[`LayoutNode::Column`]'s decoded shape: its child
@@ -782,6 +888,10 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
                 }
                 walk(what, &scroll_node.content, seen)
             }
+            // A `"style"` wrapper carries no id of its own -- it's purely
+            // a paint-time overlay around whatever node it wraps, so this
+            // walk passes straight through to it.
+            LayoutNode::Styled(styled) => walk(what, &styled.node, seen),
         }
     }
     let mut seen = HashSet::new();
@@ -1054,5 +1164,63 @@ mod tests {
         assert_eq!(child.size, SectionSize::EqualShare);
         assert_eq!(child.min, None);
         assert_eq!(child.max, None);
+    }
+
+    #[test]
+    fn style_override_default_is_empty() {
+        assert!(StyleOverride::default().is_empty());
+    }
+
+    #[test]
+    fn style_override_with_any_field_set_is_not_empty() {
+        let over = StyleOverride {
+            bg: Some(quadraui::Color::rgb(1, 2, 3)),
+            ..StyleOverride::default()
+        };
+        assert!(!over.is_empty());
+    }
+
+    #[test]
+    fn style_override_apply_theme_only_touches_named_fields() {
+        let base = Theme::default();
+        let over = StyleOverride {
+            bg: Some(quadraui::Color::rgb(10, 20, 30)),
+            ..StyleOverride::default()
+        };
+        let derived = over.apply_theme(base);
+        assert_eq!(derived.background, quadraui::Color::rgb(10, 20, 30));
+        // Every other field passes through unchanged.
+        assert_eq!(derived.foreground, base.foreground);
+        assert_eq!(derived.border_fg, base.border_fg);
+        assert_eq!(derived.accent_fg, base.accent_fg);
+    }
+
+    #[test]
+    fn style_override_apply_style_only_touches_named_fields() {
+        let base = Style::default();
+        let over = StyleOverride {
+            corner_radius: Some(99.0),
+            ..StyleOverride::default()
+        };
+        let derived = over.apply_style(base);
+        assert_eq!(derived.corner_radius, 99.0);
+        assert_eq!(derived.padding, base.padding);
+        assert_eq!(derived.border_width, base.border_width);
+    }
+
+    #[test]
+    fn validate_unique_leaf_ids_passes_through_a_styled_wrapper() {
+        let node = LayoutNode::Styled(LayoutStyled {
+            style: StyleOverride {
+                bg: Some(quadraui::Color::rgb(1, 1, 1)),
+                ..StyleOverride::default()
+            },
+            node: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                id: "a".to_string(),
+                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new("a"), "A")),
+                scroll_px: None,
+            })),
+        });
+        assert!(validate_unique_leaf_ids("test", &node).is_ok());
     }
 }

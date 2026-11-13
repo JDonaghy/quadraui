@@ -19,7 +19,8 @@ use crate::extra_paint::ExtraPaint;
 use crate::hit::{PaintedHit, ScrollChildHit};
 use crate::layout::{
     align_cross, justify_starts, quantise_horizontal, quantise_vertical, resolve_main_axis_sizes,
-    Align, LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LeafDescriptor, MainAxisSpec,
+    Align, LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutStyled, LeafDescriptor,
+    MainAxisSpec,
 };
 
 /// Owned decode of a render callback's returned descriptor set — one
@@ -578,7 +579,38 @@ pub fn paint_layout(
         LayoutNode::Scroll(scroll_node) => {
             paint_scroll(backend, area, scroll_node, hits, chrome_interaction);
         }
+        LayoutNode::Styled(styled) => {
+            paint_styled(backend, area, styled, hits, chrome_interaction);
+        }
     }
+}
+
+/// Paints a [`LayoutNode::Styled`] wrapper: derives a scoped
+/// `Theme`/`Style` from whatever `backend.theme()`/`backend.style()`
+/// already are (the parent's own, possibly already derived by an
+/// ancestor `Styled` node) by applying [`StyleOverride::apply_theme`]/
+/// [`StyleOverride::apply_style`], pushes the derived pair onto `backend`
+/// for the wrapped subtree's own paint, then restores the parent's
+/// values once that subtree has finished painting — the same "vary the
+/// theme per-pane" bracketing `quadraui::Backend::set_theme`'s own doc
+/// describes, just driven once per `Styled` node instead of once per
+/// host-level render pass. The restore runs even though nothing here can
+/// panic partway through today, matching every other `paint_*` function's
+/// own "always finish painting the whole subtree" contract.
+fn paint_styled(
+    backend: &mut dyn Backend,
+    area: Rect,
+    styled: &LayoutStyled,
+    hits: &mut Vec<PaintedHit>,
+    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
+) {
+    let parent_theme = backend.theme();
+    let parent_style = backend.style();
+    backend.set_theme(styled.style.apply_theme(parent_theme));
+    backend.set_style(styled.style.apply_style(parent_style));
+    paint_layout(backend, area, &styled.node, hits, chrome_interaction);
+    backend.set_theme(parent_theme);
+    backend.set_style(parent_style);
 }
 
 /// Paints a [`LayoutNode::Scroll`]: measures `scroll_node.content`'s
@@ -1200,6 +1232,13 @@ impl NaturalSize {
 /// axes — see [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for
 /// how each degrades a `None`.
 fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) -> NaturalSize {
+    // A `Styled` wrapper carries no geometry of its own -- unwrap straight
+    // through to whatever it wraps so a styled leaf still measures the
+    // same as an unstyled one. See `crate::layout::StyleOverride`'s own
+    // doc for why a metric override never reaches this measurement pass.
+    if let LayoutNode::Styled(styled) = node {
+        return natural_size(backend, &styled.node, line_height);
+    }
     let LayoutNode::Leaf(leaf) = node else {
         return NaturalSize {
             width: None,
@@ -1681,6 +1720,7 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
             }
         }
         LayoutNode::Scroll(scroll_node) => collect_leaf_tooltips(&scroll_node.content, out),
+        LayoutNode::Styled(styled) => collect_leaf_tooltips(&styled.node, out),
     }
 }
 
@@ -1782,7 +1822,7 @@ pub fn paint_leaf(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{EdgeInsets, Spacing};
+    use crate::layout::{EdgeInsets, Spacing, StyleOverride};
     use quadraui::{Decoration, StyledSpan, TextDisplayLine};
 
     /// A real font's reported char/line metrics (GTK/macOS/Win) — any
@@ -2157,6 +2197,111 @@ mod tests {
     fn vertical_split_min_quantises_against_line_height() {
         let (first, _second) = paint_split_with_min(SplitDirection::Vertical, 10.0, 10, 100);
         assert_eq!(first.height, 1.0);
+    }
+
+    /// Minimal [`quadraui::AppLogic`] around a `Row` of three `Button`
+    /// leaves, the middle one wrapped in its own [`LayoutNode::Styled`]
+    /// nested inside an outer [`LayoutNode::Styled`] wrapping the whole
+    /// row — the acceptance scenario for per-node style overrides: a
+    /// `"style"` override changes exactly the subtree it wraps, a nested
+    /// override composes with (and wins over) an ancestor's, and an
+    /// unstyled sibling is left alone.
+    struct StyledRowLogic {
+        engine: crate::engine::InteractionEngine,
+    }
+
+    impl quadraui::AppLogic for StyledRowLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let leaf = |id: &str, label: &str| {
+                LayoutNode::Leaf(LayoutLeaf {
+                    id: id.to_string(),
+                    descriptor: LeafDescriptor::Button(Button::new(WidgetId::new(id), label)),
+                    scroll_px: None,
+                })
+            };
+            let row = LayoutNode::Row(LayoutContainer::new(
+                vec![
+                    leaf("a", "Alpha"),
+                    LayoutNode::Styled(crate::layout::LayoutStyled {
+                        style: StyleOverride {
+                            fg: Some(quadraui::Color::rgb(0, 255, 0)),
+                            ..StyleOverride::default()
+                        },
+                        node: Box::new(leaf("b", "Bravo")),
+                    }),
+                    leaf("c", "Charlie"),
+                ],
+                Spacing::default(),
+            ));
+            let node = LayoutNode::Styled(crate::layout::LayoutStyled {
+                style: StyleOverride {
+                    fg: Some(quadraui::Color::rgb(255, 0, 0)),
+                    ..StyleOverride::default()
+                },
+                node: Box::new(row),
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(
+            &mut self,
+            _event: quadraui::UiEvent,
+            _backend: &mut dyn Backend,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+    }
+
+    #[test]
+    fn styled_wrapper_scopes_an_override_to_its_own_subtree_and_composes_with_nesting() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = StyledRowLogic {
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 42, 3);
+        driver.render();
+
+        let (ax, ay) = driver.find("Alpha").expect("Alpha should paint");
+        let (bx, by) = driver.find("Bravo").expect("Bravo should paint");
+        let (cx, cy) = driver.find("Charlie").expect("Charlie should paint");
+
+        let alpha_fg = driver
+            .style_at(ax as u16, ay as u16)
+            .expect("style at Alpha")
+            .fg;
+        let bravo_fg = driver
+            .style_at(bx as u16, by as u16)
+            .expect("style at Bravo")
+            .fg;
+        let charlie_fg = driver
+            .style_at(cx as u16, cy as u16)
+            .expect("style at Charlie")
+            .fg;
+
+        let red = quadraui::tui::ratatui_color(quadraui::Color::rgb(255, 0, 0));
+        let green = quadraui::tui::ratatui_color(quadraui::Color::rgb(0, 255, 0));
+        assert_eq!(
+            alpha_fg, red,
+            "Alpha has no override of its own, so it inherits the outer row's"
+        );
+        assert_eq!(
+            bravo_fg, green,
+            "Bravo's own nested override wins over the outer row's"
+        );
+        assert_eq!(
+            charlie_fg, red,
+            "Charlie (Bravo's sibling) is unaffected by Bravo's own override, \
+             and still inherits the outer row's"
+        );
     }
 
     /// The acceptance scenario for `"split"`: `padding: 12, margin: 4,

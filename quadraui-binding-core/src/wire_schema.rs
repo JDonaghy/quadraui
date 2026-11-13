@@ -894,6 +894,33 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("max", float_()),
         ]
     };
+
+    // An optional `"style"` sibling key, valid on every node-kind object
+    // below (`crate::wire::style_override_from_value` reads it off the
+    // same outer node dict `child_size_fields`/`wire_version_field` read
+    // theirs off) -- `crate::layout::StyleOverride`'s own wire shape: a
+    // dict of a known subset of `Theme` colour tokens and `Style` metric
+    // tokens, every one optional. `style_color_value` mirrors
+    // `crate::host::theme_color_value`'s hex-string convenience on top of
+    // the plain `Color` object shape.
+    let style_color_value = b.define(alias_doc(
+        "StyleColorValue",
+        uniont(vec![color.clone(), str_()]),
+        "A `\"style\"` colour token: a `Color` object, or a \"#rrggbb\"/\"#rrggbbaa\" hex string.",
+    ));
+    let style_value = b.define(obj_doc(
+        "StyleValue",
+        vec![
+            field_opt("bg", style_color_value.clone()),
+            field_opt("fg", style_color_value.clone()),
+            field_opt("border", style_color_value.clone()),
+            field_opt("accent", style_color_value.clone()),
+            field_opt("padding", float_()),
+            field_opt("corner_radius", float_()),
+            field_opt("border_width", float_()),
+        ],
+        "A per-node \"style\" override, scoped to that node's own subtree: \"bg\"/\"fg\"/\"border\"/\"accent\" override Theme colour tokens, \"padding\"/\"corner_radius\"/\"border_width\" override Style metric tokens. See docs/bindings-wire-format.md for the full token mapping.",
+    ));
     let layout_row_node = b.define(obj(
         "LayoutRowNode",
         [
@@ -905,6 +932,7 @@ pub fn schema() -> Vec<DefJson> {
                 field_opt("justify", lit(&["start", "center", "end", "space_between"])),
                 field_opt("align", lit(&["start", "center", "end", "stretch"])),
                 wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
             ],
             child_size_fields(),
         ]
@@ -921,6 +949,7 @@ pub fn schema() -> Vec<DefJson> {
                 field_opt("justify", lit(&["start", "center", "end", "space_between"])),
                 field_opt("align", lit(&["start", "center", "end", "stretch"])),
                 wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
             ],
             child_size_fields(),
         ]
@@ -947,6 +976,7 @@ pub fn schema() -> Vec<DefJson> {
                 field_opt("margin", float_()),
                 field_opt("gap", float_()),
                 wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
             ],
             child_size_fields(),
         ]
@@ -985,6 +1015,7 @@ pub fn schema() -> Vec<DefJson> {
                 field_opt("padding", padding_value.clone()),
                 field_opt("margin", float_()),
                 wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
             ],
             child_size_fields(),
         ]
@@ -1010,6 +1041,7 @@ pub fn schema() -> Vec<DefJson> {
                 field_opt("padding", padding_value.clone()),
                 field_opt("margin", float_()),
                 wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
             ],
             child_size_fields(),
         ]
@@ -1030,6 +1062,7 @@ pub fn schema() -> Vec<DefJson> {
             vec![
                 field("sidebar_panel", layout_sidebar_panel_payload),
                 wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
             ],
             child_size_fields(),
         ]
@@ -1053,6 +1086,7 @@ pub fn schema() -> Vec<DefJson> {
                 field_opt("padding", padding_value.clone()),
                 field_opt("margin", float_()),
                 wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
             ],
             child_size_fields(),
         ]
@@ -1095,6 +1129,7 @@ pub fn schema() -> Vec<DefJson> {
             vec![
                 field("split_tree", layout_split_tree_payload),
                 wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
             ],
             child_size_fields(),
         ]
@@ -2468,7 +2503,9 @@ pub fn schema() -> Vec<DefJson> {
     // the same `"size"`/`"min"`/`"max"` sibling keys every other
     // node-kind object above does -- `RenderFrameDict` (the flat shape,
     // never a row/column child) does not, so `render_frame_fields` stays
-    // untouched.
+    // untouched. Same reasoning for the `"style"` sibling key every other
+    // node-kind object above also takes.
+    leaf_fields.push(field_opt("style", style_value.clone()));
     leaf_fields.extend(child_size_fields());
     let layout_leaf_node = b.define(obj_doc(
         "LayoutLeafNode",
@@ -3563,6 +3600,7 @@ mod coverage {
             LayoutNode::SidebarPanel(_) => {}
             LayoutNode::SplitTree(_) => {}
             LayoutNode::Scroll(_) => {}
+            LayoutNode::Styled(_) => {}
         }
     }
 

@@ -15,6 +15,16 @@
 //! dormant pre-live one, not the live session's own, so a change (or a
 //! read) here would otherwise silently miss the terminal/window actually
 //! on screen.
+//!
+//! `setTheme`/`setStyle` above are whole-app-wide -- every `draw_*` call
+//! after them paints with the new values, everywhere. A render callback
+//! that wants to vary the theme/style for just one subtree (e.g. a
+//! destructive panel tinted red) instead sets an optional `"style"` key on
+//! any layout-tree node it returns -- see `docs/bindings-wire-format.md`'s
+//! own doc for that wire shape. That path is handled entirely inside
+//! `quadraui-binding-core` (`layout::StyleOverride`, `render::paint_layout`'s
+//! `Styled` arm), with no napi-rs method of its own: it rides the same
+//! render callback a tree already returns.
 
 use super::*;
 

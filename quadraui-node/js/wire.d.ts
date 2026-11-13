@@ -372,6 +372,20 @@ export interface PaddingSides {
 /** A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", "right", "bottom", "left"}` -- never both shapes at once. */
 export type PaddingValue = number | PaddingAxis | PaddingSides;
 
+/** A `"style"` colour token: a `Color` object, or a "#rrggbb"/"#rrggbbaa" hex string. */
+export type StyleColorValue = Color | string;
+
+/** A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. See docs/bindings-wire-format.md for the full token mapping. */
+export interface StyleValue {
+  bg?: StyleColorValue;
+  fg?: StyleColorValue;
+  border?: StyleColorValue;
+  accent?: StyleColorValue;
+  padding?: number;
+  corner_radius?: number;
+  border_width?: number;
+}
+
 export interface LayoutRowNode {
   row: LayoutNode[];
   padding?: PaddingValue;
@@ -380,6 +394,7 @@ export interface LayoutRowNode {
   justify?: "start" | "center" | "end" | "space_between";
   align?: "start" | "center" | "end" | "stretch";
   wire_version?: number;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -393,6 +408,7 @@ export interface LayoutColumnNode {
   justify?: "start" | "center" | "end" | "space_between";
   align?: "start" | "center" | "end" | "stretch";
   wire_version?: number;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -414,6 +430,7 @@ export interface LayoutSplitNode {
   margin?: number;
   gap?: number;
   wire_version?: number;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -445,6 +462,7 @@ export interface LayoutTabsNode {
   padding?: PaddingValue;
   margin?: number;
   wire_version?: number;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -465,6 +483,7 @@ export interface LayoutPanelNode {
   padding?: PaddingValue;
   margin?: number;
   wire_version?: number;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -480,6 +499,7 @@ export interface LayoutSidebarPanelPayload {
 export interface LayoutSidebarPanelNode {
   sidebar_panel: LayoutSidebarPanelPayload;
   wire_version?: number;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -497,6 +517,7 @@ export interface LayoutScrollNode {
   padding?: PaddingValue;
   margin?: number;
   wire_version?: number;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -527,6 +548,7 @@ export interface LayoutSplitTreePayload {
 export interface LayoutSplitTreeNode {
   split_tree: LayoutSplitTreePayload;
   wire_version?: number;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -1575,6 +1597,7 @@ export interface LayoutLeafNode {
   password?: PasswordDescriptor;
   textarea?: TextAreaDescriptor;
   markdown?: MarkdownDescriptor;
+  style?: StyleValue;
   size?: SectionSize;
   min?: number;
   max?: number;

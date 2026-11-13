@@ -342,6 +342,19 @@ class PaddingSides(TypedDict):
 # A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", "right", "bottom", "left"}` -- never both shapes at once.
 PaddingValue = Union[float, PaddingAxis, PaddingSides]
 
+# A `"style"` colour token: a `Color` object, or a "#rrggbb"/"#rrggbbaa" hex string.
+StyleColorValue = Union[Color, str]
+
+class StyleValue(TypedDict):
+    """A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. See docs/bindings-wire-format.md for the full token mapping."""
+    bg: NotRequired[StyleColorValue]
+    fg: NotRequired[StyleColorValue]
+    border: NotRequired[StyleColorValue]
+    accent: NotRequired[StyleColorValue]
+    padding: NotRequired[float]
+    corner_radius: NotRequired[float]
+    border_width: NotRequired[float]
+
 class LayoutRowNode(TypedDict):
     row: List[LayoutNode]
     padding: NotRequired[PaddingValue]
@@ -350,6 +363,7 @@ class LayoutRowNode(TypedDict):
     justify: NotRequired[Literal['start', 'center', 'end', 'space_between']]
     align: NotRequired[Literal['start', 'center', 'end', 'stretch']]
     wire_version: NotRequired[int]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -362,6 +376,7 @@ class LayoutColumnNode(TypedDict):
     justify: NotRequired[Literal['start', 'center', 'end', 'space_between']]
     align: NotRequired[Literal['start', 'center', 'end', 'stretch']]
     wire_version: NotRequired[int]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -381,6 +396,7 @@ class LayoutSplitNode(TypedDict):
     margin: NotRequired[float]
     gap: NotRequired[float]
     wire_version: NotRequired[int]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -409,6 +425,7 @@ class LayoutTabsNode(TypedDict):
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     wire_version: NotRequired[int]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -427,6 +444,7 @@ class LayoutPanelNode(TypedDict):
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     wire_version: NotRequired[int]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -440,6 +458,7 @@ class LayoutSidebarPanelPayload(TypedDict):
 class LayoutSidebarPanelNode(TypedDict):
     sidebar_panel: LayoutSidebarPanelPayload
     wire_version: NotRequired[int]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -455,6 +474,7 @@ class LayoutScrollNode(TypedDict):
     padding: NotRequired[PaddingValue]
     margin: NotRequired[float]
     wire_version: NotRequired[int]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -480,6 +500,7 @@ class LayoutSplitTreePayload(TypedDict):
 class LayoutSplitTreeNode(TypedDict):
     split_tree: LayoutSplitTreePayload
     wire_version: NotRequired[int]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -1435,6 +1456,7 @@ class LayoutLeafNode(TypedDict):
     password: NotRequired[PasswordDescriptor]
     textarea: NotRequired[TextAreaDescriptor]
     markdown: NotRequired[MarkdownDescriptor]
+    style: NotRequired[StyleValue]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
