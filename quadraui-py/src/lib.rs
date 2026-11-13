@@ -701,6 +701,71 @@ fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<
         .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
 }
 
+/// Which of [`QuiApp::show_overlay`]'s seven in-canvas overlay kinds a
+/// `kind` string names. The 13 existing `show_*`/`dismiss_*` methods
+/// (`show_context_menu`, `show_message_dialog`/`dismiss_message_dialog`,
+/// `show_toast`/`dismiss_toast`, `show_tooltip`/`hide_tooltip`,
+/// `show_completions`/`dismiss_completions`, `show_float`/`dismiss_float`,
+/// `show_rich_text_popup`/`dismiss_rich_text_popup`) are one-line forwards
+/// onto [`QuiApp::show_overlay`]/[`QuiApp::dismiss_overlay`] built on this
+/// enum; see those two methods' own docs for the shared `descriptor`/
+/// `anchor` shape each variant below expects.
+#[derive(Clone, Copy)]
+enum OverlayKind {
+    ContextMenu,
+    MessageDialog,
+    Toast,
+    Tooltip,
+    Completions,
+    Float,
+    RichTextPopup,
+}
+
+impl OverlayKind {
+    /// Parses one of `show_overlay`'s seven recognized `kind` strings,
+    /// prefixing an unrecognized one's error with `what` (the calling
+    /// method's own name).
+    fn parse(what: &str, kind: &str) -> PyResult<Self> {
+        match kind {
+            "context_menu" => Ok(Self::ContextMenu),
+            "message_dialog" => Ok(Self::MessageDialog),
+            "toast" => Ok(Self::Toast),
+            "tooltip" => Ok(Self::Tooltip),
+            "completions" => Ok(Self::Completions),
+            "float" => Ok(Self::Float),
+            "rich_text_popup" => Ok(Self::RichTextPopup),
+            other => Err(InvalidDescriptorError::new_err(format!(
+                "{what}: unknown overlay kind {other:?}; expected one of \"context_menu\", \
+                 \"message_dialog\", \"toast\", \"tooltip\", \"completions\", \"float\", \
+                 \"rich_text_popup\""
+            ))),
+        }
+    }
+}
+
+/// Looks up `key` in `dict`, raising `InvalidDescriptorError` (prefixed
+/// with `what`) rather than panicking or silently defaulting if it's
+/// missing. `show_overlay`'s own per-kind `descriptor` fields that have no
+/// primitive-level default (`"items"`, `"title"`, `"body"`, `"buttons"`)
+/// all read through this.
+fn dict_item<'py>(what: &str, dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+    dict.get_item(key)?
+        .ok_or_else(|| InvalidDescriptorError::new_err(format!("{what}: missing {key:?} key")))
+}
+
+/// Requires `anchor` to be `Some` for a `show_overlay` `kind` that needs
+/// one (every kind but `"message_dialog"`/`"toast"`), raising
+/// `InvalidDescriptorError` otherwise.
+fn require_anchor(
+    what: &str,
+    kind: &str,
+    anchor: Option<(f32, f32, f32, f32)>,
+) -> PyResult<(f32, f32, f32, f32)> {
+    anchor.ok_or_else(|| {
+        InvalidDescriptorError::new_err(format!("{what}: {kind:?} overlay needs an anchor"))
+    })
+}
+
 /// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
 /// `what` -- the same shape `open_path`/`move_to_trash`/... already use
 /// for `PlatformServices`' own `ServiceResult`-returning methods.
@@ -3966,6 +4031,209 @@ impl QuiApp {
         })
     }
 
+    /// Opens one of this app's seven in-canvas overlay kinds by name — the
+    /// generic counterpart [`Self::show_context_menu`]/
+    /// [`Self::show_message_dialog`]/[`Self::show_toast`]/
+    /// [`Self::show_tooltip`]/[`Self::show_completions`]/
+    /// [`Self::show_float`]/[`Self::show_rich_text_popup`] each forward
+    /// onto (see each one's own doc for the exact user-facing shape and
+    /// event-routing behavior its `kind` carries over unchanged).
+    ///
+    /// `kind` is one of `"context_menu"`, `"message_dialog"`, `"toast"`,
+    /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"` —
+    /// `InvalidDescriptorError` names the full list for anything else.
+    /// `descriptor` holds that kind's own fields: for `"toast"`,
+    /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"`, the
+    /// same dict shape the matching `show_*` method's own `Deserialize`
+    /// primitive documents (plus an extra `"corner"` key for `"toast"`,
+    /// the named method's own scalar argument); for `"context_menu"`, a
+    /// single `"items"` key wrapping that method's own list argument; for
+    /// `"message_dialog"`, `"title"`/`"body"`/`"buttons"`/`"severity"`
+    /// keys matching that method's own scalar arguments.
+    ///
+    /// `anchor` reshapes each kind's own positional argument into one
+    /// `(f32, f32, f32, f32)` tuple: the first two components are the
+    /// `(x, y)` pair `"context_menu"`/`"completions"`/`"rich_text_popup"`
+    /// each already take as a 2-tuple, all four are `"tooltip"`'s own
+    /// `(x, y, width, height)` anchor rect, the first two double as
+    /// `"float"`'s own `width`/`height`, and `"message_dialog"`/`"toast"`
+    /// ignore it entirely (`None` is fine for both; every other kind
+    /// raises `InvalidDescriptorError` if `anchor` is `None`).
+    ///
+    /// Returns an id this overlay can later be named by in
+    /// [`Self::dismiss_overlay`]: the descriptor's own `"id"` field for
+    /// every kind that has one (`"toast"`, `"tooltip"`, `"completions"`,
+    /// `"float"`, `"rich_text_popup"`), or a fixed sentinel —
+    /// `kind` itself — for the two that don't (`"context_menu"`,
+    /// `"message_dialog"`).
+    ///
+    /// Same "call from top-level script code only" restriction as
+    /// [`Self::show_message_dialog`] — every kind routes through this
+    /// app's one `(Backend, PyAppLogic)` pair, so a reentrant call from
+    /// inside the registered event handler or render callback hits the
+    /// same PyO3 runtime-borrow wall.
+    #[pyo3(signature = (kind, descriptor, anchor=None))]
+    fn show_overlay(
+        &mut self,
+        kind: &str,
+        descriptor: &Bound<'_, PyDict>,
+        anchor: Option<(f32, f32, f32, f32)>,
+    ) -> PyResult<String> {
+        let overlay_kind = OverlayKind::parse("show_overlay", kind)?;
+        match overlay_kind {
+            OverlayKind::ContextMenu => {
+                let items: Vec<ContextMenuItem> =
+                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "items")?)
+                        .map_err(|err| {
+                            InvalidDescriptorError::new_err(format!(
+                                "show_overlay: invalid items: {err}"
+                            ))
+                        })?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                self.open_overlay(|backend, app_logic| {
+                    app_logic
+                        .engine
+                        .open_context_menu(items, Point::new(x, y), backend);
+                })?;
+                Ok(kind.to_string())
+            }
+            OverlayKind::MessageDialog => {
+                let title: String = dict_item("show_overlay", descriptor, "title")?.extract()?;
+                let body: String = dict_item("show_overlay", descriptor, "body")?.extract()?;
+                let buttons: Vec<DialogButton> =
+                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "buttons")?)
+                        .map_err(|err| {
+                            InvalidDescriptorError::new_err(format!(
+                                "show_overlay: invalid buttons: {err}"
+                            ))
+                        })?;
+                let severity: Option<String> = descriptor
+                    .get_item("severity")?
+                    .map(|v| v.extract())
+                    .transpose()?;
+                let severity = severity
+                    .map(|s| parse_dialog_severity("show_overlay", &s))
+                    .transpose()?;
+                let opts = message_dialog_options_from_buttons(title, body, buttons, severity)
+                    .map_err(|err| {
+                        InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
+                    })?;
+                self.open_overlay(|backend, app_logic| {
+                    app_logic.engine.open_message_dialog(opts, backend);
+                })?;
+                Ok(kind.to_string())
+            }
+            OverlayKind::Toast => {
+                let toast: Toast = decode("show_overlay", descriptor)?;
+                let corner: Option<String> = descriptor
+                    .get_item("corner")?
+                    .map(|v| v.extract())
+                    .transpose()?;
+                let corner = corner
+                    .map(|c| parse_toast_corner("show_overlay", &c))
+                    .transpose()?;
+                let id = toast.id.to_string();
+                self.open_overlay(|_backend, app_logic| {
+                    app_logic
+                        .engine
+                        .show_toast(toast, corner.unwrap_or_default());
+                })?;
+                Ok(id)
+            }
+            OverlayKind::Tooltip => {
+                let tooltip: Tooltip = decode("show_overlay", descriptor)?;
+                let (x, y, w, h) = require_anchor("show_overlay", kind, anchor)?;
+                let id = tooltip.id.to_string();
+                self.open_overlay(|_backend, app_logic| {
+                    app_logic
+                        .engine
+                        .show_tooltip(tooltip, Rect::new(x, y, w, h));
+                })?;
+                Ok(id)
+            }
+            OverlayKind::Completions => {
+                let completions: Completions = decode("show_overlay", descriptor)?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let id = completions.id.to_string();
+                self.open_overlay(|_backend, app_logic| {
+                    app_logic
+                        .engine
+                        .show_completions(completions, Point::new(x, y));
+                })?;
+                Ok(id)
+            }
+            OverlayKind::Float => {
+                let float: Float = decode("show_overlay", descriptor)?;
+                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let measure = FloatMeasure::new(width, height);
+                let id = float.id.to_string();
+                self.open_overlay(|backend, app_logic| {
+                    app_logic.engine.show_float(float, measure, backend);
+                })?;
+                Ok(id)
+            }
+            OverlayKind::RichTextPopup => {
+                let popup: RichTextPopup = decode("show_overlay", descriptor)?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let id = popup.id.to_string();
+                self.open_overlay(|_backend, app_logic| {
+                    app_logic
+                        .engine
+                        .show_rich_text_popup(popup, Point::new(x, y));
+                })?;
+                Ok(id)
+            }
+        }
+    }
+
+    /// Closes the overlay named by `id` — the generic counterpart
+    /// [`Self::dismiss_message_dialog`]/[`Self::dismiss_toast`]/
+    /// [`Self::hide_tooltip`]/[`Self::dismiss_completions`]/
+    /// [`Self::dismiss_float`]/[`Self::dismiss_rich_text_popup`] each
+    /// forward onto, plus a `"context_menu"` case none of those six had a
+    /// dismiss counterpart for at all. Returns whether an overlay was
+    /// actually open to close; no event is dispatched either way — the
+    /// same "close without resolving" shape every one of those six
+    /// methods already documents.
+    ///
+    /// `id` is either one of `show_overlay`'s own six singleton
+    /// sentinels (`"context_menu"`, `"message_dialog"`, `"tooltip"`,
+    /// `"completions"`, `"float"`, `"rich_text_popup"` — closing the
+    /// matching kind's open overlay regardless of whether it's the one
+    /// that returned this exact id) or any other string, read as a toast
+    /// id (closing the toast with that id, if one is showing). A toast
+    /// whose own id happens to collide with one of those six sentinels is
+    /// the one case this can't address by id; name toasts something else.
+    fn dismiss_overlay(&mut self, id: &str) -> PyResult<bool> {
+        match id {
+            "context_menu" => self.dismiss_via(|backend, app_logic| {
+                let was_open = app_logic.engine.ctx_menu_mut().is_open();
+                if was_open {
+                    app_logic.engine.ctx_menu_mut().close(backend);
+                }
+                was_open
+            }),
+            "message_dialog" => self
+                .dismiss_via(|backend, app_logic| app_logic.engine.close_message_dialog(backend)),
+            "tooltip" => self.dismiss_via(|_backend, app_logic| app_logic.engine.hide_tooltip()),
+            "completions" => {
+                self.dismiss_via(|_backend, app_logic| app_logic.engine.dismiss_completions())
+            }
+            "float" => {
+                self.dismiss_via(|backend, app_logic| app_logic.engine.dismiss_float(backend))
+            }
+            "rich_text_popup" => {
+                self.dismiss_via(|_backend, app_logic| app_logic.engine.dismiss_rich_text_popup())
+            }
+            toast_id => {
+                let toast_id = WidgetId::new(toast_id);
+                self.dismiss_via(move |_backend, app_logic| {
+                    app_logic.engine.dismiss_toast(toast_id)
+                })
+            }
+        }
+    }
+
     /// Opens a right-click-style popup menu at `position` (view-local
     /// coordinates) built from `items` — a list of dicts, each matching
     /// `ContextMenuItem`'s shape (`id`, `label`, `detail`, `disabled`,
@@ -3998,25 +4266,21 @@ impl QuiApp {
     /// see the module doc's "cannot call back into `QuiApp`" note. From
     /// inside a handler, call [`QuiAppActions::show_context_menu`] (via
     /// [`QuiApp::actions`]) instead — see that type's doc for why it can
-    /// succeed where this can't.
+    /// succeed where this can't. A one-line forward onto
+    /// [`Self::show_overlay`].
     fn show_context_menu(
         &mut self,
         items: &Bound<'_, PyList>,
         position: (f32, f32),
     ) -> PyResult<()> {
-        let items: Vec<ContextMenuItem> =
-            pythonize::depythonize(items.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!("show_context_menu: invalid items: {err}"))
-            })?;
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            app_logic
-                .engine
-                .open_context_menu(items, Point::new(position.0, position.1), backend);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        let descriptor = PyDict::new(items.py());
+        descriptor.set_item("items", items)?;
+        self.show_overlay(
+            "context_menu",
+            &descriptor,
+            Some((position.0, position.1, 0.0, 0.0)),
+        )?;
+        Ok(())
     }
 
     /// Opens an in-canvas confirm/alert/prompt dialog built from `title`/
@@ -4077,6 +4341,7 @@ impl QuiApp {
     /// list, keyboard-focus cursor rather than a blocking popup) needs a
     /// differently-shaped surface than this "one call, blocks input
     /// until resolved" method and isn't wired here either.
+    /// A one-line forward onto [`Self::show_overlay`].
     #[pyo3(signature = (title, body, buttons, severity=None))]
     fn show_message_dialog(
         &mut self,
@@ -4085,26 +4350,15 @@ impl QuiApp {
         buttons: &Bound<'_, PyList>,
         severity: Option<String>,
     ) -> PyResult<()> {
-        let buttons: Vec<DialogButton> =
-            pythonize::depythonize(buttons.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "show_message_dialog: invalid buttons: {err}"
-                ))
-            })?;
-        let severity = severity
-            .map(|s| parse_dialog_severity("show_message_dialog", &s))
-            .transpose()?;
-        let opts =
-            message_dialog_options_from_buttons(title, body, buttons, severity).map_err(|err| {
-                InvalidDescriptorError::new_err(format!("show_message_dialog: {err}"))
-            })?;
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            app_logic.engine.open_message_dialog(opts, backend);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        let descriptor = PyDict::new(buttons.py());
+        descriptor.set_item("title", title)?;
+        descriptor.set_item("body", body)?;
+        descriptor.set_item("buttons", buttons)?;
+        if let Some(severity) = severity {
+            descriptor.set_item("severity", severity)?;
+        }
+        self.show_overlay("message_dialog", &descriptor, None)?;
+        Ok(())
     }
 
     /// Closes the open message dialog (if any) without resolving it —
@@ -4113,17 +4367,9 @@ impl QuiApp {
     /// top-level script code without driving it through input; mirrors
     /// `show_message_dialog`'s own "call from top-level script code only"
     /// restriction and re-renders so `screen()` reflects the dismissal
-    /// immediately.
+    /// immediately. A one-line forward onto [`Self::dismiss_overlay`].
     fn dismiss_message_dialog(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            let closed = app_logic.engine.close_message_dialog(backend);
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay("message_dialog")
     }
 
     // ── Remaining in-canvas overlays: Toast / Tooltip / Completions /
@@ -4137,7 +4383,8 @@ impl QuiApp {
     // reflect the open overlay without a separate step. Call each from
     // top-level script code only, never from inside the registered event
     // handler or render callback — same PyO3 runtime-borrow wall
-    // `show_message_dialog`'s own doc explains.
+    // `show_message_dialog`'s own doc explains. Each is a one-line
+    // forward onto `show_overlay`/`dismiss_overlay`.
 
     /// Shows `toast` (a dict matching [`quadraui::Toast`]'s shape — `id`,
     /// `title`, `body`, `severity`, `actions`, `accent`) stacked in
@@ -4157,33 +4404,19 @@ impl QuiApp {
     /// [`QuiAppActions::show_toast`] (via [`QuiApp::actions`]) instead.
     #[pyo3(signature = (toast, corner=None))]
     fn show_toast(&mut self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
-        let toast: Toast = decode("show_toast", toast)?;
-        let corner = corner
-            .map(|c| parse_toast_corner("show_toast", &c))
-            .transpose()?;
-        self.guarded(|app| {
-            app.driver
-                .app_mut()
-                .engine
-                .show_toast(toast, corner.unwrap_or_default());
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        let descriptor = toast.copy()?;
+        if let Some(corner) = corner {
+            descriptor.set_item("corner", corner)?;
+        }
+        self.show_overlay("toast", &descriptor, None)?;
+        Ok(())
     }
 
     /// Closes the toast with this id, if showing. Returns whether one was
     /// closed. No event is dispatched — mirrors `dismiss_message_dialog`'s
     /// "close without resolving" shape.
     fn dismiss_toast(&mut self, id: String) -> PyResult<bool> {
-        self.guarded(|app| {
-            let closed = app.driver.app_mut().engine.dismiss_toast(WidgetId::new(id));
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay(&id)
     }
 
     /// Shows `tooltip` (a dict matching [`quadraui::Tooltip`]'s shape —
@@ -4202,26 +4435,13 @@ impl QuiApp {
         tooltip: &Bound<'_, PyDict>,
         anchor: (f32, f32, f32, f32),
     ) -> PyResult<()> {
-        let tooltip: Tooltip = decode("show_tooltip", tooltip)?;
-        let anchor = Rect::new(anchor.0, anchor.1, anchor.2, anchor.3);
-        self.guarded(|app| {
-            app.driver.app_mut().engine.show_tooltip(tooltip, anchor);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        self.show_overlay("tooltip", tooltip, Some(anchor))?;
+        Ok(())
     }
 
     /// Hides the open tooltip (if any). Returns whether one was open.
     fn hide_tooltip(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let hidden = app.driver.app_mut().engine.hide_tooltip();
-            if hidden {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(hidden)
-        })
+        self.dismiss_overlay("tooltip")
     }
 
     /// Shows `completions` (a dict matching [`quadraui::Completions`]'s
@@ -4238,30 +4458,18 @@ impl QuiApp {
         completions: &Bound<'_, PyDict>,
         cursor: (f32, f32),
     ) -> PyResult<()> {
-        let completions: Completions = decode("show_completions", completions)?;
-        let cursor = Point::new(cursor.0, cursor.1);
-        self.guarded(|app| {
-            app.driver
-                .app_mut()
-                .engine
-                .show_completions(completions, cursor);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        self.show_overlay(
+            "completions",
+            completions,
+            Some((cursor.0, cursor.1, 0.0, 0.0)),
+        )?;
+        Ok(())
     }
 
     /// Closes the open completions popup (if any) without reporting a
     /// selection. Returns whether one was open.
     fn dismiss_completions(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let closed = app.driver.app_mut().engine.dismiss_completions();
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay("completions")
     }
 
     /// Opens `float` (a dict matching [`quadraui::Float`]'s shape — `id`,
@@ -4281,29 +4489,14 @@ impl QuiApp {
     /// Escape, matching [`quadraui::ModalStack::top_focusable`]'s own
     /// "never steals keys" doc.
     fn show_float(&mut self, float: &Bound<'_, PyDict>, width: f32, height: f32) -> PyResult<()> {
-        let float: Float = decode("show_float", float)?;
-        let measure = FloatMeasure::new(width, height);
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            app_logic.engine.show_float(float, measure, backend);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        self.show_overlay("float", float, Some((width, height, 0.0, 0.0)))?;
+        Ok(())
     }
 
     /// Closes the open float (if any) with no event. Returns whether one
     /// was open.
     fn dismiss_float(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            let closed = app_logic.engine.dismiss_float(backend);
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay("float")
     }
 
     /// Shows `popup` (a dict matching [`quadraui::RichTextPopup`]'s shape
@@ -4321,30 +4514,18 @@ impl QuiApp {
         popup: &Bound<'_, PyDict>,
         anchor: (f32, f32),
     ) -> PyResult<()> {
-        let popup: RichTextPopup = decode("show_rich_text_popup", popup)?;
-        let anchor = Point::new(anchor.0, anchor.1);
-        self.guarded(|app| {
-            app.driver
-                .app_mut()
-                .engine
-                .show_rich_text_popup(popup, anchor);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        self.show_overlay(
+            "rich_text_popup",
+            popup,
+            Some((anchor.0, anchor.1, 0.0, 0.0)),
+        )?;
+        Ok(())
     }
 
     /// Closes the open rich-text popup (if any) without reporting a link
     /// click. Returns whether one was open.
     fn dismiss_rich_text_popup(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let closed = app.driver.app_mut().engine.dismiss_rich_text_popup();
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay("rich_text_popup")
     }
 
     /// Empties a slot (one of the integers returned by an `insert_*` call),
@@ -5824,6 +6005,45 @@ impl QuiApp {
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
             Ok(kind.to_string())
+        })
+    }
+
+    /// Shared body of every [`QuiApp::show_overlay`] match arm: runs
+    /// `open` against this app's live `(Backend, PyAppLogic)` pair, then
+    /// re-renders so `screen()`/`screen_contains()` reflect the newly
+    /// opened overlay without a separate step — the same immediate-render
+    /// contract each of the 13 kind-specific `show_*` methods already
+    /// documents.
+    fn open_overlay(
+        &mut self,
+        open: impl FnOnce(&mut dyn Backend, &mut PyAppLogic),
+    ) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            open(backend, app_logic);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Shared body of every [`QuiApp::dismiss_overlay`] match arm: runs
+    /// `close` against this app's live `(Backend, PyAppLogic)` pair,
+    /// re-rendering only when it reports something was actually closed —
+    /// the same "no-op re-render" contract each of the six kind-specific
+    /// `dismiss_*`/`hide_tooltip` methods already documents.
+    fn dismiss_via(
+        &mut self,
+        close: impl FnOnce(&mut dyn Backend, &mut PyAppLogic) -> bool,
+    ) -> PyResult<bool> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let closed = close(backend, app_logic);
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
         })
     }
 
