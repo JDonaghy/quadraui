@@ -15,7 +15,7 @@ use quadraui::{
     TextInputHit, TextInputMeasure, UiEvent, WidgetId,
 };
 
-use crate::extra_paint::extra_as;
+use crate::extra_paint::{extra_as, extra_as_text_input, PasswordInput};
 use crate::hit::PaintedHit;
 
 /// Per-widget cache of the live [`TextEditor`] session behind a standalone
@@ -191,23 +191,38 @@ pub fn apply_text_input_edit(
 }
 
 /// Resolves a `CharTyped`/`ClipboardPaste` landing on the currently focused
-/// [`TextInput`] extra into the [`FormEvent::TextInputChanged`] the insert
-/// produced. Returns `None` when nothing is focused, the focused widget
-/// isn't a `TextInput`, or it has scrolled out of this frame's hit map.
+/// `TextInput`/`PasswordInput`/`TextArea` extra (via
+/// [`extra_as_text_input`]) into the [`FormEvent::TextInputChanged`] the
+/// insert produced. Returns `None` when nothing is focused, the focused
+/// widget is none of those three, or it has scrolled out of this frame's
+/// hit map. A [`PasswordInput`] strips any `'\n'` out of the inserted text
+/// first — [`PasswordInput::as_form`]'s doc keeps `inner` to exactly one
+/// line, and unlike `Enter` (caught earlier by
+/// [`text_input_key_event`]'s own commit arm before `EditOp::from_key` is
+/// even reached), nothing upstream of this call stops an IME commit or a
+/// multi-line clipboard paste from inserting one.
 pub fn text_input_insert_event(
     focused: WidgetId,
     hit_map: &[PaintedHit],
     op: EditOp,
     text_editors: &TextEditorCache,
 ) -> Option<UiEvent> {
-    let text_input = hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::Extra { id, extra, .. } if *id == focused => extra_as::<TextInput>(extra),
+    let (text_input, is_password) = hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Extra { id, extra, .. } if *id == focused => {
+            extra_as_text_input(extra).map(|ti| (ti, extra_as::<PasswordInput>(extra).is_some()))
+        }
         _ => None,
     })?;
+    let op = match (is_password, op) {
+        (true, EditOp::InsertChar('\n')) => return None,
+        (true, EditOp::InsertText(text)) => EditOp::InsertText(text.replace(['\n', '\r'], "")),
+        (_, op) => op,
+    };
     apply_text_input_edit(focused, text_input, op, text_editors)
 }
 
-/// Resolves a `MouseDown` landing on a standalone [`TextInput`] extra's
+/// Resolves a `MouseDown` landing on a standalone `TextInput`/
+/// `PasswordInput`/`TextArea` extra's (via [`extra_as_text_input`])
 /// [`crate::hit::HitDetail::ExtraBody`] into an [`EditOp::SetCursor`]
 /// placing the caret under the click, via [`quadraui::TextInput::layout`]'s
 /// own metrics-aware hit-test — the same per-click resolution
@@ -221,8 +236,8 @@ pub fn text_input_insert_event(
 /// *next* keystroke on this widget starts from the clicked position
 /// instead of wherever the cursor was left after the previous edit (or
 /// `(0, 0)` if this is the first interaction). Returns `None` outright
-/// (no cache write) when `id` isn't painted as a `TextInput` extra this
-/// frame.
+/// (no cache write) when `id` isn't painted as one of those three extras
+/// this frame.
 pub fn text_input_click_event(
     hit_map: &[PaintedHit],
     id: WidgetId,
@@ -236,7 +251,7 @@ pub fn text_input_click_event(
             area,
             extra,
             ..
-        } if *hit_id == id => extra_as::<TextInput>(extra).map(|ti| (*area, ti)),
+        } if *hit_id == id => extra_as_text_input(extra).map(|ti| (*area, ti)),
         _ => None,
     })?;
     let layout = text_input.layout(area, measure);

@@ -1228,7 +1228,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("focused", bool_()),
         ],
     ));
-    let password_descriptor = b.define(obj(
+    let password_descriptor = b.define(obj_doc(
         "PasswordDescriptor",
         vec![
             field("id", re("WidgetId")),
@@ -1237,17 +1237,22 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("has_focus", bool_()),
             field_opt("mask_char", str_()),
         ],
+        "`mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode.",
     ));
+    // Mirrors `TextArea`'s own hand-written `Deserialize` in
+    // `extra_paint.rs` (`id`/`value`/`placeholder`/`cursor`/`has_focus`/
+    // `visible_rows`), NOT `TextInputDescriptor` above, even though both
+    // are standalone-leaf siblings of it -- `TextArea::inner` is a plain
+    // single-line-shaped `TextInput` buffer decoded from a flat `value`
+    // string and a byte-offset `cursor`, not `TextInputDescriptor`'s own
+    // multi-line `lines`/`cursor_line`/`cursor_col` convention.
     let textarea_descriptor = b.define(obj(
-        "TextareaDescriptor",
+        "TextAreaDescriptor",
         vec![
             field("id", re("WidgetId")),
-            field("lines", list(str_())),
-            field_opt("cursor_line", int_()),
-            field_opt("cursor_col", int_()),
+            field_opt("value", str_()),
             field_opt("placeholder", nullable(str_())),
-            field_opt("scroll_offset", int_()),
-            field_opt("scroll_col", int_()),
+            field_opt("cursor", nullable(int_())),
             field_opt("has_focus", bool_()),
             field_opt("visible_rows", int_()),
         ],

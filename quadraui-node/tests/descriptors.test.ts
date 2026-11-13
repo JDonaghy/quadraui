@@ -487,6 +487,80 @@ const INLINE_LEAF_CASES: Array<{
       ["ti:1", { TextInputChanged: { id: "ti:1", value: "!hello" } }],
     ],
   },
+  {
+    name: "checkbox",
+    tree: { row: [{ id: "cb:1", checkbox: { id: "cb:1", value: false } }] },
+    events: [{ MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} } }],
+    expected: [
+      { FocusChanged: "cb:1" },
+      ["cb:1", { ToggleChanged: { id: "cb:1", value: true } }],
+    ],
+  },
+  {
+    name: "slider",
+    tree: {
+      row: [
+        { id: "sl:1", slider: { id: "sl:1", value: 0.0, min: 0.0, max: 10.0, step: 1.0 } },
+      ],
+    },
+    events: [
+      // x: 0.0 lands focus on the slider without moving it -- the mapped
+      // fraction is 0.0, same as the current value -- so the second event
+      // (Right) is what actually exercises the change.
+      { MouseDown: { button: "Left", position: { x: 0.0, y: 0.0 }, modifiers: {} } },
+      { KeyPressed: { key: { Named: "Right" }, modifiers: {}, repeat: false } },
+    ],
+    expected: [
+      { FocusChanged: "sl:1" },
+      null,
+      ["sl:1", { SliderChanged: { id: "sl:1", value: 1.0 } }],
+    ],
+  },
+  {
+    name: "select",
+    tree: { row: [{ id: "se:1", select: { id: "se:1", options: ["One", "Two", "Three"] } }] },
+    events: [
+      { MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} } },
+      { KeyPressed: { key: { Named: "Down" }, modifiers: {}, repeat: false } },
+    ],
+    expected: [
+      { FocusChanged: "se:1" },
+      // Unlike `radio_group`'s click (unclaimed), a click on a standalone
+      // `select` leaf steps the selection itself, so it reaches the
+      // handler as `DropdownChanged` too, not `null`.
+      ["se:1", { DropdownChanged: { id: "se:1", selected_idx: 1 } }],
+      ["se:1", { DropdownChanged: { id: "se:1", selected_idx: 1 } }],
+    ],
+  },
+  {
+    name: "password",
+    tree: { row: [{ id: "pw:1", password: { id: "pw:1", value: "hi" } }] },
+    events: [
+      { MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} } },
+      { CharTyped: "!" },
+    ],
+    expected: [
+      { FocusChanged: "pw:1" },
+      null,
+      ["pw:1", { TextInputChanged: { id: "pw:1", value: "hi!" } }],
+    ],
+  },
+  {
+    name: "textarea",
+    tree: { row: [{ id: "ta:1", textarea: { id: "ta:1", value: "hi" } }] },
+    events: [
+      { MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} } },
+      { KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false } },
+    ],
+    expected: [
+      { FocusChanged: "ta:1" },
+      null,
+      // The focusing click lands at column 0 (the default cursor position
+      // for a textarea with no explicit `cursor`), so Enter's inserted
+      // newline lands before "hi", not after it.
+      ["ta:1", { TextInputChanged: { id: "ta:1", value: "\nhi" } }],
+    ],
+  },
 ];
 
 for (const { name, tree, events, expected } of INLINE_LEAF_CASES) {

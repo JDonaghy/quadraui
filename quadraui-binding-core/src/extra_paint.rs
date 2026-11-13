@@ -100,6 +100,27 @@ pub fn extra_as<T: 'static>(extra: &Rc<dyn ExtraPaint>) -> Option<&T> {
     (extra.as_ref() as &dyn std::any::Any).downcast_ref::<T>()
 }
 
+/// Recovers the plain [`TextInput`] driving the matched extra's own
+/// typing/cursor/selection, whether `extra` is a bare standalone
+/// `TextInput` or one of [`PasswordInput`]/[`TextArea`]'s `inner` — all
+/// three reuse [`quadraui::TextEditor`] against an ordinary `TextInput`
+/// buffer verbatim (masked or multi-line only at paint time, via each's
+/// own `as_form`), so [`crate::text_input::text_input_click_event`]/
+/// [`crate::text_input::text_input_insert_event`] can place a caret or
+/// insert typed/pasted text on any of the three through one call site.
+pub fn extra_as_text_input(extra: &Rc<dyn ExtraPaint>) -> Option<&TextInput> {
+    if let Some(text_input) = extra_as::<TextInput>(extra) {
+        return Some(text_input);
+    }
+    if let Some(password) = extra_as::<PasswordInput>(extra) {
+        return Some(&password.inner);
+    }
+    if let Some(text_area) = extra_as::<TextArea>(extra) {
+        return Some(&text_area.inner);
+    }
+    None
+}
+
 impl ExtraPaint for ProgressBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_progress(area, self);
@@ -408,7 +429,7 @@ fn single_field_form(id: WidgetId, kind: FieldKind, disabled: bool, focused: boo
 /// `slider_default_step` — the standalone leaf's wire default needs the
 /// identical `1.0`, since it decodes straight into a [`FieldKind::Slider`]
 /// via [`single_field_form`].
-fn checkbox_slider_default_step() -> f32 {
+fn slider_default_step() -> f32 {
     1.0
 }
 
@@ -465,16 +486,16 @@ impl ExtraPaint for Checkbox {
 /// [`FieldKind::Slider`], reached via the `"slider"` extra kind. Paints
 /// through [`single_field_form`] (see its doc);
 /// [`crate::semantic::slider_click_event`]/[`crate::semantic::slider_key_event`]
-/// supply Left/Right/Up/Down/Home/End stepping and a click-to-nudge, since
-/// (like [`Checkbox`] above) `Form` itself has no keyboard handling for a
-/// bare `Slider` field.
+/// supply Left/Right/Up/Down/Home/End stepping and a click-to-track-position
+/// mapping, since (like [`Checkbox`] above) `Form` itself has no keyboard
+/// handling for a bare `Slider` field.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Slider {
     pub id: WidgetId,
     pub value: f32,
     pub min: f32,
     pub max: f32,
-    #[serde(default = "checkbox_slider_default_step")]
+    #[serde(default = "slider_default_step")]
     pub step: f32,
     #[serde(default)]
     pub disabled: bool,
@@ -589,14 +610,17 @@ fn password_input_default_mask() -> char {
 /// A standalone masked single-line input — the layout-leaf lift of
 /// [`FieldKind::PasswordInput`], reached via the `"password"` extra kind.
 /// The real value lives in `inner` (a plain [`quadraui::TextInput`], always
-/// kept to exactly one line — see [`crate::semantic::password_key_event`]), so typing/
-/// cursor/selection reuse [`quadraui::TextEditor`] and
-/// [`crate::text_input::text_input_key_event`] verbatim rather than a
-/// second text-editing implementation; only [`PasswordInput::as_form`]'s
-/// paint-time bridge differs from a bare standalone `TextInput`, masking
-/// every character so the screen never shows the plaintext — matching
-/// `FieldKind::PasswordInput`'s own "value is stored in plaintext; only
-/// rendering is masked" contract.
+/// kept to exactly one line — `Enter` commits rather than inserting `'\n'`
+/// (via [`crate::semantic::password_key_event`]'s forward to
+/// [`crate::text_input::text_input_key_event`]), and
+/// [`crate::text_input::text_input_insert_event`] strips any `'\n'` out of
+/// an IME commit or clipboard paste before it ever reaches `inner`), so
+/// typing/cursor/selection otherwise reuse [`quadraui::TextEditor`]
+/// verbatim rather than a second text-editing implementation; only
+/// [`PasswordInput::as_form`]'s paint-time bridge differs from a bare
+/// standalone `TextInput`, masking every character so the screen never
+/// shows the plaintext — matching `FieldKind::PasswordInput`'s own "value
+/// is stored in plaintext; only rendering is masked" contract.
 #[derive(Debug, Clone)]
 pub struct PasswordInput {
     pub inner: TextInput,
@@ -1899,10 +1923,11 @@ mod tests {
         );
     }
 
-    /// Right/Up (keyboard) and a click (mouse) both step the value up by
-    /// `step`, reaching the handler as [`FormEvent::SliderChanged`] — the
-    /// keyboard operability `FieldKind::Slider` has no generic
-    /// `FormController` arm for today.
+    /// Right/Up (keyboard) steps the value up by `step`; a click (mouse)
+    /// maps the click's x-position within the track to a value — reaching
+    /// the handler as [`FormEvent::SliderChanged`] either way, matching
+    /// `FieldKind::Slider`'s own "click-and-drag on the track updates
+    /// value" contract rather than a fixed one-`step` nudge.
     #[test]
     fn slider_leaf_renders_clicks_and_keys_step_through_the_interaction_engine() {
         let id = WidgetId::new("sl:1");
@@ -1920,16 +1945,19 @@ mod tests {
         );
 
         let area = leaf_area(&driver, id);
-        driver.click(area.x, area.y);
+        // One cell short of the track's right edge, so the mapped fraction
+        // is close to (but short of) `1.0` — proving the click landed where
+        // the pointer was, not just "somewhere on the body".
+        driver.click(area.x + area.width - 1.0, area.y);
         {
             let dispatched = &driver.app().sink.borrow().dispatched;
             assert!(
                 dispatched.iter().any(|event| matches!(
                     event,
                     UiEvent::Form(ev_id, FormEvent::SliderChanged { value, .. })
-                        if *ev_id == id && (*value - 1.0).abs() < f32::EPSILON
+                        if *ev_id == id && *value > 9.0 && *value < 10.0
                 )),
-                "click should emit SliderChanged{{value: 1.0}}: {dispatched:?}"
+                "a click near the track's right edge should emit SliderChanged{{value: ~9.5}}: {dispatched:?}"
             );
         }
         driver.app().sink.borrow_mut().dispatched.clear();
@@ -2029,6 +2057,56 @@ mod tests {
         );
     }
 
+    /// An IME-committed character (`CharTyped`) or a clipboard paste
+    /// (`ClipboardPaste`) both reach a focused standalone password leaf
+    /// through [`text_input_insert_event`] -- [`extra_as_text_input`]
+    /// matches a [`PasswordInput`]'s `inner`, not only a bare `TextInput`.
+    /// A newline embedded in the pasted text is stripped rather than
+    /// splitting `inner` into a second line, keeping
+    /// [`PasswordInput::as_form`]'s "always exactly one line" invariant
+    /// even though this path (unlike `Enter`) has no commit special-case
+    /// to fall back on.
+    #[test]
+    fn password_leaf_reaches_char_typed_and_clipboard_paste_and_strips_newlines() {
+        let id = WidgetId::new("pw:2");
+        let password = || {
+            Rc::new(PasswordInput {
+                inner: TextInput::new(id)
+                    .with_lines(vec!["hi".to_string()])
+                    .with_cursor_col(2)
+                    .with_has_focus(true),
+                mask_char: '*',
+            })
+        };
+
+        let mut driver = single_leaf_driver(id, password());
+        driver.dispatch(UiEvent::CharTyped('!'));
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::TextInputChanged { value, .. })
+                    if *ev_id == id && value == "hi!"
+            )),
+            "CharTyped('!') should emit TextInputChanged{{value: \"hi!\"}}: {dispatched:?}"
+        );
+
+        // A fresh driver at the same starting `inner` -- see the identical
+        // comment in the select test above for why this doesn't chain off
+        // the previous dispatch's own outcome.
+        let mut driver = single_leaf_driver(id, password());
+        driver.dispatch(UiEvent::ClipboardPaste("yo\nthere".to_string()));
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::TextInputChanged { value, .. })
+                    if *ev_id == id && value == "hiyothere" && !value.contains('\n')
+            )),
+            "pasting \"yo\\nthere\" should strip the newline: {dispatched:?}"
+        );
+    }
+
     /// Enter inserts a newline (not a commit, unlike a plain standalone
     /// `TextInput`/[`PasswordInput`]) — the one behavioural difference
     /// `FieldKind::TextArea`'s own doc draws against `FieldKind::TextInput`,
@@ -2061,6 +2139,39 @@ mod tests {
                     if *ev_id == id && value == "hi\n"
             )),
             "Enter should emit TextInputChanged{{value: \"hi\\n\"}}: {dispatched:?}"
+        );
+    }
+
+    /// A clipboard paste reaches a focused standalone textarea leaf the
+    /// same way [`password_leaf_reaches_char_typed_and_clipboard_paste_and_strips_newlines`]
+    /// proves it reaches a password leaf -- [`extra_as_text_input`]
+    /// matches a [`TextArea`]'s `inner` too. Unlike the password case, a
+    /// pasted newline is kept verbatim: `TextArea` has no single-line
+    /// invariant to protect.
+    #[test]
+    fn text_area_leaf_reaches_clipboard_paste_with_embedded_newline() {
+        let id = WidgetId::new("ta:2");
+        let inner = TextInput::new(id)
+            .with_lines(vec!["hi".to_string()])
+            .with_cursor_col(2)
+            .with_has_focus(true);
+        let mut driver = single_leaf_driver(
+            id,
+            Rc::new(TextArea {
+                inner,
+                visible_rows: 3,
+            }),
+        );
+
+        driver.dispatch(UiEvent::ClipboardPaste(" there\nfriend".to_string()));
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::TextInputChanged { value, .. })
+                    if *ev_id == id && value == "hi there\nfriend"
+            )),
+            "pasting \" there\\nfriend\" should keep its newline: {dispatched:?}"
         );
     }
 }

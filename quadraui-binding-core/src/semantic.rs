@@ -299,16 +299,30 @@ pub(crate) fn checkbox_key_event(id: WidgetId, checkbox: &Checkbox, key: &Key) -
     checkbox_click_event(id, checkbox)
 }
 
-/// Nudges a standalone [`Slider`] leaf's `value` by one `step` (clicking
-/// the body steps up, same direction Right/Up does below) — the click
-/// half of [`slider_key_event`]'s arrow/Home/End stepping. `None` when
-/// disabled or already pinned at `max` (clicking past the bound is a
-/// no-op, not an error).
-pub(crate) fn slider_click_event(id: WidgetId, slider: &Slider) -> Option<UiEvent> {
-    slider_step(id, slider, slider.step)
+/// Maps a click at absolute `point` within the slider's absolute `area`
+/// straight to a track position — `FieldKind::Slider`'s own doc
+/// ("click-and-drag on the track updates value") means where on the track
+/// the click lands, not a fixed one-`step` nudge regardless of position.
+/// `None` when disabled, the area has no width to map against, or the
+/// mapped value doesn't actually move `slider.value`.
+pub(crate) fn slider_click_event(
+    id: WidgetId,
+    slider: &Slider,
+    area: quadraui::Rect,
+    point: quadraui::Point,
+) -> Option<UiEvent> {
+    if slider.disabled || area.width <= 0.0 {
+        return None;
+    }
+    let fraction = ((point.x - area.x) / area.width).clamp(0.0, 1.0);
+    let value = slider.clamp(slider.min + fraction * (slider.max - slider.min));
+    if value == slider.value {
+        return None;
+    }
+    Some(UiEvent::Form(id, FormEvent::SliderChanged { id, value }))
 }
 
-/// Shared by [`slider_click_event`]/[`slider_key_event`]: clamps
+/// Shared by [`slider_key_event`]: clamps
 /// `slider.value + delta` to `[slider.min, slider.max]` via
 /// [`Slider::clamp`] and returns `None` when that doesn't actually move
 /// the value (already at the bound `delta` pushes toward).
@@ -392,17 +406,18 @@ pub(crate) fn select_click_event(id: WidgetId, select: &Select) -> Option<UiEven
     select_step(id, select, 1)
 }
 
-/// Up moves to the previous option; Down, Enter and Space all move to
-/// the next one (there is no separate "open" step to distinguish —
-/// `FieldKind::Dropdown` has none either). `None` for every other key,
-/// leaving [`focus_scoped_key_event`] to fall through to the raw
-/// `KeyPressed`.
+/// Up moves to the previous option, Down to the next one — the same two
+/// keys and only those two that `FormController`'s private
+/// `handle_dropdown_key` claims for a `Form`-embedded `FieldKind::Dropdown`
+/// field, so a focused standalone `select` leaf keeps the same key
+/// contract. Enter and Space are deliberately left unclaimed (`None`): they
+/// *open* a select, they don't mutate its selection, and leaving them
+/// unclaimed here lets an app-level Enter/submit handler still see the
+/// keypress.
 pub(crate) fn select_key_event(id: WidgetId, select: &Select, key: &Key) -> Option<UiEvent> {
     match key {
         Key::Named(NamedKey::Up) => select_step(id, select, -1),
-        Key::Named(NamedKey::Down) | Key::Named(NamedKey::Enter) | Key::Char(' ') => {
-            select_step(id, select, 1)
-        }
+        Key::Named(NamedKey::Down) => select_step(id, select, 1),
         _ => None,
     }
 }
@@ -469,13 +484,18 @@ pub(crate) fn text_area_key_event(
 /// event handler unchanged.
 /// [`HitDetail::ExtraBody`] resolves against the matched extra's own click
 /// semantics (currently [`Switch::click`]); an extra with no recognized
-/// click behavior still falls through to the raw `MouseDown`.
+/// click behavior still falls through to the raw `MouseDown`. `point` is
+/// the absolute click position the caller already has (every caller is a
+/// `MouseDown`/`DoubleClick` branch, so it's always available) — only
+/// [`HitDetail::ExtraBody`]'s [`Slider`] arm uses it, to map a click to a
+/// track position rather than a fixed step.
 pub fn semantic_event_for_hit(
     id: WidgetId,
     detail: &HitDetail,
     modifiers: Modifiers,
     double_click: bool,
     hit_map: &[PaintedHit],
+    point: quadraui::Point,
 ) -> Option<UiEvent> {
     match detail {
         HitDetail::TabBarTab { tab } => Some(UiEvent::TabBar(
@@ -546,13 +566,16 @@ pub fn semantic_event_for_hit(
         }
         HitDetail::ExtraBody => hit_map.iter().find_map(|hit| match hit {
             PaintedHit::Extra {
-                id: hit_id, extra, ..
+                id: hit_id,
+                extra,
+                area,
+                ..
             } if *hit_id == id => {
                 if let Some(checkbox) = extra_as::<Checkbox>(extra) {
                     return checkbox_click_event(id, checkbox);
                 }
                 if let Some(slider) = extra_as::<Slider>(extra) {
-                    return slider_click_event(id, slider);
+                    return slider_click_event(id, slider, *area, point);
                 }
                 if let Some(select) = extra_as::<Select>(extra) {
                     return select_click_event(id, select);
