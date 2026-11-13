@@ -787,15 +787,6 @@ impl MenuSystem {
                 .items
                 .get(path_idx)
                 .and_then(|item| item.submenu.clone());
-            let parent_bounds = stack[depth].1.bounds;
-            let anchor_y = stack[depth]
-                .1
-                .visible_items
-                .iter()
-                .find(|v| v.item_idx == path_idx)
-                .map(|v| v.bounds.y)
-                .unwrap_or(parent_bounds.y);
-
             let Some(sub_items) = sub_items_opt else {
                 break;
             };
@@ -804,21 +795,15 @@ impl MenuSystem {
             // to the parent's width.
             let menu_width = dropdown_width(backend, &sub_items, lh);
 
-            // Pull-right anchor with left-flip on overflow.
-            let preferred_x = parent_bounds.x + parent_bounds.width + 1.0;
-            let flipped_x = parent_bounds.x - menu_width - 1.0;
-            let anchor_x = if preferred_x + menu_width <= vp.x + vp.width {
-                preferred_x
-            } else if flipped_x >= vp.x {
-                flipped_x
-            } else {
-                (vp.x + vp.width - menu_width).max(vp.x)
-            };
+            // Shared pull-right/flip-left/clamp anchor rule — see
+            // `ContextMenuLayout::submenu_anchor`.
+            let anchor = stack[depth].1.submenu_anchor(path_idx, menu_width, vp);
+            let (anchor_x, anchor_y) = (anchor.x, anchor.y);
 
             let selected = self.submenu_selected.get(depth).copied().unwrap_or(0);
 
             let sub_menu = ContextMenu {
-                id: WidgetId::new("menu-system-submenu"),
+                id: WidgetId::new(format!("menu-system-submenu-{depth}")),
                 items: sub_items.clone(),
                 selected_idx: selected,
                 bg: None,
