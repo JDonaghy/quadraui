@@ -3,7 +3,9 @@ wired onto `InteractionEngine`'s own anchored-overlay slot (the one
 `show_message_dialog` / `show_context_menu` already use):
 `show_toast`/`dismiss_toast`, `show_tooltip`/`hide_tooltip`,
 `show_completions`/`dismiss_completions`, `show_float`/`dismiss_float`, and
-`show_rich_text_popup`/`dismiss_rich_text_popup`.
+`show_rich_text_popup`/`dismiss_rich_text_popup` -- plus the generic
+`show_overlay`/`dismiss_overlay` pair every one of those 13 methods is a
+one-line forward onto.
 
 Follows `test_extra_primitives.py`'s `show_message_dialog`/
 `show_context_menu` tests as the pattern: a real Python `dict` decoded
@@ -333,3 +335,92 @@ def test_dismiss_rich_text_popup_closes_without_input():
     )
     assert app.dismiss_rich_text_popup() is True
     assert app.dismiss_rich_text_popup() is False
+
+
+# ── Generic show_overlay/dismiss_overlay ──────────────────────────────────
+#
+# All 13 kind-specific methods above are one-line forwards onto these two;
+# this section exercises the generic pair directly rather than re-covering
+# every behavior already pinned above.
+
+
+def test_show_overlay_toast_returns_its_own_id_and_dismiss_overlay_closes_it():
+    app = QuiApp(40, 20)
+    returned_id = app.show_overlay(
+        "toast", {"id": "toast:saved", "title": "Saved", "body": ""}, None
+    )
+    assert returned_id == "toast:saved"
+    assert app.screen_contains("Saved")
+
+    assert app.dismiss_overlay(returned_id) is True
+    assert not app.screen_contains("Saved")
+    # Dismissing the same id again is a no-op, not an error.
+    assert app.dismiss_overlay(returned_id) is False
+
+
+def test_show_overlay_message_dialog_returns_sentinel_and_dismiss_overlay_closes_it():
+    app = QuiApp(40, 20)
+    returned_id = app.show_overlay(
+        "message_dialog",
+        {"title": "Quit?", "body": "", "buttons": [{"id": "ok", "label": "OK"}]},
+        None,
+    )
+    assert returned_id == "message_dialog"
+    assert app.screen_contains("Quit?")
+
+    assert app.dismiss_overlay("message_dialog") is True
+    assert not app.screen_contains("Quit?")
+
+
+def test_show_overlay_context_menu_then_dismiss_overlay_closes_it():
+    # `dismiss_overlay("context_menu")` is a new capability `dismiss_*`
+    # never had: there was no `dismiss_context_menu` among the original 13.
+    app = QuiApp(40, 20)
+    returned_id = app.show_overlay(
+        "context_menu",
+        {
+            "items": [
+                {"id": "copy", "label": {"spans": [{"text": "Copy", "fg": None, "bg": None}]}}
+            ]
+        },
+        (2.0, 2.0, 0.0, 0.0),
+    )
+    assert returned_id == "context_menu"
+    assert app.screen_contains("Copy")
+
+    assert app.dismiss_overlay("context_menu") is True
+    assert not app.screen_contains("Copy")
+    assert app.dismiss_overlay("context_menu") is False
+
+
+def test_show_overlay_tooltip_matches_show_tooltip_screen_output():
+    # `show_tooltip` is itself a one-line forward onto `show_overlay`; this
+    # pins that the generic entry point paints identically to the
+    # kind-specific one it replaces.
+    direct = QuiApp(40, 20)
+    direct.show_tooltip({"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0))
+
+    generic = QuiApp(40, 20)
+    returned_id = generic.show_overlay(
+        "tooltip", {"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0)
+    )
+
+    assert returned_id == "tip:hint"
+    assert generic.screen() == direct.screen()
+
+
+def test_show_overlay_rejects_unknown_kind():
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.show_overlay("not_a_real_kind", {}, None)
+
+
+def test_show_overlay_rejects_missing_anchor_when_required():
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.show_overlay("tooltip", {"id": "tip:hint", "text": "Hello tip"}, None)
+
+
+def test_dismiss_overlay_unknown_id_is_a_no_op():
+    app = QuiApp(40, 20)
+    assert app.dismiss_overlay("not-a-known-overlay-id") is False

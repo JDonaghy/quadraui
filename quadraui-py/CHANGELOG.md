@@ -31,6 +31,22 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiApp.show_overlay(kind, descriptor, anchor)` / `QuiApp.dismiss_overlay(id)`:
+  a generic entry point over the same seven in-canvas overlay kinds the
+  existing `show_context_menu`/`show_message_dialog`/`show_toast`/
+  `show_tooltip`/`show_completions`/`show_float`/`show_rich_text_popup`
+  methods each open, naming the kind by string (`"context_menu"`,
+  `"message_dialog"`, `"toast"`, `"tooltip"`, `"completions"`, `"float"`,
+  `"rich_text_popup"`) rather than needing a dedicated method per kind.
+  `show_overlay` returns an id `dismiss_overlay` can later close by — the
+  descriptor's own `"id"` field for the five kinds that carry one, or a
+  fixed `kind`-named sentinel for the two that don't (`"context_menu"`,
+  `"message_dialog"`) — and `dismiss_overlay` can now also close a
+  context menu, a capability none of the original 13 methods had (there
+  was no `dismiss_context_menu`). All 13 existing methods are unchanged
+  one-line forwards onto this pair, so no existing call site needs to
+  change.
+
 - `QuiApp.define_style(name, overrides)` registers a named style set — a
   reusable bundle of the same tokens a node's inline `"style"` dict
   accepts — and any layout-tree node may then name one or more of them
