@@ -47,6 +47,26 @@ export declare class QuadrauiError extends Error {
 
 /** A descriptor/event shape this binding's decode adapter rejected. */
 export declare class InvalidDescriptorError extends QuadrauiError {}
+
+export declare class MissingFieldError extends InvalidDescriptorError {
+  readonly code: "missing_field";
+}
+
+export declare class UnknownVariantError extends InvalidDescriptorError {
+  readonly code: "unknown_variant";
+}
+
+export declare class TypeMismatchError extends InvalidDescriptorError {
+  readonly code: "type_mismatch";
+}
+
+export declare class UnknownKeyError extends InvalidDescriptorError {
+  readonly code: "unknown_key";
+}
+
+export declare class VersionMismatchError extends InvalidDescriptorError {
+  readonly code: "version_mismatch";
+}
 /** A fixed slot or additive-primitive kind that already holds a descriptor. */
 export declare class SlotOccupiedError extends QuadrauiError {}
 /** A slot id that is not one of the documented `SLOT_*` constants. */

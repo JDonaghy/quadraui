@@ -31,6 +31,21 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- A descriptor-decode failure now raises one of five new
+  `InvalidDescriptorError` subclasses instead of the bare base class:
+  `MissingFieldError`, `UnknownVariantError`, `TypeMismatchError`,
+  `UnknownKeyError`, `VersionMismatchError` — chosen by matching
+  `quadraui_binding_core::DecodeError`'s own variant directly, never by
+  parsing the exception's message. Each has a `code` class attribute
+  (e.g. `"missing_field"`) mirroring `DecodeError::code`, and the
+  exception's message now names the full path into the layout tree the
+  problem was found at (e.g. `render: at split#body › panel#chrome:
+  missing field "ratio"`), not just a bare field name — `DecodeError` no
+  longer loses an ancestor node's id when a decode error happens several
+  levels into a nested tree. Existing `except InvalidDescriptorError`/
+  `pytest.raises(InvalidDescriptorError, ...)` call sites keep matching
+  unchanged.
+
 - `QuiApp.show_overlay(kind, descriptor, anchor)` / `QuiApp.dismiss_overlay(id)`:
   a generic entry point over the same seven in-canvas overlay kinds the
   existing `show_context_menu`/`show_message_dialog`/`show_toast`/

@@ -197,7 +197,7 @@ use quadraui_binding_core::{
     set_jump_list, set_login_item, step_driver, take_pending_error as core_take_pending_error,
     text_display_from_lines, theme_color_value, toast_corner, tree_rows_and_viewport,
     update_apply_on_quit, update_check_for_update, update_download_and_stage,
-    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
     ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf,
     LayoutNode, LeafDescriptor, OverrideError, PaintedHit, RenderFrame, RenderOutput, ServiceError,
     StyleContext, UpdateInfoWire, WindowCloseHandling,
@@ -264,7 +264,55 @@ create_exception!(
     QuadrauiError,
     "A descriptor dict passed to `push_event` or an `insert_*` method did \
     not decode into the shape it was expected to have (mirrors \
-    `QUI_ERR_INVALID_JSON`)."
+    `QUI_ERR_INVALID_JSON`). [`decode_error_to_py`] raises this directly \
+    for a `quadraui_binding_core::DecodeError::Borrow` -- every other \
+    variant raises one of the subclasses below instead, chosen by \
+    matching the enum, never by parsing this exception's own message."
+);
+
+create_exception!(
+    _quadraui,
+    MissingFieldError,
+    InvalidDescriptorError,
+    "A descriptor dict was missing a field this decoder requires (mirrors \
+    `quadraui_binding_core::DecodeError::MissingField`). Its `code` class \
+    attribute is `\"missing_field\"`."
+);
+
+create_exception!(
+    _quadraui,
+    UnknownVariantError,
+    InvalidDescriptorError,
+    "A field held a value outside the specific set this decoder accepts \
+    (mirrors `quadraui_binding_core::DecodeError::UnknownVariant`). Its \
+    `code` class attribute is `\"unknown_variant\"`."
+);
+
+create_exception!(
+    _quadraui,
+    TypeMismatchError,
+    InvalidDescriptorError,
+    "A field held a value of the wrong JSON shape (mirrors \
+    `quadraui_binding_core::DecodeError::TypeMismatch`). Its `code` class \
+    attribute is `\"type_mismatch\"`."
+);
+
+create_exception!(
+    _quadraui,
+    UnknownKeyError,
+    InvalidDescriptorError,
+    "A dict carried a key this decoder does not recognize there (mirrors \
+    `quadraui_binding_core::DecodeError::UnknownKey`). Its `code` class \
+    attribute is `\"unknown_key\"`."
+);
+
+create_exception!(
+    _quadraui,
+    VersionMismatchError,
+    InvalidDescriptorError,
+    "A render callback's `\"wire_version\"` is newer than this host \
+    understands (mirrors `quadraui_binding_core::DecodeError::VersionMismatch`). \
+    Its `code` class attribute is `\"version_mismatch\"`."
 );
 
 create_exception!(
@@ -812,6 +860,30 @@ fn service_error_to_py(what: &str, err: ServiceError) -> PyErr {
     }
 }
 
+/// Maps a [`quadraui_binding_core::DecodeError`] to this binding's own
+/// exception taxonomy -- one subclass of [`InvalidDescriptorError`] per
+/// variant, chosen by matching the enum directly rather than parsing its
+/// rendered message. The exception's message is [`DecodeError::to_string`]
+/// unchanged (`"<what>: at <path>: <problem>"`), so an author sees exactly
+/// which widget in the tree a nested decode failed on; its *class* and
+/// `code` class attribute (set once at module init, in `_quadraui`) are
+/// what a caller matches on instead of grepping that message.
+fn decode_error_to_py(err: DecodeError) -> PyErr {
+    let message = err.to_string();
+    match err {
+        DecodeError::MissingField { .. } => MissingFieldError::new_err(message),
+        DecodeError::UnknownVariant { .. } => UnknownVariantError::new_err(message),
+        DecodeError::TypeMismatch { .. } => TypeMismatchError::new_err(message),
+        DecodeError::UnknownKey { .. } => UnknownKeyError::new_err(message),
+        DecodeError::VersionMismatch { .. } => VersionMismatchError::new_err(message),
+        DecodeError::Borrow { .. } => InvalidDescriptorError::new_err(message),
+        // `DecodeError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises the common base class
+        // rather than failing to compile.
+        _ => InvalidDescriptorError::new_err(message),
+    }
+}
+
 /// Builds a [`ContextMenu`] for [`quadraui::backend::TrayService::set_menu`], which takes a
 /// `&ContextMenu` rather than a bare item list -- thin wrapper over
 /// [`quadraui_binding_core::menu_for_surface`], named `"qui-tray-menu"`.
@@ -1319,8 +1391,7 @@ impl ShellApp for PyShellApp {
 /// own doc for the recognized key vocabulary.
 fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
     let mut de = pythonize::Depythonizer::from_object(dict.as_any());
-    quadraui_binding_core::decode_shell_config(&mut de)
-        .map_err(|err| InvalidDescriptorError::new_err(err.0))
+    quadraui_binding_core::decode_shell_config(&mut de).map_err(decode_error_to_py)
 }
 
 /// Takes and returns this session's pending callback-raised error, if any
@@ -1581,7 +1652,7 @@ fn render_output_from_callback(
         ) {
             Ok(output) => Some(output),
             Err(err) => {
-                record_error(pending_error, InvalidDescriptorError::new_err(err.0));
+                record_error(pending_error, decode_error_to_py(err));
                 None
             }
         }
@@ -2444,12 +2515,10 @@ impl QuiAppActions {
     /// that running loop immediately rather than waiting for the next
     /// unrelated event.
     fn define_style(&self, name: &str, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
-        validate_style_set_name("define_style", name)
-            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        validate_style_set_name("define_style", name).map_err(decode_error_to_py)?;
         let json = pyany_to_json(overrides.as_any())
             .map_err(|err| InvalidDescriptorError::new_err(format!("define_style: {err}")))?;
-        let parsed = decode_style_overrides("define_style", &json)
-            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        let parsed = decode_style_overrides("define_style", &json).map_err(decode_error_to_py)?;
         self.queue
             .borrow_mut()
             .push_back(DeferredAction::DefineStyle(name.to_string(), parsed));
@@ -4214,7 +4283,7 @@ impl QuiApp {
                         let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
                         let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
                         decode_popover("show_overlay", &mut de, styles)
-                            .map_err(|err| InvalidDescriptorError::new_err(err.0))?
+                            .map_err(decode_error_to_py)?
                     };
                     id = decoded.chrome.id.to_string();
                     app_logic.engine.show_popover_layout(
@@ -4246,7 +4315,7 @@ impl QuiApp {
                         let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
                         let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
                         decode_layout_dialog("show_overlay", &mut de, styles)
-                            .map_err(|err| InvalidDescriptorError::new_err(err.0))?
+                            .map_err(decode_error_to_py)?
                     };
                     id = decoded.chrome.id.to_string();
                     app_logic.engine.open_layout_dialog(
@@ -5184,12 +5253,10 @@ impl QuiApp {
     /// `run_native` loop is driving, so its `request_frame_in` call
     /// repaints that loop rather than a backend nothing is reading from.
     fn define_style(&mut self, name: &str, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
-        validate_style_set_name("define_style", name)
-            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        validate_style_set_name("define_style", name).map_err(decode_error_to_py)?;
         let json = pyany_to_json(overrides.as_any())
             .map_err(|err| InvalidDescriptorError::new_err(format!("define_style: {err}")))?;
-        let parsed = decode_style_overrides("define_style", &json)
-            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        let parsed = decode_style_overrides("define_style", &json).map_err(decode_error_to_py)?;
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             app_logic.host.style_sets.define(name, parsed);
@@ -6070,8 +6137,7 @@ impl QuiApp {
             )));
         }
         let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-        let value = decode_extra_primitive(what, kind, &mut de)
-            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        let value = decode_extra_primitive(what, kind, &mut de).map_err(decode_error_to_py)?;
         self.guarded(|app| {
             app.driver
                 .app_mut()
@@ -6221,6 +6287,26 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "InvalidDescriptorError",
         py.get_type::<InvalidDescriptorError>(),
+    )?;
+    // Each `DecodeError` subclass's `code` class attribute mirrors
+    // `quadraui_binding_core::DecodeError::code` -- set once here, not per
+    // raise, since every instance of one class shares the same code.
+    for (ty, code) in [
+        (py.get_type::<MissingFieldError>(), "missing_field"),
+        (py.get_type::<UnknownVariantError>(), "unknown_variant"),
+        (py.get_type::<TypeMismatchError>(), "type_mismatch"),
+        (py.get_type::<UnknownKeyError>(), "unknown_key"),
+        (py.get_type::<VersionMismatchError>(), "version_mismatch"),
+    ] {
+        ty.setattr("code", code)?;
+    }
+    m.add("MissingFieldError", py.get_type::<MissingFieldError>())?;
+    m.add("UnknownVariantError", py.get_type::<UnknownVariantError>())?;
+    m.add("TypeMismatchError", py.get_type::<TypeMismatchError>())?;
+    m.add("UnknownKeyError", py.get_type::<UnknownKeyError>())?;
+    m.add(
+        "VersionMismatchError",
+        py.get_type::<VersionMismatchError>(),
     )?;
     m.add("SlotOccupiedError", py.get_type::<SlotOccupiedError>())?;
     m.add("UnknownSlotError", py.get_type::<UnknownSlotError>())?;

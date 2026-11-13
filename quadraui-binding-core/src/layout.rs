@@ -1085,6 +1085,17 @@ pub const LEAF_KIND_KEYS: [&str; 6] = [
     "tab_bar",
 ];
 
+/// Builds the [`DecodeError::Borrow`] [`validate_unique_leaf_ids`]'s walk
+/// raises on the first repeated id, naming both the offending `kind` (the
+/// node that already held `id`'s namespace, not necessarily the same kind
+/// as the one that just collided with it) and `id` itself.
+fn duplicate_leaf_id_error(what: &str, kind: &str, id: &str) -> DecodeError {
+    DecodeError::borrow(
+        format!("{what} › {kind}#{id}"),
+        format!("duplicate leaf id {id:?}"),
+    )
+}
+
 /// Walks `node` collecting every leaf and split `id` into one namespace,
 /// returning a [`DecodeError`] on the first repeat. A unique id per
 /// leaf/split lets host code address one instance unambiguously even when a
@@ -1103,17 +1114,14 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
             }
             LayoutNode::Leaf(leaf) => {
                 if !seen.insert(leaf.id.clone()) {
-                    return Err(DecodeError(format!(
-                        "{what}: duplicate leaf id {:?}",
-                        leaf.id
-                    )));
+                    return Err(duplicate_leaf_id_error(what, "leaf", &leaf.id));
                 }
                 Ok(())
             }
             LayoutNode::Split(split) => {
                 let id = split.split.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
+                    return Err(duplicate_leaf_id_error(what, "split", &id));
                 }
                 walk(what, &split.first, seen)?;
                 walk(what, &split.second, seen)
@@ -1121,14 +1129,11 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
             LayoutNode::Tabs(tabs) => {
                 let id = tabs.tab_bar.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
+                    return Err(duplicate_leaf_id_error(what, "tabs", &id));
                 }
                 for entry in &tabs.entries {
                     if !seen.insert(entry.id.clone()) {
-                        return Err(DecodeError(format!(
-                            "{what}: duplicate leaf id {:?}",
-                            entry.id
-                        )));
+                        return Err(duplicate_leaf_id_error(what, "tab", &entry.id));
                     }
                     walk(what, &entry.content, seen)?;
                 }
@@ -1138,23 +1143,20 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
             LayoutNode::Panel(panel_node) => {
                 let id = panel_node.panel.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
+                    return Err(duplicate_leaf_id_error(what, "panel", &id));
                 }
                 walk(what, &panel_node.content, seen)
             }
             LayoutNode::SidebarPanel(sidebar_node) => {
                 let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
+                    return Err(duplicate_leaf_id_error(what, "sidebar_panel", &id));
                 }
                 walk(what, &sidebar_node.content, seen)
             }
             LayoutNode::SplitTree(split_tree) => {
                 if !seen.insert(split_tree.id.clone()) {
-                    return Err(DecodeError(format!(
-                        "{what}: duplicate leaf id {:?}",
-                        split_tree.id
-                    )));
+                    return Err(duplicate_leaf_id_error(what, "split_tree", &split_tree.id));
                 }
                 for leaf in &split_tree.leaves {
                     walk(what, leaf, seen)?;
@@ -1163,10 +1165,7 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
             }
             LayoutNode::Scroll(scroll_node) => {
                 if !seen.insert(scroll_node.id.clone()) {
-                    return Err(DecodeError(format!(
-                        "{what}: duplicate leaf id {:?}",
-                        scroll_node.id
-                    )));
+                    return Err(duplicate_leaf_id_error(what, "scroll", &scroll_node.id));
                 }
                 walk(what, &scroll_node.content, seen)
             }
@@ -1504,5 +1503,33 @@ mod tests {
             })),
         });
         assert!(validate_unique_leaf_ids("test", &node).is_ok());
+    }
+
+    /// A repeated leaf id is a [`DecodeError::Borrow`] naming the offending
+    /// node's own path, not just the bare id string -- `"test › leaf#a"`,
+    /// not just `"a"`, so a binding can tell which of two leaves sharing an
+    /// id is the second (colliding) one.
+    #[test]
+    fn validate_unique_leaf_ids_names_the_colliding_nodes_path() {
+        let leaf = |id: &str| {
+            LayoutNode::Leaf(LayoutLeaf {
+                id: id.to_string(),
+                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new(id), id)),
+                scroll_px: None,
+            })
+        };
+        let node = LayoutNode::Row(LayoutContainer {
+            children: vec![LayoutChild::new(leaf("a")), LayoutChild::new(leaf("a"))],
+            spacing: Spacing::default(),
+            justify: Justify::default(),
+            align: Align::default(),
+        });
+        let error = validate_unique_leaf_ids("test", &node).unwrap_err();
+        assert_eq!(error.code(), "borrow");
+        assert_eq!(error.path(), "test › leaf#a");
+        assert!(
+            error.to_string().contains("duplicate leaf id \"a\""),
+            "{error}"
+        );
     }
 }

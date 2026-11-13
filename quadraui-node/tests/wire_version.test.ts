@@ -3,7 +3,7 @@
 // object -- a versionless tree (every pre-existing render callback), a
 // tree at the current `quadraui_binding_core::wire_schema::WIRE_VERSION`,
 // and an older version are all accepted; a version newer than this host
-// understands is a clear `InvalidDescriptorError`.
+// understands is a clear `VersionMismatchError`.
 //
 // Run against a built addon, e.g.:
 //
@@ -47,6 +47,6 @@ test("setRender: a wire_version newer than this host understands is a clear erro
     wire_version: 999,
     button: { id: "demo:ok", label: "OK" },
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), /VersionMismatchError/);
   assert.throws(() => app.screen(), /wire_version/);
 });

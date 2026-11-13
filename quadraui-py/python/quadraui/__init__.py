@@ -25,6 +25,12 @@ Python callback raised, which passes through unchanged) is a
 ``PanicError``, ``PoisonedError``, ``InternalError``,
 ``NativeAlreadyRunError``, ``NoDisplayError``, ``NotOnMainThreadError``,
 ``InvalidAppIdError``, ``InvalidFontRoleError``, and ``UnsupportedError``.
+A descriptor-decode failure (``quadraui_binding_core::DecodeError``) raises
+one of ``InvalidDescriptorError``'s own subclasses -- ``MissingFieldError``,
+``UnknownVariantError``, ``TypeMismatchError``, ``UnknownKeyError``, or
+``VersionMismatchError``, chosen by the decoder's own variant, each with a
+``code`` class attribute and a message naming the full path into the
+layout tree the problem was found at.
 
 ``QuiApp``'s platform-services methods -- ``check_for_update``/
 ``download_and_stage``/``apply_on_quit`` (auto-update), ``begin_power_save_block``/
@@ -112,6 +118,7 @@ from ._quadraui import (
     InvalidDescriptorError,
     InvalidDimensionsError,
     InvalidFontRoleError,
+    MissingFieldError,
     NativeAlreadyRunError,
     NoDisplayError,
     NotOnMainThreadError,
@@ -122,8 +129,12 @@ from ._quadraui import (
     QuiAppWaker,
     QuiShellApp,
     SlotOccupiedError,
+    TypeMismatchError,
+    UnknownKeyError,
     UnknownSlotError,
+    UnknownVariantError,
     UnsupportedError,
+    VersionMismatchError,
     app_path,
     install_crash_handler,
     set_app_identifier,
@@ -135,6 +146,11 @@ __all__ = [
     "QuiShellApp",
     "QuadrauiError",
     "InvalidDescriptorError",
+    "MissingFieldError",
+    "UnknownVariantError",
+    "TypeMismatchError",
+    "UnknownKeyError",
+    "VersionMismatchError",
     "SlotOccupiedError",
     "UnknownSlotError",
     "InvalidDimensionsError",

@@ -152,12 +152,10 @@ impl QuiApp {
     pub fn define_style(&mut self, env: Env, name: String, overrides: Object) -> Result<()> {
         self.check_not_dispatching()?;
         self.check_not_live()?;
-        validate_style_set_name("defineStyle", &name)
-            .map_err(|err| invalid_descriptor_error(err.0))?;
+        validate_style_set_name("defineStyle", &name).map_err(decode_error_to_js)?;
         let json = to_descriptor_value(overrides.to_unknown())
             .map_err(|detail| invalid_descriptor_error(format!("defineStyle: {detail}")))?;
-        let parsed =
-            decode_style_overrides("defineStyle", &json).map_err(invalid_descriptor_error)?;
+        let parsed = decode_style_overrides("defineStyle", &json).map_err(decode_error_to_js)?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             app_logic.host.style_sets.define(name, parsed);

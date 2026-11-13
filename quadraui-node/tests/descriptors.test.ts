@@ -301,11 +301,11 @@ test("insertExtra form with control_width and min_control_width renders without 
   assert.ok(app.screenContains("exactwidth"));
 });
 
-test("insertExtra with an unknown kind raises InvalidDescriptorError", () => {
+test("insertExtra with an unknown kind raises UnknownVariantError", () => {
   const app = new QuiApp(40, 20);
   assert.throws(
     () => app.insertExtra("not_a_real_kind", { id: "x" }),
-    /InvalidDescriptorError/,
+    /UnknownVariantError/,
   );
 });
 

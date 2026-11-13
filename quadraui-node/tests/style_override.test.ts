@@ -101,12 +101,12 @@ test("style: \"surface_bg\" is the alias a Secondary button fill actually reads"
   );
 });
 
-test("style: an unknown key is a clear InvalidDescriptorError", () => {
+test("style: an unknown key is a clear UnknownKeyError", () => {
   const app = new QuiApp(10, 1);
   app.setRender(() => ({
     row: [{ id: "td", text_display: { id: "td", lines: [] } }],
     style: { background: "#000000" },
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), /UnknownKeyError/);
   assert.throws(() => app.screen(), /style/);
 });

@@ -220,24 +220,22 @@ fn must_be_dict<'a>(what: &str, value: &'a Value, suffix: &str) -> Result<&'a Va
     if value.is_object() {
         Ok(value)
     } else {
-        Err(DecodeError(format!("{what}: {suffix} must be an object")))
+        Err(DecodeError::type_mismatch(what, suffix, "an object"))
     }
 }
 
 /// Reads `value[key]` as a required sub-dict, raising a [`DecodeError`]
-/// from `context` (a caller-supplied `"{what}: <label>"` prefix) if it is
-/// missing or not a dict.
+/// at `context` (a caller-supplied path so far) if it is missing or not a
+/// dict.
 fn required_dict<'a>(value: &'a Value, key: &str, context: &str) -> Result<&'a Value, DecodeError> {
     match obj_get(value, key) {
         Some(v) if v.is_object() => Ok(v),
-        Some(_) => Err(DecodeError(format!("{context} {key:?} must be an object"))),
-        None => Err(DecodeError(format!(
-            "{context} is missing required {key:?}"
-        ))),
+        Some(_) => Err(DecodeError::type_mismatch(context, key, "an object")),
+        None => Err(DecodeError::missing_field(context, key)),
     }
 }
 
-/// Reads `value[key]` as a required `list`, raising a [`DecodeError`] from
+/// Reads `value[key]` as a required `list`, raising a [`DecodeError`] at
 /// `context` if it is missing or not a list.
 fn required_list<'a>(
     value: &'a Value,
@@ -247,74 +245,68 @@ fn required_list<'a>(
     match obj_get(value, key) {
         Some(v) => v
             .as_array()
-            .ok_or_else(|| DecodeError(format!("{context} {key:?} must be an array"))),
-        None => Err(DecodeError(format!(
-            "{context} is missing required {key:?}"
-        ))),
+            .ok_or_else(|| DecodeError::type_mismatch(context, key, "an array")),
+        None => Err(DecodeError::missing_field(context, key)),
     }
 }
 
-/// Reads `value[key]` as a required string, raising a [`DecodeError`] from
+/// Reads `value[key]` as a required string, raising a [`DecodeError`] at
 /// `context` if it is missing or not a string.
 fn required_str(value: &Value, key: &str, context: &str) -> Result<String, DecodeError> {
     match obj_get(value, key) {
         Some(v) => v
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| DecodeError(format!("{context} {key:?} must be a string"))),
-        None => Err(DecodeError(format!(
-            "{context} is missing required {key:?}"
-        ))),
+            .ok_or_else(|| DecodeError::type_mismatch(context, key, "a string")),
+        None => Err(DecodeError::missing_field(context, key)),
     }
 }
 
-/// Reads `value[key]` as a required `f32`, raising a [`DecodeError`] from
+/// Reads `value[key]` as a required `f32`, raising a [`DecodeError`] at
 /// `context` if it is missing or not a number.
 fn required_f32(value: &Value, key: &str, context: &str) -> Result<f32, DecodeError> {
     match obj_get(value, key) {
         Some(v) => v
             .as_f64()
             .map(|f| f as f32)
-            .ok_or_else(|| DecodeError(format!("{context} {key:?} must be a number"))),
-        None => Err(DecodeError(format!(
-            "{context} is missing required {key:?}"
-        ))),
+            .ok_or_else(|| DecodeError::type_mismatch(context, key, "a number")),
+        None => Err(DecodeError::missing_field(context, key)),
     }
 }
 
-/// Reads `value[key]` as an optional `f32`, raising a [`DecodeError`] from
+/// Reads `value[key]` as an optional `f32`, raising a [`DecodeError`] at
 /// `context` if present but not a number. `None` when absent.
 fn opt_f32(value: &Value, key: &str, context: &str) -> Result<Option<f32>, DecodeError> {
     match obj_get(value, key) {
         Some(v) => v
             .as_f64()
             .map(|f| Some(f as f32))
-            .ok_or_else(|| DecodeError(format!("{context} {key:?} must be a number"))),
+            .ok_or_else(|| DecodeError::type_mismatch(context, key, "a number")),
         None => Ok(None),
     }
 }
 
-/// Reads `value[key]` as an optional `bool`, raising a [`DecodeError`] from
+/// Reads `value[key]` as an optional `bool`, raising a [`DecodeError`] at
 /// `context` if present but not a bool. `None` when absent.
 fn opt_bool(value: &Value, key: &str, context: &str) -> Result<Option<bool>, DecodeError> {
     match obj_get(value, key) {
         Some(v) => v
             .as_bool()
             .map(Some)
-            .ok_or_else(|| DecodeError(format!("{context} {key:?} must be a bool"))),
+            .ok_or_else(|| DecodeError::type_mismatch(context, key, "a bool")),
         None => Ok(None),
     }
 }
 
 /// Reads `value[key]` as an optional non-negative integer, raising a
-/// [`DecodeError`] from `context` if present but not one. `None` when
+/// [`DecodeError`] at `context` if present but not one. `None` when
 /// absent.
 fn opt_usize(value: &Value, key: &str, context: &str) -> Result<Option<usize>, DecodeError> {
     match obj_get(value, key) {
         Some(v) => v
             .as_u64()
             .map(|n| Some(n as usize))
-            .ok_or_else(|| DecodeError(format!("{context} {key:?} must be an integer"))),
+            .ok_or_else(|| DecodeError::type_mismatch(context, key, "an integer")),
         None => Ok(None),
     }
 }
@@ -330,9 +322,12 @@ fn split_direction(context: &str, orientation: &str) -> Result<SplitDirection, D
     match orientation {
         "horizontal" => Ok(SplitDirection::Horizontal),
         "vertical" => Ok(SplitDirection::Vertical),
-        _ => Err(DecodeError(format!(
-            "{context} \"orientation\" must be one of {SPLIT_ORIENTATIONS:?}, got {orientation:?}"
-        ))),
+        _ => Err(DecodeError::unknown_variant(
+            context,
+            "orientation",
+            orientation,
+            &SPLIT_ORIENTATIONS,
+        )),
     }
 }
 
@@ -381,7 +376,7 @@ pub fn decode_layout_node_with_styles<'de, D: Deserializer<'de>>(
     styles: StyleContext<'_>,
 ) -> Result<LayoutNode, DecodeError> {
     let value = materialize(deserializer)
-        .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))?;
+        .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))?;
     layout_node_from_value(what, &value, styles)
 }
 
@@ -473,7 +468,7 @@ fn layout_node_from_value_inner(
         // `gap` is meaningful here -- the space between the split's two
         // panes -- unlike `"tabs"`/`"panel"` below.
         let spacing = spacing_from_value(what, value, "\"split\"", true)?;
-        let split_value = must_be_dict(what, v, "\"split\"")?;
+        let split_value = must_be_dict(what, v, "split")?;
         return Ok(LayoutNode::Split(layout_split_from_value(
             what,
             split_value,
@@ -483,14 +478,14 @@ fn layout_node_from_value_inner(
     }
     if let Some(v) = obj_get(value, "tabs") {
         let spacing = spacing_from_value(what, value, "\"tabs\"", false)?;
-        let tabs_value = must_be_dict(what, v, "\"tabs\"")?;
+        let tabs_value = must_be_dict(what, v, "tabs")?;
         return Ok(LayoutNode::Tabs(layout_tabs_from_value(
             what, tabs_value, spacing, styles,
         )?));
     }
     if let Some(v) = obj_get(value, "panel") {
         let spacing = spacing_from_value(what, value, "\"panel\"", false)?;
-        let panel_value = must_be_dict(what, v, "\"panel\"")?;
+        let panel_value = must_be_dict(what, v, "panel")?;
         return Ok(LayoutNode::Panel(layout_panel_from_value(
             what,
             panel_value,
@@ -500,7 +495,7 @@ fn layout_node_from_value_inner(
     }
     if let Some(v) = obj_get(value, "sidebar_panel") {
         reject_unsupported_spacing_keys(what, value, "a \"sidebar_panel\" node")?;
-        let sidebar_value = must_be_dict(what, v, "\"sidebar_panel\"")?;
+        let sidebar_value = must_be_dict(what, v, "sidebar_panel")?;
         return Ok(LayoutNode::SidebarPanel(layout_sidebar_panel_from_value(
             what,
             sidebar_value,
@@ -509,7 +504,7 @@ fn layout_node_from_value_inner(
     }
     if let Some(v) = obj_get(value, "split_tree") {
         reject_unsupported_spacing_keys(what, value, "a \"split_tree\" node")?;
-        let split_tree_value = must_be_dict(what, v, "\"split_tree\"")?;
+        let split_tree_value = must_be_dict(what, v, "split_tree")?;
         return Ok(LayoutNode::SplitTree(layout_split_tree_from_value(
             what,
             split_tree_value,
@@ -518,7 +513,7 @@ fn layout_node_from_value_inner(
     }
     if let Some(v) = obj_get(value, "scroll") {
         let spacing = spacing_from_value(what, value, "\"scroll\"", false)?;
-        let scroll_value = must_be_dict(what, v, "\"scroll\"")?;
+        let scroll_value = must_be_dict(what, v, "scroll")?;
         return Ok(LayoutNode::Scroll(layout_scroll_from_value(
             what,
             scroll_value,
@@ -544,9 +539,12 @@ fn reject_unsupported_spacing_keys(
 ) -> Result<(), DecodeError> {
     for key in ["padding", "margin", "gap"] {
         if obj_get(value, key).is_some() {
-            return Err(DecodeError(format!(
-                "{what}: {label} does not support \"{key}\" yet -- only \"row\"/\"column\"/\"split\"/\"tabs\"/\"panel\"/\"scroll\" nodes do"
-            )));
+            return Err(DecodeError::borrow(
+                what,
+                format!(
+                    "{label} does not support \"{key}\" yet -- only \"row\"/\"column\"/\"split\"/\"tabs\"/\"panel\"/\"scroll\" nodes do"
+                ),
+            ));
         }
     }
     Ok(())
@@ -571,16 +569,19 @@ fn layout_children_from_value(
 ) -> Result<Vec<LayoutChild>, DecodeError> {
     let list = value
         .as_array()
-        .ok_or_else(|| DecodeError(format!("{what}: row/column children must be an array")))?;
+        .ok_or_else(|| DecodeError::type_mismatch(what, "row/column children", "an array"))?;
     list.iter()
-        .map(|child| {
+        .enumerate()
+        .map(|(index, child)| {
+            let context = format!("{what} › children[{index}]");
             if !child.is_object() {
-                return Err(DecodeError(format!(
-                    "{what}: each row/column child must be an object"
-                )));
+                return Err(DecodeError::type_mismatch(
+                    what,
+                    format!("children[{index}]"),
+                    "an object",
+                ));
             }
-            let node = layout_node_from_value(what, child, styles)?;
-            let context = format!("{what}: row/column child");
+            let node = layout_node_from_value(&context, child, styles)?;
             let size = child_size_from_value(child, &context)?;
             let min = opt_f32(child, "min", &context)?;
             let max = opt_f32(child, "max", &context)?;
@@ -611,13 +612,14 @@ fn child_size_from_value(value: &Value, context: &str) -> Result<SectionSize, De
     let size = match obj_get(value, "size") {
         None => return Ok(SectionSize::default()),
         Some(v) => serde_json::from_value::<SectionSize>(v.clone())
-            .map_err(|err| DecodeError(format!("{context} \"size\": {err}")))?,
+            .map_err(|err| DecodeError::borrow(context, format!("\"size\": {err}")))?,
     };
     if let SectionSize::Percent(p) = size {
         if !(0.0..=1.0).contains(&p) {
-            return Err(DecodeError(format!(
-                "{context} \"size\": {{\"Percent\": ..}} must be between 0.0 and 1.0, got {p}"
-            )));
+            return Err(DecodeError::borrow(
+                context,
+                format!("\"size\": {{\"Percent\": ..}} must be between 0.0 and 1.0, got {p}"),
+            ));
         }
     }
     Ok(size)
@@ -639,15 +641,18 @@ fn justify_from_value(what: &str, value: &Value, label: &str) -> Result<Justify,
         Some(v) => {
             let s = v
                 .as_str()
-                .ok_or_else(|| DecodeError(format!("{context} \"justify\" must be a string")))?;
+                .ok_or_else(|| DecodeError::type_mismatch(&context, "justify", "a string"))?;
             match s {
                 "start" => Ok(Justify::Start),
                 "center" => Ok(Justify::Center),
                 "end" => Ok(Justify::End),
                 "space_between" => Ok(Justify::SpaceBetween),
-                _ => Err(DecodeError(format!(
-                    "{context} \"justify\" must be one of {JUSTIFY_VALUES:?}, got {s:?}"
-                ))),
+                _ => Err(DecodeError::unknown_variant(
+                    &context,
+                    "justify",
+                    s,
+                    &JUSTIFY_VALUES,
+                )),
             }
         }
     }
@@ -668,15 +673,18 @@ fn align_from_value(what: &str, value: &Value, label: &str) -> Result<Align, Dec
         Some(v) => {
             let s = v
                 .as_str()
-                .ok_or_else(|| DecodeError(format!("{context} \"align\" must be a string")))?;
+                .ok_or_else(|| DecodeError::type_mismatch(&context, "align", "a string"))?;
             match s {
                 "start" => Ok(Align::Start),
                 "center" => Ok(Align::Center),
                 "end" => Ok(Align::End),
                 "stretch" => Ok(Align::Stretch),
-                _ => Err(DecodeError(format!(
-                    "{context} \"align\" must be one of {ALIGN_VALUES:?}, got {s:?}"
-                ))),
+                _ => Err(DecodeError::unknown_variant(
+                    &context,
+                    "align",
+                    s,
+                    &ALIGN_VALUES,
+                )),
             }
         }
     }
@@ -700,9 +708,10 @@ fn spacing_from_value(
     let context = format!("{what}: {label}");
     if !allow_gap {
         if let Some(_gap) = obj_get(value, "gap") {
-            return Err(DecodeError(format!(
-                "{context} does not support \"gap\" -- only \"row\"/\"column\"/\"split\" nodes do"
-            )));
+            return Err(DecodeError::borrow(
+                &context,
+                "does not support \"gap\" -- only \"row\"/\"column\"/\"split\" nodes do",
+            ));
         }
     }
     let padding = match obj_get(value, "padding") {
@@ -738,9 +747,12 @@ fn edge_insets_from_value(value: &Value, context: &str) -> Result<EdgeInsets, De
         const KNOWN_KEYS: [&str; 6] = ["x", "y", "top", "right", "bottom", "left"];
         for key in obj.keys() {
             if !KNOWN_KEYS.contains(&key.as_str()) {
-                return Err(DecodeError(format!(
-                    "{context} \"padding\" has unknown key {key:?} -- expected one of \"x\"/\"y\"/\"top\"/\"right\"/\"bottom\"/\"left\""
-                )));
+                return Err(DecodeError::unknown_key(
+                    context,
+                    "padding",
+                    key.as_str(),
+                    &KNOWN_KEYS,
+                ));
             }
         }
         let x = opt_f32(value, "x", context)?;
@@ -752,9 +764,10 @@ fn edge_insets_from_value(value: &Value, context: &str) -> Result<EdgeInsets, De
         let has_axis = x.is_some() || y.is_some();
         let has_sides = top.is_some() || right.is_some() || bottom.is_some() || left.is_some();
         if has_axis && has_sides {
-            return Err(DecodeError(format!(
-                "{context} \"padding\" cannot mix \"x\"/\"y\" with \"top\"/\"right\"/\"bottom\"/\"left\" in the same object"
-            )));
+            return Err(DecodeError::borrow(
+                context,
+                "\"padding\" cannot mix \"x\"/\"y\" with \"top\"/\"right\"/\"bottom\"/\"left\" in the same object",
+            ));
         }
         if has_axis {
             return Ok(EdgeInsets::xy(x.unwrap_or(0.0), y.unwrap_or(0.0)));
@@ -766,9 +779,10 @@ fn edge_insets_from_value(value: &Value, context: &str) -> Result<EdgeInsets, De
             left: left.unwrap_or(0.0),
         });
     }
-    Err(DecodeError(format!(
-        "{context} \"padding\" must be a number, or an object with \"x\"/\"y\" or \"top\"/\"right\"/\"bottom\"/\"left\""
-    )))
+    Err(DecodeError::borrow(
+        context,
+        "\"padding\" must be a number, or an object with \"x\"/\"y\" or \"top\"/\"right\"/\"bottom\"/\"left\"",
+    ))
 }
 
 /// Every key a `"style"` dict may carry — see [`StyleOverride`]'s own
@@ -817,9 +831,9 @@ fn style_classes_from_value(what: &str, value: &Value) -> Result<Vec<String>, De
         Value::Array(entries) => entries
             .iter()
             .map(|entry| {
-                entry.as_str().ok_or_else(|| {
-                    DecodeError(format!("{context} list entries must all be strings"))
-                })
+                entry
+                    .as_str()
+                    .ok_or_else(|| DecodeError::type_mismatch(&context, "class[]", "a string"))
             })
             .collect::<Result<Vec<&str>, DecodeError>>()
             .map(|entries| {
@@ -829,9 +843,11 @@ fn style_classes_from_value(what: &str, value: &Value) -> Result<Vec<String>, De
                     .map(str::to_owned)
                     .collect()
             }),
-        _ => Err(DecodeError(format!(
-            "{context} must be a string or a list of strings"
-        ))),
+        _ => Err(DecodeError::type_mismatch(
+            &context,
+            "class",
+            "a string or a list of strings",
+        )),
     }
 }
 
@@ -860,7 +876,7 @@ fn style_override_from_value(
     let Some(raw) = obj_get(value, "style") else {
         return Ok(None);
     };
-    let dict = must_be_dict(what, raw, "\"style\"")?;
+    let dict = must_be_dict(what, raw, "style")?;
     let context = format!("{what}: \"style\"");
     let over = style_override_fields(&context, dict)?;
     Ok(if over.is_empty() { None } else { Some(over) })
@@ -891,12 +907,13 @@ pub fn decode_style_overrides(what: &str, value: &Value) -> Result<StyleOverride
 /// raised, the same convention [`decode_style_overrides`] uses.
 pub fn validate_style_set_name(what: &str, name: &str) -> Result<(), DecodeError> {
     if name.is_empty() {
-        return Err(DecodeError(format!("{what}: \"name\" must not be empty")));
+        return Err(DecodeError::borrow(what, "\"name\" must not be empty"));
     }
     if name.contains(char::is_whitespace) {
-        return Err(DecodeError(format!(
-            "{what}: \"name\" must not contain whitespace, got {name:?}"
-        )));
+        return Err(DecodeError::borrow(
+            what,
+            format!("\"name\" must not contain whitespace, got {name:?}"),
+        ));
     }
     Ok(())
 }
@@ -915,11 +932,12 @@ fn style_override_fields(context: &str, dict: &Value) -> Result<StyleOverride, D
         .keys()
     {
         if !STYLE_OVERRIDE_KEYS.contains(&key.as_str()) {
-            return Err(DecodeError(format!(
-                "{context} has unknown key {key:?} -- expected one of \"bg\"/\"fg\"/\
-                 \"border\"/\"accent\"/\"surface_bg\"/\"accent_bg\"/\"padding\"/\
-                 \"corner_radius\"/\"border_width\""
-            )));
+            return Err(DecodeError::unknown_key(
+                context,
+                "style",
+                key.as_str(),
+                &STYLE_OVERRIDE_KEYS,
+            ));
         }
     }
     Ok(StyleOverride {
@@ -943,13 +961,14 @@ fn style_override_fields(context: &str, dict: &Value) -> Result<StyleOverride, D
 fn opt_color(value: &Value, key: &str, context: &str) -> Result<Option<Color>, DecodeError> {
     match obj_get(value, key) {
         Some(Value::String(hex)) => Color::from_hex(hex).map(Some).ok_or_else(|| {
-            DecodeError(format!(
-                "{context} {key:?}: {hex:?} is not a valid \"#rrggbb\"/\"#rrggbbaa\" hex colour"
-            ))
+            DecodeError::borrow(
+                context,
+                format!("{key:?}: {hex:?} is not a valid \"#rrggbb\"/\"#rrggbbaa\" hex colour"),
+            )
         }),
         Some(v) => serde_json::from_value(v.clone())
             .map(Some)
-            .map_err(|err| DecodeError(format!("{context} {key:?}: {err}"))),
+            .map_err(|err| DecodeError::borrow(context, format!("{key:?}: {err}"))),
         None => Ok(None),
     }
 }
@@ -976,14 +995,10 @@ fn layout_split_from_value(
         Some(v) => v
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| DecodeError(format!("{what}: split \"id\" must be a string")))?,
-        None => {
-            return Err(DecodeError(format!(
-                "{what}: split is missing required \"id\""
-            )))
-        }
+            .ok_or_else(|| DecodeError::type_mismatch(what, "split.id", "a string"))?,
+        None => return Err(DecodeError::missing_field(what, "split.id")),
     };
-    let context = format!("{what}: split {id:?}");
+    let context = format!("{what} › split#{id}");
 
     let orientation = required_str(value, "orientation", &context)?;
     let direction = split_direction(&context, &orientation)?;
@@ -992,9 +1007,9 @@ fn layout_split_from_value(
     let second_min = opt_f32(value, "second_min", &context)?.unwrap_or(0.0);
 
     let first_value = required_dict(value, "first", &context)?;
-    let first = layout_node_from_value(what, first_value, styles)?;
+    let first = layout_node_from_value(&format!("{context} › first"), first_value, styles)?;
     let second_value = required_dict(value, "second", &context)?;
-    let second = layout_node_from_value(what, second_value, styles)?;
+    let second = layout_node_from_value(&format!("{context} › second"), second_value, styles)?;
 
     Ok(LayoutSplit {
         split: Split {
@@ -1028,9 +1043,9 @@ fn layout_panel_from_value(
 ) -> Result<LayoutPanel, DecodeError> {
     let panel: Panel = decode_value(what, value)?;
     let id = panel.id.as_str().to_owned();
-    let context = format!("{what}: panel {id:?}");
+    let context = format!("{what} › panel#{id}");
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(what, content_value, styles)?;
+    let content = layout_node_from_value(&format!("{context} › content"), content_value, styles)?;
     Ok(LayoutPanel {
         panel,
         content: Box::new(content),
@@ -1049,9 +1064,9 @@ fn layout_sidebar_panel_from_value(
 ) -> Result<LayoutSidebarPanel, DecodeError> {
     let sidebar_panel: SidebarPanel = decode_value(what, value)?;
     let id = sidebar_panel.id.as_str().to_owned();
-    let context = format!("{what}: sidebar_panel {id:?}");
+    let context = format!("{what} › sidebar_panel#{id}");
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(what, content_value, styles)?;
+    let content = layout_node_from_value(&format!("{context} › content"), content_value, styles)?;
     Ok(LayoutSidebarPanel {
         sidebar_panel,
         content: Box::new(content),
@@ -1071,13 +1086,16 @@ fn scroll_axis_from_value(context: &str, value: &Value) -> Result<ScrollAxis, De
         Some(v) => {
             let s = v
                 .as_str()
-                .ok_or_else(|| DecodeError(format!("{context} \"axis\" must be a string")))?;
+                .ok_or_else(|| DecodeError::type_mismatch(context, "axis", "a string"))?;
             match s {
                 "vertical" => Ok(ScrollAxis::Vertical),
                 "horizontal" => Ok(ScrollAxis::Horizontal),
-                _ => Err(DecodeError(format!(
-                    "{context} \"axis\" must be one of {SCROLL_AXES:?}, got {s:?}"
-                ))),
+                _ => Err(DecodeError::unknown_variant(
+                    context,
+                    "axis",
+                    s,
+                    &SCROLL_AXES,
+                )),
             }
         }
     }
@@ -1102,18 +1120,14 @@ fn layout_scroll_from_value(
         Some(v) => v
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| DecodeError(format!("{what}: scroll \"id\" must be a string")))?,
-        None => {
-            return Err(DecodeError(format!(
-                "{what}: scroll is missing required \"id\""
-            )));
-        }
+            .ok_or_else(|| DecodeError::type_mismatch(what, "scroll.id", "a string"))?,
+        None => return Err(DecodeError::missing_field(what, "scroll.id")),
     };
-    let context = format!("{what}: scroll {id:?}");
+    let context = format!("{what} › scroll#{id}");
     let axis = scroll_axis_from_value(&context, value)?;
     let offset = opt_f32(value, "offset", &context)?;
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(what, content_value, styles)?;
+    let content = layout_node_from_value(&format!("{context} › content"), content_value, styles)?;
     Ok(LayoutScroll {
         id,
         axis,
@@ -1141,18 +1155,14 @@ fn layout_split_tree_from_value(
         Some(v) => v
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| DecodeError(format!("{what}: split_tree \"id\" must be a string")))?,
-        None => {
-            return Err(DecodeError(format!(
-                "{what}: split_tree is missing required \"id\""
-            )));
-        }
+            .ok_or_else(|| DecodeError::type_mismatch(what, "split_tree.id", "a string"))?,
+        None => return Err(DecodeError::missing_field(what, "split_tree.id")),
     };
-    let context = format!("{what}: split_tree {id:?}");
+    let context = format!("{what} › split_tree#{id}");
     let root_value = required_dict(value, "root", &context)?;
 
     let mut leaves = Vec::new();
-    let tree = split_tree_node_from_value(what, &id, root_value, &mut leaves, styles)?;
+    let tree = split_tree_node_from_value(&context, &id, root_value, &mut leaves, styles)?;
     Ok(LayoutSplitTree { id, tree, leaves })
 }
 
@@ -1171,30 +1181,44 @@ fn split_tree_node_from_value(
     styles: StyleContext<'_>,
 ) -> Result<SplitTree, DecodeError> {
     if let Some(v) = obj_get(value, "leaf") {
-        let leaf_value = must_be_dict(what, v, &format!("split_tree {tree_id:?} \"leaf\""))?;
-        let content = layout_node_from_value(what, leaf_value, styles)?;
+        let leaf_context = format!("{what} › leaf");
+        let leaf_value = must_be_dict(what, v, "leaf")?;
+        let content = layout_node_from_value(&leaf_context, leaf_value, styles)?;
         let placeholder = WidgetId::new(format!("{tree_id}::leaf::{}", leaves.len()));
         leaves.push(content);
         return Ok(SplitTree::leaf(placeholder));
     }
     if let Some(v) = obj_get(value, "split") {
-        let split_value = must_be_dict(what, v, &format!("split_tree {tree_id:?} \"split\""))?;
-        let context = format!("{what}: split_tree {tree_id:?} split");
+        let split_value = must_be_dict(what, v, "split")?;
+        let context = format!("{what} › split");
 
         let orientation = required_str(split_value, "orientation", &context)?;
         let direction = split_direction(&context, &orientation)?;
         let ratio = required_f32(split_value, "ratio", &context)?;
 
         let first_value = required_dict(split_value, "first", &context)?;
-        let first = split_tree_node_from_value(what, tree_id, first_value, leaves, styles)?;
+        let first = split_tree_node_from_value(
+            &format!("{context} › first"),
+            tree_id,
+            first_value,
+            leaves,
+            styles,
+        )?;
         let second_value = required_dict(split_value, "second", &context)?;
-        let second = split_tree_node_from_value(what, tree_id, second_value, leaves, styles)?;
+        let second = split_tree_node_from_value(
+            &format!("{context} › second"),
+            tree_id,
+            second_value,
+            leaves,
+            styles,
+        )?;
 
         return Ok(SplitTree::split(direction, ratio, first, second));
     }
-    Err(DecodeError(format!(
-        "{what}: split_tree {tree_id:?} node must have a \"leaf\" or \"split\" key"
-    )))
+    Err(DecodeError::borrow(
+        what,
+        "node must have a \"leaf\" or \"split\" key",
+    ))
 }
 
 /// Decodes a `"tabs"` node: `{"id", "tabs", "selected", "closable",
@@ -1221,27 +1245,29 @@ fn layout_tabs_from_value(
         Some(v) => v
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| DecodeError(format!("{what}: tabs \"id\" must be a string")))?,
-        None => {
-            return Err(DecodeError(format!(
-                "{what}: tabs is missing required \"id\""
-            )))
-        }
+            .ok_or_else(|| DecodeError::type_mismatch(what, "tabs.id", "a string"))?,
+        None => return Err(DecodeError::missing_field(what, "tabs.id")),
     };
-    let context = format!("{what}: tabs {id:?}");
+    let context = format!("{what} › tabs#{id}");
 
     let tabs_list = required_list(value, "tabs", &context)?;
     let mut items = Vec::with_capacity(tabs_list.len());
     let mut entries = Vec::with_capacity(tabs_list.len());
-    for entry in tabs_list {
+    for (index, entry) in tabs_list.iter().enumerate() {
+        let entry_context = format!("{context} › tabs[{index}]");
         if !entry.is_object() {
-            return Err(DecodeError(format!("{context} each tab must be an object")));
+            return Err(DecodeError::type_mismatch(
+                &context,
+                format!("tabs[{index}]"),
+                "an object",
+            ));
         }
-        let tab_id = required_str(entry, "id", &format!("{context} tab"))?;
-        let tab_context = format!("{context} tab {tab_id:?}");
+        let tab_id = required_str(entry, "id", &entry_context)?;
+        let tab_context = format!("{context} › tab#{tab_id}");
         let title = required_str(entry, "title", &tab_context)?;
         let content_value = required_dict(entry, "content", &tab_context)?;
-        let content = layout_node_from_value(what, content_value, styles)?;
+        let content =
+            layout_node_from_value(&format!("{tab_context} › content"), content_value, styles)?;
         let is_closable = opt_bool(entry, "closable", &tab_context)?.unwrap_or(true);
         let is_dirty = opt_bool(entry, "is_dirty", &tab_context)?.unwrap_or(false);
         let is_preview = opt_bool(entry, "is_preview", &tab_context)?.unwrap_or(false);
@@ -1261,10 +1287,13 @@ fn layout_tabs_from_value(
 
     let selected = opt_usize(value, "selected", &context)?.unwrap_or(0);
     if !items.is_empty() && selected >= items.len() {
-        return Err(DecodeError(format!(
-            "{context} \"selected\" index {selected} is out of range for {len} tab(s)",
-            len = items.len()
-        )));
+        return Err(DecodeError::borrow(
+            &context,
+            format!(
+                "\"selected\" index {selected} is out of range for {len} tab(s)",
+                len = items.len()
+            ),
+        ));
     }
     if let Some(item) = items.get_mut(selected) {
         item.is_active = true;
@@ -1275,29 +1304,34 @@ fn layout_tabs_from_value(
     let focused_index = opt_usize(value, "focused_index", &context)?;
     if let Some(idx) = focused_index {
         if !items.is_empty() && idx >= items.len() {
-            return Err(DecodeError(format!(
-                "{context} \"focused_index\" {idx} is out of range for {len} tab(s)",
-                len = items.len()
-            )));
+            return Err(DecodeError::borrow(
+                &context,
+                format!(
+                    "\"focused_index\" {idx} is out of range for {len} tab(s)",
+                    len = items.len()
+                ),
+            ));
         }
     }
     let right_segments: Vec<TabBarSegment> = match obj_get(value, "right_segments") {
         Some(v) => {
             if !v.is_array() {
-                return Err(DecodeError(format!(
-                    "{context} \"right_segments\" must be an array"
-                )));
+                return Err(DecodeError::type_mismatch(
+                    &context,
+                    "right_segments",
+                    "an array",
+                ));
             }
             serde_json::from_value(v.clone()).map_err(|err| {
-                DecodeError(format!("{context} invalid \"right_segments\": {err}"))
+                DecodeError::borrow(&context, format!("invalid \"right_segments\": {err}"))
             })?
         }
         None => Vec::new(),
     };
     let active_accent: Option<Color> = match obj_get(value, "active_accent") {
         Some(v) => {
-            let accent_value = must_be_dict(what, v, &format!("tabs {id:?} \"active_accent\""))?;
-            Some(decode_value(what, accent_value)?)
+            let accent_value = must_be_dict(&context, v, "active_accent")?;
+            Some(decode_value(&context, accent_value)?)
         }
         None => None,
     };
@@ -1331,13 +1365,10 @@ fn layout_leaf_from_value(what: &str, value: &Value) -> Result<LayoutLeaf, Decod
         Some(v) => v
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| DecodeError(format!("{what}: leaf \"id\" must be a string")))?,
-        None => {
-            return Err(DecodeError(format!(
-                "{what}: leaf is missing required \"id\""
-            )))
-        }
+            .ok_or_else(|| DecodeError::type_mismatch(what, "leaf.id", "a string"))?,
+        None => return Err(DecodeError::missing_field(what, "leaf.id")),
     };
+    let context = format!("{what} › leaf#{id}");
 
     let mut found: Option<LeafDescriptor> = None;
     // Set alongside `found` only for the three scrollable kinds —
@@ -1349,28 +1380,29 @@ fn layout_leaf_from_value(what: &str, value: &Value) -> Result<LayoutLeaf, Decod
         let Some(v) = obj_get(value, key) else {
             continue;
         };
-        let value_dict = must_be_dict(what, v, &format!("leaf {id:?} {key:?}"))?;
+        let value_dict = must_be_dict(&context, v, key)?;
         if found.is_some() {
-            return Err(DecodeError(format!(
-                "{what}: leaf {id:?} has more than one descriptor kind"
-            )));
+            return Err(DecodeError::borrow(
+                &context,
+                "has more than one descriptor kind",
+            ));
         }
         found = Some(match key {
-            "button" => LeafDescriptor::Button(decode_value(what, value_dict)?),
-            "text_display" => LeafDescriptor::TextDisplay(decode_value(what, value_dict)?),
+            "button" => LeafDescriptor::Button(decode_value(&context, value_dict)?),
+            "text_display" => LeafDescriptor::TextDisplay(decode_value(&context, value_dict)?),
             "list" => {
                 scroll_px = crate::scroll_px_from_value(v);
-                LeafDescriptor::List(decode_value(what, value_dict)?)
+                LeafDescriptor::List(decode_value(&context, value_dict)?)
             }
             "tree" => {
                 scroll_px = crate::scroll_px_from_value(v);
-                LeafDescriptor::Tree(decode_value(what, value_dict)?)
+                LeafDescriptor::Tree(decode_value(&context, value_dict)?)
             }
             "data_table" => {
                 scroll_px = crate::scroll_px_from_value(v);
-                LeafDescriptor::DataTable(decode_value(what, value_dict)?)
+                LeafDescriptor::DataTable(decode_value(&context, value_dict)?)
             }
-            "tab_bar" => LeafDescriptor::TabBar(decode_value(what, value_dict)?),
+            "tab_bar" => LeafDescriptor::TabBar(decode_value(&context, value_dict)?),
             _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
         });
     }
@@ -1382,22 +1414,26 @@ fn layout_leaf_from_value(what: &str, value: &Value) -> Result<LayoutLeaf, Decod
         let Some(v) = obj_get(value, kind) else {
             continue;
         };
-        let value_dict = must_be_dict(what, v, &format!("leaf {id:?} {kind:?}"))?;
+        let value_dict = must_be_dict(&context, v, kind)?;
         if found.is_some() {
-            return Err(DecodeError(format!(
-                "{what}: leaf {id:?} has more than one descriptor kind"
-            )));
+            return Err(DecodeError::borrow(
+                &context,
+                "has more than one descriptor kind",
+            ));
         }
         found = Some(LeafDescriptor::Extra(decode_extra_primitive(
-            what, kind, value_dict,
+            &context, kind, value_dict,
         )?));
     }
 
     let descriptor = found.ok_or_else(|| {
-        DecodeError(format!(
-            "{what}: leaf {id:?} is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {:?})",
-            EXTRA_PRIMITIVE_KINDS
-        ))
+        DecodeError::borrow(
+            &context,
+            format!(
+                "is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {:?})",
+                EXTRA_PRIMITIVE_KINDS
+            ),
+        )
     })?;
 
     Ok(LayoutLeaf {
@@ -1481,16 +1517,17 @@ struct DialogChromeWire {
 impl DialogChromeWire {
     fn into_dialog(self, what: &str) -> Result<quadraui::Dialog, DecodeError> {
         if self.buttons.is_empty() {
-            return Err(DecodeError(format!(
-                "{what}: \"buttons\" must not be empty — a dialog with no buttons can never be \
-                 resolved by Enter or Escape"
-            )));
+            return Err(DecodeError::borrow(
+                what,
+                "\"buttons\" must not be empty — a dialog with no buttons can never be \
+                 resolved by Enter or Escape",
+            ));
         }
         let severity = self
             .severity
             .map(|s| crate::host::dialog_severity(&s))
             .transpose()
-            .map_err(|err| DecodeError(format!("{what}: {err}")))?;
+            .map_err(|err| DecodeError::borrow(what, err))?;
         Ok(quadraui::Dialog {
             id: WidgetId::new(self.id),
             title: quadraui::StyledText::plain(self.title),
@@ -1521,14 +1558,14 @@ fn overlay_content<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
     styles: StyleContext<'_>,
 ) -> Result<OverlayContent<T>, DecodeError> {
     let value = materialize(deserializer)
-        .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))?;
-    let chrome = obj_get(&value, chrome_key)
-        .ok_or_else(|| DecodeError(format!("{what}: missing {chrome_key:?} key")))?;
-    must_be_dict(what, chrome, &format!("{chrome_key:?}"))?;
+        .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))?;
+    let chrome =
+        obj_get(&value, chrome_key).ok_or_else(|| DecodeError::missing_field(what, chrome_key))?;
+    must_be_dict(what, chrome, chrome_key)?;
     let chrome = decode_value(what, chrome)?;
-    let content = obj_get(&value, "content")
-        .ok_or_else(|| DecodeError(format!("{what}: missing \"content\" key")))?;
-    let content = layout_node_from_value(what, content, styles)?;
+    let content =
+        obj_get(&value, "content").ok_or_else(|| DecodeError::missing_field(what, "content"))?;
+    let content = layout_node_from_value(&format!("{what} › content"), content, styles)?;
     validate_unique_leaf_ids(what, &content)?;
     Ok(OverlayContent { chrome, content })
 }
@@ -1566,16 +1603,11 @@ fn check_wire_version(what: &str, value: &Value) -> Result<(), DecodeError> {
         return Ok(());
     };
     let version = v.as_u64().ok_or_else(|| {
-        DecodeError(format!(
-            "{what}: \"wire_version\" must be a non-negative integer, got {v}"
-        ))
+        DecodeError::type_mismatch(what, "wire_version", "a non-negative integer")
     })?;
     let current = u64::from(crate::wire_schema::WIRE_VERSION);
     if version > current {
-        return Err(DecodeError(format!(
-            "{what}: \"wire_version\" {version} is newer than this host understands \
-             (current {current}) — upgrade the host, or downgrade the binding"
-        )));
+        return Err(DecodeError::version_mismatch(what, version, current));
     }
     Ok(())
 }
@@ -1606,7 +1638,7 @@ pub fn decode_render_output_with_styles<'de, D: Deserializer<'de>>(
     styles: StyleContext<'_>,
 ) -> Result<RenderOutput, DecodeError> {
     let value = materialize(deserializer)
-        .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))?;
+        .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))?;
     check_wire_version(what, &value)?;
     if is_layout_tree(&value) {
         let node = layout_node_from_value(what, &value, styles)?;
@@ -1631,9 +1663,7 @@ fn slot_entry<T: serde::de::DeserializeOwned>(
     match obj_get(value, key) {
         Some(v) => {
             if !v.is_object() {
-                return Err(DecodeError(format!(
-                    "{what}: {key:?} must be an object or null"
-                )));
+                return Err(DecodeError::type_mismatch(what, key, "an object or null"));
             }
             Ok(Some(decode_value(what, v)?))
         }
@@ -1654,9 +1684,7 @@ fn extra_slot_entry(
     match obj_get(value, kind) {
         Some(v) => {
             if !v.is_object() {
-                return Err(DecodeError(format!(
-                    "{what}: {kind:?} must be an object or null"
-                )));
+                return Err(DecodeError::type_mismatch(what, kind, "an object or null"));
             }
             Ok(Some(decode_extra_primitive(what, kind, v)?))
         }
@@ -1699,8 +1727,7 @@ pub(crate) fn render_frame_from_value(
 /// [`dict_str`], but raises a [`DecodeError`] when `key` is absent or
 /// `null` instead of returning `Ok(None)`.
 fn dict_required_str(what: &str, value: &Value, key: &str) -> Result<String, DecodeError> {
-    dict_str(what, value, key)?
-        .ok_or_else(|| DecodeError(format!("{what}: missing required {key:?}")))
+    dict_str(what, value, key)?.ok_or_else(|| DecodeError::missing_field(what, key))
 }
 
 /// Reads `value[key]` as a string, raising a [`DecodeError`] if present
@@ -1710,7 +1737,7 @@ fn dict_str(what: &str, value: &Value, key: &str) -> Result<Option<String>, Deco
         Some(v) => v
             .as_str()
             .map(|s| Some(s.to_owned()))
-            .ok_or_else(|| DecodeError(format!("{what}: {key:?} must be a string"))),
+            .ok_or_else(|| DecodeError::type_mismatch(what, key, "a string")),
         None => Ok(None),
     }
 }
@@ -1722,7 +1749,7 @@ fn dict_f32(what: &str, value: &Value, key: &str) -> Result<Option<f32>, DecodeE
         Some(v) => v
             .as_f64()
             .map(|f| Some(f as f32))
-            .ok_or_else(|| DecodeError(format!("{what}: {key:?} must be a number"))),
+            .ok_or_else(|| DecodeError::type_mismatch(what, key, "a number")),
         None => Ok(None),
     }
 }
@@ -1734,7 +1761,7 @@ fn dict_bool(what: &str, value: &Value, key: &str) -> Result<Option<bool>, Decod
         Some(v) => v
             .as_bool()
             .map(Some)
-            .ok_or_else(|| DecodeError(format!("{what}: {key:?} must be a bool"))),
+            .ok_or_else(|| DecodeError::type_mismatch(what, key, "a bool")),
         None => Ok(None),
     }
 }
@@ -1759,13 +1786,18 @@ fn panel_definition_from_value(what: &str, value: &Value) -> Result<PanelDefinit
 fn panel_list_from_value(what: &str, value: &Value) -> Result<Vec<PanelDefinition>, DecodeError> {
     let list = value
         .as_array()
-        .ok_or_else(|| DecodeError(format!("{what}: panels must be an array")))?;
+        .ok_or_else(|| DecodeError::type_mismatch(what, "panels", "an array"))?;
     list.iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(index, item)| {
             if !item.is_object() {
-                return Err(DecodeError(format!("{what}: each panel must be an object")));
+                return Err(DecodeError::type_mismatch(
+                    what,
+                    format!("panels[{index}]"),
+                    "an object",
+                ));
             }
-            panel_definition_from_value(what, item)
+            panel_definition_from_value(&format!("{what} › panels[{index}]"), item)
         })
         .collect()
 }
@@ -1811,17 +1843,23 @@ fn bottom_panel_config_from_value(
 ) -> Result<BottomPanelConfig, DecodeError> {
     let tabs = match obj_get(value, "tabs") {
         Some(v) => {
-            let list = v.as_array().ok_or_else(|| {
-                DecodeError(format!("{what}: bottom_panel \"tabs\" must be an array"))
-            })?;
+            let list = v
+                .as_array()
+                .ok_or_else(|| DecodeError::type_mismatch(what, "bottom_panel.tabs", "an array"))?;
             list.iter()
-                .map(|item| {
+                .enumerate()
+                .map(|(index, item)| {
                     if !item.is_object() {
-                        return Err(DecodeError(format!(
-                            "{what}: each bottom_panel tab must be an object"
-                        )));
+                        return Err(DecodeError::type_mismatch(
+                            what,
+                            format!("bottom_panel.tabs[{index}]"),
+                            "an object",
+                        ));
                     }
-                    bottom_panel_tab_from_value(what, item)
+                    bottom_panel_tab_from_value(
+                        &format!("{what} › bottom_panel.tabs[{index}]"),
+                        item,
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()?
         }
@@ -1869,9 +1907,12 @@ fn shell_config_from_value(value: &Value) -> Result<ShellConfig, DecodeError> {
             "left" => ShellPosition::Left,
             "right" => ShellPosition::Right,
             other => {
-                return Err(DecodeError(format!(
-                    "{what}: \"position\" must be \"left\" or \"right\", got {other:?}"
-                )));
+                return Err(DecodeError::unknown_variant(
+                    what,
+                    "position",
+                    other,
+                    &["left", "right"],
+                ));
             }
         };
         config = config.with_position(position);
@@ -1908,9 +1949,11 @@ fn shell_config_from_value(value: &Value) -> Result<ShellConfig, DecodeError> {
     }
     if let Some(bp_value) = obj_get(value, "bottom_panel") {
         if !bp_value.is_object() {
-            return Err(DecodeError(format!(
-                "{what}: \"bottom_panel\" must be an object"
-            )));
+            return Err(DecodeError::type_mismatch(
+                what,
+                "bottom_panel",
+                "an object",
+            ));
         }
         config = config.with_bottom_panel_config(bottom_panel_config_from_value(what, bp_value)?);
     }
@@ -1925,7 +1968,7 @@ pub fn decode_shell_config<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<ShellConfig, DecodeError> {
     let value = materialize(deserializer)
-        .map_err(|err| DecodeError(format!("run_shell: invalid descriptor: {err}")))?;
+        .map_err(|err| DecodeError::borrow("run_shell", format!("invalid descriptor: {err}")))?;
     shell_config_from_value(&value)
 }
 
@@ -2025,7 +2068,7 @@ mod tests {
             &no_content,
             StyleContext::new(&sets, &theme),
         ))
-        .0;
+        .to_string();
         assert!(
             message.contains("\"content\""),
             "the error should name the missing key: {message}"
@@ -2036,7 +2079,7 @@ mod tests {
             &no_chrome,
             StyleContext::new(&sets, &theme),
         ))
-        .0;
+        .to_string();
         assert!(
             message.contains("\"float\""),
             "the error should name the missing key: {message}"
@@ -2167,7 +2210,7 @@ mod tests {
             Ok(_) => panic!("expected an out-of-range Percent size to be rejected"),
             Err(err) => err,
         };
-        assert!(err.0.contains("Percent"), "{}", err.0);
+        assert!(err.to_string().contains("Percent"), "{}", err.to_string());
     }
 
     /// A `"row"`/`"column"` node's `"justify"`/`"align"` keys are siblings
@@ -2217,7 +2260,7 @@ mod tests {
             Ok(_) => panic!("expected an unknown justify value to be rejected"),
             Err(err) => err,
         };
-        assert!(err.0.contains("justify"), "{}", err.0);
+        assert!(err.to_string().contains("justify"), "{}", err.to_string());
     }
 
     /// [`rejects_an_unknown_justify_value`]'s counterpart for `"align"`.
@@ -2231,7 +2274,7 @@ mod tests {
             Ok(_) => panic!("expected an unknown align value to be rejected"),
             Err(err) => err,
         };
-        assert!(err.0.contains("align"), "{}", err.0);
+        assert!(err.to_string().contains("align"), "{}", err.to_string());
     }
 
     /// A `"split"` node is itself a valid row/column child, so it takes
@@ -2299,7 +2342,7 @@ mod tests {
             "gap": 8,
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("gap"), "{}", error.0);
+        assert!(error.to_string().contains("gap"), "{}", error.to_string());
     }
 
     /// A `"tabs"` node's `"padding"`/`"margin"` keys decode the same way a
@@ -2338,7 +2381,7 @@ mod tests {
             "gap": 8,
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("gap"), "{}", error.0);
+        assert!(error.to_string().contains("gap"), "{}", error.to_string());
     }
 
     /// A `"split"` node's `"padding"`/`"margin"`/`"gap"` keys all decode --
@@ -2380,7 +2423,11 @@ mod tests {
             "padding": 12,
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("padding"), "{}", error.0);
+        assert!(
+            error.to_string().contains("padding"),
+            "{}",
+            error.to_string()
+        );
     }
 
     /// An unknown key inside a `"padding"` object (a typo like `"lef"`)
@@ -2392,7 +2439,7 @@ mod tests {
             "padding": {"lef": 4},
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("lef"), "{}", error.0);
+        assert!(error.to_string().contains("lef"), "{}", error.to_string());
     }
 
     /// Mixing the `{"x", "y"}` axis shape with the `{"top", ...}` side
@@ -2405,7 +2452,7 @@ mod tests {
             "padding": {"x": 6, "top": 3},
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("mix"), "{}", error.0);
+        assert!(error.to_string().contains("mix"), "{}", error.to_string());
     }
 
     /// A `"tabs"` node marks the `"selected"` entry active and carries
@@ -2492,7 +2539,11 @@ mod tests {
             }
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("focused_index"), "{}", error.0);
+        assert!(
+            error.to_string().contains("focused_index"),
+            "{}",
+            error.to_string()
+        );
     }
 
     /// `"focused_index": 0` on an empty `"tabs"` array decodes without
@@ -2747,8 +2798,16 @@ mod tests {
             "style": {"background": "#000000"},
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("unknown key"), "{}", error.0);
-        assert!(error.0.contains("\"background\""), "{}", error.0);
+        assert!(
+            error.to_string().contains("unknown key"),
+            "{}",
+            error.to_string()
+        );
+        assert!(
+            error.to_string().contains("\"background\""),
+            "{}",
+            error.to_string()
+        );
     }
 
     /// `"style.bg"` rejects a malformed hex string instead of silently
@@ -2760,7 +2819,11 @@ mod tests {
             "style": {"bg": "not-a-colour"},
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("\"bg\""), "{}", error.0);
+        assert!(
+            error.to_string().contains("\"bg\""),
+            "{}",
+            error.to_string()
+        );
     }
 
     /// `"style"` must itself be an object, not a bare value.
@@ -2771,8 +2834,16 @@ mod tests {
             "style": "bg",
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("\"style\""), "{}", error.0);
-        assert!(error.0.contains("must be an object"), "{}", error.0);
+        assert!(
+            error.to_string().contains("\"style\""),
+            "{}",
+            error.to_string()
+        );
+        assert!(
+            error.to_string().contains("must be an object"),
+            "{}",
+            error.to_string()
+        );
     }
 
     /// Decodes `value` against a registry holding exactly `sets` on top of
@@ -3035,9 +3106,17 @@ mod tests {
     #[test]
     fn class_rejects_a_wrongly_typed_value() {
         let error = err(decode(&json!({"row": [], "class": 7})));
-        assert!(error.0.contains("\"class\""), "{}", error.0);
+        assert!(
+            error.to_string().contains("\"class\""),
+            "{}",
+            error.to_string()
+        );
         let error = err(decode(&json!({"row": [], "class": ["ok", 7]})));
-        assert!(error.0.contains("must all be strings"), "{}", error.0);
+        assert!(
+            error.to_string().contains("\"class[]\""),
+            "{}",
+            error.to_string()
+        );
     }
 
     /// `validate_style_set_name` rejects both an empty name and one
@@ -3050,13 +3129,17 @@ mod tests {
         assert!(validate_style_set_name("define_style", "card").is_ok());
 
         let error = validate_style_set_name("define_style", "").unwrap_err();
-        assert!(error.0.contains("must not be empty"), "{}", error.0);
+        assert!(
+            error.to_string().contains("must not be empty"),
+            "{}",
+            error.to_string()
+        );
 
         let error = validate_style_set_name("define_style", "card danger").unwrap_err();
         assert!(
-            error.0.contains("must not contain whitespace"),
+            error.to_string().contains("must not contain whitespace"),
             "{}",
-            error.0
+            error.to_string()
         );
     }
 
@@ -3073,7 +3156,7 @@ mod tests {
             "gap": 8,
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("gap"), "{}", error.0);
+        assert!(error.to_string().contains("gap"), "{}", error.to_string());
     }
 
     /// An unrecognized `"axis"` value is a decode error naming the
@@ -3088,7 +3171,7 @@ mod tests {
             }
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("axis"), "{}", error.0);
+        assert!(error.to_string().contains("axis"), "{}", error.to_string());
     }
 
     /// A scroll node missing its required `"id"` key is rejected, same as
@@ -3101,7 +3184,7 @@ mod tests {
             }
         });
         let error = err(decode(&value));
-        assert!(error.0.contains("id"), "{}", error.0);
+        assert!(error.to_string().contains("id"), "{}", error.to_string());
     }
 
     /// A split node missing its required `"id"` key is rejected.
@@ -3116,7 +3199,13 @@ mod tests {
             }
         });
         let err = err(decode(&value));
-        assert!(err.0.contains("is missing required \"id\""), "{}", err.0);
+        assert!(matches!(err, DecodeError::MissingField { .. }), "{err:?}");
+        assert!(
+            err.to_string().contains("missing field"),
+            "{}",
+            err.to_string()
+        );
+        assert!(err.to_string().contains("split.id"), "{}", err.to_string());
     }
 
     /// A render callback tree with two leaves sharing the same id is
@@ -3130,7 +3219,11 @@ mod tests {
             ]
         });
         let output = err(decode_render_output("render", &value));
-        assert!(output.0.contains("duplicate leaf id"), "{}", output.0);
+        assert!(
+            output.to_string().contains("duplicate leaf id"),
+            "{}",
+            output.to_string()
+        );
     }
 
     /// A split's `"orientation"` must be `"horizontal"` or `"vertical"`.
@@ -3146,7 +3239,11 @@ mod tests {
             }
         });
         let err = err(decode(&value));
-        assert!(err.0.contains("must be one of"), "{}", err.0);
+        assert!(
+            err.to_string().contains("must be one of"),
+            "{}",
+            err.to_string()
+        );
     }
 
     /// A tabs node's `"selected"` index must be in range for its tab list.
@@ -3162,7 +3259,11 @@ mod tests {
             }
         });
         let err = err(decode(&value));
-        assert!(err.0.contains("out of range"), "{}", err.0);
+        assert!(
+            err.to_string().contains("out of range"),
+            "{}",
+            err.to_string()
+        );
     }
 
     /// A leaf dict naming two descriptor kinds at once is rejected.
@@ -3174,7 +3275,11 @@ mod tests {
             "list": {"id": "leaf1", "items": []},
         });
         let err = err(decode(&value));
-        assert!(err.0.contains("more than one descriptor kind"), "{}", err.0);
+        assert!(
+            err.to_string().contains("more than one descriptor kind"),
+            "{}",
+            err.to_string()
+        );
     }
 
     /// An unregistered additive primitive kind is rejected with every
@@ -3186,10 +3291,11 @@ mod tests {
             "not_a_real_kind",
             json!({}),
         ));
+        assert!(matches!(err, DecodeError::UnknownVariant { .. }), "{err:?}");
         assert!(
-            err.0.contains("unknown additive primitive kind"),
+            err.to_string().contains("not_a_real_kind"),
             "{}",
-            err.0
+            err.to_string()
         );
     }
 
@@ -3347,14 +3453,16 @@ mod tests {
         });
         let decode_err = err(decode_render_output("render", &value));
         assert!(
-            decode_err.0.contains("\"wire_version\""),
+            decode_err.to_string().contains("\"wire_version\""),
             "{}",
-            decode_err.0
+            decode_err.to_string()
         );
         assert!(
-            decode_err.0.contains("newer than this host understands"),
+            decode_err
+                .to_string()
+                .contains("newer than this host understands"),
             "{}",
-            decode_err.0
+            decode_err.to_string()
         );
     }
 
@@ -3368,9 +3476,11 @@ mod tests {
         });
         let decode_err = err(decode_render_output("render", &value));
         assert!(
-            decode_err.0.contains("must be a non-negative integer"),
+            decode_err
+                .to_string()
+                .contains("must be a non-negative integer"),
             "{}",
-            decode_err.0
+            decode_err.to_string()
         );
     }
 
@@ -3403,7 +3513,12 @@ mod tests {
 
         let value = json!({"title": "My Shell", "position": "sideways"});
         let err = err(decode_shell_config(&value));
-        assert!(err.0.contains("must be \"left\" or \"right\""), "{}", err.0);
+        assert!(matches!(err, DecodeError::UnknownVariant { .. }), "{err:?}");
+        assert!(
+            err.to_string().contains("\"sideways\""),
+            "{}",
+            err.to_string()
+        );
     }
 
     /// `run_shell`'s tabbed `"bottom_panel"` dict applies its own
@@ -3428,6 +3543,114 @@ mod tests {
     #[test]
     fn decode_shell_config_requires_title() {
         let err = err(decode_shell_config(json!({})));
-        assert!(err.0.contains("missing required \"title\""), "{}", err.0);
+        assert!(matches!(err, DecodeError::MissingField { .. }), "{err:?}");
+        assert!(err.to_string().contains("\"title\""), "{}", err.to_string());
+    }
+
+    /// A decode failure several levels into a layout tree names every
+    /// ancestor node on the way down, not just the render callback's own
+    /// top-level label -- the whole point of carrying a path rather than
+    /// a bare field name. A `"ratio"` missing from a `"split"` nested
+    /// inside a `"panel"` nested inside a `"tabs"` entry's content names
+    /// `"tabs#frm"`, `"panel#chrome"` and `"split#inner"` in that order,
+    /// not just `"render"`.
+    #[test]
+    fn a_deeply_nested_decode_error_names_every_ancestor_on_the_way_down() {
+        let value = json!({
+            "tabs": {
+                "id": "frm",
+                "tabs": [{
+                    "id": "one",
+                    "title": "One",
+                    "content": {
+                        "panel": {
+                            "id": "chrome",
+                            "content": {
+                                "split": {
+                                    "id": "inner",
+                                    "orientation": "horizontal",
+                                    // "ratio" deliberately omitted.
+                                    "first": {"id": "a", "button": {"id": "a", "label": "A"}},
+                                    "second": {"id": "b", "button": {"id": "b", "label": "B"}},
+                                },
+                            },
+                        },
+                    },
+                }],
+            },
+        });
+        let error = err(decode_render_output("render", &value));
+        assert!(
+            matches!(error, DecodeError::MissingField { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.path(),
+            "render › tabs#frm › tab#one › content › panel#chrome › content › split#inner"
+        );
+        let message = error.to_string();
+        assert!(
+            message.starts_with("render: at "),
+            "expected the root label and \"at\", got: {message}"
+        );
+        assert!(message.contains("tabs#frm"), "{message}");
+        assert!(message.contains("panel#chrome"), "{message}");
+        assert!(message.contains("split#inner"), "{message}");
+        assert!(message.contains("missing field \"ratio\""), "{message}");
+    }
+
+    /// Every [`DecodeError`] variant pairs a stable [`DecodeError::code`]
+    /// with the [`DecodeError::path`] at which it was raised -- the two
+    /// pieces of information a binding's exception mapping (and this
+    /// crate's own `#[non_exhaustive]` match) relies on instead of parsing
+    /// the rendered message.
+    #[test]
+    fn every_variant_exposes_its_own_code_and_the_path_it_was_raised_at() {
+        let missing = err(decode(&json!({"split": {
+            "orientation": "horizontal",
+            "ratio": 0.5,
+            "first": {"id": "a", "button": {"id": "a", "label": "A"}},
+            "second": {"id": "b", "button": {"id": "b", "label": "B"}},
+        }})));
+        assert_eq!(missing.code(), "missing_field");
+        assert_eq!(missing.path(), "test");
+
+        let unknown_variant = err(decode(&json!({
+            "split": {
+                "id": "s1",
+                "orientation": "diagonal",
+                "ratio": 0.5,
+                "first": {"id": "a", "button": {"id": "a", "label": "A"}},
+                "second": {"id": "b", "button": {"id": "b", "label": "B"}},
+            }
+        })));
+        assert_eq!(unknown_variant.code(), "unknown_variant");
+        assert_eq!(unknown_variant.path(), "test › split#s1");
+
+        let type_mismatch = err(decode(&json!({"row": "not a list"})));
+        assert_eq!(type_mismatch.code(), "type_mismatch");
+        assert_eq!(type_mismatch.path(), "test");
+
+        let unknown_key = err(decode(&json!({"row": [], "padding": {"lef": 4}})));
+        assert_eq!(unknown_key.code(), "unknown_key");
+        assert_eq!(unknown_key.path(), "test: \"row\"");
+
+        let version_mismatch = err(decode_render_output(
+            "render",
+            json!({
+                "wire_version": crate::wire_schema::WIRE_VERSION + 1,
+                "button": {"id": "b1", "label": "Go"},
+            }),
+        ));
+        assert_eq!(version_mismatch.code(), "version_mismatch");
+        assert_eq!(version_mismatch.path(), "render");
+
+        let borrow = err(decode(&json!({
+            "id": "leaf1",
+            "button": {"id": "leaf1", "label": "A"},
+            "list": {"id": "leaf1", "items": []},
+        })));
+        assert_eq!(borrow.code(), "borrow");
+        assert_eq!(borrow.path(), "test › leaf#leaf1");
     }
 }

@@ -349,7 +349,7 @@ test("setRender rejects an unknown justify value", () => {
     row: [{ id: "a", text_display: { id: "a", lines: [] } }],
     justify: "spread",
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), /UnknownVariantError/);
 });
 
 test("a handler calling back into QuiApp (e.g. setRender) mid-dispatch raises instead of corrupting state", () => {
