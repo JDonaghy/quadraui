@@ -100,6 +100,7 @@ exports.Split = nodes.Split;
 exports.Column = nodes.Column;
 exports.Row = nodes.Row;
 exports.SidebarPanel = nodes.SidebarPanel;
+exports.Scroll = nodes.Scroll;
 exports.Tab = nodes.Tab;
 exports.Tabs = nodes.Tabs;
 exports.Tree = nodes.Tree;
@@ -115,6 +116,7 @@ export type {
   ColumnOptions,
   RowOptions,
   SidebarPanelOptions,
+  ScrollOptions,
   TabOptions,
   TabsOptions,
   TreeOptions,

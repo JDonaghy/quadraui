@@ -1,8 +1,18 @@
 """Black-box coverage for the container/layout primitives bound to Python:
-`Panel`, `SidebarPanel` and `SplitTree`, each a `LayoutNode` variant exactly
-like the pre-existing `row`/`column`/`split`/`tabs` -- constructed from a
-plain Python dict behind a `set_render` callback and recursively holding
-any other `LayoutNode` as content/children.
+`Panel`, `SidebarPanel`, `SplitTree` and `Scroll`, each a `LayoutNode`
+variant exactly like the pre-existing `row`/`column`/`split`/`tabs` --
+constructed from a plain Python dict behind a `set_render` callback and
+recursively holding any other `LayoutNode` as content/children.
+
+`Scroll` additionally covers an uncontrolled scroll position actually
+moving: a wheel notch over its own body/scrollbar (or a page key on a
+focused child) must both dispatch `ScrollOffsetChanged` through the
+handler *and* show up in the next render -- the two are driven by separate
+code paths (`InteractionEngine::handle`'s own wheel/key translation writes
+the new offset into `WidgetState`; `resolve_layout_node_state`'s own
+`LayoutNode::Scroll` arm has to read it back before the next
+`paint_layout`), so a test asserting only the dispatched event, or only
+the resulting screen, would each miss half of the round trip.
 
 Also covers the two render-callback layout-node gaps closed alongside this
 binding work:
@@ -702,3 +712,113 @@ def test_row_with_no_size_key_still_decodes_the_legacy_leaf_shape():
     line = app.screen().splitlines()[0]
     assert line.index("L") == 0
     assert line.index("R") == 5
+
+
+def _buttons(count):
+    return [
+        {"id": f"btn:{i}", "button": {"id": f"btn:{i}", "label": f"Item{i:02d}"}}
+        for i in range(count)
+    ]
+
+
+def test_scroll_renders_its_content_subtree_and_clips_whatever_overflows_it():
+    app = QuiApp(40, 10)
+
+    def render():
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(30)}}}
+
+    app.set_render(render)
+    assert app.screen_contains("Item00")
+    assert app.screen_contains("Item09")
+    assert not app.screen_contains(
+        "Item15"
+    ), "content past the viewport must not paint until the scroll actually moves"
+
+
+def test_scroll_wheel_notch_on_the_scrollbar_dispatches_and_persists_the_new_offset():
+    app = QuiApp(40, 10)
+
+    def render():
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(30)}}}
+
+    app.set_render(render)
+    # Force the first paint so the scrollbar's own track is on the hit map
+    # before the wheel notch below -- see the `panel` click test's own
+    # comment above for why `push_event`/`run` alone would miss it.
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    # x=39 lands on the vertical scrollbar's own track/thumb (the
+    # rightmost column the viewport reserves once content overflows it),
+    # so the wheel resolves through `HitDetail::ScrollScrollbarThumb`
+    # directly rather than needing a child leaf's own id to look up its
+    # enclosing scroll. `ScrollView::handle_wheel`'s own convention: a
+    # positive `delta.y` is forward/down.
+    app.push_event(
+        {"Scroll": {"delta": {"x": 0.0, "y": 3.0}, "position": {"x": 39.0, "y": 1.0}}}
+    )
+    app.run(1)
+
+    assert received == [{"ScrollOffsetChanged": {"widget": "scroll:main", "new_offset": 3}}]
+    assert not app.screen_contains(
+        "Item00"
+    ), "the resolved offset must reach the next paint, not stay pinned at 0"
+    assert app.screen_contains("Item04")
+
+
+def test_scroll_page_down_on_a_focused_child_scrolls_the_whole_container():
+    app = QuiApp(40, 10)
+
+    def render():
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(30)}}}
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 1.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "PageDown"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert received == [{"ScrollOffsetChanged": {"widget": "scroll:main", "new_offset": 10}}]
+    assert app.screen_contains("Item10")
+    assert not app.screen_contains("Item00")
+
+
+def test_scroll_node_helper_builds_the_expected_wire_shape_and_omits_defaults():
+    from quadraui.app import Scroll, TextDisplay
+
+    node = Scroll(TextDisplay([]))
+    assert node.kind == "scroll"
+    assert node.id is None
+    built = node.build("scroll:1", {"content": {"text_display": {"id": "x", "lines": []}}})
+    assert built == {"scroll": {"id": "scroll:1", "content": {"text_display": {"id": "x", "lines": []}}}}
+
+    pinned = Scroll(
+        TextDisplay([]),
+        id="scroll:pinned",
+        axis="horizontal",
+        offset=4.0,
+        padding=2,
+        margin=1.0,
+    )
+    assert pinned.id == "scroll:pinned"
+    built_pinned = pinned.build("scroll:pinned", {"content": {"ignored": True}})
+    assert built_pinned == {
+        "scroll": {
+            "id": "scroll:pinned",
+            "axis": "horizontal",
+            "offset": 4.0,
+            "content": {"ignored": True},
+        },
+        "padding": 2,
+        "margin": 1.0,
+    }

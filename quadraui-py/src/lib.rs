@@ -191,14 +191,15 @@ use quadraui_binding_core::{
     menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout,
     pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
     resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
-    resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
-    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
-    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    toast_corner, tree_rows_and_viewport, update_apply_on_quit, update_check_for_update,
-    update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
-    with_window, BindingHost, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, PaintedHit,
-    RenderFrame, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
+    resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
+    resolve_tree_expansion, set_as_default_protocol_client, set_dock_menu, set_jump_list,
+    set_login_item, step_driver, take_pending_error as core_take_pending_error,
+    text_display_from_lines, theme_color_value, toast_corner, tree_rows_and_viewport,
+    update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost,
+    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf,
+    LayoutNode, LeafDescriptor, OverrideError, PaintedHit, RenderFrame, RenderOutput, ServiceError,
+    UpdateInfoWire, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`
@@ -1613,12 +1614,30 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
                 resolve_layout_node_state(engine, leaf);
             }
         }
-        // The container's own scroll offset needs the backend metrics this
-        // walker deliberately doesn't take (viewport vs. natural content
-        // length, to clamp against); `paint_layout` clamps whatever
-        // `offset` the wire carried -- `None` painting from the top -- so
-        // only the content subtree's own widget state is resolved here.
+        // Mirrors `resolved_viewport_rows`'s own "read the previous
+        // frame's painted geometry, not this frame's backend/area" shape
+        // (this walker takes neither) -- `scroll_view_at` rebuilds the
+        // exact `quadraui::ScrollView` `crate::render::paint_scroll`
+        // painted for this id last frame, straight off its own
+        // `PaintedHit::Scroll` fields, so `max_offset()` here is the same
+        // clamp paint already applied, not a re-derived one. `None` (no
+        // hit yet -- the very first render) falls back to `0.0`, the same
+        // "start at the top" default `resolve_scroll_offset`'s own
+        // `WidgetState` entry seeds a never-before-seen id with. Without
+        // this, `InteractionEngine::handle`'s own wheel/key/scrollbar-drag
+        // `apply_scroll_offset` write would sit in `WidgetState` forever
+        // unread, since `scroll_node.offset` -- left `None` (uncontrolled)
+        // by every render callback that doesn't pin it itself -- would
+        // otherwise reach `paint_layout` still unresolved and paint from
+        // `0.0` every frame.
         LayoutNode::Scroll(scroll_node) => {
+            let id = WidgetId::new(scroll_node.id.as_str());
+            let max_offset = quadraui_binding_core::drag::scroll_view_at(&engine.hit_map(), id)
+                .map(|view| view.max_offset())
+                .unwrap_or(0.0);
+            let offset =
+                resolve_scroll_offset(engine.widget_state(), id, scroll_node.offset, max_offset);
+            scroll_node.offset = Some(offset);
             resolve_layout_node_state(engine, &mut scroll_node.content);
         }
     }
@@ -6866,6 +6885,93 @@ def handle(event):
                 !app.screen_contains("MainFile")
                     .expect("render must not raise"),
                 "collapsing the branch must prune its child row from the scroll's content"
+            );
+        });
+    }
+
+    /// A wheel `Scroll` landing on an uncontrolled `{"scroll": {...}}`
+    /// container's own body/scrollbar moves its stored offset in
+    /// `InteractionEngine::widget_state` — `resolve_layout_node_state`'s
+    /// own `LayoutNode::Scroll` arm must read that back (via
+    /// `scroll_view_at`'s rebuilt `ScrollView::max_offset`, the same
+    /// previous-frame-geometry source `resolved_viewport_rows` already
+    /// uses for `Tree`/`List`/`DataTable`) and resolve `scroll_node.offset`
+    /// to it before the next `paint_layout`, or an uncontrolled scroll
+    /// would stay pinned at its unresolved `None` -> `0.0` default forever,
+    /// no matter how many wheel notches the engine already applied.
+    #[test]
+    fn scroll_container_wheel_notch_persists_its_offset_into_the_next_render() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'scroll': {
+        'id': 'scroll:main',
+        'axis': 'vertical',
+        'content': {'column': [
+            {'id': f'btn:{i}', 'button': {'id': f'btn:{i}', 'label': f'Item{i:02d}'}}
+            for i in range(30)
+        ]},
+    }}
+
+def handle(event):
+    pass
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Item00")
+                    .expect("render must not raise"),
+                "the scroll must start painting from its own top"
+            );
+            assert!(
+                !app.screen_contains("Item12")
+                    .expect("render must not raise"),
+                "a button far enough down must start out of the viewport"
+            );
+
+            // Lands on the vertical scrollbar's own track/thumb (the
+            // rightmost column of the viewport, reserved whenever the
+            // content overflows it) rather than on a button directly, so
+            // the wheel resolves through `HitDetail::ScrollScrollbarThumb`'s
+            // own `Some(*id)` shortcut -- `ScrollView::handle_wheel`'s own
+            // doc: positive `delta.y` is forward/down.
+            let event = py
+                .eval(
+                    c"{'Scroll': {'delta': {'x': 0.0, 'y': 3.0}, 'position': {'x': 39.0, 'y': 1.0}}}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate");
+            let event_dict = event.cast::<PyDict>().expect("dict literal must be a dict");
+            app.push_event(event_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                !app.screen_contains("Item00")
+                    .expect("render must not raise"),
+                "three notches down must scroll button 0 out of the viewport"
+            );
+            assert!(
+                app.screen_contains("Item04")
+                    .expect("render must not raise"),
+                "the resolved offset must actually reach the next paint, not stay at 0"
             );
         });
     }

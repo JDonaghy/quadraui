@@ -34,6 +34,7 @@ of these keys, naming the node's kind:
 | `"panel"` | `LayoutPanelNode` | Deprecated chrome wrapper around one child -- prefer `"sidebar_panel"`. |
 | `"sidebar_panel"` | `LayoutSidebarPanelNode` | Chrome (toolbar, accent) wrapper around one child. |
 | `"split_tree"` | `LayoutSplitTreeNode` | A recursive tree of splits (`SplitTreeRecursiveNode`), for more than two panes. |
+| `"scroll"` | `LayoutScrollNode` | A scrollable viewport around one content child, built on `ScrollView`. |
 | `"leaf"` | `LayoutLeafNode` | A primitive widget -- see *Leaf kinds* below. |
 
 A `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/`"sidebar_panel"`/
