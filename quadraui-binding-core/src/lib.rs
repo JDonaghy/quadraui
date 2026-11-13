@@ -72,7 +72,7 @@ pub use engine::{message_dialog_options_from_buttons, EventSink, InteractionEngi
 pub use extra_paint::{decode_extra_primitive, extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
-pub use hit::{HitDetail, PaintedHit};
+pub use hit::{HitDetail, PaintedHit, ScrollChildHit};
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 pub use host::NativeExitPolicy;
 pub use host::{

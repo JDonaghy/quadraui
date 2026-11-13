@@ -247,17 +247,18 @@ pub enum PaintedHit {
     /// to resolve a new offset without re-measuring the content. `scrollbar`
     /// is `None` when the content fits without scrolling, mirroring
     /// [`Self::Tree`]'s own `scrollbar` field; its `track` is an absolute
-    /// rect, outside `viewport` (reserved alongside it, not inside it), so
-    /// [`clip_hits_to_viewport`] never needs to narrow it the way it
-    /// narrows [`Self::Tree`]'s. `children` is the `(id, start, len)` of
-    /// every direct [`crate::layout::LayoutNode::Leaf`] child when this
-    /// scroll's content is a `Column`/`Row` matching its own axis —
-    /// `start`/`len` are main-axis content-relative (not yet offset by
-    /// `offset`, and not clamped to `viewport` the way the child's own
-    /// painted rect may be) — read by the engine to scroll a child that
-    /// just received focus fully into view. Empty for `Atomic` content or
-    /// a non-`Leaf` direct child (a nested `Row`/`Column`/`Split`/…),
-    /// where that scroll-into-view isn't implemented yet.
+    /// rect, outside `viewport` (reserved alongside it, not inside it), and
+    /// is narrowed by [`clip_hits_to_viewport`] the same way it narrows
+    /// [`Self::Tree`]'s — a `Scroll` nested inside another `Scroll`'s
+    /// viewport needs its own track clipped to the OUTER viewport too, the
+    /// same class of leak a nested `Tree`'s track is already guarded
+    /// against. `children` is one [`ScrollChildHit`] per direct
+    /// [`crate::layout::LayoutNode::Leaf`] child when this scroll's
+    /// content is a `Column`/`Row` matching its own axis — read by the
+    /// engine to scroll a child that just received focus fully into view.
+    /// Empty for `Atomic` content or a non-`Leaf` direct child (a nested
+    /// `Row`/`Column`/`Split`/…), where that scroll-into-view isn't
+    /// implemented yet.
     Scroll {
         id: WidgetId,
         viewport: Rect,
@@ -265,8 +266,23 @@ pub enum PaintedHit {
         content_len: f32,
         offset: f32,
         scrollbar: Option<Scrollbar>,
-        children: Vec<(WidgetId, f32, f32)>,
+        children: Vec<ScrollChildHit>,
     },
+}
+
+/// One [`PaintedHit::Scroll::children`] entry: `id` is the direct
+/// [`crate::layout::LayoutNode::Leaf`] child's own id; `start`/`len` are
+/// its main-axis span within the scroll's content, content-relative — NOT
+/// yet offset by [`PaintedHit::Scroll::offset`], and not clamped to
+/// `viewport` the way the child's own painted rect may be, since the
+/// engine's scroll-into-view math needs the un-clamped span. Mirrors
+/// [`crate::render::ScrollChildSlot`]'s own `start`/`len` fields, which
+/// this struct is built from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollChildHit {
+    pub id: WidgetId,
+    pub start: f32,
+    pub len: f32,
 }
 
 /// Intersects `hits[start..]` — one [`crate::render::paint_scroll`] call's
@@ -302,10 +318,11 @@ pub enum PaintedHit {
 /// translates a click into); and a nested [`PaintedHit::Scroll`]'s own
 /// `viewport`. Two more sub-rect collections, checked by
 /// [`hit_test_painted`] ahead of a kind's own primary bounds, are narrowed
-/// alongside it: [`PaintedHit::Tree`]'s `scrollbar.track` (an absolute
-/// rect, like `Button`'s `layout.bounds` — narrowed directly, never
-/// dropping the surrounding `Tree` entry even when the track itself ends
-/// up with no overlap) and [`PaintedHit::Extra`]'s `chrome_hits` (each
+/// alongside it: [`PaintedHit::Tree`]'s and [`PaintedHit::Scroll`]'s own
+/// `scrollbar.track` (an absolute rect, like `Button`'s `layout.bounds` —
+/// narrowed directly, never dropping the surrounding `Tree`/`Scroll` entry
+/// even when the track itself ends up with no overlap) and
+/// [`PaintedHit::Extra`]'s `chrome_hits` (each
 /// entry independently intersected and dropped on no overlap, the same
 /// per-entry treatment `hits` itself gets). The chrome-layout kinds
 /// (`Split`/`SplitTree`/`Panel`/`SidebarPanel`) carry several independent
@@ -325,6 +342,10 @@ pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, vi
         *primary_bounds_mut(&mut hits[i]).expect("checked above") = clipped;
         match &mut hits[i] {
             PaintedHit::Tree {
+                scrollbar: Some(scrollbar),
+                ..
+            }
+            | PaintedHit::Scroll {
                 scrollbar: Some(scrollbar),
                 ..
             } => {
@@ -1182,6 +1203,42 @@ mod tests {
         // The track's own pre-clip span (`y` in `[0, 24)`) reached past
         // `viewport`'s bottom edge (`y` in `[0, 10)`) -- narrowed, a point
         // past the viewport's own edge doesn't resolve to it.
+        assert!(!scrollbar.track.contains(Point { x: 19.0, y: 20.0 }));
+        assert!(scrollbar.track.contains(Point { x: 19.0, y: 5.0 }));
+    }
+
+    /// [`PaintedHit::Scroll`]'s own `scrollbar.track` is narrowed the same
+    /// way [`PaintedHit::Tree`]'s is (see the test just above) — a nested
+    /// `Scroll` painted inside an outer one, straddling the OUTER
+    /// viewport's own edge, must not keep a clickable track reaching past
+    /// it.
+    #[test]
+    fn clip_hits_to_viewport_narrows_a_scrolls_scrollbar_track() {
+        let viewport = Rect::new(0.0, 0.0, 20.0, 10.0);
+        let track = Rect::new(19.0, 0.0, 1.0, 24.0);
+        let scrollbar = Some(Scrollbar::vertical("track", track, 0.0, 100.0, 24.0, 1.0));
+        let mut hits = vec![PaintedHit::Scroll {
+            id: WidgetId::new("hit-test:scroll"),
+            viewport: Rect::new(0.0, 0.0, 20.0, 24.0),
+            axis: ScrollAxis::Vertical,
+            content_len: 100.0,
+            offset: 0.0,
+            scrollbar,
+            children: Vec::new(),
+        }];
+        clip_hits_to_viewport(&mut hits, 0, viewport);
+
+        let PaintedHit::Scroll {
+            scrollbar: Some(scrollbar),
+            ..
+        } = &hits[0]
+        else {
+            panic!("still a Scroll hit with a scrollbar");
+        };
+        // Same assertion as the `Tree` test: the track's own pre-clip span
+        // (`y` in `[0, 24)`) reached past `viewport`'s bottom edge (`y` in
+        // `[0, 10)`) -- narrowed, a point past the viewport's own edge
+        // doesn't resolve to it.
         assert!(!scrollbar.track.contains(Point { x: 19.0, y: 20.0 }));
         assert!(scrollbar.track.contains(Point { x: 19.0, y: 5.0 }));
     }

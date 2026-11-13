@@ -75,13 +75,16 @@ fn continue_or_tooltip_redraw(tooltip_dismissed: bool) -> quadraui::Reaction {
 /// enough when it ends after, through [`ScrollView::scroll_by`] rather
 /// than computing a raw offset by hand (so the result is still clamped by
 /// that primitive's own math). `None` when the child is already fully
-/// visible, including when `len` alone is larger than `view`'s own
-/// [`ScrollView::visible_len`] (it can never be made fully visible either
-/// way, so there's nothing to scroll toward). Called when a click moves
-/// keyboard focus to a child painted only partly inside its enclosing
-/// `Scroll`'s viewport (straddling an edge, not scrolled fully out — a
-/// child scrolled fully out of view never gets painted in the first
-/// place, hence is never a click target at all).
+/// visible. When `len` alone is larger than `view`'s own
+/// [`ScrollView::visible_len`], the child can never be made fully visible
+/// either way — `start < visible_start` still scrolls backward to align
+/// its start, same as any other too-tall child. Called whenever keyboard
+/// focus moves to a child of a `Scroll` — a click on one painted only
+/// partly inside its enclosing viewport (straddling an edge), or a
+/// directly-dispatched `UiEvent::FocusChanged` (e.g. a binding's own
+/// Tab-cycling) landing on one scrolled fully out of view, since
+/// [`PaintedHit::Scroll::children`] covers every child regardless of
+/// whether it's currently painted.
 fn scroll_child_into_view(
     view: &quadraui::ScrollView,
     start: f32,
@@ -96,6 +99,27 @@ fn scroll_child_into_view(
     } else {
         None
     }
+}
+
+/// Whether the leaf hit for `focused` already claims PageUp/PageDown/Home/
+/// End for its own semantics — a focused `TextInput`'s caret (`Home`/`End`
+/// via [`crate::text_input::text_input_key_event`]) or a focused
+/// `TextDisplay`'s own paging (routed through
+/// [`crate::semantic::focus_scoped_key_event`] into
+/// `UiEvent::TextDisplay(.., KeyPressed)`). Checked before
+/// [`InteractionEngine::handle`] lets an enclosing `Scroll` claim those
+/// keys instead, so a scrollable form (the canonical use for a `Scroll`
+/// wrapping a `TextInput`) never loses caret movement, and a focused
+/// `TextDisplay` never loses its own page-by-page scrolling, to the
+/// enclosing container.
+fn focused_leaf_claims_page_keys(hit_map: &[PaintedHit], focused: WidgetId) -> bool {
+    hit_map.iter().any(|hit| match hit {
+        PaintedHit::TextDisplay { id, .. } => *id == focused,
+        PaintedHit::Extra { id, extra, .. } => {
+            *id == focused && extra_as::<TextInput>(extra).is_some()
+        }
+        _ => false,
+    })
 }
 
 /// The one binding-specific step [`InteractionEngine::handle`] cannot do
@@ -715,9 +739,10 @@ impl InteractionEngine {
     /// `Split`/`SplitTree`/`Panel`/`SidebarPanel` are chrome around other
     /// content, not focusable leaves themselves, so they are skipped (their
     /// own action/toolbar buttons aren't recorded as separate `PaintedHit`
-    /// entries — see `crate::hit::HitDetail::PanelAction` et al. — so there
-    /// is nothing yet for a future keyboard-nav pass to pick up here
-    /// either); `Extra` is a tab stop only when its descriptor opts in via
+    /// entries — see `crate::hit::HitDetail::PanelAction` et al. — so a
+    /// future keyboard-nav pass over those specific buttons still has
+    /// nothing to pick up here); `Extra` is a tab stop only when its
+    /// descriptor opts in via
     /// [`crate::extra_paint::ExtraPaint::tab_stop`] (currently `Switch` and
     /// `TextInput`); `TextDisplay` is always one (scroll/copy need
     /// keyboard focus the same way a `Tree`/`List` does); every other
@@ -753,29 +778,46 @@ impl InteractionEngine {
     /// [`PaintedHit::Scroll::children`]/[`enclosing_scroll_child`]) that
     /// isn't already fully inside that `Scroll`'s own visible range,
     /// scrolls it there and persists the new offset via
-    /// [`apply_scroll_offset`] — the shared "a focused child should be
-    /// fully visible" side effect, called both from [`Self::handle`]'s own
-    /// click-to-focus bookkeeping and for a directly-dispatched
-    /// `UiEvent::FocusChanged` (e.g. a binding's own Tab-cycling, which
-    /// calls `AppLogic::handle` straight through to [`Self::handle`]
-    /// without going through this engine's click-to-focus code at all).
-    /// Returns whether it actually scrolled anything, so a caller can fold
-    /// that into its own `Reaction`.
-    fn scroll_focused_child_into_view(&self, id: WidgetId) -> bool {
+    /// [`apply_scroll_offset`], then dispatches the resulting
+    /// `UiEvent::ScrollOffsetChanged` through `sink` — the shared "a
+    /// focused child should be fully visible" side effect, called both
+    /// from [`Self::handle`]'s own click-to-focus bookkeeping and for a
+    /// directly-dispatched `UiEvent::FocusChanged` (e.g. a binding's own
+    /// Tab-cycling, which calls `AppLogic::handle` straight through to
+    /// [`Self::handle`] without going through this engine's click-to-focus
+    /// code at all). Every other offset-changing path (wheel, page keys,
+    /// thumb drag, track paging) dispatches this same event, in both
+    /// controlled and uncontrolled mode — see [`crate::widget_state`]'s own
+    /// module doc — and this is no exception, even though `id` landing
+    /// here is itself a side effect of a focus change rather than a direct
+    /// scroll gesture. Returns `Reaction::Continue` when nothing scrolled,
+    /// so a caller can fold the result into its own `Reaction` via `merge`
+    /// either way.
+    fn scroll_focused_child_into_view(
+        &self,
+        id: WidgetId,
+        sink: &mut dyn EventSink,
+    ) -> quadraui::Reaction {
         let Some((scroll_id, start, len)) = enclosing_scroll_child(&self.hit_map.borrow(), id)
         else {
-            return false;
+            return quadraui::Reaction::Continue;
         };
         let Some(view) = scroll_view_at(&self.hit_map.borrow(), scroll_id) else {
-            return false;
+            return quadraui::Reaction::Continue;
         };
         let Some(ScrollViewEvent::Scrolled { offset: new_offset }) =
             scroll_child_into_view(&view, start, len)
         else {
-            return false;
+            return quadraui::Reaction::Continue;
         };
         apply_scroll_offset(&self.widget_state, scroll_id, new_offset);
-        true
+        quadraui::Reaction::Redraw.merge(sink.dispatch(
+            &UiEvent::ScrollOffsetChanged {
+                widget: scroll_id,
+                new_offset: new_offset.round() as usize,
+            },
+            None,
+        ))
     }
 
     /// The hover/pressed [`InteractionState`] for the chrome-bar extra
@@ -1055,8 +1097,9 @@ impl InteractionEngine {
         // click-driven focus change.
         let mut scroll_into_view_reaction = Reaction::Continue;
         if let UiEvent::FocusChanged(Some(id)) = &event {
-            if self.scroll_focused_child_into_view(*id) {
-                scroll_into_view_reaction = Reaction::Redraw;
+            scroll_into_view_reaction = self.scroll_focused_child_into_view(*id, sink);
+            if matches!(scroll_into_view_reaction, Reaction::Exit) {
+                return scroll_into_view_reaction;
             }
         }
 
@@ -1612,19 +1655,23 @@ impl InteractionEngine {
                         | Key::Named(NamedKey::PageDown)
                         | Key::Named(NamedKey::Home)
                         | Key::Named(NamedKey::End)
-                ) {
+                ) && !focused_leaf_claims_page_keys(&self.hit_map.borrow(), focused)
+                {
                     // The focused leaf has none of `Tree`/`List`/`DataTable`'s
                     // own page/home/end cursor handling (those already
                     // claimed the key above, so this never double-handles
-                    // one of them) — if it's a direct child of a `Scroll`,
-                    // route the key to that `Scroll`'s own
-                    // `ScrollView::handle_key` instead, mirroring the wheel
-                    // handling below but for the keyboard, and returning
-                    // straight away with a `ScrollOffsetChanged` rather than
-                    // falling into the generic `focus_scoped_key_event`
-                    // substitution below — unlike the tree/list/data-table
-                    // cases, this key has no OTHER semantic meaning for a
-                    // plain `Button`/`TextDisplay`/… to still receive.
+                    // one of them), and isn't a `TextInput`/`TextDisplay`
+                    // that claims these keys for itself either (guarded by
+                    // `focused_leaf_claims_page_keys` above, so a focused
+                    // `TextInput`'s `Home`/`End` caret move and a focused
+                    // `TextDisplay`'s own key handling still reach
+                    // `focus_scoped_key_event` below, never this routing) —
+                    // if it's a direct child of a `Scroll`, route the key to
+                    // that `Scroll`'s own `ScrollView::handle_key` instead,
+                    // mirroring the wheel handling below but for the
+                    // keyboard, and returning straight away with a
+                    // `ScrollOffsetChanged` rather than falling into the
+                    // generic `focus_scoped_key_event` substitution below.
                     // `false` (not applied) when there's no enclosing
                     // `Scroll`, or its content already fits/is already at
                     // that bound — the key then falls through unchanged to
@@ -1841,8 +1888,10 @@ impl InteractionEngine {
                     // (straddling an edge) — scroll it fully into view, the
                     // same way a focused `Tree`/`List`/`DataTable` row
                     // scrolls itself into view on cursor navigation.
-                    if self.scroll_focused_child_into_view(*id) {
-                        focus_reaction = focus_reaction.merge(Reaction::Redraw);
+                    focus_reaction =
+                        focus_reaction.merge(self.scroll_focused_child_into_view(*id, sink));
+                    if matches!(focus_reaction, Reaction::Exit) {
+                        return focus_reaction;
                     }
                 }
             }
@@ -2189,11 +2238,14 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
+    use std::rc::Rc;
+
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
         AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, MouseButton, NamedKey,
-        Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split, TabBar, TabBarEvent, TabBarHit,
-        ToolbarEvent, TreeEvent, TreeView, UiEvent, WidgetId,
+        Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split, StyledSpan, TabBar, TabBarEvent,
+        TabBarHit, TextDisplay, TextDisplayLine, TextInput, ToolbarEvent, TreeEvent, TreeView,
+        UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
@@ -5092,7 +5144,8 @@ mod tests {
     /// A column of `count` buttons, labelled `"0"`..`"{count - 1}"` by
     /// index — mirrors `crate::render::tests::button_column` /
     /// `crate::host::tests::ScrollLeafLogic`'s own content builder, the
-    /// shared content every `LayoutNode::Scroll` input test below stacks.
+    /// shared content every vertical-axis `LayoutNode::Scroll` input test
+    /// below stacks.
     fn button_column(count: usize) -> LayoutNode {
         LayoutNode::Column(LayoutContainer::new(
             (0..count)
@@ -5112,18 +5165,42 @@ mod tests {
         ))
     }
 
+    /// [`button_column`]'s horizontal-axis counterpart: a `Row` of `count`
+    /// buttons, same labelling — the content a horizontal-axis
+    /// `LayoutNode::Scroll` input test stacks.
+    fn button_row(count: usize) -> LayoutNode {
+        LayoutNode::Row(LayoutContainer::new(
+            (0..count)
+                .map(|i| {
+                    let label = i.to_string();
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: label.clone(),
+                        descriptor: LeafDescriptor::Button(Button::new(
+                            WidgetId::new(label.clone()),
+                            label,
+                        )),
+                        scroll_px: None,
+                    })
+                })
+                .collect(),
+            Spacing::default(),
+        ))
+    }
+
     /// An [`AppLogic`] whose `render`/`handle` go through
     /// [`InteractionEngine`] exactly the way [`MinimalLogic`] does, hosting
-    /// a `LayoutNode::Scroll` around [`button_column`] instead of a bare
-    /// `Button` — the issue's own acceptance scenario (40 buttons, a
-    /// 10-row viewport) driven through the full `event -> hit -> semantic`
-    /// pipeline, not just [`crate::render::paint_layout`]/
+    /// a `LayoutNode::Scroll` around [`button_column`] (vertical `axis`)
+    /// or [`button_row`] (horizontal) instead of a bare `Button` — the
+    /// issue's own acceptance scenario (40 buttons, a 10-row viewport)
+    /// driven through the full `event -> hit -> semantic` pipeline, not
+    /// just [`crate::render::paint_layout`]/
     /// [`crate::host::resolve_layout_node`] called directly the way
     /// `crate::render::tests::ScrollButtonsLogic`/
     /// `crate::host::tests::ScrollLeafLogic` already cover.
     struct ScrollLogic {
         button_count: usize,
         offset: Option<f32>,
+        axis: ScrollAxis,
         engine: InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
@@ -5134,11 +5211,15 @@ mod tests {
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let viewport = backend.viewport();
             let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let content = match self.axis {
+                ScrollAxis::Vertical => button_column(self.button_count),
+                ScrollAxis::Horizontal => button_row(self.button_count),
+            };
             let mut node = LayoutNode::Scroll(LayoutScroll {
                 id: "scroll".to_string(),
-                axis: ScrollAxis::Vertical,
+                axis: self.axis,
                 offset: self.offset,
-                content: Box::new(button_column(self.button_count)),
+                content: Box::new(content),
                 spacing: Spacing::default(),
             });
             resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
@@ -5159,13 +5240,156 @@ mod tests {
         }
     }
 
-    /// Builds a `button_count`-button `Scroll` (vertical, `offset` as
+    /// Builds a `button_count`-button vertical-axis `Scroll` (`offset` as
     /// given — `None` for uncontrolled) and drives it through a 10-row
     /// [`TuiDriver`], mirroring [`tree_driver`]/`data_table_driver`.
     fn scroll_driver(button_count: usize, offset: Option<f32>) -> TuiDriver<ScrollLogic> {
         let logic = ScrollLogic {
             button_count,
             offset,
+            axis: ScrollAxis::Vertical,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 20, 10)
+    }
+
+    /// [`scroll_driver`]'s horizontal-axis counterpart — same
+    /// `button_count`/`offset` contract, [`button_row`] content, through
+    /// the same 20-column viewport (each button is 5 columns wide per
+    /// [`crate::render::natural_size`]'s `Button` arm at `char_width() <=
+    /// 1.0`, so the viewport shows 4 at a time).
+    fn horizontal_scroll_driver(
+        button_count: usize,
+        offset: Option<f32>,
+    ) -> TuiDriver<ScrollLogic> {
+        let logic = ScrollLogic {
+            button_count,
+            offset,
+            axis: ScrollAxis::Horizontal,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 20, 10)
+    }
+
+    /// A vertical-axis `Scroll` content tree a page-key scoping test
+    /// needs: a focused leaf other than a plain `Button` mixed in among
+    /// enough of them that the enclosing `Scroll` has room to scroll
+    /// (`max_offset > 0`) — proving a page key reaches that leaf's own
+    /// handling rather than paging the container just because a `Scroll`
+    /// COULD page. `leaf` is placed first (row 0, so it starts visible at
+    /// a zero offset) and `tail_buttons` fills out the rest.
+    fn leaf_then_buttons_column(leaf: LayoutNode, tail_buttons: usize) -> LayoutNode {
+        let mut children = vec![leaf];
+        children.extend((0..tail_buttons).map(|i| {
+            let label = i.to_string();
+            LayoutNode::Leaf(LayoutLeaf {
+                id: label.clone(),
+                descriptor: LeafDescriptor::Button(Button::new(
+                    WidgetId::new(label.clone()),
+                    label,
+                )),
+                scroll_px: None,
+            })
+        }));
+        LayoutNode::Column(LayoutContainer::new(children, Spacing::default()))
+    }
+
+    /// [`leaf_then_buttons_column`]'s content: a focused `TextInput`
+    /// (id `"input"`, one line `"hello"`, cursor at column 0) followed by
+    /// 14 buttons — 15 rows total in a 10-row viewport, so the enclosing
+    /// `Scroll` has 5 rows of room to page.
+    fn text_input_then_buttons_column() -> LayoutNode {
+        let text_input = TextInput::new(WidgetId::new("input"))
+            .with_lines(vec!["hello".to_string()])
+            .with_cursor_col(0);
+        leaf_then_buttons_column(
+            LayoutNode::Leaf(LayoutLeaf {
+                id: "input".to_string(),
+                descriptor: LeafDescriptor::Extra(Rc::new(text_input)),
+                scroll_px: None,
+            }),
+            14,
+        )
+    }
+
+    /// [`leaf_then_buttons_column`]'s content: a focused `TextDisplay`
+    /// (id `"log"`, one line) followed by 14 buttons — same 15-rows-in-a
+    /// 10-row-viewport shape as [`text_input_then_buttons_column`].
+    fn text_display_then_buttons_column() -> LayoutNode {
+        let text_display = TextDisplay {
+            id: WidgetId::new("log"),
+            lines: vec![TextDisplayLine {
+                spans: vec![StyledSpan::plain("line 0")],
+                decoration: Default::default(),
+                timestamp: None,
+            }],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        leaf_then_buttons_column(
+            LayoutNode::Leaf(LayoutLeaf {
+                id: "log".to_string(),
+                descriptor: LeafDescriptor::TextDisplay(text_display),
+                scroll_px: None,
+            }),
+            14,
+        )
+    }
+
+    /// An [`AppLogic`] hosting a vertical `LayoutNode::Scroll` around
+    /// whatever `content_builder` returns — [`ScrollLogic`]'s own
+    /// button-only content can't host a `TextInput`/`TextDisplay` leaf,
+    /// which the page-key scoping tests need mixed in among buttons.
+    struct ScrollWithLeafLogic {
+        content_builder: fn() -> LayoutNode,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ScrollWithLeafLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let mut node = LayoutNode::Scroll(LayoutScroll {
+                id: "scroll".to_string(),
+                axis: ScrollAxis::Vertical,
+                offset: None,
+                content: Box::new((self.content_builder)()),
+                spacing: Spacing::default(),
+            });
+            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a [`ScrollWithLeafLogic`] and drives it through a 10-row
+    /// [`TuiDriver`], mirroring [`scroll_driver`].
+    fn scroll_with_leaf_driver(
+        content_builder: fn() -> LayoutNode,
+    ) -> TuiDriver<ScrollWithLeafLogic> {
+        let logic = ScrollWithLeafLogic {
+            content_builder,
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -5392,6 +5616,226 @@ mod tests {
         assert!(
             painted.contains(&"25".to_string()),
             "button \"25\" must now be painted (hence visible) after receiving focus: {painted:?}"
+        );
+    }
+
+    /// A horizontal-axis `Scroll` routes a wheel's `delta.x` and a thumb
+    /// drag's `position.x` the same way the vertical tests above exercise
+    /// `delta.y`/`position.y` — covering `ScrollDrag::axis`, the
+    /// `position.x` continuation in the drag-move branch, `char_width()`
+    /// as the horizontal wheel step, and `scrollbar.axis` in the
+    /// thumb-arming path, none of which any other test here reaches.
+    #[test]
+    fn horizontal_scroll_routes_wheel_and_thumb_drag_through_delta_x_and_position_x() {
+        let mut driver = horizontal_scroll_driver(8, None);
+        driver.render();
+        let initial = painted_button_ids(&driver.app().engine.hit_map());
+        assert_eq!(
+            initial.first(),
+            Some(&"0".to_string()),
+            "must start scrolled to the first button: {initial:?}"
+        );
+
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: ScrollDelta::new(5.0, 0.0),
+            position: Point { x: 0.0, y: 0.0 },
+        });
+        driver.render();
+        let after_wheel = painted_button_ids(&driver.app().engine.hit_map());
+        assert_ne!(
+            after_wheel.first(),
+            Some(&"0".to_string()),
+            "a horizontal wheel delta.x must move the container's own offset: {after_wheel:?}"
+        );
+
+        let scrollbar = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Scroll {
+                        id,
+                        scrollbar: Some(scrollbar),
+                        ..
+                    } if *id == WidgetId::new("scroll") => Some(scrollbar.clone()),
+                    _ => None,
+                })
+                .expect("8 buttons wider than a 20-column viewport must paint a scrollbar")
+        };
+        assert_eq!(scrollbar.axis, ScrollAxis::Horizontal);
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            position: Point {
+                x: scrollbar.track.x + scrollbar.thumb_start,
+                y: scrollbar.track.y,
+            },
+        });
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point {
+                x: scrollbar.track.x + scrollbar.track.width,
+                y: scrollbar.track.y,
+            },
+            buttons: quadraui::ButtonMask {
+                left: true,
+                ..Default::default()
+            },
+        });
+        driver.dispatch(UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point {
+                x: scrollbar.track.x + scrollbar.track.width,
+                y: scrollbar.track.y,
+            },
+        });
+        driver.render();
+
+        let hits = driver.app().engine.hit_map();
+        let painted = painted_button_ids(&hits);
+        assert_eq!(
+            painted.last(),
+            Some(&"7".to_string()),
+            "dragging the thumb to the end of a horizontal track must reveal the last button: {painted:?}"
+        );
+    }
+
+    /// A press on a `Scroll`'s own scrollbar track (not the thumb) pages
+    /// by one viewport — the `HitDetail::ScrollScrollbarTrackBefore`/
+    /// `TrackAfter` arm, otherwise exercised by no test here. Pressing
+    /// below the thumb (`PressZone::After`, with the thumb starting at
+    /// the track's top since the container starts unscrolled) must page
+    /// the container down by one viewport, bringing button `"10"` to the
+    /// top — mirroring [`dragging_the_scroll_thumb_to_the_bottom_reveals_the_last_button`]'s
+    /// own track lookup, but clicking (not dragging) a point past the
+    /// thumb's end instead of on it.
+    #[test]
+    fn pressing_the_scroll_track_after_the_thumb_pages_down_by_one_viewport() {
+        let mut driver = scroll_driver(40, None);
+        driver.render();
+        let track = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Scroll {
+                        id,
+                        scrollbar: Some(scrollbar),
+                        ..
+                    } if *id == WidgetId::new("scroll") => Some(scrollbar.track),
+                    _ => None,
+                })
+                .expect("40 buttons in a 10-row viewport must paint a scrollbar")
+        };
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            position: Point {
+                x: track.x,
+                y: track.y + track.height - 0.5,
+            },
+        });
+        driver.render();
+
+        let hits = driver.app().engine.hit_map();
+        let want: Vec<String> = (10..20).map(|i| i.to_string()).collect();
+        assert_eq!(
+            painted_button_ids(&hits),
+            want,
+            "pressing the track after the thumb must page the container down by one viewport"
+        );
+    }
+
+    /// `End` on a focused `TextInput` that is a direct child of a `Scroll`
+    /// with room to page (`max_offset > 0`) must move the caret, never
+    /// page the enclosing container — `focused_leaf_claims_page_keys`'s
+    /// whole reason to exist. The `TextInput` starts with its cursor at
+    /// column 0 of a non-empty line, so `End` is a real cursor move (not a
+    /// no-op the old, ungated routing could coincidentally get right), and
+    /// moving it changes no text (`EditOp::MoveLineEnd` never touches
+    /// `lines`), so [`crate::text_input::apply_text_input_edit`] returns
+    /// `None` and [`crate::semantic::focus_scoped_key_event`] falls back
+    /// to the raw `KeyPressed` — the signal this test checks for, rather
+    /// than a `ScrollOffsetChanged` the old routing would have emitted
+    /// instead (and returned early on, never reaching this fallback).
+    #[test]
+    fn end_on_a_focused_text_input_inside_a_scroll_moves_the_caret_not_the_scroll() {
+        let mut driver = scroll_with_leaf_driver(text_input_then_buttons_column);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("input")));
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::End),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let sink = driver.app().sink.borrow();
+        assert!(
+            !sink
+                .dispatched
+                .iter()
+                .any(|(event, _)| matches!(event, UiEvent::ScrollOffsetChanged { .. })),
+            "End on a focused TextInput inside a Scroll must never page the container: {:?}",
+            sink.dispatched
+        );
+        assert!(
+            sink.dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::End),
+                    ..
+                }
+            )),
+            "the raw KeyPressed must still reach the binding once the TextInput's own \
+             cursor-only move leaves `focus_scoped_key_event` with nothing to substitute: {:?}",
+            sink.dispatched
+        );
+    }
+
+    /// `PageDown` on a focused `TextDisplay` that is a direct child of a
+    /// `Scroll` with room to page must route into the `TextDisplay`'s own
+    /// `UiEvent::TextDisplay(.., KeyPressed)`, never page the enclosing
+    /// container — `PaintedHit::TextDisplay` is always a tab stop and
+    /// always claims its own keys via `focus_scoped_key_event`, the other
+    /// half of `focused_leaf_claims_page_keys`'s gate.
+    #[test]
+    fn page_down_on_a_focused_text_display_inside_a_scroll_routes_to_the_text_display_not_the_scroll(
+    ) {
+        let mut driver = scroll_with_leaf_driver(text_display_then_buttons_column);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("log")));
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::PageDown),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let sink = driver.app().sink.borrow();
+        assert!(
+            !sink
+                .dispatched
+                .iter()
+                .any(|(event, _)| matches!(event, UiEvent::ScrollOffsetChanged { .. })),
+            "PageDown on a focused TextDisplay inside a Scroll must never page the container: {:?}",
+            sink.dispatched
+        );
+        assert!(
+            sink.dispatched
+                .iter()
+                .any(|(event, _)| matches!(event, UiEvent::TextDisplay(id, _) if *id == WidgetId::new("log"))),
+            "PageDown must reach the TextDisplay's own KeyPressed handling: {:?}",
+            sink.dispatched
         );
     }
 }

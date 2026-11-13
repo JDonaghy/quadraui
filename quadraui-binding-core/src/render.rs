@@ -16,7 +16,7 @@ use quadraui::{
 };
 
 use crate::extra_paint::ExtraPaint;
-use crate::hit::PaintedHit;
+use crate::hit::{PaintedHit, ScrollChildHit};
 use crate::layout::{
     align_cross, justify_starts, quantise_horizontal, quantise_vertical, resolve_main_axis_sizes,
     Align, LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LeafDescriptor, MainAxisSpec,
@@ -642,12 +642,12 @@ fn paint_scroll(
         content_len,
         metrics,
     );
-    // The `(id, start, len)` of every direct `Leaf` child, read straight
-    // off `slots` before it's consumed below — see `PaintedHit::Scroll`'s
-    // own `children` doc for why this has to come from the slot (its
+    // One `ScrollChildHit` per direct `Leaf` child, read straight off
+    // `slots` before it's consumed below — see `PaintedHit::Scroll`'s own
+    // `children` doc for why this has to come from the slot (its
     // pre-offset, pre-clamp `start`/`len`) rather than the child's own
     // painted rect.
-    let children: Vec<(WidgetId, f32, f32)> = match (&slots, scroll_node.content.as_ref()) {
+    let children: Vec<ScrollChildHit> = match (&slots, scroll_node.content.as_ref()) {
         (
             ScrollSlots::Children(slots),
             LayoutNode::Row(container) | LayoutNode::Column(container),
@@ -656,9 +656,11 @@ fn paint_scroll(
             .iter()
             .zip(slots.iter())
             .filter_map(|(child, slot)| match &child.node {
-                LayoutNode::Leaf(leaf) => {
-                    Some((WidgetId::new(leaf.id.as_str()), slot.start, slot.len))
-                }
+                LayoutNode::Leaf(leaf) => Some(ScrollChildHit {
+                    id: WidgetId::new(leaf.id.as_str()),
+                    start: slot.start,
+                    len: slot.len,
+                }),
                 _ => None,
             })
             .collect(),
@@ -811,8 +813,10 @@ fn offset_windowed_leaf_scrolled_to_offset(
 /// [`quadraui::ScrollView::horizontal`] are the only constructors, so
 /// `scroll_offset` is set via its own `pub` field afterwards (mutating an
 /// already-constructed instance's field is unaffected by
-/// `#[non_exhaustive]`, unlike construction syntax).
-fn scroll_view_at(
+/// `#[non_exhaustive]`, unlike construction syntax). `pub(crate)` so
+/// [`crate::drag::scroll_view_at`] can share this construction rather than
+/// re-deriving it from a [`PaintedHit::Scroll`]'s own fields.
+pub(crate) fn scroll_view_at(
     id: WidgetId,
     axis: ScrollAxis,
     viewport: Rect,

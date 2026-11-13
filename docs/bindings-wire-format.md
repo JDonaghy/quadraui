@@ -473,6 +473,9 @@ only once both `quadraui-py` and `quadraui-node` emit the new value.
 - [`_HitDetailExtraBody`](#wire-_hitdetailextrabody)
 - [`_HitDetailExtraChrome`](#wire-_hitdetailextrachrome)
 - [`_HitDetailScrollBody`](#wire-_hitdetailscrollbody)
+- [`_HitDetailScrollScrollbarTrackBefore`](#wire-_hitdetailscrollscrollbartrackbefore)
+- [`_HitDetailScrollScrollbarThumb`](#wire-_hitdetailscrollscrollbarthumb)
+- [`_HitDetailScrollScrollbarTrackAfter`](#wire-_hitdetailscrollscrollbartrackafter)
 - [`HitDetail`](#wire-hitdetail)
 - [`_UiKeyPressedPayload`](#wire-_uikeypressedpayload)
 - [`_MouseDownPayload`](#wire-_mousedownpayload)
@@ -3606,12 +3609,33 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `kind` | `"scroll_body"` | yes |  |
 
+<a id="wire-_hitdetailscrollscrollbartrackbefore"></a>
+#### `_HitDetailScrollScrollbarTrackBefore`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"scroll_scrollbar_track_before"` | yes |  |
+
+<a id="wire-_hitdetailscrollscrollbarthumb"></a>
+#### `_HitDetailScrollScrollbarThumb`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"scroll_scrollbar_thumb"` | yes |  |
+
+<a id="wire-_hitdetailscrollscrollbartrackafter"></a>
+#### `_HitDetailScrollScrollbarTrackAfter`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"scroll_scrollbar_track_after"` | yes |  |
+
 <a id="wire-hitdetail"></a>
 #### `HitDetail`
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome | _HitDetailScrollBody`.
+Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`
