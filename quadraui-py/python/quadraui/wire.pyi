@@ -1563,6 +1563,48 @@ class RenderFrameDict(TypedDict):
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
 
+class AnchorDescriptor(TypedDict):
+    """Where a float/popover opens: a rect, the side of it to prefer, and the gap along that axis."""
+    rect: Rect  # Bounds of the element the overlay opens against, in absolute coordinates.
+    preferred: NotRequired[Literal['Top', 'Bottom', 'Left', 'Right', 'AtPoint']]
+    margin: NotRequired[float]
+
+class FloatDescriptor(TypedDict):
+    """A floating surface's own chrome: anchor, border and background."""
+    id: WidgetId
+    anchor: AnchorDescriptor
+    focusable: NotRequired[bool]
+    border: NotRequired[bool]
+    bg: NotRequired[Optional[Color]]
+
+class DialogButtonDescriptor(TypedDict):
+    """One button in a dialog's button row."""
+    id: WidgetId
+    label: str
+    is_default: NotRequired[bool]
+    is_cancel: NotRequired[bool]
+    tint: NotRequired[Optional[Color]]
+    spec: NotRequired[Optional[ButtonSpecDescriptor]]
+
+class DialogChromeDescriptor(TypedDict):
+    """A layout dialog's own title/body/button chrome -- the same friendly shape the "message_dialog" overlay kind takes."""
+    id: WidgetId
+    title: NotRequired[str]
+    body: NotRequired[str]  # Text shown above the content slot; split on newlines into one line each.
+    buttons: List[DialogButtonDescriptor]
+    severity: NotRequired[Literal['info', 'question', 'warning', 'error']]
+    vertical_buttons: NotRequired[bool]
+
+class PopoverDescriptor(TypedDict):
+    """A `show_overlay("popover", ...)` descriptor: float chrome plus the layout subtree painted inside it, whose leaves focus and emit events exactly as in the main tree."""
+    float: FloatDescriptor
+    content: LayoutNode
+
+class LayoutDialogDescriptor(TypedDict):
+    """A `show_overlay("layout_dialog", ...)` descriptor: modal dialog chrome plus the layout subtree painted in its body."""
+    dialog: DialogChromeDescriptor
+    content: LayoutNode
+
 class PanelDefinitionDescriptor(TypedDict):
     id: str
     icon: NotRequired[str]

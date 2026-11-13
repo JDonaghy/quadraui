@@ -2563,6 +2563,77 @@ pub fn schema() -> Vec<DefJson> {
         "A render callback's return value: a layout tree or the flat shape.",
     ));
 
+    // ── Content-bearing overlay descriptors ──────────────────────────────
+    let anchor_descriptor = b.define(obj_doc(
+        "AnchorDescriptor",
+        vec![
+            with_doc(
+                field("rect", re("Rect")),
+                "Bounds of the element the overlay opens against, in absolute coordinates.",
+            ),
+            field_opt(
+                "preferred",
+                lit(&["Top", "Bottom", "Left", "Right", "AtPoint"]),
+            ),
+            field_opt("margin", float_()),
+        ],
+        "Where a float/popover opens: a rect, the side of it to prefer, and the gap along that axis.",
+    ));
+    let float_descriptor = b.define(obj_doc(
+        "FloatDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("anchor", anchor_descriptor),
+            field_opt("focusable", bool_()),
+            field_opt("border", bool_()),
+            field_opt("bg", nullable(re("Color"))),
+        ],
+        "A floating surface's own chrome: anchor, border and background.",
+    ));
+    let dialog_button_descriptor = b.define(obj_doc(
+        "DialogButtonDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("label", str_()),
+            field_opt("is_default", bool_()),
+            field_opt("is_cancel", bool_()),
+            field_opt("tint", nullable(re("Color"))),
+            field_opt("spec", nullable(re("ButtonSpecDescriptor"))),
+        ],
+        "One button in a dialog's button row.",
+    ));
+    let dialog_chrome_descriptor = b.define(obj_doc(
+        "DialogChromeDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("title", str_()),
+            with_doc(
+                field_opt("body", str_()),
+                "Text shown above the content slot; split on newlines into one line each.",
+            ),
+            field("buttons", list(dialog_button_descriptor)),
+            field_opt("severity", lit(&["info", "question", "warning", "error"])),
+            field_opt("vertical_buttons", bool_()),
+        ],
+        "A layout dialog's own title/body/button chrome -- the same friendly shape the \"message_dialog\" overlay kind takes.",
+    ));
+    b.define(obj_doc(
+        "PopoverDescriptor",
+        vec![
+            field("float", float_descriptor),
+            field("content", re("LayoutNode")),
+        ],
+        "A `show_overlay(\"popover\", ...)` descriptor: float chrome plus the layout subtree painted inside it, whose leaves focus and emit events exactly as in the main tree.",
+    ));
+    b.define(obj_doc(
+        "LayoutDialogDescriptor",
+        vec![
+            field("dialog", dialog_chrome_descriptor),
+            field("content", re("LayoutNode")),
+        ],
+        "A `show_overlay(\"layout_dialog\", ...)` descriptor: modal dialog chrome plus the layout subtree painted in its body.",
+    ));
+
     // ── `run_shell` config ───────────────────────────────────────────────
     b.define(obj(
         "PanelDefinitionDescriptor",
@@ -4022,6 +4093,35 @@ mod coverage {
     );
     assert_fields!(assert_scroll_delta_fields, ScrollDelta { x, y });
     assert_fields!(
+        assert_anchor_fields,
+        quadraui::Anchor {
+            rect,
+            preferred,
+            margin
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_float_fields,
+        quadraui::Float {
+            id,
+            anchor,
+            focusable,
+            border,
+            bg
+        }
+    );
+    assert_fields!(
+        assert_dialog_button_fields,
+        quadraui::DialogButton {
+            id,
+            label,
+            is_default,
+            is_cancel,
+            tint,
+            spec
+        }
+    );
+    assert_fields!(
         assert_button_mask_fields,
         ButtonMask {
             left,
@@ -5272,6 +5372,17 @@ mod coverage {
                 // `Button`'s own default variant ever changes.
                 let _ = ButtonVariant::Secondary;
             }
+        );
+
+        value_shape_test!(
+            float_json_keys_match_the_schema_field_list,
+            "Float",
+            "FloatDescriptor",
+            quadraui::Float::new(
+                WidgetId::new("test"),
+                quadraui::Anchor::new(Rect::new(0.0, 0.0, 1.0, 1.0), quadraui::Side::Bottom),
+            ),
+            ["id", "anchor", "focusable", "border", "bg"]
         );
 
         value_shape_test!(

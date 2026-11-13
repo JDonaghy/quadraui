@@ -68,7 +68,9 @@ where
 
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
-pub use engine::{message_dialog_options_from_buttons, EventSink, InteractionEngine};
+pub use engine::{
+    message_dialog_options_from_buttons, DialogContentSize, EventSink, InteractionEngine,
+};
 pub use extra_paint::{decode_extra_primitive, extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
@@ -115,9 +117,10 @@ pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCa
 pub use tree_edit::tree_row_rename_key_event;
 pub use widget_state::WidgetState;
 pub use wire::{
-    decode_layout_node, decode_layout_node_with_styles, decode_render_output,
-    decode_render_output_with_styles, decode_shell_config, decode_style_overrides,
-    validate_style_set_name, RenderOutput, StaticTabContent, StyleContext, LAYOUT_NODE_KEYS,
+    decode_layout_dialog, decode_layout_node, decode_layout_node_with_styles, decode_popover,
+    decode_render_output, decode_render_output_with_styles, decode_shell_config,
+    decode_style_overrides, validate_style_set_name, OverlayContent, RenderOutput,
+    StaticTabContent, StyleContext, LAYOUT_NODE_KEYS,
 };
 
 /// Lift an optional `"scroll_px"` number out of a `list`/`tree`/
