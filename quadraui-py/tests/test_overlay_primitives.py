@@ -424,3 +424,193 @@ def test_show_overlay_rejects_missing_anchor_when_required():
 def test_dismiss_overlay_unknown_id_is_a_no_op():
     app = QuiApp(40, 20)
     assert app.dismiss_overlay("not-a-known-overlay-id") is False
+
+
+# ── Content-bearing overlays (popover / layout dialog) ───────────────────
+
+
+def _toggle_form_leaf(leaf_id="settings", field_id="wrap"):
+    """A `"form"` leaf holding one toggle field -- the same shape
+    `test_extra_primitives.py`'s own `"form"` case uses, reused here as an
+    overlay's content."""
+    return {
+        "id": leaf_id,
+        "form": {
+            "id": leaf_id,
+            "fields": [
+                {
+                    "id": field_id,
+                    "label": {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]},
+                    "kind": {"Toggle": {"value": False}},
+                }
+            ],
+        },
+    }
+
+
+def _popover_descriptor():
+    """A popover whose content is a `Button` above a `"form"` leaf.
+
+    The button comes first deliberately: opening a content-bearing
+    overlay seeds keyboard focus onto its first tab stop, and the TUI
+    focus-ring convention paints a border box over the focused widget's
+    own edge rows (`quadraui/src/tui/focus_ring.rs`). A single-row form
+    field as the *first* stop would have its only row covered by that
+    ring, which would make the assertions below read as "the content
+    never painted" when it did.
+    """
+    return {
+        "float": {"id": "popover:menu", "anchor": _anchor(2.0, 2.0)},
+        "content": {
+            "column": [
+                {"id": "submit", "button": {"id": "submit", "label": "Submit"}},
+                _toggle_form_leaf(),
+            ]
+        },
+    }
+
+
+def test_show_overlay_popover_paints_its_content_and_routes_a_button_click():
+    app = QuiApp(60, 24)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
+
+    returned_id = app.show_overlay("popover", _popover_descriptor(), (24.0, 8.0, 0.0, 0.0))
+
+    assert returned_id == "popover:menu"
+    # Unlike a chrome-only `"float"`, the popover's own content paints.
+    assert app.screen_contains("Submit")
+    assert app.screen_contains("Word wrap")
+
+    row, col = _locate(app, "Submit")
+    _click(app, row, col)
+
+    assert any("Form" in event for event in received), received
+
+
+def test_show_overlay_popover_toggle_emits_the_normal_semantic_event():
+    app = QuiApp(60, 24)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.show_overlay("popover", _popover_descriptor(), (24.0, 8.0, 0.0, 0.0))
+    row, col = _locate(app, "Word wrap")
+    _click(app, row, col)
+
+    toggles = [
+        event
+        for event in received
+        if isinstance(event, dict)
+        and "Form" in event
+        and "ToggleChanged" in event["Form"][1]
+    ]
+    assert toggles, received
+    assert toggles[0]["Form"][1]["ToggleChanged"]["value"] is True
+
+
+def test_show_overlay_popover_is_dismissed_by_an_outside_click():
+    app = QuiApp(60, 24)
+    # A registered handler is what routes events through the engine at
+    # all (`PyAppLogic::handle` skips the whole engine without one), so
+    # the dismissal below needs one even though it asserts on the screen.
+    app.set_handler(lambda event: None)
+    app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
+    app.show_overlay("popover", _popover_descriptor(), (24.0, 8.0, 0.0, 0.0))
+    assert app.screen_contains("Submit")
+
+    # The viewport's own bottom-right corner, well clear of a popover
+    # anchored at (2, 2).
+    _click(app, 23, 59)
+
+    assert not app.screen_contains("Submit")
+
+
+def _layout_dialog_descriptor():
+    return {
+        "dialog": {
+            "id": "dialog:prefs",
+            "title": "Preferences",
+            "buttons": [
+                {"id": "save", "label": "Save", "is_default": True},
+                {"id": "cancel", "label": "Cancel", "is_cancel": True},
+            ],
+        },
+        # Same first-stop reasoning as `_popover_descriptor`: the button
+        # takes the seeded focus (and its ring), leaving the form's own
+        # single row painted in full.
+        "content": {
+            "column": [
+                {"id": "apply", "button": {"id": "apply", "label": "Apply"}},
+                _toggle_form_leaf(),
+            ]
+        },
+    }
+
+
+def test_show_overlay_layout_dialog_paints_chrome_plus_content():
+    app = QuiApp(60, 24)
+    app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
+
+    returned_id = app.show_overlay("layout_dialog", _layout_dialog_descriptor(), (40.0, 6.0, 0.0, 0.0))
+
+    assert returned_id == "dialog:prefs"
+    assert app.screen_contains("Preferences")
+    assert app.screen_contains("Cancel")
+    assert app.screen_contains("Word wrap")
+
+
+def test_show_overlay_layout_dialog_toggle_emits_the_normal_semantic_event():
+    app = QuiApp(60, 24)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.show_overlay("layout_dialog", _layout_dialog_descriptor(), (40.0, 6.0, 0.0, 0.0))
+    row, col = _locate(app, "Word wrap")
+    _click(app, row, col)
+
+    toggles = [
+        event
+        for event in received
+        if isinstance(event, dict)
+        and "Form" in event
+        and "ToggleChanged" in event["Form"][1]
+    ]
+    assert toggles, received
+
+
+def test_show_overlay_layout_dialog_escape_resolves_its_cancel_button():
+    app = QuiApp(60, 24)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.show_overlay("layout_dialog", _layout_dialog_descriptor(), (40.0, 6.0, 0.0, 0.0))
+    _escape(app)
+
+    resolved = [
+        event
+        for event in received
+        if isinstance(event, dict) and "MessageDialogResolved" in event
+    ]
+    assert resolved, received
+    assert resolved[0]["MessageDialogResolved"] == "cancel"
+    assert not app.screen_contains("Preferences")
+
+
+def test_dismiss_overlay_closes_a_popover_and_a_layout_dialog():
+    app = QuiApp(60, 24)
+    app.show_overlay("popover", _popover_descriptor(), (24.0, 8.0, 0.0, 0.0))
+    assert app.dismiss_overlay("popover") is True
+    assert app.dismiss_overlay("popover") is False
+
+    app.show_overlay("layout_dialog", _layout_dialog_descriptor(), (40.0, 6.0, 0.0, 0.0))
+    assert app.dismiss_overlay("layout_dialog") is True
+    assert app.dismiss_overlay("layout_dialog") is False
+
+
+def test_show_overlay_popover_rejects_a_descriptor_missing_its_content():
+    app = QuiApp(60, 24)
+    with pytest.raises(InvalidDescriptorError):
+        app.show_overlay(
+            "popover", {"float": {"id": "popover:menu", "anchor": _anchor(2.0, 2.0)}}, (24.0, 8.0, 0.0, 0.0)
+        )
