@@ -542,6 +542,12 @@ only once both `quadraui-py` and `quadraui-node` emit the new value.
 - [`LayoutNode`](#wire-layoutnode)
 - [`RenderFrameDict`](#wire-renderframedict)
 - [`RenderOutput`](#wire-renderoutput)
+- [`AnchorDescriptor`](#wire-anchordescriptor)
+- [`FloatDescriptor`](#wire-floatdescriptor)
+- [`DialogButtonDescriptor`](#wire-dialogbuttondescriptor)
+- [`DialogChromeDescriptor`](#wire-dialogchromedescriptor)
+- [`PopoverDescriptor`](#wire-popoverdescriptor)
+- [`LayoutDialogDescriptor`](#wire-layoutdialogdescriptor)
 - [`PanelDefinitionDescriptor`](#wire-paneldefinitiondescriptor)
 - [`BottomPanelTabDescriptor`](#wire-bottompaneltabdescriptor)
 - [`BottomPanelConfigDescriptor`](#wire-bottompanelconfigdescriptor)
@@ -3141,6 +3147,78 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 A render callback's return value: a layout tree or the flat shape.
 
 Alias for `LayoutNode | RenderFrameDict`.
+
+<a id="wire-anchordescriptor"></a>
+#### `AnchorDescriptor`
+
+Where a float/popover opens: a rect, the side of it to prefer, and the gap along that axis.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `rect` | `Rect` | yes | Bounds of the element the overlay opens against, in absolute coordinates. |
+| `preferred` | `"Top" \| "Bottom" \| "Left" \| "Right" \| "AtPoint"` | no |  |
+| `margin` | `number` | no |  |
+
+<a id="wire-floatdescriptor"></a>
+#### `FloatDescriptor`
+
+A floating surface's own chrome: anchor, border and background.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `anchor` | `AnchorDescriptor` | yes |  |
+| `focusable` | `boolean` | no |  |
+| `border` | `boolean` | no |  |
+| `bg` | `Color \| null` | no |  |
+
+<a id="wire-dialogbuttondescriptor"></a>
+#### `DialogButtonDescriptor`
+
+One button in a dialog's button row.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `label` | `string` | yes |  |
+| `is_default` | `boolean` | no |  |
+| `is_cancel` | `boolean` | no |  |
+| `tint` | `Color \| null` | no |  |
+| `spec` | `ButtonSpecDescriptor \| null` | no |  |
+
+<a id="wire-dialogchromedescriptor"></a>
+#### `DialogChromeDescriptor`
+
+A layout dialog's own title/body/button chrome -- the same friendly shape the "message_dialog" overlay kind takes.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `title` | `string` | no |  |
+| `body` | `string` | no | Text shown above the content slot; split on newlines into one line each. |
+| `buttons` | `DialogButtonDescriptor[]` | yes |  |
+| `severity` | `"info" \| "question" \| "warning" \| "error"` | no |  |
+| `vertical_buttons` | `boolean` | no |  |
+
+<a id="wire-popoverdescriptor"></a>
+#### `PopoverDescriptor`
+
+A `show_overlay("popover", ...)` descriptor: float chrome plus the layout subtree painted inside it, whose leaves focus and emit events exactly as in the main tree.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `float` | `FloatDescriptor` | yes |  |
+| `content` | `LayoutNode` | yes |  |
+
+<a id="wire-layoutdialogdescriptor"></a>
+#### `LayoutDialogDescriptor`
+
+A `show_overlay("layout_dialog", ...)` descriptor: modal dialog chrome plus the layout subtree painted in its body.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dialog` | `DialogChromeDescriptor` | yes |  |
+| `content` | `LayoutNode` | yes |  |
 
 <a id="wire-paneldefinitiondescriptor"></a>
 #### `PanelDefinitionDescriptor`

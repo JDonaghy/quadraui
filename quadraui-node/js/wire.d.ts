@@ -1670,6 +1670,54 @@ export interface RenderFrameDict {
 /** A render callback's return value: a layout tree or the flat shape. */
 export type RenderOutput = LayoutNode | RenderFrameDict;
 
+/** Where a float/popover opens: a rect, the side of it to prefer, and the gap along that axis. */
+export interface AnchorDescriptor {
+  rect: Rect; // Bounds of the element the overlay opens against, in absolute coordinates.
+  preferred?: "Top" | "Bottom" | "Left" | "Right" | "AtPoint";
+  margin?: number;
+}
+
+/** A floating surface's own chrome: anchor, border and background. */
+export interface FloatDescriptor {
+  id: WidgetId;
+  anchor: AnchorDescriptor;
+  focusable?: boolean;
+  border?: boolean;
+  bg?: Color | null;
+}
+
+/** One button in a dialog's button row. */
+export interface DialogButtonDescriptor {
+  id: WidgetId;
+  label: string;
+  is_default?: boolean;
+  is_cancel?: boolean;
+  tint?: Color | null;
+  spec?: ButtonSpecDescriptor | null;
+}
+
+/** A layout dialog's own title/body/button chrome -- the same friendly shape the "message_dialog" overlay kind takes. */
+export interface DialogChromeDescriptor {
+  id: WidgetId;
+  title?: string;
+  body?: string; // Text shown above the content slot; split on newlines into one line each.
+  buttons: DialogButtonDescriptor[];
+  severity?: "info" | "question" | "warning" | "error";
+  vertical_buttons?: boolean;
+}
+
+/** A `show_overlay("popover", ...)` descriptor: float chrome plus the layout subtree painted inside it, whose leaves focus and emit events exactly as in the main tree. */
+export interface PopoverDescriptor {
+  float: FloatDescriptor;
+  content: LayoutNode;
+}
+
+/** A `show_overlay("layout_dialog", ...)` descriptor: modal dialog chrome plus the layout subtree painted in its body. */
+export interface LayoutDialogDescriptor {
+  dialog: DialogChromeDescriptor;
+  content: LayoutNode;
+}
+
 export interface PanelDefinitionDescriptor {
   id: string;
   icon?: string;
