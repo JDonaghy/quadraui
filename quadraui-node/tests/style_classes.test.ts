@@ -68,6 +68,9 @@ test("class: later classes win the tokens earlier ones also named", () => {
   // A single whitespace-separated string names the same two sets, in the
   // same order -- the CSS class= convention.
   assert.deepEqual(appWithClasses("first second").cellColors(0, 0)[1], [0, 255, 0]);
+  // A whitespace-separated array entry splits into the same two names too,
+  // not one literal name containing a space.
+  assert.deepEqual(appWithClasses(["first second"]).cellColors(0, 0)[1], [0, 255, 0]);
 });
 
 test("class: an inline \"style\" key wins over the node's own class", () => {
@@ -152,6 +155,14 @@ test("defineStyle: rejects an unknown override key", () => {
 test("defineStyle: rejects an empty name", () => {
   const app = new QuiApp(10, 1);
   assert.throws(() => app.defineStyle("", { bg: "#000000" }), /name/);
+});
+
+test("defineStyle: rejects a name containing whitespace", () => {
+  // Closes the gap a "class" string/array entry would otherwise open: both
+  // split on whitespace (see the array-entry test below), so a name
+  // containing it could never be referenced through "class" at all.
+  const app = new QuiApp(10, 1);
+  assert.throws(() => app.defineStyle("card danger", { bg: "#000000" }), /whitespace/);
 });
 
 test("class: rejects a wrongly typed value", () => {

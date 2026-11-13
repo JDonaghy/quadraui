@@ -45,8 +45,12 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `"danger"`, `"subtle"`, each mapping onto the matching `Button` variant's
   own resting fill, and each following a later `set_theme` call; defining
   one of those names replaces it. Redefining a set repaints from the next
-  frame on. `QuiApp.style_set_names()` lists what is registered. See
-  `docs/bindings-wire-format.md` and
+  frame on. `QuiApp.style_set_names()` lists what is registered.
+  `QuiApp.actions().define_style(name, overrides)` is the counterpart a
+  registered event handler calls instead of `QuiApp.define_style` directly
+  — the same "already borrowed" restriction every other `actions()` method
+  exists for — and is the path that makes a redefinition repaint a running
+  `run_tui` loop immediately. See `docs/bindings-wire-format.md` and
   `quadraui-py/examples/style_classes_demo.py`.
 
 - Any layout-tree node a render callback returns (`"row"`/`"column"`/

@@ -1,7 +1,7 @@
 """Black-box coverage for `QuiApp.actions()`'s `QuiAppActions` handle: the
 way a registered event handler queues `show_message_dialog`/`show_toast`/
 `show_tooltip`/`send_notification`/`open_path`/`reveal_in_file_manager`/
-`move_to_trash`/`restore_from_trash` (the methods `QuiApp`
+`move_to_trash`/`restore_from_trash`/`define_style` (the methods `QuiApp`
 itself restricts to top-level script code, since a handler already holds
 this app's one mutable borrow for the whole dispatch that invoked it) and
 has it applied right after that dispatch finishes, instead of raising
@@ -156,6 +156,41 @@ def test_multiple_actions_queued_from_one_dispatch_all_apply():
 
     assert app.screen_contains("Alpha")
     assert app.screen_contains("Bravo")
+
+
+def test_define_style_queued_from_a_handler_repaints_the_classed_node():
+    """`actions.define_style(name, overrides)` -- the deferred counterpart
+    to `QuiApp.define_style`, which raises "already borrowed" if called
+    directly from a handler, the same wall every other method here
+    sidesteps."""
+    app = QuiApp(10, 1)
+    app.define_style("card", {"bg": "#112233"})
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "td",
+                    "text_display": {"id": "td", "lines": [{"spans": [{"text": "x"}]}]},
+                    "class": "card",
+                }
+            ]
+        }
+
+    app.set_render(render)
+    actions = app.actions()
+    assert app.cell_colors(0, 0)[1] == (17, 34, 51)
+
+    def on_event(_event):
+        # A direct `app.define_style(...)` call from inside `on_event`
+        # would hit the PyO3 "already borrowed" wall instead.
+        actions.define_style("card", {"bg": "#445566"})
+
+    app.set_handler(on_event)
+    app.push_key_event(ord("a"))
+    app.run(1)
+
+    assert app.cell_colors(0, 0)[1] == (68, 85, 102)
 
 
 def test_apply_tab_activated_persists_without_a_click_or_pinning_the_descriptor():

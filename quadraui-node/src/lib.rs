@@ -316,11 +316,11 @@ use quadraui_binding_core::{
     set_app_identifier, set_as_default_protocol_client, set_dock_menu, set_jump_list,
     set_login_item, step_driver, take_pending_error as core_take_pending_error,
     text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
-    update_check_for_update, update_download_and_stage, widget_state_snapshot,
-    window_close_reaction, with_tray, with_window, BindingHost, DecodeError, ErasedShellDriver,
-    EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError, RenderOutput,
-    ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
-    SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    update_check_for_update, update_download_and_stage, validate_style_set_name,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
+    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
+    RenderOutput, ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON,
+    SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode};

@@ -62,8 +62,9 @@ class StyleClassesDemo {
       row: [
         button("save", "Save", "primary"),
         button("discard", "Discard", "brand"),
-        // Both sets name surface_bg; the later one in the list wins it,
-        // while "brand"'s other tokens still apply.
+        // Both sets name surface_bg; the later one in the list, "danger",
+        // wins it, so this button renders with "danger"'s fill rather
+        // than "brand"'s.
         button("reset", "Reset", "brand danger"),
         button("quiet", "Quiet", "subtle"),
       ],

@@ -142,23 +142,22 @@ impl QuiApp {
     /// colours. Defining one of those names replaces it.
     ///
     /// Redefining a set applies from the next frame on: nothing caches a
-    /// resolved override, and this requests that frame immediately
-    /// ([`Backend::request_frame_in`]) so a running `startTui`/
-    /// `startNative` loop repaints rather than waiting for the next
-    /// unrelated event.
+    /// resolved override -- the next `"class"` reference to `name`, in
+    /// whatever frame renders next, resolves against the new overrides
+    /// with nothing further to do. `check_not_live` above means that next
+    /// frame is never mid-loop: a `startTui`/`startNative` loop already
+    /// running has this call rejected outright, so there is no live
+    /// backend here for a `request_frame_in` nudge to repaint.
     #[napi(js_name = "defineStyle")]
     pub fn define_style(&mut self, env: Env, name: String, overrides: Object) -> Result<()> {
         self.check_not_dispatching()?;
         self.check_not_live()?;
-        if name.is_empty() {
-            return Err(invalid_descriptor_error(
-                "defineStyle: \"name\" must not be empty",
-            ));
-        }
+        validate_style_set_name("defineStyle", &name)
+            .map_err(|err| invalid_descriptor_error(err.0))?;
         let json = to_descriptor_value(overrides.to_unknown())
             .map_err(|detail| invalid_descriptor_error(format!("defineStyle: {detail}")))?;
-        let parsed = decode_style_overrides("defineStyle", &json)
-            .map_err(invalid_descriptor_error)?;
+        let parsed =
+            decode_style_overrides("defineStyle", &json).map_err(invalid_descriptor_error)?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             app_logic.host.style_sets.define(name, parsed);

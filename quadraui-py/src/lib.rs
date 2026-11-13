@@ -202,6 +202,7 @@ use quadraui_binding_core::{
     LayoutNode, LeafDescriptor, OverrideError, PaintedHit, RenderFrame, RenderOutput, ServiceError,
     StyleContext, UpdateInfoWire, WindowCloseHandling,
 };
+use quadraui_binding_core::{validate_style_set_name, StyleOverride};
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`
 /// and `QuiApp::run_native`) between a [`QuiApp`] and every [`QuiAppWaker`]
@@ -410,7 +411,7 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
-/// `set_theme`) — carrying exactly the already-decoded arguments the
+/// `set_theme`, `define_style`) — carrying exactly the already-decoded arguments the
 /// matching `QuiApp` method passes to the same underlying
 /// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
 /// with no further decoding or validation left to do.
@@ -488,6 +489,7 @@ enum DeferredAction {
     SetDockMenu(serde_json::Value),
     SetJumpList(serde_json::Value),
     ActivateTab(WidgetId, usize),
+    DefineStyle(String, StyleOverride),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -1934,7 +1936,7 @@ impl QuiAppWaker {
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
-/// `set_theme` — plus [`Self::apply_tab_activated`], a write into the
+/// `set_theme`, `define_style` — plus [`Self::apply_tab_activated`], a write into the
 /// engine's own widget-state store with no restricted `QuiApp` method of
 /// its own at all (see its own doc) — so a registered event handler can
 /// request one of them without re-entering `QuiApp`'s own PyO3 cell.
@@ -2352,6 +2354,32 @@ impl QuiAppActions {
             .borrow_mut()
             .push_back(DeferredAction::ActivateTab(WidgetId::new(id), index));
     }
+
+    /// Queues a [`DeferredAction::DefineStyle`] — same arguments and the
+    /// same per-key decoding/validation (via [`decode_style_overrides`]) as
+    /// `QuiApp::define_style`. `overrides` needs no live backend to decode
+    /// against (unlike [`Self::set_theme`]'s theme-field merge), so this
+    /// raises the same `InvalidDescriptorError` synchronously on an empty
+    /// `name` or an unknown/mistyped key, and only the registration itself
+    /// — `StyleSets::define` plus the `Backend::request_frame_in` nudge —
+    /// waits for [`flush_deferred_actions`], which runs against whichever
+    /// live backend `run_tui`/`run_native` is actually driving (the
+    /// `backend` argument `PyAppLogic::handle`/`tick` is given), so this is
+    /// the path that makes a redefinition from inside a handler repaint
+    /// that running loop immediately rather than waiting for the next
+    /// unrelated event.
+    fn define_style(&self, name: &str, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        validate_style_set_name("define_style", name)
+            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        let json = pyany_to_json(overrides.as_any())
+            .map_err(|err| InvalidDescriptorError::new_err(format!("define_style: {err}")))?;
+        let parsed = decode_style_overrides("define_style", &json)
+            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::DefineStyle(name.to_string(), parsed));
+        Ok(())
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -2591,6 +2619,10 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
             }
             DeferredAction::ActivateTab(id, index) => {
                 apply_tab_activated(app_logic.engine.widget_state(), id, index);
+            }
+            DeferredAction::DefineStyle(name, overrides) => {
+                app_logic.host.style_sets.define(name, overrides);
+                backend.request_frame_in(Duration::ZERO);
             }
         }
     }
@@ -4879,15 +4911,24 @@ impl QuiApp {
     /// colours. Defining one of those names replaces it.
     ///
     /// Redefining a set applies from the next frame on: nothing caches a
-    /// resolved override, and this requests that frame immediately
-    /// ([`Backend::request_frame_in`]) so a running `run_tui`/`run_native`
-    /// loop repaints rather than waiting for the next unrelated event.
+    /// resolved override. This requests a repaint immediately
+    /// ([`Backend::request_frame_in`]) on whichever backend this app is
+    /// driving at the call site -- for a call from top-level script code
+    /// before `run_tui`/`run_native` starts (or from `step`/`run`), that is
+    /// the only backend this app has, so there is no other loop around to
+    /// nudge.
+    ///
+    /// Call from top-level script code only, never from inside the
+    /// registered event handler or render callback -- see
+    /// `show_context_menu`'s own doc for why (the same PyO3 runtime-borrow
+    /// wall applies here). From inside a handler, call
+    /// [`QuiAppActions::define_style`] (via [`Self::actions`]) instead --
+    /// that path flushes against the real backend a running `run_tui`/
+    /// `run_native` loop is driving, so its `request_frame_in` call
+    /// repaints that loop rather than a backend nothing is reading from.
     fn define_style(&mut self, name: &str, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
-        if name.is_empty() {
-            return Err(InvalidDescriptorError::new_err(
-                "define_style: \"name\" must not be empty",
-            ));
-        }
+        validate_style_set_name("define_style", name)
+            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
         let json = pyany_to_json(overrides.as_any())
             .map_err(|err| InvalidDescriptorError::new_err(format!("define_style: {err}")))?;
         let parsed = decode_style_overrides("define_style", &json)
