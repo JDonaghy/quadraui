@@ -10,7 +10,7 @@
 //! callback — the one binding-specific step this engine cannot do itself.
 
 use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
@@ -18,11 +18,12 @@ use quadraui::compose::{
     FormDialogAction, FormDialogController, Handled, MenuDef, MenuEvent, MenuSystem,
     MessageDialogController,
 };
+use quadraui::primitives::form::focus_order;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
     wheel_row_delta, Backend, CompletionItemMeasure, Completions, CompletionsHit,
     CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog,
-    EditOp, Float, FloatLayout, FloatMeasure, Form, InteractionState, Key, MenuBar,
+    EditOp, Float, FloatLayout, FloatMeasure, Form, FormEvent, InteractionState, Key, MenuBar,
     MessageDialogButton, Modifiers, NamedKey, Point, Rect, RichTextPopup, RichTextPopupHit,
     RichTextPopupLayout, RichTextPopupMeasure, ScrollAxis, ScrollViewEvent, TabBarEvent,
     TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout,
@@ -398,6 +399,96 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             } => extra.tab_stop().then_some((*id, *area)),
         })
         .collect()
+}
+
+// ─── `Form.focused_field`, uncontrolled by default ─────────────────────────
+//
+// `Form.focused_field: Option<WidgetId>` already has a real "unset" state
+// at the type level — unlike `Split::ratio`/`TabItem::is_active` (plain
+// `f32`/`bool`, needing `host::resolved_tab_active_index`'s own
+// baseline-latch workaround since neither has an "uncontrolled" sentinel
+// to compare against), it's the exact same shape `LayoutScroll::offset`
+// already resolves through `WidgetState::resolve` directly — see
+// `host::resolve_scroll_offset`. `resolve`'s own generic signature takes
+// `Option<V>` as "is this controlled"; here `V` is itself `Option<WidgetId>`
+// (the stored/resolved type, since "no field focused" is a legitimate
+// resting state, not a sentinel to special-case), so `form.focused_field`
+// is lifted one level via `.map(Some)` before being passed in: `None`
+// (uncontrolled) passes straight through, `Some(id)` (controlled) becomes
+// `Some(Some(id))` — [`WidgetState::resolve`]'s own `Some(value)` arm then
+// pins `value = Some(id)` outright, every frame, overwriting whatever an
+// engine-driven move stored in between (same strong pin
+// `host::resolve_scroll_offset`'s own controlled case gets, not the
+// weaker "only pins the frame it changes" baseline-latch one).
+
+/// Resolves `form.focused_field` for [`InteractionEngine::sync_forms`] to
+/// feed its cached [`FormController`] — the `Form` counterpart of
+/// `host::resolve_scroll_offset`. `Some(id)` (controlled) wins outright
+/// every frame and is written back, so a later frame that goes back to
+/// `None` resumes from it rather than an older engine-owned value. `None`
+/// (uncontrolled) resolves to whatever [`InteractionEngine::handle`]'s
+/// own Tab/Shift-Tab/Up/Down/click routing last persisted via
+/// [`apply_form_focus_changed`] (or stays `None` the first time this form
+/// id is seen).
+fn resolve_form_focused_field(widget_state: &WidgetState, form: &Form) -> Option<WidgetId> {
+    widget_state.resolve(form.id, form.focused_field.map(Some), || None)
+}
+
+/// Persists `new_field` as `form_id`'s own engine-owned focused field —
+/// call whenever [`InteractionEngine::handle`]'s own form-focus routing
+/// (Tab/Shift-Tab between fields, Up/Down between fields, or a field
+/// click) decides on a new one. A later [`resolve_form_focused_field`]
+/// call overwrites this the moment the matching `Form.focused_field` is
+/// `Some` again — mirrors `host::apply_scroll_offset`'s own "the next
+/// resolve decides whether this sticks" shape.
+fn apply_form_focus_changed(widget_state: &WidgetState, form_id: WidgetId, new_field: WidgetId) {
+    widget_state.set(form_id, Some(new_field));
+}
+
+/// Whether `form`'s current `focused_field` sits at the end `delta` would
+/// move past — `delta > 0` (Tab) checks the last entry of `stops`,
+/// `delta < 0` (Shift-Tab) the first — or there is nothing in `stops` to
+/// move between at all. Mirrors
+/// [`quadraui::compose::form_dialog::FormDialogController::navigate`]'s
+/// own boundary check (which decides whether to forward a Tab/Shift-Tab
+/// keypress into its embedded form or hand focus to its own button row
+/// instead); this is the main-tree counterpart
+/// [`InteractionEngine::handle_form_tab`] uses to decide whether to hand
+/// focus to the next/previous *app-level* tab stop instead.
+fn form_focus_at_boundary(form: &Form, stops: &[WidgetId], delta: isize) -> bool {
+    if stops.is_empty() {
+        return true;
+    }
+    match form
+        .focused_field
+        .and_then(|id| stops.iter().position(|s| *s == id))
+    {
+        Some(i) if delta > 0 => i + 1 >= stops.len(),
+        Some(0) if delta < 0 => true,
+        None if delta < 0 => true,
+        _ => false,
+    }
+}
+
+/// What [`InteractionEngine::handle_form_tab`] decided for a Tab/
+/// Shift-Tab keypress reaching a focused main-tree `"form"` extra.
+enum FormTabOutcome {
+    /// Engine focus moved off the form entirely, to the next/previous
+    /// app-level tab stop — the `Reaction` already reflects every side
+    /// effect of that move (the `FocusChanged` dispatch, any "scroll
+    /// fully into view", and a forced redraw), so the caller returns it
+    /// immediately rather than continuing to process the original
+    /// `KeyPressed`.
+    LeftForm(quadraui::Reaction),
+    /// Moved between fields inside the form — the caller converts the
+    /// original `KeyPressed` into `UiEvent::Form(form_id, _)` and lets
+    /// the rest of [`InteractionEngine::handle`] dispatch it normally,
+    /// same as every other `FormEvent` a focused form produces.
+    Moved(FormEvent),
+    /// Nothing changed (no cached controller for this id, or its own
+    /// `handle_event` had no use for the synthesized key) — the caller
+    /// leaves the original `KeyPressed` untouched.
+    PassThrough,
 }
 
 /// `Reaction::Continue`, unless a tooltip auto-dismissed earlier in the
@@ -940,6 +1031,16 @@ pub struct InteractionEngine {
     /// walks this instead, so the invariant "at most one claims a given
     /// click" is reproducible rather than merely usually true.
     form_order: RefCell<Vec<WidgetId>>,
+    /// Which of [`Self::form_controllers`]' ids [`Self::sync_forms`] most
+    /// recently observed as `backend.focus_manager().focused()` itself —
+    /// unlike each controller's own [`FormController::has_focus`] (which
+    /// ORs in the descriptor's purely cosmetic `Form.has_focus`, see
+    /// [`Self::sync_forms`]'s own doc), this tracks *only* real engine
+    /// focus, so [`Self::tab_stops`] can tell "Tab should move within
+    /// this form's own fields" apart from "this form merely paints
+    /// itself as highlighted" without a `&dyn Backend` of its own to ask
+    /// (`AppLogic::tab_stops` takes none).
+    form_engine_focus: RefCell<HashSet<WidgetId>>,
     /// Which corner [`Self::overlays`]' [`Overlay::Toast`] entries stack
     /// in — set by the most recent [`Self::show_toast`] call. Not part of
     /// [`Overlay::Toast`] itself since it applies to the whole group, not
@@ -1812,6 +1913,18 @@ impl InteractionEngine {
     /// unconditionally — cycling focus among whichever stops this
     /// returns, via `backend`'s own focus manager — whenever this is
     /// non-empty, *before* the key ever reaches [`Self::handle`].
+    ///
+    /// Excludes a main-tree `"form"` extra's own stop while
+    /// [`Self::form_engine_focus`] names it (i.e. `backend`'s focus
+    /// manager named it as of the last [`Self::sync_forms`] call) — Tab
+    /// inside it is then [`Self::handle_form_tab`]'s job (move between
+    /// fields, then leave the form once a cycle at either end has
+    /// nowhere left to go inside it), not the generic cross-widget cycle
+    /// above. Unlike the `FormDialog`/popover case above, this removes
+    /// only that one entry rather than the whole list — every *other*
+    /// sibling stop stays reachable, and the form itself still appears
+    /// here (so Tab can reach it in the first place) until engine focus
+    /// actually lands on it.
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
         if self.overlays.iter().any(|o| {
             matches!(
@@ -1835,7 +1948,10 @@ impl InteractionEngine {
         }) {
             return content.tab_stops();
         }
-        tab_stops_from_hits(&self.hit_map.borrow())
+        let mut stops = tab_stops_from_hits(&self.hit_map.borrow());
+        let form_engine_focus = self.form_engine_focus.borrow();
+        stops.retain(|(id, _)| !form_engine_focus.contains(id));
+        stops
     }
 
     /// If `id` is a direct child of a `Scroll` (per
@@ -2011,6 +2127,21 @@ impl InteractionEngine {
             };
             seen.push(*id);
             let engine_focused = backend.focus_manager().focused() == Some(id);
+            if engine_focused {
+                self.form_engine_focus.borrow_mut().insert(*id);
+            } else {
+                self.form_engine_focus.borrow_mut().remove(id);
+            }
+            // `Form.focused_field`'s own controlled/uncontrolled
+            // resolution — see that field's doc. `None` (uncontrolled)
+            // resumes from whatever `Self::handle`'s own Tab/Shift-Tab/
+            // Up/Down/click routing last persisted for this form id (or
+            // stays `None` the first time it's seen); `Some(id)`
+            // (controlled) wins outright and is written back so a later
+            // uncontrolled frame resumes from it instead of an older
+            // engine-owned value.
+            let mut form = form.clone();
+            form.focused_field = resolve_form_focused_field(&self.widget_state, &form);
             let mut controllers = self.form_controllers.borrow_mut();
             let is_new = !controllers.contains_key(id);
             let controller = controllers
@@ -2030,7 +2161,166 @@ impl InteractionEngine {
         self.form_rects
             .borrow_mut()
             .retain(|id, _| seen.contains(id));
+        self.form_engine_focus
+            .borrow_mut()
+            .retain(|id| seen.contains(id));
         *self.form_order.borrow_mut() = seen;
+    }
+
+    /// Tab/Shift-Tab inside a main-tree `"form"` extra that currently
+    /// holds engine focus — called from [`Self::handle`]'s own
+    /// `KeyPressed` routing once [`Self::tab_stops`]'s own exclusion (see
+    /// its doc) has let the key reach here instead of the generic
+    /// cross-widget cycle. `forward` is `true` for `Tab`, `false` for
+    /// `Shift+Tab`/`BackTab`.
+    ///
+    /// Not at either end of [`quadraui::primitives::form::focus_order`]:
+    /// forwards a synthesized `Tab`/`BackTab` into `form_id`'s own cached
+    /// [`FormController`], exactly as [`Self::handle`] already did for
+    /// every other `KeyPressed` reaching a focused form — its own
+    /// `move_focus` reseeds the new field's text/date-edit cursor and
+    /// scrolls it into view, which reimplementing the move here from
+    /// scratch would lose. At either end: hands engine focus to the
+    /// next/previous *app-level* tab stop instead (mirrors
+    /// [`quadraui::compose::form_dialog::FormDialogController::navigate`]'s
+    /// own boundary check, which hands focus to its button row at the
+    /// same point) — "leaving the form" the same way Tab already leaves
+    /// any other single-stop widget. `None` when `form_id` names no
+    /// cached controller at all (nothing to do; the caller's own
+    /// `KeyPressed` should keep flowing through [`Self::handle`]
+    /// unchanged).
+    fn handle_form_tab(
+        &self,
+        form_id: WidgetId,
+        rect: Rect,
+        forward: bool,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> Option<FormTabOutcome> {
+        let form = self
+            .form_controllers
+            .borrow()
+            .get(&form_id)
+            .and_then(|c| c.form().cloned())?;
+        let stops = focus_order(&form);
+        let delta: isize = if forward { 1 } else { -1 };
+        if form_focus_at_boundary(&form, &stops, delta) {
+            let Some(next_id) = self.next_tab_stop_leaving(form_id, forward) else {
+                return Some(FormTabOutcome::PassThrough);
+            };
+            let mut focus_reaction = quadraui::Reaction::Continue;
+            if backend.set_focus(Some(next_id)) {
+                focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(next_id)), None);
+                if matches!(focus_reaction, quadraui::Reaction::Exit) {
+                    return Some(FormTabOutcome::LeftForm(focus_reaction));
+                }
+                focus_reaction =
+                    focus_reaction.merge(self.scroll_focused_child_into_view(next_id, sink));
+                if matches!(focus_reaction, quadraui::Reaction::Exit) {
+                    return Some(FormTabOutcome::LeftForm(focus_reaction));
+                }
+            }
+            return Some(FormTabOutcome::LeftForm(
+                quadraui::Reaction::Redraw.merge(focus_reaction),
+            ));
+        }
+        let key_event = UiEvent::KeyPressed {
+            key: Key::Named(if forward {
+                NamedKey::Tab
+            } else {
+                NamedKey::BackTab
+            }),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let mut controllers = self.form_controllers.borrow_mut();
+        let controller = controllers.get_mut(&form_id)?;
+        controller.set_has_focus(true);
+        match controller.handle_event(&key_event, backend, rect) {
+            Handled::Event(FormControllerAction::FormAction(form_event)) => {
+                if let FormEvent::FocusChanged { id } = &form_event {
+                    apply_form_focus_changed(&self.widget_state, form_id, *id);
+                }
+                Some(FormTabOutcome::Moved(form_event))
+            }
+            _ => Some(FormTabOutcome::PassThrough),
+        }
+    }
+
+    /// The next (`forward`)/previous app-level tab stop after `form_id`
+    /// in this frame's own full [`tab_stops_from_hits`] order — the
+    /// "leave the form" half of [`Self::handle_form_tab`]. `None` when
+    /// `form_id` isn't one of this frame's stops (it was removed from
+    /// [`Self::hit_map`] between render and this keystroke) or it is the
+    /// only one (nothing to leave to).
+    fn next_tab_stop_leaving(&self, form_id: WidgetId, forward: bool) -> Option<WidgetId> {
+        let stops = tab_stops_from_hits(&self.hit_map.borrow());
+        if stops.len() < 2 {
+            return None;
+        }
+        let idx = stops.iter().position(|(id, _)| *id == form_id)?;
+        let next_idx = quadraui::focus::cycle_index(idx, if forward { 1 } else { -1 }, stops.len());
+        Some(stops[next_idx].0)
+    }
+
+    /// Up/Down field-to-field navigation for a focused main-tree `"form"`
+    /// — called from [`Self::handle`]'s own `KeyPressed` routing only
+    /// once `focused`'s own [`FormController::handle_event`] has already
+    /// reported [`Handled::Ignored`] for the identical keypress, meaning
+    /// the focused field itself has no use for Up/Down (a
+    /// `DatePicker`/`Dropdown`/`NumberInput`/`RadioGroup` already claims
+    /// both internally and never reaches here — trying the field first
+    /// and falling back to this instead of duplicating `FormController`'s
+    /// own per-kind knowledge of which keys each consumes). Clamps at
+    /// either end rather than wrapping or leaving the form — unlike
+    /// Tab/Shift-Tab, Up/Down has no "leave the form" contract.
+    fn maybe_move_form_focus_vertically(
+        &self,
+        form_id: WidgetId,
+        event: &UiEvent,
+    ) -> Option<FormEvent> {
+        let UiEvent::KeyPressed {
+            key: Key::Named(named @ (NamedKey::Up | NamedKey::Down)),
+            modifiers,
+            ..
+        } = event
+        else {
+            return None;
+        };
+        if modifiers.ctrl || modifiers.alt || modifiers.cmd {
+            return None;
+        }
+        let form = self
+            .form_controllers
+            .borrow()
+            .get(&form_id)
+            .and_then(|c| c.form().cloned())?;
+        let stops = focus_order(&form);
+        if stops.is_empty() {
+            return None;
+        }
+        let delta: isize = if matches!(named, NamedKey::Down) {
+            1
+        } else {
+            -1
+        };
+        let cur = form
+            .focused_field
+            .and_then(|id| stops.iter().position(|s| *s == id));
+        let next_idx = match cur {
+            Some(i) => {
+                let next = i as isize + delta;
+                if next < 0 || next as usize >= stops.len() {
+                    return None;
+                }
+                next as usize
+            }
+            None if delta > 0 => 0,
+            None => stops.len() - 1,
+        };
+        let id = stops[next_idx];
+        apply_form_focus_changed(&self.widget_state, form_id, id);
+        Some(FormEvent::FocusChanged { id })
     }
 
     /// Repaints every standalone `"text_input"` extra this frame whose
@@ -2573,26 +2863,71 @@ impl InteractionEngine {
         // safe to try unconditionally even when no `"form"` extra is
         // focused (or none exists this frame): `form_rects`/`form_controllers`
         // then has no entry for the focused id, or `set_has_focus(true)`
-        // simply enables a gate nothing else reads. Only `FormAction`
-        // replaces `event`; `ScrollChanged`/`Consumed`/`Ignored` never
-        // arise for these three event kinds in `FormController::handle_inner`'s
-        // own match, so there is nothing else to react to here. Tab/
-        // Shift+Tab field cycling inside a form is NOT reachable this way —
-        // `quadraui::runtime::preprocess_event` claims `Tab`/`BackTab`
-        // unconditionally for the app-level tab order whenever `tab_stops()`
-        // is non-empty, before an event ever reaches here.
+        // simply enables a gate nothing else reads.
+        //
+        // Plain Tab/Shift+Tab (no Ctrl/Alt/Cmd) is special-cased ahead of
+        // the generic dispatch below: `Self::tab_stops` excludes this
+        // form's own stop from the app-level cycle for as long as
+        // `Self::form_engine_focus` names it, specifically so the key
+        // reaches `Self::handle_form_tab` here instead — see that
+        // method's own doc for the "move between fields, then leave the
+        // form at either end" contract.
+        //
+        // Up/Down falls through to the generic dispatch first, same as
+        // every other key: only once that reports `Handled::Ignored`
+        // (the focused field itself has no use for Up/Down) does
+        // `Self::maybe_move_form_focus_vertically` treat it as a
+        // field-to-field move — see that method's own doc for why trying
+        // the field first is what keeps a `DatePicker`/`Dropdown`/
+        // `NumberInput`/`RadioGroup`'s own Up/Down handling working
+        // unchanged.
         if matches!(
             event,
             UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_)
         ) {
             if let Some(focused) = backend.focus_manager().focused().copied() {
                 if let Some(rect) = self.form_rects.borrow().get(&focused).copied() {
-                    if let Some(controller) = self.form_controllers.borrow_mut().get_mut(&focused) {
+                    let tab_direction = match &event {
+                        UiEvent::KeyPressed {
+                            key: Key::Named(named @ (NamedKey::Tab | NamedKey::BackTab)),
+                            modifiers,
+                            ..
+                        } if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
+                            Some(matches!(named, NamedKey::Tab) && !modifiers.shift)
+                        }
+                        _ => None,
+                    };
+                    if let Some(forward) = tab_direction {
+                        match self.handle_form_tab(focused, rect, forward, backend, sink) {
+                            Some(FormTabOutcome::LeftForm(reaction)) => {
+                                return reaction
+                                    .merge(continue_or_tooltip_redraw(tooltip_dismissed));
+                            }
+                            Some(FormTabOutcome::Moved(form_event)) => {
+                                event = UiEvent::Form(focused, form_event);
+                            }
+                            Some(FormTabOutcome::PassThrough) | None => {}
+                        }
+                    } else if let Some(controller) =
+                        self.form_controllers.borrow_mut().get_mut(&focused)
+                    {
                         controller.set_has_focus(true);
-                        if let Handled::Event(FormControllerAction::FormAction(form_event)) =
-                            controller.handle_event(&event, backend, rect)
-                        {
-                            event = UiEvent::Form(focused, form_event);
+                        match controller.handle_event(&event, backend, rect) {
+                            Handled::Event(FormControllerAction::FormAction(form_event)) => {
+                                if let FormEvent::FocusChanged { id } = &form_event {
+                                    apply_form_focus_changed(&self.widget_state, focused, *id);
+                                }
+                                event = UiEvent::Form(focused, form_event);
+                            }
+                            Handled::Event(FormControllerAction::ScrollChanged) => {}
+                            Handled::Ignored => {
+                                if let Some(form_event) =
+                                    self.maybe_move_form_focus_vertically(focused, &event)
+                                {
+                                    event = UiEvent::Form(focused, form_event);
+                                }
+                            }
+                            Handled::Consumed => {}
                         }
                     }
                 }
@@ -2641,11 +2976,21 @@ impl InteractionEngine {
                     }
                 }
                 return match outcome {
-                    Handled::Event(FormControllerAction::FormAction(form_event)) => focus_reaction
-                        .merge(
+                    Handled::Event(FormControllerAction::FormAction(form_event)) => {
+                        // A click resolving to `FocusChanged` is exactly
+                        // "clicking a field focuses it" — persist it the
+                        // same way Tab/Shift-Tab/Up/Down do, so an
+                        // uncontrolled form (the app never echoes
+                        // `focused_field` back) still keeps the clicked
+                        // field focused on the next render.
+                        if let FormEvent::FocusChanged { id: field_id } = &form_event {
+                            apply_form_focus_changed(&self.widget_state, id, *field_id);
+                        }
+                        focus_reaction.merge(
                             Reaction::Redraw
                                 .merge(sink.dispatch(&UiEvent::Form(id, form_event), None)),
-                        ),
+                        )
+                    }
                     Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
                         focus_reaction.merge(Reaction::Redraw)
                     }
@@ -3671,6 +4016,253 @@ mod tests {
             self.engine
                 .handle(event, backend, &mut *self.sink.borrow_mut())
         }
+    }
+
+    /// Mirrors [`FormLogic`], but also paints a sibling `Button` in the
+    /// same main tree — needed for the "Tab leaves the form once a cycle
+    /// at either end has nowhere left to go inside it" tests, which have
+    /// to observe engine focus landing on something *other than* the
+    /// form once Tab/Shift-Tab runs out of fields to move between.
+    struct FormAndButtonLogic {
+        form: quadraui::Form,
+        button: Button,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for FormAndButtonLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let mut extra: HashMap<String, std::rc::Rc<dyn crate::extra_paint::ExtraPaint>> =
+                HashMap::new();
+            extra.insert(
+                "form".to_string(),
+                std::rc::Rc::new(self.form.clone())
+                    as std::rc::Rc<dyn crate::extra_paint::ExtraPaint>,
+            );
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: Some(&self.button),
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.sync_forms(backend, &hits);
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    fn text_input_field(id: &str) -> quadraui::FormField {
+        quadraui::FormField {
+            id: WidgetId::new(id),
+            label: quadraui::StyledText::plain(id),
+            kind: quadraui::FieldKind::TextInput {
+                value: String::new(),
+                placeholder: String::new(),
+                cursor: Some(0),
+                selection_anchor: None,
+            },
+            hint: quadraui::StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn uncontrolled_text_form(id: &str, field_ids: &[&str]) -> quadraui::Form {
+        quadraui::Form {
+            id: WidgetId::new(id),
+            fields: field_ids.iter().map(|f| text_input_field(f)).collect(),
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    /// Acceptance coverage for the "engine-owned by default" contract: an
+    /// app that never sets `focused_field` at all (always `None`) still
+    /// gets Tab-driven field focus, and typing afterward lands on the
+    /// right field — the headless-driver counterpart of
+    /// `quadraui-py`/`quadraui-node`'s own acceptance tests.
+    #[test]
+    fn uncontrolled_main_tree_form_tab_enters_the_first_field_and_typing_works() {
+        use quadraui::FormEvent;
+
+        let logic = FormLogic {
+            form: uncontrolled_text_form("settings", &["a", "b", "c"]),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+
+        // First Tab: nothing is focused yet anywhere, so the generic
+        // app-level cycle (the form is its only stop) lands engine focus
+        // on the form as a whole.
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        driver.render();
+
+        // Second Tab: `Self::tab_stops` now excludes the form (it holds
+        // engine focus), so this one reaches `Self::handle_form_tab`
+        // instead of the generic cycle -- moving onto the first field.
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|(ev, _)| matches!(
+                    ev,
+                    UiEvent::Form(_, FormEvent::FocusChanged { id }) if *id == WidgetId::new("a")
+                )),
+                "the second Tab should focus field \"a\": {:?}",
+                dispatched
+            );
+        }
+        driver.app().sink.borrow_mut().dispatched.clear();
+        driver.render();
+
+        // Typing now lands on "a" even though the app never echoed
+        // `focused_field` back at all -- `None` is no longer a dead form.
+        driver.dispatch(UiEvent::CharTyped('x'));
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::Form(_, FormEvent::TextInputChanged { id, value })
+                    if *id == WidgetId::new("a") && value == "x"
+            )),
+            "typing after Tab should land in field \"a\": {:?}",
+            dispatched
+        );
+    }
+
+    /// Tab/Shift-Tab moves between fields, then leaves the form once a
+    /// cycle at either end has nowhere left to go inside it -- the last
+    /// field's own next Tab must move engine focus onto the sibling
+    /// button, not wrap back to the first field.
+    #[test]
+    fn tab_at_the_last_field_leaves_the_main_tree_form_for_the_next_app_level_stop() {
+        let mut form = uncontrolled_text_form("settings", &["a", "b"]);
+        // Simulates the form already being mid-navigation: "b" (the last
+        // field) already has focus, same as if two Tabs had already
+        // landed engine focus on the form and moved into its last field.
+        form.focused_field = Some(WidgetId::new("b"));
+        let logic = FormAndButtonLogic {
+            form,
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("settings")));
+        }
+        driver.render();
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let (backend, app) = driver.parts_mut();
+        assert_eq!(
+            backend.focus_manager().focused().copied(),
+            Some(WidgetId::new("go")),
+            "Tab at the last field must leave the form for the next app-level stop"
+        );
+        assert!(
+            app.sink
+                .borrow()
+                .dispatched
+                .iter()
+                .any(|(ev, _)| matches!(ev, UiEvent::FocusChanged(Some(id)) if *id == WidgetId::new("go"))),
+            "leaving the form must dispatch FocusChanged(\"go\"): {:?}",
+            app.sink.borrow().dispatched
+        );
+    }
+
+    /// An app that sets `focused_field` explicitly stays controlled: a
+    /// click that would otherwise move engine-owned focus elsewhere must
+    /// not change what the next render paints as focused, since the
+    /// descriptor keeps pinning the same field every frame.
+    #[test]
+    fn controlled_main_tree_form_keeps_app_set_focus_despite_a_click() {
+        let mut form = uncontrolled_text_form("settings", &["a", "b"]);
+        form.focused_field = Some(WidgetId::new("a"));
+        let logic = FormLogic {
+            form,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+
+        // Clicking field "b" still reports FocusChanged -- the app just
+        // chooses not to act on it, same as any other controlled field.
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(1.0, 1.0),
+            modifiers: Modifiers::default(),
+        });
+        driver.render();
+
+        let resolved = driver
+            .app()
+            .engine
+            .form_controllers
+            .borrow()
+            .get(&WidgetId::new("settings"))
+            .and_then(|c| c.form().and_then(|f| f.focused_field));
+        assert_eq!(
+            resolved,
+            Some(WidgetId::new("a")),
+            "a controlled Form.focused_field must keep winning every frame, \
+             regardless of a click the app's own descriptor never reacted to"
+        );
     }
 
     /// A wheel `Scroll` landing inside a `"form"` extra's own rect must

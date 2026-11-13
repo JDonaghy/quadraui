@@ -1210,3 +1210,138 @@ test("pushEvent with a bad shape raises InvalidDescriptorError", () => {
   const app = new QuiApp(40, 20);
   assert.throws(() => app.pushEvent({ NotARealEvent: {} }), /InvalidDescriptorError/);
 });
+
+test("uncontrolled form Tab then type focuses and types the first field", () => {
+  // Acceptance: an app that never sets `focused_field` (the key is
+  // omitted every frame) still gets Tab-driven field focus from the
+  // host itself, and typing afterward lands on the right field.
+  const app = new QuiApp(40, 20);
+  const state = { name: "" };
+
+  app.setRender(() => ({
+    form: {
+      id: "settings",
+      fields: [
+        {
+          id: "name",
+          label: { spans: [{ text: "Name", fg: null, bg: null }] },
+          kind: { TextInput: { value: state.name } },
+        },
+      ],
+    },
+  }));
+  app.screen();
+
+  let received: any[] = [];
+  app.setHandler((event: any) => {
+    received.push(event);
+    if (!event.Form) return;
+    const [, formEvent] = event.Form;
+    if (formEvent.TextInputChanged) {
+      state.name = formEvent.TextInputChanged.value;
+    }
+  });
+
+  // First Tab: nothing is focused anywhere yet, so the generic
+  // app-level cycle (the form is its only stop) lands engine focus on
+  // the form as a whole.
+  app.pushEvent({ KeyPressed: { key: { Named: "Tab" }, modifiers: {}, repeat: false } });
+  app.run(1);
+  assert.equal(received[received.length - 1].FocusChanged, "settings");
+
+  // Second Tab: the host's own field cycling takes over from here,
+  // landing on "name".
+  received = [];
+  app.pushEvent({ KeyPressed: { key: { Named: "Tab" }, modifiers: {}, repeat: false } });
+  app.run(1);
+  let [widgetId, formEvent] = received[received.length - 1].Form;
+  assert.equal(widgetId, "settings");
+  assert.deepStrictEqual(formEvent, { FocusChanged: { id: "name" } });
+
+  // Typing now lands on "name" even though the app never echoed
+  // `focused_field` back at all -- `None` is no longer a dead form.
+  received = [];
+  app.pushEvent({ CharTyped: "x" });
+  app.run(1);
+  [widgetId, formEvent] = received[received.length - 1].Form;
+  assert.equal(widgetId, "settings");
+  assert.deepStrictEqual(formEvent, { TextInputChanged: { id: "name", value: "x" } });
+  assert.equal(state.name, "x");
+});
+
+test("uncontrolled form click focuses and types with no focused_field tracking", () => {
+  // Same "`None` is no longer a dead form" property as the Tab test
+  // above, via a click instead -- the handler never reads or writes
+  // `focused_field` at all, and typing right after a click still lands
+  // on the clicked field.
+  const app = new QuiApp(40, 20);
+  const state = { name: "" };
+
+  app.setRender(() => ({
+    form: {
+      id: "settings",
+      fields: [
+        {
+          id: "name",
+          label: { spans: [{ text: "Name", fg: null, bg: null }] },
+          kind: { TextInput: { value: state.name } },
+        },
+      ],
+    },
+  }));
+  app.screen();
+
+  app.setHandler((event: any) => {
+    if (!event.Form) return;
+    const [, formEvent] = event.Form;
+    if (formEvent.TextInputChanged) {
+      state.name = formEvent.TextInputChanged.value;
+    }
+  });
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 6.0, y: 0.0 }, modifiers: {} },
+  });
+  app.pushEvent({ CharTyped: "z" });
+  app.run(2);
+
+  assert.equal(state.name, "z");
+});
+
+test("controlled form focused_field keeps app-set focus despite a click", () => {
+  // An app that sets `focused_field` explicitly stays controlled: a
+  // click that would otherwise move engine-owned focus to a different
+  // field must not change which row the next render paints as focused.
+  const app = new QuiApp(40, 20);
+
+  app.setRender(() => ({
+    form: {
+      id: "settings",
+      focused_field: "a",
+      fields: [
+        {
+          id: "a",
+          label: { spans: [{ text: "A", fg: null, bg: null }] },
+          kind: { TextInput: { value: "" } },
+        },
+        {
+          id: "b",
+          label: { spans: [{ text: "B", fg: null, bg: null }] },
+          kind: { TextInput: { value: "" } },
+        },
+      ],
+    },
+  }));
+  app.setHandler(() => {});
+  app.screen();
+
+  // Clicking field "b" (row 1) still moves engine focus onto the form
+  // and reports a click internally -- the app's own descriptor just
+  // keeps pinning "a" every frame, so the highlight stays put.
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 6.0, y: 1.0 }, modifiers: {} },
+  });
+  app.run(1);
+
+  assert.deepEqual(app.cellColors(0, 0)[1], [50, 60, 90]);
+  assert.deepEqual(app.cellColors(0, 1)[1], [20, 22, 30]);
+});

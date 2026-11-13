@@ -247,6 +247,32 @@ binding author having to implement the choice itself. `scroll_offset`,
 `focused_index`, and `checked` across the leaf descriptors in the generated
 reference below are the common examples.
 
+### `Form.focused_field`
+
+A `"form"` extra's own `focused_field` follows the rule above, with a
+richer uncontrolled behaviour than a plain scroll offset or checked flag:
+
+- **Controlled** -- the render callback sets `focused_field` to a field id
+  every frame. That id wins outright for this frame no matter what a click
+  or keypress just did inside the form, the same strong pin
+  `LayoutScroll::offset` gets.
+- **Uncontrolled** -- the render callback leaves `focused_field` unset
+  (omitted, or explicitly `null`). The host's `InteractionEngine` then owns
+  moving it itself: Tab/Shift-Tab cycle between the form's own fields and
+  leave the form once a cycle at either end has nowhere left to go inside
+  it (handing focus to the next app-level Tab stop instead); Up/Down move
+  between fields the currently-focused one doesn't already consume for
+  itself (a `DateFieldPicker`/`ComboBox`/`NumberInput`/`RadioGroup` field
+  claims Up/Down internally); and clicking a field focuses it. Either way,
+  a `FormEvent::FocusChanged` is dispatched on every change, so a
+  controlled render callback has something to assign back on the next
+  frame, and an uncontrolled one can observe the move without needing to.
+
+An app that never sets `focused_field` at all keeps every other `"form"`
+interaction (typing into whichever field is focused, toggling a switch,
+clicking a button) working with no app code tracking focus at all -- the
+form is never a dead end just because the key was left `null`.
+
 ### `has_focus` is not a controlled/uncontrolled field
 
 `has_focus` on a `"text_input"`/`"password"`/`"textarea"` extra (and on a
@@ -2676,7 +2702,7 @@ Alias for `("Label" | "Button") | _FieldKindDict | _FieldKindToolbar | _FieldKin
 | --- | --- | --- | --- |
 | `id` | `WidgetId` | yes |  |
 | `fields` | `FormFieldDescriptor[]` | yes |  |
-| `focused_field` | `WidgetId \| null` | yes |  |
+| `focused_field` | `WidgetId \| null` | no |  |
 | `scroll_offset` | `number` | no |  |
 | `has_focus` | `boolean` | no |  |
 | `label_position` | `LabelPosition` | no |  |

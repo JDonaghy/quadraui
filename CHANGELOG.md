@@ -78,6 +78,16 @@ save/clip/restore); `WinBackend` forwards to the same seam backed by
   by default, resolved against `WidgetState` by `resolve_scroll_offset` the
   way a `Split`'s divider ratio already is. Wheel and keyboard routing onto
   the container is a follow-up.
+- `Form.focused_field`: engine-owned (uncontrolled) by default, the same
+  controlled/uncontrolled split `LayoutScroll::offset` already has. An app
+  that leaves the key `None`/omitted gets Tab/Shift-Tab field cycling
+  (leaving the form once a cycle at either end has nowhere left to go
+  inside it), Up/Down between fields the focused one doesn't already
+  consume, and click-to-focus, all persisted by `quadraui-py`'s/
+  `quadraui-node`'s `InteractionEngine` with no app code; an app that sets
+  it explicitly stays controlled, same as before. `#[serde(default)]` keeps
+  the wire shape additive -- `Form::focus_order` is the new public
+  Tab-order helper backing it.
 
 ### Fixed
 - TUI `Button`: a leaf painted into a cell taller than its one row of
