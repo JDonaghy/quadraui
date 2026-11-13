@@ -14,8 +14,9 @@ use std::collections::HashMap;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction, Handled,
-    MenuDef, MenuEvent, MenuSystem, MessageDialogController,
+    ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction,
+    FormDialogAction, FormDialogController, Handled, MenuDef, MenuEvent, MenuSystem,
+    MessageDialogController,
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
@@ -148,10 +149,22 @@ pub trait EventSink {
 /// completions, dialog, tooltip, toast topmost of all.
 enum Overlay {
     ContextMenu(ContextMenuController),
-    Float(Float, FloatMeasure),
+    /// The third slot is `Some` for a content-bearing float — a
+    /// "popover" opened via [`InteractionEngine::show_popover`] — whose
+    /// embedded [`FormController`] this engine lays out, paints, and
+    /// routes events into itself, and `None` for a plain chrome-only
+    /// float opened via [`InteractionEngine::show_float`], whose content
+    /// (if any) is painted by the host's own render path instead — see
+    /// that method's own doc.
+    Float(Float, FloatMeasure, Option<FormController>),
     RichTextPopup(RichTextPopup, Point),
     Completions(Completions, Point),
     Dialog(MessageDialogController),
+    /// A modal [`quadraui::Dialog`] hosting a [`quadraui::Form`]'s fields
+    /// — opened via [`InteractionEngine::open_form_dialog`]. Shares
+    /// [`Overlay::rank`] with [`Overlay::Dialog`] so only one modal
+    /// dialog (of either kind) is ever open at once.
+    FormDialog(FormDialogController),
     Tooltip(Tooltip, Rect),
     /// Unlike every other variant, more than one of these can be in the
     /// stack at once — a toast stack is itself a group, not a singleton
@@ -177,6 +190,7 @@ impl Overlay {
             Overlay::RichTextPopup(..) => 2,
             Overlay::Completions(..) => 3,
             Overlay::Dialog(_) => 4,
+            Overlay::FormDialog(_) => 4,
             Overlay::Tooltip(..) => 5,
             Overlay::Toast(_) => 6,
         }
@@ -541,6 +555,7 @@ impl InteractionEngine {
     /// surface.
     pub fn open_message_dialog(&mut self, opts: MessageDialogOptions, backend: &mut dyn Backend) {
         self.close_message_dialog(backend);
+        self.close_form_dialog(backend);
         if self.menu_system.borrow().is_open() {
             self.menu_system.borrow_mut().close(backend);
         }
@@ -572,6 +587,72 @@ impl InteractionEngine {
             }
             _ => false,
         }
+    }
+
+    /// Whether a form-hosting dialog opened via [`Self::open_form_dialog`]
+    /// is currently open.
+    pub fn form_dialog_open(&self) -> bool {
+        self.overlays
+            .iter()
+            .any(|o| matches!(o, Overlay::FormDialog(_)))
+    }
+
+    /// Opens `dialog` — a [`FormDialogController`] hosting a
+    /// [`quadraui::Form`]'s fields inside a modal [`quadraui::Dialog`]'s own
+    /// title/button chrome — pushing its bounds onto the backend's
+    /// [`quadraui::ModalStack`], the same contract
+    /// [`Self::open_message_dialog`] already follows. Replaces (and pops)
+    /// any dialog or form-dialog already open: the two kinds share
+    /// [`Overlay::rank`], so [`Self::push_overlay`]'s "same rank, same
+    /// slot" rule keeps "only one modal dialog at a time" true across
+    /// both. A binding's own `show_form_dialog` surface calls this, then
+    /// pushes the app's current field values onto `dialog` every frame
+    /// via [`FormDialogController::set_form`] before
+    /// [`Self::render_overlays`] paints it — the same "app owns the
+    /// data, controller owns the edits" contract a bare
+    /// [`FormController`] consumer already follows.
+    pub fn open_form_dialog(&mut self, dialog: FormDialogController, backend: &mut dyn Backend) {
+        self.close_form_dialog(backend);
+        self.close_message_dialog(backend);
+        if self.menu_system.borrow().is_open() {
+            self.menu_system.borrow_mut().close(backend);
+        }
+        if self.context_menu_open() {
+            self.close_context_menu(backend);
+        }
+        let id = dialog.dialog().id;
+        let bounds = dialog.bounds(backend);
+        backend.modal_stack_handle().borrow_mut().push(id, bounds);
+        self.push_overlay(Overlay::FormDialog(dialog));
+    }
+
+    /// Closes the open form-dialog (if any), popping its
+    /// [`quadraui::ModalStack`] entry. Returns whether one was open.
+    /// Mirrors [`Self::close_message_dialog`]'s own doc.
+    pub fn close_form_dialog(&mut self, backend: &mut dyn Backend) -> bool {
+        match self.remove_overlay(|o| matches!(o, Overlay::FormDialog(_))) {
+            Some(Overlay::FormDialog(open)) => {
+                backend
+                    .modal_stack_handle()
+                    .borrow_mut()
+                    .pop(&open.dialog().id);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Mutable access to the open form-dialog's own controller, if any —
+    /// a binding's render path uses this to call
+    /// [`FormDialogController::set_form`]/[`FormDialogController::set_body`]
+    /// every frame before painting, the same "push fresh state, then
+    /// render" contract a bare [`FormController`] consumer already
+    /// follows.
+    pub fn form_dialog_mut(&mut self) -> Option<&mut FormDialogController> {
+        self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::FormDialog(d) => Some(d),
+            _ => None,
+        })
     }
 
     // ── Toast ────────────────────────────────────────────────────────
@@ -744,7 +825,45 @@ impl InteractionEngine {
             .modal_stack_handle()
             .borrow_mut()
             .push_float(&float, layout.bounds);
-        self.push_overlay(Overlay::Float(float, measure));
+        self.push_overlay(Overlay::Float(float, measure, None));
+    }
+
+    /// Opens `float` as a content-bearing popover: anchored and chromed
+    /// exactly like [`Self::show_float`], but with `form`'s fields laid
+    /// out and painted into [`quadraui::FloatLayout::content_bounds`] by
+    /// this engine itself (through an embedded [`FormController`])
+    /// rather than left to the host's own render path. Unlike a plain
+    /// [`Self::show_float`], [`Self::handle`] routes every event into
+    /// the embedded form while this is open — typing/toggling a field
+    /// emits the normal `UiEvent::Form(float.id, ..)` event, same shape
+    /// a `"form"` layout-tree leaf already emits — and a `MouseDown`
+    /// landing outside `float`'s own bounds dismisses it, in addition
+    /// to the Escape dismissal every focusable float already gets (see
+    /// [`Self::dispatch_overlays`]'s own doc). `float.focusable` is
+    /// forced to `true` regardless of what the caller set — a popover
+    /// with no keyboard focus of its own would leave `form`'s fields
+    /// permanently unreachable by keyboard. Tab/Shift+Tab stay trapped
+    /// inside `form`'s own fields — see [`Self::tab_stops`]'s own doc
+    /// for the other half of that trap. Replaces (and pops) any float
+    /// already open.
+    pub fn show_popover(
+        &mut self,
+        mut float: Float,
+        measure: FloatMeasure,
+        form: Form,
+        backend: &mut dyn Backend,
+    ) {
+        float.focusable = true;
+        self.close_float(backend);
+        let layout = float.layout(viewport_rect(backend), measure);
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .push_float(&float, layout.bounds);
+        let mut controller = FormController::new(float.id.as_str().to_string());
+        controller.set_form(form);
+        controller.set_has_focus(true);
+        self.push_overlay(Overlay::Float(float, measure, Some(controller)));
     }
 
     /// Closes the open float (if any), popping its
@@ -755,7 +874,7 @@ impl InteractionEngine {
 
     fn close_float(&mut self, backend: &mut dyn Backend) -> bool {
         match self.remove_overlay(|o| matches!(o, Overlay::Float(..))) {
-            Some(Overlay::Float(float, _)) => {
+            Some(Overlay::Float(float, _, _)) => {
                 backend.modal_stack_handle().borrow_mut().pop(&float.id);
                 true
             }
@@ -831,9 +950,12 @@ impl InteractionEngine {
         for overlay in &self.overlays {
             match overlay {
                 Overlay::ContextMenu(controller) => controller.render(backend),
-                Overlay::Float(float, measure) => {
+                Overlay::Float(float, measure, content) => {
                     let layout = self.float_layout(backend, float, *measure);
                     backend.draw_float(float, &layout);
+                    if let Some(controller) = content {
+                        controller.render(backend, layout.content_bounds);
+                    }
                 }
                 Overlay::RichTextPopup(popup, anchor) => {
                     let layout = self.rich_text_popup_layout(backend, popup, *anchor);
@@ -844,6 +966,7 @@ impl InteractionEngine {
                     backend.draw_completions(completions, &layout);
                 }
                 Overlay::Dialog(dialog) => dialog.render(backend),
+                Overlay::FormDialog(dialog) => dialog.render(backend),
                 Overlay::Tooltip(tooltip, anchor) => {
                     let layout = self.tooltip_layout(backend, tooltip, *anchor);
                     backend.draw_tooltip(tooltip, &layout);
@@ -872,7 +995,25 @@ impl InteractionEngine {
     /// `TextInput`); `TextDisplay` is always one (scroll/copy need
     /// keyboard focus the same way a `Tree`/`List` does); every other
     /// variant yields its id and bounding `Rect`.
+    ///
+    /// Returns empty while an [`Overlay::FormDialog`] or a content-bearing
+    /// [`Overlay::Float`] (a popover opened via [`Self::show_popover`]) is
+    /// open, regardless of what the main tree itself painted this frame.
+    /// `quadraui::runtime::preprocess_event` claims Tab/Shift+Tab
+    /// unconditionally — cycling the main tree's own focus — whenever this
+    /// is non-empty, *before* the key ever reaches [`Self::handle`]; an
+    /// open form-dialog/popover instead traps Tab itself, inside its own
+    /// embedded form (see [`FormDialogController`]'s "Keyboard model" doc
+    /// section and [`Self::dispatch_overlays`]'s popover handling), so
+    /// this must report no main-tree stops at all while either is open —
+    /// otherwise the global cycle would reach straight through the modal
+    /// to whatever the host painted underneath it.
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
+        if self.overlays.iter().any(|o| {
+            matches!(o, Overlay::FormDialog(_)) || matches!(o, Overlay::Float(_, _, Some(_)))
+        }) {
+            return Vec::new();
+        }
         self.hit_map
             .borrow()
             .iter()
@@ -1202,6 +1343,40 @@ impl InteractionEngine {
             }
         }
 
+        // `FormDialogController::handle_event` is also self-contained —
+        // typing a field, toggling a `FieldKind::Toggle`, Tab/Shift+Tab
+        // between fields and buttons, Enter/Escape on a button, and a
+        // click anywhere in the dialog are all resolved internally (see
+        // that type's own "Keyboard model" doc section), so this claims
+        // the event unconditionally while one is open, same as
+        // `Overlay::Dialog` above.
+        if let Some(dialog) = self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::FormDialog(d) => Some(d),
+            _ => None,
+        }) {
+            let dialog_id = dialog.dialog().id;
+            match dialog.handle_event(event, backend) {
+                Handled::Event(FormDialogAction::ButtonClicked(id)) => {
+                    // Closing regardless of what `sink` itself returns —
+                    // same "force the repaint" reasoning as the message
+                    // dialog's own `Handled::Event` arm above.
+                    self.close_form_dialog(backend);
+                    return Some(
+                        Reaction::Redraw
+                            .merge(sink.dispatch(&UiEvent::MessageDialogResolved(id), None)),
+                    );
+                }
+                Handled::Event(FormDialogAction::FormAction(form_event)) => {
+                    return Some(
+                        Reaction::Redraw
+                            .merge(sink.dispatch(&UiEvent::Form(dialog_id, form_event), None)),
+                    );
+                }
+                Handled::Consumed => return Some(Reaction::Redraw),
+                Handled::Ignored => {}
+            }
+        }
+
         if let Some((completions, cursor)) = self.find_completions() {
             match event {
                 UiEvent::KeyPressed {
@@ -1268,6 +1443,60 @@ impl InteractionEngine {
             }
         }
 
+        // A content-bearing float ("popover", opened via
+        // `Self::show_popover`) claims every event but Escape (handled
+        // below, same as any other focusable float) while it's open: a
+        // `MouseDown` landing outside its own bounds dismisses it; any
+        // other event — a click inside it, or a key with no position at
+        // all (typing/toggling a field) — routes into its embedded
+        // `FormController` directly, the same self-contained model
+        // `Overlay::FormDialog` above uses. A plain chrome-only float
+        // (content `None`) still does NOT claim mouse clicks here — its
+        // content is painted by the host, not this engine (see
+        // `Self::show_float`'s own doc) — so a click anywhere near one of
+        // those keeps flowing through the normal hit-map routing below.
+        if let Some((float, measure)) = self.overlays.iter().find_map(|o| match o {
+            Overlay::Float(f, m, Some(_)) => Some((f.clone(), *m)),
+            _ => None,
+        }) {
+            let is_escape = matches!(
+                event,
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Escape),
+                    ..
+                }
+            );
+            if !is_escape {
+                let layout = self.float_layout(backend, &float, measure);
+                let position = event_position(event);
+                let inside = position.map(|p| layout.bounds.contains(p));
+                if matches!(event, UiEvent::MouseDown { .. }) && inside == Some(false) {
+                    self.dismiss_float(backend);
+                    return Some(Reaction::Redraw);
+                }
+                if position.is_none() || inside == Some(true) {
+                    let outcome = self.overlays.iter_mut().find_map(|o| match o {
+                        Overlay::Float(f, _, Some(c)) if f.id == float.id => {
+                            Some(c.handle_event(event, backend, layout.content_bounds))
+                        }
+                        _ => None,
+                    });
+                    if let Some(outcome) = outcome {
+                        return Some(match outcome {
+                            Handled::Event(FormControllerAction::FormAction(form_event)) => {
+                                Reaction::Redraw.merge(
+                                    sink.dispatch(&UiEvent::Form(float.id, form_event), None),
+                                )
+                            }
+                            Handled::Event(FormControllerAction::ScrollChanged)
+                            | Handled::Consumed => Reaction::Redraw,
+                            Handled::Ignored => Reaction::Continue,
+                        });
+                    }
+                }
+            }
+        }
+
         // Float does NOT claim mouse clicks here: its content is painted
         // by the host, not this engine (see `Self::show_float`'s doc), so
         // a click anywhere near it has to keep flowing through the
@@ -1278,7 +1507,7 @@ impl InteractionEngine {
         let float_claims_escape = self
             .overlays
             .iter()
-            .any(|o| matches!(o, Overlay::Float(f, _) if f.focusable))
+            .any(|o| matches!(o, Overlay::Float(f, _, _) if f.focusable))
             && matches!(
                 event,
                 UiEvent::KeyPressed {
@@ -2984,6 +3213,324 @@ mod tests {
         assert!(
             backend.modal_stack_handle().borrow().top().is_none(),
             "resolving the dialog must pop its ModalStack entry"
+        );
+    }
+
+    /// Acceptance coverage for a content-bearing modal dialog: a
+    /// [`FormDialogController`] hosting a `text_input` field emits the
+    /// normal `UiEvent::Form` event for typing, and Tab never escapes
+    /// the modal to the main tree's own button underneath it —
+    /// exercised through the real `TuiDriver::dispatch` path (not a
+    /// direct `engine.handle` call), so `quadraui::runtime::preprocess_event`'s
+    /// own global Tab-cycle is actually in the loop, the same way a real
+    /// binding's runner would drive it. See [`InteractionEngine::tab_stops`]'s
+    /// own doc for why trapping Tab needs this method's cooperation, not
+    /// just [`FormDialogController`]'s internal handling. A `switch`
+    /// (`FieldKind::Toggle`) field's own normal-event path is covered by
+    /// the popover test below instead — toggling one is mouse-only, a
+    /// pre-existing property of the embedded `FormController` this
+    /// change doesn't touch, and computing a click position for it needs
+    /// `FormController::field_rect`, a method this test's own
+    /// `FormDialogController` has no equivalent public accessor for.
+    #[test]
+    fn open_form_dialog_with_text_input_and_toggle_traps_tab_and_emits_normal_form_events() {
+        use quadraui::compose::FormDialogController;
+        use quadraui::{DialogButton, FieldKind, Form, FormEvent, FormField, StyledText};
+
+        fn field(id: &str, kind: FieldKind) -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: StyledText::plain(id),
+                kind,
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }
+        }
+
+        let form = Form {
+            id: WidgetId::new("form:prefs"),
+            fields: vec![
+                field(
+                    "name",
+                    FieldKind::TextInput {
+                        value: String::new(),
+                        placeholder: String::new(),
+                        cursor: Some(0),
+                        selection_anchor: None,
+                    },
+                ),
+                field("flag", FieldKind::Toggle { value: false }),
+            ],
+            focused_field: Some(WidgetId::new("name")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+
+        let mut dialog = FormDialogController::new("prefs", "Preferences").with_buttons(vec![
+            DialogButton {
+                id: WidgetId::new("cancel"),
+                label: "Cancel".into(),
+                is_default: false,
+                is_cancel: true,
+                tint: None,
+                spec: None,
+            },
+            DialogButton {
+                id: WidgetId::new("ok"),
+                label: "OK".into(),
+                is_default: true,
+                is_cancel: false,
+                tint: None,
+                spec: None,
+            },
+        ]);
+        dialog.set_form(form);
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 60, 24);
+        {
+            let (backend, app) = driver.parts_mut();
+            app.engine.open_form_dialog(dialog, backend);
+        }
+        driver.render();
+
+        assert!(
+            driver.app().engine.tab_stops().is_empty(),
+            "tab_stops must report no main-tree stops while a form-dialog \
+             is open, or `preprocess_event`'s global Tab-cycle would reach \
+             straight past the modal to whatever is painted underneath it"
+        );
+
+        // Typing lands in the already-focused "name" field as a normal
+        // `UiEvent::Form(.., TextInputChanged)`.
+        driver.dispatch(UiEvent::CharTyped('x'));
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|(ev, _)| matches!(
+                    ev,
+                    UiEvent::Form(_, FormEvent::TextInputChanged { id, value })
+                        if *id == WidgetId::new("name") && value == "x"
+                )),
+                "typing should emit a normal Form(TextInputChanged) event: {:?}",
+                dispatched
+            );
+        }
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        // Tab moves focus from "name" to "flag" -- it must never reach
+        // past the dialog's own fields/buttons to the main tree's "go"
+        // button, which is what a failure of the `tab_stops` trap above
+        // would look like end-to-end.
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                !dispatched.iter().any(|(ev, _)| matches!(
+                    ev,
+                    UiEvent::FocusChanged(Some(id)) if *id == WidgetId::new("go")
+                )),
+                "Tab must stay inside the modal, never focus the main \
+                 tree's own button: {:?}",
+                dispatched
+            );
+        }
+
+        assert!(
+            driver.app().engine.form_dialog_open(),
+            "the dialog must still be open -- nothing above should have closed it"
+        );
+    }
+
+    /// Acceptance coverage for a content-bearing popover: a
+    /// [`Self::show_popover`] opened anchored to a button's own painted
+    /// rect emits the normal `UiEvent::Form` event for typing in a
+    /// `text_input` field and for clicking a `switch` (`FieldKind::Toggle`)
+    /// field, and is dismissed by a `MouseDown` landing outside its
+    /// bounds -- popping its [`quadraui::ModalStack`] entry the same way
+    /// [`Self::close_message_dialog`]'s own test already proves for a
+    /// message dialog. The toggle field's click position is computed via
+    /// a scratch [`FormController`] (same `form`, same
+    /// [`FormController::field_rect`] the real popover's own embedded
+    /// controller resolves a click against) rather than a hardcoded
+    /// coordinate.
+    #[test]
+    fn show_popover_with_a_text_input_and_toggle_emits_normal_form_events_and_is_dismissed_by_an_outside_click(
+    ) {
+        use quadraui::compose::FormController;
+        use quadraui::{Anchor, FieldKind, Float, FloatMeasure, Form, FormEvent, FormField, Side};
+
+        fn field(id: &str, kind: FieldKind) -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: quadraui::StyledText::plain(id),
+                kind,
+                hint: quadraui::StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }
+        }
+
+        let form = Form {
+            id: WidgetId::new("form:popover"),
+            fields: vec![
+                field(
+                    "note",
+                    FieldKind::TextInput {
+                        value: String::new(),
+                        placeholder: String::new(),
+                        cursor: Some(0),
+                        selection_anchor: None,
+                    },
+                ),
+                field("flag", FieldKind::Toggle { value: false }),
+            ],
+            focused_field: Some(WidgetId::new("note")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 60, 24);
+        driver.render();
+        let button_rect = {
+            let hit_map = driver.app().engine.hit_map();
+            hit_map
+                .iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Button { id, layout } if *id == WidgetId::new("go") => {
+                        Some(layout.bounds)
+                    }
+                    _ => None,
+                })
+                .expect("the background button should have painted a hit")
+        };
+
+        let float = Float::new(
+            WidgetId::new("popover:note"),
+            Anchor::new(button_rect, Side::Bottom),
+        );
+        let measure = FloatMeasure::new(24.0, 6.0);
+        let content_bounds = {
+            let (backend, app) = driver.parts_mut();
+            app.engine
+                .show_popover(float.clone(), measure, form.clone(), backend);
+            app.engine
+                .float_layout(backend, &float, measure)
+                .content_bounds
+        };
+        driver.render();
+        assert!(
+            driver.app().engine.tab_stops().is_empty(),
+            "tab_stops must report no main-tree stops while the popover is open"
+        );
+
+        // Typing lands in the already-focused "note" field.
+        driver.dispatch(UiEvent::CharTyped('x'));
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|(ev, _)| matches!(
+                    ev,
+                    UiEvent::Form(_, FormEvent::TextInputChanged { id, value })
+                        if *id == WidgetId::new("note") && value == "x"
+                )),
+                "typing should emit a normal Form(TextInputChanged) event: {:?}",
+                dispatched
+            );
+        }
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        // Click the "flag" toggle, at the position a scratch
+        // `FormController` (built from the same `form`) resolves it to.
+        let flag_rect = {
+            let mut scratch = FormController::new("scratch".to_string());
+            scratch.set_form(form);
+            let (backend, _) = driver.parts_mut();
+            scratch
+                .field_rect(WidgetId::new("flag"), backend, content_bounds)
+                .expect("the toggle field should have a resolved rect")
+        };
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(
+                flag_rect.x + flag_rect.width * 0.5,
+                flag_rect.y + flag_rect.height * 0.5,
+            ),
+            modifiers: Modifiers::default(),
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|(ev, _)| matches!(
+                    ev,
+                    UiEvent::Form(_, FormEvent::ToggleChanged { id, value: true })
+                        if *id == WidgetId::new("flag")
+                )),
+                "clicking the toggle should emit a normal Form(ToggleChanged) \
+                 event: {:?}",
+                dispatched
+            );
+        }
+
+        // Well outside the popover's own box (and the background button).
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(59.0, 23.0),
+            modifiers: Modifiers::default(),
+        });
+
+        let (backend, app) = driver.parts_mut();
+        assert!(
+            backend.modal_stack_handle().borrow().top().is_none(),
+            "an outside click must dismiss the popover, popping its \
+             ModalStack entry"
+        );
+        assert!(
+            !app.engine.tab_stops().is_empty(),
+            "once the popover is gone, `tab_stops` should report the main \
+             tree's own stops again"
         );
     }
 
