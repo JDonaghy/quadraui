@@ -214,9 +214,7 @@ impl StyleOverride {
         }
         style
     }
-}
 
-impl StyleOverride {
     /// Merges `self` *over* `base`: every token `self` names wins, every
     /// token it leaves `None` falls through to whatever `base` named (or
     /// stays `None` if neither did). The merge a `"class"` list and a
@@ -237,13 +235,33 @@ impl StyleOverride {
     }
 }
 
-/// The names [`StyleSets::new`] pre-populates, in the order
-/// [`StyleSets::names`] reports them. Each maps onto existing `Theme`
-/// tokens (and, through them, onto an existing `ButtonVariant`'s own
-/// resting fill) rather than onto fixed literal colours, so a built-in
-/// set follows an app's own `set_theme` palette — see [`StyleSets`]'s own
-/// doc table.
-pub const BUILTIN_STYLE_SET_NAMES: [&str; 4] = ["primary", "secondary", "danger", "subtle"];
+/// One [`BUILTIN_STYLE_SETS`] entry: a name paired with the `Theme`-deriving
+/// function it resolves through.
+type BuiltinStyleSet = (&'static str, fn(&Theme) -> StyleOverride);
+
+/// Each built-in style-set name paired with the `Theme`-deriving function
+/// [`StyleSets::new`] registers it under — the one source both `new()`
+/// and [`BUILTIN_STYLE_SET_NAMES`] read from, so a future fifth built-in
+/// (or a renamed one) can't update one and forget the other.
+const BUILTIN_STYLE_SETS: [BuiltinStyleSet; 4] = [
+    ("primary", builtin_primary),
+    ("secondary", builtin_secondary),
+    ("danger", builtin_danger),
+    ("subtle", builtin_subtle),
+];
+
+/// The names [`BUILTIN_STYLE_SETS`] registers, in that table's own order —
+/// **not** the sorted order [`StyleSets::names`] reports them in. Each
+/// maps onto existing `Theme` tokens (and, through them, onto an existing
+/// `ButtonVariant`'s own resting fill) rather than onto fixed literal
+/// colours, so a built-in set follows an app's own `set_theme` palette —
+/// see [`StyleSets`]'s own doc table.
+pub const BUILTIN_STYLE_SET_NAMES: [&str; 4] = [
+    BUILTIN_STYLE_SETS[0].0,
+    BUILTIN_STYLE_SETS[1].0,
+    BUILTIN_STYLE_SETS[2].0,
+    BUILTIN_STYLE_SETS[3].0,
+];
 
 /// How one named style set produces the [`StyleOverride`] a `"class"`
 /// reference to it resolves to.
@@ -318,19 +336,12 @@ impl Default for StyleSets {
 }
 
 impl StyleSets {
-    /// A registry holding exactly the [`BUILTIN_STYLE_SET_NAMES`] sets.
+    /// A registry holding exactly the [`BUILTIN_STYLE_SETS`] sets.
     pub fn new() -> Self {
         let mut sets: HashMap<String, StyleSetDef> = HashMap::new();
-        sets.insert(
-            "primary".to_owned(),
-            StyleSetDef::Builtin(builtin_primary as fn(&Theme) -> StyleOverride),
-        );
-        sets.insert(
-            "secondary".to_owned(),
-            StyleSetDef::Builtin(builtin_secondary),
-        );
-        sets.insert("danger".to_owned(), StyleSetDef::Builtin(builtin_danger));
-        sets.insert("subtle".to_owned(), StyleSetDef::Builtin(builtin_subtle));
+        for (name, derive) in BUILTIN_STYLE_SETS {
+            sets.insert(name.to_owned(), StyleSetDef::Builtin(derive));
+        }
         Self { sets }
     }
 

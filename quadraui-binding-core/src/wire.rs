@@ -790,10 +790,13 @@ const STYLE_OVERRIDE_KEYS: [&str; 9] = [
 /// Decodes an optional `"class"` sibling key found alongside any layout
 /// node dict, in the same place [`style_override_from_value`] reads
 /// `"style"`: a single string, or a list of strings, each naming a
-/// registered [`StyleSets`] entry. A string is split on ASCII whitespace,
-/// so `{"class": "card danger"}` names two sets — the CSS `class=`
-/// attribute's own convention, which this key is the analogue of. Returns
-/// an empty `Vec` when the key is absent.
+/// registered [`StyleSets`] entry. Every string involved — the whole value
+/// itself, or each list entry — is split on ASCII whitespace, so
+/// `{"class": "card danger"}` and `{"class": ["card danger"]}` both name
+/// the same two sets — the CSS `class=` attribute's own convention, which
+/// this key is the analogue of, applied the same way regardless of which
+/// of the two shapes a given name arrived in. Returns an empty `Vec` when
+/// the key is absent.
 ///
 /// Rejects a value that is neither a string nor a list of strings (a typed
 /// shape error, like every other wrongly-typed key in this decoder), but
@@ -814,11 +817,18 @@ fn style_classes_from_value(what: &str, value: &Value) -> Result<Vec<String>, De
         Value::Array(entries) => entries
             .iter()
             .map(|entry| {
-                entry.as_str().map(str::to_owned).ok_or_else(|| {
+                entry.as_str().ok_or_else(|| {
                     DecodeError(format!("{context} list entries must all be strings"))
                 })
             })
-            .collect(),
+            .collect::<Result<Vec<&str>, DecodeError>>()
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .flat_map(str::split_whitespace)
+                    .map(str::to_owned)
+                    .collect()
+            }),
         _ => Err(DecodeError(format!(
             "{context} must be a string or a list of strings"
         ))),
@@ -866,6 +876,29 @@ fn style_override_from_value(
 pub fn decode_style_overrides(what: &str, value: &Value) -> Result<StyleOverride, DecodeError> {
     let dict = must_be_dict(what, value, "overrides")?;
     style_override_fields(what, dict)
+}
+
+/// Validates `name` for a binding's own `define_style(name, overrides)`
+/// surface, before it is handed to [`StyleSets::define`]: rejects an empty
+/// name (nothing to register under) and a name containing whitespace.
+/// The whitespace rule closes a gap [`style_classes_from_value`] would
+/// otherwise open — that function always splits a `"class"` string (and,
+/// as of this function's own sibling fix, every list entry too) on
+/// whitespace, so a name containing it could never be referenced through
+/// `"class"` at all, only resolved against by accident if some other code
+/// path constructed it directly. CSS forbids whitespace in a class token
+/// for the same reason. `what` names the calling surface in any error
+/// raised, the same convention [`decode_style_overrides`] uses.
+pub fn validate_style_set_name(what: &str, name: &str) -> Result<(), DecodeError> {
+    if name.is_empty() {
+        return Err(DecodeError(format!("{what}: \"name\" must not be empty")));
+    }
+    if name.contains(char::is_whitespace) {
+        return Err(DecodeError(format!(
+            "{what}: \"name\" must not contain whitespace, got {name:?}"
+        )));
+    }
+    Ok(())
 }
 
 /// Reads every [`STYLE_OVERRIDE_KEYS`] token off `dict` (already known to
@@ -2635,6 +2668,33 @@ mod tests {
         assert_eq!(as_string, as_array);
     }
 
+    /// A whitespace-separated array entry splits into several names too --
+    /// `{"class": ["first second"]}` names the same two sets as
+    /// `{"class": "first second"}`, not one set named `"first second"`.
+    #[test]
+    fn a_whitespace_separated_array_entry_also_names_several_sets() {
+        let sets = [
+            (
+                "first",
+                StyleOverride {
+                    fg: Color::from_hex("#ff0000"),
+                    bg: Color::from_hex("#000011"),
+                    ..StyleOverride::default()
+                },
+            ),
+            ("second", set_with_fg("#00ff00")),
+        ];
+        let as_string = styled_override(&decode_with_sets(
+            &json!({"row": [], "class": "first second"}),
+            &sets,
+        ));
+        let as_array_entry = styled_override(&decode_with_sets(
+            &json!({"row": [], "class": ["first second"]}),
+            &sets,
+        ));
+        assert_eq!(as_string, as_array_entry);
+    }
+
     /// An inline `"style"` key beats every class the same node names --
     /// a CSS `style=` attribute beating a `class=` rule.
     #[test]
@@ -2760,6 +2820,26 @@ mod tests {
         assert!(error.0.contains("\"class\""), "{}", error.0);
         let error = err(decode(&json!({"row": [], "class": ["ok", 7]})));
         assert!(error.0.contains("must all be strings"), "{}", error.0);
+    }
+
+    /// `validate_style_set_name` rejects both an empty name and one
+    /// containing whitespace -- the latter closes the gap a `"class"`
+    /// string/array entry splits on whitespace: a name that itself
+    /// contained whitespace could never be referenced through either
+    /// `"class"` shape.
+    #[test]
+    fn validate_style_set_name_rejects_empty_and_whitespace_names() {
+        assert!(validate_style_set_name("define_style", "card").is_ok());
+
+        let error = validate_style_set_name("define_style", "").unwrap_err();
+        assert!(error.0.contains("must not be empty"), "{}", error.0);
+
+        let error = validate_style_set_name("define_style", "card danger").unwrap_err();
+        assert!(
+            error.0.contains("must not contain whitespace"),
+            "{}",
+            error.0
+        );
     }
 
     /// `"gap"` has no meaning on a `"scroll"` node -- there's no second

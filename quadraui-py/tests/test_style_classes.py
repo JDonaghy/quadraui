@@ -167,6 +167,25 @@ def test_define_style_rejects_an_empty_name():
         app.define_style("", {"bg": "#000000"})
 
 
+def test_define_style_rejects_a_name_containing_whitespace():
+    # Closes the gap a "class" string/array entry would otherwise open:
+    # both split on whitespace (see
+    # test_a_whitespace_separated_array_entry_also_names_several_sets), so
+    # a name containing it could never be referenced through "class" at
+    # all.
+    app = QuiApp(10, 1)
+    with pytest.raises(InvalidDescriptorError, match="whitespace"):
+        app.define_style("card danger", {"bg": "#000000"})
+
+
+def test_a_whitespace_separated_array_entry_also_names_several_sets():
+    app = QuiApp(10, 1)
+    app.define_style("first", {"bg": "#ff0000"})
+    app.define_style("second", {"bg": "#00ff00"})
+    app.set_render(lambda: {"row": [_text_leaf("td", **{"class": ["first second"]})]})
+    assert app.cell_colors(0, 0)[1] == (0, 255, 0), "a space inside one array entry still splits"
+
+
 def test_class_rejects_a_wrongly_typed_value():
     app = QuiApp(10, 1)
     app.set_render(lambda: {"row": [_text_leaf("td", **{"class": 7})]})

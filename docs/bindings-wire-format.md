@@ -147,7 +147,7 @@ than from fixed colours:
 | --- | --- | --- |
 | `"primary"` | `accent_bg`/`surface_bg` = `Theme.accent_bg`, `accent` = `Theme.accent_fg` | a `"button"`'s `Primary` variant fill, extended to every filled surface in the subtree |
 | `"secondary"` | `accent_bg`/`surface_bg` = `Theme.surface_bg`, `fg` = `Theme.surface_fg` | a `"button"`'s `Secondary` variant fill |
-| `"danger"` | `accent_bg`/`surface_bg` = `Theme.error_fg`, `border`/`accent` = `Theme.error_fg` | a `"button"`'s `Danger` variant fill |
+| `"danger"` | `accent_bg`/`surface_bg` = `Theme.button_danger_bg`, `border`/`accent` = `Theme.error_fg` | a `"button"`'s `Danger` variant fill |
 | `"subtle"` | `fg`/`border` = `Theme.muted_fg`, `accent_bg`/`surface_bg` = `Theme.background` | de-emphasised chrome: muted text, no raised surface |
 
 Each sets *both* `accent_bg` and `surface_bg`, because which of the two a
@@ -158,9 +158,17 @@ replaces it.
 
 **Redefining a set applies from the next frame on.** Nothing caches a
 resolved override -- every `"class"` key re-resolves through the registry
-during each frame's own decode -- and `define_style` requests that frame
-immediately, so a running `run_tui`/`startTui` loop repaints rather than
-waiting for the next unrelated event. A built-in set resolves against the
+during each frame's own decode, with nothing further to do. In Python, a
+registered handler redefines a set through
+`app.actions().define_style(...)` rather than `app.define_style` directly
+(the same "already borrowed" restriction every other `actions()` method
+exists for -- see `QuiAppActions`'s own rustdoc for the full story);
+applying that queued redefinition requests a repaint on the real backend
+a running `run_tui` loop is driving, so it repaints immediately rather
+than waiting for the next unrelated event. Node's `defineStyle` has no
+such deferred counterpart: it rejects outright while
+`startTui`/`startNative` is live (`check_not_live`), so there is never a
+running loop for it to nudge. A built-in set resolves against the
 app-wide theme read at the start of the frame; an ancestor node's own
 `"style"` key narrowing `surface_bg` for its subtree does not re-derive a
 descendant's `{"class": "secondary"}` against that narrowed theme.
