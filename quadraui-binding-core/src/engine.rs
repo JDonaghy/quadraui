@@ -42,7 +42,9 @@ use crate::host::{
     apply_data_table_nav_key, apply_list_nav_key, apply_scroll_offset, apply_split_divider_drag,
     apply_tab_activated, apply_tab_closed, apply_tree_nav_key, apply_tree_toggle_expand,
 };
-use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
+use crate::semantic::{
+    button_clicked_event, focus_scoped_key_event, number_input_click_event, semantic_event_for_hit,
+};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
 
@@ -1933,6 +1935,10 @@ impl InteractionEngine {
         // which case the raw `MouseDown`/`DoubleClick` (and its `"hit"` dict)
         // never reaches `sink` at all.
         let mut attach_hit = hit.is_some() && !scroll_translated;
+        // Set by the `HitDetail::ButtonBody` arm below, alongside (never
+        // instead of) the raw `MouseDown`/`DoubleClick` dispatch — merged
+        // into the final `Reaction` the same way `focus_reaction` is.
+        let mut button_clicked_reaction = Reaction::Continue;
         if let Some((id, detail)) = &hit {
             let modifiers_and_double_click = match &event {
                 UiEvent::MouseDown { modifiers, .. } => Some((*modifiers, false)),
@@ -2139,6 +2145,21 @@ impl InteractionEngine {
                         }
                     }
                     attach_hit = false;
+                } else if matches!(detail, HitDetail::ButtonBody) {
+                    // A layout-tree `Button` leaf's click is additive, not
+                    // a replacement, unlike every other `detail` arm above
+                    // and below: `event`/`attach_hit` are left untouched
+                    // here, so the raw `MouseDown`/`DoubleClick` (with its
+                    // `"hit"` dict still attached) reaches `sink` below
+                    // exactly as it always did, for compatibility with a
+                    // binding's own handler that already synthesizes the
+                    // click itself from that raw event. This dispatch is
+                    // the semantic event on top of it.
+                    button_clicked_reaction =
+                        sink.dispatch(&button_clicked_event(*id), Some(&HitDetail::ButtonBody));
+                    if matches!(button_clicked_reaction, Reaction::Exit) {
+                        return button_clicked_reaction;
+                    }
                 } else if let Some(semantic) = semantic_event_for_hit(
                     *id,
                     detail,
@@ -2210,6 +2231,7 @@ impl InteractionEngine {
             .merge(menu_reaction)
             .merge(hover_reaction)
             .merge(focus_reaction)
+            .merge(button_clicked_reaction)
             .merge(event_reaction)
             .merge(persisted_state)
     }
@@ -2477,12 +2499,15 @@ mod tests {
 
     /// A `MouseDown` on the button must round-trip through
     /// [`InteractionEngine::handle`] as click-to-focus (a `FocusChanged`
-    /// dispatch) followed by the click itself with its hit attached — the
-    /// same two-dispatch sequence a real binding's `AppLogic::handle` leaf
-    /// produces, proving the orchestration itself (not just paint/hit-test)
-    /// is usable with no host-language binding in scope.
+    /// dispatch), then the semantic `UiEvent::Form(id,
+    /// FormEvent::ButtonClicked)` [`crate::semantic::button_clicked_event`]
+    /// builds, then the raw click itself with its hit still attached — the
+    /// semantic dispatch is additive, never a replacement, so a binding
+    /// that already synthesizes its own click from the raw `MouseDown`
+    /// keeps working unchanged. Proves the orchestration itself (not just
+    /// paint/hit-test) is usable with no host-language binding in scope.
     #[test]
-    fn click_on_a_button_focuses_it_then_dispatches_the_click() {
+    fn click_on_a_button_focuses_it_then_dispatches_button_clicked_then_the_raw_click() {
         let logic = MinimalLogic {
             button: Button::new(WidgetId::new("go"), "Go"),
             engine: InteractionEngine::new(),
@@ -2514,22 +2539,124 @@ mod tests {
         let dispatched = &driver.app().sink.borrow().dispatched;
         assert_eq!(
             dispatched.len(),
-            2,
-            "expected a focus dispatch and the click itself"
+            3,
+            "expected a focus dispatch, the semantic ButtonClicked, and the raw click: {:?}",
+            dispatched
         );
         assert!(
             matches!(dispatched[0].0, UiEvent::FocusChanged(Some(id)) if id == WidgetId::new("go")),
             "click-to-focus must dispatch FocusChanged first: {:?}",
             dispatched[0]
         );
-        assert!(
-            matches!(dispatched[1].0, UiEvent::MouseDown { .. }),
-            "the raw click must still follow, with its hit attached: {:?}",
+        assert_eq!(
+            dispatched[1].0,
+            UiEvent::Form(
+                WidgetId::new("go"),
+                quadraui::FormEvent::ButtonClicked {
+                    id: WidgetId::new("go")
+                }
+            ),
+            "the semantic ButtonClicked must follow the focus dispatch: {:?}",
             dispatched[1]
         );
         assert!(
-            dispatched[1].1.is_some(),
-            "a button has no semantic click substitution, so the raw click keeps its hit"
+            matches!(dispatched[2].0, UiEvent::MouseDown { .. }),
+            "the raw click must still follow, with its hit attached, for compatibility \
+             with a binding that already synthesizes its own click from it: {:?}",
+            dispatched[2]
+        );
+        assert!(
+            dispatched[2].1.is_some(),
+            "a button has no semantic click SUBSTITUTION (only an additive one), so the \
+             raw click keeps its hit"
+        );
+    }
+
+    /// Enter on a focused layout-tree `Button` round-trips through
+    /// [`InteractionEngine::handle`] as the same semantic
+    /// `UiEvent::Form(id, FormEvent::ButtonClicked)` a pointer click
+    /// produces — the keyboard-activation half of this engine's `Button`
+    /// coverage, exercised via [`crate::semantic::focus_scoped_key_event`]'s
+    /// own `PaintedHit::Button` arm rather than
+    /// [`InteractionEngine::handle`]'s `MouseDown`/`DoubleClick` routing.
+    /// Unlike the pointer click, this fully replaces the raw `KeyPressed`
+    /// — matching `Toolbar::activate_focused`'s own Enter/Space handling,
+    /// which does the same.
+    #[test]
+    fn enter_on_a_focused_button_dispatches_button_clicked() {
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("go")));
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert_eq!(
+            dispatched,
+            &[(
+                UiEvent::Form(
+                    WidgetId::new("go"),
+                    quadraui::FormEvent::ButtonClicked {
+                        id: WidgetId::new("go")
+                    }
+                ),
+                None
+            )],
+            "Enter on a focused Button must dispatch exactly the semantic \
+             ButtonClicked, replacing the raw KeyPressed: {:?}",
+            dispatched
+        );
+    }
+
+    /// Space does the same as Enter (see
+    /// [`enter_on_a_focused_button_dispatches_button_clicked`]) — both are
+    /// the chords [`quadraui::Button::handle_key`]'s own doc names as this
+    /// primitive's activation keys.
+    #[test]
+    fn space_on_a_focused_button_dispatches_button_clicked() {
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("go")));
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Char(' '),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert_eq!(
+            dispatched,
+            &[(
+                UiEvent::Form(
+                    WidgetId::new("go"),
+                    quadraui::FormEvent::ButtonClicked {
+                        id: WidgetId::new("go")
+                    }
+                ),
+                None
+            )],
+            "Space on a focused Button must dispatch exactly the semantic \
+             ButtonClicked, replacing the raw KeyPressed: {:?}",
+            dispatched
         );
     }
 
@@ -5868,6 +5995,149 @@ mod tests {
                 .any(|(event, _)| matches!(event, UiEvent::TextDisplay(id, _) if *id == WidgetId::new("log"))),
             "PageDown must reach the TextDisplay's own KeyPressed handling: {:?}",
             sink.dispatched
+        );
+    }
+
+    /// A standalone `"text_input"` leaf whose `render` rebuilds the
+    /// descriptor from `value` every frame but — unlike every other
+    /// `AppLogic` in this module's own test suite, and unlike a
+    /// well-behaved real binding — deliberately never echoes
+    /// `TextInput::has_focus` back as `true` once the engine focuses it.
+    /// Regression fixture for the "engine focus is authoritative,
+    /// `has_focus` is cosmetic" contract
+    /// [`crate::text_input`]'s own module doc states: key routing for a
+    /// focused `"text_input"`/`"password"`/`"textarea"` extra is keyed
+    /// entirely by `backend.focus_manager().focused()`
+    /// ([`focus_scoped_key_event`]/`text_input_insert_event`'s own
+    /// `focused` parameter), never by the descriptor's own `has_focus`
+    /// field, so a host that never echoes it still keeps every keystroke
+    /// reaching the cached [`quadraui::TextEditor`] and being applied to
+    /// `value` via `FormEvent::TextInputChanged`.
+    struct NeverEchoesFocusTextInputLogic {
+        value: RefCell<String>,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for NeverEchoesFocusTextInputLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let text_input = TextInput::new(WidgetId::new("input"))
+                .with_lines(vec![self.value.borrow().clone()])
+                .with_cursor_col(self.value.borrow().chars().count());
+            let node = LayoutNode::Leaf(LayoutLeaf {
+                id: "input".to_string(),
+                descriptor: LeafDescriptor::Extra(std::rc::Rc::new(text_input)),
+                scroll_px: None,
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let r = self
+                .engine
+                .handle(event, backend, &mut *self.sink.borrow_mut());
+            let dispatched = self.sink.borrow().dispatched.clone();
+            for (ev, _) in dispatched {
+                if let UiEvent::Form(_, quadraui::FormEvent::TextInputChanged { value, .. }) = ev {
+                    *self.value.borrow_mut() = value;
+                }
+            }
+            r
+        }
+    }
+
+    /// Three keystrokes into a `"text_input"` extra the engine already
+    /// focuses (via a direct `backend.set_focus`, mirroring a host's own
+    /// click-to-focus or Tab-cycling outcome) must all land, in order,
+    /// even though [`NeverEchoesFocusTextInputLogic::render`] never once
+    /// echoes `has_focus: true` back onto the descriptor across the three
+    /// re-renders between them. A regression on the "has_focus gates
+    /// routing" shape this guards against would drop every keystroke
+    /// after the first — see this test's own fixture doc.
+    #[test]
+    fn typing_into_a_focused_text_input_never_drops_a_key_when_has_focus_is_never_echoed() {
+        let logic = NeverEchoesFocusTextInputLogic {
+            value: RefCell::new(String::new()),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        driver.render();
+
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("input")));
+        }
+        driver.render();
+
+        for ch in ['a', 'b', 'c'] {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Char(ch),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            driver.render();
+        }
+
+        assert_eq!(
+            *driver.app().value.borrow(),
+            "abc",
+            "every keystroke must land even though has_focus is never echoed back: {:?}",
+            driver.app().sink.borrow().dispatched
+        );
+    }
+
+    /// Same contract as
+    /// [`typing_into_a_focused_text_input_never_drops_a_key_when_has_focus_is_never_echoed`],
+    /// but focusing the input through a real `MouseDown` click-to-focus
+    /// (exercising `InteractionEngine::handle`'s own focus-setting path)
+    /// rather than a direct `backend.set_focus` — the two keystrokes right
+    /// after the click must still both land.
+    #[test]
+    fn click_to_focus_a_text_input_then_typing_never_drops_a_key_when_has_focus_is_never_echoed() {
+        let logic = NeverEchoesFocusTextInputLogic {
+            value: RefCell::new(String::new()),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        driver.render();
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(1.0, 0.0),
+            modifiers: Modifiers::default(),
+        });
+        driver.render();
+
+        for ch in ['x', 'y'] {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Char(ch),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            driver.render();
+        }
+
+        assert_eq!(
+            *driver.app().value.borrow(),
+            "xy",
+            "every keystroke after click-to-focus must land even though has_focus is \
+             never echoed back: {:?}",
+            driver.app().sink.borrow().dispatched
         );
     }
 }

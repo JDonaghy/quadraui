@@ -118,6 +118,21 @@ binding author having to implement the choice itself. `scroll_offset`,
 `focused_index`, and `checked` across the leaf descriptors in the generated
 reference below are the common examples.
 
+### `has_focus` is not a controlled/uncontrolled field
+
+`has_focus` on a `"text_input"`/`"password"`/`"textarea"` extra (and on a
+`Form`'s own fields) looks like it belongs in the list above, but it isn't
+tracked by `WidgetState::resolve` at all -- it is purely cosmetic, read only
+when painting the caret/focus-ring chrome. Which widget actually *receives*
+a typed key or click is decided entirely by the engine's own focus state
+(`backend.focus_manager().focused()`, set by click-to-focus or
+`FocusManager::focus_next`/`focus_prev`), never by this field. A render
+callback that never echoes `has_focus: true` back after a `FocusChanged`
+dispatch still gets every subsequent keystroke delivered to that widget --
+only the focus-ring/caret rendering for that one frame would be stale, not
+the routing. Echo it back anyway for a frame-accurate focus ring; just don't
+rely on it (or worry about its absence) for keys to keep arriving.
+
 ## `wire_version` policy
 
 Every top-level `RenderOutput` (any `LayoutNode` variant, or
