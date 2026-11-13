@@ -31,6 +31,24 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiApp.define_style(name, overrides)` registers a named style set — a
+  reusable bundle of the same tokens a node's inline `"style"` dict
+  accepts — and any layout-tree node may then name one or more of them
+  through a new optional `"class"` key: a single name, a
+  whitespace-separated string of names, or a list, the CSS `class=`
+  analogue of `"style"`. Classes merge left to right (a later name wins a
+  token an earlier one also named) and the node's own inline `"style"`
+  beats all of them. A class name no set was defined under is ignored
+  rather than raising — unlike an unknown key *inside* `"style"`, which
+  is still an `InvalidDescriptorError`. Four theme-derived sets exist
+  before any `define_style` call — `"primary"`, `"secondary"`,
+  `"danger"`, `"subtle"`, each mapping onto the matching `Button` variant's
+  own resting fill, and each following a later `set_theme` call; defining
+  one of those names replaces it. Redefining a set repaints from the next
+  frame on. `QuiApp.style_set_names()` lists what is registered. See
+  `docs/bindings-wire-format.md` and
+  `quadraui-py/examples/style_classes_demo.py`.
+
 - Any layout-tree node a render callback returns (`"row"`/`"column"`/
   `"split"`/`"tabs"`/`"panel"`/`"sidebar_panel"`/`"split_tree"`/`"scroll"`,
   or a leaf) may carry an optional `"style"` dict: `"bg"`/`"fg"`/

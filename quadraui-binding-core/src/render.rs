@@ -2595,6 +2595,132 @@ mod tests {
         );
     }
 
+    /// End to end for the `"class"` key: a tree carrying class names,
+    /// decoded against a [`crate::layout::StyleSets`] registry and painted
+    /// through [`paint_layout`], reaches the same cells an inline
+    /// `"style"` would -- with the registry's own precedence (later class
+    /// wins, inline `"style"` wins over every class, unknown name
+    /// ignored) visible in the painted colours rather than only in the
+    /// decoded [`StyleOverride`].
+    #[test]
+    fn class_names_resolve_through_the_registry_into_the_painted_cells() {
+        use quadraui::tui::testing::TuiDriver;
+
+        struct Logic {
+            engine: crate::engine::InteractionEngine,
+            sets: crate::layout::StyleSets,
+        }
+        impl quadraui::AppLogic for Logic {
+            type AreaId = ();
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let value = serde_json::json!({
+                    "row": [
+                        {"id": "plain", "button": {"id": "plain", "label": "Plain"}},
+                        {
+                            "id": "one",
+                            "button": {"id": "one", "label": "OneClass"},
+                            "class": "brand",
+                        },
+                        {
+                            "id": "two",
+                            "button": {"id": "two", "label": "TwoClass"},
+                            "class": ["brand", "alert"],
+                        },
+                        {
+                            "id": "inline",
+                            "button": {"id": "inline", "label": "InlineWins"},
+                            "class": "brand",
+                            "style": {"accent_bg": "#0000ff"},
+                        },
+                        {
+                            "id": "unknown",
+                            "button": {"id": "unknown", "label": "Unknown"},
+                            "class": "no-such-set",
+                        },
+                    ],
+                });
+                let theme = backend.theme();
+                let node = crate::wire::decode_layout_node_with_styles(
+                    "test",
+                    &value,
+                    crate::wire::StyleContext::new(&self.sets, &theme),
+                )
+                .expect("valid tree");
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &node, &mut hits, &|id| {
+                    self.engine.chrome_interaction(id)
+                });
+                self.engine.set_hits(hits);
+            }
+            fn handle(
+                &mut self,
+                _event: quadraui::UiEvent,
+                _backend: &mut dyn Backend,
+            ) -> quadraui::Reaction {
+                quadraui::Reaction::Continue
+            }
+        }
+
+        let mut sets = crate::layout::StyleSets::new();
+        sets.define(
+            "brand",
+            StyleOverride {
+                accent_bg: Some(quadraui::Color::rgb(0, 255, 0)),
+                ..StyleOverride::default()
+            },
+        );
+        sets.define(
+            "alert",
+            StyleOverride {
+                accent_bg: Some(quadraui::Color::rgb(255, 0, 0)),
+                ..StyleOverride::default()
+            },
+        );
+        let logic = Logic {
+            engine: crate::engine::InteractionEngine::new(),
+            sets,
+        };
+        let mut driver = TuiDriver::new(logic, 80, 3);
+        driver.render();
+
+        let bg_at = |driver: &mut TuiDriver<Logic>, label: &str| {
+            let (x, y) = driver
+                .find(label)
+                .unwrap_or_else(|| panic!("{label} should paint"));
+            driver
+                .style_at(x as u16, y as u16)
+                .unwrap_or_else(|| panic!("style at {label}"))
+                .bg
+        };
+
+        let plain = bg_at(&mut driver, "Plain");
+        let green = quadraui::tui::ratatui_color(quadraui::Color::rgb(0, 255, 0));
+        let red = quadraui::tui::ratatui_color(quadraui::Color::rgb(255, 0, 0));
+        let blue = quadraui::tui::ratatui_color(quadraui::Color::rgb(0, 0, 255));
+        assert_eq!(
+            bg_at(&mut driver, "OneClass"),
+            green,
+            "one class resolves to that set's own tokens"
+        );
+        assert_eq!(
+            bg_at(&mut driver, "TwoClass"),
+            red,
+            "the later class in the list wins a token both name"
+        );
+        assert_eq!(
+            bg_at(&mut driver, "InlineWins"),
+            blue,
+            "the node's own inline \"style\" beats every class it names"
+        );
+        assert_eq!(
+            bg_at(&mut driver, "Unknown"),
+            plain,
+            "an unknown class name resolves to nothing, leaving the node unstyled"
+        );
+    }
+
     /// The acceptance scenario for `"split"`: `padding: 12, margin: 4,
     /// gap: 8` on a stock 80×24 terminal must still leave both panes real
     /// room to paint into, and the second pane must never overflow past
