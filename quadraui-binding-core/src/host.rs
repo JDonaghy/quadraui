@@ -2091,14 +2091,17 @@ pub fn widget_state_snapshot(
 
 /// The anchored-overlay paint pass every binding's `AppLogic::render` runs
 /// once, after painting its own fixed/additive slots (via [`crate::render::draw_bands`]
-/// or [`crate::render::paint_layout`]) and collecting `hits`: dialog on top of
-/// everything, then float/rich-text-popup/completions, then tooltip, then
-/// toast last of all — a correctness contract worth writing down in exactly
-/// one place rather than copy-pasted at each of a binding's render paths
-/// (the static-slots path and the render-callback path both reach this).
-/// Takes `hits` by value and hands it to [`InteractionEngine::set_hits`] at
-/// the end, after every `sync_*`/`render_*` call above has had a chance to
-/// read it by reference.
+/// or [`crate::render::paint_layout`]) and collecting `hits`: syncs the
+/// menu bar/forms/text-input carets against `hits`, then makes the one
+/// [`InteractionEngine::render_overlays`] call that paints every open
+/// overlay in z-order (dialog on top of everything but tooltip/toast, then
+/// float/rich-text-popup/completions below it, toast topmost of all) — a
+/// correctness contract worth writing down in exactly one place rather
+/// than copy-pasted at each of a binding's render paths (the static-slots
+/// path and the render-callback path both reach this). Takes `hits` by
+/// value and hands it to [`InteractionEngine::set_hits`] at the end, after
+/// every `sync_*`/`render_overlays` call above has had a chance to read it
+/// by reference.
 pub fn render_overlays(
     engine: &InteractionEngine,
     backend: &mut dyn Backend,
@@ -2107,13 +2110,7 @@ pub fn render_overlays(
     engine.sync_menu_bar(backend, &hits);
     engine.sync_forms(backend, &hits);
     engine.sync_text_input_carets(backend, &hits);
-    engine.render_ctx_menu(backend);
-    engine.render_float(backend);
-    engine.render_rich_text_popup(backend);
-    engine.render_completions(backend);
-    engine.render_dialog(backend);
-    engine.render_tooltip(backend);
-    engine.render_toast(backend);
+    engine.render_overlays(backend);
     engine.set_hits(hits);
 }
 

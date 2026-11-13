@@ -136,6 +136,53 @@ pub trait EventSink {
     fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> quadraui::Reaction;
 }
 
+/// One entry in [`InteractionEngine::overlays`] — every anchored popup/
+/// dialog/toast/tooltip/float/completions/rich-text-popup surface a
+/// binding's own `show_*`/`dismiss_*` methods can open, now backed by one
+/// `Vec` instead of seven separate fields. [`Overlay::rank`] fixes each
+/// kind's z-index, so [`InteractionEngine::push_overlay`] always inserts a
+/// new entry at the same relative position regardless of call order —
+/// the exact z-order `host::render_overlays`'s old hard-coded call
+/// sequence used to encode by writing its seven `render_*` calls in a
+/// fixed order: context menu lowest, then float, rich-text popup,
+/// completions, dialog, tooltip, toast topmost of all.
+enum Overlay {
+    ContextMenu(ContextMenuController),
+    Float(Float, FloatMeasure),
+    RichTextPopup(RichTextPopup, Point),
+    Completions(Completions, Point),
+    Dialog(MessageDialogController),
+    Tooltip(Tooltip, Rect),
+    /// Unlike every other variant, more than one of these can be in the
+    /// stack at once — a toast stack is itself a group, not a singleton
+    /// overlay; [`InteractionEngine::push_overlay`] only ever replaces an
+    /// existing entry with the same [`quadraui::types::WidgetId`], same
+    /// as [`InteractionEngine::show_toast`]'s own doc already promised.
+    Toast(Toast),
+}
+
+impl Overlay {
+    /// Fixed z-priority: lower sorts first (bottom of the stack, painted
+    /// first). [`InteractionEngine::render_overlays`] walks
+    /// [`InteractionEngine::overlays`] in this order; its overlay-input
+    /// dispatch walks the same stack in reverse, so the highest-ranked
+    /// open overlay always gets first claim on an event — "hit
+    /// precedence agrees with paint order", the invariant every one of
+    /// these kinds' own doc already promised before they shared one
+    /// stack.
+    fn rank(&self) -> u8 {
+        match self {
+            Overlay::ContextMenu(_) => 0,
+            Overlay::Float(..) => 1,
+            Overlay::RichTextPopup(..) => 2,
+            Overlay::Completions(..) => 3,
+            Overlay::Dialog(_) => 4,
+            Overlay::Tooltip(..) => 5,
+            Overlay::Toast(_) => 6,
+        }
+    }
+}
+
 /// Owns every piece of state the `event -> hit -> semantic` orchestration
 /// needs across frames: the current frame's painted hits, an armed
 /// divider/scrollbar drag, per-widget text-input cursor cache, and the
@@ -218,15 +265,15 @@ pub struct InteractionEngine {
     /// [`MenuSystem::handle`] with the same `bar_rect` the paint pass used.
     /// `None` whenever no `"menu_bar"` extra was present that frame.
     menu_bar_rect: RefCell<Option<Rect>>,
-    /// Owns the state behind a binding's own `show_context_menu` surface:
-    /// which popup (if any) is open and routes its mouse/keyboard navigation
-    /// and dismissal.
-    ctx_menu: ContextMenuController,
-    /// Owns the state behind a binding's own `show_message_dialog` surface:
-    /// the open in-canvas [`Dialog`][quadraui::Dialog] (if any), tracked on
-    /// the backend's [`quadraui::ModalStack`] for the same hit-test
-    /// precedence [`Self::ctx_menu`] already has.
-    dialog: Option<MessageDialogController>,
+    /// The one z-ordered overlay stack backing every `show_*`/`dismiss_*`
+    /// surface below (context menu, dialog, toast, tooltip, completions,
+    /// float, rich-text popup) — see [`Overlay`]'s own doc. Lowest
+    /// [`Overlay::rank`] first; [`Self::push_overlay`]/[`Self::remove_overlay`]
+    /// are the only places that mutate this directly, so every kind's
+    /// own insertion/removal nuance (singleton-replace vs. toast's
+    /// replace-by-id) lives in those two methods instead of being
+    /// hand-rolled seven times.
+    overlays: Vec<Overlay>,
     /// Per-bar hovered child, keyed by the chrome-bar extra's own id
     /// (`Toolbar`'s button, `StatusBar`'s segment, `ActivityBar`'s item) —
     /// updated on every `MouseMoved` via [`chrome_hover_hit`] and read back
@@ -279,39 +326,13 @@ pub struct InteractionEngine {
     /// walks this instead, so the invariant "at most one claims a given
     /// click" is reproducible rather than merely usually true.
     form_order: RefCell<Vec<WidgetId>>,
-    /// Owns the state behind a binding's own `show_toast`/`dismiss_toast`
-    /// surface: the toasts currently showing, oldest first, and which
-    /// corner they stack in. Non-modal (see [`quadraui::primitives::toast`]'s
-    /// module doc) — unlike [`Self::dialog`], this never claims the
-    /// [`quadraui::ModalStack`] or blocks input on its own; [`Self::handle`]
-    /// only intercepts a click that lands on a toast's own dismiss/action
-    /// region.
-    toasts: Vec<Toast>,
-    /// Which corner [`Self::toasts`] stacks in — set by the most recent
-    /// [`Self::show_toast`] call.
+    /// Which corner [`Self::overlays`]' [`Overlay::Toast`] entries stack
+    /// in — set by the most recent [`Self::show_toast`] call. Not part of
+    /// [`Overlay::Toast`] itself since it applies to the whole group, not
+    /// a single toast — showing a second toast in a different corner
+    /// moves the whole stack, same caveat [`quadraui::ToastOverlay`]'s
+    /// own single-`corner` field already carried.
     toast_corner: ToastCorner,
-    /// Owns the state behind a binding's own `show_tooltip`/`hide_tooltip`
-    /// surface: the open [`Tooltip`] (if any) and the anchor rect it was
-    /// shown against. Non-interactive (see [`Self::render_tooltip`]'s doc)
-    /// — [`Self::handle`] only ever clears it as a side effect of the next
-    /// click/key, never routes a hit against it.
-    tooltip: Option<(Tooltip, Rect)>,
-    /// Owns the state behind a binding's own `show_completions`/
-    /// `dismiss_completions` surface: the open [`Completions`] popup (if
-    /// any) and the cursor position it was anchored to.
-    completions: Option<(Completions, Point)>,
-    /// Owns the state behind a binding's own `show_float`/`dismiss_float`
-    /// surface: the open [`Float`] (if any) and the caller-supplied
-    /// [`FloatMeasure`] its layout was resolved from. Pushed onto the
-    /// backend's [`quadraui::ModalStack`] while open, mirroring
-    /// [`Self::dialog`] — see [`quadraui::primitives::float`]'s own
-    /// "Stacking" doc section for why a `Float` needs this even though it
-    /// is otherwise non-blocking chrome.
-    float: Option<(Float, FloatMeasure)>,
-    /// Owns the state behind a binding's own `show_rich_text_popup`/
-    /// `dismiss_rich_text_popup` surface: the open [`RichTextPopup`] (if
-    /// any) and the anchor position it was shown against.
-    rich_text_popup: Option<(RichTextPopup, Point)>,
 }
 
 impl InteractionEngine {
@@ -368,17 +389,81 @@ impl InteractionEngine {
         *self.hit_map.borrow_mut() = hits;
     }
 
-    /// Mutable access to the context-menu controller, for a binding's own
-    /// `show_context_menu`-style surface to open a popup on.
-    pub fn ctx_menu_mut(&mut self) -> &mut ContextMenuController {
-        &mut self.ctx_menu
+    /// Inserts `overlay` into [`Self::overlays`] at the position
+    /// [`Overlay::rank`] fixes for its kind. Every kind but
+    /// [`Overlay::Toast`] is a singleton: inserting one first removes any
+    /// existing entry of the SAME kind, so a binding's own `show_*` call
+    /// keeps the "replaces whatever was already open" contract each of
+    /// those methods' own doc promises. A [`Overlay::Toast`] instead
+    /// removes only a prior entry with the same [`quadraui::types::WidgetId`]
+    /// (same "replace by id, else stack" rule [`Self::show_toast`]'s own
+    /// doc already promised) and is otherwise appended after any already
+    /// showing, preserving their relative (oldest-first) order.
+    fn push_overlay(&mut self, overlay: Overlay) {
+        match &overlay {
+            Overlay::Toast(toast) => {
+                let id = toast.id;
+                self.overlays
+                    .retain(|o| !matches!(o, Overlay::Toast(t) if t.id == id));
+            }
+            _ => {
+                let rank = overlay.rank();
+                self.overlays.retain(|o| o.rank() != rank);
+            }
+        }
+        let rank = overlay.rank();
+        let at = self
+            .overlays
+            .iter()
+            .take_while(|o| o.rank() <= rank)
+            .count();
+        self.overlays.insert(at, overlay);
+    }
+
+    /// Removes the first entry matching `pred` (there is at most one,
+    /// except for [`Overlay::Toast`], where a caller's own predicate
+    /// narrows to a single id), returning it. Backs every `dismiss_*`/
+    /// `close_*` method below — each supplies its own kind/id match, so
+    /// the removal itself lives in one place instead of seven near-copies
+    /// of `Option::take`/`Vec::retain`.
+    fn remove_overlay(&mut self, pred: impl Fn(&Overlay) -> bool) -> Option<Overlay> {
+        let idx = self.overlays.iter().position(pred)?;
+        Some(self.overlays.remove(idx))
+    }
+
+    /// Whether a `Custom`-style context-menu popup opened via
+    /// [`Self::open_context_menu`] is currently open — `false` for a
+    /// `Native`-style one (AppKit owns that popup's own state) and when
+    /// nothing is open, mirroring [`ContextMenuController::is_open`].
+    fn context_menu_open(&self) -> bool {
+        self.overlays
+            .iter()
+            .any(|o| matches!(o, Overlay::ContextMenu(c) if c.is_open()))
+    }
+
+    /// Closes the open context-menu popup (if any), via its own
+    /// [`ContextMenuController::close`].
+    fn close_context_menu(&mut self, backend: &mut dyn Backend) {
+        if let Some(Overlay::ContextMenu(controller)) = self
+            .overlays
+            .iter_mut()
+            .find(|o| matches!(o, Overlay::ContextMenu(_)))
+        {
+            controller.close(backend);
+        }
     }
 
     /// Builds an anchored [`ContextMenu`] from `items` and opens it at `at`,
     /// seeding its keyboard selection on the first selectable item — the
     /// full "build the popup, open it" sequence behind a binding's own
     /// `show_context_menu` surface, so that surface only has to decode its
-    /// own wire format into `items` before calling this.
+    /// own wire format into `items` before calling this. Reuses the
+    /// [`Overlay::ContextMenu`] entry already in [`Self::overlays`] (if
+    /// any) rather than always pushing a fresh one, so calling this twice
+    /// in a row still goes through the SAME [`ContextMenuController::open`]
+    /// call a persisted controller would have, including whatever
+    /// close-the-old-one-first behaviour that method's own `Native` path
+    /// performs internally.
     pub fn open_context_menu(
         &mut self,
         items: Vec<ContextMenuItem>,
@@ -393,20 +478,43 @@ impl InteractionEngine {
             placement: ContextMenuPlacement::AnchorPoint,
         };
         menu.selected_idx = menu.first_selectable();
-        self.ctx_menu.open(menu, at, backend);
+        if let Some(Overlay::ContextMenu(controller)) = self
+            .overlays
+            .iter_mut()
+            .find(|o| matches!(o, Overlay::ContextMenu(_)))
+        {
+            controller.open(menu, at, backend);
+            return;
+        }
+        let mut controller = ContextMenuController::new();
+        controller.open(menu, at, backend);
+        self.push_overlay(Overlay::ContextMenu(controller));
     }
 
-    /// Paints the open context-menu popup (if any) on top of whatever this
-    /// frame already painted. Call once per render, after the binding's own
-    /// paint pass and [`InteractionEngine::sync_menu_bar`].
-    pub fn render_ctx_menu(&self, backend: &mut dyn Backend) {
-        self.ctx_menu.render(backend);
+    /// The context-menu popup's own event routing, forwarded to whatever
+    /// [`Overlay::ContextMenu`] entry is in [`Self::overlays`] — `Ignored`
+    /// immediately when none is, same contract
+    /// [`ContextMenuController::handle`] already promises.
+    fn dispatch_context_menu(
+        &mut self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+    ) -> ContextMenuOutcome {
+        match self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::ContextMenu(c) => Some(c),
+            _ => None,
+        }) {
+            Some(controller) => controller.handle(event, backend),
+            None => ContextMenuOutcome::Ignored,
+        }
     }
 
     /// Whether a message dialog opened via [`Self::open_message_dialog`]
     /// is currently open.
     pub fn dialog_open(&self) -> bool {
-        self.dialog.is_some()
+        self.overlays
+            .iter()
+            .any(|o| matches!(o, Overlay::Dialog(_)))
     }
 
     /// Opens an in-canvas message/alert/confirm dialog built from `opts`,
@@ -415,25 +523,25 @@ impl InteractionEngine {
     /// gets the same hit-test precedence an open context menu already has.
     /// Replaces (and pops) any dialog already open. Also closes an open
     /// `"menu_bar"` dropdown or context-menu popup, if either is open: the
-    /// dialog paints on top of both (`render_dialog` runs after
-    /// `sync_menu_bar`/`render_ctx_menu`), and [`Self::handle`] now routes
-    /// the dialog ahead of both, so a popup left open underneath would be
-    /// unreachable input it still holds precedence over. Call from a
-    /// binding's own `show_message_dialog` surface, mirroring
-    /// [`Self::ctx_menu_mut`]'s `.open(...)` call.
+    /// dialog paints on top of both ([`Overlay::Dialog`]'s own
+    /// [`Overlay::rank`] is higher than [`Overlay::ContextMenu`]'s), and
+    /// [`Self::handle`] now routes the dialog ahead of both, so a popup
+    /// left open underneath would be unreachable input it still holds
+    /// precedence over. Call from a binding's own `show_message_dialog`
+    /// surface.
     pub fn open_message_dialog(&mut self, opts: MessageDialogOptions, backend: &mut dyn Backend) {
         self.close_message_dialog(backend);
         if self.menu_system.borrow().is_open() {
             self.menu_system.borrow_mut().close(backend);
         }
-        if self.ctx_menu.is_open() {
-            self.ctx_menu.close(backend);
+        if self.context_menu_open() {
+            self.close_context_menu(backend);
         }
         let controller = MessageDialogController::new(opts);
         let id = controller.dialog().id;
         let bounds = controller.bounds(backend);
         backend.modal_stack_handle().borrow_mut().push(id, bounds);
-        self.dialog = Some(controller);
+        self.push_overlay(Overlay::Dialog(controller));
     }
 
     /// Closes the open message dialog (if any), popping its
@@ -444,24 +552,15 @@ impl InteractionEngine {
     /// all, or one the app wants to tear down from outside input, could
     /// never be cleared. A no-op (returns `false`) if nothing is open.
     pub fn close_message_dialog(&mut self, backend: &mut dyn Backend) -> bool {
-        match self.dialog.take() {
-            Some(open) => {
+        match self.remove_overlay(|o| matches!(o, Overlay::Dialog(_))) {
+            Some(Overlay::Dialog(open)) => {
                 backend
                     .modal_stack_handle()
                     .borrow_mut()
                     .pop(&open.dialog().id);
                 true
             }
-            None => false,
-        }
-    }
-
-    /// Paints the open message dialog (if any) on top of whatever this
-    /// frame already painted. Call once per render, after the binding's own
-    /// paint pass — same contract as [`Self::render_ctx_menu`].
-    pub fn render_dialog(&self, backend: &mut dyn Backend) {
-        if let Some(dialog) = &self.dialog {
-            dialog.render(backend);
+            _ => false,
         }
     }
 
@@ -477,9 +576,8 @@ impl InteractionEngine {
     /// separate `WidgetId`-disjoint calls per frame, same caveat
     /// [`quadraui::ToastOverlay`]'s own single-`corner` field carries.
     pub fn show_toast(&mut self, toast: Toast, corner: ToastCorner) {
-        self.toasts.retain(|t| t.id != toast.id);
-        self.toasts.push(toast);
         self.toast_corner = corner;
+        self.push_overlay(Overlay::Toast(toast));
     }
 
     /// Removes the toast with this id, if showing. Returns whether one
@@ -488,35 +586,28 @@ impl InteractionEngine {
     /// timer fires) in addition to the dismiss `×`
     /// [`Self::handle`] already routes.
     pub fn dismiss_toast(&mut self, id: WidgetId) -> bool {
-        let before = self.toasts.len();
-        self.toasts.retain(|t| t.id != id);
-        self.toasts.len() != before
+        self.remove_overlay(|o| matches!(o, Overlay::Toast(t) if t.id == id))
+            .is_some()
     }
 
     fn toast_overlay(&self) -> ToastOverlay {
         ToastOverlay {
             id: WidgetId::new("qui-toast-stack"),
             corner: self.toast_corner,
-            toasts: self.toasts.clone(),
+            toasts: self
+                .overlays
+                .iter()
+                .filter_map(|o| match o {
+                    Overlay::Toast(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect(),
             focus: None,
         }
     }
 
-    /// Paints every showing toast, stacked in [`Self::toast_corner`], on
-    /// top of whatever this frame already painted. Call once per render,
-    /// after every other `render_*` on this engine — a toast notification
-    /// reads as "always on top" (VS Code convention), so it paints over
-    /// an open dialog/popup/float too. A no-op when no toast is showing.
-    pub fn render_toast(&self, backend: &mut dyn Backend) {
-        if self.toasts.is_empty() {
-            return;
-        }
-        let overlay = self.toast_overlay();
-        backend.draw_toast_overlay(viewport_rect(backend), &overlay);
-    }
-
     /// Recomputes the same [`quadraui::ToastStackLayout`]
-    /// [`Self::render_toast`] just painted, for [`Self::handle`]'s click
+    /// [`Self::render_overlays`] just painted, for [`Self::handle`]'s click
     /// routing — the "one layout fn, two callers" pattern
     /// [`MessageDialogController::layout`] already follows for `Dialog`.
     fn toast_layout(&self, backend: &dyn Backend) -> ToastStackLayout {
@@ -540,7 +631,7 @@ impl InteractionEngine {
     /// widget it describes, in the backend's ABSOLUTE frame). Replaces
     /// any tooltip already showing.
     pub fn show_tooltip(&mut self, tooltip: Tooltip, anchor: Rect) {
-        self.tooltip = Some((tooltip, anchor));
+        self.push_overlay(Overlay::Tooltip(tooltip, anchor));
     }
 
     /// Hides the open tooltip (if any). Returns whether one was open.
@@ -548,7 +639,8 @@ impl InteractionEngine {
     /// click/key — see that method's doc — so apps only need this for an
     /// explicit "hide now" (e.g. the hovered widget itself changed).
     pub fn hide_tooltip(&mut self) -> bool {
-        self.tooltip.take().is_some()
+        self.remove_overlay(|o| matches!(o, Overlay::Tooltip(..)))
+            .is_some()
     }
 
     /// Whether a tooltip is currently open — the `bool` half of
@@ -558,7 +650,9 @@ impl InteractionEngine {
     /// thinks one is visible) against whatever [`Self::handle`]'s own
     /// click/key auto-dismiss just did to it.
     pub fn tooltip_open(&self) -> bool {
-        self.tooltip.is_some()
+        self.overlays
+            .iter()
+            .any(|o| matches!(o, Overlay::Tooltip(..)))
     }
 
     fn tooltip_layout(
@@ -577,32 +671,31 @@ impl InteractionEngine {
         tooltip.layout(anchor, viewport_rect(backend), measure, m.line_height)
     }
 
-    /// Paints the open tooltip (if any) on top of whatever this frame
-    /// already painted. Tooltips are non-interactive
-    /// ([`quadraui::Backend::draw_tooltip`]'s own doc — "no hit data
-    /// returned"), so unlike every other `render_*` here there is
-    /// nothing for [`Self::handle`] to hit-test against it; the only
-    /// input routing it gets is the auto-dismiss [`Self::handle`]
-    /// performs on the next click/key.
-    pub fn render_tooltip(&self, backend: &mut dyn Backend) {
-        if let Some((tooltip, anchor)) = &self.tooltip {
-            let layout = self.tooltip_layout(backend, tooltip, *anchor);
-            backend.draw_tooltip(tooltip, &layout);
-        }
-    }
-
     // ── Completions ──────────────────────────────────────────────────
 
     /// Shows `completions` anchored at `cursor` (the caret position in
     /// the backend's ABSOLUTE frame). Replaces any popup already open.
     pub fn show_completions(&mut self, completions: Completions, cursor: Point) {
-        self.completions = Some((completions, cursor));
+        self.push_overlay(Overlay::Completions(completions, cursor));
     }
 
     /// Closes the open completions popup (if any) without reporting a
     /// selection. Returns whether one was open.
     pub fn dismiss_completions(&mut self) -> bool {
-        self.completions.take().is_some()
+        self.remove_overlay(|o| matches!(o, Overlay::Completions(..)))
+            .is_some()
+    }
+
+    /// The open completions popup (if any) and the cursor position it was
+    /// anchored to, for [`Self::handle`]'s hit-test dispatch — cloned out
+    /// of [`Self::overlays`] so the caller can go on to call
+    /// [`Self::dismiss_completions`] (which needs `&mut self`) without a
+    /// borrow of the stack still outstanding.
+    fn find_completions(&self) -> Option<(Completions, Point)> {
+        self.overlays.iter().find_map(|o| match o {
+            Overlay::Completions(c, p) => Some((c.clone(), *p)),
+            _ => None,
+        })
     }
 
     fn completions_layout(
@@ -623,31 +716,17 @@ impl InteractionEngine {
         )
     }
 
-    /// Paints the open completions popup (if any) on top of whatever
-    /// this frame already painted. Call once per render, before
-    /// [`Self::render_dialog`] (which [`Self::handle`] checks before
-    /// this popup's own hit-test): an app that somehow has both open at
-    /// once gets the dialog on top, both visually and for input —
-    /// "hit precedence agrees with paint order" either way, same
-    /// invariant [`Self::dialog`]'s own doc calls out.
-    pub fn render_completions(&self, backend: &mut dyn Backend) {
-        if let Some((completions, cursor)) = &self.completions {
-            let layout = self.completions_layout(backend, completions, *cursor);
-            backend.draw_completions(completions, &layout);
-        }
-    }
-
     // ── Float ────────────────────────────────────────────────────────
 
     /// Opens `float` at `measure`'s size, pushing its resolved bounds
     /// onto the backend's [`quadraui::ModalStack`] via
     /// [`quadraui::ModalStack::push_float`] so other modal-aware code
-    /// gets the same hit-test precedence [`Self::dialog`] already has.
+    /// gets the same hit-test precedence [`Overlay::Dialog`] already has.
     /// Replaces (and pops) any float already open. **Content is not
     /// this call's concern** — same as [`quadraui::Backend::draw_float`]
     /// itself, the host paints whatever belongs in
     /// [`quadraui::FloatLayout::content_bounds`] through its own normal
-    /// render path after this call's `render_float` runs.
+    /// render path after this call's [`Self::render_overlays`] runs.
     pub fn show_float(&mut self, float: Float, measure: FloatMeasure, backend: &mut dyn Backend) {
         self.close_float(backend);
         let layout = float.layout(viewport_rect(backend), measure);
@@ -655,7 +734,7 @@ impl InteractionEngine {
             .modal_stack_handle()
             .borrow_mut()
             .push_float(&float, layout.bounds);
-        self.float = Some((float, measure));
+        self.push_overlay(Overlay::Float(float, measure));
     }
 
     /// Closes the open float (if any), popping its
@@ -665,12 +744,12 @@ impl InteractionEngine {
     }
 
     fn close_float(&mut self, backend: &mut dyn Backend) -> bool {
-        match self.float.take() {
-            Some((float, _)) => {
+        match self.remove_overlay(|o| matches!(o, Overlay::Float(..))) {
+            Some(Overlay::Float(float, _)) => {
                 backend.modal_stack_handle().borrow_mut().pop(&float.id);
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
@@ -683,30 +762,31 @@ impl InteractionEngine {
         float.layout(viewport_rect(backend), measure)
     }
 
-    /// Paints the open float's chrome (if any) on top of whatever this
-    /// frame already painted. Call once per render. Paints chrome only —
-    /// see [`Self::show_float`]'s doc — the host paints its own content
-    /// into the returned bounds' `content_bounds` separately.
-    pub fn render_float(&self, backend: &mut dyn Backend) {
-        if let Some((float, measure)) = &self.float {
-            let layout = self.float_layout(backend, float, *measure);
-            backend.draw_float(float, &layout);
-        }
-    }
-
     // ── RichTextPopup ────────────────────────────────────────────────
 
     /// Shows `popup` anchored at `anchor` (typically the top-left of the
     /// editor cell it describes, in the backend's ABSOLUTE frame).
     /// Replaces any popup already open.
     pub fn show_rich_text_popup(&mut self, popup: RichTextPopup, anchor: Point) {
-        self.rich_text_popup = Some((popup, anchor));
+        self.push_overlay(Overlay::RichTextPopup(popup, anchor));
     }
 
     /// Closes the open rich-text popup (if any) without reporting a link
     /// click. Returns whether one was open.
     pub fn dismiss_rich_text_popup(&mut self) -> bool {
-        self.rich_text_popup.take().is_some()
+        self.remove_overlay(|o| matches!(o, Overlay::RichTextPopup(..)))
+            .is_some()
+    }
+
+    /// The open rich-text popup (if any) and the anchor it was shown
+    /// against, for [`Self::handle`]'s hit-test dispatch — see
+    /// [`Self::find_completions`]'s own doc for why this clones out of
+    /// [`Self::overlays`] rather than borrowing it.
+    fn find_rich_text_popup(&self) -> Option<(RichTextPopup, Point)> {
+        self.overlays.iter().find_map(|o| match o {
+            Overlay::RichTextPopup(p, a) => Some((p.clone(), *a)),
+            _ => None,
+        })
     }
 
     fn rich_text_popup_layout(
@@ -727,12 +807,45 @@ impl InteractionEngine {
         )
     }
 
-    /// Paints the open rich-text popup (if any) on top of whatever this
-    /// frame already painted. Call once per render.
-    pub fn render_rich_text_popup(&self, backend: &mut dyn Backend) {
-        if let Some((popup, anchor)) = &self.rich_text_popup {
-            let layout = self.rich_text_popup_layout(backend, popup, *anchor);
-            backend.draw_rich_text_popup(popup, &layout);
+    /// The single render pass over [`Self::overlays`], in z-order
+    /// (lowest [`Overlay::rank`] — bottommost — first, toast topmost of
+    /// all): the one call that replaces the seven kind-specific
+    /// `render_*` methods this engine used to expose
+    /// (`render_ctx_menu`/`render_dialog`/`render_toast`/`render_tooltip`/
+    /// `render_completions`/`render_float`/`render_rich_text_popup`), each
+    /// painted at its own fixed spot in `host::render_overlays`'s old call
+    /// sequence. Call once per render, after the binding's own paint pass
+    /// and [`InteractionEngine::sync_menu_bar`]/[`InteractionEngine::sync_forms`]/
+    /// [`InteractionEngine::sync_text_input_carets`].
+    pub fn render_overlays(&self, backend: &mut dyn Backend) {
+        for overlay in &self.overlays {
+            match overlay {
+                Overlay::ContextMenu(controller) => controller.render(backend),
+                Overlay::Float(float, measure) => {
+                    let layout = self.float_layout(backend, float, *measure);
+                    backend.draw_float(float, &layout);
+                }
+                Overlay::RichTextPopup(popup, anchor) => {
+                    let layout = self.rich_text_popup_layout(backend, popup, *anchor);
+                    backend.draw_rich_text_popup(popup, &layout);
+                }
+                Overlay::Completions(completions, cursor) => {
+                    let layout = self.completions_layout(backend, completions, *cursor);
+                    backend.draw_completions(completions, &layout);
+                }
+                Overlay::Dialog(dialog) => dialog.render(backend),
+                Overlay::Tooltip(tooltip, anchor) => {
+                    let layout = self.tooltip_layout(backend, tooltip, *anchor);
+                    backend.draw_tooltip(tooltip, &layout);
+                }
+                // A toast stack paints as one group, after this loop —
+                // see the call below.
+                Overlay::Toast(_) => {}
+            }
+        }
+        if self.overlays.iter().any(|o| matches!(o, Overlay::Toast(_))) {
+            let overlay = self.toast_overlay();
+            backend.draw_toast_overlay(viewport_rect(backend), &overlay);
         }
     }
 
@@ -1012,6 +1125,165 @@ impl InteractionEngine {
         }
     }
 
+    /// The single hit-test/dispatch pass over [`Self::overlays`],
+    /// collapsing what used to be five hand-written per-kind blocks in
+    /// [`Self::handle`] (menu-bar/context-menu routing stays separate —
+    /// see that method's own doc for why): walks the stack top-to-bottom
+    /// (descending [`Overlay::rank`], matching [`Self::render_overlays`]'s
+    /// ascending paint order in reverse) and gives each kind a chance to
+    /// claim `event` with its own nuance — toast claims a `MouseDown`
+    /// landing on its own dismiss/action region only, dialog claims any
+    /// event, completions/rich-text-popup each claim Escape and a
+    /// `MouseDown`, float claims Escape only when focusable. The FIRST
+    /// kind that claims it wins; `None` means nothing in the stack
+    /// claimed `event`, so [`Self::handle`]'s own routing (menu-bar,
+    /// click-to-focus, ...) continues exactly as if none of this existed.
+    /// Toast is always topmost by [`Overlay::rank`], so it is checked
+    /// first regardless of what else is open.
+    fn dispatch_overlays(
+        &mut self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> Option<quadraui::Reaction> {
+        use quadraui::Reaction;
+
+        if self.overlays.iter().any(|o| matches!(o, Overlay::Toast(_))) {
+            if let UiEvent::MouseDown { position, .. } = event {
+                match self.toast_layout(backend).hit_test(position.x, position.y) {
+                    ToastHit::Dismiss(id) => {
+                        self.dismiss_toast(id);
+                        return Some(Reaction::Redraw);
+                    }
+                    ToastHit::Action(action_id) => {
+                        return Some(
+                            Reaction::Redraw.merge(
+                                sink.dispatch(&UiEvent::ToastActionClicked(action_id), None),
+                            ),
+                        );
+                    }
+                    ToastHit::Body(_) => return Some(Reaction::Continue),
+                    ToastHit::Empty => {}
+                }
+            }
+        }
+
+        // `MessageDialogController::handle_event` reports `Handled::Ignored`
+        // immediately when nothing is open, so this is safe to run
+        // unconditionally.
+        if let Some(dialog) = self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::Dialog(d) => Some(d),
+            _ => None,
+        }) {
+            match dialog.handle_event(event, &*backend) {
+                Handled::Event(choice) => {
+                    // The dialog is closing regardless of what `sink`
+                    // itself returns — force the repaint that takes it
+                    // off screen, same as the context-menu's own
+                    // `ContextMenuOutcome::Event` arm in `Self::handle`.
+                    self.close_message_dialog(backend);
+                    return Some(
+                        Reaction::Redraw
+                            .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None)),
+                    );
+                }
+                Handled::Consumed => return Some(Reaction::Redraw),
+                Handled::Ignored => {}
+            }
+        }
+
+        if let Some((completions, cursor)) = self.find_completions() {
+            match event {
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Escape),
+                    ..
+                } => {
+                    self.dismiss_completions();
+                    return Some(Reaction::Redraw);
+                }
+                UiEvent::MouseDown { position, .. } => {
+                    let layout = self.completions_layout(backend, &completions, cursor);
+                    match layout.hit_test(position.x, position.y) {
+                        CompletionsHit::Item(idx) => {
+                            self.dismiss_completions();
+                            return Some(Reaction::Redraw.merge(sink.dispatch(
+                                &UiEvent::CompletionItemActivated(completions.id, idx),
+                                None,
+                            )));
+                        }
+                        CompletionsHit::Inert => return Some(Reaction::Continue),
+                        CompletionsHit::Empty => {
+                            self.dismiss_completions();
+                            return Some(Reaction::Redraw);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some((popup, anchor)) = self.find_rich_text_popup() {
+            match event {
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Escape),
+                    ..
+                } => {
+                    self.dismiss_rich_text_popup();
+                    return Some(Reaction::Redraw);
+                }
+                UiEvent::MouseDown { position, .. } => {
+                    let layout = self.rich_text_popup_layout(backend, &popup, anchor);
+                    match layout.hit_test(position.x, position.y) {
+                        RichTextPopupHit::Link(idx) => {
+                            let url = popup
+                                .links
+                                .get(idx)
+                                .map(|l| l.url.clone())
+                                .unwrap_or_default();
+                            return Some(Reaction::Redraw.merge(
+                                sink.dispatch(&UiEvent::RichTextLinkClicked(popup.id, url), None),
+                            ));
+                        }
+                        RichTextPopupHit::Outside => {
+                            self.dismiss_rich_text_popup();
+                            return Some(Reaction::Redraw);
+                        }
+                        RichTextPopupHit::Char(..)
+                        | RichTextPopupHit::ScrollbarTrack
+                        | RichTextPopupHit::ScrollbarThumb
+                        | RichTextPopupHit::Body => return Some(Reaction::Continue),
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Float does NOT claim mouse clicks here: its content is painted
+        // by the host, not this engine (see `Self::show_float`'s doc), so
+        // a click anywhere near it has to keep flowing through the
+        // normal hit-map routing below for that content to ever receive
+        // it. A non-focusable hint float never steals Escape either, same
+        // distinction [`quadraui::ModalStack::top_focusable`]'s own doc
+        // draws.
+        let float_claims_escape = self
+            .overlays
+            .iter()
+            .any(|o| matches!(o, Overlay::Float(f, _) if f.focusable))
+            && matches!(
+                event,
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Escape),
+                    ..
+                }
+            );
+        if float_claims_escape {
+            self.dismiss_float(backend);
+            return Some(Reaction::Redraw);
+        }
+
+        None
+    }
+
     /// The full `event -> hit -> semantic` orchestration: menu-bar/
     /// context-menu routing, divider/scrollbar drag arming and translation,
     /// click-to-focus, focus-scoped key/paste routing, and the raw ->
@@ -1073,8 +1345,8 @@ impl InteractionEngine {
         // side effect rather than an early return. Clearing it here (on
         // every `MouseDown`/`KeyPressed`, before anything else below gets
         // a chance to consume the event) is what "route dismissal" means
-        // for a primitive with [`Self::render_tooltip`]'s "no hit data
-        // returned" contract: the next interaction anywhere always hides
+        // for a primitive with [`quadraui::Backend::draw_tooltip`]'s "no
+        // hit data returned" contract: the next interaction anywhere always hides
         // it, same as a native tooltip's hover-out behaviour.
         if matches!(
             event,
@@ -1105,166 +1377,18 @@ impl InteractionEngine {
             }
         }
 
-        // An open toast stack is non-modal (unlike every overlay below)
-        // but still paints on top of everything else this frame
-        // (`render_toast` runs last of all `render_*` on this engine —
-        // see its own doc), so a click on its dismiss `×`/action region
-        // must claim the event before any of the modal overlays below
-        // get a chance to, same "hit precedence agrees with paint order"
-        // invariant `Self::dialog`'s own doc calls out. A click that
-        // misses every toast (`ToastHit::Empty`) falls through
-        // unconsumed to the modal/content routing below, since a toast
-        // in a screen corner essentially never overlaps anything else
-        // painted there.
-        if !self.toasts.is_empty() {
-            if let UiEvent::MouseDown { position, .. } = &event {
-                match self.toast_layout(backend).hit_test(position.x, position.y) {
-                    ToastHit::Dismiss(id) => {
-                        self.dismiss_toast(id);
-                        return Reaction::Redraw;
-                    }
-                    ToastHit::Action(action_id) => {
-                        return Reaction::Redraw
-                            .merge(sink.dispatch(&UiEvent::ToastActionClicked(action_id), None));
-                    }
-                    ToastHit::Body(_) => return continue_or_tooltip_redraw(tooltip_dismissed),
-                    ToastHit::Empty => {}
-                }
-            }
-        }
-
-        // An open message dialog is modal and painted on top of everything
-        // else this frame (`render_dialog` runs after `sync_menu_bar`/
-        // `render_ctx_menu`), so it must see every event before the
-        // menu-bar/context-menu routing just below — hit precedence has to
-        // agree with paint order in both directions. `open_message_dialog`
-        // closes any open dropdown/popup when the dialog opens, so this and
-        // the menu-bar/context-menu checks below are never simultaneously
-        // "open" in practice; the ordering here is what makes that
-        // invariant hold even if that changes.
-        // `MessageDialogController::handle_event` reports `Handled::Ignored`
-        // immediately when nothing is open, so this is safe to run
-        // unconditionally.
-        if let Some(dialog) = self.dialog.as_mut() {
-            match dialog.handle_event(&event, &*backend) {
-                Handled::Event(choice) => {
-                    // The dialog is closing regardless of what `sink`
-                    // itself returns — force the repaint that takes it off
-                    // screen, same as the `ContextMenuOutcome::Event` arm
-                    // below.
-                    self.close_message_dialog(backend);
-                    return Reaction::Redraw
-                        .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None));
-                }
-                Handled::Consumed => return Reaction::Redraw,
-                Handled::Ignored => {}
-            }
-        }
-
-        // An open completions popup claims Escape (dismiss) and a
-        // `MouseDown` landing anywhere — on an item (reports the
-        // activation), elsewhere inside the popup (swallowed — it's
-        // still "on the popup"), or outside it (dismisses, same as a
-        // context-menu's click-outside). Checked after the dialog (so an
-        // open dialog keeps its own higher hit precedence if an app ever
-        // has both open) but before the menu-bar/context-menu routing
-        // below, matching [`Self::render_completions`]'s "before
-        // `Self::render_dialog`" paint-order doc.
-        if let Some((completions, cursor)) = self.completions.clone() {
-            match &event {
-                UiEvent::KeyPressed {
-                    key: Key::Named(NamedKey::Escape),
-                    ..
-                } => {
-                    self.dismiss_completions();
-                    return Reaction::Redraw;
-                }
-                UiEvent::MouseDown { position, .. } => {
-                    let layout = self.completions_layout(backend, &completions, cursor);
-                    match layout.hit_test(position.x, position.y) {
-                        CompletionsHit::Item(idx) => {
-                            self.dismiss_completions();
-                            return Reaction::Redraw.merge(sink.dispatch(
-                                &UiEvent::CompletionItemActivated(completions.id, idx),
-                                None,
-                            ));
-                        }
-                        CompletionsHit::Inert => {
-                            return continue_or_tooltip_redraw(tooltip_dismissed)
-                        }
-                        CompletionsHit::Empty => {
-                            self.dismiss_completions();
-                            return Reaction::Redraw;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // An open rich-text popup claims Escape (dismiss) and a
-        // `MouseDown` the same way completions does above: a link hit
-        // reports the click, any other in-bounds hit is swallowed, and a
-        // miss dismisses the popup.
-        if let Some((popup, anchor)) = self.rich_text_popup.clone() {
-            match &event {
-                UiEvent::KeyPressed {
-                    key: Key::Named(NamedKey::Escape),
-                    ..
-                } => {
-                    self.dismiss_rich_text_popup();
-                    return Reaction::Redraw;
-                }
-                UiEvent::MouseDown { position, .. } => {
-                    let layout = self.rich_text_popup_layout(backend, &popup, anchor);
-                    match layout.hit_test(position.x, position.y) {
-                        RichTextPopupHit::Link(idx) => {
-                            let url = popup
-                                .links
-                                .get(idx)
-                                .map(|l| l.url.clone())
-                                .unwrap_or_default();
-                            return Reaction::Redraw.merge(
-                                sink.dispatch(&UiEvent::RichTextLinkClicked(popup.id, url), None),
-                            );
-                        }
-                        RichTextPopupHit::Outside => {
-                            self.dismiss_rich_text_popup();
-                            return Reaction::Redraw;
-                        }
-                        RichTextPopupHit::Char(..)
-                        | RichTextPopupHit::ScrollbarTrack
-                        | RichTextPopupHit::ScrollbarThumb
-                        | RichTextPopupHit::Body => {
-                            return continue_or_tooltip_redraw(tooltip_dismissed)
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // An open float claims Escape (dismiss) only when it is
-        // focusable — a non-focusable hint float never steals keys, same
-        // distinction [`quadraui::ModalStack::top_focusable`]'s own doc
-        // draws. It does NOT claim mouse clicks here: its content is
-        // painted by the host, not this engine (see `Self::show_float`'s
-        // doc), so a click anywhere near it has to keep flowing through
-        // the normal hit-map routing below for that content to ever
-        // receive it.
-        if let Some((float, _)) = &self.float {
-            if float.focusable
-                && matches!(
-                    &event,
-                    UiEvent::KeyPressed {
-                        key: Key::Named(NamedKey::Escape),
-                        ..
-                    }
-                )
-            {
-                self.dismiss_float(backend);
-                return Reaction::Redraw;
-            }
+        // One shared pass over `Self::overlays`, topmost (highest
+        // `Overlay::rank`) first — toast (claims a `MouseDown` landing on
+        // its own dismiss/action region only), then dialog (claims
+        // everything), then completions/rich-text-popup (each claims
+        // Escape and a `MouseDown`), then float (claims Escape only when
+        // focusable) — collapsing what used to be five hand-written
+        // per-kind precedence blocks into [`Self::dispatch_overlays`].
+        // `None` means nothing in the stack claimed `event`; the
+        // menu-bar/context-menu routing below (and everything after it)
+        // runs exactly as if none of this existed.
+        if let Some(reaction) = self.dispatch_overlays(&event, backend, sink) {
+            return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
         }
 
         // A `"menu_bar"` extra's dropdown and a context-menu popup both own
@@ -1315,7 +1439,7 @@ impl InteractionEngine {
                 MenuEvent::Ignored => {}
             }
         }
-        match self.ctx_menu.handle(&event, backend) {
+        match self.dispatch_context_menu(&event, backend) {
             ContextMenuOutcome::Event(ev) => {
                 // Same reasoning as the `MenuEvent::Activated` arm above:
                 // activation/dismissal already closed the popup in
@@ -2367,7 +2491,7 @@ mod tests {
                 &mut hits,
                 &|id| self.engine.chrome_interaction(id),
             );
-            self.engine.render_dialog(backend);
+            self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
         }
 
@@ -2855,14 +2979,14 @@ mod tests {
 
     /// Opening a message dialog while a context-menu popup is already
     /// open closes the popup: paint order puts the dialog on top
-    /// (`render_dialog` runs after `render_ctx_menu`), and [`Self::handle`]
-    /// now checks the dialog first, so a popup left open underneath would
-    /// be unreachable input it still held precedence over. Pins the fix
-    /// for the "both stay open, the popup keeps event priority" defect.
+    /// ([`Overlay::Dialog`]'s own [`Overlay::rank`] is higher than
+    /// [`Overlay::ContextMenu`]'s), and [`InteractionEngine::handle`]
+    /// checks the dialog first, so a popup left open underneath would be
+    /// unreachable input it still held precedence over.
     #[test]
     fn open_message_dialog_closes_an_open_context_menu_popup() {
         use quadraui::backend::{MessageDialogButton, MessageDialogOptions};
-        use quadraui::{ContextMenu, ContextMenuItem, Key, NamedKey};
+        use quadraui::{ContextMenuItem, Key, NamedKey};
 
         let logic = MinimalLogic {
             button: Button::new(WidgetId::new("go"), "Go"),
@@ -2873,22 +2997,15 @@ mod tests {
 
         {
             let (backend, app) = driver.parts_mut();
-            let menu = ContextMenu {
-                id: WidgetId::new("popup"),
-                items: vec![ContextMenuItem {
-                    id: Some(WidgetId::new("copy")),
-                    label: quadraui::types::StyledText::plain("Copy"),
-                    ..Default::default()
-                }],
-                selected_idx: 0,
-                bg: None,
-                placement: quadraui::ContextMenuPlacement::AnchorPoint,
-            };
+            let items = vec![ContextMenuItem {
+                id: Some(WidgetId::new("copy")),
+                label: quadraui::types::StyledText::plain("Copy"),
+                ..Default::default()
+            }];
             app.engine
-                .ctx_menu_mut()
-                .open(menu, Point::new(1.0, 1.0), backend);
+                .open_context_menu(items, Point::new(1.0, 1.0), backend);
             assert!(
-                app.engine.ctx_menu_mut().is_open(),
+                app.engine.context_menu_open(),
                 "the popup must be open before the dialog opens"
             );
         }
@@ -2909,7 +3026,7 @@ mod tests {
             let (backend, app) = driver.parts_mut();
             app.engine.open_message_dialog(opts, backend);
             assert!(
-                !app.engine.ctx_menu_mut().is_open(),
+                !app.engine.context_menu_open(),
                 "opening the dialog must close the popup painted underneath it"
             );
         }
@@ -2935,6 +3052,227 @@ mod tests {
             ),
             "expected MessageDialogResolved(ok), not a context-menu event: {:?}",
             dispatched[0]
+        );
+    }
+
+    /// The overlay stack orders by [`Overlay::rank`], not by push order:
+    /// completions outranks a rich-text popup, so opening completions
+    /// FIRST and the popup SECOND must still leave completions on top —
+    /// it, not the popup opened more recently, claims the next Escape.
+    #[test]
+    fn overlay_stack_orders_by_fixed_rank_not_push_order() {
+        use quadraui::{Completions, RichTextPopup};
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        let (_backend, app) = driver.parts_mut();
+        app.engine.show_completions(
+            Completions {
+                id: WidgetId::new("completions"),
+                ..Default::default()
+            },
+            Point::new(2.0, 2.0),
+        );
+        app.engine.show_rich_text_popup(
+            RichTextPopup {
+                id: WidgetId::new("popup"),
+                lines: vec![],
+                line_text: vec![],
+                line_scales: vec![],
+                scroll_top: 0,
+                max_visible_rows: 10,
+                has_focus: false,
+                selection: None,
+                links: vec![],
+                focused_link: None,
+                placement: Default::default(),
+                padding: 1.0,
+                fg: None,
+                bg: None,
+            },
+            Point::new(2.0, 2.0),
+        );
+
+        driver.render();
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let (_backend, app) = driver.parts_mut();
+        assert!(
+            !app.engine.dismiss_completions(),
+            "Escape must already have closed completions — the higher-\
+             ranked overlay, even though it was opened before the popup"
+        );
+        assert!(
+            app.engine.dismiss_rich_text_popup(),
+            "the lower-ranked rich-text popup must still be open — Escape \
+             only ever closes the topmost overlay"
+        );
+    }
+
+    /// Dismissing one overlay by id, through the shared stack, leaves
+    /// every other entry untouched — another toast with a different id,
+    /// and a different overlay kind (`Dialog`) entirely.
+    #[test]
+    fn dismiss_overlay_by_id_removes_only_the_matching_entry() {
+        use quadraui::backend::MessageDialogOptions;
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        let new_toast = |id: &str, title: &str| quadraui::Toast {
+            id: WidgetId::new(id),
+            title: title.to_string(),
+            body: String::new(),
+            severity: quadraui::ToastSeverity::Info,
+            actions: Vec::new(),
+            accent: None,
+        };
+
+        {
+            let (backend, app) = driver.parts_mut();
+            app.engine.open_message_dialog(
+                MessageDialogOptions {
+                    title: "Heads up".to_string(),
+                    body: "Something happened.".to_string(),
+                    buttons: Vec::new(),
+                    severity: None,
+                },
+                backend,
+            );
+            app.engine
+                .show_toast(new_toast("a", "A"), quadraui::ToastCorner::BottomRight);
+            app.engine
+                .show_toast(new_toast("b", "B"), quadraui::ToastCorner::BottomRight);
+        }
+
+        let (_backend, app) = driver.parts_mut();
+        assert!(
+            app.engine.dismiss_toast(WidgetId::new("a")),
+            "toast \"a\" was showing"
+        );
+        assert!(
+            !app.engine.dismiss_toast(WidgetId::new("a")),
+            "toast \"a\" is already gone"
+        );
+        assert!(
+            app.engine.dialog_open(),
+            "the dialog, a different overlay kind sharing the same stack, \
+             must be untouched by removing toast \"a\""
+        );
+        assert!(
+            app.engine.dismiss_toast(WidgetId::new("b")),
+            "toast \"b\", pushed after \"a\" onto the same shared stack, \
+             must be untouched by removing \"a\" by id"
+        );
+    }
+
+    /// Escape closes only the topmost overlay, one at a time — pressing
+    /// it a second time then closes the one underneath, never both at
+    /// once.
+    #[test]
+    fn escape_closes_only_the_top_overlay() {
+        use quadraui::RichTextPopup;
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        let (_backend, app) = driver.parts_mut();
+        // Rich-text popup opened first (lower `Overlay::rank`), completions
+        // opened second (higher rank) — completions ends up on top in
+        // push order too, so this also covers the common case alongside
+        // `overlay_stack_orders_by_fixed_rank_not_push_order`'s reversed one.
+        app.engine.show_rich_text_popup(
+            RichTextPopup {
+                id: WidgetId::new("popup"),
+                lines: vec![],
+                line_text: vec![],
+                line_scales: vec![],
+                scroll_top: 0,
+                max_visible_rows: 10,
+                has_focus: false,
+                selection: None,
+                links: vec![],
+                focused_link: None,
+                placement: Default::default(),
+                padding: 1.0,
+                fg: None,
+                bg: None,
+            },
+            Point::new(2.0, 2.0),
+        );
+        app.engine.show_completions(
+            quadraui::Completions {
+                id: WidgetId::new("completions"),
+                ..Default::default()
+            },
+            Point::new(2.0, 2.0),
+        );
+
+        driver.render();
+
+        let escape = || UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+
+        driver.dispatch(escape());
+        let (_backend, app) = driver.parts_mut();
+        assert!(
+            !app.engine.dismiss_completions(),
+            "the first Escape must close only the topmost overlay \
+             (completions)"
+        );
+        assert!(
+            app.engine.dismiss_rich_text_popup(),
+            "the rich-text popup underneath must still be open after just \
+             one Escape"
+        );
+
+        // Re-open the popup to repeat with a fresh stack and confirm the
+        // SECOND Escape (nothing left above it) now closes it too.
+        app.engine.show_rich_text_popup(
+            RichTextPopup {
+                id: WidgetId::new("popup"),
+                lines: vec![],
+                line_text: vec![],
+                line_scales: vec![],
+                scroll_top: 0,
+                max_visible_rows: 10,
+                has_focus: false,
+                selection: None,
+                links: vec![],
+                focused_link: None,
+                placement: Default::default(),
+                padding: 1.0,
+                fg: None,
+                bg: None,
+            },
+            Point::new(2.0, 2.0),
+        );
+        driver.render();
+        driver.dispatch(escape());
+        let (_backend, app) = driver.parts_mut();
+        assert!(
+            !app.engine.dismiss_rich_text_popup(),
+            "with nothing left above it, Escape must close the popup too"
         );
     }
 
