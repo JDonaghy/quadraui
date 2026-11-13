@@ -185,6 +185,30 @@ test("button onClick fires on Enter while focused", () => {
   assert.deepEqual(clicks, [1]);
 });
 
+test("button onClick fires on Enter after a click moved real focus to it", () => {
+  // A click leaves the *backend's* own focus on the button, not just this
+  // layer's `_focusedId`, so the Enter that follows resolves to the button's
+  // semantic `Form`/`ButtonClicked` activation instead of a raw `KeyPressed`.
+  // Both routes must reach the same `onClick`.
+  const clicks: number[] = [];
+  const fallback: unknown[] = [];
+  const app = new App(20, 5, {
+    view: () => Button("Save", { id: "t:save", onClick: () => clicks.push(1) }),
+    onEvent: (event: unknown) => fallback.push(event),
+  });
+
+  clickAt(app);
+  assert.deepEqual(clicks, [1], "the click itself must fire onClick exactly once");
+  assert.ok(
+    !fallback.some((event) => typeof event === "object" && event !== null && "Form" in event),
+    "a button's own activation must never reach the onEvent escape hatch",
+  );
+
+  app.pushEvent(keyEvent({ Named: "Enter" }));
+  app.step();
+  assert.deepEqual(clicks, [1, 1], "Enter on the clicked (and so really focused) button must fire too");
+});
+
 test("an unmatched event falls through to onEvent", () => {
   const seen: unknown[] = [];
   const { keyName } = require("../js/app/index.ts");

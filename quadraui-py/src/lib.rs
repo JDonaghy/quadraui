@@ -5840,6 +5840,38 @@ mod tests {
     use super::*;
     use quadraui::{ButtonMask, ScrollDelta};
 
+    /// Unwrap one pythonized `UiEvent::Form(id, FormEvent::ButtonClicked
+    /// { id })` payload -- `{"Form": (id, {"ButtonClicked": {"id": id}})}`
+    /// on the wire -- down to the clicked button's own id, asserting the
+    /// whole shape on the way so a drift in any layer names the layer that
+    /// drifted.
+    fn form_button_clicked_id(event: &Bound<'_, PyDict>) -> String {
+        let form = event
+            .get_item("Form")
+            .expect("dict lookup")
+            .expect("a semantic button click must carry a Form key")
+            .cast_into::<PyTuple>()
+            .expect("Form must pythonize to a (id, event) tuple");
+        assert_eq!(form.len(), 2, "Form must carry (id, event)");
+        let inner = form
+            .get_item(1)
+            .expect("second element")
+            .cast_into::<PyDict>()
+            .expect("the inner FormEvent must pythonize to a dict");
+        let clicked = inner
+            .get_item("ButtonClicked")
+            .expect("dict lookup")
+            .expect("a button click must carry a ButtonClicked key")
+            .cast_into::<PyDict>()
+            .expect("ButtonClicked payload must be a dict");
+        clicked
+            .get_item("id")
+            .expect("dict lookup")
+            .expect("id key must be present")
+            .extract()
+            .expect("id must be a string")
+    }
+
     /// A Rust panic raised from inside `guarded`'s body is caught and
     /// re-raised as `PanicError`, and poisons the app so a later call
     /// raises `PoisonedError` without running its body.
@@ -7282,6 +7314,11 @@ def render():
     /// attaches a `"hit"` key naming the sub-region struck -- `button_body`
     /// for a click anywhere on its body. Located via `find_bounds`, never a
     /// hardcoded coordinate.
+    ///
+    /// The semantic `Form` / `ButtonClicked` dispatch the click also
+    /// produces is additive: it sits between the click-to-focus
+    /// `FocusChanged` and the raw `MouseDown`, and the raw event still
+    /// arrives with its `"hit"` dict intact.
     #[test]
     fn mouse_down_over_a_painted_button_is_enriched_with_its_widget_id() {
         Python::attach(|py| {
@@ -7342,9 +7379,9 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                2,
-                "the click must emit both a FocusChanged (nothing was focused yet) and \
-                 the MouseDown itself"
+                3,
+                "the click must emit a FocusChanged (nothing was focused yet), the \
+                 semantic Form/ButtonClicked, and the MouseDown itself"
             );
             let focus_dict = received_list
                 .get_item(0)
@@ -7358,9 +7395,20 @@ def handle(event):
                 .extract()
                 .expect("FocusChanged must carry the newly focused widget's id as a string");
             assert_eq!(focused, "btn:ok", "the clicked button must receive focus");
+            assert_eq!(
+                form_button_clicked_id(
+                    &received_list
+                        .get_item(1)
+                        .expect("second item")
+                        .cast_into::<PyDict>()
+                        .expect("event payload must be a dict")
+                ),
+                "btn:ok",
+                "the semantic Form/ButtonClicked must name the clicked button"
+            );
             let event_dict = received_list
-                .get_item(1)
-                .expect("second item")
+                .get_item(2)
+                .expect("third item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let mouse_down = event_dict
@@ -7681,9 +7729,9 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                2,
-                "the click must emit both a FocusChanged (nothing was focused yet) and \
-                 the MouseDown itself"
+                3,
+                "the click must emit a FocusChanged (nothing was focused yet), the \
+                 semantic Form/ButtonClicked, and the MouseDown itself"
             );
             let focus_dict = received_list
                 .get_item(0)
@@ -7697,9 +7745,20 @@ def handle(event):
                 .extract()
                 .expect("FocusChanged must carry the newly focused widget's id as a string");
             assert_eq!(focused, "btn:left", "the clicked button must receive focus");
+            assert_eq!(
+                form_button_clicked_id(
+                    &received_list
+                        .get_item(1)
+                        .expect("second item")
+                        .cast_into::<PyDict>()
+                        .expect("event payload must be a dict")
+                ),
+                "btn:left",
+                "the semantic Form/ButtonClicked must name the nested button"
+            );
             let event_dict = received_list
-                .get_item(1)
-                .expect("second item")
+                .get_item(2)
+                .expect("third item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let mouse_down = event_dict
