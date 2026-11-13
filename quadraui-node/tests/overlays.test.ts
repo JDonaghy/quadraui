@@ -552,3 +552,202 @@ test("dismissOverlay with an unknown id is a no-op", () => {
   const app = new QuiApp(40, 20);
   assert.equal(app.dismissOverlay("not-a-known-overlay-id"), false);
 });
+
+// ── Content-bearing overlays (popover / layout dialog) ──────────────────
+
+function toggleFormLeaf() {
+  return {
+    id: "settings",
+    form: {
+      id: "settings",
+      fields: [
+        {
+          id: "wrap",
+          label: { spans: [{ text: "Word wrap", fg: null, bg: null }] },
+          kind: { Toggle: { value: false } },
+        },
+      ],
+    },
+  };
+}
+
+// The button comes first deliberately: opening a content-bearing overlay
+// seeds keyboard focus onto its first tab stop, and the TUI focus-ring
+// convention paints a border box over the focused widget's own edge rows
+// (`quadraui/src/tui/focus_ring.rs`). A single-row form field as the
+// *first* stop would have its only row covered by that ring, which would
+// make the assertions below read as "the content never painted".
+function popoverDescriptor() {
+  return {
+    float: { id: "popover:menu", anchor: anchor(2.0, 2.0) },
+    content: {
+      column: [
+        { id: "submit", button: { id: "submit", label: "Submit" } },
+        toggleFormLeaf(),
+      ],
+    },
+  };
+}
+
+function layoutDialogDescriptor() {
+  return {
+    dialog: {
+      id: "dialog:prefs",
+      title: "Preferences",
+      buttons: [
+        { id: "save", label: "Save", is_default: true },
+        { id: "cancel", label: "Cancel", is_cancel: true },
+      ],
+    },
+    content: {
+      column: [
+        { id: "apply", button: { id: "apply", label: "Apply" } },
+        toggleFormLeaf(),
+      ],
+    },
+  };
+}
+
+function formToggles(received: unknown[]) {
+  return received.filter(
+    (event) =>
+      typeof event === "object" &&
+      event !== null &&
+      "Form" in (event as object) &&
+      "ToggleChanged" in ((event as any).Form[1] as object),
+  );
+}
+
+test("showOverlay popover paints its content and routes a button click", () => {
+  const app = new QuiApp(60, 24);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
+
+  const returnedId = app.showOverlay("popover", popoverDescriptor(), {
+    width: 24.0,
+    height: 8.0,
+  });
+
+  assert.equal(returnedId, "popover:menu");
+  assert.ok(app.screenContains("Submit"));
+  assert.ok(app.screenContains("Word wrap"));
+
+  const [row, col] = locate(app, "Submit");
+  click(app, row, col);
+
+  assert.ok(
+    received.some(
+      (event) =>
+        typeof event === "object" && event !== null && "Form" in (event as object),
+    ),
+    JSON.stringify(received),
+  );
+});
+
+test("showOverlay popover toggle emits the normal semantic event", () => {
+  const app = new QuiApp(60, 24);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showOverlay("popover", popoverDescriptor(), { width: 24.0, height: 8.0 });
+  const [row, col] = locate(app, "Word wrap");
+  click(app, row, col);
+
+  const toggles = formToggles(received);
+  assert.ok(toggles.length > 0, JSON.stringify(received));
+  assert.equal((toggles[0] as any).Form[1].ToggleChanged.value, true);
+});
+
+test("showOverlay popover is dismissed by an outside click", () => {
+  const app = new QuiApp(60, 24);
+  // A registered handler is what routes events through the engine at all,
+  // so the dismissal below needs one even though it asserts on the screen.
+  app.setHandler(() => undefined);
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
+  app.showOverlay("popover", popoverDescriptor(), { width: 24.0, height: 8.0 });
+  assert.ok(app.screenContains("Submit"));
+
+  click(app, 23, 59);
+
+  assert.ok(!app.screenContains("Submit"));
+});
+
+test("showOverlay layout_dialog paints chrome plus content", () => {
+  const app = new QuiApp(60, 24);
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
+
+  const returnedId = app.showOverlay("layout_dialog", layoutDialogDescriptor(), {
+    width: 40.0,
+    height: 6.0,
+  });
+
+  assert.equal(returnedId, "dialog:prefs");
+  assert.ok(app.screenContains("Preferences"));
+  assert.ok(app.screenContains("Cancel"));
+  assert.ok(app.screenContains("Word wrap"));
+});
+
+test("showOverlay layout_dialog toggle emits the normal semantic event", () => {
+  const app = new QuiApp(60, 24);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showOverlay("layout_dialog", layoutDialogDescriptor(), {
+    width: 40.0,
+    height: 6.0,
+  });
+  const [row, col] = locate(app, "Word wrap");
+  click(app, row, col);
+
+  assert.ok(formToggles(received).length > 0, JSON.stringify(received));
+});
+
+test("showOverlay layout_dialog escape resolves its cancel button", () => {
+  const app = new QuiApp(60, 24);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showOverlay("layout_dialog", layoutDialogDescriptor(), {
+    width: 40.0,
+    height: 6.0,
+  });
+  escape(app);
+
+  const resolved = received.filter(
+    (event) =>
+      typeof event === "object" &&
+      event !== null &&
+      "MessageDialogResolved" in (event as object),
+  );
+  assert.ok(resolved.length > 0, JSON.stringify(received));
+  assert.equal((resolved[0] as any).MessageDialogResolved, "cancel");
+  assert.ok(!app.screenContains("Preferences"));
+});
+
+test("dismissOverlay closes a popover and a layout dialog", () => {
+  const app = new QuiApp(60, 24);
+  app.showOverlay("popover", popoverDescriptor(), { width: 24.0, height: 8.0 });
+  assert.equal(app.dismissOverlay("popover"), true);
+  assert.equal(app.dismissOverlay("popover"), false);
+
+  app.showOverlay("layout_dialog", layoutDialogDescriptor(), {
+    width: 40.0,
+    height: 6.0,
+  });
+  assert.equal(app.dismissOverlay("layout_dialog"), true);
+  assert.equal(app.dismissOverlay("layout_dialog"), false);
+});
+
+test("showOverlay popover rejects a descriptor missing its content", () => {
+  const app = new QuiApp(60, 24);
+  assert.throws(
+    () =>
+      app.showOverlay(
+        "popover",
+        { float: { id: "popover:menu", anchor: anchor(2.0, 2.0) } },
+        { width: 24.0, height: 8.0 },
+      ),
+    /InvalidDescriptorError/,
+  );
+});
