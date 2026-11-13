@@ -703,6 +703,21 @@ impl LayoutDialog {
     }
 }
 
+/// Clears `backend`'s keyboard focus when it names one of `content`'s own
+/// leaves — called as a content-bearing overlay closes, so the id of a
+/// leaf that no longer paints anywhere can't outlive it as "the focused
+/// widget" (leaving the main tree with a focused id none of its own tab
+/// stops match, and so no focus ring and no focus-scoped key routing at
+/// all). Leaves focus alone when it already points at something outside
+/// the overlay.
+fn release_content_focus(backend: &mut dyn Backend, content: &LayoutContent) {
+    let focused = backend.focus_manager().focused().copied();
+    let inside = focused.is_some_and(|id| content.tab_stops().iter().any(|(stop, _)| *stop == id));
+    if inside {
+        backend.set_focus(None);
+    }
+}
+
 /// [`InteractionEngine::dispatch_overlays`]'s own routing for an open
 /// [`Overlay::LayoutDialog`], as a free function so it can run while the
 /// overlay stack is immutably borrowed (closing the dialog needs
@@ -1141,6 +1156,7 @@ impl InteractionEngine {
     pub fn open_message_dialog(&mut self, opts: MessageDialogOptions, backend: &mut dyn Backend) {
         self.close_message_dialog(backend);
         self.close_form_dialog(backend);
+        self.close_layout_dialog(backend);
         if self.menu_system.borrow().is_open() {
             self.menu_system.borrow_mut().close(backend);
         }
@@ -1187,10 +1203,10 @@ impl InteractionEngine {
     /// title/button chrome — pushing its bounds onto the backend's
     /// [`quadraui::ModalStack`], the same contract
     /// [`Self::open_message_dialog`] already follows. Replaces (and pops)
-    /// any dialog or form-dialog already open: the two kinds share
-    /// [`Overlay::rank`], so [`Self::push_overlay`]'s "same rank, same
-    /// slot" rule keeps "only one modal dialog at a time" true across
-    /// both. A binding's own `show_form_dialog` surface calls this, then
+    /// any modal dialog already open, of any of the three kinds: they all
+    /// share [`Overlay::rank`], so [`Self::push_overlay`]'s "same rank,
+    /// same slot" rule keeps "only one modal dialog at a time" true
+    /// across all of them. A binding's own `show_form_dialog` surface calls this, then
     /// pushes the app's current field values onto `dialog` every frame
     /// via [`FormDialogController::set_form`] before
     /// [`Self::render_overlays`] paints it — the same "app owns the
@@ -1199,6 +1215,7 @@ impl InteractionEngine {
     pub fn open_form_dialog(&mut self, dialog: FormDialogController, backend: &mut dyn Backend) {
         self.close_form_dialog(backend);
         self.close_message_dialog(backend);
+        self.close_layout_dialog(backend);
         if self.menu_system.borrow().is_open() {
             self.menu_system.borrow_mut().close(backend);
         }
@@ -1613,6 +1630,7 @@ impl InteractionEngine {
                     .modal_stack_handle()
                     .borrow_mut()
                     .pop(&embedded.dialog.id);
+                release_content_focus(backend, &embedded.content);
                 true
             }
             _ => false,
@@ -1643,8 +1661,11 @@ impl InteractionEngine {
 
     fn close_float(&mut self, backend: &mut dyn Backend) -> bool {
         match self.remove_overlay(|o| matches!(o, Overlay::Float(..))) {
-            Some(Overlay::Float(float, _, _)) => {
+            Some(Overlay::Float(float, _, content)) => {
                 backend.modal_stack_handle().borrow_mut().pop(&float.id);
+                if let Some(FloatContent::Layout(embedded)) = &content {
+                    release_content_focus(backend, embedded);
+                }
                 true
             }
             _ => false,
@@ -4980,6 +5001,99 @@ mod tests {
         assert!(
             backend.modal_stack_handle().borrow().top().is_none(),
             "closing the dialog must pop its ModalStack entry"
+        );
+    }
+
+    /// Opening a message dialog while a layout dialog is already open
+    /// replaces it cleanly: the two share [`Overlay::rank`], so the
+    /// layout dialog has to be closed (and its [`quadraui::ModalStack`]
+    /// entry popped, and the keyboard focus it seeded onto its own
+    /// content released) rather than silently dropped out of the overlay
+    /// stack by [`InteractionEngine::push_overlay`]'s "same rank, same
+    /// slot" rule.
+    #[test]
+    fn opening_a_message_dialog_over_a_layout_dialog_pops_its_modal_entry_and_focus() {
+        use quadraui::backend::{MessageDialogButton, MessageDialogOptions};
+        use quadraui::{DialogButton, StyledText};
+
+        use super::DialogContentSize;
+
+        let content = LayoutNode::Leaf(LayoutLeaf {
+            id: "apply".to_string(),
+            descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("apply"), "Apply")),
+            scroll_px: None,
+        });
+        let dialog = quadraui::Dialog {
+            id: WidgetId::new("dialog:prefs"),
+            title: StyledText::plain("Preferences"),
+            body: Vec::new(),
+            buttons: vec![DialogButton {
+                id: WidgetId::new("close"),
+                label: "Close".to_string(),
+                is_default: true,
+                is_cancel: true,
+                tint: None,
+                spec: None,
+            }],
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        };
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 60, 24);
+        driver.render();
+        {
+            let (backend, app) = driver.parts_mut();
+            app.engine
+                .open_layout_dialog(dialog, content, DialogContentSize::default(), backend);
+        }
+        driver.render();
+        {
+            let (backend, _) = driver.parts_mut();
+            assert_eq!(
+                backend.focus_manager().focused().copied(),
+                Some(WidgetId::new("apply")),
+                "opening the layout dialog should seed focus onto its own content"
+            );
+        }
+
+        let opts = MessageDialogOptions {
+            title: "Heads up".to_string(),
+            body: "Something happened.".to_string(),
+            buttons: vec![MessageDialogButton {
+                id: WidgetId::new("ok"),
+                label: "OK".to_string(),
+                is_default: true,
+                is_cancel: false,
+                spec: None,
+            }],
+            severity: None,
+        };
+        {
+            let (backend, app) = driver.parts_mut();
+            app.engine.open_message_dialog(opts, backend);
+        }
+
+        let (backend, app) = driver.parts_mut();
+        assert!(
+            !app.engine.layout_dialog_open(),
+            "the layout dialog must be closed, not left in the overlay stack"
+        );
+        assert_eq!(
+            backend.modal_stack_handle().borrow().top().map(|e| e.id),
+            Some(WidgetId::new("message_dialog")),
+            "only the message dialog's own ModalStack entry should remain"
+        );
+        assert_eq!(
+            backend.focus_manager().focused().copied(),
+            None,
+            "the closed dialog's content must not keep keyboard focus"
         );
     }
 
