@@ -2913,6 +2913,49 @@ def test_show_context_menu_escape_dismisses_without_item_activation():
     assert received == ["ContextMenuDismissed"]
 
 
+def test_show_context_menu_with_nested_submenu_opens_by_right_arrow_and_activates():
+    # `ContextMenuItem.submenu` nests through the same `show_context_menu`
+    # call -- opening the parent's child popup by Right arrow and
+    # activating a nested leaf reports that leaf's own id via
+    # `ContextMenuItemActivated`, the same shape a flat menu's activation
+    # already carries (`nesting depth is transparent to the caller`).
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    items = [
+        {
+            "id": "view",
+            "label": {"spans": [{"text": "View", "fg": None, "bg": None}]},
+            "submenu": [
+                {
+                    "id": "toggle_sidebar",
+                    "label": {
+                        "spans": [{"text": "Toggle Sidebar", "fg": None, "bg": None}]
+                    },
+                },
+            ],
+        },
+    ]
+    app.show_context_menu(items, (2.0, 2.0))
+    assert app.screen_contains("View")
+
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Right"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert app.screen_contains("Toggle Sidebar"), "the submenu must now be painted"
+    assert received == [], "pure navigation dispatches nothing to the app's handler"
+
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert received == [{"ContextMenuItemActivated": "toggle_sidebar"}]
+    assert not app.screen_contains("Toggle Sidebar"), "activation must close the popup"
+
+
 def test_show_context_menu_item_with_codicon_icon_renders_fallback():
     # `ContextMenuItem::icon` accepts the same `{"codicon": "...",
     # "fallback": "..."}` wire shape a tree row's `icon` does (see
