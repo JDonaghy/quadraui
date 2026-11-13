@@ -38,10 +38,11 @@ of these keys, naming the node's kind:
 | `"leaf"` | `LayoutLeafNode` | A primitive widget -- see *Leaf kinds* below. |
 
 A `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/`"sidebar_panel"`/
-`"split_tree"` node also accepts the sizing keys `"size"`, `"min"`, `"max"`
-when it's itself a `"row"`/`"column"` child, and the chrome keys `"padding"`,
-`"margin"`, `"gap"` where that node kind supports them -- see each node's own
-field table in the generated reference for exactly which it accepts.
+`"split_tree"`/`"scroll"` node also accepts the sizing keys `"size"`,
+`"min"`, `"max"` when it's itself a `"row"`/`"column"` child, and the
+chrome keys `"padding"`, `"margin"`, `"gap"` where that node kind supports
+them -- see each node's own field table in the generated reference for
+exactly which it accepts.
 
 ## Leaf kinds
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Sequence
 
 if TYPE_CHECKING:
     # `quadraui.wire` is a stub-only module (no backing `.py`) -- see its own
@@ -42,6 +42,7 @@ __all__ = [
     "Column",
     "Row",
     "SidebarPanel",
+    "Scroll",
     "Tab",
     "Tabs",
     "Tree",
@@ -50,7 +51,6 @@ __all__ = [
     "TextDisplay",
     "Button",
     "Toolbar",
-    "Scroll",
 ]
 
 # A renderable value: a `Node`, a `Component` (duck-typed -- `quadraui.app`
@@ -95,7 +95,7 @@ def _callbacks(**named: Optional[Callable[..., None]]) -> Dict[str, Callable[...
     return {name: fn for name, fn in named.items() if fn is not None}
 
 
-# --- composition: split / column / row / sidebar_panel / tabs ---------------
+# --- composition: split / column / row / sidebar_panel / scroll / tabs -----
 
 
 def Split(
@@ -190,7 +190,7 @@ def Scroll(
     content: Renderable,
     *,
     id: Optional[str] = None,
-    axis: str = "vertical",
+    axis: Literal["vertical", "horizontal"] = "vertical",
     offset: Optional[float] = None,
     padding: Any = None,
     margin: Optional[float] = None,

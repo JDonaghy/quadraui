@@ -26,6 +26,7 @@ import type {
   ColumnDescriptor,
   DataRowDescriptor,
   Icon,
+  LayoutScrollPayload,
   PaddingValue,
   SelectionMode,
   StatusBarSegment,
@@ -107,7 +108,7 @@ function callbacksFrom(named: Record<string, AnyCallback | undefined>): Record<s
   return result;
 }
 
-// --- composition: split / column / row / sidebarPanel / tabs --------------
+// --- composition: split / column / row / sidebarPanel / scroll / tabs -----
 
 export interface SplitOptions {
   id?: string;
@@ -220,8 +221,8 @@ exports.SidebarPanel = SidebarPanel;
 
 export interface ScrollOptions {
   id?: string;
-  axis?: "vertical" | "horizontal";
-  offset?: number;
+  axis?: LayoutScrollPayload["axis"];
+  offset?: LayoutScrollPayload["offset"];
   padding?: PaddingValue;
   margin?: number;
 }
