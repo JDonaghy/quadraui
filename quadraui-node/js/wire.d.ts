@@ -653,6 +653,12 @@ export interface TextAreaDescriptor {
   visible_rows?: number;
 }
 
+export interface MarkdownDescriptor {
+  id: WidgetId;
+  source: string;
+  scroll_offset?: number;
+}
+
 export type ScrollAxis = "Vertical" | "Horizontal";
 
 export interface ScrollbarDescriptor {
@@ -1568,6 +1574,7 @@ export interface LayoutLeafNode {
   select?: SelectDescriptor;
   password?: PasswordDescriptor;
   textarea?: TextAreaDescriptor;
+  markdown?: MarkdownDescriptor;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -1620,6 +1627,7 @@ export interface RenderFrameDict {
   select?: SelectDescriptor | null;
   password?: PasswordDescriptor | null;
   textarea?: TextAreaDescriptor | null;
+  markdown?: MarkdownDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

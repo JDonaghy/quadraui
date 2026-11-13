@@ -773,6 +773,62 @@ test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", 
   );
 });
 
+test("inline tree leaf markdown renders formatting and link click emits RichTextLinkClicked", () => {
+  // `"markdown"` reuses `render_markdown_to_styled` (the same adapter
+  // `push_turn_markdown`/`RichTextPopup` content already goes through),
+  // not a second parser -- asserted here by checking the raw syntax is
+  // gone from the painted screen (a renderer bypass that printed `source`
+  // verbatim would still pass a plain `screenContains` check on each
+  // substring, since every one of them is also present in the raw text).
+  // The link click resolves through the same `ExtraChrome` chrome-hit
+  // mechanism toolbar/status_bar/activity_bar above use, into
+  // `RichTextLinkClicked` -- the event `RichTextPopup`'s own link click
+  // already dispatches -- so this gets its own test rather than a row in
+  // `INLINE_LEAF_CASES`, matching those three.
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "md:1",
+        markdown: {
+          id: "md:1",
+          source: "# Title\n**bold** *italic* `code`\n- item\n[docs](https://example.com/docs)",
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  assert.ok(app.screenContains("Title"));
+  assert.ok(app.screenContains("bold"));
+  assert.ok(app.screenContains("italic"));
+  assert.ok(app.screenContains("code"));
+  assert.ok(app.screenContains("item"));
+  assert.ok(app.screenContains("docs"));
+  assert.ok(!app.screenContains("# Title"));
+  assert.ok(!app.screenContains("**bold**"));
+  assert.ok(!app.screenContains("*italic*"));
+  assert.ok(!app.screenContains("`code`"));
+  assert.ok(!app.screenContains("[docs]"));
+  assert.ok(app.screenContains("•"));
+
+  // `QuiApp` has no `find` helper, so the link's cell position is located
+  // the same way `callbacks.test.ts` locates a column: scan `screen()`'s
+  // own rows/columns directly.
+  const lines = app.screen().split("\n");
+  const y = lines.findIndex((line: string) => line.includes("docs"));
+  const x = lines[y].indexOf("docs");
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({ MouseDown: { button: "Left", position: { x, y }, modifiers: {} } });
+  app.run(1);
+
+  assert.equal(received.length, 1, JSON.stringify(received));
+  const [widgetId, url] = received[0].RichTextLinkClicked;
+  assert.equal(widgetId, "md:1");
+  assert.equal(url, "https://example.com/docs");
+});
+
 test("inline tree leaf find_replace renders its query text", () => {
   // `FindReplacePanel` carries no `id` field of its own (see
   // `ExtraPaint::id`'s fixed-sentinel doc), so this is its first coverage

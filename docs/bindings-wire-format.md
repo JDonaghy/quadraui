@@ -241,6 +241,7 @@ only once both `quadraui-py` and `quadraui-node` emit the new value.
 - [`SelectDescriptor`](#wire-selectdescriptor)
 - [`PasswordDescriptor`](#wire-passworddescriptor)
 - [`TextAreaDescriptor`](#wire-textareadescriptor)
+- [`MarkdownDescriptor`](#wire-markdowndescriptor)
 - [`ScrollAxis`](#wire-scrollaxis)
 - [`ScrollbarDescriptor`](#wire-scrollbardescriptor)
 - [`ScrollViewDescriptor`](#wire-scrollviewdescriptor)
@@ -1463,6 +1464,15 @@ Alias for `"Contain" | "Cover" | "Fill" | "None"`.
 | `cursor` | `number \| null` | no |  |
 | `has_focus` | `boolean` | no |  |
 | `visible_rows` | `number` | no |  |
+
+<a id="wire-markdowndescriptor"></a>
+#### `MarkdownDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `source` | `string` | yes |  |
+| `scroll_offset` | `number` | no |  |
 
 <a id="wire-scrollaxis"></a>
 #### `ScrollAxis`
@@ -2866,6 +2876,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `select` | `SelectDescriptor` | no |  |
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
+| `markdown` | `MarkdownDescriptor` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -2926,6 +2937,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `select` | `SelectDescriptor \| null` | no |  |
 | `password` | `PasswordDescriptor \| null` | no |  |
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
+| `markdown` | `MarkdownDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`

@@ -591,6 +591,11 @@ class TextAreaDescriptor(TypedDict):
     has_focus: NotRequired[bool]
     visible_rows: NotRequired[int]
 
+class MarkdownDescriptor(TypedDict):
+    id: WidgetId
+    source: str
+    scroll_offset: NotRequired[int]
+
 ScrollAxis = Literal['Vertical', 'Horizontal']
 
 class ScrollbarDescriptor(TypedDict):
@@ -1429,6 +1434,7 @@ class LayoutLeafNode(TypedDict):
     select: NotRequired[SelectDescriptor]
     password: NotRequired[PasswordDescriptor]
     textarea: NotRequired[TextAreaDescriptor]
+    markdown: NotRequired[MarkdownDescriptor]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -1480,6 +1486,7 @@ class RenderFrameDict(TypedDict):
     select: NotRequired[Optional[SelectDescriptor]]
     password: NotRequired[Optional[PasswordDescriptor]]
     textarea: NotRequired[Optional[TextAreaDescriptor]]
+    markdown: NotRequired[Optional[MarkdownDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

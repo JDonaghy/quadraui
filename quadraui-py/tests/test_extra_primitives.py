@@ -1745,6 +1745,62 @@ def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
     assert {"MenuActivated": "menu:file:save"} in received, received
 
 
+def test_inline_tree_leaf_markdown_renders_formatting_and_link_click_emits_event():
+    # `"markdown"` reuses `render_markdown_to_styled` (the same adapter
+    # `push_turn_markdown`/`RichTextPopup` content already goes through),
+    # not a second parser -- asserted here by checking the raw syntax is
+    # gone from the painted screen (a renderer bypass that printed `source`
+    # verbatim would still pass a plain `screen_contains` check on each
+    # substring, since every one of them is also present in the raw text).
+    # The link click resolves through the same `ExtraChrome` chrome-hit
+    # mechanism `toolbar`/`status_bar`/`activity_bar` above use, into
+    # `RichTextLinkClicked` -- the event `RichTextPopup`'s own link click
+    # already dispatches -- so this gets its own test rather than a row in
+    # `_INLINE_LEAF_CASES`, matching those three.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "md:1",
+                    "markdown": {
+                        "id": "md:1",
+                        "source": "# Title\n**bold** *italic* `code`\n- item\n[docs](https://example.com/docs)",
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    assert app.screen_contains("Title")
+    assert app.screen_contains("bold")
+    assert app.screen_contains("italic")
+    assert app.screen_contains("code")
+    assert app.screen_contains("item")
+    assert app.screen_contains("docs")
+    assert not app.screen_contains("# Title")
+    assert not app.screen_contains("**bold**")
+    assert not app.screen_contains("*italic*")
+    assert not app.screen_contains("`code`")
+    assert not app.screen_contains("[docs]")
+    assert app.screen_contains("•")
+
+    # `QuiApp` (unlike `QuiShellApp`) has no `find` helper, so the link's
+    # cell position is located the same way `test_insert_extra_form_control_width_*`
+    # above locates a column: scan `screen()`'s own rows/columns directly.
+    lines = app.screen().splitlines()
+    y = next(i for i, line in enumerate(lines) if "docs" in line)
+    x = lines[y].find("docs")
+    event = _click(app, float(x), float(y))
+
+    widget_id, url = event["RichTextLinkClicked"]
+    assert widget_id == "md:1"
+    assert url == "https://example.com/docs"
+
+
 def test_inline_tree_leaf_find_replace_renders_query_text():
     # `FindReplacePanel` carries no `id` field of its own (see
     # `ExtraPaint::id`'s fixed-sentinel doc); `test_missing_primitives.py`
