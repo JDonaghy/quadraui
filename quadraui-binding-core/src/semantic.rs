@@ -462,6 +462,22 @@ pub(crate) fn text_area_key_event(
     apply_text_input_edit(id, &text_area.inner, op, text_editors)
 }
 
+/// The semantic event a layout-tree `Button` leaf's activation — a pointer
+/// click on its [`HitDetail::ButtonBody`] or an Enter/Space while it holds
+/// keyboard focus — stands for. Shared by [`focus_scoped_key_event`]'s own
+/// `PaintedHit::Button` arm and `InteractionEngine::handle`'s own
+/// `MouseDown`/`DoubleClick` routing, so both input modalities produce the
+/// identical shape rather than each hand-rolling it. Reuses
+/// [`FormEvent::ButtonClicked`] — the same event [`quadraui::Form`]'s own
+/// embedded `Button`/`ButtonRow` fields already emit — rather than adding a
+/// new `UiEvent` variant for a standalone `Button`, the same "reuse an
+/// existing shape over adding a new one" convention
+/// [`HitDetail::ExtraBody`]'s `Switch` arm already follows for
+/// `FormEvent::ToggleChanged`.
+pub fn button_clicked_event(id: WidgetId) -> UiEvent {
+    UiEvent::Form(id, FormEvent::ButtonClicked { id })
+}
+
 /// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
 /// stands for, if any — the set the binding's own event handler synthesizes so a tab
 /// click, tab close-button click, tree-row/chevron click, list-item click,
@@ -647,13 +663,17 @@ pub fn key_to_focus_string(key: &Key) -> String {
 /// (or, for a focused `DataTable`'s Up/Down/Enter, straight into
 /// [`data_table_key_event`]'s `RowSelected`/`RowActivated`; or, for a
 /// focused `List`'s Enter with at least one row, straight into
-/// [`list_key_event`]'s `ItemActivated`). `Button` has
-/// no semantic key variant at all, so a key focused on one passes through
-/// as the original
-/// `UiEvent::KeyPressed` unchanged; the same happens for any other key a
-/// focused `DataTable`/`List` doesn't recognize, and when `focused` names a
-/// leaf absent from this frame's hit map (for example a tree that scrolled
-/// out of the render).
+/// [`list_key_event`]'s `ItemActivated`). Enter/Space on a focused layout-tree
+/// `Button` resolves to [`button_clicked_event`] — the same shape a pointer
+/// click on its [`HitDetail::ButtonBody`] produces (synthesized directly by
+/// `InteractionEngine::handle`'s own `MouseDown`/`DoubleClick` routing, not
+/// through this function), and the same "Enter/Space activates the focused
+/// control" convention `Toolbar::activate_focused`'s own caller below
+/// already follows. Every other key a focused `Button` doesn't
+/// recognize passes through as the original `UiEvent::KeyPressed` unchanged;
+/// the same happens for any other key a focused `DataTable`/`List` doesn't
+/// recognize, and when `focused` names a leaf absent from this frame's hit
+/// map (for example a tree that scrolled out of the render).
 pub fn focus_scoped_key_event(
     focused: WidgetId,
     raw_key: &Key,
@@ -670,6 +690,13 @@ pub fn focus_scoped_key_event(
     hit_map
         .iter()
         .find_map(|hit| match hit {
+            PaintedHit::Button { id, .. } if *id == focused => {
+                if matches!(raw_key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
+                    Some(button_clicked_event(*id))
+                } else {
+                    None
+                }
+            }
             PaintedHit::Tree { id, editing, .. } if *id == focused => {
                 if let Some((path, edit)) = editing {
                     if let Some(ev) =

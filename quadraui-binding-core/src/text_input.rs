@@ -5,6 +5,29 @@
 //! `cursor_line`/`cursor_col` snapshot every keystroke, and so
 //! `EditOp::Undo`/`Redo` have real history to act on instead of starting
 //! from an empty stack on every call.
+//!
+//! # `has_focus` is cosmetic, not routing
+//!
+//! Every function here ([`text_input_key_event`], [`text_input_insert_event`],
+//! [`text_input_click_event`]) is reached only once a caller
+//! (`InteractionEngine::handle`'s own `KeyPressed`/`CharTyped`/
+//! `ClipboardPaste`/`MouseDown` routing, or
+//! [`crate::semantic::focus_scoped_key_event`]) has already resolved
+//! *which* widget a key/click targets — from
+//! `backend.focus_manager().focused()` for a key, from the hit-tested
+//! click position for a pointer event. Neither path ever reads the
+//! `TextInput`/`PasswordInput`/`TextArea` descriptor's own `has_focus`
+//! field to make that decision; it is read only by [`crate::extra_paint`]
+//! when painting the caret/focus-ring chrome. A host is therefore never
+//! required to echo `has_focus: true` back after a `FocusChanged`
+//! dispatch for typed keys to keep reaching the cached editor here — the
+//! engine's own focus state is the sole authority, so a key can never
+//! silently vanish for lack of an echoed flag. See
+//! `quadraui-binding-core/src/engine.rs`'s
+//! `typing_into_a_focused_text_input_never_drops_a_key_when_has_focus_is_never_echoed`
+//! test for the regression coverage, and `docs/bindings-wire-format.md`'s
+//! "Controlled vs. uncontrolled fields" section for the binding-facing
+//! statement of this contract.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
