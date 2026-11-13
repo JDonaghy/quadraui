@@ -4206,13 +4206,8 @@ impl QuiApp {
     /// the one case this can't address by id; name toasts something else.
     fn dismiss_overlay(&mut self, id: &str) -> PyResult<bool> {
         match id {
-            "context_menu" => self.dismiss_via(|backend, app_logic| {
-                let was_open = app_logic.engine.ctx_menu_mut().is_open();
-                if was_open {
-                    app_logic.engine.ctx_menu_mut().close(backend);
-                }
-                was_open
-            }),
+            "context_menu" => self
+                .dismiss_via(|backend, app_logic| app_logic.engine.dismiss_context_menu(backend)),
             "message_dialog" => self
                 .dismiss_via(|backend, app_logic| app_logic.engine.close_message_dialog(backend)),
             "tooltip" => self.dismiss_via(|_backend, app_logic| app_logic.engine.hide_tooltip()),
