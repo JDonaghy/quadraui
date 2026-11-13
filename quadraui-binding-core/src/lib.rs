@@ -32,24 +32,204 @@ pub mod wire_schema;
 
 /// A wire-decode failure from any decoder in [`wire`] or
 /// [`extra_paint::decode_extra_primitive`] — the core counterpart of a
-/// binding's own descriptor-decode exception (`quadraui-py`'s
-/// `InvalidDescriptorError`). Carries a human-readable `"{what}: ..."`
-/// message in the same shape every decoder in this crate produces, so a
-/// binding can surface it unchanged (just mapped to its own exception
-/// type) rather than reformatting it.
+/// binding's own descriptor-decode exception taxonomy (`quadraui-py`'s
+/// `InvalidDescriptorError` and its per-variant subclasses). `#[non_exhaustive]`
+/// so a binding match always carries a wildcard arm, and so this crate can add
+/// a finer-grained variant later without that being a breaking change.
+///
+/// Every variant carries the dotted path into the layout tree at which the
+/// problem was found — [`Self::path`] returns it verbatim (e.g.
+/// `"render › split#body › panel#chrome"`), and [`Display`](std::fmt::Display)
+/// renders the full `"<root>: at <rest>: <problem>"` message a binding
+/// surfaces unchanged (just mapped to its own exception type) — so an author
+/// reading a nested-tree error sees which widget it happened on instead of
+/// grepping the whole descriptor for a bare field name. [`Self::code`]
+/// returns a short, stable, machine-matchable tag for the variant, for a
+/// binding that wants to pick its own exception subclass by `match`ing on
+/// this enum directly rather than parsing [`Self::code`]'s string form.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DecodeError(pub String);
+pub enum DecodeError {
+    /// A dict at `path` had no `field` key, and this decoder has no
+    /// default for it.
+    MissingField { path: String, field: String },
+    /// `field`'s value at `path` was a recognized shape (a string, most
+    /// often) but not one of the specific values this decoder accepts.
+    UnknownVariant {
+        path: String,
+        field: String,
+        got: String,
+        expected: Vec<String>,
+    },
+    /// `field`'s value at `path` was not the JSON shape this decoder
+    /// expects (e.g. a `"ratio"` that isn't a number).
+    TypeMismatch {
+        path: String,
+        field: String,
+        expected: String,
+    },
+    /// A dict at `path` carried `key`, which isn't one of the keys this
+    /// decoder recognizes there.
+    UnknownKey {
+        path: String,
+        field: String,
+        key: String,
+        expected: Vec<String>,
+    },
+    /// A `"wire_version"` at `path` is newer than `max`, the highest this
+    /// host understands.
+    VersionMismatch { path: String, got: u64, max: u64 },
+    /// A failure this crate didn't itself diagnose as one of the variants
+    /// above — a lower-level `serde`/`serde_json` deserialize error handed
+    /// back verbatim, or a bespoke cross-field validation this decoder
+    /// performs itself (a duplicate leaf id, an out-of-range `"ratio"`).
+    /// The catch-all every other variant exists to be a more specific
+    /// alternative to.
+    Borrow { path: String, message: String },
+}
+
+impl DecodeError {
+    pub fn missing_field(path: impl Into<String>, field: impl Into<String>) -> Self {
+        DecodeError::MissingField {
+            path: path.into(),
+            field: field.into(),
+        }
+    }
+
+    pub fn unknown_variant(
+        path: impl Into<String>,
+        field: impl Into<String>,
+        got: impl Into<String>,
+        expected: &[&str],
+    ) -> Self {
+        DecodeError::UnknownVariant {
+            path: path.into(),
+            field: field.into(),
+            got: got.into(),
+            expected: expected.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    pub fn type_mismatch(
+        path: impl Into<String>,
+        field: impl Into<String>,
+        expected: impl Into<String>,
+    ) -> Self {
+        DecodeError::TypeMismatch {
+            path: path.into(),
+            field: field.into(),
+            expected: expected.into(),
+        }
+    }
+
+    pub fn unknown_key(
+        path: impl Into<String>,
+        field: impl Into<String>,
+        key: impl Into<String>,
+        expected: &[&str],
+    ) -> Self {
+        DecodeError::UnknownKey {
+            path: path.into(),
+            field: field.into(),
+            key: key.into(),
+            expected: expected.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    pub fn version_mismatch(path: impl Into<String>, got: u64, max: u64) -> Self {
+        DecodeError::VersionMismatch {
+            path: path.into(),
+            got,
+            max,
+        }
+    }
+
+    pub fn borrow(path: impl Into<String>, message: impl Into<String>) -> Self {
+        DecodeError::Borrow {
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+
+    /// The dotted path into the layout tree this error occurred at, e.g.
+    /// `"render › split#body › panel#chrome"` — the same string
+    /// [`Display`](std::fmt::Display) renders `"at <rest>:"` from, minus
+    /// the leading root label and the trailing problem description.
+    pub fn path(&self) -> &str {
+        match self {
+            DecodeError::MissingField { path, .. }
+            | DecodeError::UnknownVariant { path, .. }
+            | DecodeError::TypeMismatch { path, .. }
+            | DecodeError::UnknownKey { path, .. }
+            | DecodeError::VersionMismatch { path, .. }
+            | DecodeError::Borrow { path, .. } => path,
+        }
+    }
+
+    /// A short, stable, snake_case tag naming which variant this is —
+    /// e.g. `"missing_field"` — for a binding that wants to pick its own
+    /// exception subclass by string rather than matching this enum
+    /// directly (`quadraui-node`'s napi-rs boundary has no custom
+    /// exception-class mechanism, so it tags a thrown `Error`'s message
+    /// with this and reconstructs the typed subclass on the JS side).
+    pub fn code(&self) -> &'static str {
+        match self {
+            DecodeError::MissingField { .. } => "missing_field",
+            DecodeError::UnknownVariant { .. } => "unknown_variant",
+            DecodeError::TypeMismatch { .. } => "type_mismatch",
+            DecodeError::UnknownKey { .. } => "unknown_key",
+            DecodeError::VersionMismatch { .. } => "version_mismatch",
+            DecodeError::Borrow { .. } => "borrow",
+        }
+    }
+
+    /// The problem description [`Display`](std::fmt::Display) renders
+    /// after `"at <path>: "` — everything this variant carries besides
+    /// `path` itself, folded into one human-readable clause.
+    fn problem(&self) -> String {
+        match self {
+            DecodeError::MissingField { field, .. } => format!("missing field {field:?}"),
+            DecodeError::UnknownVariant {
+                field,
+                got,
+                expected,
+                ..
+            } => {
+                format!("{field:?} must be one of {expected:?}, got {got:?}")
+            }
+            DecodeError::TypeMismatch {
+                field, expected, ..
+            } => {
+                format!("{field:?} must be {expected}")
+            }
+            DecodeError::UnknownKey { key, expected, .. } => {
+                format!("unknown key {key:?} -- expected one of {expected:?}")
+            }
+            DecodeError::VersionMismatch { got, max, .. } => {
+                format!(
+                    "\"wire_version\" {got} is newer than this host understands \
+                     (max {max}) — upgrade the host, or downgrade the binding"
+                )
+            }
+            DecodeError::Borrow { message, .. } => message.clone(),
+        }
+    }
+}
 
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        let problem = self.problem();
+        match self.path().split_once(" › ") {
+            Some((root, rest)) => write!(f, "{root}: at {rest}: {problem}"),
+            None => write!(f, "{}: {problem}", self.path()),
+        }
     }
 }
 
 impl std::error::Error for DecodeError {}
 
 /// Deserializes `deserializer` into `T`, wrapping any failure as a
-/// [`DecodeError`] whose message names `what` — the shared tail every
+/// [`DecodeError::Borrow`] whose path is `what` — the shared tail every
 /// per-kind decoder in this crate (`wire::decode_layout_node`,
 /// `extra_paint::decode_extra_primitive`, ...) reduces to once it has a
 /// concrete type and a `serde::Deserializer` in hand. Public so a binding
@@ -63,7 +243,7 @@ where
     D: serde::Deserializer<'de>,
 {
     T::deserialize(deserializer)
-        .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))
+        .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))
 }
 
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};

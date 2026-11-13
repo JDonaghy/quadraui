@@ -791,6 +791,6 @@ test("showOverlay popover rejects a descriptor missing its content", () => {
         { float: { id: "popover:menu", anchor: anchor(2.0, 2.0) } },
         { width: 24.0, height: 8.0 },
       ),
-    /InvalidDescriptorError/,
+    /MissingFieldError/,
   );
 });

@@ -73,9 +73,48 @@ class QuadrauiError extends Error {
 }
 exports.QuadrauiError = QuadrauiError;
 
-/** A descriptor/event shape this binding's decode adapter rejected -- mirrors `quadraui-py`'s `InvalidDescriptorError`. */
+/**
+ * A descriptor/event shape this binding's decode adapter rejected --
+ * mirrors `quadraui-py`'s `InvalidDescriptorError`. A `quadraui_binding_core::
+ * DecodeError::Borrow` (a bespoke cross-field validation this crate's own
+ * decoders perform, or a lower-level `serde` error neither of them
+ * diagnosed further) raises this directly; every other `DecodeError`
+ * variant raises one of the five subclasses below instead, chosen on the
+ * Rust side by matching the enum, never by parsing this exception's own
+ * message.
+ */
 class InvalidDescriptorError extends QuadrauiError {}
 exports.InvalidDescriptorError = InvalidDescriptorError;
+
+/** A descriptor dict was missing a field this decoder requires -- mirrors `quadraui_binding_core::DecodeError::MissingField` (and `quadraui-py`'s `MissingFieldError`). `code` is `"missing_field"`. */
+class MissingFieldError extends InvalidDescriptorError {
+  readonly code = "missing_field";
+}
+exports.MissingFieldError = MissingFieldError;
+
+/** A field held a value outside the specific set this decoder accepts -- mirrors `quadraui_binding_core::DecodeError::UnknownVariant` (and `quadraui-py`'s `UnknownVariantError`). `code` is `"unknown_variant"`. */
+class UnknownVariantError extends InvalidDescriptorError {
+  readonly code = "unknown_variant";
+}
+exports.UnknownVariantError = UnknownVariantError;
+
+/** A field held a value of the wrong JSON shape -- mirrors `quadraui_binding_core::DecodeError::TypeMismatch` (and `quadraui-py`'s `TypeMismatchError`). `code` is `"type_mismatch"`. */
+class TypeMismatchError extends InvalidDescriptorError {
+  readonly code = "type_mismatch";
+}
+exports.TypeMismatchError = TypeMismatchError;
+
+/** A dict carried a key this decoder does not recognize there -- mirrors `quadraui_binding_core::DecodeError::UnknownKey` (and `quadraui-py`'s `UnknownKeyError`). `code` is `"unknown_key"`. */
+class UnknownKeyError extends InvalidDescriptorError {
+  readonly code = "unknown_key";
+}
+exports.UnknownKeyError = UnknownKeyError;
+
+/** A render callback's `"wire_version"` is newer than this host understands -- mirrors `quadraui_binding_core::DecodeError::VersionMismatch` (and `quadraui-py`'s `VersionMismatchError`). `code` is `"version_mismatch"`. */
+class VersionMismatchError extends InvalidDescriptorError {
+  readonly code = "version_mismatch";
+}
+exports.VersionMismatchError = VersionMismatchError;
 
 /** A fixed slot or additive-primitive kind that already holds a descriptor -- mirrors `quadraui-py`'s `SlotOccupiedError`. */
 class SlotOccupiedError extends QuadrauiError {}
@@ -154,6 +193,11 @@ exports.UnsupportedError = UnsupportedError;
  */
 const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiError> = {
   InvalidDescriptorError,
+  MissingFieldError,
+  UnknownVariantError,
+  TypeMismatchError,
+  UnknownKeyError,
+  VersionMismatchError,
   SlotOccupiedError,
   UnknownSlotError,
   InvalidDimensionsError,

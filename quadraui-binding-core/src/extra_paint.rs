@@ -1504,10 +1504,12 @@ macro_rules! extra_primitives {
                     $kind => Ok(Rc::new(crate::decode_value::<$ty, D>(what, deserializer)?)
                         as Rc<dyn ExtraPaint>),
                 )+
-                _ => Err(crate::DecodeError(format!(
-                    "{what}: unknown additive primitive kind {kind:?} (expected one of {:?})",
-                    EXTRA_PRIMITIVE_KINDS
-                ))),
+                _ => Err(crate::DecodeError::unknown_variant(
+                    what,
+                    "kind",
+                    kind,
+                    &EXTRA_PRIMITIVE_KINDS,
+                )),
             }
         }
     };

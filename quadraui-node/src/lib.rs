@@ -1033,7 +1033,7 @@ fn render_output_from_callback(
     match decode_render_output_with_styles("render", &value, styles) {
         Ok(output) => Some(output),
         Err(err) => {
-            record_error(pending_error, invalid_descriptor_error(err));
+            record_error(pending_error, decode_error_to_js(err));
             None
         }
     }
@@ -1412,6 +1412,35 @@ fn invalid_descriptor_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("InvalidDescriptorError: {detail}"))
 }
 
+/// [`invalid_descriptor_error`]'s counterpart for an actual
+/// [`DecodeError`] value: tags the thrown `Error`'s message with the
+/// specific subclass name `js/index.ts`'s `ERROR_CLASSES_BY_TAG` maps
+/// back to that variant's own JS class (`MissingFieldError`,
+/// `UnknownVariantError`, `TypeMismatchError`, `UnknownKeyError`,
+/// `VersionMismatchError`), chosen by matching the enum directly rather
+/// than parsing [`DecodeError`]'s own rendered message -- a
+/// [`DecodeError::Borrow`] (or any future variant this match doesn't name)
+/// falls back to the shared `InvalidDescriptorError` tag, same as before
+/// this match existed. The message itself is `err.to_string()` unchanged
+/// (`"<what>: at <path>: <problem>"`), so an author sees exactly which
+/// widget in the tree a nested decode failed on.
+fn decode_error_to_js(err: DecodeError) -> Error {
+    let message = err.to_string();
+    let tag = match err {
+        DecodeError::MissingField { .. } => "MissingFieldError",
+        DecodeError::UnknownVariant { .. } => "UnknownVariantError",
+        DecodeError::TypeMismatch { .. } => "TypeMismatchError",
+        DecodeError::UnknownKey { .. } => "UnknownKeyError",
+        DecodeError::VersionMismatch { .. } => "VersionMismatchError",
+        DecodeError::Borrow { .. } => "InvalidDescriptorError",
+        // `DecodeError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises the common base tag
+        // rather than failing to compile.
+        _ => "InvalidDescriptorError",
+    };
+    Error::from_reason(format!("{tag}: {message}"))
+}
+
 /// Mirrors [`invalid_descriptor_error`] for an already-occupied fixed slot
 /// or additive-primitive kind -- the napi-rs analog of `quadraui-py`'s
 /// `SlotOccupiedError` exception subclass.
@@ -1750,7 +1779,7 @@ fn decode_via_core<T>(
 ) -> Result<T> {
     let value = to_descriptor_value(descriptor)
         .map_err(|detail| invalid_descriptor_error(format!("{what}: {detail}")))?;
-    core(&value).map_err(invalid_descriptor_error)
+    core(&value).map_err(decode_error_to_js)
 }
 
 /// Decodes `descriptor` by first materializing it into one

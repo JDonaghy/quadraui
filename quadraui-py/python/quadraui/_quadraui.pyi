@@ -36,6 +36,16 @@ from .wire import (
 
 class QuadrauiError(Exception): ...
 class InvalidDescriptorError(QuadrauiError): ...
+class MissingFieldError(InvalidDescriptorError):
+    code: str
+class UnknownVariantError(InvalidDescriptorError):
+    code: str
+class TypeMismatchError(InvalidDescriptorError):
+    code: str
+class UnknownKeyError(InvalidDescriptorError):
+    code: str
+class VersionMismatchError(InvalidDescriptorError):
+    code: str
 class SlotOccupiedError(QuadrauiError): ...
 class UnknownSlotError(QuadrauiError): ...
 class InvalidDimensionsError(QuadrauiError): ...
