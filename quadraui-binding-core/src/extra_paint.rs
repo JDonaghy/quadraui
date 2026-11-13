@@ -11,11 +11,12 @@ use std::rc::Rc;
 
 use quadraui::{
     ActivityBar, Backend, BoardModel, Canvas, Chart, ComboBox, CommandCenter, CommandLine,
-    CompletionItemMeasure, DatePicker, DiffView, Editor, FindReplacePanel, Form, Image,
-    InteractionState, MenuBar, MessageList, Minimap, MultiSectionView, NumberInput, NumberInputHit,
-    Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect, ScrollAxis, ScrollView, Scrollbar,
-    Spinner, StatusBar, StatusBarHit, Switch, SwitchHit, Terminal, TextInput, TextRegion, Toolbar,
-    ToolbarButton, WidgetId,
+    CompletionItemMeasure, DatePicker, DiffView, Editor, FieldKind, FindReplacePanel, Form,
+    FormField, Image, InteractionState, LabelPosition, MenuBar, MessageList, Minimap,
+    MultiSectionView, NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar,
+    RadioGroup, Rect, ScrollAxis, ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit,
+    StyledText, Switch, SwitchHit, Terminal, TextInput, TextRegion, Toolbar, ToolbarButton,
+    WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -352,6 +353,445 @@ impl ExtraPaint for DatePicker {
     /// impossible, same caveat. `Left`/`Right`/`Up`/`Down`/`PageUp`/
     /// `PageDown`/`Enter` navigation still works once focused via
     /// [`ExtraPaint::tab_stop`].
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+/// Wraps `kind` as the sole field of a throwaway single-field [`Form`]
+/// sharing `id` with both the form and its one field — the bridge every
+/// standalone `"checkbox"`/`"slider"`/`"select"`/`"password"`/`"textarea"`
+/// leaf below uses to paint through [`quadraui::Backend::draw_form`]
+/// rather than a second, leaf-specific rasteriser: a `Form`-embedded field
+/// of the same [`FieldKind`] paints through the exact same backend call,
+/// so there is nothing for any of these leaves to duplicate. The label
+/// column is hidden form-wide (there is only ever one field, with no
+/// label of its own) so the leaf's whole area goes to the control, the
+/// same "just the control, no label gutter" footprint
+/// [`quadraui::Switch`]/[`quadraui::NumberInput`]/[`quadraui::ComboBox`]
+/// already have as bare standalone extras.
+fn single_field_form(id: WidgetId, kind: FieldKind, disabled: bool, focused: bool) -> Form {
+    Form {
+        id,
+        fields: vec![FormField {
+            id,
+            label: StyledText::plain(""),
+            kind,
+            hint: StyledText::plain(""),
+            disabled,
+            validation: None,
+            label_position: Some(LabelPosition::Hidden),
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }],
+        focused_field: if focused { Some(id) } else { None },
+        scroll_offset: 0,
+        has_focus: focused,
+        label_position: LabelPosition::Hidden,
+        label_align: Default::default(),
+        label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
+        spacing: Default::default(),
+    }
+}
+
+/// Mirrors [`quadraui::primitives::form`]'s own private
+/// `slider_default_step` — the standalone leaf's wire default needs the
+/// identical `1.0`, since it decodes straight into a [`FieldKind::Slider`]
+/// via [`single_field_form`].
+fn checkbox_slider_default_step() -> f32 {
+    1.0
+}
+
+/// A standalone boolean toggle — the layout-leaf lift of
+/// [`FieldKind::Toggle`], reached via the `"checkbox"` extra kind. Paints
+/// and whole-area hit-tests through [`single_field_form`] (see its doc);
+/// [`crate::semantic::checkbox_click_event`]/
+/// [`crate::semantic::checkbox_key_event`] supply the Space/Enter/click
+/// semantics `Form` itself has no generic keyboard handling for on a bare
+/// `Toggle` field (only `FormController`'s mouse `click_inner` flips one
+/// today), so this leaf is keyboard-operable in a way a `Form`-embedded
+/// `Toggle` field, used directly, is not yet.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Checkbox {
+    pub id: WidgetId,
+    #[serde(default)]
+    pub value: bool,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub focused: bool,
+}
+
+impl Checkbox {
+    pub(crate) fn as_form(&self) -> Form {
+        single_field_form(
+            self.id,
+            FieldKind::Toggle { value: self.value },
+            self.disabled,
+            self.focused,
+        )
+    }
+}
+
+impl ExtraPaint for Checkbox {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_form(area, &self.as_form());
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+/// A standalone numeric slider — the layout-leaf lift of
+/// [`FieldKind::Slider`], reached via the `"slider"` extra kind. Paints
+/// through [`single_field_form`] (see its doc);
+/// [`crate::semantic::slider_click_event`]/[`crate::semantic::slider_key_event`]
+/// supply Left/Right/Up/Down/Home/End stepping and a click-to-nudge, since
+/// (like [`Checkbox`] above) `Form` itself has no keyboard handling for a
+/// bare `Slider` field.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Slider {
+    pub id: WidgetId,
+    pub value: f32,
+    pub min: f32,
+    pub max: f32,
+    #[serde(default = "checkbox_slider_default_step")]
+    pub step: f32,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub focused: bool,
+}
+
+impl Slider {
+    pub(crate) fn as_form(&self) -> Form {
+        single_field_form(
+            self.id,
+            FieldKind::Slider {
+                value: self.value,
+                min: self.min,
+                max: self.max,
+                step: self.step,
+            },
+            self.disabled,
+            self.focused,
+        )
+    }
+
+    /// Clamps `raw` to `[self.min, self.max]` without
+    /// [`f32::clamp`]'s panic on an inverted `min > max` — a wire payload
+    /// controls both bounds, so a host typo inverting them degrades to a
+    /// well-defined (if useless) clamp instead of a panic that would take
+    /// the whole render down.
+    pub(crate) fn clamp(&self, raw: f32) -> f32 {
+        raw.max(self.min).min(self.max)
+    }
+}
+
+impl ExtraPaint for Slider {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_form(area, &self.as_form());
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+/// A standalone single-choice option list — the layout-leaf lift of
+/// [`FieldKind::Dropdown`], reached via the `"select"` extra kind. Paints
+/// through [`single_field_form`] (see its doc);
+/// [`crate::semantic::select_click_event`]/[`crate::semantic::select_key_event`]
+/// move/commit `selected_idx` on Up/Down/Enter/Space and on click, mirroring
+/// `FieldKind::Dropdown`'s own "no separate open step; a move commits
+/// immediately" contract.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Select {
+    pub id: WidgetId,
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub selected_idx: usize,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub focused: bool,
+}
+
+impl Select {
+    pub(crate) fn as_form(&self) -> Form {
+        single_field_form(
+            self.id,
+            FieldKind::Dropdown {
+                options: self
+                    .options
+                    .iter()
+                    .map(|o| StyledText::plain(o.clone()))
+                    .collect(),
+                selected_idx: self.selected_idx,
+            },
+            self.disabled,
+            self.focused,
+        )
+    }
+}
+
+impl ExtraPaint for Select {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_form(area, &self.as_form());
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+/// Mirrors [`quadraui::primitives::form`]'s own private
+/// `password_default_mask`.
+fn password_input_default_mask() -> char {
+    '•'
+}
+
+/// A standalone masked single-line input — the layout-leaf lift of
+/// [`FieldKind::PasswordInput`], reached via the `"password"` extra kind.
+/// The real value lives in `inner` (a plain [`quadraui::TextInput`], always
+/// kept to exactly one line — see [`crate::semantic::password_key_event`]), so typing/
+/// cursor/selection reuse [`quadraui::TextEditor`] and
+/// [`crate::text_input::text_input_key_event`] verbatim rather than a
+/// second text-editing implementation; only [`PasswordInput::as_form`]'s
+/// paint-time bridge differs from a bare standalone `TextInput`, masking
+/// every character so the screen never shows the plaintext — matching
+/// `FieldKind::PasswordInput`'s own "value is stored in plaintext; only
+/// rendering is masked" contract.
+#[derive(Debug, Clone)]
+pub struct PasswordInput {
+    pub inner: TextInput,
+    pub mask_char: char,
+}
+
+impl PasswordInput {
+    pub(crate) fn as_form(&self) -> Form {
+        let line = self.inner.lines.first().map(String::as_str).unwrap_or("");
+        let cursor = line
+            .char_indices()
+            .nth(self.inner.cursor_col)
+            .map(|(b, _)| b)
+            .unwrap_or(line.len());
+        single_field_form(
+            self.inner.id,
+            FieldKind::PasswordInput {
+                value: line.to_string(),
+                placeholder: String::new(),
+                cursor: Some(cursor),
+                mask_char: self.mask_char,
+            },
+            false,
+            self.inner.has_focus,
+        )
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PasswordInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Wire {
+            id: WidgetId,
+            #[serde(default)]
+            value: String,
+            #[serde(default)]
+            cursor: Option<usize>,
+            #[serde(default)]
+            has_focus: bool,
+            #[serde(default = "password_input_default_mask")]
+            mask_char: char,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let char_count = wire.value.chars().count();
+        let cursor_col = wire.cursor.unwrap_or(char_count).min(char_count);
+        Ok(PasswordInput {
+            inner: TextInput::new(wire.id)
+                .with_lines(vec![wire.value])
+                .with_cursor_col(cursor_col)
+                .with_has_focus(wire.has_focus),
+            mask_char: wire.mask_char,
+        })
+    }
+}
+
+impl ExtraPaint for PasswordInput {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_form(area, &self.as_form());
+    }
+
+    fn id(&self) -> WidgetId {
+        self.inner.id
+    }
+
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+/// Mirrors [`quadraui::primitives::form`]'s own private
+/// `textarea_default_rows`.
+fn text_area_default_rows() -> usize {
+    3
+}
+
+/// A standalone multi-line input — the layout-leaf lift of
+/// [`FieldKind::TextArea`], reached via the `"textarea"` extra kind. Like
+/// [`PasswordInput`], `inner` is a plain [`quadraui::TextInput`] (already
+/// multi-line), so [`crate::semantic::text_area_key_event`] reuses
+/// [`quadraui::EditOp::from_key`] and
+/// [`crate::text_input::apply_text_input_edit`] unchanged — `inner.lines`
+/// *is* the value, with no bridging needed on the way in. Only the
+/// paint-time bridge differs from a bare standalone `TextInput`: it
+/// round-trips through a [`FieldKind::TextArea`] so the leaf paints
+/// pixel-for-pixel as a `Form`-embedded `TextArea` field would, down to
+/// `visible_rows`' height hint.
+#[derive(Debug, Clone)]
+pub struct TextArea {
+    pub inner: TextInput,
+    pub visible_rows: usize,
+}
+
+impl<'de> serde::Deserialize<'de> for TextArea {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Wire {
+            id: WidgetId,
+            #[serde(default)]
+            value: String,
+            #[serde(default)]
+            placeholder: Option<String>,
+            #[serde(default)]
+            cursor: Option<usize>,
+            #[serde(default)]
+            has_focus: bool,
+            #[serde(default = "text_area_default_rows")]
+            visible_rows: usize,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let lines: Vec<String> = wire.value.split('\n').map(str::to_string).collect();
+        // `cursor` is a byte offset into the flat multi-line `value`
+        // (`FieldKind::TextArea`'s own convention) — resolve it to a
+        // `(line, col)` pair by walking line boundaries, the inverse of
+        // `TextArea::as_form`'s own byte-offset computation.
+        let (cursor_line, cursor_col) = {
+            let mut remaining = wire.cursor.unwrap_or(0);
+            let mut line_idx = 0;
+            for (i, line) in lines.iter().enumerate() {
+                let line_len = line.len();
+                if remaining <= line_len {
+                    let col = line
+                        .char_indices()
+                        .take_while(|(b, _)| *b < remaining)
+                        .count();
+                    line_idx = i;
+                    remaining = col;
+                    break;
+                }
+                remaining -= line_len + 1;
+                line_idx = i;
+            }
+            (line_idx, remaining)
+        };
+        let mut inner = TextInput::new(wire.id)
+            .with_lines(lines)
+            .with_cursor_line(cursor_line)
+            .with_cursor_col(cursor_col)
+            .with_has_focus(wire.has_focus);
+        if let Some(placeholder) = wire.placeholder {
+            inner = inner.with_placeholder(placeholder);
+        }
+        Ok(TextArea {
+            inner,
+            visible_rows: wire.visible_rows,
+        })
+    }
+}
+
+impl TextArea {
+    pub(crate) fn as_form(&self) -> Form {
+        let value = self.inner.lines.join("\n");
+        let mut cursor = 0usize;
+        for line in &self.inner.lines[..self.inner.cursor_line.min(self.inner.lines.len())] {
+            cursor += line.len() + 1;
+        }
+        if let Some(line) = self.inner.lines.get(self.inner.cursor_line) {
+            cursor += line
+                .char_indices()
+                .nth(self.inner.cursor_col)
+                .map(|(b, _)| b)
+                .unwrap_or(line.len());
+        }
+        single_field_form(
+            self.inner.id,
+            FieldKind::TextArea {
+                value,
+                placeholder: self.inner.placeholder.clone().unwrap_or_default(),
+                cursor: Some(cursor),
+                visible_rows: self.visible_rows,
+            },
+            false,
+            self.inner.has_focus,
+        )
+    }
+}
+
+impl ExtraPaint for TextArea {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_form(area, &self.as_form());
+    }
+
+    fn id(&self) -> WidgetId {
+        self.inner.id
+    }
+
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -908,6 +1348,11 @@ extra_primitives! {
     "canvas" => Canvas,
     "scroll_view" => ScrollView,
     "find_replace" => FindReplacePanel,
+    "checkbox" => Checkbox,
+    "slider" => Slider,
+    "select" => Select,
+    "password" => PasswordInput,
+    "textarea" => TextArea,
 }
 
 #[cfg(test)]
@@ -917,7 +1362,7 @@ mod tests {
     use crate::layout::{LayoutLeaf, LeafDescriptor};
     use crate::render::paint_leaf;
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::{AppLogic, PaletteItem, Reaction, UiEvent};
+    use quadraui::{AppLogic, FormEvent, PaletteItem, Reaction, UiEvent};
     use std::cell::RefCell;
 
     /// Records every event an [`EventSink`] receives, in order, for a
@@ -1319,6 +1764,303 @@ mod tests {
                 UiEvent::MenuActivated(id) if *id == WidgetId::new("menu:file:save")
             )),
             "expected a MenuActivated event for the inline menu_bar leaf, got {dispatched:?}"
+        );
+    }
+
+    /// A reusable one-leaf [`AppLogic`] for the standalone
+    /// `"checkbox"`/`"slider"`/`"select"`/`"password"`/`"textarea"` leaf
+    /// tests below — the same shape
+    /// [`switch_leaf_click_toggles_through_the_interaction_engine`] builds
+    /// by hand, generalised over any [`ExtraPaint`] so each leaf's own test
+    /// only needs to build the descriptor and assert on the result.
+    struct SingleLeafApp {
+        id: WidgetId,
+        extra: Rc<dyn ExtraPaint>,
+        engine: crate::engine::InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for SingleLeafApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+            use crate::render::paint_layout;
+
+            let tree = LayoutNode::Row(LayoutContainer::new(
+                vec![LayoutNode::Leaf(LayoutLeaf {
+                    id: self.id.as_str().to_string(),
+                    descriptor: LeafDescriptor::Extra(self.extra.clone()),
+                    scroll_px: None,
+                })],
+                Spacing::default(),
+            ));
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &tree, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Renders `extra` as the sole leaf of a `20x5` driver and returns it
+    /// already focused (via a leading `Tab`, the same mechanism
+    /// [`tab_focuses_a_toolbar_and_enter_activates_its_focused_button`]
+    /// (`crate::engine`'s own tests) uses) — every leaf below is its
+    /// layout tree's only tab stop, so one `Tab` always lands focus on it.
+    fn single_leaf_driver(id: WidgetId, extra: Rc<dyn ExtraPaint>) -> TuiDriver<SingleLeafApp> {
+        let app = SingleLeafApp {
+            id,
+            extra,
+            engine: crate::engine::InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+        driver.press_named(quadraui::NamedKey::Tab);
+        driver.app().sink.borrow_mut().dispatched.clear();
+        driver
+    }
+
+    /// The absolute area the leaf `id` painted into this frame, read back
+    /// from the engine's own hit map the same way
+    /// [`switch_leaf_click_toggles_through_the_interaction_engine`] does.
+    fn leaf_area(driver: &TuiDriver<SingleLeafApp>, id: WidgetId) -> Rect {
+        driver
+            .app()
+            .engine
+            .hit_map()
+            .iter()
+            .find_map(|hit| match hit {
+                PaintedHit::Extra {
+                    id: hit_id, area, ..
+                } if *hit_id == id => Some(*area),
+                _ => None,
+            })
+            .expect("leaf should have painted an Extra hit")
+    }
+
+    /// Render shows the unchecked glyph; a click toggles it (mouse); Space
+    /// toggles it again (keyboard) — both routed through
+    /// [`checkbox_click_event`]/[`checkbox_key_event`], both reaching the
+    /// handler as [`FormEvent::ToggleChanged`]. `Checkbox::as_form` is what
+    /// paints the `[ ]`/`[x]` glyph — the exact [`FieldKind::Toggle`]
+    /// painter a `Form`-embedded field uses, never a second rasteriser.
+    #[test]
+    fn checkbox_leaf_renders_clicks_and_keys_toggle_through_the_interaction_engine() {
+        let id = WidgetId::new("cb:1");
+        let checkbox = || Checkbox {
+            id,
+            value: false,
+            disabled: false,
+            focused: true,
+        };
+
+        let mut driver = single_leaf_driver(id, Rc::new(checkbox()));
+        assert!(driver.screen_contains("[ ]"), "{}", driver.screen());
+
+        let area = leaf_area(&driver, id);
+        driver.click(area.x, area.y);
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::ToggleChanged { value: true, .. })
+                    if *ev_id == id
+            )),
+            "click should emit ToggleChanged{{value: true}}: {dispatched:?}"
+        );
+
+        // A fresh driver, same starting `value: false` — the engine only
+        // ever sees the last-painted snapshot (the host echoes the new
+        // value back on its next render, which this single-frame test
+        // never does), so Space is exercised against the same starting
+        // state the click above was, not the click's own outcome.
+        let mut driver = single_leaf_driver(id, Rc::new(checkbox()));
+        driver.type_char(' ');
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::ToggleChanged { value: true, .. })
+                    if *ev_id == id
+            )),
+            "Space should emit ToggleChanged{{value: true}}: {dispatched:?}"
+        );
+    }
+
+    /// Right/Up (keyboard) and a click (mouse) both step the value up by
+    /// `step`, reaching the handler as [`FormEvent::SliderChanged`] — the
+    /// keyboard operability `FieldKind::Slider` has no generic
+    /// `FormController` arm for today.
+    #[test]
+    fn slider_leaf_renders_clicks_and_keys_step_through_the_interaction_engine() {
+        let id = WidgetId::new("sl:1");
+        let mut driver = single_leaf_driver(
+            id,
+            Rc::new(Slider {
+                id,
+                value: 0.0,
+                min: 0.0,
+                max: 10.0,
+                step: 1.0,
+                disabled: false,
+                focused: true,
+            }),
+        );
+
+        let area = leaf_area(&driver, id);
+        driver.click(area.x, area.y);
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|event| matches!(
+                    event,
+                    UiEvent::Form(ev_id, FormEvent::SliderChanged { value, .. })
+                        if *ev_id == id && (*value - 1.0).abs() < f32::EPSILON
+                )),
+                "click should emit SliderChanged{{value: 1.0}}: {dispatched:?}"
+            );
+        }
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        driver.press_named(quadraui::NamedKey::Right);
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::SliderChanged { value, .. })
+                    if *ev_id == id && (*value - 1.0).abs() < f32::EPSILON
+            )),
+            "Right should emit SliderChanged{{value: 1.0}}: {dispatched:?}"
+        );
+    }
+
+    /// Down (keyboard) and a click (mouse) both move to the next option,
+    /// committing immediately — reaching the handler as
+    /// [`FormEvent::DropdownChanged`], mirroring `FieldKind::Dropdown`'s
+    /// own "no separate open step" contract.
+    #[test]
+    fn select_leaf_renders_clicks_and_keys_move_through_the_interaction_engine() {
+        let id = WidgetId::new("se:1");
+        let select = || Select {
+            id,
+            options: vec!["One".to_string(), "Two".to_string(), "Three".to_string()],
+            selected_idx: 0,
+            disabled: false,
+            focused: true,
+        };
+
+        let mut driver = single_leaf_driver(id, Rc::new(select()));
+        assert!(driver.screen_contains("One"), "{}", driver.screen());
+
+        let area = leaf_area(&driver, id);
+        driver.click(area.x, area.y);
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::DropdownChanged { selected_idx: 1, .. })
+                    if *ev_id == id
+            )),
+            "click should emit DropdownChanged{{selected_idx: 1}}: {dispatched:?}"
+        );
+
+        // A fresh driver at the same starting `selected_idx: 0` — see the
+        // identical comment in the checkbox test above for why this
+        // doesn't chain off the click's own outcome.
+        let mut driver = single_leaf_driver(id, Rc::new(select()));
+        driver.press_named(quadraui::NamedKey::Down);
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::DropdownChanged { selected_idx: 1, .. })
+                    if *ev_id == id
+            )),
+            "Down should emit DropdownChanged{{selected_idx: 1}}: {dispatched:?}"
+        );
+    }
+
+    /// Typing a character is the real interactive path for a standalone
+    /// password leaf (a whole-area click only focuses it, the same coarse
+    /// convention `ComboBox`/`DatePicker`/`RadioGroup` already have) —
+    /// reaching the handler as [`FormEvent::TextInputChanged`] via
+    /// [`password_key_event`]'s forward to [`text_input_key_event`]. The
+    /// render assertion checks the masked glyph appears and the plaintext
+    /// never does, proving [`PasswordInput::as_form`] actually masks
+    /// rather than echoing `inner` verbatim.
+    #[test]
+    fn password_leaf_renders_masked_and_typing_reaches_the_interaction_engine() {
+        let id = WidgetId::new("pw:1");
+        let inner = TextInput::new(id)
+            .with_lines(vec!["hi".to_string()])
+            .with_cursor_col(2)
+            .with_has_focus(true);
+        let mut driver = single_leaf_driver(
+            id,
+            Rc::new(PasswordInput {
+                inner,
+                mask_char: '*',
+            }),
+        );
+        assert!(driver.screen_contains("**"), "{}", driver.screen());
+        assert!(!driver.screen_contains("hi"), "{}", driver.screen());
+
+        driver.type_char('!');
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::TextInputChanged { value, .. })
+                    if *ev_id == id && value == "hi!"
+            )),
+            "typing '!' should emit TextInputChanged{{value: \"hi!\"}}: {dispatched:?}"
+        );
+    }
+
+    /// Enter inserts a newline (not a commit, unlike a plain standalone
+    /// `TextInput`/[`PasswordInput`]) — the one behavioural difference
+    /// `FieldKind::TextArea`'s own doc draws against `FieldKind::TextInput`,
+    /// given here by [`text_area_key_event`] never special-casing Enter the
+    /// way [`password_key_event`]'s forward to [`text_input_key_event`]
+    /// does. Reaches the handler as [`FormEvent::TextInputChanged`] with
+    /// the embedded `\n`.
+    #[test]
+    fn text_area_leaf_renders_and_enter_inserts_a_newline_through_the_interaction_engine() {
+        let id = WidgetId::new("ta:1");
+        let inner = TextInput::new(id)
+            .with_lines(vec!["hi".to_string()])
+            .with_cursor_col(2)
+            .with_has_focus(true);
+        let mut driver = single_leaf_driver(
+            id,
+            Rc::new(TextArea {
+                inner,
+                visible_rows: 3,
+            }),
+        );
+        assert!(driver.screen_contains("hi"), "{}", driver.screen());
+
+        driver.press_named(quadraui::NamedKey::Enter);
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(ev_id, FormEvent::TextInputChanged { value, .. })
+                    if *ev_id == id && value == "hi\n"
+            )),
+            "Enter should emit TextInputChanged{{value: \"hi\\n\"}}: {dispatched:?}"
         );
     }
 }
