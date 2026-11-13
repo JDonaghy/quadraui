@@ -43,6 +43,13 @@ enum OverlayKind {
     Completions,
     Float,
     RichTextPopup,
+    /// A float with a layout subtree painted inside it, whose leaves take
+    /// focus and emit events exactly as in the main tree -- see
+    /// [`InteractionEngine::show_popover_layout`].
+    Popover,
+    /// A modal dialog with a layout subtree painted in its body -- see
+    /// [`InteractionEngine::open_layout_dialog`].
+    LayoutDialog,
 }
 
 impl OverlayKind {
@@ -58,10 +65,12 @@ impl OverlayKind {
             "completions" => Ok(Self::Completions),
             "float" => Ok(Self::Float),
             "rich_text_popup" => Ok(Self::RichTextPopup),
+            "popover" => Ok(Self::Popover),
+            "layout_dialog" => Ok(Self::LayoutDialog),
             other => Err(invalid_descriptor_error(format!(
                 "{what}: unknown overlay kind {other:?}; expected one of \"context_menu\", \
                  \"message_dialog\", \"toast\", \"tooltip\", \"completions\", \"float\", \
-                 \"rich_text_popup\""
+                 \"rich_text_popup\", \"popover\", \"layout_dialog\""
             ))),
         }
     }
@@ -160,8 +169,19 @@ impl QuiApp {
     /// event-routing behavior its `kind` carries over unchanged).
     ///
     /// `kind` is one of `"context_menu"`, `"message_dialog"`, `"toast"`,
-    /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"` --
-    /// `InvalidDescriptorError` names the full list for anything else.
+    /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"`,
+    /// `"popover"`, `"layout_dialog"` -- `InvalidDescriptorError` names
+    /// the full list for anything else.
+    ///
+    /// `"popover"` and `"layout_dialog"` are the content-bearing kinds:
+    /// each takes a `{float|dialog: {...}, content: <layout node>}`
+    /// descriptor (`PopoverDescriptor`/`LayoutDialogDescriptor` in
+    /// `wire.d.ts`) whose `content` subtree is laid out inside the
+    /// overlay and whose leaves take focus and emit the same semantic
+    /// events they would in the main tree. `anchor` is a `{width,
+    /// height}` size for both -- the popover's own size, or the dialog's
+    /// content slot, which may be omitted entirely for a
+    /// viewport-relative default.
     /// `descriptor` holds that kind's own fields: for `"toast"`,
     /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"`, the
     /// same object shape the matching `show*` method's own primitive
@@ -295,6 +315,67 @@ impl QuiApp {
                 })?;
                 Ok(id)
             }
+            OverlayKind::Popover => {
+                let anchor = require_anchor("showOverlay", &kind, anchor)?;
+                let size: FloatSize = decode_direct(env, "showOverlay", anchor)?;
+                let measure = FloatMeasure::new(size.width as f32, size.height as f32);
+                let value = to_descriptor_value(descriptor)
+                    .map_err(|detail| invalid_descriptor_error(format!("showOverlay: {detail}")))?;
+                let mut id = String::new();
+                self.open_overlay_try(env, |backend, app_logic| {
+                    let decoded = {
+                        let theme = backend.theme();
+                        let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
+                        decode_popover("showOverlay", &value, styles)
+                            .map_err(invalid_descriptor_error)?
+                    };
+                    id = decoded.chrome.id.to_string();
+                    app_logic.engine.show_popover_layout(
+                        decoded.chrome,
+                        measure,
+                        decoded.content,
+                        backend,
+                    );
+                    Ok(())
+                })?;
+                Ok(id)
+            }
+            OverlayKind::LayoutDialog => {
+                // Unlike every other anchored kind, the anchor is
+                // optional here: it sizes the dialog's content slot, and
+                // omitting it takes `DialogContentSize`'s own
+                // viewport-relative defaults.
+                let size = match anchor {
+                    Some(anchor) => {
+                        let size: FloatSize = decode_direct(env, "showOverlay", anchor)?;
+                        DialogContentSize {
+                            width: Some(size.width as f32),
+                            height: Some(size.height as f32),
+                        }
+                    }
+                    None => DialogContentSize::default(),
+                };
+                let value = to_descriptor_value(descriptor)
+                    .map_err(|detail| invalid_descriptor_error(format!("showOverlay: {detail}")))?;
+                let mut id = String::new();
+                self.open_overlay_try(env, |backend, app_logic| {
+                    let decoded = {
+                        let theme = backend.theme();
+                        let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
+                        decode_layout_dialog("showOverlay", &value, styles)
+                            .map_err(invalid_descriptor_error)?
+                    };
+                    id = decoded.chrome.id.to_string();
+                    app_logic.engine.open_layout_dialog(
+                        decoded.chrome,
+                        decoded.content,
+                        size,
+                        backend,
+                    );
+                    Ok(())
+                })?;
+                Ok(id)
+            }
         }
     }
 
@@ -332,8 +413,13 @@ impl QuiApp {
             "completions" => self.dismiss_via(env, |_backend, app_logic| {
                 app_logic.engine.dismiss_completions()
             }),
-            "float" => self.dismiss_via(env, |backend, app_logic| {
+            // A `"popover"` *is* a float (one this engine paints content
+            // into), so either sentinel closes it.
+            "float" | "popover" => self.dismiss_via(env, |backend, app_logic| {
                 app_logic.engine.dismiss_float(backend)
+            }),
+            "layout_dialog" => self.dismiss_via(env, |backend, app_logic| {
+                app_logic.engine.close_layout_dialog(backend)
             }),
             "rich_text_popup" => self.dismiss_via(env, |_backend, app_logic| {
                 app_logic.engine.dismiss_rich_text_popup()
@@ -542,6 +628,28 @@ impl QuiApp {
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             open(backend, app_logic);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// [`Self::open_overlay`] for a kind whose descriptor can only be
+    /// decoded once the live `(TuiBackend, NodeAppLogic)` pair is in hand
+    /// -- `"popover"`/`"layout_dialog"`, whose `"content"` subtree
+    /// resolves its `"class"` keys against the backend's current theme
+    /// and this app's own registered style sets. `open` reports a decode
+    /// failure as the same `InvalidDescriptorError` every other kind
+    /// raises before ever reaching the engine, and nothing is rendered
+    /// when it does.
+    fn open_overlay_try(
+        &mut self,
+        env: Env,
+        open: impl FnOnce(&mut dyn Backend, &mut NodeAppLogic) -> Result<()>,
+    ) -> Result<()> {
+        self.guarded(env, |app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            open(backend, app_logic)?;
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
             Ok(())
