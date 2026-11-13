@@ -1268,7 +1268,7 @@ pub fn schema() -> Vec<DefJson> {
         vec![
             field("id", re("WidgetId")),
             field("source", str_()),
-            field_opt("scroll_top", int_()),
+            field_opt("scroll_offset", int_()),
         ],
     ));
     let scroll_axis = b.define(alias("ScrollAxis", lit(&["Vertical", "Horizontal"])));

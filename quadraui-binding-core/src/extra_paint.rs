@@ -16,8 +16,7 @@ use quadraui::{
     MessageList, Minimap, MultiSectionView, NumberInput, NumberInputHit, Palette, PipelineView,
     Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar,
     Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit, Terminal, TextDisplay,
-    TextDisplayLine, TextDisplayLineMeasure, TextInput, TextRegion, Theme, Toolbar, ToolbarButton,
-    WidgetId,
+    TextDisplayLine, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -834,10 +833,15 @@ impl ExtraPaint for TextArea {
 /// already take with their own `as_form` bridge) turns it into the
 /// [`TextDisplay`] this type paints through, so headings/bold/italic/code
 /// spans/lists/links all reuse the one markdown→styled-lines renderer
-/// instead of a second parser. `scroll_top` mirrors
-/// [`TextDisplay::scroll_offset`]'s own controlled-component contract —
-/// the host owns it and feeds the updated value back in on the next
-/// render after a scroll gesture.
+/// instead of a second parser. `scroll_offset` mirrors
+/// [`TextDisplay::scroll_offset`]'s own controlled-component contract (same
+/// wire key, too) — the host owns it and feeds the updated value back in
+/// on the next render after a scroll gesture. A wheel notch over the leaf
+/// (its body or a link) is translated the same way one over a plain
+/// `"text_display"` leaf is — see [`crate::drag::markdown_at`] and its call
+/// site in [`crate::engine::InteractionEngine::handle`] — into
+/// `UiEvent::TextDisplay(id, TextDisplayEvent::Scrolled { new_offset })`,
+/// which the host applies back onto this field.
 ///
 /// Links resolve to an exact clicked line through
 /// [`ExtraPaint::paint_chrome`]'s per-link `chrome_hits` (the same
@@ -854,7 +858,7 @@ pub struct Markdown {
     pub id: WidgetId,
     pub source: String,
     #[serde(default)]
-    pub scroll_top: usize,
+    pub scroll_offset: usize,
 }
 
 /// Builds the `WidgetId` of the `idx`-th link inside `id`'s markdown
@@ -884,7 +888,7 @@ impl Markdown {
         let td = TextDisplay {
             id: self.id,
             lines,
-            scroll_offset: self.scroll_top,
+            scroll_offset: self.scroll_offset,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -907,6 +911,28 @@ impl Markdown {
         let idx: usize = child.as_str().strip_prefix(&prefix)?.parse().ok()?;
         let rendered = render_markdown_to_styled(&self.source, &Theme::default());
         rendered.links.get(idx).map(|(_, _, url)| url.clone())
+    }
+
+    /// `(total_lines, viewport_lines)` for this leaf's rendered
+    /// `TextDisplay` at `area`, via [`Backend::text_display_layout`] — the
+    /// same per-frame layout [`ExtraPaint::paint_chrome`] paints from, so a
+    /// wheel notch's `max_offset` clamp agrees with what's actually on
+    /// screen. `viewport_lines` is measured at a zero scroll offset (a
+    /// shadow clone, painting nothing) the same way
+    /// `crate::render::text_display_viewport_lines` measures a plain
+    /// `"text_display"` leaf's own capacity, since a layout at the real
+    /// offset can read short near the end of a long document.
+    pub(crate) fn viewport_lines(&self, backend: &mut dyn Backend, area: Rect) -> (usize, usize) {
+        let theme = backend.theme();
+        let (td, _) = self.render(&theme);
+        let total_lines = td.lines.len();
+        let mut shadow = td;
+        shadow.scroll_offset = 0;
+        let viewport_lines = backend
+            .text_display_layout(area, &shadow)
+            .visible_lines
+            .len();
+        (total_lines, viewport_lines)
     }
 }
 
@@ -931,6 +957,13 @@ impl ExtraPaint for Markdown {
     /// this instead of [`ExtraPaint::paint`] for every `Extra` leaf, so
     /// this is the one real paint path; [`ExtraPaint::paint`] above stays
     /// for trait completeness and direct (non-leaf) use.
+    ///
+    /// Link rects come from [`Backend::text_display_layout`], never a
+    /// hand-rolled measure — it's the same per-row layout
+    /// `draw_text_display` itself paints from (word-wrap on TUI, Pango
+    /// wrap on GTK), so a chrome rect never drifts from where the backend
+    /// actually drew that row the way a flat one-row-per-line guess would
+    /// on any line long enough to wrap.
     fn paint_chrome(
         &self,
         backend: &mut dyn Backend,
@@ -943,10 +976,7 @@ impl ExtraPaint for Markdown {
         if rendered.links.is_empty() {
             return Vec::new();
         }
-        let row_height = backend.line_height();
-        let layout = td.layout(area.width, area.height, |_| {
-            TextDisplayLineMeasure::new(row_height)
-        });
+        let layout = backend.text_display_layout(area, &td);
         layout
             .visible_lines
             .iter()
@@ -1838,13 +1868,17 @@ mod tests {
 
     /// A `Markdown` leaf renders headings, bold/italic, an inline code
     /// span and a list through the shared `render_markdown_to_styled`
-    /// adapter (asserted on the painted screen text, proving the same
-    /// renderer `push_turn_markdown` uses is reused rather than a second
-    /// parser), and a `MouseDown` on the link's painted row round-trips
-    /// through [`crate::engine::InteractionEngine::handle`]'s
-    /// `HitDetail::ExtraChrome` arm into
-    /// `UiEvent::RichTextLinkClicked` — the same event `RichTextPopup`'s
-    /// own link click already dispatches.
+    /// adapter — asserted both on the raw markdown syntax having been
+    /// *consumed* (every marker absent from the painted screen text) and
+    /// on a `fg` distinct from plain body text for the code span, so a
+    /// bypass that dumped `source` to the screen verbatim — which still
+    /// contains every one of those substrings — fails this test. This
+    /// proves the same renderer `push_turn_markdown` uses is reused rather
+    /// than a second parser. A `MouseDown` on the link's painted row
+    /// round-trips through
+    /// [`crate::engine::InteractionEngine::handle`]'s `HitDetail::ExtraChrome`
+    /// arm into `UiEvent::RichTextLinkClicked` — the same event
+    /// `RichTextPopup`'s own link click already dispatches.
     #[test]
     fn markdown_leaf_renders_formatting_and_link_click_emits_rich_text_link_clicked() {
         use crate::engine::InteractionEngine;
@@ -1864,7 +1898,7 @@ mod tests {
                 let markdown = Markdown {
                     id: WidgetId::new("md:1"),
                     source: "# Title\n**bold** *italic* `code`\n- item\n[docs](https://example.com/docs)".to_string(),
-                    scroll_top: 0,
+                    scroll_offset: 0,
                 };
                 let tree = LayoutNode::Row(LayoutContainer::new(
                     vec![LayoutNode::Leaf(LayoutLeaf {
@@ -1907,6 +1941,59 @@ mod tests {
         assert!(driver.screen_contains("item"), "list item text missing");
         assert!(driver.screen_contains("docs"), "link text missing");
 
+        // Every raw markdown marker must be gone from the painted screen
+        // -- a renderer bypass that printed `source` verbatim would still
+        // pass every `screen_contains` assertion above, since all of those
+        // substrings also appear in the raw source text.
+        assert!(
+            !driver.screen_contains("# Title"),
+            "heading marker should be stripped, not painted literally"
+        );
+        assert!(
+            !driver.screen_contains("**bold**"),
+            "bold marker should be stripped, not painted literally"
+        );
+        assert!(
+            !driver.screen_contains("*italic*"),
+            "italic marker should be stripped, not painted literally"
+        );
+        assert!(
+            !driver.screen_contains("`code`"),
+            "code-span marker should be stripped, not painted literally"
+        );
+        assert!(
+            !driver.screen_contains("[docs]"),
+            "link syntax should be stripped, not painted literally"
+        );
+        assert!(
+            driver.screen_contains("\u{2022}"),
+            "list item should paint a bullet marker"
+        );
+
+        // The adapter's own styling -- not just marker removal -- reaches
+        // the screen: the code span's `fg` differs from plain body text's
+        // (`Theme::accent_fg`, not the default foreground). `TextDisplay`'s
+        // TUI rasteriser (`tui::text_display::draw_text_display`) paints
+        // only `span.fg`/`span.bg`, not `span.bold`/`span.italic` (a
+        // pre-existing TUI limitation of the primitive this leaf paints
+        // through, not something this leaf can fix on its own), so bold/
+        // italic have no distinct on-screen signal to assert beyond the
+        // marker-stripping above.
+        let (item_x, item_y) = driver
+            .find("item")
+            .expect("plain list text should be painted");
+        let item_style = driver
+            .style_at(item_x as u16, item_y as u16)
+            .expect("style at plain list text");
+        let (code_x, code_y) = driver.find("code").expect("code span should be painted");
+        let code_style = driver
+            .style_at(code_x as u16, code_y as u16)
+            .expect("style at code span");
+        assert_ne!(
+            code_style.fg, item_style.fg,
+            "code span should be coloured differently from plain body text"
+        );
+
         let link_point = {
             let hits = driver.app().engine.hit_map();
             hits.iter()
@@ -1936,6 +2023,91 @@ mod tests {
                     if *id == WidgetId::new("md:1") && url == "https://example.com/docs"
             )),
             "expected a RichTextLinkClicked event for the inline markdown leaf, got {dispatched:?}"
+        );
+    }
+
+    /// A wheel notch over a `Markdown` leaf's body must emit
+    /// `UiEvent::TextDisplay(id, TextDisplayEvent::Scrolled { .. })` — the
+    /// same translation a plain `"text_display"` leaf's own wheel gets
+    /// (`InteractionEngine::handle`'s `over_markdown` arm), since the host
+    /// owns `Markdown::scroll_offset` as a controlled component and has no
+    /// other way to learn a scroll gesture happened. The document has more
+    /// lines than the 10-row viewport fits, so there is something to
+    /// scroll.
+    #[test]
+    fn markdown_leaf_wheel_scroll_emits_text_display_scrolled() {
+        use crate::engine::InteractionEngine;
+        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::render::paint_layout;
+        use quadraui::{ScrollDelta, TextDisplayEvent};
+
+        struct MarkdownScrollApp {
+            engine: InteractionEngine,
+            sink: RefCell<RecordingSink>,
+        }
+
+        impl AppLogic for MarkdownScrollApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let source = (0..20)
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let markdown = Markdown {
+                    id: WidgetId::new("md:scroll"),
+                    source,
+                    scroll_offset: 0,
+                };
+                let tree = LayoutNode::Row(LayoutContainer::new(
+                    vec![LayoutNode::Leaf(LayoutLeaf {
+                        id: "md:scroll".into(),
+                        descriptor: LeafDescriptor::Extra(Rc::new(markdown)),
+                        scroll_px: None,
+                    })],
+                    Spacing::default(),
+                ));
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &tree, &mut hits, &|id| {
+                    self.engine.chrome_interaction(id)
+                });
+                self.engine.set_hits(hits);
+            }
+
+            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+                self.engine.tab_stops()
+            }
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                self.engine
+                    .handle(event, backend, &mut *self.sink.borrow_mut())
+            }
+        }
+
+        let app = MarkdownScrollApp {
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(app, 40, 10);
+        driver.render();
+
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: ScrollDelta::new(0.0, -1.0),
+            position: Point::new(1.0, 1.0),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::TextDisplay(id, TextDisplayEvent::Scrolled { new_offset: 1 })
+                    if *id == WidgetId::new("md:scroll")
+            )),
+            "expected a TextDisplay(Scrolled {{ new_offset: 1 }}) event for a wheel notch \
+             over the markdown leaf, got {dispatched:?}"
         );
     }
 

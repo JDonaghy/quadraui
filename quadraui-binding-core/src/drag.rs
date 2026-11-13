@@ -19,6 +19,7 @@ use quadraui::{
     SplitLayout, SplitTreeLayout, TabBarHit, TreePath, WidgetId,
 };
 
+use crate::extra_paint::{extra_as, Markdown};
 use crate::hit::PaintedHit;
 
 /// A divider drag in progress: armed by the binding's own event handler on a
@@ -276,6 +277,26 @@ pub fn text_display_scroll_state(
             viewport_lines,
             ..
         } if *hit_id == id => Some((*total_lines, *viewport_lines, layout.resolved_scroll_offset)),
+        _ => None,
+    })
+}
+
+/// The `(area, Markdown)` painted under `id` this frame, when `id` names a
+/// `"markdown"` extra leaf's own [`PaintedHit::Extra`] entry — the
+/// `Markdown`-shaped counterpart of [`text_display_scroll_state`]. Unlike
+/// that lookup, this can't hand back a ready `(total_lines, viewport_lines,
+/// scroll_offset)` triple: a `PaintedHit::Extra` carries no precomputed
+/// layout of its own (unlike `PaintedHit::TextDisplay`), so the caller
+/// re-derives the line counts via [`Markdown::viewport_lines`] against a
+/// live `Backend`, which this lookup alone has no access to.
+pub fn markdown_at(hit_map: &[PaintedHit], id: WidgetId) -> Option<(Rect, Markdown)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Extra {
+            id: hit_id,
+            area,
+            extra,
+            ..
+        } if *hit_id == id => extra_as::<Markdown>(extra).map(|md| (*area, md.clone())),
         _ => None,
     })
 }
