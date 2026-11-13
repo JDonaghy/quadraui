@@ -17,21 +17,23 @@ quadraui has 1000+ commits of history predating this file (see `git log`);
 none of it is backfilled here. `[Unreleased]` below is where changelog
 discipline begins — every PR from this point forward that changes `quadraui`'s
 public API, in the sense `quadraui/docs/PRIMITIVE_RULES.md` rule 8 defines,
-adds an entry here in the same PR. A public-API PR that skips this file is
-incomplete for the same reason rule 8 already treats a missing
-`## Downstream impact` section as incomplete — this file's `Deprecated` /
+adds a `changelog.d/<issue>.<kind>.md` fragment in the same PR, never a direct
+edit here — `scripts/release.py prepare` assembles the fragments into
+`[Unreleased]` at release time (see `changelog.d/README.md`). A public-API PR
+that skips its fragment is incomplete for the same reason rule 8 already treats
+a missing `## Downstream impact` section as incomplete — this file's `Deprecated` /
 `Removed` sections are rule 8's two-PR protocol made visible outside a diff:
 
 - **PR 1 of a rule-8 change** (new shape added, old one kept behind
-  `#[deprecated]`) adds an entry under `### Deprecated` naming the old item,
+  `#[deprecated]`) adds a `deprecated` fragment naming the old item,
   its replacement, and the tracking issue for PR 2.
-- **PR 2** (shim deleted) moves that same line to `### Removed` and closes the
-  loop — same wording, one section down, so the deprecation's full lifecycle
-  reads as two adjacent lines rather than being lost across two disconnected
+- **PR 2** (shim deleted) adds a `removed` fragment with that same wording and
+  closes the loop — same line, one section down, so the deprecation's full
+  lifecycle reads as two adjacent lines rather than being lost across two disconnected
   PRs.
 - A non-breaking addition (new primitive, new optional field, new `Backend`
-  method with no default per rule 7) goes under `### Added`.
-- A behavior fix with no API shape change goes under `### Fixed`.
+  method with no default per rule 7) is an `added` fragment.
+- A behavior fix with no API shape change is a `fixed` fragment.
 
 See `quadraui/docs/PRIMITIVE_RULES.md` rule 8 for the full lifecycle policy
 (what counts as breaking, the deprecation-shim patterns, the two-PR split)
