@@ -390,6 +390,83 @@ _INLINE_LEAF_CASES = [
         ],
         id="text_input",
     ),
+    pytest.param(
+        {"row": [{"id": "cb:1", "checkbox": {"id": "cb:1", "value": False}}]},
+        [{"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}],
+        [
+            {"FocusChanged": "cb:1"},
+            ("cb:1", {"ToggleChanged": {"id": "cb:1", "value": True}}),
+        ],
+        id="checkbox",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "sl:1",
+                    "slider": {"id": "sl:1", "value": 0.0, "min": 0.0, "max": 10.0, "step": 1.0},
+                }
+            ]
+        },
+        [
+            # x: 0.0 lands focus on the slider without moving it -- the
+            # mapped fraction is 0.0, same as the current value -- so the
+            # second event (Right) is what actually exercises the change.
+            {"MouseDown": {"button": "Left", "position": {"x": 0.0, "y": 0.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Right"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "sl:1"},
+            None,
+            ("sl:1", {"SliderChanged": {"id": "sl:1", "value": 1.0}}),
+        ],
+        id="slider",
+    ),
+    pytest.param(
+        {"row": [{"id": "se:1", "select": {"id": "se:1", "options": ["One", "Two", "Three"]}}]},
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Down"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "se:1"},
+            # Unlike `radio_group`'s click (unclaimed), a click on a
+            # standalone `select` leaf steps the selection itself, so it
+            # reaches the handler as `DropdownChanged` too, not `None`.
+            ("se:1", {"DropdownChanged": {"id": "se:1", "selected_idx": 1}}),
+            ("se:1", {"DropdownChanged": {"id": "se:1", "selected_idx": 1}}),
+        ],
+        id="select",
+    ),
+    pytest.param(
+        {"row": [{"id": "pw:1", "password": {"id": "pw:1", "value": "hi"}}]},
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}},
+            {"CharTyped": "!"},
+        ],
+        [
+            {"FocusChanged": "pw:1"},
+            None,
+            ("pw:1", {"TextInputChanged": {"id": "pw:1", "value": "hi!"}}),
+        ],
+        id="password",
+    ),
+    pytest.param(
+        {"row": [{"id": "ta:1", "textarea": {"id": "ta:1", "value": "hi"}}]},
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "ta:1"},
+            None,
+            # The focusing click lands at column 0 (the default cursor
+            # position for a textarea with no explicit `cursor`), so
+            # Enter's inserted newline lands before "hi", not after it.
+            ("ta:1", {"TextInputChanged": {"id": "ta:1", "value": "\nhi"}}),
+        ],
+        id="textarea",
+    ),
 ]
 
 

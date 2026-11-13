@@ -553,6 +553,44 @@ class SwitchDescriptor(TypedDict):
     disabled: NotRequired[bool]
     focused: NotRequired[bool]
 
+class CheckboxDescriptor(TypedDict):
+    id: WidgetId
+    value: NotRequired[bool]
+    disabled: NotRequired[bool]
+    focused: NotRequired[bool]
+
+class SliderDescriptor(TypedDict):
+    id: WidgetId
+    value: float
+    min: float
+    max: float
+    step: NotRequired[float]
+    disabled: NotRequired[bool]
+    focused: NotRequired[bool]
+
+class SelectDescriptor(TypedDict):
+    id: WidgetId
+    options: List[str]
+    selected_idx: NotRequired[int]
+    disabled: NotRequired[bool]
+    focused: NotRequired[bool]
+
+class PasswordDescriptor(TypedDict):
+    """`mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode."""
+    id: WidgetId
+    value: NotRequired[str]
+    cursor: NotRequired[Optional[int]]
+    has_focus: NotRequired[bool]
+    mask_char: NotRequired[str]
+
+class TextAreaDescriptor(TypedDict):
+    id: WidgetId
+    value: NotRequired[str]
+    placeholder: NotRequired[Optional[str]]
+    cursor: NotRequired[Optional[int]]
+    has_focus: NotRequired[bool]
+    visible_rows: NotRequired[int]
+
 ScrollAxis = Literal['Vertical', 'Horizontal']
 
 class ScrollbarDescriptor(TypedDict):
@@ -1386,6 +1424,11 @@ class LayoutLeafNode(TypedDict):
     canvas: NotRequired[CanvasDescriptor]
     scroll_view: NotRequired[ScrollViewDescriptor]
     find_replace: NotRequired[FindReplacePanelDescriptor]
+    checkbox: NotRequired[CheckboxDescriptor]
+    slider: NotRequired[SliderDescriptor]
+    select: NotRequired[SelectDescriptor]
+    password: NotRequired[PasswordDescriptor]
+    textarea: NotRequired[TextAreaDescriptor]
     size: NotRequired[SectionSize]
     min: NotRequired[float]
     max: NotRequired[float]
@@ -1432,6 +1475,11 @@ class RenderFrameDict(TypedDict):
     canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
+    checkbox: NotRequired[Optional[CheckboxDescriptor]]
+    slider: NotRequired[Optional[SliderDescriptor]]
+    select: NotRequired[Optional[SelectDescriptor]]
+    password: NotRequired[Optional[PasswordDescriptor]]
+    textarea: NotRequired[Optional[TextAreaDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

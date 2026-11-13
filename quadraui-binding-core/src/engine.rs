@@ -1950,6 +1950,7 @@ impl InteractionEngine {
                             modifiers,
                             double_click,
                             &self.hit_map.borrow(),
+                            position,
                         ) {
                             event = semantic;
                             attach_hit = false;
@@ -2114,6 +2115,7 @@ impl InteractionEngine {
                     modifiers,
                     double_click,
                     &self.hit_map.borrow(),
+                    event_position(&event).unwrap_or_default(),
                 ) {
                     event = semantic;
                     attach_hit = false;

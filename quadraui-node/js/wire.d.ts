@@ -610,6 +610,49 @@ export interface SwitchDescriptor {
   focused?: boolean;
 }
 
+export interface CheckboxDescriptor {
+  id: WidgetId;
+  value?: boolean;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+export interface SliderDescriptor {
+  id: WidgetId;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+export interface SelectDescriptor {
+  id: WidgetId;
+  options: string[];
+  selected_idx?: number;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+/** `mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode. */
+export interface PasswordDescriptor {
+  id: WidgetId;
+  value?: string;
+  cursor?: number | null;
+  has_focus?: boolean;
+  mask_char?: string;
+}
+
+export interface TextAreaDescriptor {
+  id: WidgetId;
+  value?: string;
+  placeholder?: string | null;
+  cursor?: number | null;
+  has_focus?: boolean;
+  visible_rows?: number;
+}
+
 export type ScrollAxis = "Vertical" | "Horizontal";
 
 export interface ScrollbarDescriptor {
@@ -1520,6 +1563,11 @@ export interface LayoutLeafNode {
   canvas?: CanvasDescriptor;
   scroll_view?: ScrollViewDescriptor;
   find_replace?: FindReplacePanelDescriptor;
+  checkbox?: CheckboxDescriptor;
+  slider?: SliderDescriptor;
+  select?: SelectDescriptor;
+  password?: PasswordDescriptor;
+  textarea?: TextAreaDescriptor;
   size?: SectionSize;
   min?: number;
   max?: number;
@@ -1567,6 +1615,11 @@ export interface RenderFrameDict {
   canvas?: CanvasDescriptor | null;
   scroll_view?: ScrollViewDescriptor | null;
   find_replace?: FindReplacePanelDescriptor | null;
+  checkbox?: CheckboxDescriptor | null;
+  slider?: SliderDescriptor | null;
+  select?: SelectDescriptor | null;
+  password?: PasswordDescriptor | null;
+  textarea?: TextAreaDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

@@ -236,6 +236,11 @@ only once both `quadraui-py` and `quadraui-node` emit the new value.
 - [`NumberInputDescriptor`](#wire-numberinputdescriptor)
 - [`ComboBoxDescriptor`](#wire-comboboxdescriptor)
 - [`SwitchDescriptor`](#wire-switchdescriptor)
+- [`CheckboxDescriptor`](#wire-checkboxdescriptor)
+- [`SliderDescriptor`](#wire-sliderdescriptor)
+- [`SelectDescriptor`](#wire-selectdescriptor)
+- [`PasswordDescriptor`](#wire-passworddescriptor)
+- [`TextAreaDescriptor`](#wire-textareadescriptor)
 - [`ScrollAxis`](#wire-scrollaxis)
 - [`ScrollbarDescriptor`](#wire-scrollbardescriptor)
 - [`ScrollViewDescriptor`](#wire-scrollviewdescriptor)
@@ -1399,6 +1404,65 @@ Alias for `"Contain" | "Cover" | "Fill" | "None"`.
 | `value` | `boolean` | no |  |
 | `disabled` | `boolean` | no |  |
 | `focused` | `boolean` | no |  |
+
+<a id="wire-checkboxdescriptor"></a>
+#### `CheckboxDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `value` | `boolean` | no |  |
+| `disabled` | `boolean` | no |  |
+| `focused` | `boolean` | no |  |
+
+<a id="wire-sliderdescriptor"></a>
+#### `SliderDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `value` | `number` | yes |  |
+| `min` | `number` | yes |  |
+| `max` | `number` | yes |  |
+| `step` | `number` | no |  |
+| `disabled` | `boolean` | no |  |
+| `focused` | `boolean` | no |  |
+
+<a id="wire-selectdescriptor"></a>
+#### `SelectDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `options` | `string[]` | yes |  |
+| `selected_idx` | `number` | no |  |
+| `disabled` | `boolean` | no |  |
+| `focused` | `boolean` | no |  |
+
+<a id="wire-passworddescriptor"></a>
+#### `PasswordDescriptor`
+
+`mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `value` | `string` | no |  |
+| `cursor` | `number \| null` | no |  |
+| `has_focus` | `boolean` | no |  |
+| `mask_char` | `string` | no |  |
+
+<a id="wire-textareadescriptor"></a>
+#### `TextAreaDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `value` | `string` | no |  |
+| `placeholder` | `string \| null` | no |  |
+| `cursor` | `number \| null` | no |  |
+| `has_focus` | `boolean` | no |  |
+| `visible_rows` | `number` | no |  |
 
 <a id="wire-scrollaxis"></a>
 #### `ScrollAxis`
@@ -2797,6 +2861,11 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `canvas` | `CanvasDescriptor` | no |  |
 | `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor` | no |  |
+| `checkbox` | `CheckboxDescriptor` | no |  |
+| `slider` | `SliderDescriptor` | no |  |
+| `select` | `SelectDescriptor` | no |  |
+| `password` | `PasswordDescriptor` | no |  |
+| `textarea` | `TextAreaDescriptor` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -2852,6 +2921,11 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `canvas` | `CanvasDescriptor \| null` | no |  |
 | `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
+| `checkbox` | `CheckboxDescriptor \| null` | no |  |
+| `slider` | `SliderDescriptor \| null` | no |  |
+| `select` | `SelectDescriptor \| null` | no |  |
+| `password` | `PasswordDescriptor \| null` | no |  |
+| `textarea` | `TextAreaDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
