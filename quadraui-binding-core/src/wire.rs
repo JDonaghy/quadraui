@@ -46,7 +46,8 @@ use crate::host::text_display_from_lines;
 use crate::layout::{
     validate_unique_leaf_ids, Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutLeaf,
     LayoutNode, LayoutPanel, LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree,
-    LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS,
+    LayoutStyled, LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, StyleOverride,
+    LEAF_KIND_KEYS,
 };
 use crate::render::RenderFrame;
 use crate::{decode_value, DecodeError};
@@ -369,7 +370,27 @@ pub fn decode_layout_node<'de, D: Deserializer<'de>>(
     layout_node_from_value(what, &value)
 }
 
+/// Decodes one layout-tree node dict, then wraps it in a
+/// [`LayoutNode::Styled`] if that same dict also carries a `"style"`
+/// sibling key — see [`style_override_from_value`]. Every node kind
+/// dispatches through [`layout_node_from_value_inner`] first, so `"style"`
+/// is handled exactly once here rather than separately in each of that
+/// function's own branches.
 fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, DecodeError> {
+    let node = layout_node_from_value_inner(what, value)?;
+    match style_override_from_value(what, value)? {
+        Some(style) => Ok(LayoutNode::Styled(LayoutStyled {
+            style,
+            node: Box::new(node),
+        })),
+        None => Ok(node),
+    }
+}
+
+/// Decodes the node-kind-specific part of a layout-tree node dict --
+/// [`layout_node_from_value`]'s own `"style"`-wrapping is applied around
+/// this function's result, not inside it.
+fn layout_node_from_value_inner(what: &str, value: &Value) -> Result<LayoutNode, DecodeError> {
     if let Some(v) = obj_get(value, "row") {
         let children = layout_children_from_value(what, v)?;
         let spacing = spacing_from_value(what, value, "\"row\"", true)?;
@@ -685,6 +706,80 @@ fn edge_insets_from_value(value: &Value, context: &str) -> Result<EdgeInsets, De
     Err(DecodeError(format!(
         "{context} \"padding\" must be a number, or an object with \"x\"/\"y\" or \"top\"/\"right\"/\"bottom\"/\"left\""
     )))
+}
+
+/// Every key a `"style"` dict may carry — see [`StyleOverride`]'s own
+/// token-mapping table for what each resolves onto.
+const STYLE_OVERRIDE_KEYS: [&str; 7] = [
+    "bg",
+    "fg",
+    "border",
+    "accent",
+    "padding",
+    "corner_radius",
+    "border_width",
+];
+
+/// Decodes an optional `"style"` sibling key found alongside any layout
+/// node dict (any of `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/
+/// `"sidebar_panel"`/`"split_tree"`/`"scroll"`, or a leaf's own `{"id",
+/// "<kind>"}` dict) into a [`StyleOverride`]. `None` when the key is
+/// absent, or present but empty — [`StyleOverride::is_empty`] folds
+/// `{"style": {}}` down to the same `None` a missing key produces, so
+/// [`layout_node_from_value`] never wraps a node in a no-op
+/// [`crate::layout::LayoutStyled`].
+///
+/// Rejects any key outside [`STYLE_OVERRIDE_KEYS`] — the same "typo is a
+/// decode error, not a silently-dropped key" policy [`edge_insets_from_value`]
+/// already applies to `"padding"`'s own object shape.
+fn style_override_from_value(
+    what: &str,
+    value: &Value,
+) -> Result<Option<StyleOverride>, DecodeError> {
+    let Some(raw) = obj_get(value, "style") else {
+        return Ok(None);
+    };
+    let dict = must_be_dict(what, raw, "\"style\"")?;
+    let context = format!("{what}: \"style\"");
+    if let Some(obj) = dict.as_object() {
+        for key in obj.keys() {
+            if !STYLE_OVERRIDE_KEYS.contains(&key.as_str()) {
+                return Err(DecodeError(format!(
+                    "{context} has unknown key {key:?} -- expected one of \"bg\"/\"fg\"/\
+                     \"border\"/\"accent\"/\"padding\"/\"corner_radius\"/\"border_width\""
+                )));
+            }
+        }
+    }
+    let over = StyleOverride {
+        bg: opt_color(dict, "bg", &context)?,
+        fg: opt_color(dict, "fg", &context)?,
+        border: opt_color(dict, "border", &context)?,
+        accent: opt_color(dict, "accent", &context)?,
+        padding: opt_f32(dict, "padding", &context)?,
+        corner_radius: opt_f32(dict, "corner_radius", &context)?,
+        border_width: opt_f32(dict, "border_width", &context)?,
+    };
+    Ok(if over.is_empty() { None } else { Some(over) })
+}
+
+/// Reads `value[key]` as an optional colour: a `"#rrggbb"`/`"#rrggbbaa"`
+/// hex string (mirroring [`crate::host::theme_color_value`]'s own
+/// convenience for a backend-wide `set_theme` override), or any other
+/// shape [`Color`]'s derived `Deserialize` accepts (an `{"r","g","b","a"}`
+/// object or `[r, g, b[, a]]` array). `None` when absent.
+fn opt_color(value: &Value, key: &str, context: &str) -> Result<Option<Color>, DecodeError> {
+    match obj_get(value, key) {
+        Some(Value::String(hex)) => Color::from_hex(hex).map(Some).ok_or_else(|| {
+            DecodeError(format!(
+                "{context} {key:?}: {hex:?} is not a valid \"#rrggbb\"/\"#rrggbbaa\" hex colour"
+            ))
+        }),
+        Some(v) => serde_json::from_value(v.clone())
+            .map(Some)
+            .map_err(|err| DecodeError(format!("{context} {key:?}: {err}"))),
+        None => Ok(None),
+    }
 }
 
 /// Decodes a `"split"` node: `{"id", "orientation", "ratio", "first",
@@ -2128,6 +2223,121 @@ mod tests {
         assert_eq!(scroll.spacing.padding, EdgeInsets::uniform(12.0));
         assert_eq!(scroll.spacing.margin, 4.0);
         assert_eq!(scroll.spacing.gap, 0.0);
+    }
+
+    /// A `"style"` sibling key wraps whatever node the rest of the dict
+    /// decoded to in a [`LayoutNode::Styled`], decoding `"bg"`/`"fg"` as
+    /// hex colours.
+    #[test]
+    fn round_trips_a_style_key_as_a_styled_wrapper() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+            "style": {"bg": "#112233", "fg": "#ffffff"},
+        });
+        let node = decode(&value).expect("valid styled row");
+        let LayoutNode::Styled(styled) = node else {
+            panic!("expected a styled wrapper");
+        };
+        assert_eq!(styled.style.bg, Color::from_hex("#112233"));
+        assert_eq!(styled.style.fg, Color::from_hex("#ffffff"));
+        assert_eq!(styled.style.border, None);
+        assert!(matches!(*styled.node, LayoutNode::Row(_)));
+    }
+
+    /// `"style"` works the same on a leaf node as on a container -- it's
+    /// a sibling of the leaf's own `"id"`/`"<kind>"` keys, not nested
+    /// inside the descriptor.
+    #[test]
+    fn round_trips_a_style_key_on_a_leaf_node() {
+        let value = json!({
+            "id": "btn",
+            "button": {"id": "btn", "label": "Go"},
+            "style": {"accent": "#ff0000", "corner_radius": 6.0},
+        });
+        let node = decode(&value).expect("valid styled leaf");
+        let LayoutNode::Styled(styled) = node else {
+            panic!("expected a styled wrapper");
+        };
+        assert_eq!(styled.style.accent, Color::from_hex("#ff0000"));
+        assert_eq!(styled.style.corner_radius, Some(6.0));
+        assert!(matches!(*styled.node, LayoutNode::Leaf(_)));
+    }
+
+    /// An empty `"style": {}` is a no-op -- decoding falls through to the
+    /// plain (unwrapped) node, exactly as if the key were absent.
+    #[test]
+    fn an_empty_style_dict_does_not_wrap_the_node() {
+        let value = json!({
+            "row": [],
+            "style": {},
+        });
+        let node = decode(&value).expect("valid row");
+        assert!(matches!(node, LayoutNode::Row(_)));
+    }
+
+    /// Nested `"style"` keys compose: an inner override only narrows the
+    /// fields it names, so the outer `"bg"` still applies to anything
+    /// inside the inner node that doesn't override it itself.
+    #[test]
+    fn nested_style_keys_each_wrap_their_own_node() {
+        let value = json!({
+            "row": [{
+                "id": "a",
+                "button": {"id": "a", "label": "A"},
+                "style": {"fg": "#00ff00"},
+            }],
+            "style": {"bg": "#000000"},
+        });
+        let node = decode(&value).expect("valid nested styled tree");
+        let LayoutNode::Styled(outer) = node else {
+            panic!("expected an outer styled wrapper");
+        };
+        assert_eq!(outer.style.bg, Color::from_hex("#000000"));
+        let LayoutNode::Row(container) = outer.node.as_ref() else {
+            panic!("expected the wrapped node to be a row");
+        };
+        let LayoutNode::Styled(inner) = &container.children[0].node else {
+            panic!("expected the row's own child to carry its own styled wrapper");
+        };
+        assert_eq!(inner.style.fg, Color::from_hex("#00ff00"));
+        assert_eq!(inner.style.bg, None);
+    }
+
+    /// An unknown `"style"` key is a decode error naming it, the same
+    /// policy `"padding"`'s own object shape already enforces.
+    #[test]
+    fn style_rejects_an_unknown_key() {
+        let value = json!({
+            "row": [],
+            "style": {"background": "#000000"},
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("unknown key"), "{}", error.0);
+        assert!(error.0.contains("\"background\""), "{}", error.0);
+    }
+
+    /// `"style.bg"` rejects a malformed hex string instead of silently
+    /// falling back to some default colour.
+    #[test]
+    fn style_rejects_an_invalid_hex_colour() {
+        let value = json!({
+            "row": [],
+            "style": {"bg": "not-a-colour"},
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("\"bg\""), "{}", error.0);
+    }
+
+    /// `"style"` must itself be an object, not a bare value.
+    #[test]
+    fn style_rejects_a_non_object_value() {
+        let value = json!({
+            "row": [],
+            "style": "bg",
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("\"style\""), "{}", error.0);
+        assert!(error.0.contains("must be an object"), "{}", error.0);
     }
 
     /// `"gap"` has no meaning on a `"scroll"` node -- there's no second

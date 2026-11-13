@@ -1964,6 +1964,12 @@ pub fn resolve_layout_node(
                 }
             }
         }
+        // A `"style"` wrapper carries no widget state of its own -- it's
+        // purely a `crate::render::paint_layout`-time overlay -- so this
+        // resolve pass is a straight passthrough to whatever it wraps.
+        LayoutNode::Styled(styled) => {
+            resolve_layout_node(widget_state, backend, area, &mut styled.node);
+        }
     }
 }
 

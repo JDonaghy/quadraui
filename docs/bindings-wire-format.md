@@ -44,6 +44,16 @@ chrome keys `"padding"`, `"margin"`, `"gap"` where that node kind supports
 them -- see each node's own field table in the generated reference for
 exactly which it accepts.
 
+Every node kind, including a `"leaf"`, also accepts an optional `"style"`
+key (`StyleValue` in the generated reference): a scoped subset of `Theme`
+colour tokens (`"bg"`, `"fg"`, `"border"`, `"accent"` -- a `Color` object or
+a `"#rrggbb"`/`"#rrggbbaa"` hex string) and `Style` metric tokens
+(`"padding"`, `"corner_radius"`, `"border_width"`), applied as a derived
+theme/style to that node's own subtree only -- siblings, and anything
+above it in the tree, are unaffected. A nested `"style"` composes with an
+ancestor's: it only overrides the tokens it names, and everything it
+doesn't name falls through to whatever the ancestor already set.
+
 ## Leaf kinds
 
 A `"leaf"` node (`LayoutLeafNode`) is `{"id": <str>, "<kind>": <descriptor>}`
@@ -206,6 +216,8 @@ only once both `quadraui-py` and `quadraui-node` emit the new value.
 - [`PaddingAxis`](#wire-paddingaxis)
 - [`PaddingSides`](#wire-paddingsides)
 - [`PaddingValue`](#wire-paddingvalue)
+- [`StyleColorValue`](#wire-stylecolorvalue)
+- [`StyleValue`](#wire-stylevalue)
 - [`LayoutRowNode`](#wire-layoutrownode)
 - [`LayoutColumnNode`](#wire-layoutcolumnnode)
 - [`LayoutSplitPayload`](#wire-layoutsplitpayload)
@@ -1076,6 +1088,28 @@ A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", 
 
 Alias for `number | PaddingAxis | PaddingSides`.
 
+<a id="wire-stylecolorvalue"></a>
+#### `StyleColorValue`
+
+A `"style"` colour token: a `Color` object, or a "#rrggbb"/"#rrggbbaa" hex string.
+
+Alias for `Color | string`.
+
+<a id="wire-stylevalue"></a>
+#### `StyleValue`
+
+A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. See docs/bindings-wire-format.md for the full token mapping.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bg` | `StyleColorValue` | no |  |
+| `fg` | `StyleColorValue` | no |  |
+| `border` | `StyleColorValue` | no |  |
+| `accent` | `StyleColorValue` | no |  |
+| `padding` | `number` | no |  |
+| `corner_radius` | `number` | no |  |
+| `border_width` | `number` | no |  |
+
 <a id="wire-layoutrownode"></a>
 #### `LayoutRowNode`
 
@@ -1088,6 +1122,7 @@ Alias for `number | PaddingAxis | PaddingSides`.
 | `justify` | `"start" \| "center" \| "end" \| "space_between"` | no |  |
 | `align` | `"start" \| "center" \| "end" \| "stretch"` | no |  |
 | `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1104,6 +1139,7 @@ Alias for `number | PaddingAxis | PaddingSides`.
 | `justify` | `"start" \| "center" \| "end" \| "space_between"` | no |  |
 | `align` | `"start" \| "center" \| "end" \| "stretch"` | no |  |
 | `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1131,6 +1167,7 @@ Alias for `number | PaddingAxis | PaddingSides`.
 | `margin` | `number` | no |  |
 | `gap` | `number` | no |  |
 | `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1171,6 +1208,7 @@ Alias for `number | PaddingAxis | PaddingSides`.
 | `padding` | `PaddingValue` | no |  |
 | `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1198,6 +1236,7 @@ The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`
 | `padding` | `PaddingValue` | no |  |
 | `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1219,6 +1258,7 @@ The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`
 | --- | --- | --- | --- |
 | `sidebar_panel` | `LayoutSidebarPanelPayload` | yes |  |
 | `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1242,6 +1282,7 @@ The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`
 | `padding` | `PaddingValue` | no |  |
 | `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -1290,6 +1331,7 @@ Alias for `_SplitTreeLeaf | _SplitTreeSplitWrapper`.
 | --- | --- | --- | --- |
 | `split_tree` | `LayoutSplitTreePayload` | yes |  |
 | `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |
@@ -2877,6 +2919,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
 | `markdown` | `MarkdownDescriptor` | no |  |
+| `style` | `StyleValue` | no |  |
 | `size` | `SectionSize` | no |  |
 | `min` | `number` | no |  |
 | `max` | `number` | no |  |

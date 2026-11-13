@@ -1652,6 +1652,12 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
             scroll_node.offset = Some(offset);
             resolve_layout_node_state(engine, &mut scroll_node.content);
         }
+        // A `"style"` wrapper carries no cursor/scroll/active-tab state of
+        // its own -- it's purely a paint-time overlay -- so this resolve
+        // pass is a straight passthrough to whatever it wraps.
+        LayoutNode::Styled(styled_node) => {
+            resolve_layout_node_state(engine, &mut styled_node.node);
+        }
     }
 }
 
@@ -6565,6 +6571,78 @@ mod tests {
             assert!(
                 tree_bounds.x + tree_bounds.width <= table_bounds.x,
                 "the tree's columns must be entirely left of the table's: tree={tree_bounds:?} table={table_bounds:?}"
+            );
+        });
+    }
+
+    /// A render callback's `"style"` key on a `"row"` and a nested `"style"`
+    /// on one of its `"button"` leaves each scope to their own subtree: an
+    /// unstyled sibling button inherits the row's own override, while the
+    /// styled leaf's own override wins over it -- the same acceptance
+    /// scenario `quadraui_binding_core::render::tests::
+    /// styled_wrapper_scopes_an_override_to_its_own_subtree_and_composes_with_nesting`
+    /// covers at the binding-core layer, exercised here end to end through
+    /// a real Python render callback.
+    #[test]
+    fn render_callback_style_key_scopes_an_override_to_its_own_subtree() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(42, 3, None, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {\"row\": [\
+                        {\"id\": \"a\", \"button\": {\"id\": \"a\", \"label\": \"Alpha\"}}, \
+                        {\
+                            \"id\": \"b\", \"button\": {\"id\": \"b\", \"label\": \"Bravo\"}, \
+                            \"style\": {\"fg\": \"#00ff00\"}\
+                        }, \
+                        {\"id\": \"c\", \"button\": {\"id\": \"c\", \"label\": \"Charlie\"}}\
+                    ], \"style\": {\"fg\": \"#ff0000\"}}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+            app.screen().expect("render must not raise");
+
+            let (ax, ay) = app.driver.find("Alpha").expect("Alpha must be on screen");
+            let (bx, by) = app.driver.find("Bravo").expect("Bravo must be on screen");
+            let (cx, cy) = app
+                .driver
+                .find("Charlie")
+                .expect("Charlie must be on screen");
+
+            let alpha_fg = app
+                .driver
+                .style_at(ax as u16, ay as u16)
+                .expect("style at Alpha")
+                .fg;
+            let bravo_fg = app
+                .driver
+                .style_at(bx as u16, by as u16)
+                .expect("style at Bravo")
+                .fg;
+            let charlie_fg = app
+                .driver
+                .style_at(cx as u16, cy as u16)
+                .expect("style at Charlie")
+                .fg;
+
+            assert_eq!(
+                ratatui_rgb(alpha_fg),
+                (255, 0, 0),
+                "Alpha has no override of its own, so it inherits the row's"
+            );
+            assert_eq!(
+                ratatui_rgb(bravo_fg),
+                (0, 255, 0),
+                "Bravo's own nested override wins over the row's"
+            );
+            assert_eq!(
+                ratatui_rgb(charlie_fg),
+                (255, 0, 0),
+                "Charlie (Bravo's sibling) is unaffected by Bravo's own override, \
+                 and still inherits the row's"
             );
         });
     }
