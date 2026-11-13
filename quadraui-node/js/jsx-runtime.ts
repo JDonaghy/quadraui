@@ -68,6 +68,7 @@ import type {
   Node as QuiNode,
   Renderable,
   RowOptions,
+  ScrollOptions,
   SidebarPanelOptions,
   SplitOptions,
   StatusBarOptions,
@@ -99,6 +100,7 @@ const nodeConstructors = require("./app/nodes.ts") as {
   Column(items: Renderable[], options?: ColumnOptions): QuiNode;
   Row(items: Renderable[], options?: RowOptions): QuiNode;
   SidebarPanel(content: Renderable, options?: SidebarPanelOptions): QuiNode;
+  Scroll(content: Renderable, options?: ScrollOptions): QuiNode;
   Tabs(tabs: TabEntry[], options?: TabsOptions): QuiNode;
   Tree(rows: TreeRowDescriptor[], options?: TreeOptions): QuiNode;
   Table(columns: ColumnDescriptor[], rows: DataRowDescriptor[], options?: TableOptions): QuiNode;
@@ -133,6 +135,10 @@ export interface RowProps extends RowOptions {
 }
 
 export interface SidebarPanelProps extends SidebarPanelOptions {
+  children?: Renderable;
+}
+
+export interface ScrollProps extends ScrollOptions {
   children?: Renderable;
 }
 
@@ -178,6 +184,7 @@ export namespace JSX {
     column: ColumnProps;
     row: RowProps;
     sidebarPanel: SidebarPanelProps;
+    scroll: ScrollProps;
     tabs: TabsProps;
     tree: TreeProps;
     table: TableProps;
@@ -261,6 +268,10 @@ const INTRINSICS: Record<IntrinsicTag, IntrinsicBuilder> = {
   sidebarPanel: (props) => {
     const typed = props as unknown as SidebarPanelProps;
     return nodeConstructors.SidebarPanel(typed.children ?? null, withoutChildren(typed));
+  },
+  scroll: (props) => {
+    const typed = props as unknown as ScrollProps;
+    return nodeConstructors.Scroll(typed.children ?? null, withoutChildren(typed));
   },
   tabs: (props) => {
     const typed = props as unknown as TabsProps;

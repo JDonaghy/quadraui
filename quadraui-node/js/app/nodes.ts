@@ -218,6 +218,42 @@ function SidebarPanel(content: Renderable, options: SidebarPanelOptions = {}): N
 }
 exports.SidebarPanel = SidebarPanel;
 
+export interface ScrollOptions {
+  id?: string;
+  axis?: "vertical" | "horizontal";
+  offset?: number;
+  padding?: PaddingValue;
+  margin?: number;
+}
+
+/**
+ * A scrollable viewport around a single `content` subtree, built on
+ * `quadraui::ScrollView`. `axis` picks which dimension scrolls (defaults
+ * to `"vertical"`); `offset` is the same controlled/uncontrolled
+ * surface-pixel scroll position `scrollOffset` is elsewhere -- omit it to
+ * let the framework own the position across frames (mouse wheel,
+ * PageUp/PageDown, a scrollbar drag), or pass it on every render to pin
+ * it from the app's own state. `padding`/`margin` inset the viewport
+ * before `content` is measured/painted; there's no `gap` -- a scroll has
+ * only one content subtree, nothing to space it from.
+ */
+function Scroll(content: Renderable, options: ScrollOptions = {}): Node {
+  const { id = null, axis, offset, padding, margin } = options;
+
+  function build(nodeId: string, children: Record<string, unknown>): Record<string, unknown> {
+    const payload: Record<string, unknown> = { id: nodeId, content: children.content };
+    if (axis !== undefined && axis !== "vertical") payload.axis = axis;
+    if (offset !== undefined) payload.offset = offset;
+    const wire: Record<string, unknown> = { scroll: payload };
+    if (padding !== undefined) wire.padding = padding;
+    if (margin !== undefined) wire.margin = margin;
+    return wire;
+  }
+
+  return { kind: "scroll", id, callbacks: {}, children: { content }, build };
+}
+exports.Scroll = Scroll;
+
 interface TabSpec {
   content: Renderable;
   title: string;

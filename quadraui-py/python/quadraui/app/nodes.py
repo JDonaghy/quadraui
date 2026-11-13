@@ -50,6 +50,7 @@ __all__ = [
     "TextDisplay",
     "Button",
     "Toolbar",
+    "Scroll",
 ]
 
 # A renderable value: a `Node`, a `Component` (duck-typed -- `quadraui.app`
@@ -183,6 +184,42 @@ def SidebarPanel(
         return {"sidebar_panel": payload}
 
     return Node("sidebar_panel", id, {}, {"content": content}, build)
+
+
+def Scroll(
+    content: Renderable,
+    *,
+    id: Optional[str] = None,
+    axis: str = "vertical",
+    offset: Optional[float] = None,
+    padding: Any = None,
+    margin: Optional[float] = None,
+) -> Node:
+    """A scrollable viewport around a single `content` subtree, built on
+    `quadraui::ScrollView`. `axis` picks which dimension scrolls
+    (`"vertical"`/`"horizontal"`); `offset` is the same controlled/
+    uncontrolled surface-pixel scroll position `scroll_offset` is
+    elsewhere -- omit it to let the framework own the position across
+    frames (mouse wheel, PageUp/PageDown, a scrollbar drag), or pass it on
+    every render to pin it from the app's own state. `padding`/`margin`
+    inset the viewport before `content` is measured/painted; there's no
+    `gap` -- a scroll has only one content subtree, nothing to space it
+    from."""
+
+    def build(node_id: str, children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "content": children["content"]}
+        if axis != "vertical":
+            payload["axis"] = axis
+        if offset is not None:
+            payload["offset"] = offset
+        wire: Dict[str, Any] = {"scroll": payload}
+        if padding is not None:
+            wire["padding"] = padding
+        if margin is not None:
+            wire["margin"] = margin
+        return wire
+
+    return Node("scroll", id, {}, {"content": content}, build)
 
 
 @dataclass
