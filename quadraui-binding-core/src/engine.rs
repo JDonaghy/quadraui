@@ -1018,7 +1018,12 @@ impl InteractionEngine {
     /// permanently unreachable by keyboard. Tab/Shift+Tab stay trapped
     /// inside `form`'s own fields — see [`Self::tab_stops`]'s own doc
     /// for the other half of that trap. Replaces (and pops) any float
-    /// already open.
+    /// already open. Use [`Self::popover_mut`] afterward to push fresh
+    /// field values onto the still-open popover every frame, the same
+    /// "app owns the data, controller owns the edits" contract a bare
+    /// [`FormController`] consumer already follows — calling this again
+    /// instead would recreate the embedded controller from scratch,
+    /// discarding its own live cursor/selection/scroll state.
     pub fn show_popover(
         &mut self,
         mut float: Float,
@@ -1041,6 +1046,26 @@ impl InteractionEngine {
             measure,
             Some(FloatContent::Form(controller)),
         ));
+    }
+
+    /// Mutable access to a Form-content popover's embedded
+    /// [`FormController`] (opened via [`Self::show_popover`]), if one is
+    /// open — `None` for a plain [`Self::show_float`] float, a
+    /// [`Self::show_popover_layout`] popover, or no float at all. Mirrors
+    /// [`Self::form_dialog_mut`]'s own doc: a binding's render path calls
+    /// [`FormController::set_form`] through this every frame before
+    /// painting, the same "push fresh state, then render" contract a
+    /// bare `FormController` consumer already follows — without it, a
+    /// popover's fields are frozen at whatever `form` was passed to
+    /// [`Self::show_popover`] when it opened, since that method's own
+    /// `self.close_float(backend)` would otherwise be the only way to
+    /// refresh them, discarding the controller's own live
+    /// cursor/selection/scroll state in the process.
+    pub fn popover_mut(&mut self) -> Option<&mut FormController> {
+        self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::Float(_, _, Some(FloatContent::Form(c))) => Some(c),
+            _ => None,
+        })
     }
 
     /// Opens `float` as a content-bearing popover, like [`Self::show_popover`],
