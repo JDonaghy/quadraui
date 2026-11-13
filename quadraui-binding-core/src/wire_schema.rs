@@ -1197,6 +1197,61 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("focused", bool_()),
         ],
     ));
+    let checkbox_descriptor = b.define(obj(
+        "CheckboxDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("value", bool_()),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let slider_descriptor = b.define(obj(
+        "SliderDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("value", float_()),
+            field("min", float_()),
+            field("max", float_()),
+            field_opt("step", float_()),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let select_descriptor = b.define(obj(
+        "SelectDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("options", list(str_())),
+            field_opt("selected_idx", int_()),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let password_descriptor = b.define(obj(
+        "PasswordDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("value", str_()),
+            field_opt("cursor", nullable(int_())),
+            field_opt("has_focus", bool_()),
+            field_opt("mask_char", str_()),
+        ],
+    ));
+    let textarea_descriptor = b.define(obj(
+        "TextareaDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("lines", list(str_())),
+            field_opt("cursor_line", int_()),
+            field_opt("cursor_col", int_()),
+            field_opt("placeholder", nullable(str_())),
+            field_opt("scroll_offset", int_()),
+            field_opt("scroll_col", int_()),
+            field_opt("has_focus", bool_()),
+            field_opt("visible_rows", int_()),
+        ],
+    ));
     let scroll_axis = b.define(alias("ScrollAxis", lit(&["Vertical", "Horizontal"])));
     let scrollbar_descriptor = b.define(obj(
         "ScrollbarDescriptor",
@@ -2379,6 +2434,11 @@ pub fn schema() -> Vec<DefJson> {
             "canvas" => canvas_descriptor.clone(),
             "scroll_view" => scroll_view_descriptor.clone(),
             "find_replace" => find_replace_panel_descriptor.clone(),
+            "checkbox" => checkbox_descriptor.clone(),
+            "slider" => slider_descriptor.clone(),
+            "select" => select_descriptor.clone(),
+            "password" => password_descriptor.clone(),
+            "textarea" => textarea_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
