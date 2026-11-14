@@ -283,7 +283,7 @@ impl DecodeDiagnostics {
     }
 
     /// Registers (replacing any previous registration) the callback a
-    /// warn-mode finding invokes — `hook(key, path)`, called at most once
+    /// warn-mode finding invokes — `hook(path, key)`, called at most once
     /// per distinct `key` for this session's lifetime. A binding wires this
     /// to whatever callable its own `on_unknown_key`-style surface
     /// registers; `None` (the default) makes a warn-mode finding a no-op
@@ -316,7 +316,12 @@ impl DecodeDiagnostics {
             return Err(DecodeError::unknown_key(path, field, key, expected));
         }
         if self.warned.borrow_mut().insert(key.to_string()) {
-            if let Some(hook) = self.hook.borrow().as_ref() {
+            // Clone the `Rc` out of the `RefCell` before invoking it, rather
+            // than holding the borrow across the call: a hook that re-enters
+            // and calls `set_hook` on this same session would otherwise hit
+            // a double-borrow panic.
+            let hook = self.hook.borrow().clone();
+            if let Some(hook) = hook {
                 hook(path, key);
             }
         }
@@ -370,11 +375,17 @@ fn check_node_sibling_keys(
     let Some(obj) = value.as_object() else {
         return Ok(());
     };
+    // Reported as the finding's `expected` list too, not just checked
+    // against -- a strict-mode error naming only `shape_keys` would
+    // under-report what this node actually accepts.
+    let known: Vec<&str> = shape_keys
+        .iter()
+        .copied()
+        .chain(UNIVERSAL_NODE_SIBLING_KEYS)
+        .collect();
     for key in obj.keys() {
-        if !shape_keys.contains(&key.as_str())
-            && !UNIVERSAL_NODE_SIBLING_KEYS.contains(&key.as_str())
-        {
-            diagnostics.report_unknown_key(path, field, key, shape_keys)?;
+        if !known.contains(&key.as_str()) {
+            diagnostics.report_unknown_key(path, field, key, &known)?;
         }
     }
     Ok(())
@@ -525,6 +536,26 @@ pub const LAYOUT_NODE_KEYS: [&str; 8] = [
     "scroll",
 ];
 
+// Per-kind sibling-key vocabularies [`layout_node_from_value_inner`] passes
+// to [`check_node_sibling_keys`] (`UNIVERSAL_NODE_SIBLING_KEYS` folds in
+// automatically, so none of these repeats `"style"`/`"class"`/`"size"`/
+// `"min"`/`"max"`/`"wire_version"`). Named constants, not inline literals
+// at each call site, so this module's own `#[cfg(test)]`
+// `node_shape_key_constants_match_the_wire_schema_field_list` test can
+// cross-check every one against `wire_schema::schema()`'s own field list
+// for that node kind: a field added on one side without the other fails
+// that test instead of silently drifting into a false "unknown key"
+// warning (or a strict-mode app's new hard rejection) the first time a real
+// app sends it.
+const ROW_SHAPE_KEYS: [&str; 6] = ["row", "padding", "margin", "gap", "justify", "align"];
+const COLUMN_SHAPE_KEYS: [&str; 6] = ["column", "padding", "margin", "gap", "justify", "align"];
+const SPLIT_SHAPE_KEYS: [&str; 4] = ["split", "padding", "margin", "gap"];
+const TABS_SHAPE_KEYS: [&str; 3] = ["tabs", "padding", "margin"];
+const PANEL_SHAPE_KEYS: [&str; 3] = ["panel", "padding", "margin"];
+const SIDEBAR_PANEL_SHAPE_KEYS: [&str; 1] = ["sidebar_panel"];
+const SPLIT_TREE_SHAPE_KEYS: [&str; 1] = ["split_tree"];
+const SCROLL_SHAPE_KEYS: [&str; 3] = ["scroll", "padding", "margin"];
+
 /// Decodes one layout tree node from `deserializer`: a `"row"` or `"column"`
 /// key holds the container's children, a `"split"` key holds a two-pane
 /// divider, a `"tabs"` key holds a tab strip plus per-tab content, a
@@ -629,13 +660,7 @@ fn layout_node_from_value_inner(
     diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutNode, DecodeError> {
     if let Some(v) = obj_get(value, "row") {
-        check_node_sibling_keys(
-            diagnostics,
-            what,
-            "\"row\"",
-            value,
-            &["row", "padding", "margin", "gap", "justify", "align"],
-        )?;
+        check_node_sibling_keys(diagnostics, what, "\"row\"", value, &ROW_SHAPE_KEYS)?;
         let children = layout_children_from_value(what, v, styles, diagnostics)?;
         let spacing = spacing_from_value(what, value, "\"row\"", true)?;
         let justify = justify_from_value(what, value, "\"row\"")?;
@@ -648,13 +673,7 @@ fn layout_node_from_value_inner(
         }));
     }
     if let Some(v) = obj_get(value, "column") {
-        check_node_sibling_keys(
-            diagnostics,
-            what,
-            "\"column\"",
-            value,
-            &["column", "padding", "margin", "gap", "justify", "align"],
-        )?;
+        check_node_sibling_keys(diagnostics, what, "\"column\"", value, &COLUMN_SHAPE_KEYS)?;
         let children = layout_children_from_value(what, v, styles, diagnostics)?;
         let spacing = spacing_from_value(what, value, "\"column\"", true)?;
         let justify = justify_from_value(what, value, "\"column\"")?;
@@ -667,13 +686,7 @@ fn layout_node_from_value_inner(
         }));
     }
     if let Some(v) = obj_get(value, "split") {
-        check_node_sibling_keys(
-            diagnostics,
-            what,
-            "\"split\"",
-            value,
-            &["split", "padding", "margin", "gap"],
-        )?;
+        check_node_sibling_keys(diagnostics, what, "\"split\"", value, &SPLIT_SHAPE_KEYS)?;
         // `gap` is meaningful here -- the space between the split's two
         // panes -- unlike `"tabs"`/`"panel"` below.
         let spacing = spacing_from_value(what, value, "\"split\"", true)?;
@@ -687,13 +700,7 @@ fn layout_node_from_value_inner(
         )?));
     }
     if let Some(v) = obj_get(value, "tabs") {
-        check_node_sibling_keys(
-            diagnostics,
-            what,
-            "\"tabs\"",
-            value,
-            &["tabs", "padding", "margin"],
-        )?;
+        check_node_sibling_keys(diagnostics, what, "\"tabs\"", value, &TABS_SHAPE_KEYS)?;
         let spacing = spacing_from_value(what, value, "\"tabs\"", false)?;
         let tabs_value = must_be_dict(what, v, "tabs")?;
         return Ok(LayoutNode::Tabs(layout_tabs_from_value(
@@ -705,13 +712,7 @@ fn layout_node_from_value_inner(
         )?));
     }
     if let Some(v) = obj_get(value, "panel") {
-        check_node_sibling_keys(
-            diagnostics,
-            what,
-            "\"panel\"",
-            value,
-            &["panel", "padding", "margin"],
-        )?;
+        check_node_sibling_keys(diagnostics, what, "\"panel\"", value, &PANEL_SHAPE_KEYS)?;
         let spacing = spacing_from_value(what, value, "\"panel\"", false)?;
         let panel_value = must_be_dict(what, v, "panel")?;
         return Ok(LayoutNode::Panel(layout_panel_from_value(
@@ -729,7 +730,7 @@ fn layout_node_from_value_inner(
             what,
             "\"sidebar_panel\"",
             value,
-            &["sidebar_panel"],
+            &SIDEBAR_PANEL_SHAPE_KEYS,
         )?;
         let sidebar_value = must_be_dict(what, v, "sidebar_panel")?;
         return Ok(LayoutNode::SidebarPanel(layout_sidebar_panel_from_value(
@@ -741,7 +742,13 @@ fn layout_node_from_value_inner(
     }
     if let Some(v) = obj_get(value, "split_tree") {
         reject_unsupported_spacing_keys(what, value, "a \"split_tree\" node")?;
-        check_node_sibling_keys(diagnostics, what, "\"split_tree\"", value, &["split_tree"])?;
+        check_node_sibling_keys(
+            diagnostics,
+            what,
+            "\"split_tree\"",
+            value,
+            &SPLIT_TREE_SHAPE_KEYS,
+        )?;
         let split_tree_value = must_be_dict(what, v, "split_tree")?;
         return Ok(LayoutNode::SplitTree(layout_split_tree_from_value(
             what,
@@ -751,13 +758,7 @@ fn layout_node_from_value_inner(
         )?));
     }
     if let Some(v) = obj_get(value, "scroll") {
-        check_node_sibling_keys(
-            diagnostics,
-            what,
-            "\"scroll\"",
-            value,
-            &["scroll", "padding", "margin"],
-        )?;
+        check_node_sibling_keys(diagnostics, what, "\"scroll\"", value, &SCROLL_SHAPE_KEYS)?;
         let spacing = spacing_from_value(what, value, "\"scroll\"", false)?;
         let scroll_value = must_be_dict(what, v, "scroll")?;
         return Ok(LayoutNode::Scroll(layout_scroll_from_value(
@@ -1948,6 +1949,13 @@ fn overlay_content<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
 ) -> Result<OverlayContent<T>, DecodeError> {
     let value = materialize(deserializer)
         .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))?;
+    check_unknown_keys(
+        diagnostics,
+        what,
+        "overlay",
+        &value,
+        &[chrome_key, "content"],
+    )?;
     let chrome =
         obj_get(&value, chrome_key).ok_or_else(|| DecodeError::missing_field(what, chrome_key))?;
     must_be_dict(what, chrome, chrome_key)?;
@@ -1970,14 +1978,21 @@ pub enum RenderOutput {
     Tree(LayoutNode),
 }
 
-/// A `dict` carrying any of [`LAYOUT_NODE_KEYS`] is parsed as a layout
-/// tree; any other `dict` is parsed as the flat per-slot shape, so a
-/// render callback written against the flat shape keeps working
-/// unchanged.
+/// A `dict` carrying any of [`LAYOUT_NODE_KEYS`], or a top-level `"id"` key
+/// (the one key a [`LayoutLeafNode`](crate::layout::LayoutLeaf) carries that
+/// [`RenderFrame`]'s flat shape never does — see `docs/bindings-wire-format.md`'s
+/// own `{"id": "c", "button": {...}}` example), is parsed as a layout tree;
+/// any other `dict` is parsed as the flat per-slot shape, so a render
+/// callback written against the flat shape keeps working unchanged. Without
+/// the `"id"` check, a render callback returning a bare top-level leaf would
+/// fall through to the flat branch, which has no `"id"`/`"style"`/`"class"`/
+/// sizing-key vocabulary of its own and so would both mis-report `"id"` as
+/// unknown and silently drop the leaf's `"style"`/`"class"`.
 fn is_layout_tree(value: &Value) -> bool {
-    LAYOUT_NODE_KEYS
-        .iter()
-        .any(|key| obj_get(value, key).is_some())
+    obj_get(value, "id").is_some()
+        || LAYOUT_NODE_KEYS
+            .iter()
+            .any(|key| obj_get(value, key).is_some())
 }
 
 /// Checks a render callback's returned value's optional top-level
@@ -3919,6 +3934,38 @@ mod tests {
         assert!(frame.text_display.is_none());
     }
 
+    /// A render callback returning a bare top-level leaf (`{"id": ...,
+    /// "<kind>": {...}}`, no container key) is a one-node [`LayoutNode`]
+    /// tree, not the flat [`RenderFrame`] shape -- `docs/bindings-wire-format.md`'s
+    /// own documented example (`{"id": "c", "button": {...}, "class":
+    /// "card"}`). Decoded under `strict`, it must produce zero diagnostics:
+    /// before `is_layout_tree` also checked for a top-level `"id"` key,
+    /// this fell through to the flat branch, which has no `"id"` in its own
+    /// known-key list and so raised `UnknownKeyError` on a perfectly valid
+    /// descriptor.
+    #[test]
+    fn a_bare_top_level_leaf_decodes_as_a_tree_with_no_diagnostics_under_strict() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::strict();
+        let value = json!({
+            "id": "q:out",
+            "text_display": {"id": "q:out", "lines": []},
+        });
+        let output = decode_render_output_with_styles(
+            "render",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        )
+        .expect("a bare top-level leaf is a valid, documented render output");
+        let RenderOutput::Tree(LayoutNode::Leaf(leaf)) = output else {
+            panic!("expected a one-node leaf tree");
+        };
+        assert_eq!(leaf.id, "q:out");
+        assert!(diagnostics.warned_keys().is_empty());
+    }
+
     /// A render callback's returned value with no `"wire_version"` key at
     /// all decodes exactly like before this key existed -- the versionless
     /// policy [`crate::wire_schema::WIRE_VERSION`]'s own doc describes.
@@ -4346,5 +4393,61 @@ mod tests {
         let strict = DecodeDiagnostics::strict();
         let error = err(decode_shell_config(&value, &strict));
         assert_eq!(error.code(), "unknown_key");
+    }
+
+    /// The field names `crate::wire_schema::schema()` declares for `def_name`
+    /// — [`crate::wire_schema::DefJson::Obj`]'s own field list, flattened to
+    /// just the names. Panics if no such `Obj` def exists, so a typo'd
+    /// `def_name` in a caller below fails loudly rather than silently
+    /// comparing against an empty set.
+    fn schema_field_names(def_name: &str) -> HashSet<String> {
+        crate::wire_schema::schema()
+            .into_iter()
+            .find_map(|def| match def {
+                crate::wire_schema::DefJson::Obj { name, fields, .. } if name == def_name => {
+                    Some(fields.into_iter().map(|f| f.name).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no such schema `Obj` def: {def_name}"))
+    }
+
+    /// Every per-kind sibling-key constant [`layout_node_from_value_inner`]
+    /// passes to [`check_node_sibling_keys`] (plus [`UNIVERSAL_NODE_SIBLING_KEYS`]
+    /// it folds in automatically) names exactly the field set
+    /// `crate::wire_schema::schema()` declares for that node's own generated
+    /// def -- the same source `docs/bindings-wire-format.md`'s *Generated
+    /// reference* section renders from. A field added to one side without
+    /// the other would otherwise only surface as a silent false "unknown
+    /// key" warning (or a surprise strict-mode rejection) the first time a
+    /// real app sent it, rather than failing this test at compile-review
+    /// time.
+    #[test]
+    fn node_shape_key_constants_match_the_wire_schema_field_list() {
+        let cases: &[(&str, &[&str])] = &[
+            ("LayoutRowNode", &ROW_SHAPE_KEYS),
+            ("LayoutColumnNode", &COLUMN_SHAPE_KEYS),
+            ("LayoutSplitNode", &SPLIT_SHAPE_KEYS),
+            ("LayoutTabsNode", &TABS_SHAPE_KEYS),
+            ("LayoutPanelNode", &PANEL_SHAPE_KEYS),
+            ("LayoutSidebarPanelNode", &SIDEBAR_PANEL_SHAPE_KEYS),
+            ("LayoutSplitTreeNode", &SPLIT_TREE_SHAPE_KEYS),
+            ("LayoutScrollNode", &SCROLL_SHAPE_KEYS),
+        ];
+        for (def_name, shape_keys) in cases {
+            let mut expected = schema_field_names(def_name);
+            for universal in UNIVERSAL_NODE_SIBLING_KEYS {
+                // `schema_field_names` is the generated reference's own
+                // field list, which already carries these; strip them back
+                // out so the comparison is against `shape_keys` alone, the
+                // same split `check_node_sibling_keys` itself makes.
+                expected.remove(universal);
+            }
+            let actual: HashSet<String> = shape_keys.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                actual, expected,
+                "{def_name}'s shape-key constant has drifted from its wire_schema field list"
+            );
+        }
     }
 }

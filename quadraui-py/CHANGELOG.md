@@ -13,13 +13,19 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 ### Added
 
 - `QuiApp(..., strict=False, on_unknown_key=None)`: a render callback's
-  returned descriptor (or `run_shell`'s `config`) carrying an unrecognised
-  *optional* key (a misspelt `"cursr"`, `"focussed"`, ...) now reports it
-  through `on_unknown_key(key, path)` — called at most once per distinct
-  key for the app's whole lifetime — instead of silently dropping it.
+  returned descriptor carrying an unrecognised *optional* key (a misspelt
+  `"cursr"`, `"focussed"`, ...) now reports it through
+  `on_unknown_key(key, path)` — called at most once per distinct key for
+  the app's whole lifetime — instead of silently dropping it.
   `strict=True` turns the same finding into an `UnknownKeyError` instead,
   raised from the render that found it. The default (`strict=False`, no
   `on_unknown_key`) keeps every existing app's behaviour unchanged.
+- `QuiApp.run_shell(..., strict=False, on_unknown_key=None)`: the same
+  `strict`/`on_unknown_key` policy, applied to `run_shell`'s own `config`
+  argument. Since `config` decodes exactly once, synchronously, during
+  `run_shell` itself, an `on_unknown_key` callback that raises surfaces as
+  `run_shell`'s own raised exception rather than through a later `step`/
+  `run` call.
 
 ### Changed
 
