@@ -57,6 +57,14 @@ pub struct RenderFrame {
 /// A missing key or a `null` value both mean "draw nothing in this slot
 /// this frame"; every error is labeled `"render"` — the only context a
 /// `RenderFrame` is ever decoded in.
+///
+/// Builds a fresh warn-mode [`crate::wire::DecodeDiagnostics`] per call
+/// (unlike [`crate::wire::decode_render_output_with_styles`], which takes a
+/// session-scoped one), so an unknown optional key found through this impl
+/// can never warn-once across calls or honour a binding's `strict` setting.
+/// No binding calls this `Deserialize` impl directly today — each decodes
+/// through `decode_render_output_with_styles` instead — so the gap is
+/// latent, not currently user-visible.
 impl<'de> Deserialize<'de> for RenderFrame {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

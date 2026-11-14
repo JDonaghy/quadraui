@@ -87,13 +87,10 @@ non-bordered `"list"`/`"tree"`, but **not** a `"button"`'s `Primary`/
 no `"style"` alias yet -- overriding either still needs a host-wide
 `setTheme`/`set_theme` call.
 
-**An unknown key inside `"style"` is always a decode error**, stricter
-than an unrecognised sibling key on the surrounding node dict itself
-(e.g. `{"row": [...], "bogus": 1}` decodes fine, silently ignoring
-`"bogus"`): `"style"`'s whole point is a closed, documented vocabulary of
-theme/style tokens, where a typo'd key silently doing nothing would be a
-worse failure mode than the data format v1 unknown-key policy a sibling
-key gets.
+**An unknown key inside `"style"` is always a decode error** — stricter
+than the warn-by-default policy an unrecognised sibling key on the
+surrounding node dict itself gets; see *Unknown optional wire key policy*
+below for both.
 
 ### Named style sets: `define_style` + `"class"`
 
@@ -133,11 +130,9 @@ that node's subtree -- the same mechanism `"style"` alone goes through, so
 everything above about metric overrides not re-running layout, and about
 which token a leaf actually reads, applies unchanged.
 
-**An unknown class *name* is ignored, not an error** -- the data format v1
-unknown-key policy, the opposite of an unknown key *inside* `"style"`. A
-class name is open-ended host data (an app defines its own names at
-runtime), while `"style"`'s keys are a fixed, documented token list where a
-typo can only ever be a typo.
+**An unknown class *name* is always ignored, not reported** -- the opposite
+end of the spectrum from an unknown key *inside* `"style"`; see *Unknown
+optional wire key policy* below for both.
 
 **Four sets exist before any `define_style` call**, each derived from the
 app's live `Theme` (so they follow a `set_theme`/`setTheme` call) rather
@@ -308,6 +303,48 @@ checks an incoming tree's `"wire_version"` against it:
 
 The constant only moves alongside a real additive wire-shape change, and
 only once both `quadraui-py` and `quadraui-node` emit the new value.
+
+## Unknown optional wire key policy
+
+Every wire struct `quadraui-binding-core` decodes by hand (every
+`LayoutNode` variant, `LayoutLeafNode`, `RenderFrameDict`, the `run_shell`/
+`runShell` `config` object, ...) reports a key outside its own documented
+vocabulary — a misspelt optional key like `"cursr"` or `"focussed"` — rather
+than either silently dropping it or always hard-failing:
+
+- **Default: warn.** The key reaches a binding's own diagnostic hook (if
+  one is registered — `QuiApp`'s `on_unknown_key`/`onUnknownKey`) at most
+  once per distinct key name for that app's whole lifetime, and decoding
+  continues unaffected. With no hook registered, nothing is user-visible
+  beyond that dedup bookkeeping — this is the default, so no app written
+  before this policy existed breaks.
+- **`strict=True`/`strict: true`: reject.** The same finding instead raises
+  a decode error immediately, naming the key and the field it appeared on
+  — the same failure mode a missing *required* field already has.
+
+A render callback's returned descriptor and `run_shell`/`runShell`'s
+`config` argument each opt into `strict` and register a hook independently
+— see `QuiApp`'s own constructor/`run_shell` doc (`quadraui-py`) or
+`setStrict`/`setOnUnknownKey`/`runShell` doc (`quadraui-node`) for the exact
+surface. A *required* field or a wrongly-typed value is always a decode
+error regardless of this policy — it only covers an otherwise-harmless
+unrecognised key a decoder would otherwise have had to either drop or
+reject with no way to choose.
+
+**An unknown key inside `"style"` stays a hard decode error unconditionally**
+— not subject to `strict`/warn at all — stricter than an unrecognised
+sibling key on the surrounding node dict itself gets (e.g.
+`{"row": [...], "bogus": 1}` reports `"bogus"` through the policy above,
+rather than always failing outright): `"style"`'s whole point is a closed,
+documented vocabulary of theme/style tokens, where a typo'd key silently
+doing nothing would be a worse failure mode than this policy's warn default
+allows.
+
+**An unknown class *name* is always ignored, not reported** — the opposite
+end of the spectrum from `"style"`'s hard rejection, and not subject to
+`strict`/warn either. A class name is open-ended host data (an app defines
+its own names at runtime via `define_style`), while `"style"`'s keys are a
+fixed, documented token list where a typo can only ever be a typo.
 
 ## Generated reference
 

@@ -4056,14 +4056,15 @@ fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> Result<()> {
 /// in this crate uses -- `&serde_json::Value` implements
 /// `serde::Deserializer` directly, so [`decode_shell_config`] is handed the
 /// materialized value with no further wrapper. The napi-rs analog of
-/// `quadraui-py`'s own `shell_config_from_dict`.
-fn shell_config_from_descriptor(descriptor: Unknown) -> Result<ShellConfig> {
-    // `runShell` decodes `descriptor` exactly once, at construction -- a
-    // fresh, warn-mode `DecodeDiagnostics` is this one-shot call's whole
-    // "session", so there is no longer-lived instance for it to share.
-    let diagnostics = quadraui_binding_core::DecodeDiagnostics::warn();
+/// `quadraui-py`'s own `shell_config_from_dict`. `diagnostics` is
+/// `runShell`'s own `strict`/`onUnknownKey` session -- see
+/// [`QuiApp::run_shell`]'s own doc.
+fn shell_config_from_descriptor(
+    descriptor: Unknown,
+    diagnostics: &quadraui_binding_core::DecodeDiagnostics,
+) -> Result<ShellConfig> {
     decode_via_core("runShell", descriptor, |value| {
-        decode_shell_config(value, &diagnostics)
+        decode_shell_config(value, diagnostics)
     })
 }
 
@@ -4344,6 +4345,14 @@ impl QuiApp {
     ///
     /// Raises if `width`/`height` is zero, or `InvalidDescriptorError` if
     /// `config` doesn't decode.
+    ///
+    /// `strict`/`onUnknownKey` apply to that one `config` decode, the same
+    /// policy [`QuiApp::set_strict`]/[`QuiApp::set_on_unknown_key`] apply to
+    /// a render callback's returned descriptor -- see those methods' own
+    /// docs for the full contract. Unlike a plain `QuiApp`, `runShell`
+    /// decodes `config` exactly once, synchronously, during this call, so a
+    /// hook raising is surfaced as this call's own `Result::Err` rather than
+    /// deferred to a later `step`/`run`.
     #[napi(js_name = "runShell")]
     #[allow(clippy::too_many_arguments)]
     pub fn run_shell(
@@ -4356,9 +4365,45 @@ impl QuiApp {
         on_shell_event: Option<Function<'_, Unknown<'static>, Unknown<'static>>>,
         on_bottom_panel_event: Option<Function<'_, Unknown<'static>, Unknown<'static>>>,
         on_tick: Option<Function<'_, Unknown<'static>, Unknown<'static>>>,
+        strict: Option<bool>,
+        on_unknown_key: Option<Function<'_, Unknown<'static>, Unknown<'static>>>,
     ) -> Result<QuiShellApp> {
         let (width, height) = checked_dimensions(width, height)?;
-        let shell_config = shell_config_from_descriptor(config)?;
+        let diagnostics = quadraui_binding_core::DecodeDiagnostics::warn();
+        diagnostics.set_strict(strict.unwrap_or(false));
+        // `config` decodes exactly once, synchronously, right here -- so a
+        // hook error is captured into this plain cell and raised directly
+        // below, rather than queued in a `ShellState::pending_error` no
+        // `QuiShellApp` exists yet to hold.
+        let hook_error: Rc<RefCell<Option<Error>>> = Rc::new(RefCell::new(None));
+        if let Some(callback) = on_unknown_key {
+            let callback = callback.create_ref()?;
+            let hook_error = hook_error.clone();
+            diagnostics.set_hook(move |path: &str, key: &str| {
+                let payload: Unknown<'static> =
+                    match env.to_js_value(&serde_json::json!({"key": key, "path": path})) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            record_error(&hook_error, err);
+                            return;
+                        }
+                    };
+                let func = match callback.borrow_back(&env) {
+                    Ok(func) => func,
+                    Err(err) => {
+                        record_error(&hook_error, err);
+                        return;
+                    }
+                };
+                if let Err(err) = func.call(payload) {
+                    record_error(&hook_error, err);
+                }
+            });
+        }
+        let shell_config = shell_config_from_descriptor(config, &diagnostics)?;
+        if let Some(err) = hook_error.borrow_mut().take() {
+            return Err(err);
+        }
         let state = Rc::new(RefCell::new(ShellState {
             handler: on_event.map(|f| f.create_ref()).transpose()?,
             on_tick: on_tick.map(|f| f.create_ref()).transpose()?,

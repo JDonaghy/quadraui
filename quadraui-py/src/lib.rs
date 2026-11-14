@@ -1443,15 +1443,15 @@ impl ShellApp for PyShellApp {
 /// impl on `ShellConfig`/`PanelDefinition`/`BottomPanelConfig` upstream, so
 /// that decoder reads the subset of `ShellConfig`'s builder surface this
 /// binding supports field-by-field instead of depending on one — see its
-/// own doc for the recognized key vocabulary.
-fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
+/// own doc for the recognized key vocabulary. `diagnostics` is
+/// `run_shell`'s own `strict`/`on_unknown_key` session — see
+/// [`QuiApp::run_shell`]'s own doc.
+fn shell_config_from_dict(
+    dict: &Bound<'_, PyDict>,
+    diagnostics: &quadraui_binding_core::DecodeDiagnostics,
+) -> PyResult<ShellConfig> {
     let mut de = pythonize::Depythonizer::from_object(dict.as_any());
-    // `run_shell` decodes `config` exactly once, at construction -- a
-    // fresh, warn-mode [`quadraui_binding_core::DecodeDiagnostics`] is
-    // this one-shot call's whole "session", so there is no longer-lived
-    // instance for it to share.
-    let diagnostics = quadraui_binding_core::DecodeDiagnostics::warn();
-    quadraui_binding_core::decode_shell_config(&mut de, &diagnostics).map_err(decode_error_to_py)
+    quadraui_binding_core::decode_shell_config(&mut de, diagnostics).map_err(decode_error_to_py)
 }
 
 /// Takes and returns this session's pending callback-raised error, if any
@@ -3022,6 +3022,14 @@ impl QuiApp {
     /// exactly as the matching `QuiShellApp.set_*` method would right
     /// after construction.
     ///
+    /// `strict`/`on_unknown_key` apply to that one `config` decode, the
+    /// same policy [`Self::new`]'s own `strict`/`on_unknown_key` apply to a
+    /// render callback's returned descriptor — see that constructor's doc
+    /// for the full contract. Unlike `QuiApp::new`, `run_shell` decodes
+    /// `config` exactly once, synchronously, during this call, so a hook
+    /// raising is surfaced as this call's own `PyResult::Err` rather than
+    /// deferred to a later `step`/`run`.
+    ///
     /// This is a separate class ([`QuiShellApp`], not a mode switch on this
     /// `QuiApp`) rather than an instance method: a plain `QuiApp` wraps a
     /// fixed `TuiDriver<PyAppLogic>`, and `run_shell` drives a different
@@ -3033,7 +3041,8 @@ impl QuiApp {
     /// mode-dispatching wrapper.
     ///
     /// Raises `InvalidDimensionsError` if `width`/`height` is zero, or
-    /// `InvalidDescriptorError` if `config` doesn't decode.
+    /// `InvalidDescriptorError` if `config` doesn't decode (including a
+    /// `strict=True` unknown-key rejection).
     #[staticmethod]
     #[pyo3(signature = (
         width,
@@ -3044,6 +3053,8 @@ impl QuiApp {
         on_shell_event=None,
         on_bottom_panel_event=None,
         on_tick=None,
+        strict=false,
+        on_unknown_key=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn run_shell(
@@ -3055,13 +3066,36 @@ impl QuiApp {
         on_shell_event: Option<Py<PyAny>>,
         on_bottom_panel_event: Option<Py<PyAny>>,
         on_tick: Option<Py<PyAny>>,
+        strict: bool,
+        on_unknown_key: Option<Py<PyAny>>,
     ) -> PyResult<QuiShellApp> {
         if width == 0 || height == 0 {
             return Err(InvalidDimensionsError::new_err(
                 "width and height must both be non-zero",
             ));
         }
-        let shell_config = shell_config_from_dict(config)?;
+        let diagnostics = quadraui_binding_core::DecodeDiagnostics::warn();
+        diagnostics.set_strict(strict);
+        // `config` decodes exactly once, synchronously, right here -- so a
+        // hook error is captured into this plain cell and raised directly
+        // below, rather than queued in a `ShellState::pending_error` no
+        // `QuiShellApp` exists yet to hold.
+        let hook_error: Rc<RefCell<Option<PyErr>>> = Rc::new(RefCell::new(None));
+        if let Some(callback) = on_unknown_key {
+            let hook_error = hook_error.clone();
+            diagnostics.set_hook(move |path: &str, key: &str| {
+                let (key, path) = (key.to_string(), path.to_string());
+                Python::attach(|py| {
+                    if let Err(err) = callback.call1(py, (key, path)) {
+                        record_error(&hook_error, err);
+                    }
+                });
+            });
+        }
+        let shell_config = shell_config_from_dict(config, &diagnostics)?;
+        if let Some(err) = hook_error.borrow_mut().take() {
+            return Err(err);
+        }
         let state = Rc::new(RefCell::new(ShellState {
             handler: on_event,
             on_tick,
