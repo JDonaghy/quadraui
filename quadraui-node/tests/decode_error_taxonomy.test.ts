@@ -5,7 +5,8 @@
 // `instanceof InvalidDescriptorError` check keeps matching unchanged;
 // the message is tagged with the subclass name, so a regex on the message
 // must name the subclass), carry a `code` property mirroring
-// `quadraui_binding_core::DecodeError::code`, and raise with a message
+// `quadraui_binding_core::DecodeError::code`, a `path` property mirroring
+// `quadraui_binding_core::DecodeError::path`, and raise with a message
 // naming the full path into the layout tree at which the problem was
 // found -- not just a bare field name.
 //
@@ -157,6 +158,16 @@ test("a deeply nested decode error names every ancestor on the way down", () => 
     assert.match(message, /tabs#frm/);
     assert.match(message, /panel#chrome/);
     assert.match(message, /split#inner/);
+    // `.path` carries the same dotted path, independent of the message
+    // text, and the NUL byte used to smuggle it across the napi-rs
+    // boundary (see `toQuadrauiError`'s own doc) never leaks into either.
+    const path = (err as { path?: string }).path;
+    assert.equal(typeof path, "string");
+    assert.ok(!(path as string).includes("\u0000"));
+    assert.ok(!message.includes("\u0000"));
+    assert.match(path as string, /tabs#frm/);
+    assert.match(path as string, /panel#chrome/);
+    assert.match(path as string, /split#inner/);
     return true;
   });
 });

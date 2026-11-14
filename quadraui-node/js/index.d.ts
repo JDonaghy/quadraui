@@ -45,8 +45,18 @@ export declare class QuadrauiError extends Error {
   constructor(message: string);
 }
 
-/** A descriptor/event shape this binding's decode adapter rejected. */
-export declare class InvalidDescriptorError extends QuadrauiError {}
+/**
+ * A descriptor/event shape this binding's decode adapter rejected.
+ *
+ * `path` is the dotted path into the layout tree the underlying
+ * `DecodeError::path` named (e.g. `"render › split#body › panel#chrome"`)
+ * -- only present when this instance came from an actual `DecodeError`;
+ * `undefined` for a plain `InvalidDescriptorError` raised directly for a
+ * non-`DecodeError` failure.
+ */
+export declare class InvalidDescriptorError extends QuadrauiError {
+  readonly path?: string;
+}
 
 export declare class MissingFieldError extends InvalidDescriptorError {
   readonly code: "missing_field";

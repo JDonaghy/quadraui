@@ -1442,11 +1442,25 @@ fn invalid_descriptor_error(detail: impl std::fmt::Display) -> Error {
 /// `VersionMismatchError`, `DecodeFailedError`), chosen by matching the
 /// enum directly rather than parsing [`DecodeError`]'s own rendered
 /// message. Any future core variant this match doesn't name falls back to
-/// the shared `InvalidDescriptorError` tag. The message itself is
-/// `err.to_string()` unchanged (`"<what>: at <path>: <problem>"`), so an
-/// author sees exactly which widget in the tree a nested decode failed on.
+/// the shared `InvalidDescriptorError` tag. The visible part of the
+/// message is `err.to_string()` unchanged (`"<what>: at <path>:
+/// <problem>"`), so an author sees exactly which widget in the tree a
+/// nested decode failed on.
+///
+/// napi-rs has no mechanism for a `#[napi]` function to attach an extra
+/// property to the `Error` object it throws -- [`Error`] only carries a
+/// `status`/`reason` pair, and `reason` becomes the thrown object's whole
+/// `message` (see [`crate::Error`]'s own crate docs). To still get
+/// [`DecodeError::path`] across that boundary as its own `.path` property
+/// (rather than a caller re-parsing it out of the message), this appends
+/// it after a NUL byte, which can't occur in either half: `js/index.ts`'s
+/// `toQuadrauiError` splits the thrown message on the first NUL, strips it
+/// back off before constructing the typed subclass (so `.message` ends up
+/// identical to what it was before this suffix existed), and sets the
+/// remainder as `.path`.
 fn decode_error_to_js(err: DecodeError) -> Error {
     let message = err.to_string();
+    let path = err.path().to_string();
     let tag = match err {
         DecodeError::MissingField { .. } => "MissingFieldError",
         DecodeError::UnknownVariant { .. } => "UnknownVariantError",
@@ -1459,7 +1473,7 @@ fn decode_error_to_js(err: DecodeError) -> Error {
         // rather than failing to compile.
         _ => "InvalidDescriptorError",
     };
-    Error::from_reason(format!("{tag}: {message}"))
+    Error::from_reason(format!("{tag}: {message}\u{0}{path}"))
 }
 
 /// Mirrors [`invalid_descriptor_error`] for an already-occupied fixed slot
