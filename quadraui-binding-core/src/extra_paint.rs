@@ -1512,6 +1512,35 @@ macro_rules! extra_primitives {
                 )),
             }
         }
+
+        /// [`decode_extra_primitive`] against an already-[`serde_json::Value`]
+        /// descriptor body, routing an unrecognized key inside it through
+        /// `diagnostics` the same way [`crate::wire::decode_value_checked`]
+        /// does for a fixed leaf's own body — the layout-tree leaf decode
+        /// (`crate::wire::layout_leaf_from_value`) and the flat render-frame
+        /// extra slot (`crate::wire::extra_slot_entry`) both call this
+        /// instead of [`decode_extra_primitive`] once they already have a
+        /// materialized `Value` and a session to report through.
+        pub(crate) fn decode_extra_primitive_checked(
+            diagnostics: &crate::wire::DecodeDiagnostics,
+            what: &str,
+            kind: &str,
+            value: &serde_json::Value,
+        ) -> Result<Rc<dyn ExtraPaint>, crate::DecodeError> {
+            match kind {
+                $(
+                    $kind => Ok(Rc::new(crate::wire::decode_value_checked::<$ty>(
+                        diagnostics, what, kind, value,
+                    )?) as Rc<dyn ExtraPaint>),
+                )+
+                _ => Err(crate::DecodeError::unknown_variant(
+                    what,
+                    "kind",
+                    kind,
+                    &EXTRA_PRIMITIVE_KINDS,
+                )),
+            }
+        }
     };
 }
 
@@ -2391,6 +2420,58 @@ mod tests {
                     if *ev_id == id && (*value - 1.0).abs() < f32::EPSILON
             )),
             "Right should emit SliderChanged{{value: 1.0}}: {dispatched:?}"
+        );
+    }
+
+    /// An unrecognised key inside a `"slider"` descriptor body -- an
+    /// additive-primitive leaf, reached through
+    /// [`decode_extra_primitive_checked`] rather than the six fixed leaf
+    /// kinds -- is a hard [`crate::DecodeError::UnknownKey`] under
+    /// `strict`, naming the key, the dict it was found on, and the keys
+    /// `Slider` actually accepts, the same policy a layout-tree node's own
+    /// sibling keys already get.
+    #[test]
+    fn slider_leaf_body_rejects_an_unknown_key_under_strict() {
+        let value = serde_json::json!({
+            "id": "sl:1",
+            "value": 0.0,
+            "min": 0.0,
+            "max": 10.0,
+            "stpe": 1.0,
+        });
+        let diagnostics = crate::wire::DecodeDiagnostics::strict();
+        let error = match decode_extra_primitive_checked(&diagnostics, "test", "slider", &value) {
+            Ok(_) => panic!("a typo'd \"stpe\" key must be rejected under strict"),
+            Err(err) => err,
+        };
+        assert_eq!(error.code(), "unknown_key");
+        assert!(
+            error.to_string().contains("\"stpe\""),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// The same typo'd key [`slider_leaf_body_rejects_an_unknown_key_under_strict`]
+    /// rejects under `strict` only warns once, through the registered hook,
+    /// under the default (warn) policy -- the decode still succeeds despite
+    /// the unrecognised key.
+    #[test]
+    fn slider_leaf_body_warns_once_under_default_policy() {
+        let value = serde_json::json!({
+            "id": "sl:1",
+            "value": 0.0,
+            "min": 0.0,
+            "max": 10.0,
+            "stpe": 1.0,
+        });
+        let diagnostics = crate::wire::DecodeDiagnostics::warn();
+        if let Err(err) = decode_extra_primitive_checked(&diagnostics, "test", "slider", &value) {
+            panic!("warn mode still decodes despite the unrecognised key: {err}");
+        }
+        assert_eq!(
+            diagnostics.warned_keys(),
+            std::collections::HashSet::from(["stpe".to_string()])
         );
     }
 
