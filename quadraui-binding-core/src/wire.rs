@@ -779,7 +779,7 @@ fn layout_node_from_value_inner(
 ) -> Result<LayoutNode, DecodeError> {
     if let Some(v) = obj_get(value, "row") {
         check_node_sibling_keys(diagnostics, what, "\"row\"", value, &ROW_SHAPE_KEYS)?;
-        let children = layout_children_from_value(what, v, styles, diagnostics)?;
+        let children = layout_children_from_value(what, v, "\"row\"", styles, diagnostics)?;
         let spacing = spacing_from_value(what, value, "\"row\"", true)?;
         let justify = justify_from_value(what, value, "\"row\"")?;
         let align = align_from_value(what, value, "\"row\"")?;
@@ -792,7 +792,7 @@ fn layout_node_from_value_inner(
     }
     if let Some(v) = obj_get(value, "column") {
         check_node_sibling_keys(diagnostics, what, "\"column\"", value, &COLUMN_SHAPE_KEYS)?;
-        let children = layout_children_from_value(what, v, styles, diagnostics)?;
+        let children = layout_children_from_value(what, v, "\"column\"", styles, diagnostics)?;
         let spacing = spacing_from_value(what, value, "\"column\"", true)?;
         let justify = justify_from_value(what, value, "\"column\"")?;
         let align = align_from_value(what, value, "\"column\"")?;
@@ -941,22 +941,31 @@ fn reject_unsupported_spacing_keys(
 /// accepted here too. Tightening that back to "a real `list`" needs a
 /// pyo3-aware check this crate can't make; it would live in a binding's
 /// own decode adapter instead.
+///
+/// `label` is the container's own key (`"\"row\""`/`"\"column\""`), used
+/// the same way [`spacing_from_value`]/[`justify_from_value`]/
+/// [`align_from_value`] already fold it into their own error paths --
+/// a container-shape problem (this `list` itself, or one of its entries,
+/// not being the shape expected) names the container it was found on,
+/// not just the ancestor path leading to it.
 fn layout_children_from_value(
     what: &str,
     value: &Value,
+    label: &str,
     styles: StyleContext<'_>,
     diagnostics: &DecodeDiagnostics,
 ) -> Result<Vec<LayoutChild>, DecodeError> {
+    let container_context = format!("{what} › {label}");
     let list = value
         .as_array()
-        .ok_or_else(|| DecodeError::type_mismatch(what, "row/column children", "an array"))?;
+        .ok_or_else(|| DecodeError::type_mismatch(&container_context, "children", "an array"))?;
     list.iter()
         .enumerate()
         .map(|(index, child)| {
-            let context = format!("{what} › children[{index}]");
+            let context = format!("{container_context} › children[{index}]");
             if !child.is_object() {
                 return Err(DecodeError::type_mismatch(
-                    what,
+                    &container_context,
                     format!("children[{index}]"),
                     "an object",
                 ));
@@ -4448,6 +4457,36 @@ mod tests {
         assert!(message.contains("missing field \"ratio\""), "{message}");
     }
 
+    /// A container-shape error -- the `"row"`/`"column"` key's own value
+    /// not being an array -- names the container it was raised on, not
+    /// just the ancestor path leading to it, the same way a sibling
+    /// `"padding"`/`"justify"`/`"align"` key error on that same container
+    /// already does. Nested one level inside an outer `"row"`, the inner
+    /// `"column"`'s malformed children keep that outer `children[0]` step
+    /// in the path too, not just the container's own label.
+    #[test]
+    fn a_malformed_nested_container_names_the_container_its_shape_error_is_on() {
+        let value = json!({
+            "row": [{
+                "id": "a",
+                "column": "not a list",
+            }],
+        });
+        let error = err(decode_render_output("render", &value));
+        assert!(
+            matches!(error, DecodeError::TypeMismatch { .. }),
+            "{error:?}"
+        );
+        assert_eq!(error.path(), "render › \"row\" › children[0] › \"column\"");
+        let message = error.to_string();
+        assert!(message.contains("children[0]"), "{message}");
+        assert!(message.contains("\"column\""), "{message}");
+        assert!(
+            message.contains("\"children\" must be an array"),
+            "{message}"
+        );
+    }
+
     /// Every [`DecodeError`] variant pairs a stable [`DecodeError::code`]
     /// with the [`DecodeError::path`] at which it was raised -- the two
     /// pieces of information a binding's exception mapping (and this
@@ -4478,7 +4517,7 @@ mod tests {
 
         let type_mismatch = err(decode(&json!({"row": "not a list"})));
         assert_eq!(type_mismatch.code(), "type_mismatch");
-        assert_eq!(type_mismatch.path(), "test");
+        assert_eq!(type_mismatch.path(), "test › \"row\"");
 
         let unknown_key = err(decode(&json!({"row": [], "padding": {"lef": 4}})));
         assert_eq!(unknown_key.code(), "unknown_key");
