@@ -14,7 +14,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("../js/index.ts");
 
 test("insertButton renders its label", () => {
   const app = new QuiApp(40, 20);
@@ -240,9 +240,14 @@ test("insertImage with a Uint8Array-sourced Bytes image renders its fallback tex
 
 test("insertImage with a missing required field raises InvalidDescriptorError", () => {
   const app = new QuiApp(40, 20);
+  // A serde-level missing field surfaces as `DecodeFailedError`, which is
+  // still an `InvalidDescriptorError` for callers catching the base class.
   assert.throws(
     () => app.insertImage({ id: "image:logo" }),
-    /InvalidDescriptorError/,
+    (err: unknown) =>
+      err instanceof DecodeFailedError &&
+      err instanceof InvalidDescriptorError &&
+      /missing field `source`/.test((err as Error).message),
   );
 });
 

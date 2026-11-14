@@ -2,8 +2,9 @@
 // per-variant exception taxonomy: `MissingFieldError`, `UnknownVariantError`,
 // `TypeMismatchError`, `UnknownKeyError`, `VersionMismatchError`, and
 // `DecodeFailedError` each extend `InvalidDescriptorError` (so an existing
-// `instanceof InvalidDescriptorError`/`/InvalidDescriptorError/` check
-// keeps matching unchanged), carry a `code` property mirroring
+// `instanceof InvalidDescriptorError` check keeps matching unchanged;
+// the message is tagged with the subclass name, so a regex on the message
+// must name the subclass), carry a `code` property mirroring
 // `quadraui_binding_core::DecodeError::code`, and raise with a message
 // naming the full path into the layout tree at which the problem was
 // found -- not just a bare field name.
