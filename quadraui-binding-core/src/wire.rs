@@ -887,6 +887,15 @@ fn layout_node_from_value_inner(
             diagnostics,
         )?));
     }
+    if let Some(key) = unknown_node_kind_key(value) {
+        let expected = all_node_kind_keys();
+        return Err(DecodeError::unknown_variant(
+            what,
+            "node kind",
+            key,
+            &expected,
+        ));
+    }
     Ok(LayoutNode::Leaf(layout_leaf_from_value(
         what,
         value,
@@ -2135,21 +2144,66 @@ pub enum RenderOutput {
     Tree(LayoutNode),
 }
 
-/// A `dict` carrying any of [`LAYOUT_NODE_KEYS`], or a top-level `"id"` key
+/// A `dict` carrying any of [`LAYOUT_NODE_KEYS`], a top-level `"id"` key
 /// (the one key a [`LayoutLeafNode`](crate::layout::LayoutLeaf) carries that
 /// [`RenderFrame`]'s flat shape never does — see `docs/bindings-wire-format.md`'s
-/// own `{"id": "c", "button": {...}}` example), is parsed as a layout tree;
-/// any other `dict` is parsed as the flat per-slot shape, so a render
-/// callback written against the flat shape keeps working unchanged. Without
-/// the `"id"` check, a render callback returning a bare top-level leaf would
+/// own `{"id": "c", "button": {...}}` example), or an [`unknown_node_kind_key`]
+/// (a dict attempting some node kind this decoder doesn't recognize at
+/// all, e.g. `{"grid": {...}}`), is parsed as a layout tree; any other
+/// `dict` is parsed as the flat per-slot shape, so a render callback
+/// written against the flat shape keeps working unchanged. Without the
+/// `"id"` check, a render callback returning a bare top-level leaf would
 /// fall through to the flat branch, which has no `"id"`/`"style"`/`"class"`/
 /// sizing-key vocabulary of its own and so would both mis-report `"id"` as
-/// unknown and silently drop the leaf's `"style"`/`"class"`.
+/// unknown and silently drop the leaf's `"style"`/`"class"`. Without the
+/// `unknown_node_kind_key` check, a dict naming an unrecognized kind and
+/// nothing else would fall through to the flat branch too, which only warns
+/// on an unrecognized key by default and so would decode as an empty,
+/// silently blank [`RenderFrame`] instead of raising.
 fn is_layout_tree(value: &Value) -> bool {
     obj_get(value, "id").is_some()
         || LAYOUT_NODE_KEYS
             .iter()
             .any(|key| obj_get(value, key).is_some())
+        || unknown_node_kind_key(value).is_some()
+}
+
+/// Every key [`layout_node_from_value_inner`] dispatches a node or leaf
+/// kind on: every [`LAYOUT_NODE_KEYS`] container, every fixed
+/// [`crate::layout::LEAF_KIND_KEYS`] leaf, and every additive
+/// [`EXTRA_PRIMITIVE_KINDS`] leaf.
+fn all_node_kind_keys() -> Vec<&'static str> {
+    LAYOUT_NODE_KEYS
+        .iter()
+        .chain(LEAF_KIND_KEYS.iter())
+        .chain(EXTRA_PRIMITIVE_KINDS.iter())
+        .copied()
+        .collect()
+}
+
+/// `value`'s first key that is neither `"id"`, a [`UNIVERSAL_NODE_SIBLING_KEYS`]
+/// sibling, nor one of [`all_node_kind_keys`] -- the dict's own attempt at
+/// naming a node kind this decoder doesn't recognize at all (e.g.
+/// `"grid"`). `None` when `value` isn't an object, when it carries a
+/// recognized kind key already (that kind's own descriptor failing is a
+/// separate, later error, not this one), or when every key present is
+/// universal and no kind was attempted at all (a dict missing its
+/// descriptor entirely, which stays [`DecodeError::MissingField`]/
+/// [`DecodeError::Borrow`] from the kind-specific decoder rather than
+/// becoming an [`DecodeError::UnknownVariant`] here).
+fn unknown_node_kind_key(value: &Value) -> Option<&str> {
+    let obj = value.as_object()?;
+    let has_recognized_kind = obj.keys().any(|k| {
+        LAYOUT_NODE_KEYS.contains(&k.as_str())
+            || LEAF_KIND_KEYS.contains(&k.as_str())
+            || EXTRA_PRIMITIVE_KINDS.contains(&k.as_str())
+    });
+    if has_recognized_kind {
+        return None;
+    }
+    obj.keys()
+        .map(String::as_str)
+        .find(|k| *k != "id" && !UNIVERSAL_NODE_SIBLING_KEYS.contains(k))
 }
 
 /// Checks a render callback's returned value's optional top-level
@@ -4014,6 +4068,49 @@ mod tests {
             "{}",
             err.to_string()
         );
+    }
+
+    /// A node dict naming a kind this decoder has never heard of (`"grid"`,
+    /// neither a [`LAYOUT_NODE_KEYS`] container nor a
+    /// [`crate::layout::LEAF_KIND_KEYS`]/[`EXTRA_PRIMITIVE_KINDS`] leaf) is
+    /// an [`DecodeError::UnknownVariant`] naming both the key and the path
+    /// it was found at, under the default (warn) [`DecodeDiagnostics`]
+    /// policy -- not a silently blank render, whether the dict is the
+    /// whole tree or nested inside a container's children.
+    #[test]
+    fn an_unknown_node_kind_is_rejected_at_the_top_level_and_nested() {
+        let top_level = err(decode(&json!({"grid": {}})));
+        assert!(
+            matches!(top_level, DecodeError::UnknownVariant { .. }),
+            "{top_level:?}"
+        );
+        assert!(top_level.to_string().contains("grid"), "{top_level}");
+        assert_eq!(top_level.path(), "test");
+
+        let nested = err(decode(&json!({
+            "row": [{"id": "a", "grid": {}}],
+        })));
+        assert!(
+            matches!(nested, DecodeError::UnknownVariant { .. }),
+            "{nested:?}"
+        );
+        assert!(nested.to_string().contains("grid"), "{nested}");
+        assert!(nested.path().contains("children[0]"), "{}", nested.path());
+    }
+
+    /// The same unknown-kind rejection, exercised through
+    /// [`decode_render_output`] -- the entry point a binding's render
+    /// callback actually returns into. Without [`is_layout_tree`]'s own
+    /// [`unknown_node_kind_key`] check, a lone `"grid"` key matches
+    /// neither flat-vs-tree sniff and falls through to the flat
+    /// [`RenderFrame`] shape, decoding as an empty, silently blank frame
+    /// (every slot `None`) instead of raising.
+    #[test]
+    fn decode_render_output_rejects_an_unknown_top_level_node_kind() {
+        let err = err(decode_render_output("render", json!({"grid": {}})));
+        assert!(matches!(err, DecodeError::UnknownVariant { .. }), "{err:?}");
+        assert!(err.to_string().contains("grid"), "{err}");
+        assert_eq!(err.path(), "render");
     }
 
     /// A minimal `Deserializer` whose `deserialize_any` calls exactly one
