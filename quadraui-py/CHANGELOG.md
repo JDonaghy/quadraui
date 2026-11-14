@@ -31,12 +31,12 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
-- A descriptor-decode failure now raises one of five new
+- A descriptor-decode failure now raises one of six new
   `InvalidDescriptorError` subclasses instead of the bare base class:
   `MissingFieldError`, `UnknownVariantError`, `TypeMismatchError`,
-  `UnknownKeyError`, `VersionMismatchError` — chosen by matching
-  `quadraui_binding_core::DecodeError`'s own variant directly, never by
-  parsing the exception's message. Each has a `code` class attribute
+  `UnknownKeyError`, `VersionMismatchError`, `DecodeFailedError` — chosen
+  by matching `quadraui_binding_core::DecodeError`'s own variant directly,
+  never by parsing the exception's message. Each has a `code` class attribute
   (e.g. `"missing_field"`) mirroring `DecodeError::code`, and the
   exception's message now names the full path into the layout tree the
   problem was found at (e.g. `render: at split#body › panel#chrome:
