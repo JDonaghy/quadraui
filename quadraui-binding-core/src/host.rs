@@ -2355,6 +2355,23 @@ impl<A: AppLogic> ErasedShellDriver for TuiDriver<A> {
 /// redraw — rather than on the very next idle `step`/`run` call, which is
 /// surprising for a caller stepping an app with nothing queued specifically
 /// to let it settle before inspecting it.
+///
+/// This is deliberately unconditional rather than gated on some "is the
+/// tree actually dirty" flag: no such flag exists anywhere upstream of
+/// this call (`Reaction::Continue` means "nothing *this event/tick* asked
+/// to redraw", not "nothing has changed since the last repaint"), and
+/// `TuiDriver::render`/`render_frame` has no cheaper early-out than
+/// re-walking the tree and re-painting `ratatui`'s cell buffer either. The
+/// cost this trades away is real: a caller `step`-ping or `run`-ning at a
+/// steady cadence with nothing queued now re-invokes the registered
+/// render callback (JS/Python decode included) on every idle poll, not
+/// only on an explicit redraw request — for a host polling at, say, 60 Hz
+/// while genuinely idle, that is 60 render-callback invocations/sec where
+/// there were none before. A future dirty-tracking flag (set on any state
+/// mutation, cleared after a render) would let this skip the repaint when
+/// nothing changed and only pay that cost on the very first idle step
+/// after a fresh registration — the one case this doc's "freshly
+/// registered render callback" paragraph above actually needs.
 pub fn step_driver(
     driver: &mut dyn ErasedShellDriver,
     pending_events: &mut VecDeque<UiEvent>,
@@ -2405,14 +2422,16 @@ pub fn click_down_up_events(x: f32, y: f32) -> [UiEvent; 2] {
 /// (one of the overlay/OS-call/window-control methods with a matching
 /// `QuiAppActions` method — `show_message_dialog`, `set_title`, ...) that
 /// a caller invoked re-entrantly, from inside that same app's own
-/// registered event/tick/render callback. Shared by every binding's own
-/// reentrancy guard (`quadraui-py`'s `ReentrantCallError`, `quadraui-node`'s
-/// own tagged equivalent) so the wording stays identical regardless of
-/// which binding raised it, and regardless of how each binding's own FFI
-/// layer actually detects the re-entrant call — PyO3's own runtime borrow
-/// check (via `Py::try_borrow_mut`) for `quadraui-py`, napi-rs's own
-/// native-borrow tracking for `quadraui-node` — since neither tags its own
-/// generic rejection with a method name or an actionable next step.
+/// registered event/tick/render callback. Used by `quadraui-py`'s own
+/// `ReentrantCallError` guard (`guard_against_reentrant_call`) so the
+/// wording there stays in one place rather than duplicated at every one
+/// of its call sites. `quadraui-node` has no Rust-side caller of this
+/// function at all — its own FFI layer never gets a chance to run custom
+/// guard code before napi-rs's own borrow check rejects the re-entrant
+/// call (see `quadraui-node/js/index.ts`'s `wrapNativeErrors` doc) — so
+/// it hardcodes the identical wording in TypeScript instead; a reword
+/// here needs a matching manual edit there, since nothing pins the two
+/// strings together.
 pub fn reentrant_call_message(method: &str) -> String {
     format!(
         "app.{method} can't be called from inside a handler; use the \

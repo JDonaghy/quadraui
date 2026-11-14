@@ -480,11 +480,11 @@ create_exception!(
     mutable borrow this requires with a generic `RuntimeError: Already \
     borrowed`, raised while extracting the method's own `self` argument -- \
     before any of this crate's code, including the guard that raises this \
-    exception, ever runs. Every one of those restricted methods is \
-    rewritten to take `slf: Py<Self>` plus an explicit `py: Python<'_>` \
-    instead of the usual `&mut self` so it can attempt that borrow itself, \
-    via [`guard_against_reentrant_call`], and raise this instead on \
-    failure. The napi-rs analog lives in `quadraui-node`'s own \
+    exception, ever runs. Every one of those restricted methods takes \
+    `slf: Py<Self>` plus an explicit `py: Python<'_>` instead of the usual \
+    `&mut self` so it can attempt that borrow itself, via \
+    [`guard_against_reentrant_call`], and raise this instead on failure. \
+    The napi-rs analog lives in `quadraui-node`'s own \
     `toQuadrauiError`/`wrapNativeErrors` (see that package's `js/index.ts`), \
     which translates the matching generic napi-rs rejection the same way."
 );
@@ -1554,10 +1554,13 @@ impl QuiShellApp {
 
     /// Advances the runner by one step, mirroring [`QuiApp::step`]'s
     /// queued-event / tick order (`run_shell` apps have no waker/`User`
-    /// event path, so there is no posted-value step to interleave).
-    /// Returns `True` if still running, `False` once exited. Re-raises
-    /// whatever exception a registered callback raised while handling this
-    /// step.
+    /// event path, so there is no posted-value step to interleave). With
+    /// nothing queued, this also renders once (see [`QuiApp::step`]'s own
+    /// doc for why), so it can re-raise whatever a registered `render`
+    /// callback itself raises, not only an event/tick handler's own
+    /// exception. Returns `True` if still running, `False` once exited.
+    /// Re-raises whatever exception a registered callback raised while
+    /// handling this step.
     fn step(&mut self) -> PyResult<bool> {
         self.guarded(|app| app.step_once())
     }
@@ -2201,7 +2204,11 @@ impl QuiAppWaker {
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
-/// `set_theme`, `define_style` — plus [`Self::apply_tab_activated`], a write into the
+/// `set_theme`, `define_style`, `apply_on_quit`, `end_power_save_block`,
+/// `set_login_item`, `set_as_default_protocol_client`,
+/// `remove_as_default_protocol_client`, `begin_drag_out`,
+/// `add_recent_document`, `clear_recent_documents`, `set_dock_menu`,
+/// `set_jump_list` — plus [`Self::apply_tab_activated`], a write into the
 /// engine's own widget-state store with no restricted `QuiApp` method of
 /// its own at all (see its own doc) — so a registered event handler can
 /// request one of them without re-entering `QuiApp`'s own PyO3 cell.
@@ -3194,9 +3201,15 @@ impl QuiApp {
     /// still nothing was dispatched. A `push_event`/`push_key_event` call
     /// always takes priority over a pending `post`/`wake`, so a steady
     /// stream of pushed events can delay (but never drop) a posted value.
-    /// Returns `True` if the app is still running afterwards, `False` once
-    /// it has exited. Re-raises whatever exception a registered
-    /// handler/tick callback raised while handling this step.
+    /// With nothing queued and nothing posted, this also renders once
+    /// after the tick — [`quadraui_binding_core::step_driver`]'s own doc
+    /// has the full rationale and cost tradeoff — so a `render` callback
+    /// that raises (e.g. on a malformed descriptor) can surface that error
+    /// from this call too, not only from an explicit `screen`/
+    /// `screen_contains` or a redraw-requesting event/tick. Returns `True`
+    /// if the app is still running afterwards, `False` once it has
+    /// exited. Re-raises whatever exception a registered handler/tick/
+    /// render callback raised while handling this step.
     fn step(&mut self) -> PyResult<bool> {
         self.guarded(|app| app.step_once())
     }
@@ -5950,8 +5963,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::apply_on_quit`] (via [`Self::actions`]) from a
     /// handler instead.
-    fn apply_on_quit(&mut self, handle: u64) -> PyResult<()> {
-        self.guarded(|app| {
+    fn apply_on_quit(slf: Py<Self>, py: Python<'_>, handle: u64) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "apply_on_quit")?;
+        this.guarded(|app| {
             update_apply_on_quit(app.driver.backend().services(), handle)
                 .map_err(|err| service_error_to_py("apply_on_quit", err))
         })
@@ -5975,8 +5989,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::end_power_save_block`] (via [`Self::actions`])
     /// from a handler instead.
-    fn end_power_save_block(&mut self, handle: u64) -> PyResult<()> {
-        self.guarded(|app| {
+    fn end_power_save_block(slf: Py<Self>, py: Python<'_>, handle: u64) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "end_power_save_block")?;
+        this.guarded(|app| {
             end_power_save_block(app.driver.backend().services(), handle)
                 .map_err(|err| service_error_to_py("end_power_save_block", err))
         })
@@ -5990,12 +6005,14 @@ impl QuiApp {
     /// a handler instead.
     #[pyo3(signature = (enabled, open_hidden=false, args=Vec::new()))]
     fn set_login_item(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         enabled: bool,
         open_hidden: bool,
         args: Vec<String>,
     ) -> PyResult<()> {
-        self.guarded(|app| {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_login_item")?;
+        this.guarded(|app| {
             set_login_item(app.driver.backend().services(), enabled, open_hidden, args)
                 .map_err(|err| service_error_to_py("set_login_item", err))
         })
@@ -6015,8 +6032,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::set_as_default_protocol_client`] (via
     /// [`Self::actions`]) from a handler instead.
-    fn set_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_as_default_protocol_client(slf: Py<Self>, py: Python<'_>, scheme: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_as_default_protocol_client")?;
+        this.guarded(|app| {
             set_as_default_protocol_client(app.driver.backend().services(), scheme)
                 .map_err(|err| service_error_to_py("set_as_default_protocol_client", err))
         })
@@ -6036,8 +6054,13 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::remove_as_default_protocol_client`] (via
     /// [`Self::actions`]) from a handler instead.
-    fn remove_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn remove_as_default_protocol_client(
+        slf: Py<Self>,
+        py: Python<'_>,
+        scheme: &str,
+    ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "remove_as_default_protocol_client")?;
+        this.guarded(|app| {
             remove_as_default_protocol_client(app.driver.backend().services(), scheme)
                 .map_err(|err| service_error_to_py("remove_as_default_protocol_client", err))
         })
@@ -6050,8 +6073,14 @@ impl QuiApp {
     /// Call [`QuiAppActions::begin_drag_out`] (via [`Self::actions`]) from
     /// a handler instead.
     #[pyo3(signature = (files=Vec::new(), text=None))]
-    fn begin_drag_out(&mut self, files: Vec<String>, text: Option<String>) -> PyResult<()> {
-        self.guarded(|app| {
+    fn begin_drag_out(
+        slf: Py<Self>,
+        py: Python<'_>,
+        files: Vec<String>,
+        text: Option<String>,
+    ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "begin_drag_out")?;
+        this.guarded(|app| {
             begin_drag_out(app.driver.backend().services(), files, text)
                 .map_err(|err| service_error_to_py("begin_drag_out", err))
         })
@@ -6062,8 +6091,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::add_recent_document`] (via [`Self::actions`])
     /// from a handler instead.
-    fn add_recent_document(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn add_recent_document(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "add_recent_document")?;
+        this.guarded(|app| {
             add_recent_document(app.driver.backend().services(), path)
                 .map_err(|err| service_error_to_py("add_recent_document", err))
         })
@@ -6074,8 +6104,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::clear_recent_documents`] (via
     /// [`Self::actions`]) from a handler instead.
-    fn clear_recent_documents(&mut self) -> PyResult<()> {
-        self.guarded(|app| {
+    fn clear_recent_documents(slf: Py<Self>, py: Python<'_>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "clear_recent_documents")?;
+        this.guarded(|app| {
             clear_recent_documents(app.driver.backend().services())
                 .map_err(|err| service_error_to_py("clear_recent_documents", err))
         })
@@ -6087,11 +6118,12 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::set_dock_menu`] (via [`Self::actions`]) from a
     /// handler instead.
-    fn set_dock_menu(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_dock_menu(slf: Py<Self>, py: Python<'_>, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_dock_menu")?;
         let items = pyany_to_json(items).map_err(|err| {
             InvalidDescriptorError::new_err(format!("set_dock_menu: invalid items: {err}"))
         })?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             set_dock_menu(app.driver.backend().services(), items)
                 .map_err(|err| service_error_to_py("set_dock_menu", err))
         })
@@ -6103,11 +6135,12 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::set_jump_list`] (via [`Self::actions`]) from a
     /// handler instead.
-    fn set_jump_list(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_jump_list(slf: Py<Self>, py: Python<'_>, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_jump_list")?;
         let items = pyany_to_json(items).map_err(|err| {
             InvalidDescriptorError::new_err(format!("set_jump_list: invalid items: {err}"))
         })?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             set_jump_list(app.driver.backend().services(), items)
                 .map_err(|err| service_error_to_py("set_jump_list", err))
         })

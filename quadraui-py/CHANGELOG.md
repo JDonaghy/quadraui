@@ -12,6 +12,13 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- `QuiApp.step`/`QuiShellApp.step`/`QuiApp.run` now render once whenever
+  a step dispatches nothing (no event queued, no posted value, no tick
+  that itself requested a redraw), not only when something explicitly
+  forces one (`screen()`/`screen_contains()`, or an event/tick asking for
+  a redraw). A `render` callback that decodes badly now raises from the
+  very next idle `step()`/`run()` call instead of only the next explicit
+  render.
 - `_quadraui.pyi` (the compiled extension's type stub) now declares every
   `#[pymethods]`/`#[pyfunction]` the native extension exports — including
   `QuiAppActions`, which previously had no stub class at all — with real
@@ -31,6 +38,12 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `ReentrantCallError`: raised instead of PyO3's raw `RuntimeError: Already
+  borrowed` when a `QuiApp` method restricted to top-level script code
+  (`show_message_dialog`, `set_title`, `apply_on_quit`, ... — every one
+  with a matching `QuiAppActions` method) is called re-entrantly, from
+  inside that same app's own registered event/tick/render callback. The
+  message names the method and points at `actions()`.
 - An asyncio-native runner: `quadraui.asyncio.run(app)` (equivalently,
   `await app.run_async()`) drives `QuiApp.step()`/render from a running
   asyncio event loop instead of a plain `while`/`for` loop, mirroring

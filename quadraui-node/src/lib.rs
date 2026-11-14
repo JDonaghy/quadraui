@@ -2584,8 +2584,12 @@ impl QuiApp {
 
     /// Advances the runner by one step: dispatches the oldest event queued
     /// by `pushKeyEvent`, or ticks (invoking a registered tick handler) if
-    /// none is queued. Returns `true` if the app is still running
-    /// afterwards, `false` once it has exited.
+    /// none is queued. With nothing queued, this also renders once after
+    /// the tick -- `quadraui_binding_core::step_driver`'s own doc has the
+    /// full rationale and cost tradeoff -- so a registered render
+    /// callback that raises can surface that error from this call too.
+    /// Returns `true` if the app is still running afterwards, `false`
+    /// once it has exited.
     #[napi]
     pub fn step(&mut self, env: Env) -> Result<bool> {
         self.guarded(env, |app| app.step_once())
@@ -4125,10 +4129,13 @@ impl QuiShellApp {
 
     /// Advances the runner by one step, mirroring [`QuiApp::step`]'s
     /// queued-event / tick order (a `runShell` app has no waker/`User`
-    /// event path, so there is no posted-value step to interleave).
-    /// Returns `true` if still running, `false` once exited. Re-raises
-    /// whatever exception a registered callback raised while handling this
-    /// step.
+    /// event path, so there is no posted-value step to interleave). With
+    /// nothing queued, this also renders once after the tick -- see
+    /// [`QuiApp::step`]'s own doc for why -- so it can re-raise whatever a
+    /// registered `render` callback itself raises, not only an event/tick
+    /// handler's own exception. Returns `true` if still running, `false`
+    /// once exited. Re-raises whatever exception a registered callback
+    /// raised while handling this step.
     #[napi]
     pub fn step(&mut self, env: Env) -> Result<bool> {
         self.guarded(env, |app| app.step_once())

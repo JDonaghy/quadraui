@@ -43,11 +43,22 @@ const RESTRICTED_METHOD_CALLS: Array<[string, unknown[]]> = [
   ["restoreFromTrash", ["/tmp/does-not-exist-quadraui-test"]],
   ["setDocumentEdited", [true]],
   ["setRepresentedFilename", ["/tmp/report.pdf"]],
+  ["setTrayIcon", [{ Path: "/tmp/icon.png" }]],
   ["setTrayTooltip", ["hint"]],
   ["setTrayMenu", [[{ id: "a", label: "A" }]]],
   ["setCursor", ["default", null]],
   ["setTheme", [{ fg: "#ffffff" }]],
   ["defineStyle", ["card", { bg: "#445566" }]],
+  ["addRecentDocument", ["/tmp/does-not-exist-quadraui-test"]],
+  ["clearRecentDocuments", []],
+  ["setDockMenu", [[{ id: "a", label: "A" }]]],
+  ["setJumpList", [[{ title: "t", program: "p" }]]],
+  ["setLoginItem", [true]],
+  ["setAsDefaultProtocolClient", ["quadraui-test"]],
+  ["removeAsDefaultProtocolClient", ["quadraui-test"]],
+  ["beginDragOut", [["/tmp/does-not-exist-quadraui-test"], null]],
+  ["endPowerSaveBlock", [1]],
+  ["applyOnQuit", [1]],
 ];
 
 for (const [method, args] of RESTRICTED_METHOD_CALLS) {
