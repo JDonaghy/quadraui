@@ -75,6 +75,15 @@ and wake whichever loop currently owns it, without exiting. Its
 delivery after a delay, from any thread, as a lightweight stand-in for a
 timer.
 
+``QuiApp.arm_wake_notify(callback)``/``disarm_wake_notify()`` register (or
+clear) a no-argument callable fired every time any ``QuiAppWaker`` handle
+this app has ever handed out delivers a ``post``/``wake``/``post_after``/
+``wake_after`` -- the low-level hook ``quadraui.asyncio.run(app)`` (an
+alias for the ``quadraui.aio`` module -- see its own module doc) arms to
+step promptly from a running asyncio loop instead of only on a fixed poll
+interval. Most callers reach for ``quadraui.asyncio.run``/
+``await app.run_async()`` directly rather than this pair.
+
 ``run_native()`` dispatches a ``"WindowClose"`` event to a registered
 handler when the window manager's close button (or Alt-F4, or the red
 traffic-light button on macOS) asks to close the window, same as any other
@@ -110,6 +119,8 @@ these take effect immediately and are replayed onto a real backend a later
 once ``step``/``run`` returns (not from inside the handler itself -- the
 same restriction as mutating any other ``QuiApp`` state mid-callback).
 """
+
+from . import aio as asyncio
 
 from ._quadraui import (
     DecodeFailedError,
