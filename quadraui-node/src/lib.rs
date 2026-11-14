@@ -1447,17 +1447,22 @@ fn invalid_descriptor_error(detail: impl std::fmt::Display) -> Error {
 /// <problem>"`), so an author sees exactly which widget in the tree a
 /// nested decode failed on.
 ///
-/// napi-rs has no mechanism for a `#[napi]` function to attach an extra
-/// property to the `Error` object it throws -- [`Error`] only carries a
-/// `status`/`reason` pair, and `reason` becomes the thrown object's whole
-/// `message` (see [`crate::Error`]'s own crate docs). To still get
-/// [`DecodeError::path`] across that boundary as its own `.path` property
-/// (rather than a caller re-parsing it out of the message), this appends
-/// it after a NUL byte, which can't occur in either half: `js/index.ts`'s
-/// `toQuadrauiError` splits the thrown message on the first NUL, strips it
-/// back off before constructing the typed subclass (so `.message` ends up
-/// identical to what it was before this suffix existed), and sets the
-/// remainder as `.path`.
+/// `napi::Error` itself has no mechanism for a `#[napi]` function to attach
+/// an extra property to the `Error` object it throws -- [`Error`] only
+/// carries a `status`/`reason` pair, and `reason` becomes the thrown
+/// object's whole `message` (see [`crate::Error`]'s own crate docs); none of
+/// this function's call sites have an `Env` in scope either, so there is no
+/// `Env::throw` escape hatch to a hand-built object with a real property.
+/// To still get [`DecodeError::path`] across that boundary as its own
+/// `.path` property (rather than a caller re-parsing it out of the
+/// message), this appends it after a NUL byte. A widget id or object key a
+/// caller supplies could itself contain one, which would shift where the
+/// split lands and garble `.message`/`.path` -- self-inflicted by the
+/// caller's own data, not a decode-adapter bug, but worth knowing about:
+/// `js/index.ts`'s `toQuadrauiError` splits the thrown message on the first
+/// NUL, strips it back off before constructing the typed subclass (so
+/// `.message` carries only the visible text), and sets the remainder as
+/// `.path`.
 fn decode_error_to_js(err: DecodeError) -> Error {
     let message = err.to_string();
     let path = err.path().to_string();

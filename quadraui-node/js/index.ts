@@ -91,7 +91,7 @@ exports.QuadrauiError = QuadrauiError;
  * must return a dict") leaves it `undefined`.
  */
 class InvalidDescriptorError extends QuadrauiError {
-  path?: string;
+  declare path?: string;
 }
 exports.InvalidDescriptorError = InvalidDescriptorError;
 
@@ -261,10 +261,11 @@ const PATH_SUFFIX_MARKER = "\u0000";
  *
  * When the native message carries a {@link PATH_SUFFIX_MARKER}-separated
  * `DecodeError::path` suffix, it is stripped back off before constructing
- * the typed subclass -- so `.message` ends up exactly what it would be
- * without this function ever having existed -- and set as that instance's
- * `.path` instead (only reachable on an {@link InvalidDescriptorError}
- * subclass; no other tag ever carries this suffix).
+ * the typed subclass -- so `.message` carries only the visible text -- and
+ * set as that instance's `.path` instead (only reachable on an
+ * {@link InvalidDescriptorError} subclass; no other tag ever carries this
+ * suffix). The same rewrite is applied to `.stack`'s first line, so the
+ * marker and path suffix never leak into either.
  */
 function toQuadrauiError(err: unknown): unknown {
   if (!(err instanceof Error) || err instanceof QuadrauiError) {
@@ -279,7 +280,10 @@ function toQuadrauiError(err: unknown): unknown {
     return err;
   }
   const wrapped = new ErrorClass(message);
-  wrapped.stack = err.stack;
+  wrapped.stack =
+    markerIndex === -1 || err.stack === undefined
+      ? err.stack
+      : err.stack.replace(err.message, message);
   if (path !== undefined && wrapped instanceof InvalidDescriptorError) {
     wrapped.path = path;
   }
