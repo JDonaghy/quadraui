@@ -38,16 +38,22 @@ class QuadrauiError(Exception): ...
 class InvalidDescriptorError(QuadrauiError): ...
 class MissingFieldError(InvalidDescriptorError):
     code: str
+    path: str
 class UnknownVariantError(InvalidDescriptorError):
     code: str
+    path: str
 class TypeMismatchError(InvalidDescriptorError):
     code: str
+    path: str
 class UnknownKeyError(InvalidDescriptorError):
     code: str
+    path: str
 class VersionMismatchError(InvalidDescriptorError):
     code: str
+    path: str
 class DecodeFailedError(InvalidDescriptorError):
     code: str
+    path: str
 class SlotOccupiedError(QuadrauiError): ...
 class UnknownSlotError(QuadrauiError): ...
 class InvalidDimensionsError(QuadrauiError): ...

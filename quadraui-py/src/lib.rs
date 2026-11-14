@@ -917,10 +917,15 @@ fn service_error_to_py(what: &str, err: ServiceError) -> PyErr {
 /// unchanged (`"<what>: at <path>: <problem>"`), so an author sees exactly
 /// which widget in the tree a nested decode failed on; its *class* and
 /// `code` class attribute (set once at module init, in `_quadraui`) are
-/// what a caller matches on instead of grepping that message.
+/// what a caller matches on instead of grepping that message. The raised
+/// instance also carries a `path` attribute holding [`DecodeError::path`]
+/// verbatim (e.g. `"render › split#body › panel#chrome"`), so a caller can
+/// locate the offending node programmatically instead of parsing it back
+/// out of the message.
 fn decode_error_to_py(err: DecodeError) -> PyErr {
+    let path = err.path().to_string();
     let message = err.to_string();
-    match err {
+    let py_err = match err {
         DecodeError::MissingField { .. } => MissingFieldError::new_err(message),
         DecodeError::UnknownVariant { .. } => UnknownVariantError::new_err(message),
         DecodeError::TypeMismatch { .. } => TypeMismatchError::new_err(message),
@@ -931,7 +936,15 @@ fn decode_error_to_py(err: DecodeError) -> PyErr {
         // leaf doesn't know about yet still raises the common base class
         // rather than failing to compile.
         _ => InvalidDescriptorError::new_err(message),
-    }
+    };
+    Python::attach(|py| {
+        // Best-effort: a descriptor exception always decodes to a concrete
+        // instance here, so `setattr` only fails if Python itself is out of
+        // memory -- not worth turning this already-error path into a
+        // second, unrelated one.
+        let _ = py_err.value(py).setattr("path", path);
+    });
+    py_err
 }
 
 /// Builds a [`ContextMenu`] for [`quadraui::backend::TrayService::set_menu`], which takes a
