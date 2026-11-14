@@ -80,8 +80,19 @@ exports.QuadrauiError = QuadrauiError;
  * subclasses below instead of this base class directly, chosen on the
  * Rust side by matching the enum, never by parsing this exception's own
  * message.
+ *
+ * `path` holds the dotted path into the layout tree the underlying
+ * `DecodeError::path` named (e.g. `"render › split#body › panel#chrome"`),
+ * set by `toQuadrauiError` after construction -- the napi-rs analog of
+ * `quadraui-py`'s own `path` instance attribute. Only present when this
+ * instance came from an actual `DecodeError` (every raise through
+ * `decode_error_to_js` on the Rust side); a plain `InvalidDescriptorError`
+ * raised directly for a non-`DecodeError` failure (e.g. "render callback
+ * must return a dict") leaves it `undefined`.
  */
-class InvalidDescriptorError extends QuadrauiError {}
+class InvalidDescriptorError extends QuadrauiError {
+  path?: string;
+}
 exports.InvalidDescriptorError = InvalidDescriptorError;
 
 /** A descriptor dict was missing a field this decoder requires -- mirrors `quadraui_binding_core::DecodeError::MissingField` (and `quadraui-py`'s `MissingFieldError`). `code` is `"missing_field"`. */
@@ -231,6 +242,15 @@ exports.ERROR_CLASSES = Object.freeze({ ...ERROR_CLASSES_BY_TAG });
 const ERROR_TAG_PATTERN = /^([A-Za-z]+Error): /;
 
 /**
+ * Separates a `decode_error_to_js`-tagged message's visible text from the
+ * `DecodeError::path` suffix Rust appends after a NUL byte -- see that
+ * function's own doc. Absent from every other tagged message (every other
+ * `Error::from_reason` call site in `quadraui-node/src/lib.rs` never
+ * appends this), so `indexOf` returning `-1` is the common case.
+ */
+const PATH_SUFFIX_MARKER = "\u0000";
+
+/**
  * Converts a value caught from a native call into the {@link QuadrauiError}
  * subclass its message is tagged with, preserving the original message
  * and stack trace. Returns `err` unchanged if it is already a
@@ -238,18 +258,31 @@ const ERROR_TAG_PATTERN = /^([A-Za-z]+Error): /;
  * registered handler/tick/render callback can throw anything, and that
  * value must pass through unchanged rather than being coerced into a
  * `QuadrauiError` it has nothing to do with.
+ *
+ * When the native message carries a {@link PATH_SUFFIX_MARKER}-separated
+ * `DecodeError::path` suffix, it is stripped back off before constructing
+ * the typed subclass -- so `.message` ends up exactly what it would be
+ * without this function ever having existed -- and set as that instance's
+ * `.path` instead (only reachable on an {@link InvalidDescriptorError}
+ * subclass; no other tag ever carries this suffix).
  */
 function toQuadrauiError(err: unknown): unknown {
   if (!(err instanceof Error) || err instanceof QuadrauiError) {
     return err;
   }
-  const match = ERROR_TAG_PATTERN.exec(err.message);
+  const markerIndex = err.message.indexOf(PATH_SUFFIX_MARKER);
+  const message = markerIndex === -1 ? err.message : err.message.slice(0, markerIndex);
+  const path = markerIndex === -1 ? undefined : err.message.slice(markerIndex + 1);
+  const match = ERROR_TAG_PATTERN.exec(message);
   const ErrorClass = match && ERROR_CLASSES_BY_TAG[match[1]];
   if (!ErrorClass) {
     return err;
   }
-  const wrapped = new ErrorClass(err.message);
+  const wrapped = new ErrorClass(message);
   wrapped.stack = err.stack;
+  if (path !== undefined && wrapped instanceof InvalidDescriptorError) {
+    wrapped.path = path;
+  }
   return wrapped;
 }
 exports.toQuadrauiError = toQuadrauiError;
