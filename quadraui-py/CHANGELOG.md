@@ -12,6 +12,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `quadraui.app.App`'s typed layer now stamps a `"wire_version"` sibling
+  key onto every tree its `view()` renders (`quadraui.app.runtime.
+  WIRE_VERSION`, mirroring `quadraui_binding_core::wire_schema::
+  WIRE_VERSION`), unless `view()` already set one itself (the raw-dict
+  escape hatch). The native extension's own version gate
+  (`VersionMismatchError`) now applies to a typed-layer tree exactly the
+  way it already did to a hand-built wire dict passed to `QuiApp.
+  set_render` directly.
 - `QuiApp(..., strict=False, on_unknown_key=None)`: a render callback's
   returned descriptor carrying an unrecognised *optional* key (a misspelt
   `"cursr"`, `"focussed"`, ...) now reports it through

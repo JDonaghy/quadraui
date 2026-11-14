@@ -12,7 +12,7 @@ Run against a built wheel/extension, e.g.:
 
 import pytest
 
-from quadraui import UnknownKeyError
+from quadraui import UnknownKeyError, VersionMismatchError
 from quadraui.app import (
     App,
     Button,
@@ -29,6 +29,7 @@ from quadraui.app import (
     Tree,
     key_name,
 )
+from quadraui.app import runtime as _runtime
 
 
 _NO_MODS = {"shift": False, "ctrl": False, "alt": False, "cmd": False}
@@ -406,3 +407,51 @@ def test_app_set_strict_toggles_the_policy_after_construction():
     app.qui.set_strict(True)
     with pytest.raises(UnknownKeyError, match="labell"):
         app.screen()
+
+
+# --- wire_version ---------------------------------------------------------
+
+
+def test_rendered_tree_carries_the_current_wire_version():
+    """Every tree this layer renders gets a `"wire_version"` sibling key
+    added automatically (see `runtime._render_once`) -- a plain `Button`
+    tree with no version opinion of its own still decodes and renders,
+    the same way a hand-built wire dict carrying the current
+    `runtime.WIRE_VERSION` already does for `QuiApp` directly."""
+
+    def view():
+        return Button("OK", on_click=lambda: None)
+
+    app = App(20, 5, view=view)
+    assert app.screen_contains("OK")
+    assert app._render()["wire_version"] == _runtime.WIRE_VERSION
+
+
+def test_a_raw_escape_hatch_dict_that_sets_its_own_wire_version_wins():
+    """A `view()` that returns a raw wire dict (the escape hatch `Node`
+    constructors bypass) and already set its own `"wire_version"` is left
+    untouched -- this layer only fills the key in when it's missing."""
+
+    def view():
+        return {"wire_version": 1, "button": {"id": "b", "label": "OK"}}
+
+    app = App(20, 5, view=view)
+    assert app._render()["wire_version"] == 1
+
+
+def test_forcing_a_wire_version_newer_than_this_host_understands_raises():
+    """Bumping `runtime.WIRE_VERSION` past what the native extension's own
+    `wire_schema::WIRE_VERSION` accepts makes the host's version gate
+    reject the next render with `VersionMismatchError`, exactly as it
+    would for a hand-built wire dict carrying the same inflated value."""
+
+    def view():
+        return Button("OK", on_click=lambda: None)
+
+    app = App(20, 5, view=view)
+    try:
+        _runtime.WIRE_VERSION = 999
+        with pytest.raises(VersionMismatchError, match="wire_version"):
+            app.screen()
+    finally:
+        _runtime.WIRE_VERSION = 1

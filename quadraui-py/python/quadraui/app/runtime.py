@@ -36,7 +36,18 @@ from . import hot_reload as _hr
 from .component import Component
 from .nodes import Node
 
-__all__ = ["App", "key_name"]
+__all__ = ["App", "WIRE_VERSION", "key_name"]
+
+
+# Mirrors `quadraui_binding_core::wire_schema::WIRE_VERSION` -- every tree
+# this layer renders carries it as a `"wire_version"` sibling key (see
+# `_render_once`), so the host's own version gate
+# (`quadraui_binding_core::wire::check_wire_version`) applies to a typed-layer
+# tree exactly the way it already does to a hand-built wire dict passed to
+# `QuiApp.set_render` directly. This constant has no runtime link to the Rust
+# one (the Python package can't read a Rust crate constant at import time),
+# so it needs a matching bump by hand if that constant ever changes.
+WIRE_VERSION = 1
 
 
 def _auto_id(path: Tuple[Any, ...]) -> str:
@@ -342,6 +353,8 @@ class App:
             raise
         self._registry = registry
         self._component_states = new_states
+        if isinstance(wire, dict) and "wire_version" not in wire:
+            wire = {**wire, "wire_version": WIRE_VERSION}
         return wire
 
     def _handle(self, event: Any) -> None:
