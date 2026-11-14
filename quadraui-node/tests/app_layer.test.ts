@@ -222,6 +222,38 @@ test("an unmatched event falls through to onEvent", () => {
   assert.equal(keyName(seen[0]), "Down");
 });
 
+// --- strict / onUnknownKey ----------------------------------------------------
+
+test("strict:true raises on a typo'd optional key in view()'s own tree", () => {
+  const { UnknownKeyError } = require("../js/index.ts");
+  // `App`'s constructor already forces one real render (see its own doc),
+  // so the typo is caught there, not on a later `step()`.
+  assert.throws(
+    () =>
+      new App(20, 5, {
+        strict: true,
+        // "focussed" is a typo for "focused_index" on a tabs descriptor.
+        view: () => ({ tabs: { id: "frm", tabs: [], focussed: 0 } }),
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof UnknownKeyError);
+      assert.match((err as Error).message, /focussed/);
+      return true;
+    },
+  );
+});
+
+test("onUnknownKey reports a typo'd optional key once, without strict", () => {
+  const calls: Array<{ key: string; path: string }> = [];
+  const app = new App(20, 5, {
+    onUnknownKey: (info) => calls.push(info),
+    view: () => ({ tabs: { id: "frm", tabs: [], focussed: 0 } }),
+  });
+  app.step();
+  app.step();
+  assert.deepEqual(calls, [{ key: "focussed", path: "render › tabs#frm" }]);
+});
+
 // --- components --------------------------------------------------------------
 
 class Counter extends Component {

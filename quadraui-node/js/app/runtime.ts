@@ -247,6 +247,22 @@ export interface AppOptions {
    * out of whatever shape it arrived in.
    */
   onEvent?(event: unknown): void;
+  /**
+   * Turns an unrecognised optional wire key on `view()`'s returned tree
+   * (a misspelt prop, a typo'd slot) into a raised `InvalidDescriptorError`
+   * out of the render that found it, instead of the default one-time
+   * {@link onUnknownKey} report -- see the wrapped `QuiApp.setStrict`'s own
+   * doc. Omit (or pass `false`) to keep the warn-and-continue default.
+   */
+  strict?: boolean;
+  /**
+   * Called as `onUnknownKey({key, path})` at most once per distinct `key`
+   * for this app's whole lifetime, whenever `view()`'s returned tree
+   * carries an unrecognised optional key and {@link strict} hasn't turned
+   * that into a raised error instead -- see the wrapped
+   * `QuiApp.setOnUnknownKey`'s own doc.
+   */
+  onUnknownKey?(info: { key: string; path: string }): void;
 }
 
 export interface HotReloadOptions {
@@ -302,6 +318,13 @@ class App {
     this.qui = new QuiApp(width, height);
     this.qui.setRender(() => this._render());
     this.qui.setHandler((event: unknown) => this._handle(event));
+    if (options.strict !== undefined) {
+      this.qui.setStrict(options.strict);
+    }
+    if (options.onUnknownKey !== undefined) {
+      const onUnknownKey = options.onUnknownKey;
+      this.qui.setOnUnknownKey((info: unknown) => onUnknownKey(info as { key: string; path: string }));
+    }
     this.actions = this.qui.actions();
     // Forces one real native paint immediately, mirroring `quadraui-py`'s
     // own `App.__init__`: its `QuiApp` constructor takes `render` directly
