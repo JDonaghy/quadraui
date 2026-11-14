@@ -14,7 +14,7 @@ name = "quadraui"
 # Tagged and published by `.github/workflows/quadraui-py-release.yml` off a
 # `py-v<version>` tag, which asserts this field matches the tag before
 # building anything.
-version = "0.10.1"
+version = "0.11.0"
 description = "Python bindings for quadraui: insert descriptors and render them headlessly."
 readme = "README.md"
 requires-python = ">=3.8"
