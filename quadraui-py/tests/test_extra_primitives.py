@@ -1157,6 +1157,7 @@ def test_form_wheel_scroll_advances_the_controller_scroll_offset():
     assert app.screen_contains("Field1")
     assert app.screen_contains("Field2")
     assert app.screen_contains("Field3")
+    assert not app.screen_contains("Field0")
 
 
 def test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field():
@@ -1224,6 +1225,75 @@ def test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field():
     assert widget_id == "settings"
     assert form_event == {"TextInputChanged": {"id": "name", "value": "x"}}
     assert state["name"] == "x"
+
+
+def test_uncontrolled_form_tab_cycles_fields_then_leaves_for_the_sibling_button():
+    # Regression coverage for the host's own Tab/Shift-Tab focus-cycling
+    # step: it must not run its generic cross-widget cycle while a
+    # main-tree "form" extra holds focus, even with another app-level tab
+    # stop sitting right next to it. Before this was fixed, the host saw
+    # a non-empty tab-stop list excluding the form's own stop, synced the
+    # focus manager's order to it (which clears focus because "settings"
+    # isn't in that list), and landed the next Tab on the *first* stop in
+    # that list regardless of which field the form was on -- so the
+    # second Tab below would jump straight to "go" instead of entering
+    # field "name" first.
+    app = QuiApp(40, 20)
+    state = {"name": ""}
+
+    def render():
+        return {
+            "column": [
+                {
+                    "id": "settings",
+                    "form": {
+                        "id": "settings",
+                        "fields": [
+                            {
+                                "id": "name",
+                                "label": {
+                                    "spans": [{"text": "Name", "fg": None, "bg": None}]
+                                },
+                                "kind": {"TextInput": {"value": state["name"]}},
+                            },
+                        ],
+                    },
+                },
+                {"id": "go", "button": {"id": "go", "label": "Go"}},
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    # First Tab: nothing is focused anywhere yet, so the generic
+    # app-level cycle lands engine focus on the form as a whole.
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert received[-1]["FocusChanged"] == "settings"
+
+    # Second Tab: must enter field "name" -- not jump straight to "go".
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    widget_id, form_event = received[-1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"FocusChanged": {"id": "name"}}
+
+    # Third Tab: "name" is the form's only field, so this leaves for "go".
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert received[-1]["FocusChanged"] == "go"
 
 
 def test_uncontrolled_form_click_focuses_and_types_with_no_focused_field_tracking():
@@ -1308,7 +1378,6 @@ def test_controlled_form_focused_field_keeps_app_set_focus_despite_a_click():
 
     assert app.cell_colors(0, 0)[1] == (50, 60, 90)
     assert app.cell_colors(0, 1)[1] == (20, 22, 30)
-    assert not app.screen_contains("Field0")
 
 
 def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
