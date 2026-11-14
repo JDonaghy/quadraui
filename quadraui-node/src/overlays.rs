@@ -326,7 +326,13 @@ impl QuiApp {
                     let decoded = {
                         let theme = backend.theme();
                         let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
-                        decode_popover("showOverlay", &value, styles).map_err(decode_error_to_js)?
+                        decode_popover(
+                            "showOverlay",
+                            &value,
+                            styles,
+                            &app_logic.host.wire_diagnostics,
+                        )
+                        .map_err(decode_error_to_js)?
                     };
                     id = decoded.chrome.id.to_string();
                     app_logic.engine.show_popover_layout(
@@ -361,8 +367,13 @@ impl QuiApp {
                     let decoded = {
                         let theme = backend.theme();
                         let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
-                        decode_layout_dialog("showOverlay", &value, styles)
-                            .map_err(decode_error_to_js)?
+                        decode_layout_dialog(
+                            "showOverlay",
+                            &value,
+                            styles,
+                            &app_logic.host.wire_diagnostics,
+                        )
+                        .map_err(decode_error_to_js)?
                     };
                     id = decoded.chrome.id.to_string();
                     app_logic.engine.open_layout_dialog(

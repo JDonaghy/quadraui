@@ -63,7 +63,9 @@ impl<'de> Deserialize<'de> for RenderFrame {
         D: Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
-        crate::wire::render_frame_from_value("render", &value).map_err(serde::de::Error::custom)
+        let diagnostics = crate::wire::DecodeDiagnostics::warn();
+        crate::wire::render_frame_from_value("render", &value, &diagnostics)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -2646,6 +2648,7 @@ mod tests {
                     "test",
                     &value,
                     crate::wire::StyleContext::new(&self.sets, &theme),
+                    &crate::wire::DecodeDiagnostics::warn(),
                 )
                 .expect("valid tree");
                 let mut hits = Vec::new();

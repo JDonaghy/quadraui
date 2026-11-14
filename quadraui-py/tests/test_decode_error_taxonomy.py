@@ -169,3 +169,49 @@ def test_a_nested_decode_error_names_every_ancestor_on_the_way_down():
     assert "tabs#frm" in message
     assert "panel#chrome" in message
     assert "split#inner" in message
+
+
+def test_unknown_optional_key_is_silently_ignored_with_no_hook_registered():
+    # The default policy, with no `on_unknown_key` registered and `strict`
+    # left at its default `False`: a misspelt optional key never stops the
+    # render, matching every app's behaviour before this policy existed.
+    app = QuiApp(20, 5)
+
+    def render():
+        return {"row": [_button("a", "A")], "focussed": "a"}
+
+    app.set_render(render)
+    app.screen()
+
+
+def test_unknown_optional_key_warns_through_the_registered_hook_once_per_key():
+    # A misspelt optional key ("focussed" for "focused_index") surfaces
+    # through `on_unknown_key(key, path)`, at most once per distinct key
+    # for this app's whole lifetime, and never stops the render.
+    calls = []
+    app = QuiApp(20, 5, on_unknown_key=lambda key, path: calls.append((key, path)))
+
+    def render():
+        return {
+            "tabs": {"id": "frm", "tabs": [], "focussed": 0},
+        }
+
+    app.set_render(render)
+    app.screen()
+    app.screen()
+    app.screen()
+    assert calls == [("focussed", "render › tabs#frm")]
+
+
+def test_strict_true_rejects_the_same_unknown_optional_key():
+    app = QuiApp(20, 5, strict=True)
+
+    def render():
+        return {
+            "tabs": {"id": "frm", "tabs": [], "focussed": 0},
+        }
+
+    app.set_render(render)
+    with pytest.raises(UnknownKeyError, match="focussed") as excinfo:
+        app.screen()
+    assert excinfo.value.code == "unknown_key"

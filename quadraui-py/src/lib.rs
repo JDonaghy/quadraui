@@ -987,7 +987,12 @@ impl AppLogic for PyAppLogic {
         // every node in the tree resolves against the same palette.
         let theme = backend.theme();
         let styles = StyleContext::new(&self.host.style_sets, &theme);
-        match render_output_from_callback(callback, &self.pending_error, styles) {
+        match render_output_from_callback(
+            callback,
+            &self.pending_error,
+            styles,
+            &self.host.wire_diagnostics,
+        ) {
             Some(RenderOutput::Flat(mut frame)) => {
                 // Merges the engine's own stored cursor/scroll/active-tab
                 // into whatever the callback's `tree`/`list`/`data_table`/
@@ -1441,7 +1446,12 @@ impl ShellApp for PyShellApp {
 /// own doc for the recognized key vocabulary.
 fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
     let mut de = pythonize::Depythonizer::from_object(dict.as_any());
-    quadraui_binding_core::decode_shell_config(&mut de).map_err(decode_error_to_py)
+    // `run_shell` decodes `config` exactly once, at construction -- a
+    // fresh, warn-mode [`quadraui_binding_core::DecodeDiagnostics`] is
+    // this one-shot call's whole "session", so there is no longer-lived
+    // instance for it to share.
+    let diagnostics = quadraui_binding_core::DecodeDiagnostics::warn();
+    quadraui_binding_core::decode_shell_config(&mut de, &diagnostics).map_err(decode_error_to_py)
 }
 
 /// Takes and returns this session's pending callback-raised error, if any
@@ -1676,6 +1686,7 @@ fn render_output_from_callback(
     callback: &Py<PyAny>,
     pending_error: &Rc<RefCell<Option<PyErr>>>,
     styles: StyleContext<'_>,
+    diagnostics: &quadraui_binding_core::DecodeDiagnostics,
 ) -> Option<RenderOutput> {
     Python::attach(|py| {
         let result = match callback.call0(py) {
@@ -1702,6 +1713,7 @@ fn render_output_from_callback(
             RENDER_CALLBACK_WHAT,
             &mut de,
             styles,
+            diagnostics,
         ) {
             Ok(output) => Some(output),
             Err(err) => {
@@ -2938,13 +2950,26 @@ impl QuiApp {
     /// to calling `set_handler` right after construction. `render`, if
     /// given, is registered as the render callback — equivalent to calling
     /// `set_render` right after construction.
+    ///
+    /// `strict`, when true, turns an unrecognised *optional* key on a
+    /// render callback's returned descriptor (a misspelt `"cursr"`,
+    /// `"focussed"`, ...) into an `InvalidDescriptorError` raised out of
+    /// the render that found it, the same way a missing required field
+    /// already does. The default (`False`) instead reports it through
+    /// `on_unknown_key`, if given — called as `on_unknown_key(key, path)`
+    /// at most once per distinct `key` for this app's whole lifetime — and
+    /// otherwise decodes unaffected, matching the pre-existing "an unknown
+    /// key is silently ignored" behaviour everywhere `on_unknown_key` is
+    /// left unset.
     #[new]
-    #[pyo3(signature = (width, height, on_event=None, render=None))]
+    #[pyo3(signature = (width, height, on_event=None, render=None, strict=false, on_unknown_key=None))]
     fn new(
         width: u16,
         height: u16,
         on_event: Option<Py<PyAny>>,
         render: Option<Py<PyAny>>,
+        strict: bool,
+        on_unknown_key: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         if width == 0 || height == 0 {
             return Err(InvalidDimensionsError::new_err(
@@ -2956,6 +2981,21 @@ impl QuiApp {
             render_callback: render,
             ..PyAppLogic::default()
         };
+        app_logic.host.wire_diagnostics.set_strict(strict);
+        if let Some(callback) = on_unknown_key {
+            let pending_error = app_logic.pending_error.clone();
+            app_logic
+                .host
+                .wire_diagnostics
+                .set_hook(move |path: &str, key: &str| {
+                    let (key, path) = (key.to_string(), path.to_string());
+                    Python::attach(|py| {
+                        if let Err(err) = callback.call1(py, (key, path)) {
+                            record_error(&pending_error, err);
+                        }
+                    });
+                });
+        }
         let driver = TuiDriver::new(app_logic, width, height);
         let current_waker = Arc::new(Mutex::new(driver.backend().waker()));
         Ok(QuiApp {
@@ -4445,8 +4485,13 @@ impl QuiApp {
                         let theme = backend.theme();
                         let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
                         let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-                        decode_popover("show_overlay", &mut de, styles)
-                            .map_err(decode_error_to_py)?
+                        decode_popover(
+                            "show_overlay",
+                            &mut de,
+                            styles,
+                            &app_logic.host.wire_diagnostics,
+                        )
+                        .map_err(decode_error_to_py)?
                     };
                     id = decoded.chrome.id.to_string();
                     app_logic.engine.show_popover_layout(
@@ -4477,8 +4522,13 @@ impl QuiApp {
                         let theme = backend.theme();
                         let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
                         let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-                        decode_layout_dialog("show_overlay", &mut de, styles)
-                            .map_err(decode_error_to_py)?
+                        decode_layout_dialog(
+                            "show_overlay",
+                            &mut de,
+                            styles,
+                            &app_logic.host.wire_diagnostics,
+                        )
+                        .map_err(decode_error_to_py)?
                     };
                     id = decoded.chrome.id.to_string();
                     app_logic.engine.open_layout_dialog(
@@ -6680,7 +6730,7 @@ mod tests {
     #[test]
     fn guarded_catches_panic_then_poisons() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None, false, None).expect("valid dimensions");
 
             let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
             let err = panicked.expect_err("a caught panic must surface as an error");
@@ -6705,7 +6755,7 @@ mod tests {
     #[test]
     fn waker_raises_poisoned_error_on_a_poisoned_app() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None, false, None).expect("valid dimensions");
 
             let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
             panicked.expect_err("a caught panic must surface as an error");
@@ -6744,7 +6794,8 @@ mod tests {
                 .unbind();
             (handler, locals.unbind())
         });
-        let mut app = QuiApp::new(10, 10, Some(handler), None).expect("valid width/height/handler");
+        let mut app = QuiApp::new(10, 10, Some(handler), None, false, None)
+            .expect("valid width/height/handler");
         let waker = app.waker().expect("app is not poisoned");
 
         let value = Python::attach(|py| 42_i32.into_pyobject(py).expect("int").into_any().unbind());
@@ -6812,7 +6863,8 @@ mod tests {
                 .unbind();
             (handler, callback, locals.unbind())
         });
-        let mut app = QuiApp::new(10, 10, Some(handler), None).expect("valid width/height/handler");
+        let mut app = QuiApp::new(10, 10, Some(handler), None, false, None)
+            .expect("valid width/height/handler");
         app.arm_wake_notify(callback);
         let waker = app.waker().expect("app is not poisoned");
 
@@ -6988,7 +7040,7 @@ mod tests {
     #[test]
     fn tick_handler_returning_false_exits_without_raising() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None, false, None).expect("valid dimensions");
             let on_tick = py
                 .eval(c"lambda: False", None, None)
                 .expect("lambda literal")
@@ -7437,7 +7489,7 @@ mod tests {
     #[test]
     fn render_callback_row_places_children_side_by_side() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(40, 20, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, None, None, false, None).expect("valid dimensions");
             let callback = py
                 .eval(
                     c"lambda: {\"row\": [\
@@ -7515,7 +7567,7 @@ mod tests {
     #[test]
     fn render_callback_style_key_scopes_an_override_to_its_own_subtree() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(42, 3, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(42, 3, None, None, false, None).expect("valid dimensions");
             let callback = py
                 .eval(
                     c"lambda: {\"row\": [\
@@ -7588,7 +7640,7 @@ mod tests {
     #[test]
     fn render_callback_style_key_surface_bg_is_the_alias_a_button_fill_actually_reads() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(60, 3, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 3, None, None, false, None).expect("valid dimensions");
             let callback = py
                 .eval(
                     c"lambda: {\"row\": [\
@@ -7659,7 +7711,7 @@ mod tests {
     #[test]
     fn render_callback_row_supports_multiple_instances_of_the_same_kind() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(60, 20, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, None, None, false, None).expect("valid dimensions");
             let callback = py
                 .eval(
                     c"lambda: {\"row\": [\
@@ -7744,8 +7796,8 @@ def handle(event):
                 .unbind();
 
             let width = 40u16;
-            let mut app =
-                QuiApp::new(width, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(width, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
 
             assert!(
                 app.screen_contains("LEFT").expect("render must not raise"),
@@ -7843,8 +7895,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
 
             assert!(
                 app.screen_contains("Alpha").expect("render must not raise"),
@@ -7948,8 +8000,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("SrcDir")
                     .expect("render must not raise"),
@@ -8029,8 +8081,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Item00")
                     .expect("render must not raise"),
@@ -8115,8 +8167,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 !app.screen_contains("Item00")
                     .expect("render must not raise"),
@@ -8180,8 +8232,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Beta").expect("render must not raise"),
                 "the second tab's title must render before it is closed"
@@ -8223,7 +8275,7 @@ def handle(event):
     #[test]
     fn tabs_nested_in_split_form_a_tab_group_rendered_side_by_side() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(60, 20, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, None, None, false, None).expect("valid dimensions");
             let callback = py
                 .eval(
                     c"lambda: {'split': {\
@@ -8342,7 +8394,8 @@ def render():
                 .expect("render must be defined")
                 .unbind();
 
-            let mut app = QuiApp::new(60, 20, None, Some(render)).expect("valid dimensions");
+            let mut app =
+                QuiApp::new(60, 20, None, Some(render), false, None).expect("valid dimensions");
 
             assert!(
                 app.screen_contains("Alpha").expect("render must not raise"),
@@ -8400,8 +8453,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("OK").expect("render must not raise"),
                 "the button's label must be painted"
@@ -8533,8 +8586,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             let bounds = app
                 .driver
                 .find_bounds("OK")
@@ -8596,8 +8649,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("OK").expect("render must not raise"),
                 "the button's label must be painted"
@@ -8750,8 +8803,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("OK").expect("render must not raise"),
                 "the nested button's label must be painted"
@@ -8925,8 +8978,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("BetaRow")
                     .expect("render must not raise"),
@@ -9082,8 +9135,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("BetaTab")
                     .expect("render must not raise"),
@@ -9226,7 +9279,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app = QuiApp::new(40, 5, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 5, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Filter")
                     .expect("render must not raise"),
@@ -9364,8 +9418,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             // Force the first render so `hit_map`/`tab_stops` are populated
             // before any key is dispatched.
             let screen = app.screen().expect("render must not raise");
@@ -9566,8 +9620,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("AlphaRow")
                     .expect("render must not raise"),
@@ -9710,8 +9764,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             let screen = app.screen().expect("render must not raise");
             assert!(
                 screen.contains("fi"),
@@ -9895,8 +9949,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("BetaRow")
                     .expect("render must not raise"),
@@ -10031,8 +10085,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Beta1").expect("render must not raise"),
                 "the second leaf's first item must be painted"
@@ -10221,8 +10275,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Beta").expect("render must not raise"),
                 "the second item must be painted"
@@ -10336,8 +10390,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Alpha").expect("render must not raise"),
                 "the first item must be painted"
@@ -10458,8 +10512,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Beta").expect("render must not raise"),
                 "the second item must be painted"
@@ -10597,7 +10651,7 @@ def handle(event):
             .expect("dict lookup")
             .expect("handle must be defined")
             .unbind();
-        QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions")
+        QuiApp::new(40, 10, Some(handle), Some(render), false, None).expect("valid dimensions")
     }
 
     /// Reads back the real painted `(Scrollbar, total_rows, viewport_rows,
@@ -11060,8 +11114,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("File").expect("render must not raise"),
                 "the menu bar's top-level item must be painted"
@@ -11232,7 +11286,7 @@ def handle(event):
             .expect("dict lookup")
             .expect("handle must be defined")
             .unbind();
-        let app = QuiApp::new(40, 20, Some(handle), None).expect("valid dimensions");
+        let app = QuiApp::new(40, 20, Some(handle), None, false, None).expect("valid dimensions");
         (app, locals)
     }
 
@@ -11507,8 +11561,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
 
             let bar_bounds = app
                 .driver
@@ -11655,7 +11709,7 @@ def handle(event):
     #[test]
     fn handler_queues_show_message_dialog_via_actions_handle_without_reentrant_borrow() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(40, 20, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, None, None, false, None).expect("valid dimensions");
             let actions = app.actions().expect("app is not poisoned");
 
             let locals = PyDict::new(py);

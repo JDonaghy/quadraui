@@ -24,7 +24,8 @@
 //! `Theme`/`Style`, already round-tripped through `serde_json` once on the
 //! way in, never raw binding input.
 
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -204,6 +205,181 @@ impl<'de> Visitor<'de> for ValueVisitor {
     }
 }
 
+// ─── Unknown optional-key diagnostics ───────────────────────────────────────
+
+/// Sibling keys every layout-tree node dict may carry regardless of its own
+/// kind: `"style"`/`"class"` (resolved by [`layout_node_from_value`]'s own
+/// wrapper, once around whichever kind-specific decode below returns),
+/// `"size"`/`"min"`/`"max"` (consumed by [`layout_children_from_value`] when
+/// this dict is a row/column child — a harmless no-op on a node reached any
+/// other way, since a child dict has no way to know which container, if
+/// any, it ends up inside), and `"wire_version"` (checked once, up front, by
+/// [`check_wire_version`], against the whole render output rather than any
+/// one node — see that function's own doc). [`check_node_sibling_keys`]
+/// folds these into every per-kind known-key list below, so none of them
+/// has to repeat them.
+const UNIVERSAL_NODE_SIBLING_KEYS: [&str; 6] =
+    ["style", "class", "size", "min", "max", "wire_version"];
+
+/// Session-scoped sink for a wire decode's unknown-*optional*-key findings
+/// — a dict key none of this crate's decoders recognize there, outside the
+/// small number of closed-vocabulary sub-dicts (`"padding"`'s object shape,
+/// a `"style"` override) that already hard-reject a typo unconditionally;
+/// see each of their own docs for why those stay stricter. A required field
+/// or a wrongly-typed value is always a [`DecodeError`] regardless of this
+/// policy — this only covers an otherwise-harmless unrecognised sibling key
+/// a decoder would otherwise silently drop.
+///
+/// [`Self::warn`] (and [`Self::default`]) keep decoding on a finding:
+/// each distinct key name reaches the registered hook (if any) at most once
+/// for this `DecodeDiagnostics`'s whole lifetime — a binding holds one
+/// alongside its other session-scoped state (`crate::host::BindingHost`),
+/// not fresh per decode call, so a render callback re-decoded every frame
+/// doesn't re-warn on the same typo each time. [`Self::strict`] instead
+/// turns the very first finding into a hard [`DecodeError::UnknownKey`],
+/// the `strict=True`/`strict: true` app option a binding surfaces.
+pub struct DecodeDiagnostics {
+    strict: Cell<bool>,
+    warned: RefCell<HashSet<String>>,
+    hook: RefCell<Option<UnknownKeyHook>>,
+}
+
+/// [`DecodeDiagnostics::set_hook`]'s registered callback, named so the
+/// field holding it stays under clippy's `type_complexity` threshold.
+type UnknownKeyHook = Rc<dyn Fn(&str, &str)>;
+
+impl DecodeDiagnostics {
+    /// A fresh warn-mode session with no hook registered yet — equivalent
+    /// to [`Self::default`].
+    pub fn warn() -> Self {
+        Self {
+            strict: Cell::new(false),
+            warned: RefCell::new(HashSet::new()),
+            hook: RefCell::new(None),
+        }
+    }
+
+    /// A fresh strict-mode session: every unknown optional key found from
+    /// here on is a hard [`DecodeError::UnknownKey`] rather than a warning.
+    pub fn strict() -> Self {
+        let this = Self::warn();
+        this.set_strict(true);
+        this
+    }
+
+    /// Switches this session's policy — `true` for strict (reject), `false`
+    /// for warn — without touching the already-warned set or hook. A
+    /// binding calls this from its own `strict` setter/constructor
+    /// argument, rather than needing to replace the whole
+    /// [`BindingHost`](crate::host::BindingHost)-held instance.
+    pub fn set_strict(&self, strict: bool) {
+        self.strict.set(strict);
+    }
+
+    /// True once [`Self::set_strict`]`(true)`/[`Self::strict`] has set this
+    /// session to reject rather than warn.
+    pub fn is_strict(&self) -> bool {
+        self.strict.get()
+    }
+
+    /// Registers (replacing any previous registration) the callback a
+    /// warn-mode finding invokes — `hook(key, path)`, called at most once
+    /// per distinct `key` for this session's lifetime. A binding wires this
+    /// to whatever callable its own `on_unknown_key`-style surface
+    /// registers; `None` (the default) makes a warn-mode finding a no-op
+    /// beyond being recorded in [`Self::warned_keys`].
+    pub fn set_hook(&self, hook: impl Fn(&str, &str) + 'static) {
+        *self.hook.borrow_mut() = Some(Rc::new(hook));
+    }
+
+    /// Every key name that has already reached the hook (or would have, had
+    /// one been registered) this session — exposed so a headless test can
+    /// assert "once per key" without needing to install a hook itself.
+    pub fn warned_keys(&self) -> HashSet<String> {
+        self.warned.borrow().clone()
+    }
+
+    /// Applies this session's policy to one finding: `key`, found on the
+    /// dict `field` names at `path`, outside `expected`. Strict mode
+    /// returns the same [`DecodeError::UnknownKey`] a required-field
+    /// mismatch already would; warn mode calls the registered hook (at most
+    /// once for this `key`) and returns `Ok`, so decoding continues
+    /// unaffected either way.
+    fn report_unknown_key(
+        &self,
+        path: &str,
+        field: &str,
+        key: &str,
+        expected: &[&str],
+    ) -> Result<(), DecodeError> {
+        if self.strict.get() {
+            return Err(DecodeError::unknown_key(path, field, key, expected));
+        }
+        if self.warned.borrow_mut().insert(key.to_string()) {
+            if let Some(hook) = self.hook.borrow().as_ref() {
+                hook(path, key);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for DecodeDiagnostics {
+    fn default() -> Self {
+        Self::warn()
+    }
+}
+
+/// Diffs `value`'s own keys (when it is an object; a no-op otherwise —
+/// every caller below only reaches this once its own shape check already
+/// confirmed an object) against `known`, reporting every key outside it
+/// through `diagnostics` — the one choke point every per-kind decoder
+/// below routes an unrecognised *optional* sibling key through, rather than
+/// each rolling its own loop (the pre-existing `"padding"`/`"style"` loops
+/// stay separate — those hard-reject unconditionally, a deliberately
+/// stricter policy; see their own docs for why).
+fn check_unknown_keys(
+    diagnostics: &DecodeDiagnostics,
+    path: &str,
+    field: &str,
+    value: &Value,
+    known: &[&str],
+) -> Result<(), DecodeError> {
+    let Some(obj) = value.as_object() else {
+        return Ok(());
+    };
+    for key in obj.keys() {
+        if !known.contains(&key.as_str()) {
+            diagnostics.report_unknown_key(path, field, key, known)?;
+        }
+    }
+    Ok(())
+}
+
+/// [`check_unknown_keys`] against a layout-tree node dict specifically:
+/// `known` is `shape_keys` plus [`UNIVERSAL_NODE_SIBLING_KEYS`], folded in
+/// so every per-kind call site below only has to name the keys unique to
+/// its own kind.
+fn check_node_sibling_keys(
+    diagnostics: &DecodeDiagnostics,
+    path: &str,
+    field: &str,
+    value: &Value,
+    shape_keys: &[&str],
+) -> Result<(), DecodeError> {
+    let Some(obj) = value.as_object() else {
+        return Ok(());
+    };
+    for key in obj.keys() {
+        if !shape_keys.contains(&key.as_str())
+            && !UNIVERSAL_NODE_SIBLING_KEYS.contains(&key.as_str())
+        {
+            diagnostics.report_unknown_key(path, field, key, shape_keys)?;
+        }
+    }
+    Ok(())
+}
+
 // ─── Value helpers ──────────────────────────────────────────────────────────
 
 /// Reads `value[key]`, treating a `null` entry the same as a missing one —
@@ -362,22 +538,32 @@ pub fn decode_layout_node<'de, D: Deserializer<'de>>(
 ) -> Result<LayoutNode, DecodeError> {
     let sets = StyleSets::new();
     let theme = Theme::default();
-    decode_layout_node_with_styles(what, deserializer, StyleContext::new(&sets, &theme))
+    let diagnostics = DecodeDiagnostics::warn();
+    decode_layout_node_with_styles(
+        what,
+        deserializer,
+        StyleContext::new(&sets, &theme),
+        &diagnostics,
+    )
 }
 
-/// [`decode_layout_node`] against a caller-supplied [`StyleContext`] — the
-/// entry point a binding's own render pass calls, handing in the
-/// [`StyleSets`] its `define_style` surface has been filling plus the
-/// backend's current [`quadraui::Theme`], so every `"class"` key in the
-/// tree resolves against them.
+/// [`decode_layout_node`] against a caller-supplied [`StyleContext`] and
+/// [`DecodeDiagnostics`] — the entry point a binding's own render pass
+/// calls, handing in the [`StyleSets`] its `define_style` surface has been
+/// filling plus the backend's current [`quadraui::Theme`] (so every
+/// `"class"` key in the tree resolves against them) and its own
+/// session-scoped `diagnostics`, so an unknown optional key found anywhere
+/// in the tree is reported through that same session rather than a fresh
+/// one per call.
 pub fn decode_layout_node_with_styles<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutNode, DecodeError> {
     let value = materialize(deserializer)
         .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))?;
-    layout_node_from_value(what, &value, styles)
+    layout_node_from_value(what, &value, styles, diagnostics)
 }
 
 /// The host state a layout-tree decode resolves a node's `"class"` key
@@ -418,8 +604,9 @@ fn layout_node_from_value(
     what: &str,
     value: &Value,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutNode, DecodeError> {
-    let node = layout_node_from_value_inner(what, value, styles)?;
+    let node = layout_node_from_value_inner(what, value, styles, diagnostics)?;
     let classes = style_classes_from_value(what, value)?;
     let inline = style_override_from_value(what, value)?.unwrap_or_default();
     let style = inline.merged_over(styles.sets.resolve(&classes, styles.theme));
@@ -439,9 +626,17 @@ fn layout_node_from_value_inner(
     what: &str,
     value: &Value,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutNode, DecodeError> {
     if let Some(v) = obj_get(value, "row") {
-        let children = layout_children_from_value(what, v, styles)?;
+        check_node_sibling_keys(
+            diagnostics,
+            what,
+            "\"row\"",
+            value,
+            &["row", "padding", "margin", "gap", "justify", "align"],
+        )?;
+        let children = layout_children_from_value(what, v, styles, diagnostics)?;
         let spacing = spacing_from_value(what, value, "\"row\"", true)?;
         let justify = justify_from_value(what, value, "\"row\"")?;
         let align = align_from_value(what, value, "\"row\"")?;
@@ -453,7 +648,14 @@ fn layout_node_from_value_inner(
         }));
     }
     if let Some(v) = obj_get(value, "column") {
-        let children = layout_children_from_value(what, v, styles)?;
+        check_node_sibling_keys(
+            diagnostics,
+            what,
+            "\"column\"",
+            value,
+            &["column", "padding", "margin", "gap", "justify", "align"],
+        )?;
+        let children = layout_children_from_value(what, v, styles, diagnostics)?;
         let spacing = spacing_from_value(what, value, "\"column\"", true)?;
         let justify = justify_from_value(what, value, "\"column\"")?;
         let align = align_from_value(what, value, "\"column\"")?;
@@ -465,6 +667,13 @@ fn layout_node_from_value_inner(
         }));
     }
     if let Some(v) = obj_get(value, "split") {
+        check_node_sibling_keys(
+            diagnostics,
+            what,
+            "\"split\"",
+            value,
+            &["split", "padding", "margin", "gap"],
+        )?;
         // `gap` is meaningful here -- the space between the split's two
         // panes -- unlike `"tabs"`/`"panel"` below.
         let spacing = spacing_from_value(what, value, "\"split\"", true)?;
@@ -474,16 +683,35 @@ fn layout_node_from_value_inner(
             split_value,
             spacing,
             styles,
+            diagnostics,
         )?));
     }
     if let Some(v) = obj_get(value, "tabs") {
+        check_node_sibling_keys(
+            diagnostics,
+            what,
+            "\"tabs\"",
+            value,
+            &["tabs", "padding", "margin"],
+        )?;
         let spacing = spacing_from_value(what, value, "\"tabs\"", false)?;
         let tabs_value = must_be_dict(what, v, "tabs")?;
         return Ok(LayoutNode::Tabs(layout_tabs_from_value(
-            what, tabs_value, spacing, styles,
+            what,
+            tabs_value,
+            spacing,
+            styles,
+            diagnostics,
         )?));
     }
     if let Some(v) = obj_get(value, "panel") {
+        check_node_sibling_keys(
+            diagnostics,
+            what,
+            "\"panel\"",
+            value,
+            &["panel", "padding", "margin"],
+        )?;
         let spacing = spacing_from_value(what, value, "\"panel\"", false)?;
         let panel_value = must_be_dict(what, v, "panel")?;
         return Ok(LayoutNode::Panel(layout_panel_from_value(
@@ -491,27 +719,45 @@ fn layout_node_from_value_inner(
             panel_value,
             spacing,
             styles,
+            diagnostics,
         )?));
     }
     if let Some(v) = obj_get(value, "sidebar_panel") {
         reject_unsupported_spacing_keys(what, value, "a \"sidebar_panel\" node")?;
+        check_node_sibling_keys(
+            diagnostics,
+            what,
+            "\"sidebar_panel\"",
+            value,
+            &["sidebar_panel"],
+        )?;
         let sidebar_value = must_be_dict(what, v, "sidebar_panel")?;
         return Ok(LayoutNode::SidebarPanel(layout_sidebar_panel_from_value(
             what,
             sidebar_value,
             styles,
+            diagnostics,
         )?));
     }
     if let Some(v) = obj_get(value, "split_tree") {
         reject_unsupported_spacing_keys(what, value, "a \"split_tree\" node")?;
+        check_node_sibling_keys(diagnostics, what, "\"split_tree\"", value, &["split_tree"])?;
         let split_tree_value = must_be_dict(what, v, "split_tree")?;
         return Ok(LayoutNode::SplitTree(layout_split_tree_from_value(
             what,
             split_tree_value,
             styles,
+            diagnostics,
         )?));
     }
     if let Some(v) = obj_get(value, "scroll") {
+        check_node_sibling_keys(
+            diagnostics,
+            what,
+            "\"scroll\"",
+            value,
+            &["scroll", "padding", "margin"],
+        )?;
         let spacing = spacing_from_value(what, value, "\"scroll\"", false)?;
         let scroll_value = must_be_dict(what, v, "scroll")?;
         return Ok(LayoutNode::Scroll(layout_scroll_from_value(
@@ -519,9 +765,14 @@ fn layout_node_from_value_inner(
             scroll_value,
             spacing,
             styles,
+            diagnostics,
         )?));
     }
-    Ok(LayoutNode::Leaf(layout_leaf_from_value(what, value)?))
+    Ok(LayoutNode::Leaf(layout_leaf_from_value(
+        what,
+        value,
+        diagnostics,
+    )?))
 }
 
 /// Rejects a `"padding"`/`"margin"`/`"gap"` spacing key found alongside a
@@ -566,6 +817,7 @@ fn layout_children_from_value(
     what: &str,
     value: &Value,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<Vec<LayoutChild>, DecodeError> {
     let list = value
         .as_array()
@@ -581,7 +833,7 @@ fn layout_children_from_value(
                     "an object",
                 ));
             }
-            let node = layout_node_from_value(&context, child, styles)?;
+            let node = layout_node_from_value(&context, child, styles, diagnostics)?;
             let size = child_size_from_value(child, &context)?;
             let min = opt_f32(child, "min", &context)?;
             let max = opt_f32(child, "max", &context)?;
@@ -990,6 +1242,7 @@ fn layout_split_from_value(
     value: &Value,
     spacing: Spacing,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutSplit, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
@@ -999,6 +1252,21 @@ fn layout_split_from_value(
         None => return Err(DecodeError::missing_field(what, "split.id")),
     };
     let context = format!("{what} › split#{id}");
+    check_unknown_keys(
+        diagnostics,
+        &context,
+        "split",
+        value,
+        &[
+            "id",
+            "orientation",
+            "ratio",
+            "first_min",
+            "second_min",
+            "first",
+            "second",
+        ],
+    )?;
 
     let orientation = required_str(value, "orientation", &context)?;
     let direction = split_direction(&context, &orientation)?;
@@ -1007,9 +1275,19 @@ fn layout_split_from_value(
     let second_min = opt_f32(value, "second_min", &context)?.unwrap_or(0.0);
 
     let first_value = required_dict(value, "first", &context)?;
-    let first = layout_node_from_value(&format!("{context} › first"), first_value, styles)?;
+    let first = layout_node_from_value(
+        &format!("{context} › first"),
+        first_value,
+        styles,
+        diagnostics,
+    )?;
     let second_value = required_dict(value, "second", &context)?;
-    let second = layout_node_from_value(&format!("{context} › second"), second_value, styles)?;
+    let second = layout_node_from_value(
+        &format!("{context} › second"),
+        second_value,
+        styles,
+        diagnostics,
+    )?;
 
     Ok(LayoutSplit {
         split: Split {
@@ -1040,12 +1318,25 @@ fn layout_panel_from_value(
     value: &Value,
     spacing: Spacing,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutPanel, DecodeError> {
     let panel: Panel = decode_value(what, value)?;
     let id = panel.id.as_str().to_owned();
     let context = format!("{what} › panel#{id}");
+    check_unknown_keys(
+        diagnostics,
+        &context,
+        "panel",
+        value,
+        &["id", "title", "actions", "accent", "collapsed", "content"],
+    )?;
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(&format!("{context} › content"), content_value, styles)?;
+    let content = layout_node_from_value(
+        &format!("{context} › content"),
+        content_value,
+        styles,
+        diagnostics,
+    )?;
     Ok(LayoutPanel {
         panel,
         content: Box::new(content),
@@ -1061,12 +1352,25 @@ fn layout_sidebar_panel_from_value(
     what: &str,
     value: &Value,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutSidebarPanel, DecodeError> {
     let sidebar_panel: SidebarPanel = decode_value(what, value)?;
     let id = sidebar_panel.id.as_str().to_owned();
     let context = format!("{what} › sidebar_panel#{id}");
+    check_unknown_keys(
+        diagnostics,
+        &context,
+        "sidebar_panel",
+        value,
+        &["id", "toolbar", "toolbar_height", "content"],
+    )?;
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(&format!("{context} › content"), content_value, styles)?;
+    let content = layout_node_from_value(
+        &format!("{context} › content"),
+        content_value,
+        styles,
+        diagnostics,
+    )?;
     Ok(LayoutSidebarPanel {
         sidebar_panel,
         content: Box::new(content),
@@ -1115,6 +1419,7 @@ fn layout_scroll_from_value(
     value: &Value,
     spacing: Spacing,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutScroll, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
@@ -1124,10 +1429,22 @@ fn layout_scroll_from_value(
         None => return Err(DecodeError::missing_field(what, "scroll.id")),
     };
     let context = format!("{what} › scroll#{id}");
+    check_unknown_keys(
+        diagnostics,
+        &context,
+        "scroll",
+        value,
+        &["id", "axis", "offset", "content"],
+    )?;
     let axis = scroll_axis_from_value(&context, value)?;
     let offset = opt_f32(value, "offset", &context)?;
     let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(&format!("{context} › content"), content_value, styles)?;
+    let content = layout_node_from_value(
+        &format!("{context} › content"),
+        content_value,
+        styles,
+        diagnostics,
+    )?;
     Ok(LayoutScroll {
         id,
         axis,
@@ -1150,6 +1467,7 @@ fn layout_split_tree_from_value(
     what: &str,
     value: &Value,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutSplitTree, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
@@ -1159,10 +1477,12 @@ fn layout_split_tree_from_value(
         None => return Err(DecodeError::missing_field(what, "split_tree.id")),
     };
     let context = format!("{what} › split_tree#{id}");
+    check_unknown_keys(diagnostics, &context, "split_tree", value, &["id", "root"])?;
     let root_value = required_dict(value, "root", &context)?;
 
     let mut leaves = Vec::new();
-    let tree = split_tree_node_from_value(&context, &id, root_value, &mut leaves, styles)?;
+    let tree =
+        split_tree_node_from_value(&context, &id, root_value, &mut leaves, styles, diagnostics)?;
     Ok(LayoutSplitTree { id, tree, leaves })
 }
 
@@ -1179,11 +1499,19 @@ fn split_tree_node_from_value(
     value: &Value,
     leaves: &mut Vec<LayoutNode>,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<SplitTree, DecodeError> {
+    check_unknown_keys(
+        diagnostics,
+        what,
+        "split_tree node",
+        value,
+        &["leaf", "split"],
+    )?;
     if let Some(v) = obj_get(value, "leaf") {
         let leaf_context = format!("{what} › leaf");
         let leaf_value = must_be_dict(what, v, "leaf")?;
-        let content = layout_node_from_value(&leaf_context, leaf_value, styles)?;
+        let content = layout_node_from_value(&leaf_context, leaf_value, styles, diagnostics)?;
         let placeholder = WidgetId::new(format!("{tree_id}::leaf::{}", leaves.len()));
         leaves.push(content);
         return Ok(SplitTree::leaf(placeholder));
@@ -1191,6 +1519,13 @@ fn split_tree_node_from_value(
     if let Some(v) = obj_get(value, "split") {
         let split_value = must_be_dict(what, v, "split")?;
         let context = format!("{what} › split");
+        check_unknown_keys(
+            diagnostics,
+            &context,
+            "split",
+            split_value,
+            &["orientation", "ratio", "first", "second"],
+        )?;
 
         let orientation = required_str(split_value, "orientation", &context)?;
         let direction = split_direction(&context, &orientation)?;
@@ -1203,6 +1538,7 @@ fn split_tree_node_from_value(
             first_value,
             leaves,
             styles,
+            diagnostics,
         )?;
         let second_value = required_dict(split_value, "second", &context)?;
         let second = split_tree_node_from_value(
@@ -1211,6 +1547,7 @@ fn split_tree_node_from_value(
             second_value,
             leaves,
             styles,
+            diagnostics,
         )?;
 
         return Ok(SplitTree::split(direction, ratio, first, second));
@@ -1240,6 +1577,7 @@ fn layout_tabs_from_value(
     value: &Value,
     spacing: Spacing,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutTabs, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
@@ -1249,6 +1587,23 @@ fn layout_tabs_from_value(
         None => return Err(DecodeError::missing_field(what, "tabs.id")),
     };
     let context = format!("{what} › tabs#{id}");
+    check_unknown_keys(
+        diagnostics,
+        &context,
+        "tabs",
+        value,
+        &[
+            "id",
+            "tabs",
+            "selected",
+            "closable",
+            "scroll_offset",
+            "right_segments",
+            "active_accent",
+            "compact",
+            "focused_index",
+        ],
+    )?;
 
     let tabs_list = required_list(value, "tabs", &context)?;
     let mut items = Vec::with_capacity(tabs_list.len());
@@ -1262,12 +1617,30 @@ fn layout_tabs_from_value(
                 "an object",
             ));
         }
+        check_unknown_keys(
+            diagnostics,
+            &entry_context,
+            "tab",
+            entry,
+            &[
+                "id",
+                "title",
+                "content",
+                "closable",
+                "is_dirty",
+                "is_preview",
+            ],
+        )?;
         let tab_id = required_str(entry, "id", &entry_context)?;
         let tab_context = format!("{context} › tab#{tab_id}");
         let title = required_str(entry, "title", &tab_context)?;
         let content_value = required_dict(entry, "content", &tab_context)?;
-        let content =
-            layout_node_from_value(&format!("{tab_context} › content"), content_value, styles)?;
+        let content = layout_node_from_value(
+            &format!("{tab_context} › content"),
+            content_value,
+            styles,
+            diagnostics,
+        )?;
         let is_closable = opt_bool(entry, "closable", &tab_context)?.unwrap_or(true);
         let is_dirty = opt_bool(entry, "is_dirty", &tab_context)?.unwrap_or(false);
         let is_preview = opt_bool(entry, "is_preview", &tab_context)?.unwrap_or(false);
@@ -1360,7 +1733,11 @@ fn layout_tabs_from_value(
 /// leaf with two keys from either set (fixed+fixed, fixed+extra, or
 /// extra+extra) is rejected by the single `found` duplicate check shared
 /// across both loops below.
-fn layout_leaf_from_value(what: &str, value: &Value) -> Result<LayoutLeaf, DecodeError> {
+fn layout_leaf_from_value(
+    what: &str,
+    value: &Value,
+    diagnostics: &DecodeDiagnostics,
+) -> Result<LayoutLeaf, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
             .as_str()
@@ -1369,6 +1746,15 @@ fn layout_leaf_from_value(what: &str, value: &Value) -> Result<LayoutLeaf, Decod
         None => return Err(DecodeError::missing_field(what, "leaf.id")),
     };
     let context = format!("{what} › leaf#{id}");
+    // "id" plus whichever of `LEAF_KIND_KEYS`/`EXTRA_PRIMITIVE_KINDS` holds
+    // this leaf's one descriptor, plus the sibling keys every layout-tree
+    // node dict may carry regardless of its own kind.
+    let known_keys: Vec<&str> = std::iter::once("id")
+        .chain(LEAF_KIND_KEYS)
+        .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
+        .chain(UNIVERSAL_NODE_SIBLING_KEYS)
+        .collect();
+    check_unknown_keys(diagnostics, &context, "leaf", value, &known_keys)?;
 
     let mut found: Option<LeafDescriptor> = None;
     // Set alongside `found` only for the three scrollable kinds —
@@ -1469,8 +1855,9 @@ pub fn decode_popover<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<OverlayContent<quadraui::Float>, DecodeError> {
-    overlay_content(what, deserializer, "float", styles)
+    overlay_content(what, deserializer, "float", styles, diagnostics)
 }
 
 /// Decodes a `{"dialog": {...}, "content": {...}}` layout-dialog
@@ -1484,9 +1871,10 @@ pub fn decode_layout_dialog<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<OverlayContent<quadraui::Dialog>, DecodeError> {
     let decoded: OverlayContent<DialogChromeWire> =
-        overlay_content(what, deserializer, "dialog", styles)?;
+        overlay_content(what, deserializer, "dialog", styles, diagnostics)?;
     Ok(OverlayContent {
         chrome: decoded.chrome.into_dialog(what)?,
         content: decoded.content,
@@ -1556,6 +1944,7 @@ fn overlay_content<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
     deserializer: D,
     chrome_key: &str,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<OverlayContent<T>, DecodeError> {
     let value = materialize(deserializer)
         .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))?;
@@ -1565,7 +1954,8 @@ fn overlay_content<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
     let chrome = decode_value(what, chrome)?;
     let content =
         obj_get(&value, "content").ok_or_else(|| DecodeError::missing_field(what, "content"))?;
-    let content = layout_node_from_value(&format!("{what} › content"), content, styles)?;
+    let content =
+        layout_node_from_value(&format!("{what} › content"), content, styles, diagnostics)?;
     validate_unique_leaf_ids(what, &content)?;
     Ok(OverlayContent { chrome, content })
 }
@@ -1627,30 +2017,41 @@ pub fn decode_render_output<'de, D: Deserializer<'de>>(
 ) -> Result<RenderOutput, DecodeError> {
     let sets = StyleSets::new();
     let theme = Theme::default();
-    decode_render_output_with_styles(what, deserializer, StyleContext::new(&sets, &theme))
+    let diagnostics = DecodeDiagnostics::warn();
+    decode_render_output_with_styles(
+        what,
+        deserializer,
+        StyleContext::new(&sets, &theme),
+        &diagnostics,
+    )
 }
 
-/// [`decode_render_output`] against a caller-supplied [`StyleContext`] —
-/// the entry point a binding's own render pass calls, so every `"class"`
-/// key in the returned tree resolves against the [`StyleSets`] that
-/// binding's `define_style` surface has been filling. The flat
+/// [`decode_render_output`] against a caller-supplied [`StyleContext`] and
+/// [`DecodeDiagnostics`] — the entry point a binding's own render pass
+/// calls, so every `"class"` key in the returned tree resolves against the
+/// [`StyleSets`] that binding's `define_style` surface has been filling,
+/// and an unknown optional key anywhere in the output is reported through
+/// that binding's own session rather than a fresh one per call. The flat
 /// (pre-layout-tree) shape carries no nodes, hence no `"class"` keys, and
 /// decodes identically either way.
 pub fn decode_render_output_with_styles<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
     styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<RenderOutput, DecodeError> {
     let value = materialize(deserializer)
         .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))?;
     check_wire_version(what, &value)?;
     if is_layout_tree(&value) {
-        let node = layout_node_from_value(what, &value, styles)?;
+        let node = layout_node_from_value(what, &value, styles, diagnostics)?;
         validate_unique_leaf_ids(what, &node)?;
         Ok(RenderOutput::Tree(node))
     } else {
         Ok(RenderOutput::Flat(Box::new(render_frame_from_value(
-            what, &value,
+            what,
+            &value,
+            diagnostics,
         )?)))
     }
 }
@@ -1702,7 +2103,21 @@ fn extra_slot_entry(
 pub(crate) fn render_frame_from_value(
     what: &str,
     value: &Value,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<RenderFrame, DecodeError> {
+    let known_keys: Vec<&str> = [
+        "button",
+        "text_display",
+        "list",
+        "tree",
+        "data_table",
+        "tab_bar",
+        "wire_version",
+    ]
+    .into_iter()
+    .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
+    .collect();
+    check_unknown_keys(diagnostics, what, "render output", value, &known_keys)?;
     let mut extra = HashMap::new();
     for kind in EXTRA_PRIMITIVE_KINDS {
         if let Some(v) = extra_slot_entry(what, value, kind)? {
@@ -1773,7 +2188,18 @@ fn dict_bool(what: &str, value: &Value, key: &str) -> Result<Option<bool>, Decod
 /// Decodes one panel dict (`{"id", "icon", "tooltip", "title"}`, all but
 /// `"id"` optional) into a [`PanelDefinition`] — one entry of `run_shell`'s
 /// `"panels"`/`"bottom_items"` lists.
-fn panel_definition_from_value(what: &str, value: &Value) -> Result<PanelDefinition, DecodeError> {
+fn panel_definition_from_value(
+    what: &str,
+    value: &Value,
+    diagnostics: &DecodeDiagnostics,
+) -> Result<PanelDefinition, DecodeError> {
+    check_unknown_keys(
+        diagnostics,
+        what,
+        "panel",
+        value,
+        &["id", "icon", "tooltip", "title"],
+    )?;
     let id = dict_required_str(what, value, "id")?;
     let icon = dict_str(what, value, "icon")?.unwrap_or_default();
     let tooltip = dict_str(what, value, "tooltip")?.unwrap_or_default();
@@ -1787,7 +2213,11 @@ fn panel_definition_from_value(what: &str, value: &Value) -> Result<PanelDefinit
 }
 
 /// Decodes a `list` of panel dicts via [`panel_definition_from_value`].
-fn panel_list_from_value(what: &str, value: &Value) -> Result<Vec<PanelDefinition>, DecodeError> {
+fn panel_list_from_value(
+    what: &str,
+    value: &Value,
+    diagnostics: &DecodeDiagnostics,
+) -> Result<Vec<PanelDefinition>, DecodeError> {
     let list = value
         .as_array()
         .ok_or_else(|| DecodeError::type_mismatch(what, "panels", "an array"))?;
@@ -1801,7 +2231,7 @@ fn panel_list_from_value(what: &str, value: &Value) -> Result<Vec<PanelDefinitio
                     "an object",
                 ));
             }
-            panel_definition_from_value(&format!("{what} › panels[{index}]"), item)
+            panel_definition_from_value(&format!("{what} › panels[{index}]"), item, diagnostics)
         })
         .collect()
 }
@@ -1812,9 +2242,10 @@ fn panel_list_from_dict(
     what: &str,
     value: &Value,
     key: &str,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<Vec<PanelDefinition>, DecodeError> {
     match obj_get(value, key) {
-        Some(v) => panel_list_from_value(what, v),
+        Some(v) => panel_list_from_value(what, v, diagnostics),
         None => Ok(Vec::new()),
     }
 }
@@ -1822,7 +2253,18 @@ fn panel_list_from_dict(
 /// Decodes one bottom-panel-tab dict (`{"id", "label", "closable",
 /// "badge"}`, all but `"id"` optional) into a [`BottomPanelTab`], with its
 /// content set to a [`StaticTabContent`] naming the tab's own id.
-fn bottom_panel_tab_from_value(what: &str, value: &Value) -> Result<BottomPanelTab, DecodeError> {
+fn bottom_panel_tab_from_value(
+    what: &str,
+    value: &Value,
+    diagnostics: &DecodeDiagnostics,
+) -> Result<BottomPanelTab, DecodeError> {
+    check_unknown_keys(
+        diagnostics,
+        what,
+        "bottom_panel tab",
+        value,
+        &["id", "label", "closable", "badge"],
+    )?;
     let id = dict_required_str(what, value, "id")?;
     let label = dict_str(what, value, "label")?.unwrap_or_else(|| id.clone());
     let closable = dict_bool(what, value, "closable")?.unwrap_or(false);
@@ -1844,7 +2286,15 @@ fn bottom_panel_tab_from_value(what: &str, value: &Value) -> Result<BottomPanelT
 fn bottom_panel_config_from_value(
     what: &str,
     value: &Value,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<BottomPanelConfig, DecodeError> {
+    check_unknown_keys(
+        diagnostics,
+        what,
+        "bottom_panel",
+        value,
+        &["tabs", "active_tab_id", "maximised", "height_fraction"],
+    )?;
     let tabs = match obj_get(value, "tabs") {
         Some(v) => {
             let list = v
@@ -1863,6 +2313,7 @@ fn bottom_panel_config_from_value(
                     bottom_panel_tab_from_value(
                         &format!("{what} › bottom_panel.tabs[{index}]"),
                         item,
+                        diagnostics,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?
@@ -1894,14 +2345,43 @@ fn bottom_panel_config_from_value(
 /// `"has_status_bar"`, `"has_command_line"`, `"has_bottom_panel"` +
 /// `"bottom_panel_height_lh"` (the bare, untabbed region), and
 /// `"bottom_panel"` (a tabbed [`BottomPanelConfig`], see
-/// [`bottom_panel_config_from_value`]). Any other key is silently ignored.
-fn shell_config_from_value(value: &Value) -> Result<ShellConfig, DecodeError> {
+/// [`bottom_panel_config_from_value`]). Any other key is reported through
+/// `diagnostics` (warn once per session, or a hard error under `strict`)
+/// rather than silently ignored.
+fn shell_config_from_value(
+    value: &Value,
+    diagnostics: &DecodeDiagnostics,
+) -> Result<ShellConfig, DecodeError> {
     let what = "run_shell";
+    check_unknown_keys(
+        diagnostics,
+        what,
+        "run_shell config",
+        value,
+        &[
+            "title",
+            "panels",
+            "bottom_items",
+            "position",
+            "sidebar_visible",
+            "default_sidebar_width",
+            "min_sidebar_width",
+            "max_sidebar_width",
+            "activity_bar_width",
+            "has_title_bar",
+            "title_bar_height_lh",
+            "has_status_bar",
+            "has_command_line",
+            "has_bottom_panel",
+            "bottom_panel_height_lh",
+            "bottom_panel",
+        ],
+    )?;
     let title = dict_required_str(what, value, "title")?;
-    let panels = panel_list_from_dict(what, value, "panels")?;
+    let panels = panel_list_from_dict(what, value, "panels", diagnostics)?;
     let mut config = ShellConfig::new(title, panels);
 
-    let bottom_items = panel_list_from_dict(what, value, "bottom_items")?;
+    let bottom_items = panel_list_from_dict(what, value, "bottom_items", diagnostics)?;
     if !bottom_items.is_empty() {
         config = config.with_bottom_items(bottom_items);
     }
@@ -1959,7 +2439,11 @@ fn shell_config_from_value(value: &Value) -> Result<ShellConfig, DecodeError> {
                 "an object",
             ));
         }
-        config = config.with_bottom_panel_config(bottom_panel_config_from_value(what, bp_value)?);
+        config = config.with_bottom_panel_config(bottom_panel_config_from_value(
+            what,
+            bp_value,
+            diagnostics,
+        )?);
     }
 
     Ok(config)
@@ -1970,10 +2454,11 @@ fn shell_config_from_value(value: &Value) -> Result<ShellConfig, DecodeError> {
 /// key vocabulary.
 pub fn decode_shell_config<'de, D: Deserializer<'de>>(
     deserializer: D,
+    diagnostics: &DecodeDiagnostics,
 ) -> Result<ShellConfig, DecodeError> {
     let value = materialize(deserializer)
         .map_err(|err| DecodeError::borrow("run_shell", format!("invalid descriptor: {err}")))?;
-    shell_config_from_value(&value)
+    shell_config_from_value(&value, diagnostics)
 }
 
 #[cfg(test)]
@@ -2020,8 +2505,13 @@ mod tests {
                 ]
             },
         });
-        let decoded = decode_popover("test", &value, StyleContext::new(&sets, &theme))
-            .expect("valid popover");
+        let decoded = decode_popover(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &DecodeDiagnostics::warn(),
+        )
+        .expect("valid popover");
         assert_eq!(decoded.chrome.id.as_str(), "popover:menu");
         let LayoutNode::Column(column) = decoded.content else {
             panic!("expected the content to decode as a column node");
@@ -2043,8 +2533,13 @@ mod tests {
             },
             "content": {"id": "a", "button": {"id": "a", "label": "A"}},
         });
-        let decoded = decode_layout_dialog("test", &value, StyleContext::new(&sets, &theme))
-            .expect("valid layout dialog");
+        let decoded = decode_layout_dialog(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &DecodeDiagnostics::warn(),
+        )
+        .expect("valid layout dialog");
         assert_eq!(decoded.chrome.id.as_str(), "dialog:prefs");
         assert_eq!(decoded.chrome.buttons.len(), 1);
         assert!(matches!(decoded.content, LayoutNode::Leaf(_)));
@@ -2071,6 +2566,7 @@ mod tests {
             "test",
             &no_content,
             StyleContext::new(&sets, &theme),
+            &DecodeDiagnostics::warn(),
         ))
         .to_string();
         assert!(
@@ -2082,6 +2578,7 @@ mod tests {
             "test",
             &no_chrome,
             StyleContext::new(&sets, &theme),
+            &DecodeDiagnostics::warn(),
         ))
         .to_string();
         assert!(
@@ -2859,8 +3356,13 @@ mod tests {
             registry.define(*name, *overrides);
         }
         let theme = Theme::default();
-        decode_layout_node_with_styles("test", value, StyleContext::new(&registry, &theme))
-            .expect("valid tree")
+        decode_layout_node_with_styles(
+            "test",
+            value,
+            StyleContext::new(&registry, &theme),
+            &DecodeDiagnostics::warn(),
+        )
+        .expect("valid tree")
     }
 
     /// The [`StyleOverride`] a decoded node's own `Styled` wrapper
@@ -3026,15 +3528,23 @@ mod tests {
         let mut registry = StyleSets::new();
         let theme = Theme::default();
         registry.define("card", set_with_fg("#ff0000"));
-        let before =
-            decode_layout_node_with_styles("test", &value, StyleContext::new(&registry, &theme))
-                .expect("valid tree");
+        let before = decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&registry, &theme),
+            &DecodeDiagnostics::warn(),
+        )
+        .expect("valid tree");
         assert_eq!(styled_override(&before).fg, Color::from_hex("#ff0000"));
 
         registry.define("card", set_with_fg("#00ff00"));
-        let after =
-            decode_layout_node_with_styles("test", &value, StyleContext::new(&registry, &theme))
-                .expect("valid tree");
+        let after = decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&registry, &theme),
+            &DecodeDiagnostics::warn(),
+        )
+        .expect("valid tree");
         assert_eq!(styled_override(&after).fg, Color::from_hex("#00ff00"));
     }
 
@@ -3069,8 +3579,13 @@ mod tests {
         let registry = StyleSets::new();
         let theme = Theme::default();
         let style = styled_override(
-            &decode_layout_node_with_styles("test", &value, StyleContext::new(&registry, &theme))
-                .expect("valid tree"),
+            &decode_layout_node_with_styles(
+                "test",
+                &value,
+                StyleContext::new(&registry, &theme),
+                &DecodeDiagnostics::warn(),
+            )
+            .expect("valid tree"),
         );
         assert_eq!(style.surface_bg, Some(theme.button_danger_bg()));
         assert_eq!(style.accent_bg, Some(theme.button_danger_bg()));
@@ -3084,6 +3599,7 @@ mod tests {
                 "test",
                 &value,
                 StyleContext::new(&registry, &recoloured),
+                &DecodeDiagnostics::warn(),
             )
             .expect("valid tree"),
         );
@@ -3499,7 +4015,8 @@ mod tests {
             "has_title_bar": true,
             "has_bottom_panel": true,
         });
-        let config = decode_shell_config(&value).expect("valid shell config");
+        let config =
+            decode_shell_config(&value, &DecodeDiagnostics::warn()).expect("valid shell config");
         assert_eq!(config.title, "My Shell");
         assert!(config.has_title_bar);
         assert_eq!(config.title_bar_height_lh, 1.5);
@@ -3512,11 +4029,12 @@ mod tests {
     #[test]
     fn decode_shell_config_validates_position() {
         let value = json!({"title": "My Shell", "position": "right"});
-        let config = decode_shell_config(&value).expect("valid position");
+        let config =
+            decode_shell_config(&value, &DecodeDiagnostics::warn()).expect("valid position");
         assert_eq!(config.position, ShellPosition::Right);
 
         let value = json!({"title": "My Shell", "position": "sideways"});
-        let err = err(decode_shell_config(&value));
+        let err = err(decode_shell_config(&value, &DecodeDiagnostics::warn()));
         assert!(matches!(err, DecodeError::UnknownVariant { .. }), "{err:?}");
         assert!(
             err.to_string().contains("\"sideways\""),
@@ -3536,7 +4054,8 @@ mod tests {
                 "tabs": [{"id": "t1"}, {"id": "t2"}],
             },
         });
-        let config = decode_shell_config(&value).expect("valid bottom_panel");
+        let config =
+            decode_shell_config(&value, &DecodeDiagnostics::warn()).expect("valid bottom_panel");
         let bottom_panel = config.bottom_panel.expect("bottom_panel is set");
         assert_eq!(bottom_panel.active_tab_id, "t1");
         assert_eq!(bottom_panel.height_fraction, 0.3);
@@ -3546,7 +4065,7 @@ mod tests {
     /// `run_shell`'s `config` dict requires `"title"`.
     #[test]
     fn decode_shell_config_requires_title() {
-        let err = err(decode_shell_config(json!({})));
+        let err = err(decode_shell_config(json!({}), &DecodeDiagnostics::warn()));
         assert!(matches!(err, DecodeError::MissingField { .. }), "{err:?}");
         assert!(err.to_string().contains("\"title\""), "{}", err.to_string());
     }
@@ -3656,5 +4175,176 @@ mod tests {
         })));
         assert_eq!(borrow.code(), "borrow");
         assert_eq!(borrow.path(), "test › leaf#leaf1");
+    }
+
+    /// A tree exercising every node kind decodes cleanly with no unknown
+    /// optional keys found, regardless of policy — the "an existing valid
+    /// tree keeps decoding exactly as before" regression every per-kind
+    /// known-key list above must not break.
+    fn full_tree_fixture() -> Value {
+        json!({
+            "column": [
+                {
+                    "split": {
+                        "id": "split1",
+                        "orientation": "horizontal",
+                        "ratio": 0.5,
+                        "first": {"id": "a", "button": {"id": "a", "label": "A"}},
+                        "second": {
+                            "tabs": {
+                                "id": "tabs1",
+                                "tabs": [
+                                    {
+                                        "id": "tab1",
+                                        "title": "One",
+                                        "content": {"id": "b", "button": {"id": "b", "label": "B"}},
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                    "padding": 4,
+                },
+                {
+                    "panel": {
+                        "id": "panel1",
+                        "content": {"id": "c", "button": {"id": "c", "label": "C"}},
+                    },
+                },
+                {
+                    "sidebar_panel": {
+                        "id": "sidebar1",
+                        "content": {"id": "d", "button": {"id": "d", "label": "D"}},
+                    },
+                },
+                {
+                    "scroll": {
+                        "id": "scroll1",
+                        "content": {"id": "e", "button": {"id": "e", "label": "E"}},
+                    },
+                },
+                {
+                    "split_tree": {
+                        "id": "tree1",
+                        "root": {
+                            "split": {
+                                "orientation": "vertical",
+                                "ratio": 0.5,
+                                "first": {"leaf": {"id": "f", "button": {"id": "f", "label": "F"}}},
+                                "second": {"leaf": {"id": "g", "button": {"id": "g", "label": "G"}}},
+                            },
+                        },
+                    },
+                },
+            ],
+        })
+    }
+
+    /// A tree exercising every node kind decodes with zero diagnostics
+    /// recorded, under the default warn policy.
+    #[test]
+    fn a_valid_tree_of_every_node_kind_produces_no_diagnostics() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::warn();
+        decode_layout_node_with_styles(
+            "test",
+            &full_tree_fixture(),
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        )
+        .expect("every node kind above is valid");
+        assert!(diagnostics.warned_keys().is_empty());
+    }
+
+    /// An unrecognised *optional* sibling key on a layout-tree node dict —
+    /// the misspelt `"focussed"` for `"focused_index"` -- warns through the
+    /// registered hook exactly once per key for the session's lifetime
+    /// under the default (non-strict) policy, decoding otherwise
+    /// unaffected, rather than silently dropping it the way this policy
+    /// didn't exist before.
+    #[test]
+    fn unknown_optional_key_warns_once_per_key_per_session() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::warn();
+        let hook_calls = Rc::new(RefCell::new(Vec::new()));
+        let recorded = hook_calls.clone();
+        diagnostics.set_hook(move |path: &str, key: &str| {
+            recorded
+                .borrow_mut()
+                .push((path.to_string(), key.to_string()));
+        });
+        let value = json!({
+            "tabs": {
+                "id": "tabs1",
+                "tabs": [],
+                "focussed": 0,
+            },
+        });
+        for _ in 0..3 {
+            decode_layout_node_with_styles(
+                "test",
+                &value,
+                StyleContext::new(&sets, &theme),
+                &diagnostics,
+            )
+            .expect("an unknown optional key does not fail the decode under warn");
+        }
+        assert_eq!(
+            diagnostics.warned_keys(),
+            HashSet::from(["focussed".to_string()])
+        );
+        assert_eq!(
+            hook_calls.borrow().as_slice(),
+            &[("test › tabs#tabs1".to_string(), "focussed".to_string())],
+            "the hook fires exactly once across three identical decodes"
+        );
+    }
+
+    /// The same unknown optional key [`unknown_optional_key_warns_once_per_key_per_session`]
+    /// warns on is a hard [`DecodeError::UnknownKey`] under `strict`.
+    #[test]
+    fn strict_mode_rejects_an_unknown_optional_key() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::strict();
+        let value = json!({
+            "tabs": {
+                "id": "tabs1",
+                "tabs": [],
+                "focussed": 0,
+            },
+        });
+        let error = err(decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        ));
+        assert_eq!(error.code(), "unknown_key");
+        assert!(
+            error.to_string().contains("\"focussed\""),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// `run_shell`'s own config dict gets the same warn/strict policy as a
+    /// layout-tree node dict.
+    #[test]
+    fn decode_shell_config_warns_then_rejects_an_unknown_key() {
+        let value = json!({"title": "App", "bottom_panel_heigth": 5.0});
+
+        let warn = DecodeDiagnostics::warn();
+        decode_shell_config(&value, &warn).expect("warn mode still decodes");
+        assert_eq!(
+            warn.warned_keys(),
+            HashSet::from(["bottom_panel_heigth".to_string()])
+        );
+
+        let strict = DecodeDiagnostics::strict();
+        let error = err(decode_shell_config(&value, &strict));
+        assert_eq!(error.code(), "unknown_key");
     }
 }

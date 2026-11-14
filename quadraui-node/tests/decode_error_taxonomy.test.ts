@@ -160,3 +160,45 @@ test("a deeply nested decode error names every ancestor on the way down", () => 
     return true;
   });
 });
+
+test("an unknown optional key is silently ignored with no hook registered", () => {
+  // The default policy, with no `setOnUnknownKey` call and `setStrict`
+  // never called: a misspelt optional key never stops the render,
+  // matching every app's behaviour before this policy existed.
+  const app = new QuiApp(20, 5);
+  app.setRender(() => ({ row: [button("a", "A")], focussed: "a" }));
+  app.screen();
+});
+
+test("an unknown optional key warns through the registered hook once per key", () => {
+  // A misspelt optional key ("focussed" for "focused_index") surfaces
+  // through the callback `setOnUnknownKey` registers, at most once per
+  // distinct key for this app's whole lifetime, and never stops the
+  // render.
+  const app = new QuiApp(20, 5);
+  const calls: Array<{ key: string; path: string }> = [];
+  app.setOnUnknownKey((payload: { key: string; path: string }) => {
+    calls.push(payload);
+  });
+  app.setRender(() => ({
+    tabs: { id: "frm", tabs: [], focussed: 0 },
+  }));
+  app.screen();
+  app.screen();
+  app.screen();
+  assert.deepEqual(calls, [{ key: "focussed", path: "render › tabs#frm" }]);
+});
+
+test("setStrict(true) rejects the same unknown optional key", () => {
+  const app = new QuiApp(20, 5);
+  app.setStrict(true);
+  app.setRender(() => ({
+    tabs: { id: "frm", tabs: [], focussed: 0 },
+  }));
+  assert.throws(() => app.screen(), (err: unknown) => {
+    assert.ok(err instanceof UnknownKeyError);
+    assert.equal((err as { code: string }).code, "unknown_key");
+    assert.match((err as Error).message, /focussed/);
+    return true;
+  });
+});

@@ -839,7 +839,13 @@ impl AppLogic for NodeAppLogic {
         // every node in the tree resolves against the same palette.
         let theme = backend.theme();
         let styles = StyleContext::new(&self.host.style_sets, &theme);
-        match render_output_from_callback(env, callback, &self.pending_error, styles) {
+        match render_output_from_callback(
+            env,
+            callback,
+            &self.pending_error,
+            styles,
+            &self.host.wire_diagnostics,
+        ) {
             Some(RenderOutput::Flat(frame)) => {
                 let resolved =
                     resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
@@ -1018,6 +1024,7 @@ fn render_output_from_callback(
     callback: &NodeCallback,
     pending_error: &Rc<RefCell<Option<Error>>>,
     styles: StyleContext<'_>,
+    diagnostics: &quadraui_binding_core::DecodeDiagnostics,
 ) -> Option<RenderOutput> {
     let result = invoke_callback(env, callback, pending_error)?;
     let value = match to_descriptor_value(result) {
@@ -1045,7 +1052,7 @@ fn render_output_from_callback(
         );
         return None;
     }
-    match decode_render_output_with_styles("render", &value, styles) {
+    match decode_render_output_with_styles("render", &value, styles, diagnostics) {
         Ok(output) => Some(output),
         Err(err) => {
             record_error(pending_error, decode_error_to_js(err));
@@ -2721,6 +2728,72 @@ impl QuiApp {
         Ok(())
     }
 
+    /// Sets this app's unknown-optional-wire-key policy: `true` turns an
+    /// unrecognised *optional* key on a render callback's returned
+    /// descriptor (a misspelt `"cursr"`, `"focussed"`, ...) into an
+    /// `InvalidDescriptorError` raised out of the render that found it, the
+    /// same way a missing required field already does. `false` (the
+    /// default) instead reports it through [`Self::set_on_unknown_key`]'s
+    /// registered callback, if any, and otherwise decodes unaffected.
+    #[napi(js_name = "setStrict")]
+    pub fn set_strict(&mut self, strict: bool) -> Result<()> {
+        self.check_not_dispatching()?;
+        self.check_not_live()?;
+        self.driver
+            .app_mut()
+            .host
+            .wire_diagnostics
+            .set_strict(strict);
+        Ok(())
+    }
+
+    /// Registers `callback` as this app's unknown-optional-wire-key
+    /// reporting hook: called as `callback({key, path})` at most once per
+    /// distinct `key` for this app's whole lifetime, whenever a render
+    /// callback's returned descriptor carries one and [`Self::set_strict`]
+    /// hasn't turned that into a raised error instead. Replaces any
+    /// callback a previous call registered. Raises if called re-entrantly,
+    /// or `LiveRunnerActiveError` once `startTui` is active -- see
+    /// [`Self::set_handler`]'s doc.
+    #[napi(js_name = "setOnUnknownKey")]
+    pub fn set_on_unknown_key(
+        &mut self,
+        callback: Function<'_, Unknown<'static>, Unknown<'static>>,
+    ) -> Result<()> {
+        self.check_not_dispatching()?;
+        self.check_not_live()?;
+        let callback = callback.create_ref()?;
+        let app = self.driver.app_mut();
+        let env = app.env.clone();
+        let pending_error = app.pending_error.clone();
+        app.host
+            .wire_diagnostics
+            .set_hook(move |path: &str, key: &str| {
+                let Some(env) = env.get() else {
+                    return;
+                };
+                let payload: Unknown<'static> =
+                    match env.to_js_value(&serde_json::json!({"key": key, "path": path})) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            record_error(&pending_error, err);
+                            return;
+                        }
+                    };
+                let func = match callback.borrow_back(&env) {
+                    Ok(func) => func,
+                    Err(err) => {
+                        record_error(&pending_error, err);
+                        return;
+                    }
+                };
+                if let Err(err) = func.call(payload) {
+                    record_error(&pending_error, err);
+                }
+            });
+        Ok(())
+    }
+
     /// Returns a [`QuiAppActions`] handle sharing this app's deferred-action
     /// queue -- the sanctioned way for a registered handler/tick callback to
     /// request a dialog/context-menu/toast/notification/file action without
@@ -3985,7 +4058,13 @@ fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> Result<()> {
 /// materialized value with no further wrapper. The napi-rs analog of
 /// `quadraui-py`'s own `shell_config_from_dict`.
 fn shell_config_from_descriptor(descriptor: Unknown) -> Result<ShellConfig> {
-    decode_via_core("runShell", descriptor, |value| decode_shell_config(value))
+    // `runShell` decodes `descriptor` exactly once, at construction -- a
+    // fresh, warn-mode `DecodeDiagnostics` is this one-shot call's whole
+    // "session", so there is no longer-lived instance for it to share.
+    let diagnostics = quadraui_binding_core::DecodeDiagnostics::warn();
+    decode_via_core("runShell", descriptor, |value| {
+        decode_shell_config(value, &diagnostics)
+    })
 }
 
 /// Headless [`ShellApp`]-backed app: an AppShell (activity bar + sidebar +
