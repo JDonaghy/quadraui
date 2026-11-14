@@ -264,10 +264,13 @@ create_exception!(
     QuadrauiError,
     "A descriptor dict passed to `push_event` or an `insert_*` method did \
     not decode into the shape it was expected to have (mirrors \
-    `QUI_ERR_INVALID_JSON`). [`decode_error_to_py`] raises this directly \
-    for a `quadraui_binding_core::DecodeError::Borrow` -- every other \
-    variant raises one of the subclasses below instead, chosen by \
-    matching the enum, never by parsing this exception's own message."
+    `QUI_ERR_INVALID_JSON`). [`decode_error_to_py`] raises one of the \
+    subclasses below for every `quadraui_binding_core::DecodeError` \
+    variant, chosen by matching the enum, never by parsing this \
+    exception's own message; this base class itself is only ever raised \
+    directly by the dozens of other `InvalidDescriptorError::new_err(...)` \
+    call sites in this module that have no `DecodeError` behind them at \
+    all."
 );
 
 create_exception!(
@@ -313,6 +316,19 @@ create_exception!(
     "A render callback's `\"wire_version\"` is newer than this host \
     understands (mirrors `quadraui_binding_core::DecodeError::VersionMismatch`). \
     Its `code` class attribute is `\"version_mismatch\"`."
+);
+
+create_exception!(
+    _quadraui,
+    DecodeFailedError,
+    InvalidDescriptorError,
+    "A descriptor decode failed in a way none of the more specific \
+    subclasses above names -- a lower-level `serde`/`serde_json` \
+    deserialize error handed back verbatim, or a bespoke cross-field \
+    validation this crate performs itself (a duplicate leaf id, an \
+    out-of-range \"ratio\") -- mirrors \
+    `quadraui_binding_core::DecodeError::Borrow`. Its `code` class \
+    attribute is `\"borrow\"`."
 );
 
 create_exception!(
@@ -876,7 +892,7 @@ fn decode_error_to_py(err: DecodeError) -> PyErr {
         DecodeError::TypeMismatch { .. } => TypeMismatchError::new_err(message),
         DecodeError::UnknownKey { .. } => UnknownKeyError::new_err(message),
         DecodeError::VersionMismatch { .. } => VersionMismatchError::new_err(message),
-        DecodeError::Borrow { .. } => InvalidDescriptorError::new_err(message),
+        DecodeError::Borrow { .. } => DecodeFailedError::new_err(message),
         // `DecodeError` is `#[non_exhaustive]`: a future core variant this
         // leaf doesn't know about yet still raises the common base class
         // rather than failing to compile.
@@ -6297,6 +6313,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         (py.get_type::<TypeMismatchError>(), "type_mismatch"),
         (py.get_type::<UnknownKeyError>(), "unknown_key"),
         (py.get_type::<VersionMismatchError>(), "version_mismatch"),
+        (py.get_type::<DecodeFailedError>(), "borrow"),
     ] {
         ty.setattr("code", code)?;
     }
@@ -6308,6 +6325,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "VersionMismatchError",
         py.get_type::<VersionMismatchError>(),
     )?;
+    m.add("DecodeFailedError", py.get_type::<DecodeFailedError>())?;
     m.add("SlotOccupiedError", py.get_type::<SlotOccupiedError>())?;
     m.add("UnknownSlotError", py.get_type::<UnknownSlotError>())?;
     m.add(

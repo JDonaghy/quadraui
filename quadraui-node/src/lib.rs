@@ -1417,13 +1417,12 @@ fn invalid_descriptor_error(detail: impl std::fmt::Display) -> Error {
 /// specific subclass name `js/index.ts`'s `ERROR_CLASSES_BY_TAG` maps
 /// back to that variant's own JS class (`MissingFieldError`,
 /// `UnknownVariantError`, `TypeMismatchError`, `UnknownKeyError`,
-/// `VersionMismatchError`), chosen by matching the enum directly rather
-/// than parsing [`DecodeError`]'s own rendered message -- a
-/// [`DecodeError::Borrow`] (or any future variant this match doesn't name)
-/// falls back to the shared `InvalidDescriptorError` tag, same as before
-/// this match existed. The message itself is `err.to_string()` unchanged
-/// (`"<what>: at <path>: <problem>"`), so an author sees exactly which
-/// widget in the tree a nested decode failed on.
+/// `VersionMismatchError`, `DecodeFailedError`), chosen by matching the
+/// enum directly rather than parsing [`DecodeError`]'s own rendered
+/// message. Any future core variant this match doesn't name falls back to
+/// the shared `InvalidDescriptorError` tag. The message itself is
+/// `err.to_string()` unchanged (`"<what>: at <path>: <problem>"`), so an
+/// author sees exactly which widget in the tree a nested decode failed on.
 fn decode_error_to_js(err: DecodeError) -> Error {
     let message = err.to_string();
     let tag = match err {
@@ -1432,7 +1431,7 @@ fn decode_error_to_js(err: DecodeError) -> Error {
         DecodeError::TypeMismatch { .. } => "TypeMismatchError",
         DecodeError::UnknownKey { .. } => "UnknownKeyError",
         DecodeError::VersionMismatch { .. } => "VersionMismatchError",
-        DecodeError::Borrow { .. } => "InvalidDescriptorError",
+        DecodeError::Borrow { .. } => "DecodeFailedError",
         // `DecodeError` is `#[non_exhaustive]`: a future core variant this
         // leaf doesn't know about yet still raises the common base tag
         // rather than failing to compile.

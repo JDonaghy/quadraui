@@ -1,12 +1,12 @@
 """Black-box coverage for `quadraui_binding_core::DecodeError`'s per-variant
 exception taxonomy: `MissingFieldError`, `UnknownVariantError`,
-`TypeMismatchError`, `UnknownKeyError`, `VersionMismatchError` each subclass
-`InvalidDescriptorError` (so existing `except InvalidDescriptorError`/
-`pytest.raises(InvalidDescriptorError, match=...)` callers keep matching
-unchanged), carry a `code` class attribute mirroring
-`quadraui_binding_core::DecodeError::code`, and raise with a message naming
-the full path into the layout tree at which the problem was found -- not
-just a bare field name.
+`TypeMismatchError`, `UnknownKeyError`, `VersionMismatchError`, and
+`DecodeFailedError` each subclass `InvalidDescriptorError` (so existing
+`except InvalidDescriptorError`/`pytest.raises(InvalidDescriptorError,
+match=...)` callers keep matching unchanged), carry a `code` class
+attribute mirroring `quadraui_binding_core::DecodeError::code`, and raise
+with a message naming the full path into the layout tree at which the
+problem was found -- not just a bare field name.
 
 Run against a built wheel/extension, e.g.:
 
@@ -17,6 +17,7 @@ Run against a built wheel/extension, e.g.:
 import pytest
 
 from quadraui import (
+    DecodeFailedError,
     InvalidDescriptorError,
     MissingFieldError,
     QuiApp,
@@ -108,6 +109,25 @@ def test_version_mismatch_names_both_versions():
         app.screen()
     assert excinfo.value.code == "version_mismatch"
     assert "999" in str(excinfo.value)
+
+
+def test_a_duplicate_leaf_id_raises_decode_failed_error_naming_both_leaves():
+    # The catch-all `DecodeError::Borrow` variant -- a bespoke cross-field
+    # validation (`validate_unique_leaf_ids`) rather than a missing/wrongly
+    # typed/unknown field -- raises `DecodeFailedError`, with `code ==
+    # "borrow"`, instead of the bare `InvalidDescriptorError` every other
+    # non-`DecodeError` raise in this binding also uses.
+    app = QuiApp(20, 5)
+
+    def render():
+        return {"row": [_button("a", "A"), _button("a", "A")]}
+
+    app.set_render(render)
+    with pytest.raises(DecodeFailedError, match="leaf#a") as excinfo:
+        app.screen()
+    assert excinfo.value.code == "borrow"
+    assert isinstance(excinfo.value, InvalidDescriptorError)
+    assert 'duplicate leaf id "a"' in str(excinfo.value)
 
 
 def test_a_nested_decode_error_names_every_ancestor_on_the_way_down():

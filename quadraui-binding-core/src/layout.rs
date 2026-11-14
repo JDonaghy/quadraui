@@ -1087,8 +1087,9 @@ pub const LEAF_KIND_KEYS: [&str; 6] = [
 
 /// Builds the [`DecodeError::Borrow`] [`validate_unique_leaf_ids`]'s walk
 /// raises on the first repeated id, naming both the offending `kind` (the
-/// node that already held `id`'s namespace, not necessarily the same kind
-/// as the one that just collided with it) and `id` itself.
+/// node currently being visited -- the second, colliding occurrence of
+/// `id`, not whichever earlier node first claimed its namespace) and `id`
+/// itself.
 fn duplicate_leaf_id_error(what: &str, kind: &str, id: &str) -> DecodeError {
     DecodeError::borrow(
         format!("{what} › {kind}#{id}"),
@@ -1103,12 +1104,19 @@ fn duplicate_leaf_id_error(what: &str, kind: &str, id: &str) -> DecodeError {
 /// shadowing a leaf's. `what` labels the error message the same way every
 /// other decoder in this crate does — [`crate::wire::decode_render_output`]
 /// passes its own caller-supplied label through unchanged.
+///
+/// `what` accumulates every ancestor's `kind#id` segment on the way down
+/// (the same ` › `-joined shape every other decoder in this crate builds),
+/// so a collision five levels into a tree names the whole subtree it was
+/// found in, not just the colliding leaf's bare `kind#id` hung directly off
+/// the tree's root label.
 pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), DecodeError> {
     fn walk(what: &str, node: &LayoutNode, seen: &mut HashSet<String>) -> Result<(), DecodeError> {
         match node {
             LayoutNode::Row(container) | LayoutNode::Column(container) => {
-                for child in &container.children {
-                    walk(what, &child.node, seen)?;
+                for (index, child) in container.children.iter().enumerate() {
+                    let context = format!("{what} › children[{index}]");
+                    walk(&context, &child.node, seen)?;
                 }
                 Ok(())
             }
@@ -1123,19 +1131,22 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
                 if !seen.insert(id.clone()) {
                     return Err(duplicate_leaf_id_error(what, "split", &id));
                 }
-                walk(what, &split.first, seen)?;
-                walk(what, &split.second, seen)
+                let context = format!("{what} › split#{id}");
+                walk(&context, &split.first, seen)?;
+                walk(&context, &split.second, seen)
             }
             LayoutNode::Tabs(tabs) => {
                 let id = tabs.tab_bar.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
                     return Err(duplicate_leaf_id_error(what, "tabs", &id));
                 }
+                let context = format!("{what} › tabs#{id}");
                 for entry in &tabs.entries {
                     if !seen.insert(entry.id.clone()) {
-                        return Err(duplicate_leaf_id_error(what, "tab", &entry.id));
+                        return Err(duplicate_leaf_id_error(&context, "tab", &entry.id));
                     }
-                    walk(what, &entry.content, seen)?;
+                    let entry_context = format!("{context} › tab#{}", entry.id);
+                    walk(&entry_context, &entry.content, seen)?;
                 }
                 Ok(())
             }
@@ -1145,21 +1156,24 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
                 if !seen.insert(id.clone()) {
                     return Err(duplicate_leaf_id_error(what, "panel", &id));
                 }
-                walk(what, &panel_node.content, seen)
+                let context = format!("{what} › panel#{id}");
+                walk(&context, &panel_node.content, seen)
             }
             LayoutNode::SidebarPanel(sidebar_node) => {
                 let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
                     return Err(duplicate_leaf_id_error(what, "sidebar_panel", &id));
                 }
-                walk(what, &sidebar_node.content, seen)
+                let context = format!("{what} › sidebar_panel#{id}");
+                walk(&context, &sidebar_node.content, seen)
             }
             LayoutNode::SplitTree(split_tree) => {
                 if !seen.insert(split_tree.id.clone()) {
                     return Err(duplicate_leaf_id_error(what, "split_tree", &split_tree.id));
                 }
+                let context = format!("{what} › split_tree#{}", split_tree.id);
                 for leaf in &split_tree.leaves {
-                    walk(what, leaf, seen)?;
+                    walk(&context, leaf, seen)?;
                 }
                 Ok(())
             }
@@ -1167,7 +1181,8 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
                 if !seen.insert(scroll_node.id.clone()) {
                     return Err(duplicate_leaf_id_error(what, "scroll", &scroll_node.id));
                 }
-                walk(what, &scroll_node.content, seen)
+                let context = format!("{what} › scroll#{}", scroll_node.id);
+                walk(&context, &scroll_node.content, seen)
             }
             // A `"style"` wrapper carries no id of its own -- it's purely
             // a paint-time overlay around whatever node it wraps, so this
@@ -1506,9 +1521,9 @@ mod tests {
     }
 
     /// A repeated leaf id is a [`DecodeError::Borrow`] naming the offending
-    /// node's own path, not just the bare id string -- `"test › leaf#a"`,
-    /// not just `"a"`, so a binding can tell which of two leaves sharing an
-    /// id is the second (colliding) one.
+    /// node's own path, not just the bare id string -- `"test ›
+    /// children[1] › leaf#a"`, not just `"a"`, so a binding can tell which
+    /// of two leaves sharing an id is the second (colliding) one.
     #[test]
     fn validate_unique_leaf_ids_names_the_colliding_nodes_path() {
         let leaf = |id: &str| {
@@ -1526,10 +1541,56 @@ mod tests {
         });
         let error = validate_unique_leaf_ids("test", &node).unwrap_err();
         assert_eq!(error.code(), "borrow");
-        assert_eq!(error.path(), "test › leaf#a");
+        assert_eq!(error.path(), "test › children[1] › leaf#a");
         assert!(
             error.to_string().contains("duplicate leaf id \"a\""),
             "{error}"
+        );
+    }
+
+    /// The same collision, but found several levels deep inside a
+    /// `split`/`panel` nesting -- every ancestor's own `kind#id`
+    /// accumulates into the error's path, so it names the whole subtree
+    /// the collision was found in, not just the colliding leaf hung
+    /// directly off the tree's root label.
+    #[test]
+    fn validate_unique_leaf_ids_accumulates_every_ancestors_path() {
+        let leaf = |id: &str| {
+            LayoutNode::Leaf(LayoutLeaf {
+                id: id.to_string(),
+                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new(id), id)),
+                scroll_px: None,
+            })
+        };
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
+        let panel = LayoutNode::Panel(LayoutPanel {
+            panel: quadraui::Panel {
+                id: quadraui::WidgetId::new("chrome"),
+                title: None,
+                actions: Vec::new(),
+                accent: None,
+                collapsed: false,
+            },
+            content: Box::new(leaf("dup")),
+            spacing: Spacing::default(),
+        });
+        let split = LayoutNode::Split(LayoutSplit {
+            split: quadraui::Split {
+                id: quadraui::WidgetId::new("body"),
+                direction: quadraui::SplitDirection::Horizontal,
+                ratio: 0.5,
+                first_min: 0.0,
+                second_min: 0.0,
+            },
+            first: Box::new(leaf("dup")),
+            second: Box::new(panel),
+            spacing: Spacing::default(),
+        });
+        let error = validate_unique_leaf_ids("render", &split).unwrap_err();
+        assert_eq!(error.code(), "borrow");
+        assert_eq!(
+            error.path(),
+            "render › split#body › panel#chrome › leaf#dup"
         );
     }
 }

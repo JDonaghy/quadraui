@@ -635,7 +635,7 @@ const JUSTIFY_VALUES: [&str; 4] = ["start", "center", "end", "space_between"];
 /// resolved. Missing defaults to [`Justify::default`] (`Start`), matching
 /// every container's pre-`justify` behaviour.
 fn justify_from_value(what: &str, value: &Value, label: &str) -> Result<Justify, DecodeError> {
-    let context = format!("{what}: {label}");
+    let context = format!("{what} › {label}");
     match obj_get(value, "justify") {
         None => Ok(Justify::default()),
         Some(v) => {
@@ -667,7 +667,7 @@ const ALIGN_VALUES: [&str; 4] = ["start", "center", "end", "stretch"];
 /// pre-`align` behaviour (every child filled the container's full
 /// cross-axis extent).
 fn align_from_value(what: &str, value: &Value, label: &str) -> Result<Align, DecodeError> {
-    let context = format!("{what}: {label}");
+    let context = format!("{what} › {label}");
     match obj_get(value, "align") {
         None => Ok(Align::default()),
         Some(v) => {
@@ -705,7 +705,7 @@ fn spacing_from_value(
     label: &str,
     allow_gap: bool,
 ) -> Result<Spacing, DecodeError> {
-    let context = format!("{what}: {label}");
+    let context = format!("{what} › {label}");
     if !allow_gap {
         if let Some(_gap) = obj_get(value, "gap") {
             return Err(DecodeError::borrow(
@@ -825,7 +825,7 @@ fn style_classes_from_value(what: &str, value: &Value) -> Result<Vec<String>, De
     let Some(raw) = obj_get(value, "class") else {
         return Ok(Vec::new());
     };
-    let context = format!("{what}: \"class\"");
+    let context = format!("{what} › \"class\"");
     match raw {
         Value::String(names) => Ok(names.split_whitespace().map(str::to_owned).collect()),
         Value::Array(entries) => entries
@@ -877,7 +877,7 @@ fn style_override_from_value(
         return Ok(None);
     };
     let dict = must_be_dict(what, raw, "style")?;
-    let context = format!("{what}: \"style\"");
+    let context = format!("{what} › \"style\"");
     let over = style_override_fields(&context, dict)?;
     Ok(if over.is_empty() { None } else { Some(over) })
 }
@@ -1603,7 +1603,11 @@ fn check_wire_version(what: &str, value: &Value) -> Result<(), DecodeError> {
         return Ok(());
     };
     let version = v.as_u64().ok_or_else(|| {
-        DecodeError::type_mismatch(what, "wire_version", "a non-negative integer")
+        DecodeError::type_mismatch(
+            what,
+            "wire_version",
+            format!("a non-negative integer, got {v}"),
+        )
     })?;
     let current = u64::from(crate::wire_schema::WIRE_VERSION);
     if version > current {
@@ -3633,7 +3637,7 @@ mod tests {
 
         let unknown_key = err(decode(&json!({"row": [], "padding": {"lef": 4}})));
         assert_eq!(unknown_key.code(), "unknown_key");
-        assert_eq!(unknown_key.path(), "test: \"row\"");
+        assert_eq!(unknown_key.path(), "test › \"row\"");
 
         let version_mismatch = err(decode_render_output(
             "render",

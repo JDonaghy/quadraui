@@ -1,9 +1,9 @@
 // Black-box coverage for `quadraui_binding_core::DecodeError`'s
 // per-variant exception taxonomy: `MissingFieldError`, `UnknownVariantError`,
-// `TypeMismatchError`, `UnknownKeyError`, `VersionMismatchError` each
-// extend `InvalidDescriptorError` (so an existing `instanceof
-// InvalidDescriptorError`/`/InvalidDescriptorError/` check keeps matching
-// unchanged), carry a `code` property mirroring
+// `TypeMismatchError`, `UnknownKeyError`, `VersionMismatchError`, and
+// `DecodeFailedError` each extend `InvalidDescriptorError` (so an existing
+// `instanceof InvalidDescriptorError`/`/InvalidDescriptorError/` check
+// keeps matching unchanged), carry a `code` property mirroring
 // `quadraui_binding_core::DecodeError::code`, and raise with a message
 // naming the full path into the layout tree at which the problem was
 // found -- not just a bare field name.
@@ -17,6 +17,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  DecodeFailedError,
   InvalidDescriptorError,
   MissingFieldError,
   QuiApp,
@@ -101,6 +102,24 @@ test("a wire_version newer than this host understands raises VersionMismatchErro
     assert.ok(err instanceof VersionMismatchError);
     assert.equal((err as { code: string }).code, "version_mismatch");
     assert.match((err as Error).message, /999/);
+    return true;
+  });
+});
+
+test("a duplicate leaf id raises DecodeFailedError naming both leaves", () => {
+  // The catch-all `DecodeError::Borrow` variant -- a bespoke cross-field
+  // validation (`validate_unique_leaf_ids`) rather than a missing/wrongly
+  // typed/unknown field -- raises `DecodeFailedError`, with `code ==
+  // "borrow"`, instead of the bare `InvalidDescriptorError` every other
+  // non-`DecodeError` raise in this binding also uses.
+  const app = new QuiApp(20, 5);
+  app.setRender(() => ({ row: [button("a", "A"), button("a", "A")] }));
+  assert.throws(() => app.screen(), (err: unknown) => {
+    assert.ok(err instanceof DecodeFailedError);
+    assert.ok(err instanceof InvalidDescriptorError);
+    assert.equal((err as { code: string }).code, "borrow");
+    assert.match((err as Error).message, /leaf#a/);
+    assert.match((err as Error).message, /duplicate leaf id "a"/);
     return true;
   });
 });

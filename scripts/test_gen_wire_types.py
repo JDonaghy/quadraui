@@ -323,6 +323,20 @@ create_exception!(
             [("QuadrauiError", "Exception"), ("InvalidDescriptorError", "QuadrauiError")],
         )
 
+    def test_parse_exception_codes_reads_the_get_type_code_table(self) -> None:
+        src = """
+    for (ty, code) in [
+        (py.get_type::<MissingFieldError>(), "missing_field"),
+        (py.get_type::<UnknownVariantError>(), "unknown_variant"),
+    ] {
+        ty.setattr("code", code)?;
+    }
+"""
+        self.assertEqual(
+            gwt.parse_exception_codes(src),
+            {"MissingFieldError": "missing_field", "UnknownVariantError": "unknown_variant"},
+        )
+
     def test_pymethods_attribute_between_pymethods_and_impl_is_skipped(self) -> None:
         src = """
 #[pymethods]
@@ -426,6 +440,44 @@ fn app_path(kind: &str) -> PyResult<String> {
         self.assertIn("class QuiAppWaker:", text)
         self.assertIn("def post(self, value: Any) -> None: ...", text)
         self.assertIn("def app_path(kind: str) -> str: ...", text)
+
+    def test_exception_with_a_code_table_entry_gets_a_code_str_attribute(self) -> None:
+        src = """
+create_exception!(
+    _quadraui,
+    QuadrauiError,
+    PyException,
+    "Base class for every exception this binding raises itself."
+);
+
+create_exception!(
+    _quadraui,
+    InvalidDescriptorError,
+    QuadrauiError,
+    "doc"
+);
+
+create_exception!(
+    _quadraui,
+    MissingFieldError,
+    InvalidDescriptorError,
+    "doc"
+);
+
+#[pymodule]
+fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    for (ty, code) in [
+        (py.get_type::<MissingFieldError>(), "missing_field"),
+    ] {
+        ty.setattr("code", code)?;
+    }
+    Ok(())
+}
+"""
+        text = gwt.render_pyi_stub(src, check_floor=False)
+        self.assertIn("class QuadrauiError(Exception): ...", text)
+        self.assertIn("class InvalidDescriptorError(QuadrauiError): ...", text)
+        self.assertIn("class MissingFieldError(InvalidDescriptorError):\n    code: str", text)
 
     def test_callable_named_params_render_as_callable_not_any(self) -> None:
         src = """

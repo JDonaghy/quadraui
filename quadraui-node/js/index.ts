@@ -75,11 +75,9 @@ exports.QuadrauiError = QuadrauiError;
 
 /**
  * A descriptor/event shape this binding's decode adapter rejected --
- * mirrors `quadraui-py`'s `InvalidDescriptorError`. A `quadraui_binding_core::
- * DecodeError::Borrow` (a bespoke cross-field validation this crate's own
- * decoders perform, or a lower-level `serde` error neither of them
- * diagnosed further) raises this directly; every other `DecodeError`
- * variant raises one of the five subclasses below instead, chosen on the
+ * mirrors `quadraui-py`'s `InvalidDescriptorError`. Every
+ * `quadraui_binding_core::DecodeError` variant raises one of the six
+ * subclasses below instead of this base class directly, chosen on the
  * Rust side by matching the enum, never by parsing this exception's own
  * message.
  */
@@ -115,6 +113,12 @@ class VersionMismatchError extends InvalidDescriptorError {
   readonly code = "version_mismatch";
 }
 exports.VersionMismatchError = VersionMismatchError;
+
+/** A decode failure none of the subclasses above names -- a bespoke cross-field validation this crate's own decoders perform (a duplicate leaf id, an out-of-range ratio), or a lower-level `serde` error neither of them diagnosed further -- mirrors `quadraui_binding_core::DecodeError::Borrow` (and `quadraui-py`'s `DecodeFailedError`). `code` is `"borrow"`. */
+class DecodeFailedError extends InvalidDescriptorError {
+  readonly code = "borrow";
+}
+exports.DecodeFailedError = DecodeFailedError;
 
 /** A fixed slot or additive-primitive kind that already holds a descriptor -- mirrors `quadraui-py`'s `SlotOccupiedError`. */
 class SlotOccupiedError extends QuadrauiError {}
@@ -198,6 +202,7 @@ const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiErro
   TypeMismatchError,
   UnknownKeyError,
   VersionMismatchError,
+  DecodeFailedError,
   SlotOccupiedError,
   UnknownSlotError,
   InvalidDimensionsError,
