@@ -67,6 +67,10 @@ export declare class UnknownKeyError extends InvalidDescriptorError {
 export declare class VersionMismatchError extends InvalidDescriptorError {
   readonly code: "version_mismatch";
 }
+
+export declare class DecodeFailedError extends InvalidDescriptorError {
+  readonly code: "borrow";
+}
 /** A fixed slot or additive-primitive kind that already holds a descriptor. */
 export declare class SlotOccupiedError extends QuadrauiError {}
 /** A slot id that is not one of the documented `SLOT_*` constants. */
