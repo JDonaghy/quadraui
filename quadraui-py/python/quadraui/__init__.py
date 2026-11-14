@@ -24,7 +24,11 @@ Python callback raised, which passes through unchanged) is a
 ``UnknownSlotError``, ``InvalidDimensionsError``, ``InvalidCharError``,
 ``PanicError``, ``PoisonedError``, ``InternalError``,
 ``NativeAlreadyRunError``, ``NoDisplayError``, ``NotOnMainThreadError``,
-``InvalidAppIdError``, ``InvalidFontRoleError``, and ``UnsupportedError``.
+``InvalidAppIdError``, ``InvalidFontRoleError``, ``UnsupportedError``, and
+``ReentrantCallError`` (a restricted ``QuiApp`` method -- one with a
+matching ``QuiAppActions`` method, e.g. ``show_message_dialog`` --  called
+from inside that same app's own registered handler/tick/render callback;
+use the ``actions()`` handle passed to the handler instead).
 A descriptor-decode failure (``quadraui_binding_core::DecodeError``) raises
 one of ``InvalidDescriptorError``'s own subclasses -- ``MissingFieldError``,
 ``UnknownVariantError``, ``TypeMismatchError``, ``UnknownKeyError``,
@@ -152,6 +156,7 @@ from ._quadraui import (
     QuiApp,
     QuiAppWaker,
     QuiShellApp,
+    ReentrantCallError,
     SlotOccupiedError,
     TypeMismatchError,
     UnknownKeyError,
@@ -190,6 +195,7 @@ __all__ = [
     "InvalidAppIdError",
     "InvalidFontRoleError",
     "UnsupportedError",
+    "ReentrantCallError",
     "app_path",
     "set_app_identifier",
     "install_crash_handler",

@@ -2285,6 +2285,7 @@ pub trait ErasedShellDriver {
     fn dispatch(&mut self, event: UiEvent) -> Reaction;
     fn pump_user_events(&mut self) -> Reaction;
     fn tick(&mut self) -> Reaction;
+    fn render(&mut self);
     fn resize(&mut self, width: u16, height: u16);
     fn exited(&self) -> bool;
     fn screen(&self) -> String;
@@ -2304,6 +2305,10 @@ impl<A: AppLogic> ErasedShellDriver for TuiDriver<A> {
 
     fn tick(&mut self) -> Reaction {
         self.tick()
+    }
+
+    fn render(&mut self) {
+        self.render()
     }
 
     fn resize(&mut self, width: u16, height: u16) {
@@ -2338,6 +2343,18 @@ impl<A: AppLogic> ErasedShellDriver for TuiDriver<A> {
 /// `step`/`step_once` surface needs identically; the one thing that differs
 /// between a headless app and a shell app — where a pending callback error
 /// is recorded, and in what shape it is re-raised — stays with the caller.
+///
+/// The idle ("nothing queued") branch always renders once at the end, even
+/// when neither `pump_user_events` nor `tick` asked for a
+/// [`Reaction::Redraw`] (each of those already repaints internally when
+/// they do, via `TuiDriver::pump_user_events`/`TuiDriver::tick`, so this
+/// skips a redundant second repaint in that case). Without this, a freshly
+/// registered render callback that decodes badly only surfaces its error
+/// the next time something explicitly forces a render — `screen`/
+/// `screen_contains`, or an event whose own dispatch happens to request a
+/// redraw — rather than on the very next idle `step`/`run` call, which is
+/// surprising for a caller stepping an app with nothing queued specifically
+/// to let it settle before inspecting it.
 pub fn step_driver(
     driver: &mut dyn ErasedShellDriver,
     pending_events: &mut VecDeque<UiEvent>,
@@ -2350,9 +2367,14 @@ pub fn step_driver(
             driver.dispatch(event);
         }
         None => {
-            driver.pump_user_events();
-            if !driver.exited() {
-                driver.tick();
+            let reaction = driver.pump_user_events();
+            let reaction = if driver.exited() {
+                reaction
+            } else {
+                reaction.merge(driver.tick())
+            };
+            if !driver.exited() && reaction != Reaction::Redraw {
+                driver.render();
             }
         }
     }
@@ -2377,6 +2399,25 @@ pub fn click_down_up_events(x: f32, y: f32) -> [UiEvent; 2] {
         mouse_down(MouseButton::Left, x, y, Modifiers::default()),
         mouse_up(MouseButton::Left, x, y),
     ]
+}
+
+/// Message for a `QuiApp` method restricted to top-level script code
+/// (one of the overlay/OS-call/window-control methods with a matching
+/// `QuiAppActions` method — `show_message_dialog`, `set_title`, ...) that
+/// a caller invoked re-entrantly, from inside that same app's own
+/// registered event/tick/render callback. Shared by every binding's own
+/// reentrancy guard (`quadraui-py`'s `ReentrantCallError`, `quadraui-node`'s
+/// own tagged equivalent) so the wording stays identical regardless of
+/// which binding raised it, and regardless of how each binding's own FFI
+/// layer actually detects the re-entrant call — PyO3's own runtime borrow
+/// check (via `Py::try_borrow_mut`) for `quadraui-py`, napi-rs's own
+/// native-borrow tracking for `quadraui-node` — since neither tags its own
+/// generic rejection with a method name or an actionable next step.
+pub fn reentrant_call_message(method: &str) -> String {
+    format!(
+        "app.{method} can't be called from inside a handler; use the \
+         actions() handle passed to / available in the handler"
+    )
 }
 
 /// Downcasts a caught panic payload to a human-readable message — shared by

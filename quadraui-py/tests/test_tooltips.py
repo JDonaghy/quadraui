@@ -20,7 +20,7 @@ all, so the handler itself shows/hides one from the hit-tested
 `MouseEntered`/`MouseLeft` it already gets, via `QuiApp.actions()`'s
 `show_tooltip`/`hide_tooltip` -- the only way to do either from inside a
 handler, since a direct `app.show_tooltip`/`app.hide_tooltip` call there
-hits the same "already borrowed" wall `test_deferred_actions.py` describes.
+raises `ReentrantCallError` the same way `test_deferred_actions.py` describes.
 
 `set_test_clock_ms` pins the headless clock `BindingHost::now_ms()` reads
 to an absolute value this file picks, so every assertion below is driven

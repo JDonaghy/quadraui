@@ -276,12 +276,11 @@ def test_set_caret_shape_rejects_an_unknown_shape():
 
 def test_app_can_react_to_a_system_theme_changed_event():
     # `UiEvent::SystemThemeChanged` already arrives through the generic
-    # `push_event`/handler path. A handler cannot call back into this same
-    # `QuiApp` while it's running (it's already borrowed for the duration
-    # of `step`/`run` -- the same restriction `render_callback`'s own doc
-    # notes for `insert_*`), so a real app reacts by recording the event
-    # and calling `set_theme` afterwards, once `step`/`run` has returned --
-    # exactly what this test does.
+    # `push_event`/handler path. A handler calling `set_theme` directly
+    # raises `ReentrantCallError` -- this app's one mutable borrow is
+    # already held for the duration of `step`/`run` -- so a real app
+    # reacts by recording the event and calling `set_theme` afterwards,
+    # once `step`/`run` has returned -- exactly what this test does.
     received = []
     app = QuiApp(20, 5, on_event=lambda event: received.append(event))
     _insert_empty_status_bar(app)

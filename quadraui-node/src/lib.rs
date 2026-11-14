@@ -1030,6 +1030,21 @@ fn render_output_from_callback(
             return None;
         }
     };
+    // `to_descriptor_value` happily turns a JS array into a `JsonValue::Array`
+    // -- valid JSON, just not a shape `decode_render_output_with_styles` ever
+    // means to accept. That function's own `obj_get`-based field lookups all
+    // return `None` for a non-object `Value` exactly the way they would for an
+    // object missing that key, so an array silently decodes as an empty flat
+    // frame instead of raising -- unlike `quadraui-py`, whose `render_output_from_callback`
+    // rejects a non-`dict` return before ever reaching the shared decoder.
+    // Mirror that rejection here, with the same message, before decoding.
+    if !value.is_object() {
+        record_error(
+            pending_error,
+            invalid_descriptor_error("render callback must return a dict"),
+        );
+        return None;
+    }
     match decode_render_output_with_styles("render", &value, styles) {
         Ok(output) => Some(output),
         Err(err) => {
