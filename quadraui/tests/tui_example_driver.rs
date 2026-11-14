@@ -4479,6 +4479,41 @@ fn data_table_f_key_toggles_footer_off() {
     );
 }
 
+/// `DataTable::bordered` (#2447): with the border on, the engine's focus
+/// ring must land on the frame, not the header/first-column/last-row
+/// content it used to paint over. `'b'` toggles it; this only checks the
+/// paint shape (top-left corner glyph, header inset one cell in) — the
+/// focus-ring-never-overwrites-content guarantee itself is covered by
+/// `tui::data_table::tests::focus_ring_over_bordered_table_never_overwrites_content`.
+#[test]
+fn data_table_b_key_toggles_the_border_and_insets_the_header() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 100, 20);
+    let before = driver.screen();
+    assert!(
+        before.starts_with("Name"),
+        "header starts flush at the top-left corner before 'b':\n{before}"
+    );
+
+    driver.type_char('b');
+    let after = driver.screen();
+    assert!(
+        after.starts_with('╭'),
+        "'b' should draw a rounded top-left border corner:\n{after}"
+    );
+    let header_row = after.lines().nth(1).expect("header row");
+    assert!(
+        header_row.starts_with('│') && header_row.contains("Name"),
+        "bordered header must inset the column title behind the left border, not paint flush at x=0:\n{after}"
+    );
+
+    driver.type_char('b');
+    let restored = driver.screen();
+    assert!(
+        restored.starts_with("Name"),
+        "'b' should toggle the border back off:\n{restored}"
+    );
+}
+
 /// `PageDown`/`PageUp` are the keyboard equivalent of
 /// clicking above/below the scrollbar thumb (a full-page jump) — before
 /// this fix the finest keyboard granularity was `j`/`k` (one row) with no

@@ -3727,6 +3727,7 @@ mod tests {
                 h_scroll: 0.0,
                 column_overrides: vec![],
                 footer: None,
+                bordered: false,
             };
             let node = LayoutNode::Scroll(LayoutScroll {
                 id: "scroll".to_string(),

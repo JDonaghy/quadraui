@@ -267,6 +267,7 @@ impl DataTableGlyphs {
 ///     h_scroll: 0.0,
 ///     column_overrides: vec![],
 ///     footer: None,
+///     bordered: false,
 /// };
 ///
 /// let layout = table.layout(80.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(20.0));
@@ -314,6 +315,27 @@ pub struct DataTable {
     /// byte-for-byte identical to a table with no footer.
     #[serde(default)]
     pub footer: Option<DataRow>,
+    /// Reserve a 1-cell/pixel margin on every edge of the table's
+    /// viewport for a decorative frame, mirroring
+    /// [`crate::primitives::list::ListView::bordered`] and
+    /// [`crate::types::TreeStyle::bordered`].
+    ///
+    /// [`DataTable::layout`] insets the header, body rows, footer and
+    /// scrollbars by this margin when set, so row 0's first column and
+    /// the header row never share a cell with whatever chrome a host
+    /// paints around the widget — most notably the generic focus-ring
+    /// convention (`crate::tui::draw_focus_ring` and its GTK/macOS/Win
+    /// counterparts), which overlays the widget's full tab-stop rect and
+    /// would otherwise overwrite the table's own header, first column
+    /// and last row. Set this when the table can receive that ring.
+    ///
+    /// **Currently only the TUI rasteriser (`crate::tui::draw_data_table`)
+    /// paints the reserved margin as a border** — same opt-in-per-backend
+    /// precedent as `TreeStyle::bordered`. GTK/macOS/Win rasterisers
+    /// don't yet draw a frame in the reserved space; setting this on
+    /// those backends only shrinks the content area.
+    #[serde(default)]
+    pub bordered: bool,
 }
 
 /// Events a `DataTable` emits back to the app.
@@ -442,6 +464,23 @@ pub struct DataTableLayout {
     /// — apply it via `tui::data_table_layout` (`#[doc(hidden)]`, so not
     /// linked here).
     pub h_scroll: f32,
+    /// Margin reserved on the left/right edges when [`DataTable::bordered`]
+    /// is set — `1.0` in surface-native units (1 cell on TUI), `0.0`
+    /// otherwise. [`Self::hit_test`] and [`Self::column_hit`] treat `x`
+    /// inside `[0, inset_x)` and `[viewport_width - inset_x,
+    /// viewport_width)` as the border frame itself — never a column —
+    /// and [`Self::content_x`] subtracts this before adding `h_scroll`
+    /// back, so a caller always passes the same raw, un-translated
+    /// pointer position regardless of `bordered`.
+    pub inset_x: f32,
+    /// Margin reserved on the top/bottom edges when [`DataTable::bordered`]
+    /// is set — `1.0` in surface-native units (1 cell on TUI), `0.0`
+    /// otherwise. Mirrors [`Self::inset_x`] for `y`: `header_height`,
+    /// `visible_rows` and `footer_height` are already resolved against
+    /// the margin-reduced interior, so [`Self::hit_test`] only needs to
+    /// shift an incoming `y` down by this amount before comparing
+    /// against them.
+    pub inset_y: f32,
 }
 
 /// Grab zone half-width for column divider detection (surface units).
@@ -462,9 +501,13 @@ impl DataTableLayout {
     /// a cell-granular backend that fed this an un-rounded `h_scroll`
     /// while painting at a rounded offset would misroute clicks whenever
     /// `h_scroll`'s fractional part crosses 0.5.
+    ///
+    /// Also undoes [`Self::inset_x`]'s left-margin shift first — `0.0`
+    /// when the table isn't [`DataTable::bordered`], so this is an
+    /// identity add-on to the pre-existing behaviour.
     #[inline]
     fn content_x(&self, x: f32) -> f32 {
-        x + self.h_scroll
+        (x - self.inset_x) + self.h_scroll
     }
 
     /// Is viewport-space `x` inside the vertical scrollbar's track, on a
@@ -486,14 +529,18 @@ impl DataTableLayout {
     fn in_v_scrollbar_strip(&self, x: f32) -> bool {
         self.h_scroll != 0.0
             && self.scrollbar_width > 0.0
-            && x >= (self.viewport_width - self.scrollbar_width).max(0.0)
+            && x >= (self.viewport_width - self.inset_x - self.scrollbar_width).max(0.0)
     }
 
     /// Resolve a click to a header / divider / row / footer.
     ///
     /// `x` and `y` are **viewport-relative**: `x` is measured from the
     /// table's left edge, *before* `h_scroll` is added back, so callers
-    /// pass the raw pointer position.
+    /// pass the raw pointer position. Unaffected by [`DataTable::bordered`]:
+    /// a caller always passes the same raw position regardless of
+    /// `inset_x`/`inset_y`, which this method accounts for internally —
+    /// a click landing in the reserved border margin resolves to
+    /// [`DataTableHit::Empty`], never a header/row/footer.
     pub fn hit_test(
         &self,
         x: f32,
@@ -501,9 +548,14 @@ impl DataTableLayout {
         scroll_offset: usize,
         total_rows: usize,
     ) -> DataTableHit {
-        if x < 0.0 || y < 0.0 || x >= self.viewport_width || y >= self.viewport_height {
+        if x < self.inset_x
+            || y < self.inset_y
+            || x >= self.viewport_width - self.inset_x
+            || y >= self.viewport_height - self.inset_y
+        {
             return DataTableHit::Empty;
         }
+        let y = y - self.inset_y;
         if y < self.header_height {
             // The vertical scrollbar owns its strip outright — never let
             // horizontally-scrolled column geometry leak underneath it.
@@ -557,8 +609,17 @@ impl DataTableLayout {
     /// This is the cell-resolution counterpart to [`Self::hit_test`]
     /// (which reports rows, not cells) and takes `x` in the same
     /// **viewport space**: `h_scroll` is added back before the lookup,
-    /// and the vertical scrollbar strip resolves to `None`.
+    /// and the vertical scrollbar strip resolves to `None`. An `x`
+    /// landing in [`Self::inset_x`]'s reserved border margin also
+    /// resolves to `None` — gated on `inset_x > 0.0` (i.e. only when
+    /// [`DataTable::bordered`] is set) so a non-bordered table keeps the
+    /// pre-existing, deliberately unclamped behaviour: an `x` past
+    /// `viewport_width` can still resolve to a column whose content
+    /// legitimately overflows the viewport (a `min_total_width` table).
     pub fn column_hit(&self, x: f32) -> Option<usize> {
+        if self.inset_x > 0.0 && (x < self.inset_x || x >= self.viewport_width - self.inset_x) {
+            return None;
+        }
         if self.in_v_scrollbar_strip(x) {
             return None;
         }
@@ -689,12 +750,27 @@ impl DataTable {
     where
         F: Fn(&Column) -> ColumnMeasure,
     {
+        // Border insets: 1 unit on every edge when `self.bordered` is
+        // set, reserving room for a decorative frame (e.g. a focus ring)
+        // so it never overwrites the header, a row, or the footer —
+        // mirrors `TreeView::layout_with_scroll_px`'s `style.bordered`
+        // handling. Everything below sizes against the inset-reduced
+        // interior; `inset_x`/`inset_y` on the returned layout carry the
+        // margin itself for `hit_test`/`column_hit` to translate back.
+        let (inset_x, inset_y) = if self.bordered {
+            (1.0, 1.0)
+        } else {
+            (0.0, 0.0)
+        };
+        let inner_width = (viewport_width - 2.0 * inset_x).max(0.0);
+        let inner_height = (viewport_height - 2.0 * inset_y).max(0.0);
+
         let sb_w = if self.show_scrollbar {
             scrollbar_width
         } else {
             0.0
         };
-        let visible_col_area = (viewport_width - sb_w).max(0.0);
+        let visible_col_area = (inner_width - sb_w).max(0.0);
         let layout_width = match self.min_total_width {
             Some(min) if min > visible_col_area => min,
             _ => visible_col_area,
@@ -722,7 +798,7 @@ impl DataTable {
         } else {
             0.0
         };
-        let body_height = (viewport_height - header_height - h_sb_h - footer_height).max(0.0);
+        let body_height = (inner_height - header_height - h_sb_h - footer_height).max(0.0);
         let visible_rows = if row_height > 0.0 {
             (body_height / row_height).floor() as usize
         } else {
@@ -740,6 +816,8 @@ impl DataTable {
             h_scrollbar_height: h_sb_h,
             footer_height,
             h_scroll: self.h_scroll,
+            inset_x,
+            inset_y,
         }
     }
 
@@ -1670,6 +1748,7 @@ pub(crate) mod native_surface_paint {
                 h_scroll: 0.0,
                 column_overrides: Vec::new(),
                 footer: None,
+                bordered: false,
             }
         }
 
@@ -1991,6 +2070,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         }
     }
 
@@ -3172,5 +3252,87 @@ mod tests {
         json.as_object_mut().unwrap().remove("footer");
         let back: DataTable = serde_json::from_value(json).unwrap();
         assert_eq!(back.footer, None);
+    }
+
+    // ── `DataTable::bordered` inset ─────────────────────────────────────
+
+    #[test]
+    fn bordered_defaults_to_false_when_omitted_from_json() {
+        let table = make_table(2, 3);
+        let mut json: serde_json::Value = serde_json::to_value(&table).unwrap();
+        json.as_object_mut().unwrap().remove("bordered");
+        let back: DataTable = serde_json::from_value(json).unwrap();
+        assert!(!back.bordered);
+    }
+
+    #[test]
+    fn bordered_reports_a_one_unit_inset_and_shrinks_the_interior() {
+        let mut table = make_table(2, 10);
+        table.bordered = true;
+        let layout = table.layout(40.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
+        assert_eq!(layout.inset_x, 1.0);
+        assert_eq!(layout.inset_y, 1.0);
+        // `viewport_width`/`viewport_height` stay the full outer size —
+        // only the interior math (visible_rows, column widths) shrinks.
+        assert_eq!(layout.viewport_width, 40.0);
+        assert_eq!(layout.viewport_height, 10.0);
+        // The 2-unit top+bottom margin (1 cell each side) costs exactly
+        // 2 fewer visible rows than a non-bordered table of the same
+        // outer size.
+        let flat = DataTable {
+            bordered: false,
+            ..table.clone()
+        };
+        let flat_layout = flat.layout(40.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
+        assert_eq!(flat_layout.inset_x, 0.0);
+        assert_eq!(flat_layout.inset_y, 0.0);
+        assert_eq!(layout.visible_rows, flat_layout.visible_rows - 2);
+    }
+
+    #[test]
+    fn bordered_hit_test_treats_the_margin_as_empty_and_insets_header_and_rows() {
+        let mut table = make_table(2, 10);
+        table.bordered = true;
+        let layout = table.layout(40.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
+
+        // The border frame itself (every edge of the outer viewport) is
+        // never a header/row/footer hit.
+        assert_eq!(layout.hit_test(0.0, 1.0, 0, 10), DataTableHit::Empty);
+        assert_eq!(layout.hit_test(2.0, 0.0, 0, 10), DataTableHit::Empty);
+        assert_eq!(layout.hit_test(39.0, 1.0, 0, 10), DataTableHit::Empty);
+        assert_eq!(layout.hit_test(2.0, 9.0, 0, 10), DataTableHit::Empty);
+        // Just inside the margin, local y=1 is the (inset) header row.
+        assert_eq!(
+            layout.hit_test(2.0, 1.0, 0, 10),
+            DataTableHit::Header { col: 0 }
+        );
+        // Local y=2 is row 0, inset the same 1 unit.
+        assert_eq!(
+            layout.hit_test(2.0, 2.0, 0, 10),
+            DataTableHit::Row { idx: 0 }
+        );
+    }
+
+    #[test]
+    fn bordered_column_hit_excludes_the_left_right_margin() {
+        let mut table = make_table(2, 10);
+        table.bordered = true;
+        let layout = table.layout(40.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
+
+        assert_eq!(
+            layout.column_hit(0.0),
+            None,
+            "left border column is not col 0"
+        );
+        assert_eq!(
+            layout.column_hit(1.0),
+            Some(0),
+            "col 0 starts right past the inset"
+        );
+        assert_eq!(
+            layout.column_hit(39.0),
+            None,
+            "right border column is not the last column"
+        );
     }
 }

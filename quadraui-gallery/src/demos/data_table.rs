@@ -176,6 +176,7 @@ impl DataTableDemo {
                 } else {
                     None
                 },
+                bordered: false,
             }
         } else {
             DataTable {
@@ -202,6 +203,7 @@ impl DataTableDemo {
                 h_scroll: 0.0,
                 column_overrides: Vec::new(),
                 footer: None,
+                bordered: false,
             }
         }
     }

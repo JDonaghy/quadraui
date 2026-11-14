@@ -269,6 +269,7 @@ class DataTableDescriptor(TypedDict):
     h_scroll: NotRequired[float]
     column_overrides: NotRequired[List[Optional[float]]]
     footer: NotRequired[Optional[DataRowDescriptor]]
+    bordered: NotRequired[bool]
     scroll_px: NotRequired[float]
 
 class TabItemDescriptor(TypedDict):

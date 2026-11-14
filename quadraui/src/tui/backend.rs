@@ -4875,6 +4875,8 @@ mod tests {
                 h_scrollbar_height: 0.0,
                 footer_height: 0.0,
                 h_scroll: 0.0,
+                inset_x: 0.0,
+                inset_y: 0.0,
             }
         }
         fn data_table_layout(
@@ -4894,6 +4896,8 @@ mod tests {
                 h_scrollbar_height: 0.0,
                 footer_height: 0.0,
                 h_scroll: 0.0,
+                inset_x: 0.0,
+                inset_y: 0.0,
             }
         }
         fn list_hscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
@@ -6083,6 +6087,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         }
     }
 
@@ -7082,6 +7087,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         };
         let table_glyphs =
             crate::primitives::data_table::DataTableGlyphs::new().with_sort_ascending_glyph("^");
