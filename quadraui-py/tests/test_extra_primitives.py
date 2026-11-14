@@ -931,6 +931,141 @@ def test_form_button_click_emits_button_clicked():
     assert form_event == {"ButtonClicked": {"id": "save"}}
 
 
+def test_form_toggle_space_and_enter_activate_via_keyboard():
+    # A focused plain `Toggle` field (not a `ToggleGroup`) flips on both
+    # Space and Enter, not just a mouse click -- `FormController`'s own
+    # key dispatch now has an arm for it, mirroring the item-row
+    # activation `ButtonRow`/`ToggleGroup`/`Toolbar` already had. Two Tabs
+    # (an uncontrolled form, mirroring
+    # `test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field`)
+    # land keyboard focus on the sole field without a mouse click.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "wrap",
+                        "label": {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]},
+                        "kind": {"Toggle": {"value": False}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for _ in range(2):
+        app.push_event(
+            {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+        )
+        app.run(1)
+    assert received[-1]["Form"] == ("settings", {"FocusChanged": {"id": "wrap"}})
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Char": " "}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ToggleChanged": {"id": "wrap", "value": True}}
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ToggleChanged": {"id": "wrap", "value": True}}
+
+    # A space delivered as a raw `CharTyped` (rather than a `KeyPressed`
+    # with `key: {"Char": " "}`) must activate the toggle too --
+    # `FormController::handle_inner`'s `CharTyped` arm used to go
+    # straight to inserting a literal character, bypassing every
+    # activation path entirely.
+    received.clear()
+    app.push_event({"CharTyped": " "})
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ToggleChanged": {"id": "wrap", "value": True}}
+
+
+def test_form_button_row_enter_and_space_activate_via_keyboard():
+    # A focused `ButtonRow` activates its current item-focused button on
+    # both Enter and Space, including a Space delivered as a raw
+    # `CharTyped` rather than `KeyPressed`. Two Tabs land keyboard focus
+    # on the row without a mouse click, same as the Toggle test above.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "row",
+                        "label": {"spans": [{"text": "Actions", "fg": None, "bg": None}]},
+                        "kind": {
+                            "ButtonRow": {
+                                "buttons": [
+                                    {"id": "a", "label": "A"},
+                                    {"id": "b", "label": "B"},
+                                ]
+                            }
+                        },
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for _ in range(2):
+        app.push_event(
+            {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+        )
+        app.run(1)
+    assert received[-1]["Form"] == ("settings", {"FocusChanged": {"id": "row"}})
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ButtonClicked": {"id": "a"}}
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Right"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    received.clear()
+    app.push_event({"CharTyped": " "})
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ButtonClicked": {"id": "b"}}
+
+
 def test_form_text_field_click_then_typing_routes_through_form_controller():
     # Clicking a `TextInput` field focuses it inside the form
     # (`FormEvent::FocusChanged`, which the host echoes back onto
@@ -1158,6 +1293,47 @@ def test_form_wheel_scroll_advances_the_controller_scroll_offset():
     assert app.screen_contains("Field2")
     assert app.screen_contains("Field3")
     assert not app.screen_contains("Field0")
+
+
+def test_form_gaining_engine_focus_keeps_its_first_field_visible():
+    # The generic engine-focus ring the TUI runner paints over whatever
+    # tab stop currently holds engine focus must not apply to a `"form"`
+    # extra at all -- `FormController` owns its own per-field focus
+    # visuals. The very first Tab (an uncontrolled form, same shape as
+    # `test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field`
+    # below) lands engine focus on the form as a whole, before any field
+    # inside it is focused -- exactly the frame the generic ring used to
+    # paint a single box over the form's own multi-row rect, hiding
+    # "Field0" under its top border line.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": f"f{i}",
+                        "label": {"spans": [{"text": f"Field{i}", "fg": None, "bg": None}]},
+                        "kind": "Label",
+                    }
+                    for i in range(10)
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.set_handler(lambda event: None)
+    assert app.screen_contains("Field0")
+
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert app.screen_contains("Field0"), (
+        "\"Field0\" must still be visible the very first frame after the "
+        f"form gains engine focus:\n{app.screen()}"
+    )
 
 
 def test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field():
