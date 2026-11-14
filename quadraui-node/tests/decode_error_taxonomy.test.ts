@@ -168,6 +168,7 @@ test("a deeply nested decode error names every ancestor on the way down", () => 
     assert.match(path as string, /tabs#frm/);
     assert.match(path as string, /panel#chrome/);
     assert.match(path as string, /split#inner/);
+    assert.ok(!(err as Error).stack!.includes("\u0000"));
     return true;
   });
 });
