@@ -876,6 +876,21 @@ def parse_create_exceptions(src: str) -> List[Tuple[str, str]]:
     return out
 
 
+def parse_exception_codes(src: str) -> Dict[str, str]:
+    """Every `(py.get_type::<Name>(), "code")` pair inside the `_quadraui`
+    pymodule function's `for (ty, code) in [...]` table that sets each
+    `DecodeError` subclass's `code` class attribute. This is the one place
+    `lib.rs` associates a `create_exception!`-declared name with the `code`
+    string instances of it carry at runtime -- there is no separate
+    declaration to parse instead, so [`render_pyi_stub`] reads this table
+    directly to decide which exception classes get a `code: str` class-body
+    annotation rather than the bodyless `...` every other exception gets."""
+    out: Dict[str, str] = {}
+    for m in re.finditer(r'\(\s*py\.get_type::<(\w+)>\(\)\s*,\s*"([^"]+)"\s*\)', src):
+        out[m.group(1)] = m.group(2)
+    return out
+
+
 # Rust primitive -> Python type, where the mapping is a straight lookup.
 _INT_TYPES = {
     "u8", "u16", "u32", "u64", "u128", "usize",
@@ -1184,12 +1199,17 @@ def render_pyi_stub(src: str, check_floor: bool = True) -> str:
     pymethods = parse_pymethods(src, check_floor=check_floor)
     pyfunctions = parse_pyfunctions(src)
     exceptions = parse_create_exceptions(src)
+    exception_codes = parse_exception_codes(src)
     if check_floor:
         _check_overrides_resolve(pymethods, pyfunctions)
 
     lines = [STUB_HEADER.rstrip() + "\n"]
     for name, base in exceptions:
-        lines.append(f"class {name}({base}): ...")
+        if name in exception_codes:
+            lines.append(f"class {name}({base}):")
+            lines.append("    code: str")
+        else:
+            lines.append(f"class {name}({base}): ...")
     lines.append("")
 
     for cls, methods in pymethods.items():

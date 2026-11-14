@@ -43,10 +43,11 @@ pub mod wire_schema;
 /// renders the full `"<root>: at <rest>: <problem>"` message a binding
 /// surfaces unchanged (just mapped to its own exception type) — so an author
 /// reading a nested-tree error sees which widget it happened on instead of
-/// grepping the whole descriptor for a bare field name. [`Self::code`]
-/// returns a short, stable, machine-matchable tag for the variant, for a
-/// binding that wants to pick its own exception subclass by `match`ing on
-/// this enum directly rather than parsing [`Self::code`]'s string form.
+/// grepping the whole descriptor for a bare field name. A binding picks
+/// its own exception subclass either by `match`ing this enum directly
+/// (`quadraui-py`) or, where no such match is available, by reading
+/// [`Self::code`]'s short, stable, machine-matchable string tag instead
+/// (`quadraui-node`'s napi-rs boundary — see that method's own doc).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
@@ -89,6 +90,8 @@ pub enum DecodeError {
 }
 
 impl DecodeError {
+    /// Builds a [`DecodeError::MissingField`]: `field` is required at
+    /// `path` and this decoder has no default for it.
     pub fn missing_field(path: impl Into<String>, field: impl Into<String>) -> Self {
         DecodeError::MissingField {
             path: path.into(),
@@ -96,6 +99,8 @@ impl DecodeError {
         }
     }
 
+    /// Builds a [`DecodeError::UnknownVariant`]: `field`'s value at `path`
+    /// was recognized shape-wise but `got` isn't one of `expected`.
     pub fn unknown_variant(
         path: impl Into<String>,
         field: impl Into<String>,
@@ -110,6 +115,8 @@ impl DecodeError {
         }
     }
 
+    /// Builds a [`DecodeError::TypeMismatch`]: `field`'s value at `path`
+    /// was not the JSON shape `expected` describes.
     pub fn type_mismatch(
         path: impl Into<String>,
         field: impl Into<String>,
@@ -122,6 +129,8 @@ impl DecodeError {
         }
     }
 
+    /// Builds a [`DecodeError::UnknownKey`]: the dict `field` names at
+    /// `path` carried `key`, which isn't one of `expected`.
     pub fn unknown_key(
         path: impl Into<String>,
         field: impl Into<String>,
@@ -136,6 +145,9 @@ impl DecodeError {
         }
     }
 
+    /// Builds a [`DecodeError::VersionMismatch`]: the `"wire_version"` at
+    /// `path` was `got`, newer than `max`, the highest this host
+    /// understands.
     pub fn version_mismatch(path: impl Into<String>, got: u64, max: u64) -> Self {
         DecodeError::VersionMismatch {
             path: path.into(),
@@ -144,6 +156,11 @@ impl DecodeError {
         }
     }
 
+    /// Builds a [`DecodeError::Borrow`]: the catch-all for a decode
+    /// failure no more specific constructor above fits -- a lower-level
+    /// `serde`/`serde_json` error handed back verbatim, or a bespoke
+    /// cross-field validation this crate performs itself, at `path`,
+    /// described by `message`.
     pub fn borrow(path: impl Into<String>, message: impl Into<String>) -> Self {
         DecodeError::Borrow {
             path: path.into(),
@@ -151,10 +168,12 @@ impl DecodeError {
         }
     }
 
-    /// The dotted path into the layout tree this error occurred at, e.g.
-    /// `"render › split#body › panel#chrome"` — the same string
-    /// [`Display`](std::fmt::Display) renders `"at <rest>:"` from, minus
-    /// the leading root label and the trailing problem description.
+    /// The ` › `-joined path into the layout tree this error occurred at,
+    /// e.g. `"render › split#body › panel#chrome"` — the whole string,
+    /// including the leading root label. [`Display`](std::fmt::Display)
+    /// splits this on its first ` › ` to render `"<root>: at <rest>:
+    /// <problem>"`, with `<rest>` being everything after that split, not
+    /// this method's own return value.
     pub fn path(&self) -> &str {
         match self {
             DecodeError::MissingField { path, .. }
@@ -202,8 +221,13 @@ impl DecodeError {
             } => {
                 format!("{field:?} must be {expected}")
             }
-            DecodeError::UnknownKey { key, expected, .. } => {
-                format!("unknown key {key:?} -- expected one of {expected:?}")
+            DecodeError::UnknownKey {
+                field,
+                key,
+                expected,
+                ..
+            } => {
+                format!("{field:?} has unknown key {key:?} -- expected one of {expected:?}")
             }
             DecodeError::VersionMismatch { got, max, .. } => {
                 format!(
