@@ -287,11 +287,11 @@ pub(crate) fn checkbox_click_event(id: WidgetId, checkbox: &Checkbox) -> Option<
     ))
 }
 
-/// Space/Enter equivalent of [`checkbox_click_event`] — keyboard
-/// operability a bare `Form`-embedded `Toggle` field doesn't get today
-/// (`FormController`'s own key dispatch has no arm for a plain `Toggle`,
-/// only its mouse `click_inner`). `None` for every other key, leaving
-/// [`focus_scoped_key_event`] to fall through to the raw `KeyPressed`.
+/// Space/Enter equivalent of [`checkbox_click_event`] — the keyboard
+/// operability a standalone, layout-tree-leaf `Checkbox` needs since it
+/// has no embedding `FormController` of its own to supply it. `None` for
+/// every other key, leaving [`focus_scoped_key_event`] to fall through to
+/// the raw `KeyPressed`.
 pub(crate) fn checkbox_key_event(id: WidgetId, checkbox: &Checkbox, key: &Key) -> Option<UiEvent> {
     if !matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
         return None;

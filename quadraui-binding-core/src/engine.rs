@@ -4632,6 +4632,59 @@ mod tests {
         );
     }
 
+    /// Regression coverage for the generic engine-focus ring's "one frame
+    /// stale" window a `"form"` extra used to fall into: `tui::run::paint_frame`
+    /// used to resolve `InteractionEngine::tab_stops`'s focus-ring rect
+    /// *before* `app.render` ran, but `tab_stops` only excludes a `"form"`'s
+    /// own stop (handing the ring off to `FormController`'s own per-field
+    /// focus visuals instead) once `InteractionEngine::sync_forms` — called
+    /// from `app.render` — has recorded that engine focus landed on it.
+    /// The very first frame after `backend.set_focus` names the form, that
+    /// record is still last frame's (not yet including this one), so the
+    /// generic single-box ring painted the whole multi-row form rect,
+    /// overwriting its first and last visible field rows with border
+    /// glyphs. With more fields than fit the viewport, that made the first
+    /// field ("name") disappear under the top border line, leaving the
+    /// second field as the first thing actually visible — exactly the
+    /// shape a scrolled-down viewport would show, with no scroll ever
+    /// having happened.
+    #[test]
+    fn form_gaining_engine_focus_does_not_paint_a_whole_form_focus_ring_over_its_first_field() {
+        let form = uncontrolled_text_form("settings", &["name", "b", "c", "d", "e", "f"]);
+        let logic = FormLogic {
+            form,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 6);
+        driver.render();
+        assert!(
+            driver.screen_contains("name"),
+            "the \"name\" field must be visible before the form has focus:\n{}",
+            driver.screen()
+        );
+
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("settings")));
+        }
+        driver.render();
+        assert!(
+            driver.screen_contains("name"),
+            "the \"name\" field must still be visible the very first frame \
+             after the form gains engine focus -- the generic focus ring \
+             must not overwrite it:\n{}",
+            driver.screen()
+        );
+        assert!(
+            !driver.screen().contains('╭'),
+            "a \"form\" extra with engine focus must never paint the \
+             generic single-box focus ring over its own multi-row content; \
+             `FormController`'s own per-field focus visuals own that job:\n{}",
+            driver.screen()
+        );
+    }
+
     /// An app that sets `focused_field` explicitly stays controlled: a
     /// click that would otherwise move engine-owned focus elsewhere must
     /// not change what the next render paints as focused, since the
@@ -5103,10 +5156,8 @@ mod tests {
     /// own doc for why trapping Tab needs this method's cooperation, not
     /// just [`FormDialogController`]'s internal handling. A `switch`
     /// (`FieldKind::Toggle`) field's own normal-event path is covered by
-    /// the popover test below instead — toggling one is mouse-only, a
-    /// pre-existing property of the embedded `FormController` this
-    /// change doesn't touch, and computing a click position for it needs
-    /// `FormController::field_rect`, a method this test's own
+    /// the popover test below instead — computing a click position for
+    /// it needs `FormController::field_rect`, a method this test's own
     /// `FormDialogController` has no equivalent public accessor for.
     #[test]
     fn open_form_dialog_with_text_input_and_toggle_traps_tab_and_emits_normal_form_events() {

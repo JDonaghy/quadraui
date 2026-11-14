@@ -157,6 +157,21 @@
 //!   item's click already does — no extra geometry lookup needed, unlike
 //!   `NumberInput`'s stepper buttons above.
 //!
+//! ## Toggle fields
+//!
+//! A plain `FieldKind::Toggle` (unlike the three item-bearing kinds the
+//! next section covers) has exactly one clickable target, so it needs no
+//! item-focus index — `handle_toggle_key` just flips `value` directly.
+//! `Enter`/Space while it's focused emit the same `FormEvent::ToggleChanged`
+//! [`form_click_event`]'s own `FieldKind::Toggle` arm does for a mouse
+//! click, keeping the two activation paths at parity. A
+//! `UiEvent::CharTyped(' ')` (some backends deliver Space this way instead
+//! of a `KeyPressed { key: Char(' '), .. }`) goes through
+//! [`Self::activate_focused_on_space`] first — the generic `CharTyped`
+//! arm otherwise never reaches `handle_key` at all, so this field (and
+//! the three item-bearing kinds above) would silently swallow the
+//! keystroke instead of activating.
+//!
 //! ## Item-level keyboard focus
 //!
 //! `FieldKind::ButtonRow` / `ToggleGroup` / `Toolbar` each pack more than
@@ -685,6 +700,23 @@ impl FormController {
                 self.handle_key(key, modifiers, vr)
             }
 
+            // A space is the one `CharTyped` character with activation
+            // semantics (Enter/Space on a `ButtonRow`/`ToggleGroup`/
+            // `Toolbar` item or a plain `Toggle` — see `handle_key`'s own
+            // Enter/Space arms). Unlike a `KeyPressed` space, `CharTyped`
+            // never reaches `handle_key` at all, so without this check a
+            // backend that delivers Space as `CharTyped(' ')` rather than
+            // `KeyPressed { key: Char(' '), .. }` would always fall
+            // through to `handle_text_op` below, which is a no-op for
+            // every one of those kinds (none has a text value) — the
+            // field would just silently swallow the keystroke.
+            // `activate_focused_on_space` returns `None` for every other
+            // field kind, so a text field's own space character still
+            // inserts normally.
+            UiEvent::CharTyped(' ') if self.has_focus => self
+                .activate_focused_on_space()
+                .unwrap_or_else(|| self.handle_text_op(EditOp::InsertChar(' '))),
+
             UiEvent::CharTyped(ch) if self.has_focus => {
                 self.handle_text_op(EditOp::InsertChar(*ch))
             }
@@ -829,6 +861,16 @@ impl FormController {
             }
             if self.focused_field_is_enabled_radio_group() {
                 if let Some(result) = self.handle_radio_group_key(key, modifiers) {
+                    return result;
+                }
+            }
+            // Plain `Toggle` — see this module's "Toggle fields" doc
+            // section. Mirrors `handle_item_row_key`'s Enter/Space arm:
+            // `handle_toggle_key` returns `None` for every other key,
+            // which falls through to the match below exactly like an
+            // unclaimed item-row/number-input/radio-group key does.
+            if self.focused_field_is_enabled_toggle() {
+                if let Some(result) = self.handle_toggle_key(key) {
                     return result;
                 }
             }
@@ -1305,6 +1347,67 @@ impl FormController {
             }
             _ => None,
         }
+    }
+
+    /// Whether the currently-focused field is a non-disabled plain
+    /// `Toggle` — gates `handle_key`'s Enter/Space interception. Mirrors
+    /// [`Self::focused_field_is_enabled_item_row`]; a `ToggleGroup`'s
+    /// individual toggles are covered by that item-row path instead (see
+    /// [`focusable_items`]), so this only ever matches the single-value
+    /// `FieldKind::Toggle`.
+    fn focused_field_is_enabled_toggle(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::Toggle { .. }))
+    }
+
+    /// Enter/Space flip the focused `Toggle`'s value — the keyboard
+    /// equivalent of [`form_click_event`]'s own `FieldKind::Toggle` arm.
+    /// Any other key returns `None`, which `handle_key` falls through to
+    /// its generic dispatch, same as [`Self::handle_item_row_key`].
+    fn handle_toggle_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
+        if !matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
+            return None;
+        }
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        let FieldKind::Toggle { value } = &field.kind else {
+            return None;
+        };
+        Some(FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+            id: focused_id,
+            value: !value,
+        }))
+    }
+
+    /// Enter/Space equivalent of this module's Enter/Space activation for
+    /// an item-row field or a plain `Toggle`, invoked from
+    /// [`Self::handle_inner`]'s `CharTyped(' ')` arm before it falls back
+    /// to inserting a literal space — see that arm's own doc for why a
+    /// space delivered as `CharTyped` needs this at all (it bypasses
+    /// `handle_key` entirely, unlike a `KeyPressed` space). `None` when
+    /// the focused field is neither kind, leaving the caller to insert
+    /// the space as text.
+    fn activate_focused_on_space(&mut self) -> Option<FormControllerEvent> {
+        if self.focused_field_is_enabled_item_row() {
+            if let Some(result) = self.handle_item_row_key(&Key::Char(' ')) {
+                return Some(result);
+            }
+        }
+        if self.focused_field_is_enabled_toggle() {
+            if let Some(result) = self.handle_toggle_key(&Key::Char(' ')) {
+                return Some(result);
+            }
+        }
+        None
     }
 
     /// Resolve the focused item's on-screen rect (if any — see
@@ -5174,6 +5277,88 @@ mod tests {
                 id: WidgetId::new("a")
             }),
             "Space activates the first (default-focused) item without a prior Right"
+        );
+    }
+
+    #[test]
+    fn space_and_enter_flip_a_focused_plain_toggle() {
+        let mut fc = controller_with(vec![toggle_field("flag", false)], Some("flag"));
+        let ev = fc.handle_cached(&key_event(Key::Char(' '), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                id: WidgetId::new("flag"),
+                value: true,
+            }),
+            "Space must flip a focused plain Toggle field, not just a mouse click"
+        );
+
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                id: WidgetId::new("flag"),
+                value: true,
+            }),
+            "Enter must flip a focused plain Toggle field too"
+        );
+    }
+
+    #[test]
+    fn disabled_toggle_ignores_space_and_enter() {
+        let mut fc = controller_with(vec![toggle_field("flag", true)], Some("flag"));
+        let ev = fc.handle_cached(&key_event(Key::Char(' '), Modifiers::default()), RECT);
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn char_typed_space_flips_a_focused_toggle_the_same_as_a_keypressed_space() {
+        // A space delivered as a raw `CharTyped` (some backends don't
+        // route a printable key through `KeyPressed` at all) must
+        // activate the toggle too, not fall through to
+        // `handle_text_op`'s no-op for a field with no text value.
+        let mut fc = controller_with(vec![toggle_field("flag", false)], Some("flag"));
+        let ev = fc.handle_cached(&UiEvent::CharTyped(' '), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                id: WidgetId::new("flag"),
+                value: true,
+            })
+        );
+    }
+
+    #[test]
+    fn char_typed_space_activates_a_focused_button_row_item_too() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(&UiEvent::CharTyped(' '), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("a")
+            })
+        );
+    }
+
+    #[test]
+    fn char_typed_space_still_inserts_into_a_focused_text_field() {
+        // `activate_focused_on_space` must return `None` for a field
+        // kind it has no activation story for, so a text field's own
+        // space character keeps inserting normally.
+        let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
+        let ev = fc.handle_cached(&UiEvent::CharTyped(' '), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("name"),
+                value: "ab ".to_string(),
+            })
         );
     }
 
