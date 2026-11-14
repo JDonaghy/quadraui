@@ -1,9 +1,11 @@
 {
   "name": "@quadraui/node",
   "version": "0.11.0",
-  "private": true,
   "description": "napi-rs bindings: insert quadraui descriptors from JavaScript/TypeScript and render them headlessly.",
   "license": "MIT OR Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -38,6 +40,7 @@
   "scripts": {
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
+    "artifacts": "napi artifacts",
     "build:dist": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc --module commonjs --target es2020 --moduleResolution node --skipLibCheck --outDir dist --rootDir js js/index.ts && node -e \"require('fs').copyFileSync('js/index.d.ts','dist/index.d.ts');require('fs').copyFileSync('js/wire.d.ts','dist/wire.d.ts')\"",
     "prepack": "npm run build:dist",
     "test": "node --test tests/*.test.ts",
@@ -53,6 +56,16 @@
   },
   "napi": {
     "binaryName": "quadraui-node",
-    "packageName": "@quadraui/node"
+    "packageName": "@quadraui/node",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "optionalDependencies": {
+    "@quadraui/node-darwin-arm64": "0.11.0",
+    "@quadraui/node-linux-x64-gnu": "0.11.0",
+    "@quadraui/node-win32-x64-msvc": "0.11.0"
   }
 }
