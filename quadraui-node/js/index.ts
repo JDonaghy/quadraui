@@ -284,18 +284,32 @@ const REENTRANT_RESTRICTED_METHODS: ReadonlySet<string> = new Set([
   "setCursor",
   "setTheme",
   "defineStyle",
+  "addRecentDocument",
+  "clearRecentDocuments",
+  "setDockMenu",
+  "setJumpList",
+  "setLoginItem",
+  "setAsDefaultProtocolClient",
+  "removeAsDefaultProtocolClient",
+  "beginDragOut",
+  "endPowerSaveBlock",
+  "applyOnQuit",
 ]);
 
 /**
- * Substring of napi-rs's own native-borrow-conflict rejection ("The same
- * native value cannot be borrowed mutably while another borrow is
- * active", and its shared-borrow sibling) -- the generic message every
- * reentrant call into a `#[napi]` instance method raises, regardless of
- * which method, before any of this package's own code runs. See
+ * napi-rs's own native-borrow-conflict rejection: "The same native value
+ * cannot be borrowed mutably while another borrow is active" -- the
+ * generic message every reentrant call into a `#[napi]` instance method
+ * raises, regardless of which method, before any of this package's own
+ * code runs. Anchored on the full sentence (not just "cannot be
+ * borrowed") so a user's own handler error that happens to contain that
+ * shorter substring, and gets propagated out of a restricted method
+ * unchanged, isn't misread as this rejection and rethrown with the wrong
+ * "can't be called from inside a handler" advice. See
  * {@link REENTRANT_RESTRICTED_METHODS}'s doc for which methods
  * `wrapNativeErrors` translates this into {@link ReentrantCallError} for.
  */
-const NATIVE_BORROW_CONFLICT_PATTERN = /cannot be borrowed/i;
+const NATIVE_BORROW_CONFLICT_PATTERN = /the same native value cannot be borrowed/i;
 
 /**
  * Replaces every own, writable, configurable function-valued property on

@@ -229,6 +229,15 @@ const CONTAINER_EVENT_MAP: Record<
 };
 
 export interface AppOptions {
+  /**
+   * Builds this frame's tree. `Renderable` permits `null`/`undefined` for
+   * a child slot (see that type's own doc), but returning either one
+   * here at the top level still throws `InvalidDescriptorError` -- the
+   * native `QuiApp.setRender` callback this wraps requires a plain
+   * object, the same gate `quadraui-py`'s own `render` callback has
+   * always had. Return `{}` (or a `Node`/`Component` tree) for an empty
+   * frame instead.
+   */
   view(): Renderable;
   /**
    * Called for every event this layer's own dispatch doesn't claim (a

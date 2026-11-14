@@ -692,6 +692,23 @@ def _parse_signature_defaults(attr_text: str) -> Dict[str, str]:
     return defaults
 
 
+#: Receiver param names a `guard_against_reentrant_call`-style method uses
+#: instead of the usual `&self`/`&mut self`/`self` so its own body can run
+#: a borrow-check guard before PyO3's macro-generated wrapper would
+#: otherwise perform that same borrow itself while extracting the
+#: receiver (see `quadraui-py/src/lib.rs`'s `guard_against_reentrant_call`
+#: doc) -- `slf: Py<Self>` for a method that still needs to attempt the
+#: borrow itself, `self_: PyRefMut<'_, Self>` for one that has already
+#: borrowed by the time it's called. Both are PyO3 receivers in every
+#: sense the generated `.pyi` cares about: the stub renders a plain
+#: `self`, same as the ordinary receiver forms.
+_OWNING_RECEIVER_NAMES = ("slf", "self_")
+#: Rust types that pair with one of `_OWNING_RECEIVER_NAMES` to form a
+#: receiver instead of an ordinary parameter. The lifetime inside
+#: `PyRef`/`PyRefMut` is normalized away before this check runs.
+_OWNING_RECEIVER_TYPES = ("Py<Self>", "PyRef<Self>", "PyRefMut<Self>")
+
+
 def _parse_params(params_text: str, defaults: Dict[str, str]) -> List[RustParam]:
     params = []
     for raw in _split_top_level(params_text):
@@ -703,8 +720,13 @@ def _parse_params(params_text: str, defaults: Dict[str, str]) -> List[RustParam]
             continue
         name, _, rust_type = raw.partition(":")
         name = name.strip()
+        rust_type = rust_type.strip()
+        normalized_type = re.sub(r"<\s*'[A-Za-z_][A-Za-z0-9_]*\s*,\s*", "<", rust_type)
+        if name in _OWNING_RECEIVER_NAMES and normalized_type in _OWNING_RECEIVER_TYPES:
+            params.append(RustParam(name="self", rust_type="self"))
+            continue
         params.append(
-            RustParam(name=name, rust_type=rust_type.strip(), default=defaults.get(name))
+            RustParam(name=name, rust_type=rust_type, default=defaults.get(name))
         )
     return params
 
