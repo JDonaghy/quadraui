@@ -2617,7 +2617,7 @@ pub fn schema() -> Vec<DefJson> {
                 field_opt("body", str_()),
                 "Text shown above the content slot; split on newlines into one line each.",
             ),
-            field("buttons", list(dialog_button_descriptor)),
+            field_opt("buttons", list(dialog_button_descriptor)),
             field_opt("severity", lit(&["info", "question", "warning", "error"])),
             field_opt("vertical_buttons", bool_()),
         ],

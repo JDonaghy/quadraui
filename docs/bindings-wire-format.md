@@ -3261,7 +3261,7 @@ A layout dialog's own title/body/button chrome -- the same friendly shape the "m
 | `id` | `WidgetId` | yes |  |
 | `title` | `string` | no |  |
 | `body` | `string` | no | Text shown above the content slot; split on newlines into one line each. |
-| `buttons` | `DialogButtonDescriptor[]` | yes |  |
+| `buttons` | `DialogButtonDescriptor[]` | no |  |
 | `severity` | `"info" \| "question" \| "warning" \| "error"` | no |  |
 | `vertical_buttons` | `boolean` | no |  |
 

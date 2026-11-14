@@ -1593,7 +1593,7 @@ class DialogChromeDescriptor(TypedDict):
     id: WidgetId
     title: NotRequired[str]
     body: NotRequired[str]  # Text shown above the content slot; split on newlines into one line each.
-    buttons: List[DialogButtonDescriptor]
+    buttons: NotRequired[List[DialogButtonDescriptor]]
     severity: NotRequired[Literal['info', 'question', 'warning', 'error']]
     vertical_buttons: NotRequired[bool]
 
