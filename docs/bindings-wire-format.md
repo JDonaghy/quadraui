@@ -262,7 +262,7 @@ richer uncontrolled behaviour than a plain scroll offset or checked flag:
   leave the form once a cycle at either end has nowhere left to go inside
   it (handing focus to the next app-level Tab stop instead); Up/Down move
   between fields the currently-focused one doesn't already consume for
-  itself (a `DateFieldPicker`/`ComboBox`/`NumberInput`/`RadioGroup` field
+  itself (a `DatePicker`/`ComboBox`/`NumberInput`/`RadioGroup` field
   claims Up/Down internally); and clicking a field focuses it. Either way,
   a `FormEvent::FocusChanged` is dispatched on every change, so a
   controlled render callback has something to assign back on the next
