@@ -6569,6 +6569,16 @@ mod tests {
     /// (read back via [`data_table_geometry`]) rather than hardcoding
     /// coordinates.
     fn data_table_driver(selected_idx: Option<usize>) -> TuiDriver<DataTableLogic> {
+        bordered_data_table_driver(selected_idx, false)
+    }
+
+    /// Same table as [`data_table_driver`], with `bordered` threaded through —
+    /// used by the drag tests that must confirm a resize tracks the pointer
+    /// identically whether or not the focus-ring inset is reserved.
+    fn bordered_data_table_driver(
+        selected_idx: Option<usize>,
+        bordered: bool,
+    ) -> TuiDriver<DataTableLogic> {
         use quadraui::{Column, ColumnWidth, DataRow, StyledText};
 
         let data_table = DataTable {
@@ -6608,7 +6618,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
-            bordered: false,
+            bordered,
         };
         let logic = DataTableLogic {
             data_table,
@@ -6714,6 +6724,60 @@ mod tests {
         assert!(
             width > original_width,
             "dragging right must grow the column: original={original_width}, new={width}"
+        );
+    }
+
+    /// A column-resize drag on a `bordered` table must grow the column by
+    /// exactly the pointer's own movement — same as the non-bordered case
+    /// above — regression for `DataTableColumnDrag::width_at` re-deriving
+    /// `DataTableLayout::content_x` without undoing `inset_x` first, which
+    /// resolved the dragged width one cell too wide whenever `bordered` was
+    /// set.
+    #[test]
+    fn dragging_a_header_divider_on_a_bordered_table_grows_by_the_pointer_delta() {
+        use quadraui::DataTableEvent;
+
+        let mut driver = bordered_data_table_driver(None, true);
+        let (area, layout) = data_table_geometry(&driver);
+        let original_width = layout.columns[0].width;
+        let divider_y = area.y + layout.inset_y + layout.header_height / 2.0;
+        let divider_point = Point::new(
+            area.x + layout.inset_x + layout.columns[0].x + original_width,
+            divider_y,
+        );
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: divider_point,
+            modifiers: Modifiers::default(),
+        });
+        let delta = 5.0;
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(divider_point.x + delta, divider_y),
+            buttons: quadraui::ButtonMask {
+                left: true,
+                right: false,
+                middle: false,
+            },
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        let resized = dispatched.iter().find_map(|(event, _)| match event {
+            UiEvent::DataTable(id, DataTableEvent::ColumnResized { col, width })
+                if *id == WidgetId::new("table") =>
+            {
+                Some((*col, *width))
+            }
+            _ => None,
+        });
+        let (col, width) = resized
+            .unwrap_or_else(|| panic!("expected a ColumnResized event, got: {:?}", dispatched));
+        assert_eq!(col, 0, "the divider drags the column to its left");
+        assert!(
+            (width - (original_width + delta)).abs() < 0.01,
+            "a bordered table's resize must track the pointer 1:1, not add an \
+             extra cell for the inset: original={original_width}, delta={delta}, new={width}"
         );
     }
 

@@ -4493,6 +4493,12 @@ fn data_table_b_key_toggles_the_border_and_insets_the_header() {
         before.starts_with("Name"),
         "header starts flush at the top-left corner before 'b':\n{before}"
     );
+    let (before_x, before_y) = driver.find("Name").expect("header title before 'b'");
+    assert_eq!(
+        (before_x, before_y),
+        (0.5, 0.5),
+        "the header title anchors at the unbordered top-left corner"
+    );
 
     driver.type_char('b');
     let after = driver.screen();
@@ -4504,6 +4510,14 @@ fn data_table_b_key_toggles_the_border_and_insets_the_header() {
     assert!(
         header_row.starts_with('│') && header_row.contains("Name"),
         "bordered header must inset the column title behind the left border, not paint flush at x=0:\n{after}"
+    );
+    let (after_x, after_y) = driver.find("Name").expect("header title after 'b'");
+    assert_eq!(
+        (after_x, after_y),
+        (1.5, 1.5),
+        "the 1-cell border inset must shift the header title's anchor by exactly \
+         (1, 1), tracking whatever layout the example paints rather than a \
+         hardcoded line/column"
     );
 
     driver.type_char('b');

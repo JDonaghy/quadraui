@@ -395,7 +395,9 @@ fn draw_data_table_inner(
         && table.rows.len() > layout.visible_rows
         && layout.scrollbar_width > 0.0
     {
-        let sb_x = area.x + area.width - ox - layout.scrollbar_width.round() as u16;
+        let sb_x = (area.x + area.width)
+            .saturating_sub(ox)
+            .saturating_sub(layout.scrollbar_width.round() as u16);
         let sb_track = crate::event::Rect::new(
             sb_x as f32,
             (area.y + oy + 1) as f32,
@@ -419,7 +421,10 @@ fn draw_data_table_inner(
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
     if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
-        let hsb_y = area.y + area.height - oy - footer_h - layout.h_scrollbar_height.round() as u16;
+        let hsb_y = (area.y + area.height)
+            .saturating_sub(oy)
+            .saturating_sub(footer_h)
+            .saturating_sub(layout.h_scrollbar_height.round() as u16);
         let track_w = (area.width as f32 - 2.0 * ox as f32 - layout.scrollbar_width).max(1.0);
         let hsb_track = crate::event::Rect::new((area.x + ox) as f32, hsb_y as f32, track_w, 1.0);
         let visible_w = (area.width as f32 - 2.0 * ox as f32 - layout.scrollbar_width).max(1.0);
@@ -442,12 +447,14 @@ fn draw_data_table_inner(
             // are reserved via `footer_height == row_height * 2.0`
             // (see `DataTable::layout`), so neither is ever painted
             // over by a body row.
-            let footer_y = area.y + area.height - 1 - oy;
+            let footer_y = (area.y + area.height).saturating_sub(1).saturating_sub(oy);
             let footer_bg = ratatui_color(theme.tab_bar_bg);
             let footer_fg = ratatui_color(theme.foreground);
 
-            // Divider rule directly above the footer row.
-            if footer_y > area.y {
+            // Divider rule directly above the footer row — guarded against
+            // the top border row too (not just `area.y`), so at the minimum
+            // bordered height the rule never overwrites the `╭───╮` frame.
+            if footer_y > area.y + oy {
                 for x in ox..area.width.saturating_sub(ox) {
                     set_cell(buf, area.x + x, footer_y - 1, '─', sep_fg, header_bg);
                 }
@@ -514,8 +521,9 @@ fn draw_data_table_inner(
 /// the 1-cell margin [`DataTable::layout`](crate::primitives::data_table::DataTable::layout)
 /// insets the header, rows, footer and scrollbars into when
 /// [`DataTable::bordered`](crate::primitives::data_table::DataTable::bordered)
-/// is set. Mirrors `tui::tree::draw_tree_border`'s glyphs plus the
-/// interior fill `tui::list::draw_list`'s own bordered branch applies, so
+/// Copies `tui::tree::draw_tree_border`'s glyphs verbatim, but — unlike
+/// that function, which leaves the interior untouched — also fills the
+/// interior the way `tui::list::draw_list`'s own bordered branch does, so
 /// a focus ring painted over the same `area` afterwards only ever
 /// recolours the frame glyphs, never the header/row content painted on
 /// top of this fill.
@@ -1716,6 +1724,82 @@ mod tests {
             DataTableHit::Empty,
             "top border row must not resolve to a header hit"
         );
+    }
+
+    /// A `bordered` table squeezed to a 1-cell-wide area must not panic
+    /// computing the vertical scrollbar's column — `sb_x` subtracts the
+    /// inset and the scrollbar width from `area.width`, which underflows
+    /// a `u16` at `area.width == 1` in debug builds unless every
+    /// subtraction saturates.
+    #[test]
+    fn bordered_one_cell_wide_area_with_scrollbar_does_not_panic() {
+        let mut table = make_scrolling_table(50);
+        table.bordered = true;
+        table.show_scrollbar = true;
+        let area = Rect::new(0, 0, 1, 10);
+        let mut buf = Buffer::empty(area);
+        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+    }
+
+    /// A `bordered` table squeezed to a 1-cell-tall area must not panic
+    /// computing the horizontal scrollbar's row or the footer row — both
+    /// subtract the inset from `area.height`, which underflows a `u16`
+    /// at `area.height == 1` in debug builds unless every subtraction
+    /// saturates.
+    #[test]
+    fn bordered_one_cell_tall_area_with_h_scrollbar_and_footer_does_not_panic() {
+        let mut table = make_table();
+        table.bordered = true;
+        table.min_total_width = Some(500.0);
+        table.footer = Some(DataRow {
+            cells: vec![StyledText::plain("TOTAL")],
+            decoration: Decoration::Normal,
+        });
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+    }
+
+    /// At the minimum bordered height that still fits a footer
+    /// (`area.height == 3`: top border + footer divider + footer row),
+    /// the footer's divider rule must not overwrite the top border —
+    /// regression for a guard that compared `footer_y` against `area.y`
+    /// instead of `area.y + oy`.
+    #[test]
+    fn bordered_footer_divider_never_overwrites_the_top_border() {
+        let mut table = make_table();
+        table.bordered = true;
+        table.footer = Some(DataRow {
+            cells: vec![StyledText::plain("TOTAL")],
+            decoration: Decoration::Normal,
+        });
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        draw_data_table(&mut buf, area, &table, &theme, None);
+
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            "╭",
+            "the top border's left corner must survive a footer at the minimum \
+             bordered height"
+        );
+        let border_fg = ratatui_color(theme.border_fg);
+        let body_bg = ratatui_color(theme.background);
+        for x in 1..area.width - 1 {
+            let cell = &buf[(x, 0)];
+            assert_eq!(
+                cell.symbol(),
+                "─",
+                "the top border row must survive a footer at the minimum bordered height"
+            );
+            assert_eq!(
+                (cell.fg, cell.bg),
+                (border_fg, body_bg),
+                "the top border row must keep its own colours, not the footer \
+                 divider's, at the minimum bordered height"
+            );
+        }
     }
 }
 
