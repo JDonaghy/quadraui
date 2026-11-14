@@ -81,8 +81,12 @@ exports.WidgetNotFoundError = WidgetNotFoundError;
 // other non-meta key on a node names the primitive kind it paints.
 const CONTAINER_ROLES = new Set(["row", "column", "split", "tabs", "panel", "sidebar_panel", "split_tree"]);
 
-// Keys a layout node may carry alongside its one role key.
-const META_KEYS = new Set(["id", "padding", "margin", "gap"]);
+// Keys a layout node may carry alongside its one role key. `wire_version`
+// is the top-level-only sibling key `js/app/runtime.ts`'s `App` now stamps
+// onto every tree it renders (see that module's own doc) -- harmless to
+// treat as meta on every node, since no primitive/container role is ever
+// itself named "wire_version".
+const META_KEYS = new Set(["id", "padding", "margin", "gap", "wire_version"]);
 
 // Descriptor fields whose string values are text a user can read. `glyph` and
 // `fallback` (an icon and its ASCII stand-in) are deliberately absent: they are

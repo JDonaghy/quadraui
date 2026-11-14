@@ -327,3 +327,50 @@ test("closing and reopening a row does not resurrect the old state", () => {
   assert.ok(!screen.includes("count=2"));
   assert.equal(screen.split("count=0").length - 1, 2);
 });
+
+// --- wire_version --------------------------------------------------------
+
+test("rendered tree carries the current wire_version", () => {
+  // Every tree this layer renders gets a `"wire_version"` sibling key added
+  // automatically (see `runtime.ts`'s `_renderOnce`) -- a plain `Button`
+  // tree with no version opinion of its own still decodes and renders, the
+  // same way a hand-built wire object carrying the current
+  // `runtime.WIRE_VERSION` already does for `QuiApp` directly.
+  const runtime = require("../js/app/runtime.ts");
+  const app = new App(20, 5, { view: () => Button("OK", { onClick: () => {} }) });
+  assert.ok(app.screenContains("OK"));
+  assert.equal((app._render() as Record<string, unknown>).wire_version, runtime.WIRE_VERSION);
+});
+
+test("a raw escape-hatch object that sets its own wire_version wins", () => {
+  // A `view()` that returns a raw wire object (the escape hatch `Node`
+  // constructors bypass) and already set its own `"wire_version"` is left
+  // untouched -- this layer only fills the key in when it's missing.
+  const app = new App(20, 5, {
+    view: () => ({ wire_version: 1, button: { id: "b", label: "OK" } }),
+  });
+  assert.equal((app._render() as Record<string, unknown>).wire_version, 1);
+});
+
+test("forcing a wire_version newer than this host understands raises", () => {
+  // Bumping `runtime.WIRE_VERSION` past what the native extension's own
+  // `wire_schema::WIRE_VERSION` accepts makes the host's version gate
+  // reject the next render with `VersionMismatchError`, exactly as it
+  // would for a hand-built wire object carrying the same inflated value.
+  const runtime = require("../js/app/runtime.ts");
+  const { VersionMismatchError } = require("../js/index.ts");
+  const app = new App(20, 5, { view: () => Button("OK", { onClick: () => {} }) });
+  try {
+    runtime.WIRE_VERSION = 999;
+    assert.throws(
+      () => app.screen(),
+      (err: unknown) => {
+        assert.ok(err instanceof VersionMismatchError);
+        assert.match((err as Error).message, /wire_version/);
+        return true;
+      },
+    );
+  } finally {
+    runtime.WIRE_VERSION = 1;
+  }
+});

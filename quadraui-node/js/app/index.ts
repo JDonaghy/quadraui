@@ -91,9 +91,10 @@
 
 const nodes = require("./nodes.ts");
 const { Component } = require("./component.ts");
-const { App, keyName } = require("./runtime.ts");
+const { App, WIRE_VERSION, keyName } = require("./runtime.ts");
 
 exports.App = App;
+exports.WIRE_VERSION = WIRE_VERSION;
 exports.keyName = keyName;
 exports.Component = Component;
 exports.Split = nodes.Split;

@@ -52,6 +52,25 @@ function autoId(path: ReadonlyArray<string | number>): string {
   return "auto:" + path.join(".");
 }
 
+/**
+ * Mirrors `quadraui_binding_core::wire_schema::WIRE_VERSION` -- every tree
+ * this layer renders carries it as a `"wire_version"` sibling key (see
+ * `_renderOnce`), so the host's own version gate
+ * (`quadraui_binding_core::wire::check_wire_version`) applies to a
+ * typed-layer tree exactly the way it already does to a hand-built wire
+ * object passed to `QuiApp.setRender` directly. This constant has no
+ * runtime link to the Rust one (the Node package can't read a Rust crate
+ * constant at import time), so it needs a matching bump by hand if that
+ * constant ever changes.
+ *
+ * Read back through `exports.WIRE_VERSION` (not the module-local binding)
+ * at stamping time below, so a test can force a mismatch by reassigning
+ * `runtime.WIRE_VERSION` on the already-`require`d module -- the same
+ * trick `quadraui-py`'s own test suite plays on its module-level
+ * `WIRE_VERSION`, which Node's `const` would otherwise block.
+ */
+exports.WIRE_VERSION = 1;
+
 function isNode(value: unknown): value is Node {
   return (
     typeof value === "object" &&
@@ -489,6 +508,9 @@ class App {
     }
     this._registry = registry;
     this._componentStates = newStates;
+    if (typeof wire === "object" && wire !== null && !Array.isArray(wire) && !("wire_version" in (wire as object))) {
+      wire = { ...(wire as Record<string, unknown>), wire_version: exports.WIRE_VERSION };
+    }
     return wire;
   }
 
