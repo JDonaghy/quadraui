@@ -4571,15 +4571,8 @@ impl QuiApp {
         items: &Bound<'_, PyList>,
         position: (f32, f32),
     ) -> PyResult<()> {
-        let mut this = guard_against_reentrant_call(&slf, py, "show_context_menu")?;
-        let descriptor = PyDict::new(items.py());
-        descriptor.set_item("items", items)?;
-        this.show_overlay(
-            "context_menu",
-            &descriptor,
-            Some((position.0, position.1, 0.0, 0.0)),
-        )?;
-        Ok(())
+        guard_against_reentrant_call(&slf, py, "show_context_menu")?
+            .open_context_menu(items, position)
     }
 
     /// Opens an in-canvas confirm/alert/prompt dialog built from `title`/
@@ -4650,16 +4643,8 @@ impl QuiApp {
         buttons: &Bound<'_, PyList>,
         severity: Option<String>,
     ) -> PyResult<()> {
-        let mut this = guard_against_reentrant_call(&slf, py, "show_message_dialog")?;
-        let descriptor = PyDict::new(buttons.py());
-        descriptor.set_item("title", title)?;
-        descriptor.set_item("body", body)?;
-        descriptor.set_item("buttons", buttons)?;
-        if let Some(severity) = severity {
-            descriptor.set_item("severity", severity)?;
-        }
-        this.show_overlay("message_dialog", &descriptor, None)?;
-        Ok(())
+        guard_against_reentrant_call(&slf, py, "show_message_dialog")?
+            .open_message_dialog(title, body, buttons, severity)
     }
 
     /// Closes the open message dialog (if any) without resolving it —
@@ -6280,6 +6265,49 @@ fn guard_against_reentrant_call<'py>(
 }
 
 impl QuiApp {
+    /// Builds the `context_menu` overlay descriptor from `items`/`position`
+    /// and opens it — the whole body of [`QuiApp::show_context_menu`], split
+    /// out so it takes an ordinary `&mut self` receiver. That method itself
+    /// takes an owning `Py<Self>` handle instead, so it can run
+    /// [`guard_against_reentrant_call`] before the borrow is attempted; it
+    /// forwards here once the borrow succeeds.
+    fn open_context_menu(
+        &mut self,
+        items: &Bound<'_, PyList>,
+        position: (f32, f32),
+    ) -> PyResult<()> {
+        let descriptor = PyDict::new(items.py());
+        descriptor.set_item("items", items)?;
+        self.show_overlay(
+            "context_menu",
+            &descriptor,
+            Some((position.0, position.1, 0.0, 0.0)),
+        )?;
+        Ok(())
+    }
+
+    /// Builds the `message_dialog` overlay descriptor from `title`/`body`/
+    /// `buttons`/`severity` and opens it — the whole body of
+    /// [`QuiApp::show_message_dialog`], split out the same way (and for the
+    /// same reason) as [`Self::open_context_menu`].
+    fn open_message_dialog(
+        &mut self,
+        title: String,
+        body: String,
+        buttons: &Bound<'_, PyList>,
+        severity: Option<String>,
+    ) -> PyResult<()> {
+        let descriptor = PyDict::new(buttons.py());
+        descriptor.set_item("title", title)?;
+        descriptor.set_item("body", body)?;
+        descriptor.set_item("buttons", buttons)?;
+        if let Some(severity) = severity {
+            descriptor.set_item("severity", severity)?;
+        }
+        self.show_overlay("message_dialog", &descriptor, None)?;
+        Ok(())
+    }
+
     /// Runs `body` on `self`, catching a Rust panic instead of letting it
     /// unwind across the PyO3 boundary. On success returns `body`'s result
     /// unchanged; on a panic, poisons this app and raises `PanicError`. If
@@ -11101,7 +11129,7 @@ def handle(event):
                 .expect("list literal must evaluate");
             let items = items_any.cast::<PyList>().expect("literal must be a list");
 
-            app.show_context_menu(items, (2.0, 2.0))
+            app.open_context_menu(items, (2.0, 2.0))
                 .expect("show_context_menu must open the popup");
             assert!(
                 app.screen_contains("Copy").expect("render must not raise"),
@@ -11199,7 +11227,7 @@ def handle(event):
                 .cast::<PyList>()
                 .expect("literal must be a list");
 
-            app.show_message_dialog(
+            app.open_message_dialog(
                 "Unsaved changes".to_string(),
                 "Do you want to save?".to_string(),
                 buttons,
@@ -11303,7 +11331,7 @@ def handle(event):
             // Title/body deliberately avoid the word "Delete" so
             // `find_bounds("Delete")` below can only match the button's
             // own label, not an earlier occurrence painted above it.
-            app.show_message_dialog(
+            app.open_message_dialog(
                 "Confirm".to_string(),
                 "This cannot be undone.".to_string(),
                 buttons,
@@ -11350,7 +11378,7 @@ def handle(event):
                 .cast::<PyList>()
                 .expect("literal must be a list");
 
-            app.show_message_dialog(
+            app.open_message_dialog(
                 "Unsaved changes".to_string(),
                 "Do you want to save?".to_string(),
                 buttons,
@@ -11483,7 +11511,7 @@ def handle(event):
             let buttons = buttons_any
                 .cast::<PyList>()
                 .expect("literal must be a list");
-            app.show_message_dialog(
+            app.open_message_dialog(
                 "Heads up".to_string(),
                 "Something happened.".to_string(),
                 buttons,
@@ -11549,7 +11577,7 @@ def handle(event):
             let (mut app, _locals) = app_recording_events(py);
             let empty = PyList::empty(py);
             let err = app
-                .show_message_dialog("Title".to_string(), "Body".to_string(), &empty, None)
+                .open_message_dialog("Title".to_string(), "Body".to_string(), &empty, None)
                 .expect_err("an empty buttons list must be rejected");
             assert!(err.is_instance_of::<InvalidDescriptorError>(py));
         });
@@ -11576,13 +11604,13 @@ def handle(event):
                 .cast::<PyList>()
                 .expect("literal must be a list");
             let err = app
-                .show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
+                .open_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
                 .expect_err("a tinted button must be rejected");
             assert!(err.is_instance_of::<InvalidDescriptorError>(py));
         });
     }
 
-    /// A handler cannot call `app.show_message_dialog(...)` directly — it
+    /// A handler cannot call `app.open_message_dialog(...)` directly — it
     /// already holds this `QuiApp`'s one mutable borrow for the whole
     /// dispatch that invoked it, so a reentrant call there raises — but it
     /// can queue the same request through the `QuiAppActions` handle
@@ -11665,7 +11693,7 @@ def handle(event):
             let buttons = buttons_any
                 .cast::<PyList>()
                 .expect("literal must be a list");
-            app.show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
+            app.open_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
                 .expect("show_message_dialog must open the dialog");
             assert!(app.screen_contains("OK").expect("render must not raise"));
 
