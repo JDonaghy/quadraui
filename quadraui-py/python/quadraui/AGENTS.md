@@ -22,6 +22,7 @@ section below names the one to open.
 | `quadraui.wire` (`wire.pyi`) | `TypedDict`s for every descriptor and event on the wire. Stub-only: import it under `TYPE_CHECKING` | Building a raw descriptor, or typing one |
 | `quadraui` (`QuiApp`) | The lower-level engine `App` wraps: raw dict descriptors, one `handle(event)` switch, platform services, theme, fonts | You need something the app layer doesn't expose |
 | `quadraui.app.hot_reload` | What survives a reload and what doesn't | Turning on hot reload |
+| `quadraui.aio` (aliased `quadraui.asyncio`) | Drives `step()`/render from a running asyncio loop instead of a background thread; adapts `async def` handlers | Your app does `await`-based work (aiohttp, subprocess, `asyncio.sleep`) |
 
 The package is typed (`py.typed`). `QuiApp`'s own methods are typed
 permissively as `Any`, so a type checker won't catch a misspelled
@@ -151,6 +152,15 @@ background thread, use `app.qui.waker()` and its
 `post(value)`/`post_after(ms, value)`. The value arrives as a
 `{"User": value}` event in `on_event`.
 
+Asyncio, as an alternative to a background thread: `await app.run_async()`
+(or `quadraui.asyncio.run(app)`) drives `step()`/render from the currently
+running loop instead of a plain `run_tui()`/`run()` call, waking promptly on
+any `waker().post(...)`/`.wake(...)` delivery rather than only on a fixed
+poll. Wrap an `async def` handler in `quadraui.asyncio.async_handler(app,
+handler)` before `set_handler(...)` — registering it unwrapped just hands
+back a never-run coroutine. See `quadraui.aio`'s own module docstring for
+the fallback-poll caveat for real terminal/OS input.
+
 Inside a handler, change engine state through `app.actions`, not through
 `QuiApp` setters (`set_theme`, fonts, ...). Those must be called outside
 the callback, after `step()`/`run` returns.
@@ -241,6 +251,8 @@ black-box test under
 - [`file_manager.py`](https://github.com/JDonaghy/quadraui/blob/main/quadraui-py/examples/file_manager.py):
   the same app on raw `QuiApp`, for comparison with the layer below.
 - `appshell_demo.py` (VS Code-style shell via `run_shell`),
-  `native_window_demo.py`, `waker_demo.py` (background threads).
+  `native_window_demo.py`, `waker_demo.py` (background threads),
+  `asyncio_demo.py` (the asyncio runner, as an alternative to a thread +
+  waker).
 
 Report bugs and API gaps at <https://github.com/JDonaghy/quadraui/issues>.

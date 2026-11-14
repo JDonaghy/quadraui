@@ -20,10 +20,10 @@ contract):
    `examples/waker_demo.py` exercises against a real terminal) posts a
    value through `QuiAppWaker.post` partway through the run, arriving
    promptly rather than waiting on this runner's own fallback poll.
-3. The whole thing runs inside an `asyncio.wait_for` with a timeout, so
-   cancelling the underlying `run_async` task (here, by that timeout
-   simply elapsing) is the normal way this demo -- and any real
-   application -- shuts the loop down.
+3. `main()` runs `quadraui.aio.run` as its own task for a fixed 1.5-second
+   window, then explicitly cancels and awaits it -- the normal way this
+   demo, and any real application driving `run`/`run_async` from its own
+   lifecycle, shuts the loop down.
 
 This demo stays headless on purpose: `quadraui.aio.run`'s own module doc
 explains why a *live* terminal/native session still needs a polling

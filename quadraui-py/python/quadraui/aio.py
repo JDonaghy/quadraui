@@ -30,6 +30,7 @@ while that task is still suspended on its own `await`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 from typing import Any, Awaitable, Callable, Union
 
@@ -82,12 +83,33 @@ async def run(app: "QuiApp", *, fallback_interval: float = _DEFAULT_FALLBACK_INT
     caller awaiting a cancelled run task still sees the cancellation.
     Re-raises whatever exception a registered handler/render callback
     raised, same as `step()`/`run()` themselves.
+
+    Calls `step()` at most once per wake (wake-notify delivery or
+    `fallback_interval` elapsing), and `step()` itself dispatches at most
+    one queued event, so a burst of several `push_event`/`push_key_event`
+    calls queued back-to-back drains at one per `fallback_interval` (the
+    wake-notify hook does not re-fire for events already in that queue).
+    `app.waker().post(...)`/`post_after(...)` are unaffected -- draining the
+    *user* value queue is `step()`'s own job, not this loop's, and it
+    drains the whole thing in one call. `quadraui-node`'s own `run()` has
+    the identical per-wake shape, so this is parity with it, not a
+    regression unique to this module.
     """
     loop = asyncio.get_running_loop()
     wake = asyncio.Event()
 
     def _notify() -> None:
-        loop.call_soon_threadsafe(wake.set)
+        # If the task running this coroutine was dropped while cancelled
+        # but never awaited (the "Task was destroyed but it is pending"
+        # shape -- the `finally` below never ran, so the hook is still
+        # armed), `loop` may already be closed by the time a later waker
+        # delivery fires this. Swallow that one case quietly instead of
+        # letting `fire_wake_notify` turn it into a traceback on stderr for
+        # a loop shutdown that already happened.
+        try:
+            loop.call_soon_threadsafe(wake.set)
+        except RuntimeError:
+            pass
 
     app.arm_wake_notify(_notify)
     try:
@@ -107,6 +129,24 @@ async def _run_async_method(
     self: "QuiApp", *, fallback_interval: float = _DEFAULT_FALLBACK_INTERVAL
 ) -> None:
     await run(self, fallback_interval=fallback_interval)
+
+
+def _is_async_callable(handler: Callable[[Any], Any]) -> bool:
+    """`inspect.iscoroutinefunction(handler)` only recognises an `async def`
+    function (or bound method) itself -- a callable *object* whose
+    `__call__` is `async def` (or a `functools.partial` wrapping either)
+    reports `False`, which would let it through `async_handler` unwrapped
+    and silently hand back a never-awaited coroutine, the exact failure
+    this module exists to prevent. Unwraps `functools.partial` down to its
+    underlying callable and falls back to the type's own `__call__` before
+    giving up.
+    """
+    while isinstance(handler, functools.partial):
+        handler = handler.func
+    if inspect.iscoroutinefunction(handler):
+        return True
+    call = getattr(type(handler), "__call__", None)
+    return call is not None and inspect.iscoroutinefunction(call)
 
 
 _run_async_method.__doc__ = (
@@ -167,7 +207,7 @@ def async_handler(
     stderr), the same as any other fire-and-forget background task's
     unretrieved exception.
     """
-    if not inspect.iscoroutinefunction(handler):
+    if not _is_async_callable(handler):
         return handler
 
     waker = app.waker()

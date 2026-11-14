@@ -120,7 +120,19 @@ once ``step``/``run`` returns (not from inside the handler itself -- the
 same restriction as mutating any other ``QuiApp`` state mid-callback).
 """
 
+import sys
+
 from . import aio as asyncio
+
+# `from . import aio as asyncio` above only binds `quadraui.asyncio` as an
+# *attribute* of this package -- `import quadraui; quadraui.asyncio.run(...)`
+# resolves through it, but `import quadraui.asyncio` and
+# `from quadraui.asyncio import run` both go through the import system's own
+# submodule lookup on `__path__` first, which finds no `asyncio.py` there and
+# raises `ModuleNotFoundError` before ever consulting this attribute.
+# Registering the same module object under its dotted name in `sys.modules`
+# makes every import form resolve to the identical `aio` module.
+sys.modules[f"{__name__}.asyncio"] = asyncio
 
 from ._quadraui import (
     DecodeFailedError,
@@ -153,6 +165,7 @@ from ._quadraui import (
 )
 
 __all__ = [
+    "asyncio",
     "QuiApp",
     "QuiAppWaker",
     "QuiShellApp",

@@ -2128,6 +2128,17 @@ impl QuiAppWaker {
     /// `asyncio`'s `call_later`) with `post` from plain Python — provided
     /// here directly so the common "run_tick again in N ms" case needs no
     /// import beyond `quadraui` itself.
+    /// Note on process shutdown: the spawned thread's sleep is not tied to
+    /// the interpreter's lifetime at all, so a `post_after(delay_ms, ...)`
+    /// call made shortly before the process exits can have its sleep still
+    /// pending when `main()` returns and the interpreter finalizes.
+    /// `fire_wake_notify`'s `Python::attach` then has no running
+    /// interpreter to re-acquire the GIL on — PyO3 aborts the process in
+    /// that case rather than returning an error, since there is no
+    /// Python-level call frame left to propagate one to. This is the same
+    /// hazard any `thread::spawn` that touches the Python C-API after
+    /// `main` returns has; callers scheduling a long `post_after`/
+    /// `wake_after` and then exiting promptly should await/join first.
     fn post_after(&self, delay_ms: u64, value: Py<PyAny>) {
         let shared = Arc::clone(&self.0);
         let notify = Arc::clone(&self.1);

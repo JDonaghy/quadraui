@@ -42,6 +42,21 @@ Documentation = "https://jdonaghy.github.io/quadraui/"
 Repository = "https://github.com/JDonaghy/quadraui"
 Issues = "https://github.com/JDonaghy/quadraui/issues"
 
+[tool.pytest.ini_options]
+# `tests/test_aio.py` marks every test `@pytest.mark.asyncio`; `asyncio_mode
+# = "strict"` (pytest-asyncio's own default, spelled out so it does not
+# silently change if that default ever does) makes that marker the only way
+# a coroutine test runs, so a plain `async def test_*` added without the
+# marker still fails loudly at collection instead of returning an unawaited
+# coroutine.
+asyncio_mode = "strict"
+# Silences `pytest-asyncio`'s own `PytestDeprecationWarning` about this
+# being unset -- `test_aio.py` has no async *fixture*, only async tests, so
+# the scope choice is otherwise moot here; pinned to its documented
+# upcoming default so a `pytest-asyncio` upgrade can't change this run's
+# behavior out from under it.
+asyncio_default_fixture_loop_scope = "function"
+
 [tool.maturin]
 # Compiled extension lives at `quadraui/_quadraui` underneath the pure-Python
 # package in `python/quadraui/`, which re-exports its public names — see
