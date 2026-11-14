@@ -16,7 +16,12 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("../js/index.ts");
+
+/** A bespoke layout validation failure: `DecodeFailedError`, still an `InvalidDescriptorError`. */
+function isDecodeFailed(err: unknown): boolean {
+  return err instanceof DecodeFailedError && err instanceof InvalidDescriptorError;
+}
 
 test("setHandler is called with the converted event payload", () => {
   const app = new QuiApp(10, 5);
@@ -155,7 +160,7 @@ test("setRender rejects a gap key on a panel node", () => {
     },
     gap: 8,
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), isDecodeFailed);
 });
 
 test("setRender rejects a gap key on a tabs node", () => {
@@ -165,7 +170,7 @@ test("setRender rejects a gap key on a tabs node", () => {
     tabs: { id: "tabbar:1", tabs: [] },
     gap: 8,
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), isDecodeFailed);
 });
 
 test("setRender accepts an optional focused_index on a tabs node", () => {
@@ -238,7 +243,7 @@ test("setRender rejects an out-of-range focused_index on a tabs node", () => {
       ],
     },
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), isDecodeFailed);
 });
 
 test("setRender honours a split's padding/margin/gap spacing keys", () => {
