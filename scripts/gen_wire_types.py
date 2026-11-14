@@ -905,8 +905,12 @@ def parse_exception_codes(src: str) -> Dict[str, str]:
     `lib.rs` associates a `create_exception!`-declared name with the `code`
     string instances of it carry at runtime -- there is no separate
     declaration to parse instead, so [`render_pyi_stub`] reads this table
-    directly to decide which exception classes get a `code: str` class-body
-    annotation rather than the bodyless `...` every other exception gets."""
+    directly to decide which exception classes get `code: str`/`path: str`
+    class-body annotations rather than the bodyless `...` every other
+    exception gets. `path` is set alongside `code` on every raise of one of
+    these classes (`decode_error_to_py`), not in this table, but it is
+    exactly the same set of classes, so this table doubles as the signal
+    for both annotations."""
     out: Dict[str, str] = {}
     for m in re.finditer(r'\(\s*py\.get_type::<(\w+)>\(\)\s*,\s*"([^"]+)"\s*\)', src):
         out[m.group(1)] = m.group(2)
@@ -1231,6 +1235,7 @@ def render_pyi_stub(src: str, check_floor: bool = True) -> str:
         if name in exception_codes:
             lines.append(f"class {name}({base}):")
             lines.append("    code: str")
+            lines.append("    path: str")
         else:
             lines.append(f"class {name}({base}): ...")
     lines.append("")

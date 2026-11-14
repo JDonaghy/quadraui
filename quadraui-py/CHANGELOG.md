@@ -83,14 +83,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `UnknownKeyError`, `VersionMismatchError`, `DecodeFailedError` — chosen
   by matching `quadraui_binding_core::DecodeError`'s own variant directly,
   never by parsing the exception's message. Each has a `code` class attribute
-  (e.g. `"missing_field"`) mirroring `DecodeError::code`, and the
-  exception's message now names the full path into the layout tree the
-  problem was found at (e.g. `render: at split#body › panel#chrome:
-  missing field "ratio"`), not just a bare field name — `DecodeError` no
-  longer loses an ancestor node's id when a decode error happens several
-  levels into a nested tree. Existing `except InvalidDescriptorError`/
-  `pytest.raises(InvalidDescriptorError, ...)` call sites keep matching
-  unchanged.
+  (e.g. `"missing_field"`) mirroring `DecodeError::code`, and a `path`
+  instance attribute mirroring `DecodeError::path` verbatim (e.g.
+  `"render › split#body › panel#chrome"`), so a caller can locate the
+  offending node programmatically instead of parsing it back out of the
+  message. The exception's message now names the full path into the
+  layout tree the problem was found at (e.g. `render: at split#body ›
+  panel#chrome: missing field "ratio"`), not just a bare field name --
+  `DecodeError` no longer loses an ancestor node's id when a decode error
+  happens several levels into a nested tree. Existing `except
+  InvalidDescriptorError`/`pytest.raises(InvalidDescriptorError, ...)`
+  call sites keep matching unchanged.
 
 - `QuiApp.show_overlay(kind, descriptor, anchor)` / `QuiApp.dismiss_overlay(id)`:
   a generic entry point over the same seven in-canvas overlay kinds the

@@ -477,7 +477,10 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         text = gwt.render_pyi_stub(src, check_floor=False)
         self.assertIn("class QuadrauiError(Exception): ...", text)
         self.assertIn("class InvalidDescriptorError(QuadrauiError): ...", text)
-        self.assertIn("class MissingFieldError(InvalidDescriptorError):\n    code: str", text)
+        self.assertIn(
+            "class MissingFieldError(InvalidDescriptorError):\n    code: str\n    path: str",
+            text,
+        )
 
     def test_callable_named_params_render_as_callable_not_any(self) -> None:
         src = """

@@ -4,9 +4,10 @@ exception taxonomy: `MissingFieldError`, `UnknownVariantError`,
 `DecodeFailedError` each subclass `InvalidDescriptorError` (so existing
 `except InvalidDescriptorError`/`pytest.raises(InvalidDescriptorError,
 match=...)` callers keep matching unchanged), carry a `code` class
-attribute mirroring `quadraui_binding_core::DecodeError::code`, and raise
-with a message naming the full path into the layout tree at which the
-problem was found -- not just a bare field name.
+attribute mirroring `quadraui_binding_core::DecodeError::code` and a `path`
+instance attribute mirroring `quadraui_binding_core::DecodeError::path`
+verbatim, and raise with a message naming the full path into the layout
+tree at which the problem was found -- not just a bare field name.
 
 Run against a built wheel/extension, e.g.:
 
@@ -50,6 +51,7 @@ def test_missing_field_names_the_split_s_own_path():
     with pytest.raises(MissingFieldError, match="split#frm") as excinfo:
         app.screen()
     assert excinfo.value.code == "missing_field"
+    assert excinfo.value.path == "render › split#frm"
     assert isinstance(excinfo.value, InvalidDescriptorError)
 
 
@@ -71,6 +73,7 @@ def test_unknown_variant_names_the_bad_orientation_and_the_split_s_path():
     with pytest.raises(UnknownVariantError, match="split#frm") as excinfo:
         app.screen()
     assert excinfo.value.code == "unknown_variant"
+    assert excinfo.value.path == "render › split#frm"
     assert "diagonal" in str(excinfo.value)
 
 
@@ -84,6 +87,7 @@ def test_type_mismatch_names_the_offending_key():
     with pytest.raises(TypeMismatchError, match="row/column children") as excinfo:
         app.screen()
     assert excinfo.value.code == "type_mismatch"
+    assert excinfo.value.path == "render"
 
 
 def test_unknown_key_names_the_typo_d_padding_key():
@@ -96,6 +100,7 @@ def test_unknown_key_names_the_typo_d_padding_key():
     with pytest.raises(UnknownKeyError, match="lef") as excinfo:
         app.screen()
     assert excinfo.value.code == "unknown_key"
+    assert excinfo.value.path == 'render › "row"'
 
 
 def test_version_mismatch_names_both_versions():
@@ -108,6 +113,7 @@ def test_version_mismatch_names_both_versions():
     with pytest.raises(VersionMismatchError, match="wire_version") as excinfo:
         app.screen()
     assert excinfo.value.code == "version_mismatch"
+    assert excinfo.value.path == "render"
     assert "999" in str(excinfo.value)
 
 
@@ -126,14 +132,17 @@ def test_a_duplicate_leaf_id_raises_decode_failed_error_naming_both_leaves():
     with pytest.raises(DecodeFailedError, match="leaf#a") as excinfo:
         app.screen()
     assert excinfo.value.code == "borrow"
+    assert excinfo.value.path == "render › children[1] › leaf#a"
     assert isinstance(excinfo.value, InvalidDescriptorError)
     assert 'duplicate leaf id "a"' in str(excinfo.value)
 
 
-def test_a_nested_decode_error_names_every_ancestor_on_the_way_down():
+def test_a_nested_decode_error_s_path_names_every_ancestor_on_the_way_down():
     # The motivating case: a "ratio" missing several levels into the tree
     # names every ancestor on the way down, not just the render callback's
-    # own top-level label.
+    # own top-level label -- in both the message and the `path` attribute,
+    # which carries `quadraui_binding_core::DecodeError::path` verbatim
+    # (the ` › `-joined string the message itself is derived from).
     app = QuiApp(20, 5)
 
     def render():
@@ -169,6 +178,10 @@ def test_a_nested_decode_error_names_every_ancestor_on_the_way_down():
     assert "tabs#frm" in message
     assert "panel#chrome" in message
     assert "split#inner" in message
+    assert excinfo.value.code == "missing_field"
+    assert excinfo.value.path == (
+        "render › tabs#frm › tab#one › content › panel#chrome › content › split#inner"
+    )
 
 
 def test_unknown_optional_key_is_silently_ignored_with_no_hook_registered():
@@ -215,3 +228,4 @@ def test_strict_true_rejects_the_same_unknown_optional_key():
     with pytest.raises(UnknownKeyError, match="focussed") as excinfo:
         app.screen()
     assert excinfo.value.code == "unknown_key"
+    assert excinfo.value.path == "render › tabs#frm"
