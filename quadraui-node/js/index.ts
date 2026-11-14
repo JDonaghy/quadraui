@@ -153,12 +153,19 @@ class InvalidFontRoleError extends QuadrauiError {}
 exports.InvalidFontRoleError = InvalidFontRoleError;
 
 /**
- * A method called re-entrantly from inside this same app's own registered
- * event/tick/render callback. napi-rs's own per-instance borrow tracking
- * already rejects most of these at the FFI boundary; this is this
- * binding's own explicit, defense-in-depth guard for the rest -- no
- * `quadraui-py` equivalent (PyO3's runtime borrow check already covers the
- * whole surface there).
+ * One of `QuiApp`'s methods restricted to top-level script code (the ones
+ * with a matching `QuiAppActions` method -- `showMessageDialog`,
+ * `setTitle`, ...) called re-entrantly, from inside this same app's own
+ * registered event/tick/render callback. napi-rs's own per-instance
+ * native-borrow tracking rejects the underlying call at the FFI boundary,
+ * before any of this package's own code -- including this class -- ever
+ * runs, with a generic message untagged with a method name or an
+ * actionable next step ("the same native value cannot be borrowed
+ * mutably while another borrow is active"); `wrapNativeErrors` recognizes
+ * that exact rejection for each restricted method and rethrows this
+ * instead. Mirrors `quadraui-py`'s own `ReentrantCallError`, which
+ * recognizes PyO3's own equally generic `RuntimeError: Already borrowed`
+ * the same way, via `guard_against_reentrant_call`.
  */
 class ReentrantCallError extends QuadrauiError {}
 exports.ReentrantCallError = ReentrantCallError;
@@ -248,6 +255,49 @@ function toQuadrauiError(err: unknown): unknown {
 exports.toQuadrauiError = toQuadrauiError;
 
 /**
+ * `QuiApp` methods restricted to top-level script code -- the ones with a
+ * matching `QuiAppActions` method, see that class's own doc for the full
+ * list -- keyed by their JS (camelCase) name. `wrapNativeErrors` checks
+ * this set before translating {@link NATIVE_BORROW_CONFLICT_PATTERN}: a
+ * reentrant call to one of these gets {@link ReentrantCallError}'s own
+ * tailored message naming the method and `actions()`; a reentrant call to
+ * anything else (`insertButton`, `slotClear`, ...) still surfaces napi-rs's
+ * own generic rejection unchanged, since there is no `actions()`
+ * counterpart to point a caller at.
+ */
+const REENTRANT_RESTRICTED_METHODS: ReadonlySet<string> = new Set([
+  "showMessageDialog",
+  "showContextMenu",
+  "showToast",
+  "showTooltip",
+  "hideTooltip",
+  "sendNotification",
+  "openPath",
+  "revealInFileManager",
+  "moveToTrash",
+  "restoreFromTrash",
+  "setDocumentEdited",
+  "setRepresentedFilename",
+  "setTrayIcon",
+  "setTrayTooltip",
+  "setTrayMenu",
+  "setCursor",
+  "setTheme",
+  "defineStyle",
+]);
+
+/**
+ * Substring of napi-rs's own native-borrow-conflict rejection ("The same
+ * native value cannot be borrowed mutably while another borrow is
+ * active", and its shared-borrow sibling) -- the generic message every
+ * reentrant call into a `#[napi]` instance method raises, regardless of
+ * which method, before any of this package's own code runs. See
+ * {@link REENTRANT_RESTRICTED_METHODS}'s doc for which methods
+ * `wrapNativeErrors` translates this into {@link ReentrantCallError} for.
+ */
+const NATIVE_BORROW_CONFLICT_PATTERN = /cannot be borrowed/i;
+
+/**
  * Replaces every own, writable, configurable function-valued property on
  * `target` (a native addon prototype, or a constructor used for its
  * static methods) with a wrapper that converts a thrown native `Error`
@@ -257,8 +307,17 @@ exports.toQuadrauiError = toQuadrauiError;
  * non-configurable is left alone the same way, which is what keeps
  * `QuiApp.runShell` (see this file's own "Error subclasses" section doc)
  * from needing special-case handling here.
+ *
+ * `restrictedMethods`, when given, additionally recognizes
+ * {@link NATIVE_BORROW_CONFLICT_PATTERN} on a property whose key is in
+ * that set and rethrows {@link ReentrantCallError} instead of the generic
+ * native rejection -- see {@link REENTRANT_RESTRICTED_METHODS}'s own doc
+ * for why this can't just be another `toQuadrauiError` tag: the
+ * rejection this recognizes comes from napi-rs itself, at the FFI
+ * boundary, before this crate's own Rust code -- which is what would
+ * otherwise tag it -- ever runs.
  */
-function wrapNativeErrors(target: object): void {
+function wrapNativeErrors(target: object, restrictedMethods?: ReadonlySet<string>): void {
   for (const key of Object.getOwnPropertyNames(target)) {
     if (key === "constructor") continue;
     const descriptor = Object.getOwnPropertyDescriptor(target, key);
@@ -275,13 +334,22 @@ function wrapNativeErrors(target: object): void {
       try {
         return original.apply(this, args);
       } catch (err) {
+        if (
+          restrictedMethods?.has(key) &&
+          err instanceof Error &&
+          NATIVE_BORROW_CONFLICT_PATTERN.test(err.message)
+        ) {
+          throw new ReentrantCallError(
+            `app.${key} can't be called from inside a handler; use the actions() handle passed to / available in the handler`,
+          );
+        }
         throw toQuadrauiError(err);
       }
     };
   }
 }
 
-wrapNativeErrors(native.QuiApp.prototype);
+wrapNativeErrors(native.QuiApp.prototype, REENTRANT_RESTRICTED_METHODS);
 wrapNativeErrors(native.QuiShellApp.prototype);
 wrapNativeErrors(native.QuiAppWaker.prototype);
 wrapNativeErrors(native.QuiAppActions.prototype);

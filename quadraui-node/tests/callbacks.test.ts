@@ -3,11 +3,13 @@
 // queue -- ports the shape of `quadraui-py/src/lib.rs`'s
 // `reaction_from_return_treats_only_explicit_false_as_exit`, its
 // `native_app_logic_window_close_handler_*` cases, and
-// `handler_queues_show_message_dialog_via_actions_handle_without_reentrant_borrow`,
-// plus a new case this crate's own `QuiApp::check_not_dispatching` needs
-// that PyO3's runtime borrow guard already covers for `quadraui-py`: a
-// handler calling back into `QuiApp` mid-dispatch must raise, not corrupt
-// state.
+// `handler_queues_show_message_dialog_via_actions_handle_without_reentrant_borrow`:
+// a handler calling back into `QuiApp` mid-dispatch must raise, not corrupt
+// state. `tests/reentrant_call_guard.test.ts` covers the tagged
+// `ReentrantCallError` message `js/index.ts`'s `wrapNativeErrors` raises
+// for each restricted method instead of napi-rs's own generic rejection;
+// `setRender` has no `actions()` counterpart, so the reentrant call below
+// still surfaces that generic rejection unchanged.
 //
 // Run against a built addon, e.g.:
 //

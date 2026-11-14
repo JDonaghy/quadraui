@@ -5,7 +5,7 @@ way a registered event handler queues `show_message_dialog`/`show_toast`/
 itself restricts to top-level script code, since a handler already holds
 this app's one mutable borrow for the whole dispatch that invoked it) and
 has it applied right after that dispatch finishes, instead of raising
-"already borrowed" the way calling the matching `QuiApp` method directly
+`ReentrantCallError` the way calling the matching `QuiApp` method directly
 from inside the handler would. `apply_tab_activated` is the one method here
 with no restricted `QuiApp` counterpart at all -- see its own doc.
 
@@ -41,8 +41,8 @@ def test_show_message_dialog_queued_from_a_handler_is_painted_after_step():
     assert not app.screen_contains("Confirm")
 
     # Nothing in this app's own dispatch raises -- a direct
-    # `app.show_message_dialog(...)` call from inside `on_event` would hit
-    # the PyO3 "already borrowed" wall instead.
+    # `app.show_message_dialog(...)` call from inside `on_event` would raise
+    # `ReentrantCallError` instead.
     app.push_key_event(ord("a"))
     app.run(1)
 
@@ -76,8 +76,8 @@ def test_show_tooltip_queued_from_a_handler_is_painted_after_step():
     app.set_handler(on_event)
     assert not app.screen_contains("Hello tip")
 
-    # A direct `app.show_tooltip(...)` call from inside `on_event` would hit
-    # the PyO3 "already borrowed" wall instead.
+    # A direct `app.show_tooltip(...)` call from inside `on_event` would
+    # raise `ReentrantCallError` instead.
     app.push_key_event(ord("a"))
     app.run(1)
 
@@ -94,9 +94,9 @@ def test_send_notification_queued_from_a_handler_does_not_raise():
     app.set_handler(on_event)
 
     # No observable error surface for `send_notification` -- a direct
-    # `app.send_notification(...)` call from inside `on_event` would hit the
-    # PyO3 "already borrowed" wall instead; this only proves the deferred
-    # path doesn't.
+    # `app.send_notification(...)` call from inside `on_event` would raise
+    # `ReentrantCallError` instead; this only proves the deferred path
+    # doesn't.
     app.push_key_event(ord("a"))
     app.run(1)
 
@@ -160,8 +160,8 @@ def test_multiple_actions_queued_from_one_dispatch_all_apply():
 
 def test_define_style_queued_from_a_handler_repaints_the_classed_node():
     """`actions.define_style(name, overrides)` -- the deferred counterpart
-    to `QuiApp.define_style`, which raises "already borrowed" if called
-    directly from a handler, the same wall every other method here
+    to `QuiApp.define_style`, which raises `ReentrantCallError` if called
+    directly from a handler, the same guard every other method here
     sidesteps."""
     app = QuiApp(10, 1)
     app.define_style("card", {"bg": "#112233"})
@@ -183,7 +183,7 @@ def test_define_style_queued_from_a_handler_repaints_the_classed_node():
 
     def on_event(_event):
         # A direct `app.define_style(...)` call from inside `on_event`
-        # would hit the PyO3 "already borrowed" wall instead.
+        # would raise `ReentrantCallError` instead.
         actions.define_style("card", {"bg": "#445566"})
 
     app.set_handler(on_event)

@@ -469,6 +469,26 @@ create_exception!(
     (`InvalidDescriptorError`)."
 );
 
+create_exception!(
+    _quadraui,
+    ReentrantCallError,
+    QuadrauiError,
+    "A `QuiApp` method restricted to top-level script code (one with a \
+    matching `QuiAppActions` method -- `show_message_dialog`, `set_title`, \
+    ...) was called re-entrantly, from inside that same app's own \
+    registered event/tick/render callback. PyO3 refuses the second \
+    mutable borrow this requires with a generic `RuntimeError: Already \
+    borrowed`, raised while extracting the method's own `self` argument -- \
+    before any of this crate's code, including the guard that raises this \
+    exception, ever runs. Every one of those restricted methods is \
+    rewritten to take `slf: Py<Self>` plus an explicit `py: Python<'_>` \
+    instead of the usual `&mut self` so it can attempt that borrow itself, \
+    via [`guard_against_reentrant_call`], and raise this instead on \
+    failure. The napi-rs analog lives in `quadraui-node`'s own \
+    `toQuadrauiError`/`wrapNativeErrors` (see that package's `js/index.ts`), \
+    which translates the matching generic napi-rs rejection the same way."
+);
+
 /// Slot id of the app's `Button` descriptor.
 const SLOT_BUTTON: i64 = quadraui_binding_core::SLOT_BUTTON;
 /// Slot id of the app's `TextDisplay` descriptor.
@@ -2189,9 +2209,11 @@ impl QuiAppWaker {
 /// A handler already holds `QuiApp`'s one mutable borrow for the whole
 /// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
 /// describes), so calling `app.show_message_dialog(...)` straight from
-/// inside a handler raises "already borrowed" — PyO3 refuses a second
-/// borrow of the same cell while the first is still outstanding. Calling
-/// the matching method here instead touches none of that: each method
+/// inside a handler raises [`ReentrantCallError`] — see
+/// [`guard_against_reentrant_call`]'s own doc for how each of those
+/// restricted `QuiApp` methods raises that instead of PyO3's own raw
+/// `RuntimeError: Already borrowed`. Calling the matching method here
+/// instead touches none of that: each method
 /// below decodes and validates its arguments immediately (so a malformed
 /// descriptor still raises synchronously, from the handler's own call) and
 /// records the already-decoded action on a queue shared with the owning
@@ -2299,7 +2321,7 @@ impl QuiAppActions {
     /// row), the handler is the only thing that knows when to dismiss it —
     /// typically on the hit-tested `MouseLeft` for the widget it showed on
     /// `MouseEntered`. Calling `app.hide_tooltip()` straight from inside
-    /// that same handler would hit the same "already borrowed" wall
+    /// that same handler would raise [`ReentrantCallError`] the same way
     /// [`Self::show_tooltip`]'s own doc describes; this queues the exact
     /// same engine call instead.
     fn hide_tooltip(&self) -> PyResult<()> {
@@ -4534,21 +4556,25 @@ impl QuiApp {
     /// returns, having seen a raw `MouseDown { button: Right, .. }` land
     /// where a menu should open), never from inside the registered event
     /// handler or render callback: both already hold this `QuiApp`'s one
-    /// mutable borrow for the whole dispatch, so a reentrant call here hits
-    /// the same PyO3 runtime-borrow wall `QuiApp.insert_*`/`slot_clear` do —
-    /// see the module doc's "cannot call back into `QuiApp`" note. From
-    /// inside a handler, call [`QuiAppActions::show_context_menu`] (via
+    /// mutable borrow for the whole dispatch, so a reentrant call here
+    /// raises [`ReentrantCallError`] (unlike `QuiApp.insert_*`/
+    /// `slot_clear`, which have no `actions()` counterpart to point to and
+    /// so still raise PyO3's raw `RuntimeError: Already borrowed` on the
+    /// same reentrant call) — see [`guard_against_reentrant_call`]'s own
+    /// doc. From inside a handler, call [`QuiAppActions::show_context_menu`] (via
     /// [`QuiApp::actions`]) instead — see that type's doc for why it can
     /// succeed where this can't. A one-line forward onto
     /// [`Self::show_overlay`].
     fn show_context_menu(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         items: &Bound<'_, PyList>,
         position: (f32, f32),
     ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "show_context_menu")?;
         let descriptor = PyDict::new(items.py());
         descriptor.set_item("items", items)?;
-        self.show_overlay(
+        this.show_overlay(
             "context_menu",
             &descriptor,
             Some((position.0, position.1, 0.0, 0.0)),
@@ -4603,8 +4629,8 @@ impl QuiApp {
     ///
     /// Call from top-level script code only, never from inside the
     /// registered event handler or render callback — see
-    /// `show_context_menu`'s own doc for why (the same PyO3 runtime-borrow
-    /// wall applies here). From inside a handler, call
+    /// `show_context_menu`'s own doc for why (the same `ReentrantCallError`
+    /// applies here). From inside a handler, call
     /// [`QuiAppActions::show_message_dialog`] (via [`QuiApp::actions`])
     /// instead.
     ///
@@ -4617,12 +4643,14 @@ impl QuiApp {
     /// A one-line forward onto [`Self::show_overlay`].
     #[pyo3(signature = (title, body, buttons, severity=None))]
     fn show_message_dialog(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         title: String,
         body: String,
         buttons: &Bound<'_, PyList>,
         severity: Option<String>,
     ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "show_message_dialog")?;
         let descriptor = PyDict::new(buttons.py());
         descriptor.set_item("title", title)?;
         descriptor.set_item("body", body)?;
@@ -4630,7 +4658,7 @@ impl QuiApp {
         if let Some(severity) = severity {
             descriptor.set_item("severity", severity)?;
         }
-        self.show_overlay("message_dialog", &descriptor, None)?;
+        this.show_overlay("message_dialog", &descriptor, None)?;
         Ok(())
     }
 
@@ -4655,8 +4683,8 @@ impl QuiApp {
     // slot, re-rendered immediately so `screen()`/`screen_contains()`
     // reflect the open overlay without a separate step. Call each from
     // top-level script code only, never from inside the registered event
-    // handler or render callback — same PyO3 runtime-borrow wall
-    // `show_message_dialog`'s own doc explains. Each is a one-line
+    // handler or render callback — raises `ReentrantCallError` the same
+    // way `show_message_dialog`'s own doc explains. Each is a one-line
     // forward onto `show_overlay`/`dismiss_overlay`.
 
     /// Shows `toast` (a dict matching [`quadraui::Toast`]'s shape — `id`,
@@ -4676,12 +4704,18 @@ impl QuiApp {
     /// `show_message_dialog`; from inside a handler, call
     /// [`QuiAppActions::show_toast`] (via [`QuiApp::actions`]) instead.
     #[pyo3(signature = (toast, corner=None))]
-    fn show_toast(&mut self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
+    fn show_toast(
+        slf: Py<Self>,
+        py: Python<'_>,
+        toast: &Bound<'_, PyDict>,
+        corner: Option<String>,
+    ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "show_toast")?;
         let descriptor = toast.copy()?;
         if let Some(corner) = corner {
             descriptor.set_item("corner", corner)?;
         }
-        self.show_overlay("toast", &descriptor, None)?;
+        this.show_overlay("toast", &descriptor, None)?;
         Ok(())
     }
 
@@ -4704,17 +4738,20 @@ impl QuiApp {
     /// auto-dismisses it; call `hide_tooltip` to dismiss it sooner (e.g.
     /// the hovered widget itself changed).
     fn show_tooltip(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         tooltip: &Bound<'_, PyDict>,
         anchor: (f32, f32, f32, f32),
     ) -> PyResult<()> {
-        self.show_overlay("tooltip", tooltip, Some(anchor))?;
+        let mut this = guard_against_reentrant_call(&slf, py, "show_tooltip")?;
+        this.show_overlay("tooltip", tooltip, Some(anchor))?;
         Ok(())
     }
 
     /// Hides the open tooltip (if any). Returns whether one was open.
-    fn hide_tooltip(&mut self) -> PyResult<bool> {
-        self.dismiss_overlay("tooltip")
+    fn hide_tooltip(slf: Py<Self>, py: Python<'_>) -> PyResult<bool> {
+        let mut this = guard_against_reentrant_call(&slf, py, "hide_tooltip")?;
+        this.dismiss_overlay("tooltip")
     }
 
     /// Shows `completions` (a dict matching [`quadraui::Completions`]'s
@@ -5157,8 +5194,9 @@ impl QuiApp {
     /// headless `TuiBackend` this emits the OSC 0/2 terminal escape
     /// sequence (crossterm's `SetTitle`) to retitle the terminal
     /// emulator's tab/window -- genuinely applied, not a no-op.
-    fn set_title(&mut self, title: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_title(slf: Py<Self>, py: Python<'_>, title: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_title")?;
+        this.guarded(|app| {
             service_result(
                 "set_title",
                 with_window(app.driver.parts_mut().0, |w| w.set_title(title)),
@@ -5171,8 +5209,9 @@ impl QuiApp {
     /// `InternalError` on every in-tree backend except a macOS
     /// `run_native` window, which has no reachable equivalent from this
     /// headless app.
-    fn set_document_edited(&mut self, edited: bool) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_document_edited(slf: Py<Self>, py: Python<'_>, edited: bool) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_document_edited")?;
+        this.guarded(|app| {
             service_result(
                 "set_document_edited",
                 with_window(app.driver.parts_mut().0, |w| w.set_document_edited(edited)),
@@ -5184,8 +5223,9 @@ impl QuiApp {
     /// association when `None`) -- [`quadraui::WindowControl::set_represented_filename`].
     /// Same macOS-only story as [`Self::set_document_edited`].
     #[pyo3(signature = (path=None))]
-    fn set_represented_filename(&mut self, path: Option<&str>) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_represented_filename(slf: Py<Self>, py: Python<'_>, path: Option<&str>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_represented_filename")?;
+        this.guarded(|app| {
             service_result(
                 "set_represented_filename",
                 with_window(app.driver.parts_mut().0, |w| {
@@ -5202,11 +5242,12 @@ impl QuiApp {
     /// `InternalError` on every in-tree backend except a `gtk`/`macos`/
     /// `win` `run_native` window: TUI has no tray/status-bar concept at all
     /// ([`Backend::tray`] stays `None` there permanently).
-    fn set_tray_icon(&mut self, icon: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_tray_icon(slf: Py<Self>, py: Python<'_>, icon: &Bound<'_, PyAny>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_tray_icon")?;
         let icon: ImageSource = pythonize::depythonize(icon).map_err(|err| {
             InvalidDescriptorError::new_err(format!("set_tray_icon: invalid icon: {err}"))
         })?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             service_result(
                 "set_tray_icon",
                 with_tray(app.driver.parts_mut().0, |t| t.set_icon(icon)),
@@ -5216,8 +5257,9 @@ impl QuiApp {
 
     /// Sets the tray icon's hover tooltip text -- [`quadraui::backend::TrayService::set_tooltip`].
     /// Same tray-less-on-TUI story as [`Self::set_tray_icon`].
-    fn set_tray_tooltip(&mut self, tooltip: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_tray_tooltip(slf: Py<Self>, py: Python<'_>, tooltip: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_tray_tooltip")?;
+        this.guarded(|app| {
             service_result(
                 "set_tray_tooltip",
                 with_tray(app.driver.parts_mut().0, |t| t.set_tooltip(tooltip)),
@@ -5232,12 +5274,13 @@ impl QuiApp {
     /// `UiEvent::ContextMenuItemActivated` the same way a right-click
     /// context menu's does. Same tray-less-on-TUI story as
     /// [`Self::set_tray_icon`].
-    fn set_tray_menu(&mut self, items: &Bound<'_, PyList>) -> PyResult<()> {
+    fn set_tray_menu(slf: Py<Self>, py: Python<'_>, items: &Bound<'_, PyList>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_tray_menu")?;
         let items: Vec<ContextMenuItem> =
             pythonize::depythonize(items.as_any()).map_err(|err| {
                 InvalidDescriptorError::new_err(format!("set_tray_menu: invalid items: {err}"))
             })?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             service_result(
                 "set_tray_menu",
                 with_tray(app.driver.parts_mut().0, |t| t.set_menu(&tray_menu(items))),
@@ -5256,9 +5299,15 @@ impl QuiApp {
     /// native pointer concept at all, same as [`Backend::set_cursor`]'s
     /// own "no window yet" case on a windowed backend.
     #[pyo3(signature = (shape, edge=None))]
-    fn set_cursor(&mut self, shape: &str, edge: Option<&str>) -> PyResult<bool> {
+    fn set_cursor(
+        slf: Py<Self>,
+        py: Python<'_>,
+        shape: &str,
+        edge: Option<&str>,
+    ) -> PyResult<bool> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_cursor")?;
         let shape = parse_pointer_shape("set_cursor", shape, edge)?;
-        self.guarded(|app| Ok(app.driver.parts_mut().0.set_cursor(shape)))
+        this.guarded(|app| Ok(app.driver.parts_mut().0.set_cursor(shape)))
     }
 
     // ─── Theme, style & fonts ────────────────────────────────────────────
@@ -5289,9 +5338,10 @@ impl QuiApp {
     /// also replayed onto whichever real backend `run_tui`/`run_native`
     /// goes on to construct, via [`AppLogic::setup`] -- mirrors
     /// [`Self::register_accelerator`]'s replay contract.
-    fn set_theme(&mut self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+    fn set_theme(slf: Py<Self>, py: Python<'_>, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_theme")?;
         let keys = dict_keys(overrides)?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let theme = merge_overrides(backend.theme(), keys, |key| {
                 let val = overrides
@@ -5374,18 +5424,24 @@ impl QuiApp {
     ///
     /// Call from top-level script code only, never from inside the
     /// registered event handler or render callback -- see
-    /// `show_context_menu`'s own doc for why (the same PyO3 runtime-borrow
-    /// wall applies here). From inside a handler, call
+    /// `show_context_menu`'s own doc for why (the same `ReentrantCallError`
+    /// applies here). From inside a handler, call
     /// [`QuiAppActions::define_style`] (via [`Self::actions`]) instead --
     /// that path flushes against the real backend a running `run_tui`/
     /// `run_native` loop is driving, so its `request_frame_in` call
     /// repaints that loop rather than a backend nothing is reading from.
-    fn define_style(&mut self, name: &str, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+    fn define_style(
+        slf: Py<Self>,
+        py: Python<'_>,
+        name: &str,
+        overrides: &Bound<'_, PyDict>,
+    ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "define_style")?;
         validate_style_set_name("define_style", name).map_err(decode_error_to_py)?;
         let json = pyany_to_json(overrides.as_any())
             .map_err(|err| InvalidDescriptorError::new_err(format!("define_style: {err}")))?;
         let parsed = decode_style_overrides("define_style", &json).map_err(decode_error_to_py)?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             app_logic.host.style_sets.define(name, parsed);
             backend.request_frame_in(Duration::ZERO);
@@ -5674,14 +5730,16 @@ impl QuiApp {
     /// known to have failed to reach any notification channel at all.
     #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
     fn send_notification(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         title: String,
         body: String,
         urgent: bool,
         silent: bool,
         tag: Option<String>,
     ) -> PyResult<()> {
-        self.guarded(|app| {
+        let mut this = guard_against_reentrant_call(&slf, py, "send_notification")?;
+        this.guarded(|app| {
             let mut n = Notification::new(title, body).with_silent(silent);
             if let Some(tag) = tag {
                 n = n.with_tag(tag);
@@ -5720,13 +5778,14 @@ impl QuiApp {
     /// has no file-manager window, but the session running it usually
     /// does. Raises `InternalError` when no such session is reachable.
     ///
-    /// Like every other `&mut self` method here, calling this from inside
-    /// the registered event handler or render callback hits the same PyO3
-    /// runtime-borrow wall `show_message_dialog`'s own doc describes —
-    /// call [`QuiAppActions::reveal_in_file_manager`] (via
+    /// Like every other method restricted this way, calling this from
+    /// inside the registered event handler or render callback raises
+    /// `ReentrantCallError` the same way `show_message_dialog`'s own doc
+    /// describes — call [`QuiAppActions::reveal_in_file_manager`] (via
     /// [`QuiApp::actions`]) from a handler instead.
-    fn reveal_in_file_manager(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn reveal_in_file_manager(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "reveal_in_file_manager")?;
+        this.guarded(|app| {
             app.driver
                 .backend()
                 .services()
@@ -5744,8 +5803,9 @@ impl QuiApp {
     /// Same handler restriction as `reveal_in_file_manager` — call
     /// [`QuiAppActions::open_path`] (via [`QuiApp::actions`]) from a
     /// handler instead.
-    fn open_path(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn open_path(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "open_path")?;
+        this.guarded(|app| {
             app.driver
                 .backend()
                 .services()
@@ -5764,8 +5824,9 @@ impl QuiApp {
     /// Same handler restriction as `reveal_in_file_manager` — call
     /// [`QuiAppActions::move_to_trash`] (via [`QuiApp::actions`]) from a
     /// handler instead.
-    fn move_to_trash(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn move_to_trash(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "move_to_trash")?;
+        this.guarded(|app| {
             app.driver
                 .backend()
                 .services()
@@ -5787,8 +5848,9 @@ impl QuiApp {
     /// Same handler restriction as `reveal_in_file_manager` — call
     /// [`QuiAppActions::restore_from_trash`] (via [`QuiApp::actions`]) from
     /// a handler instead.
-    fn restore_from_trash(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn restore_from_trash(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "restore_from_trash")?;
+        this.guarded(|app| {
             app.driver
                 .backend()
                 .services()
@@ -6189,6 +6251,34 @@ fn warn_slot_clear_deprecated(py: Python<'_>, slot: i64) -> PyResult<()> {
     )
 }
 
+/// Attempts the one mutable borrow `method` needs, converting PyO3's own
+/// generic `BorrowMutError` into [`ReentrantCallError`] (via
+/// [`quadraui_binding_core::reentrant_call_message`]) instead of letting it
+/// surface as PyO3's raw `RuntimeError: Already borrowed`.
+///
+/// Every `QuiApp` method restricted to top-level script code (the set
+/// [`QuiAppActions`]'s own doc lists) takes `slf: Py<Self>` plus this
+/// explicit `py: Python<'py>` instead of the usual `&mut self`/`&self`
+/// receiver specifically so it can call this first, *before* attempting
+/// anything else: a plain `&mut self` receiver has PyO3's
+/// macro-generated method wrapper perform this same `try_borrow_mut`
+/// itself, as part of extracting that receiver — which happens before the
+/// method's own body (including a guard written inside that body) ever
+/// runs, so a body-level check can never intercept the failure. Calling
+/// this explicitly, against the owning `Py<Self>` handle instead of
+/// through the receiver PyO3 would otherwise extract automatically, is
+/// what lets this crate's own code run first and raise its own tagged
+/// exception instead.
+fn guard_against_reentrant_call<'py>(
+    slf: &Py<QuiApp>,
+    py: Python<'py>,
+    method: &str,
+) -> PyResult<PyRefMut<'py, QuiApp>> {
+    slf.bind(py).try_borrow_mut().map_err(|_| {
+        ReentrantCallError::new_err(quadraui_binding_core::reentrant_call_message(method))
+    })
+}
+
 impl QuiApp {
     /// Runs `body` on `self`, catching a Rust panic instead of letting it
     /// unwind across the PyO3 boundary. On success returns `body`'s result
@@ -6463,6 +6553,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<InvalidFontRoleError>(),
     )?;
     m.add("UnsupportedError", py.get_type::<UnsupportedError>())?;
+    m.add("ReentrantCallError", py.get_type::<ReentrantCallError>())?;
     // Which native *feature* (if any) this build was compiled with — `gtk`
     // wins over `macos`, and both win over `win`, when more than one is
     // enabled (see `run_native`'s doc). This is a build configuration

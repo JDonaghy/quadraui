@@ -256,7 +256,12 @@ test("the watcher timer wakes the event loop on an edit", async () => {
 });
 
 test("an unresolvable watch path is rejected with a clear error", () => {
-  const app = new App(10, 3, { view: () => null });
+  // `App`'s constructor forces one real native paint immediately (see its
+  // own doc), which now requires the render callback -- `view` wrapped in
+  // `setRender` -- to return a plain object; `() => ({})` paints nothing,
+  // same as this test (which only cares about `enableHotReload`'s own
+  // validation) needs.
+  const app = new App(10, 3, { view: () => ({}) });
 
   assert.throws(() => app.enableHotReload(["./definitely-not-a-module"]), /cannot hot-reload/);
   assert.throws(() => app.enableHotReload([{} as any]), /not a module path/);
