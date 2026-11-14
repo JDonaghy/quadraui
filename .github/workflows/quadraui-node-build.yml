@@ -18,15 +18,14 @@ name: quadraui-node build
 # half and `quadraui-py-wheels.yml`'s "build artifact, then prove it is
 # loadable" shape for the pack half.
 #
-# One platform (`ubuntu-latest`), build-from-source only: `@quadraui/node`
-# ships no prebuilt `.node` binary per platform yet (`package.json`'s own
-# `"private": true` -- there is no npm-publish decision for this package
-# the way `quadraui-py-release.yml` has one for PyPI), so there is no
-# `quadraui-py-wheels.yml`-style OS matrix to run here. A consumer on any
-# platform builds from source the same way this job does, via `napi
-# build`'s own per-platform target detection; add a prebuilt-binary matrix
-# (and a `quadraui-node-release.yml` publish workflow) once this package
-# has that decision made for it.
+# One platform (`ubuntu-latest`), build-from-source only: this workflow is
+# the push/PR smoke test, not the release build. `quadraui-node-release.yml`
+# is the tag-triggered workflow that builds and publishes the prebuilt
+# `.node` binary for each of the three platforms `@quadraui/node` ships
+# (macOS arm64, Linux x86_64, Windows x86_64) -- a consumer who installs
+# from npm gets one of those, and a consumer on any other platform builds
+# from source the same way this job does, via `napi build`'s own
+# per-platform target detection.
 #
 # `npm pack`'s own `prepack` lifecycle hook (`package.json`'s `build:dist`
 # script) compiles `js/index.ts` to `dist/index.js` and copies its

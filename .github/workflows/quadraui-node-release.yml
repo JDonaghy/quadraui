@@ -1,0 +1,227 @@
+name: quadraui-node release
+
+# Publishes `@quadraui/node` to npm. Triggered by a `node-v<version>` tag --
+# deliberately distinct from the `v<version>` tags `release.yml` pushes for
+# the `quadraui` Rust crate's own crates.io releases and from the `py-v*`
+# tags `quadraui-py-release.yml` uses for PyPI (#1368's reasoning, extended
+# to a third binding): each binding leaf versions independently of the
+# crate (see `BINDING_VERSION_POLICY.md`), so a crate release, a PyPI
+# release and an npm release are three separate events that must not
+# collide on one tag namespace.
+#
+# Four npm packages publish out of this one workflow run: the root
+# `@quadraui/node` facade (no native code of its own -- just
+# `js/index.ts`'s hand-maintained wrapper, compiled to `dist/` by its own
+# `prepack` hook) and one platform package per prebuilt binary
+# (`@quadraui/node-darwin-arm64`, `-linux-x64-gnu`, `-win32-x64-msvc`, each
+# scaffolded once under `quadraui-node/npm/<platform>/` by `napi
+# create-npm-dirs` and checked in). The root package's `optionalDependencies`
+# (one entry per platform package, same version) is how `npm install
+# @quadraui/node` on a given OS/arch ends up with exactly that platform's
+# `.node` file and no others -- npm's own install-time `os`/`cpu` matching
+# on each platform package's `package.json` skips the ones that don't
+# apply. `quadraui-node/js/index.ts`'s native `require("../index.js")`
+# resolves to whichever platform package's binary npm actually installed
+# (`napi build --platform`'s own generated loader, not anything this
+# workflow writes).
+#
+# Publishing uses npm Trusted Publishing (OIDC): npm's CLI exchanges this
+# job's GitHub OIDC identity (from the `id-token: write` permission below)
+# for a short-lived upload credential, so no long-lived npm token is stored
+# anywhere -- the same shape `release.yml` uses for crates.io and
+# `quadraui-py-release.yml` uses for PyPI. This requires **operator-side**
+# one-time setup that nothing in this file can perform: on npmjs.com, each
+# of the four packages above needs its own "trusted publisher" entry naming
+# this repo (`JDonaghy/quadraui`), this workflow file
+# (`quadraui-node-release.yml`) and the `npm` environment below -- and,
+# because npm (unlike PyPI) requires the package to already exist before a
+# trusted publisher can be attached to it, the very first publish of each
+# of the four packages needs a one-time manual `npm publish` from an
+# authenticated maintainer account before this workflow's trusted-publishing
+# run can take over for every release after that. Until both are done, the
+# `publish` job fails at whichever `npm publish`/`napi pre-publish` step
+# reaches the not-yet-configured package -- the `build` jobs still succeed
+# and upload the prebuilt binaries as workflow artifacts, so nothing is lost
+# even before that setup lands.
+on:
+  push:
+    tags:
+      - "node-v*"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    name: Verify tag matches package.json version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read package.json version and compare against the tag
+        id: read
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "package.json version: ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            echo "workflow_dispatch run; skipping tag/version match check"
+            exit 0
+          fi
+          expected_tag="node-v${version}"
+          if [ "${GITHUB_REF_NAME}" != "${expected_tag}" ]; then
+            echo "::error::tag '${GITHUB_REF_NAME}' does not match quadraui-node/package.json's version '${version}' (expected tag '${expected_tag}')" >&2
+            exit 1
+          fi
+        shell: bash
+        working-directory: quadraui-node
+
+  build:
+    name: prebuilt binary (${{ matrix.platform }})
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # GitHub-hosted `macos-latest` runners are Apple Silicon (arm64) --
+          # building there with no `--target` produces the
+          # `aarch64-apple-darwin` binary this matrix wants, with no
+          # cross-compilation toolchain needed. Same `macos-latest` leg
+          # `quadraui-py-wheels.yml` uses, one target narrower: this matrix
+          # ships `aarch64` only, no Intel Mac leg.
+          - os: macos-latest
+            platform: darwin-arm64
+          - os: ubuntu-latest
+            platform: linux-x64-gnu
+          - os: windows-latest
+            platform: win32-x64-msvc
+    runs-on: ${{ matrix.os }}
+    # Sized generously for a cold Rust + napi build; a healthy run is a few
+    # minutes once dependencies are warm.
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: quadraui-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Build the native addon (release)
+        run: npm run build
+      # Smoke-tests this platform's own freshly built binary before it ever
+      # reaches an artifact upload -- the same "prove it is loadable" gate
+      # `quadraui-node-build.yml` runs for the build-from-source path, and
+      # `quadraui-py-wheels.yml`'s "import the built wheel" step for the
+      # same reason on the Python side.
+      - name: npm test
+        run: npm test
+      - name: Run every example headlessly
+        shell: bash
+        run: |
+          set -euo pipefail
+          for example in examples/*.ts; do
+            echo "::group::node $example"
+            node "$example"
+            echo "::endgroup::"
+          done
+      # `napi build --platform`'s own per-platform suffix (e.g.
+      # `quadraui-node.darwin-arm64.node`) makes each leg's artifact name
+      # collision-free without this workflow needing to rename anything.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: quadraui-node/*.node
+          if-no-files-found: error
+
+  publish:
+    name: Publish to npm
+    needs: [check-version, build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The `npm` environment is where the operator's trusted-publisher config
+    # (see the header comment) is scoped; it is also where a human "required
+    # reviewers" rule could later gate the publish, same as `release.yml`'s
+    # `release` environment does for crates.io.
+    environment: npm
+    permissions:
+      # Lets npm's CLI request the OIDC token npm's trusted publisher
+      # exchanges for an upload credential, for both the per-platform
+      # packages `napi pre-publish` publishes and the root package `npm
+      # publish` below publishes directly.
+      id-token: write
+    defaults:
+      run:
+        working-directory: quadraui-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # Each matrix leg's artifact is named after its own `platform` (e.g.
+      # `darwin-arm64`), so downloading with no `merge-multiple` nests each
+      # one under `artifacts/<platform>/` -- exactly the layout `napi
+      # artifacts` expects when copying `[name].[platform].node` files into
+      # their matching `npm/<platform>/` package.
+      - name: Download prebuilt binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: quadraui-node/artifacts
+      - name: Install npm dependencies
+        run: npm ci
+      # The root package ships no native code of its own, but it does ship
+      # the generated `index.js`/`index.d.ts` (`package.json`'s own `files`
+      # list) that every platform package's binary loads through --
+      # `js/index.ts`'s `require("../index.js")`. That loader is a static,
+      # platform-independent dispatcher (every target's `require(...)`
+      # branch is generated regardless of which host built it), so one
+      # cheap debug build on this job's own runner is enough to produce it;
+      # its own `.node` output is not part of any shipped package and is
+      # deleted right after.
+      - name: Generate index.js/index.d.ts (debug build, discarded binary)
+        run: npm run build:debug
+      - name: Discard this job's own (unshipped) debug binary
+        run: rm -f *.node
+      - name: Collect binaries into their per-platform packages
+        run: npx napi artifacts -d artifacts
+      # `napi artifacts` also drops a copy of every platform's `.node` file
+      # at the crate root (its usual `napi build` output location), which
+      # the root package's own `files` list (`*.node`, for a plain local
+      # `npm run build` + `npm pack` dev loop) would otherwise bundle into
+      # the published root tarball -- three redundant native binaries on
+      # top of the one each platform package already ships on its own.
+      # Each one's real home is its `npm/<platform>/` package, already
+      # populated by the step above; the root copies are discarded here.
+      - name: Discard napi artifacts' root-level binary copies
+        run: rm -f *.node
+      # Publishes `@quadraui/node-darwin-arm64`/`-linux-x64-gnu`/
+      # `-win32-x64-msvc` (each `npm/<platform>/package.json`'s
+      # `publishConfig.access: public`, needed since every one is scoped)
+      # and rewrites this checkout's `quadraui-node/package.json`
+      # `optionalDependencies` to match -- that rewrite is never committed
+      # back; it only needs to be on disk for the `npm publish` step below,
+      # the same "prepare in the ephemeral checkout, never push it back"
+      # shape `quadraui-py-wheels.yml` uses for its own build-time file
+      # changes.
+      - name: Publish per-platform optional-dependency packages
+        run: npx napi pre-publish -t npm
+      - name: Publish @quadraui/node
+        run: npm publish

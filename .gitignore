@@ -22,6 +22,13 @@ quadraui-node/index.d.ts
 quadraui-node/*.node
 quadraui-node/node_modules/
 
+# `napi artifacts`' per-platform binary, copied into the matching
+# `quadraui-node/npm/<platform>/` package during a release build (see
+# `.github/workflows/quadraui-node-release.yml`). The surrounding
+# `package.json`/`README.md` in each `npm/<platform>/` dir are checked in;
+# only the binary itself is a build artifact.
+quadraui-node/npm/*/*.node
+
 # `package.json`'s `build:dist` script (run by `npm pack`'s own `prepack`
 # hook): compiles `js/index.ts` to `dist/index.js` and copies
 # `js/index.d.ts`/`js/wire.d.ts` alongside it. Regenerated on every pack.

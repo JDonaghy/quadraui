@@ -6,6 +6,10 @@ toolkit. This package lets a Node/TypeScript program build `quadraui`
 descriptors and drive them headlessly, or take over a real terminal/native
 window with them.
 
+```bash
+npm install @quadraui/node
+```
+
 ```ts
 const { QuiApp } = require("@quadraui/node");
 ```
@@ -16,9 +20,8 @@ This package's minor version always equals the `quadraui` Rust crate's own
 minor version; the patch component moves independently in either direction
 (see
 [`BINDING_VERSION_POLICY.md`](https://github.com/JDonaghy/quadraui/blob/main/quadraui/docs/decisions/BINDING_VERSION_POLICY.md)).
-`@quadraui/node` is not yet published to npm (tracked by #2239) — this
-package stays `"private": true` until then — but its `package.json`
-`"version"` field already follows this table:
+A released `quadraui` version is always `npm install`-able as the matching
+`@quadraui/node` minor:
 
 | `quadraui` (Rust crate) | `@quadraui/node` |
 |---|---|
@@ -27,6 +30,22 @@ package stays `"private": true` until then — but its `package.json`
 For example, both `quadraui` crate `0.10.1` and `0.10.3` pair with any
 `@quadraui/node` `0.10.x` version; a crate `0.11.0` needs a `0.11.x`
 `package.json` bump, not `0.10.x`.
+
+## Prebuilt binaries
+
+`npm install @quadraui/node` installs one of three prebuilt native addons as
+an optional dependency, matching the installing machine's platform:
+
+- **macOS (arm64)** — `@quadraui/node-darwin-arm64`
+- **Linux (x86_64, glibc)** — `@quadraui/node-linux-x64-gnu`
+- **Windows (x86_64)** — `@quadraui/node-win32-x64-msvc`
+
+All three are headless/TUI builds — `startNative` raises `InternalError`
+rather than opening a real window on any of them, the same as building from
+source with no native-window feature enabled. A different platform (Linux
+arm64, musl, etc.) has no prebuilt binary and needs a Rust toolchain to
+build from source: clone the repo, `cd quadraui-node`, `npm install`, `npm
+run build`.
 
 ## Building and testing an app
 
