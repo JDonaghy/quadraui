@@ -2988,6 +2988,66 @@ mod tests {
         );
     }
 
+    /// A layout dialog with no buttons renders -- its content subtree is
+    /// the only thing a caller needs to resolve it -- and closing it by
+    /// the same path every other overlay kind closes through reports it
+    /// was open and removes it from the next frame.
+    #[test]
+    fn a_layout_dialog_with_no_buttons_renders_and_closes() {
+        let logic = HostLogic {
+            host: BindingHost::default(),
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        let dialog = quadraui::Dialog {
+            id: WidgetId::new("dialog:prefs"),
+            title: StyledText::plain("Preferences"),
+            body: Vec::new(),
+            buttons: Vec::new(),
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        };
+        let content = LayoutNode::Leaf(LayoutLeaf {
+            id: "go".to_string(),
+            descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("go"), "Go")),
+            scroll_px: None,
+        });
+
+        {
+            let (backend, app) = driver.parts_mut();
+            app.engine.open_layout_dialog(
+                dialog,
+                content,
+                crate::engine::DialogContentSize::default(),
+                backend,
+            );
+        }
+        driver.render();
+        assert!(
+            driver.screen_contains("Preferences"),
+            "the dialog chrome must paint with no buttons"
+        );
+        assert!(
+            driver.screen_contains("Go"),
+            "the content subtree must still paint in the dialog's body slot"
+        );
+
+        let (backend, app) = driver.parts_mut();
+        assert!(
+            app.engine.close_layout_dialog(backend),
+            "closing must report an overlay was actually open"
+        );
+        driver.render();
+        assert!(
+            !driver.screen_contains("Preferences"),
+            "the dialog must no longer paint once closed"
+        );
+    }
+
     /// A minimal [`AppLogic`] whose `render` resolves [`BindingHost::render_refs`]
     /// through [`resolve_render_refs`] before painting — exactly the
     /// resolve-then-paint sequence a real binding's own `render` runs for

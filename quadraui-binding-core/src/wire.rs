@@ -2063,7 +2063,13 @@ pub fn decode_layout_dialog<'de, D: Deserializer<'de>>(
 /// [`quadraui::compose::MessageDialogController::new`] does with
 /// [`quadraui::backend::MessageDialogOptions::body`]) and a friendly
 /// lowercase `"severity"` word, so the shape matches the
-/// `"message_dialog"` overlay kind a binding already exposes.
+/// `"message_dialog"` overlay kind a binding already exposes. `"buttons"`
+/// is omittable — a content-bearing dialog may rely on its own subtree
+/// (a form's own Cancel/Save row, a close icon) rather than the chrome's
+/// button row to resolve. An empty list routes every event into the
+/// content subtree first and leaves the dialog open on an Escape neither
+/// the subtree nor a cancel/default button claims; closing then comes
+/// from the content itself or the overlay being dismissed by id.
 #[derive(serde::Deserialize)]
 struct DialogChromeWire {
     id: String,
@@ -2071,6 +2077,7 @@ struct DialogChromeWire {
     title: String,
     #[serde(default)]
     body: String,
+    #[serde(default)]
     buttons: Vec<quadraui::DialogButton>,
     #[serde(default)]
     severity: Option<String>,
@@ -2080,13 +2087,6 @@ struct DialogChromeWire {
 
 impl DialogChromeWire {
     fn into_dialog(self, what: &str) -> Result<quadraui::Dialog, DecodeError> {
-        if self.buttons.is_empty() {
-            return Err(DecodeError::borrow(
-                what,
-                "\"buttons\" must not be empty — a dialog with no buttons can never be \
-                 resolved by Enter or Escape",
-            ));
-        }
         let severity = self
             .severity
             .map(|s| crate::host::dialog_severity(&s))
@@ -2803,6 +2803,31 @@ mod tests {
         assert_eq!(decoded.chrome.id.as_str(), "dialog:prefs");
         assert_eq!(decoded.chrome.buttons.len(), 1);
         assert!(matches!(decoded.content, LayoutNode::Leaf(_)));
+    }
+
+    /// A content-bearing dialog's own `"dialog"` chrome can omit
+    /// `"buttons"` entirely -- a form whose content subtree supplies its
+    /// own Cancel/Save row has no use for the chrome's button row too.
+    #[test]
+    fn a_layout_dialog_with_no_buttons_decodes() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let value = json!({
+            "dialog": {
+                "id": "dialog:prefs",
+                "title": "Preferences",
+            },
+            "content": {"id": "a", "button": {"id": "a", "label": "A"}},
+        });
+        let decoded = decode_layout_dialog(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &DecodeDiagnostics::warn(),
+        )
+        .expect("a dialog with no buttons decodes");
+        assert_eq!(decoded.chrome.id.as_str(), "dialog:prefs");
+        assert!(decoded.chrome.buttons.is_empty());
     }
 
     /// Both keys are required: an overlay with no chrome has nothing to
