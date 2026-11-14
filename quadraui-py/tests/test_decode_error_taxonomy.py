@@ -84,10 +84,10 @@ def test_type_mismatch_names_the_offending_key():
         return {"row": "not a list"}
 
     app.set_render(render)
-    with pytest.raises(TypeMismatchError, match="row/column children") as excinfo:
+    with pytest.raises(TypeMismatchError, match="children") as excinfo:
         app.screen()
     assert excinfo.value.code == "type_mismatch"
-    assert excinfo.value.path == "render"
+    assert excinfo.value.path == 'render › "row"'
 
 
 def test_unknown_key_names_the_typo_d_padding_key():

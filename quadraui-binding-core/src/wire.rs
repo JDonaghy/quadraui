@@ -942,7 +942,7 @@ fn reject_unsupported_spacing_keys(
 /// pyo3-aware check this crate can't make; it would live in a binding's
 /// own decode adapter instead.
 ///
-/// `label` is the container's own key (`"\"row\""`/`"\"column\""`), used
+/// `label` is the container's own key (`"row"`/`"column"`), used
 /// the same way [`spacing_from_value`]/[`justify_from_value`]/
 /// [`align_from_value`] already fold it into their own error paths --
 /// a container-shape problem (this `list` itself, or one of its entries,
