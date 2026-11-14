@@ -42,7 +42,7 @@ use quadraui::{
     SplitTree, TabBar, TabBarSegment, TabItem, Theme, WidgetId,
 };
 
-use crate::extra_paint::{decode_extra_primitive, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
+use crate::extra_paint::{ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 use crate::host::text_display_from_lines;
 use crate::layout::{
     validate_unique_leaf_ids, Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutLeaf,
@@ -389,6 +389,100 @@ fn check_node_sibling_keys(
         }
     }
     Ok(())
+}
+
+/// A one-shot [`serde::Deserializer`] wrapping a `&Value` object, used only
+/// by [`decode_value_checked`]: every method but [`Self::deserialize_struct`]
+/// forwards straight through to `value`'s own `Deserializer` impl, and that
+/// one method diffs `value`'s own keys against the field-name list `T`'s
+/// derived `Deserialize` impl hands it, reporting anything outside it
+/// through `diagnostics` before continuing the real decode. A `T` whose
+/// derive reaches this instead through `deserialize_map` (a `#[serde(flatten)]`
+/// field, a hand-written `Deserialize` impl) skips the check silently rather
+/// than tripping it falsely -- this only ever *adds* a finding, never
+/// changes what otherwise decodes successfully.
+struct DescriptorBodyDeserializer<'de, 'b> {
+    value: &'de Value,
+    diagnostics: &'b DecodeDiagnostics,
+    path: &'b str,
+    field: &'b str,
+    unknown_key: &'b Cell<Option<DecodeError>>,
+}
+
+impl<'de, 'b> serde::Deserializer<'de> for DescriptorBodyDeserializer<'de, 'b> {
+    type Error = serde_json::Error;
+
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if let Some(obj) = self.value.as_object() {
+            for key in obj.keys() {
+                if !fields.contains(&key.as_str()) {
+                    if let Err(err) = self
+                        .diagnostics
+                        .report_unknown_key(self.path, self.field, key, fields)
+                    {
+                        self.unknown_key.replace(Some(err));
+                        return Err(serde::de::Error::custom(
+                            "unknown key rejected by DecodeDiagnostics",
+                        ));
+                    }
+                }
+            }
+        }
+        self.value.deserialize_struct(name, fields, visitor)
+    }
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.value.deserialize_any(visitor)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map enum identifier ignored_any
+    }
+}
+
+/// [`decode_value`] for a descriptor *body* dict -- a leaf's `"button"`/
+/// `"slider"`/... value, decoded straight into its fixed or additive-primitive
+/// type -- except an unrecognized key inside that dict now goes through
+/// `diagnostics` exactly like a layout-tree node's own sibling keys already
+/// do via [`check_unknown_keys`], instead of decoding silently either way.
+/// `field` is the descriptor-body's own kind name (`"button"`, `"slider"`,
+/// ...), reported alongside `path` the same way [`check_unknown_keys`]'s
+/// callers already name their own dict.
+pub(crate) fn decode_value_checked<'de, T>(
+    diagnostics: &DecodeDiagnostics,
+    path: &str,
+    field: &str,
+    value: &'de Value,
+) -> Result<T, DecodeError>
+where
+    T: serde::Deserialize<'de>,
+{
+    let unknown_key: Cell<Option<DecodeError>> = Cell::new(None);
+    let guard = DescriptorBodyDeserializer {
+        value,
+        diagnostics,
+        path,
+        field,
+        unknown_key: &unknown_key,
+    };
+    T::deserialize(guard).map_err(|err| {
+        unknown_key
+            .replace(None)
+            .unwrap_or_else(|| DecodeError::borrow(path, format!("invalid descriptor: {err}")))
+    })
 }
 
 // ─── Value helpers ──────────────────────────────────────────────────────────
@@ -1775,21 +1869,51 @@ fn layout_leaf_from_value(
             ));
         }
         found = Some(match key {
-            "button" => LeafDescriptor::Button(decode_value(&context, value_dict)?),
-            "text_display" => LeafDescriptor::TextDisplay(decode_value(&context, value_dict)?),
+            "button" => LeafDescriptor::Button(decode_value_checked(
+                diagnostics,
+                &context,
+                key,
+                value_dict,
+            )?),
+            "text_display" => LeafDescriptor::TextDisplay(decode_value_checked(
+                diagnostics,
+                &context,
+                key,
+                value_dict,
+            )?),
             "list" => {
                 scroll_px = crate::scroll_px_from_value(v);
-                LeafDescriptor::List(decode_value(&context, value_dict)?)
+                LeafDescriptor::List(decode_value_checked(
+                    diagnostics,
+                    &context,
+                    key,
+                    value_dict,
+                )?)
             }
             "tree" => {
                 scroll_px = crate::scroll_px_from_value(v);
-                LeafDescriptor::Tree(decode_value(&context, value_dict)?)
+                LeafDescriptor::Tree(decode_value_checked(
+                    diagnostics,
+                    &context,
+                    key,
+                    value_dict,
+                )?)
             }
             "data_table" => {
                 scroll_px = crate::scroll_px_from_value(v);
-                LeafDescriptor::DataTable(decode_value(&context, value_dict)?)
+                LeafDescriptor::DataTable(decode_value_checked(
+                    diagnostics,
+                    &context,
+                    key,
+                    value_dict,
+                )?)
             }
-            "tab_bar" => LeafDescriptor::TabBar(decode_value(&context, value_dict)?),
+            "tab_bar" => LeafDescriptor::TabBar(decode_value_checked(
+                diagnostics,
+                &context,
+                key,
+                value_dict,
+            )?),
             _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
         });
     }
@@ -1808,9 +1932,14 @@ fn layout_leaf_from_value(
                 "has more than one descriptor kind",
             ));
         }
-        found = Some(LeafDescriptor::Extra(decode_extra_primitive(
-            &context, kind, value_dict,
-        )?));
+        found = Some(LeafDescriptor::Extra(
+            crate::extra_paint::decode_extra_primitive_checked(
+                diagnostics,
+                &context,
+                kind,
+                value_dict,
+            )?,
+        ));
     }
 
     let descriptor = found.ok_or_else(|| {
@@ -2074,8 +2203,11 @@ pub fn decode_render_output_with_styles<'de, D: Deserializer<'de>>(
 /// Reads and decodes one optional slot entry from a render callback's
 /// returned `dict`: a missing key or a `null` value both mean "draw
 /// nothing in this slot this frame"; anything else must be a `dict`
-/// decodable into `T`.
+/// decodable into `T`. An unrecognized key inside that dict routes through
+/// `diagnostics` via [`decode_value_checked`], the same strict/warn policy
+/// a layout-tree leaf's own body already gets.
 fn slot_entry<T: serde::de::DeserializeOwned>(
+    diagnostics: &DecodeDiagnostics,
     what: &str,
     value: &Value,
     key: &str,
@@ -2085,7 +2217,7 @@ fn slot_entry<T: serde::de::DeserializeOwned>(
             if !v.is_object() {
                 return Err(DecodeError::type_mismatch(what, key, "an object or null"));
             }
-            Ok(Some(decode_value(what, v)?))
+            Ok(Some(decode_value_checked(diagnostics, what, key, v)?))
         }
         None => Ok(None),
     }
@@ -2094,9 +2226,11 @@ fn slot_entry<T: serde::de::DeserializeOwned>(
 /// Reads and decodes one optional additive primitive slot entry, keyed by
 /// `kind` (one of [`EXTRA_PRIMITIVE_KINDS`]), from a render callback's
 /// returned `dict`. Mirrors [`slot_entry`]'s missing/`null`/dict-or-error
-/// shape, dispatching the decode through [`decode_extra_primitive`]
-/// instead of a single fixed type.
+/// shape (including its `diagnostics` routing), dispatching the decode
+/// through [`crate::extra_paint::decode_extra_primitive_checked`] instead of
+/// a single fixed type.
 fn extra_slot_entry(
+    diagnostics: &DecodeDiagnostics,
     what: &str,
     value: &Value,
     kind: &str,
@@ -2106,7 +2240,12 @@ fn extra_slot_entry(
             if !v.is_object() {
                 return Err(DecodeError::type_mismatch(what, kind, "an object or null"));
             }
-            Ok(Some(decode_extra_primitive(what, kind, v)?))
+            Ok(Some(crate::extra_paint::decode_extra_primitive_checked(
+                diagnostics,
+                what,
+                kind,
+                v,
+            )?))
         }
         None => Ok(None),
     }
@@ -2135,7 +2274,7 @@ pub(crate) fn render_frame_from_value(
     check_unknown_keys(diagnostics, what, "render output", value, &known_keys)?;
     let mut extra = HashMap::new();
     for kind in EXTRA_PRIMITIVE_KINDS {
-        if let Some(v) = extra_slot_entry(what, value, kind)? {
+        if let Some(v) = extra_slot_entry(diagnostics, what, value, kind)? {
             extra.insert(kind.to_string(), v);
         }
     }
@@ -2143,12 +2282,12 @@ pub(crate) fn render_frame_from_value(
     let tree_scroll_px = obj_get(value, "tree").and_then(crate::scroll_px_from_value);
     let data_table_scroll_px = obj_get(value, "data_table").and_then(crate::scroll_px_from_value);
     Ok(RenderFrame {
-        button: slot_entry(what, value, "button")?,
-        text_display: slot_entry(what, value, "text_display")?,
-        list: slot_entry(what, value, "list")?,
-        tree: slot_entry(what, value, "tree")?,
-        data_table: slot_entry(what, value, "data_table")?,
-        tab_bar: slot_entry(what, value, "tab_bar")?,
+        button: slot_entry(diagnostics, what, value, "button")?,
+        text_display: slot_entry(diagnostics, what, value, "text_display")?,
+        list: slot_entry(diagnostics, what, value, "list")?,
+        tree: slot_entry(diagnostics, what, value, "tree")?,
+        data_table: slot_entry(diagnostics, what, value, "data_table")?,
+        tab_bar: slot_entry(diagnostics, what, value, "tab_bar")?,
         extra,
         list_scroll_px,
         tree_scroll_px,
@@ -4374,6 +4513,60 @@ mod tests {
             error.to_string().contains("\"focussed\""),
             "{}",
             error.to_string()
+        );
+    }
+
+    /// An unrecognised key inside a `"button"` descriptor body -- a fixed
+    /// leaf's own dict, decoded through [`decode_value_checked`] rather
+    /// than [`check_unknown_keys`]'s sibling-key path -- is a hard
+    /// [`DecodeError::UnknownKey`] under `strict`, naming the key, the
+    /// dict it was found on, and the keys `Button` actually accepts.
+    #[test]
+    fn button_leaf_body_rejects_an_unknown_key_under_strict() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::strict();
+        let value = json!({
+            "id": "b1",
+            "button": {"id": "b1", "labl": "Go"},
+        });
+        let error = err(decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        ));
+        assert_eq!(error.code(), "unknown_key");
+        assert!(
+            error.to_string().contains("\"labl\""),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// The same typo'd key [`button_leaf_body_rejects_an_unknown_key_under_strict`]
+    /// rejects under `strict` only warns once, through the registered hook,
+    /// under the default (warn) policy -- the decode still succeeds, since
+    /// the dict also carries the real `"label"` key `Button` requires.
+    #[test]
+    fn button_leaf_body_warns_once_under_default_policy() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "b1",
+            "button": {"id": "b1", "label": "Go", "labl": "Go"},
+        });
+        decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        )
+        .expect("warn mode still decodes despite the unrecognised key");
+        assert_eq!(
+            diagnostics.warned_keys(),
+            HashSet::from(["labl".to_string()])
         );
     }
 
