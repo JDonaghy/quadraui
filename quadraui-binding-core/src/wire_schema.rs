@@ -756,6 +756,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("h_scroll", float_()),
             field_opt("column_overrides", list(nullable(float_()))),
             field_opt("footer", nullable(data_row_descriptor)),
+            field_opt("bordered", bool_()),
             field_opt("scroll_px", float_()),
         ],
     ));
@@ -3962,7 +3963,8 @@ mod coverage {
             min_total_width,
             h_scroll,
             column_overrides,
-            footer
+            footer,
+            bordered
         }
     );
     assert_fields!(

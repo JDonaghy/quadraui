@@ -1129,6 +1129,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `h_scroll` | `number` | no |  |
 | `column_overrides` | `(number \| null)[]` | no |  |
 | `footer` | `DataRowDescriptor \| null` | no |  |
+| `bordered` | `boolean` | no |  |
 | `scroll_px` | `number` | no |  |
 
 <a id="wire-tabitemdescriptor"></a>

@@ -6608,6 +6608,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         };
         let logic = DataTableLogic {
             data_table,
@@ -7418,6 +7419,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         };
         let logic = DataTableCursorLogic {
             table,

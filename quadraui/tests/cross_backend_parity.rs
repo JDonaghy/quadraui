@@ -737,6 +737,7 @@ fn declared_width_in_chars<D: ColumnUnitProbe>(d: &D, width: ColumnWidth) -> f32
         h_scroll: 0.0,
         column_overrides: vec![],
         footer: None,
+        bordered: false,
     };
     d.probe_column_width(&table) / d.probe_char_width()
 }

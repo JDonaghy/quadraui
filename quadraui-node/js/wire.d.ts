@@ -287,6 +287,7 @@ export interface DataTableDescriptor {
   h_scroll?: number;
   column_overrides?: (number | null)[];
   footer?: DataRowDescriptor | null;
+  bordered?: boolean;
   scroll_px?: number;
 }
 

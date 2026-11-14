@@ -9123,6 +9123,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         };
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
         let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
@@ -9187,6 +9188,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         };
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
 
@@ -9340,6 +9342,7 @@ mod tests {
                 h_scroll: 0.0,
                 column_overrides: vec![],
                 footer: None,
+                bordered: false,
             };
             let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
             let header_height;
@@ -9414,6 +9417,7 @@ mod tests {
                 h_scroll: 0.0,
                 column_overrides: vec![],
                 footer: None,
+                bordered: false,
             };
             let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
             {
@@ -10221,6 +10225,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         };
 
         let backend = GtkBackend::new();
@@ -10280,6 +10285,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         };
 
         // Fresh backend: no `pango_ctx` set, so `data_table_layout` falls

@@ -4,6 +4,14 @@
 //! per-cell text aligned within resolved column bounds. Selected row
 //! uses `theme.selection_bg`. Focused table highlights the selected
 //! row more prominently.
+//!
+//! **Border** (`table.bordered`): a rounded `╭─╮ │ ╰─╯` frame in
+//! [`Theme::border_fg`] around `area`, insetting the header, every row,
+//! the footer and both scrollbars by 1 cell on each side — the same
+//! margin [`DataTable::layout`](crate::primitives::data_table::DataTable::layout)
+//! reserves in `visible_rows`/`inset_x`/`inset_y`, so a host that always
+//! sets this can safely overlay a focus ring on `area` without it ever
+//! landing on the header, first column or last row.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -144,9 +152,24 @@ fn draw_data_table_inner(
     let sel_bg = ratatui_color(theme.selection_bg);
     let muted_fg = ratatui_color(theme.muted_fg);
 
+    // `table.bordered` reserves a 1-cell margin on every edge — see
+    // `DataTable::bordered`'s doc — so the header, every row, the footer
+    // and both scrollbars paint inset from `area` by this much, matching
+    // the inset `DataTable::layout` already baked into `layout.inset_x`/
+    // `layout.inset_y` for hit-testing. `0` when not bordered, so every
+    // position below is an identity add-on to the pre-existing behaviour.
+    let (ox, oy): (u16, u16) = if table.bordered { (1, 1) } else { (0, 0) };
+    if table.bordered {
+        draw_data_table_border(buf, area, ratatui_color(theme.border_fg), body_fg, body_bg);
+    }
+    // Interior bounds (right edge exclusive) every paint position below
+    // clips to, so nothing ever lands on the border frame itself.
+    let inner_x0 = area.x as i32 + ox as i32;
+    let inner_x1 = area.x as i32 + area.width as i32 - ox as i32;
+
     // ── Header row ────────────────────────────────────────────────────
-    let header_y = area.y;
-    for x in 0..area.width {
+    let header_y = area.y + oy;
+    for x in ox..area.width.saturating_sub(ox) {
         set_cell(buf, area.x + x, header_y, ' ', header_fg, header_bg);
     }
 
@@ -161,9 +184,9 @@ fn draw_data_table_inner(
             break;
         }
         let col = &table.columns[col_idx];
-        let col_x_raw = area.x as i32 + rc.x.round() as i32 - h_off as i32;
+        let col_x_raw = inner_x0 + rc.x.round() as i32 - h_off as i32;
         let col_x_end = col_x_raw + rc.width.round() as i32;
-        if col_x_end <= area.x as i32 || col_x_raw >= (area.x + area.width) as i32 {
+        if col_x_end <= inner_x0 || col_x_raw >= inner_x1 {
             continue;
         }
         let col_w = rc.width.round() as u16;
@@ -174,7 +197,7 @@ fn draw_data_table_inner(
         // Column separator on the right edge (skip last column).
         if col_idx + 1 < table.columns.len() {
             let sep_cx = col_x_raw + col_w as i32 - 1;
-            if sep_cx >= area.x as i32 && sep_cx < (area.x + area.width) as i32 {
+            if sep_cx >= inner_x0 && sep_cx < inner_x1 {
                 set_cell(buf, sep_cx as u16, header_y, '│', sep_fg, header_bg);
             }
         }
@@ -206,10 +229,10 @@ fn draw_data_table_inner(
 
         for (i, ch) in title.chars().enumerate() {
             let cx = col_x_raw + start + i as i32;
-            if cx >= col_x_raw + usable_w || cx >= (area.x + area.width) as i32 {
+            if cx >= col_x_raw + usable_w || cx >= inner_x1 {
                 break;
             }
-            if cx >= area.x as i32 {
+            if cx >= inner_x0 {
                 set_cell(buf, cx as u16, header_y, ch, header_fg, header_bg);
                 if let Some(cell) =
                     buf.cell_mut(ratatui::prelude::Position::new(cx as u16, header_y))
@@ -226,7 +249,7 @@ fn draw_data_table_inner(
     // `scroll_sub_row_px` pairs with `effective_scroll_offset` for a
     // pixel-precise painter is simply never read on this backend.
     let scroll_offset = table.effective_scroll_offset(layout.row_height, scroll_px);
-    let body_y = area.y + 1;
+    let body_y = area.y + oy + 1;
     let visible = layout
         .visible_rows
         .min(table.rows.len().saturating_sub(scroll_offset));
@@ -247,14 +270,14 @@ fn draw_data_table_inner(
         };
 
         // Fill row background
-        for x in 0..area.width {
+        for x in ox..area.width.saturating_sub(ox) {
             set_cell(buf, area.x + x, y, ' ', row_fg, row_bg);
         }
 
         for (col_idx, rc) in layout.columns.iter().enumerate() {
-            let col_x_raw = area.x as i32 + rc.x.round() as i32 - h_off as i32;
+            let col_x_raw = inner_x0 + rc.x.round() as i32 - h_off as i32;
             let col_x_end = col_x_raw + rc.width.round() as i32;
-            if col_x_end <= area.x as i32 || col_x_raw >= (area.x + area.width) as i32 {
+            if col_x_end <= inner_x0 || col_x_raw >= inner_x1 {
                 continue;
             }
             let col_w = rc.width.round() as u16;
@@ -267,7 +290,7 @@ fn draw_data_table_inner(
             // the header separator.
             if col_idx + 1 < table.columns.len() {
                 let sep_cx = col_x_raw + col_w as i32 - 1;
-                if sep_cx >= area.x as i32 && sep_cx < (area.x + area.width) as i32 {
+                if sep_cx >= inner_x0 && sep_cx < inner_x1 {
                     set_cell(buf, sep_cx as u16, y, '│', sep_fg, row_bg);
                 }
             }
@@ -341,19 +364,19 @@ fn draw_data_table_inner(
                     if chars_emitted == visible_chars {
                         if needs_ellipsis {
                             let cx = col_x_raw + start + width_used as i32;
-                            if cx >= area.x as i32 && cx < (area.x + area.width) as i32 {
+                            if cx >= inner_x0 && cx < inner_x1 {
                                 set_cell(buf, cx as u16, y, '…', span_fg, row_bg);
                             }
                         }
                         break 'cell;
                     }
                     let cx = col_x_raw + start + width_used as i32;
-                    if cx >= (area.x + area.width) as i32 {
+                    if cx >= inner_x1 {
                         break 'cell;
                     }
                     let w = crate::text_util::char_cell_width(ch);
-                    if cx >= area.x as i32 {
-                        if w == 2 && cx + 1 < (area.x + area.width) as i32 {
+                    if cx >= inner_x0 {
+                        if w == 2 && cx + 1 < inner_x1 {
                             set_cell_wide(buf, cx as u16, y, ch, span_fg, row_bg);
                         } else {
                             set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
@@ -372,12 +395,16 @@ fn draw_data_table_inner(
         && table.rows.len() > layout.visible_rows
         && layout.scrollbar_width > 0.0
     {
-        let sb_x = area.x + area.width - layout.scrollbar_width.round() as u16;
+        let sb_x = area.x + area.width - ox - layout.scrollbar_width.round() as u16;
         let sb_track = crate::event::Rect::new(
             sb_x as f32,
-            (area.y + 1) as f32,
+            (area.y + oy + 1) as f32,
             1.0,
-            (area.height.saturating_sub(1).saturating_sub(footer_h)) as f32,
+            (area
+                .height
+                .saturating_sub(2 * oy)
+                .saturating_sub(1)
+                .saturating_sub(footer_h)) as f32,
         );
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
@@ -392,10 +419,10 @@ fn draw_data_table_inner(
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
     if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
-        let hsb_y = area.y + area.height - footer_h - layout.h_scrollbar_height.round() as u16;
-        let track_w = (area.width as f32 - layout.scrollbar_width).max(1.0);
-        let hsb_track = crate::event::Rect::new(area.x as f32, hsb_y as f32, track_w, 1.0);
-        let visible_w = (area.width as f32 - layout.scrollbar_width).max(1.0);
+        let hsb_y = area.y + area.height - oy - footer_h - layout.h_scrollbar_height.round() as u16;
+        let track_w = (area.width as f32 - 2.0 * ox as f32 - layout.scrollbar_width).max(1.0);
+        let hsb_track = crate::event::Rect::new((area.x + ox) as f32, hsb_y as f32, track_w, 1.0);
+        let visible_w = (area.width as f32 - 2.0 * ox as f32 - layout.scrollbar_width).max(1.0);
         let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
             table.id,
             hsb_track,
@@ -415,18 +442,18 @@ fn draw_data_table_inner(
             // are reserved via `footer_height == row_height * 2.0`
             // (see `DataTable::layout`), so neither is ever painted
             // over by a body row.
-            let footer_y = area.y + area.height - 1;
+            let footer_y = area.y + area.height - 1 - oy;
             let footer_bg = ratatui_color(theme.tab_bar_bg);
             let footer_fg = ratatui_color(theme.foreground);
 
             // Divider rule directly above the footer row.
             if footer_y > area.y {
-                for x in 0..area.width {
+                for x in ox..area.width.saturating_sub(ox) {
                     set_cell(buf, area.x + x, footer_y - 1, '─', sep_fg, header_bg);
                 }
             }
 
-            for x in 0..area.width {
+            for x in ox..area.width.saturating_sub(ox) {
                 set_cell(buf, area.x + x, footer_y, ' ', footer_fg, footer_bg);
             }
 
@@ -436,9 +463,9 @@ fn draw_data_table_inner(
                     _ => continue,
                 };
                 let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-                let col_x_raw = area.x as i32 + rc.x.round() as i32 - h_off as i32;
+                let col_x_raw = inner_x0 + rc.x.round() as i32 - h_off as i32;
                 let col_x_end = col_x_raw + rc.width.round() as i32;
-                if col_x_end <= area.x as i32 || col_x_raw >= (area.x + area.width) as i32 {
+                if col_x_end <= inner_x0 || col_x_raw >= inner_x1 {
                     continue;
                 }
                 let col_w = rc.width.round() as u16;
@@ -459,10 +486,10 @@ fn draw_data_table_inner(
                     let span_fg = span.fg.map(ratatui_color).unwrap_or(footer_fg);
                     for ch in span.text.chars() {
                         let cx = col_x_raw + start + char_offset;
-                        if cx >= (area.x + area.width) as i32 {
+                        if cx >= inner_x1 {
                             break;
                         }
-                        if cx >= area.x as i32 {
+                        if cx >= inner_x0 {
                             set_cell(buf, cx as u16, footer_y, ch, span_fg, footer_bg);
                             if let Some(cell) =
                                 buf.cell_mut(ratatui::prelude::Position::new(cx as u16, footer_y))
@@ -480,6 +507,60 @@ fn draw_data_table_inner(
     }
 
     layout
+}
+
+/// Paint a rounded border frame (`╭─╮ │ ╰─╯`) around `area` in `border_fg`
+/// on `bg`, filling every interior cell with `(fg, bg)` first — reserving
+/// the 1-cell margin [`DataTable::layout`](crate::primitives::data_table::DataTable::layout)
+/// insets the header, rows, footer and scrollbars into when
+/// [`DataTable::bordered`](crate::primitives::data_table::DataTable::bordered)
+/// is set. Mirrors `tui::tree::draw_tree_border`'s glyphs plus the
+/// interior fill `tui::list::draw_list`'s own bordered branch applies, so
+/// a focus ring painted over the same `area` afterwards only ever
+/// recolours the frame glyphs, never the header/row content painted on
+/// top of this fill.
+fn draw_data_table_border(
+    buf: &mut Buffer,
+    area: Rect,
+    border_fg: ratatui::style::Color,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+) {
+    let top_y = area.y;
+    for col in 0..area.width {
+        let cx = area.x + col;
+        let ch = if col == 0 {
+            '╭'
+        } else if col + 1 == area.width {
+            '╮'
+        } else {
+            '─'
+        };
+        set_cell(buf, cx, top_y, ch, border_fg, bg);
+    }
+    if area.height >= 2 {
+        let bot_y = area.y + area.height - 1;
+        for col in 0..area.width {
+            let cx = area.x + col;
+            let ch = if col == 0 {
+                '╰'
+            } else if col + 1 == area.width {
+                '╯'
+            } else {
+                '─'
+            };
+            set_cell(buf, cx, bot_y, ch, border_fg, bg);
+        }
+    }
+    if area.height >= 3 {
+        for row in (area.y + 1)..(area.y + area.height - 1) {
+            set_cell(buf, area.x, row, '│', border_fg, bg);
+            set_cell(buf, area.x + area.width - 1, row, '│', border_fg, bg);
+            for col in 1..area.width.saturating_sub(1) {
+                set_cell(buf, area.x + col, row, ' ', fg, bg);
+            }
+        }
+    }
 }
 
 fn align_offset(align: ColumnAlign, text_len: u16, col_w: u16) -> u16 {
@@ -557,6 +638,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         }
     }
 
@@ -794,6 +876,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         };
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
@@ -861,6 +944,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         };
         let area = Rect::new(0, 0, 10, 10);
         let mut buf = Buffer::empty(area);
@@ -1219,6 +1303,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         }
     }
 
@@ -1348,6 +1433,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         }
     }
 
@@ -1535,6 +1621,102 @@ mod tests {
             );
         }
     }
+
+    // ── `DataTable::bordered` focus-ring inset ──────────────────────────
+
+    /// With `table.bordered`, the header and row 0's content paint one
+    /// cell inset from `area`'s top-left — the corner `draw_focus_ring`
+    /// would otherwise overwrite stays blank (border glyph territory),
+    /// not table content.
+    #[test]
+    fn bordered_insets_header_and_first_row_away_from_the_top_left_corner() {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        let mut table = make_table();
+        table.bordered = true;
+        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        // Top-left/right and bottom-left/right corners are border glyphs.
+        assert_eq!(buf[(0, 0)].symbol(), "╭");
+        assert_eq!(buf[(39, 0)].symbol(), "╮");
+        assert_eq!(buf[(0, 5)].symbol(), "╰");
+        assert_eq!(buf[(39, 5)].symbol(), "╯");
+        // The left border column continues down the header row.
+        assert_eq!(buf[(0, 1)].symbol(), "│");
+        // The header's first column paints at local x=1 (the 1-cell
+        // inset), not x=0.
+        assert_eq!(buf[(1, 1)].symbol(), "N");
+        // Row 0 ("pod-abc") paints one row below the header, inset the
+        // same 1 cell.
+        assert_eq!(buf[(1, 2)].symbol(), "p");
+    }
+
+    /// `draw_focus_ring` painted over the *same* `area` a bordered table
+    /// was painted into recolours the border cells it shares with the
+    /// table's own frame, but never touches the inset header/row content.
+    #[test]
+    fn focus_ring_over_bordered_table_never_overwrites_content() {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        let mut table = make_table();
+        table.bordered = true;
+        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        assert_eq!(buf[(1, 1)].symbol(), "N");
+        assert_eq!(buf[(1, 2)].symbol(), "p");
+
+        crate::tui::draw_focus_ring(&mut buf, area, &Theme::default());
+
+        // The ring repaints the same corner glyph; header/row content a
+        // cell in is untouched.
+        assert_eq!(buf[(0, 0)].symbol(), "╭");
+        assert_eq!(
+            buf[(1, 1)].symbol(),
+            "N",
+            "focus ring must not overwrite the bordered table's header"
+        );
+        assert_eq!(
+            buf[(1, 2)].symbol(),
+            "p",
+            "focus ring must not overwrite the bordered table's row content"
+        );
+    }
+
+    /// Hit-testing stays in sync with the inset paint: clicking the
+    /// painted header/row cells (local coords, i.e. relative to `area`)
+    /// still resolves to the right header/row; clicking the border
+    /// column/row (x=0, y=0, or the opposite edges) misses everything.
+    #[test]
+    fn bordered_hit_test_matches_inset_paint() {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        let mut table = make_table();
+        table.bordered = true;
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        // Clicking inside the header row (local y=1) resolves to a
+        // header hit.
+        assert!(matches!(
+            layout.hit_test(2.0, 1.0, table.scroll_offset, table.rows.len()),
+            DataTableHit::Header { col: 0 }
+        ));
+        // Clicking row 0's content (local y=2) resolves to row 0.
+        assert_eq!(
+            layout.hit_test(2.0, 2.0, table.scroll_offset, table.rows.len()),
+            DataTableHit::Row { idx: 0 }
+        );
+        // The border frame itself is never a column/row.
+        assert_eq!(
+            layout.hit_test(0.0, 1.0, table.scroll_offset, table.rows.len()),
+            DataTableHit::Empty,
+            "left border column must not resolve to a header hit"
+        );
+        assert_eq!(
+            layout.hit_test(2.0, 0.0, table.scroll_offset, table.rows.len()),
+            DataTableHit::Empty,
+            "top border row must not resolve to a header hit"
+        );
+    }
 }
 
 /// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
@@ -1585,6 +1767,7 @@ mod multi_select_driver_tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         }
     }
 
