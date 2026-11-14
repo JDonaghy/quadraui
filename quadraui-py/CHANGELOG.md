@@ -10,6 +10,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ## [Unreleased]
 
+### Added
+
+- `QuiApp(..., strict=False, on_unknown_key=None)`: a render callback's
+  returned descriptor (or `run_shell`'s `config`) carrying an unrecognised
+  *optional* key (a misspelt `"cursr"`, `"focussed"`, ...) now reports it
+  through `on_unknown_key(key, path)` — called at most once per distinct
+  key for the app's whole lifetime — instead of silently dropping it.
+  `strict=True` turns the same finding into an `UnknownKeyError` instead,
+  raised from the render that found it. The default (`strict=False`, no
+  `on_unknown_key`) keeps every existing app's behaviour unchanged.
+
 ### Changed
 
 - `QuiApp.step`/`QuiShellApp.step`/`QuiApp.run` now render once whenever

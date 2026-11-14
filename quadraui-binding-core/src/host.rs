@@ -196,6 +196,16 @@ pub struct BindingHost {
     /// `QuiApp` in a fresh test case gets a clean slate for free, with no
     /// process-wide state to reset between tests.
     pub warned_deprecations: RefCell<HashSet<String>>,
+    /// The session this host's own render-callback/`run_shell`-config
+    /// decode calls report an unknown optional wire key through — warn
+    /// (the default; once per key for this host's whole lifetime, the same
+    /// per-session dedup [`Self::warned_deprecations`] already gives a
+    /// deprecated method name) unless a binding's own `strict`
+    /// constructor argument/setter has called
+    /// [`crate::wire::DecodeDiagnostics::set_strict`]`(true)` on it. A
+    /// binding registers its own `on_unknown_key`-style callable via
+    /// [`crate::wire::DecodeDiagnostics::set_hook`].
+    pub wire_diagnostics: crate::wire::DecodeDiagnostics,
 }
 
 impl BindingHost {

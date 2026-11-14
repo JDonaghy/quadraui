@@ -934,6 +934,7 @@ CALLABLE_PARAM_NAMES = {
     "on_shell_event",
     "on_bottom_panel_event",
     "on_tick",
+    "on_unknown_key",
 }
 
 # `(class, method, param)` -> a Python type overriding the generic mapping

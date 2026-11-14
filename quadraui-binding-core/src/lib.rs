@@ -324,8 +324,8 @@ pub use widget_state::WidgetState;
 pub use wire::{
     decode_layout_dialog, decode_layout_node, decode_layout_node_with_styles, decode_popover,
     decode_render_output, decode_render_output_with_styles, decode_shell_config,
-    decode_style_overrides, validate_style_set_name, OverlayContent, RenderOutput,
-    StaticTabContent, StyleContext, LAYOUT_NODE_KEYS,
+    decode_style_overrides, validate_style_set_name, DecodeDiagnostics, OverlayContent,
+    RenderOutput, StaticTabContent, StyleContext, LAYOUT_NODE_KEYS,
 };
 
 /// Lift an optional `"scroll_px"` number out of a `list`/`tree`/
