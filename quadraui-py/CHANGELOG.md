@@ -31,6 +31,22 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- An asyncio-native runner: `quadraui.asyncio.run(app)` (equivalently,
+  `await app.run_async()`) drives `QuiApp.step()`/render from a running
+  asyncio event loop instead of a plain `while`/`for` loop, mirroring
+  `quadraui-node`'s own `run()`. `QuiApp.arm_wake_notify(callback)`/
+  `disarm_wake_notify()` are the new low-level hook it is built on: a
+  no-argument callback fired every time any `QuiAppWaker` handle delivers
+  a `post`/`wake`/`post_after`/`wake_after`, from whatever thread that
+  happened on, so a background delivery wakes the asyncio loop the
+  instant it fires rather than waiting on a fixed poll interval.
+  `quadraui.asyncio.async_handler(app, handler)` adapts a `handler` that
+  may be a plain callable or an `async def` into the synchronous shape
+  `set_handler`/`set_render_content`/... themselves expect — an `async
+  def` handler runs as its own `asyncio.Task` and must not block
+  rendering, so a later event dispatches and renders while it is still
+  awaiting. See `quadraui-py/examples/asyncio_demo.py`.
+
 - A descriptor-decode failure now raises one of six new
   `InvalidDescriptorError` subclasses instead of the bare base class:
   `MissingFieldError`, `UnknownVariantError`, `TypeMismatchError`,

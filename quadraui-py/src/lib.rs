@@ -213,6 +213,20 @@ use quadraui_binding_core::{validate_style_set_name, StyleOverride};
 /// under `-D warnings`.
 type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
 
+/// The no-argument Python callable [`QuiApp::arm_wake_notify`] registers,
+/// shared with every [`QuiAppWaker`] handle [`QuiApp::waker`] has ever
+/// returned — [`fire_wake_notify`] calls it (re-acquiring the GIL via
+/// `Python::attach`) every time a `post`/`wake`/`post_after`/`wake_after`
+/// call delivers, from whatever thread that happened on, so arming it once
+/// covers every handle regardless of which one a background thread calls
+/// through. `None` until `arm_wake_notify` is called, and again after
+/// `disarm_wake_notify`. `quadraui-py/python/quadraui/aio.py`'s `run` arms
+/// this once per run to step promptly instead of only on its own fallback
+/// poll interval — the pyo3 analog of `quadraui-node`'s `WakeNotify`
+/// (`ThreadsafeFunction` there, a plain `Py<PyAny>` re-acquiring the GIL
+/// here, since pyo3 has no `ThreadsafeFunction` equivalent).
+type WakeNotify = Arc<Mutex<Option<Py<PyAny>>>>;
+
 /// A single [`Backend::waker`] closure, captured once by
 /// [`PyAppLogic::setup`] and read back exactly once by [`QuiApp::run_native`]'s
 /// `macos`/`win` arms, which — unlike `gtk`'s own `GtkRunner::waker()` — expose
@@ -2014,6 +2028,17 @@ struct QuiApp {
     /// instant of a clone or a swap, never across a call into the wrapped
     /// closure itself.
     current_waker: SharedWaker,
+    /// The no-argument Python callable [`QuiApp::arm_wake_notify`]
+    /// registers, shared with every [`QuiAppWaker`] handle [`QuiApp::waker`]
+    /// has ever returned — [`fire_wake_notify`] calls it every time a
+    /// `post`/`wake`/`post_after`/`wake_after` call delivers, from whatever
+    /// thread that happened on. `None` until `arm_wake_notify` is called,
+    /// and again after `disarm_wake_notify`. The napi-rs analog
+    /// (`quadraui-node`'s `WakeNotify`) holds a `ThreadsafeFunction`
+    /// instead; this binding has no equivalent construct, so it stores the
+    /// plain `Py<PyAny>` callable directly and re-acquires the GIL (via
+    /// `Python::attach`) each time it is called instead.
+    wake_notify: WakeNotify,
 }
 
 /// A thread-safe handle, returned by [`QuiApp::waker`], that a background
@@ -2026,8 +2051,35 @@ struct QuiApp {
 /// (`Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>`, and `Py<PyAny>`
 /// is itself always `Send + Sync`) — so PyO3 lets Python pass it to another
 /// thread freely, unlike `QuiApp`.
+///
+/// The second field mirrors [`QuiApp::wake_notify`] the same way the first
+/// mirrors [`QuiApp::current_waker`] — see [`WakeNotify`]'s own doc.
 #[pyclass(module = "quadraui")]
-struct QuiAppWaker(SharedWaker);
+struct QuiAppWaker(SharedWaker, WakeNotify);
+
+/// Fires the no-argument callable [`QuiApp::arm_wake_notify`] registered in
+/// `wake_notify` (if any) — shared by every [`QuiAppWaker`] delivery path
+/// below, including the ones running on a spawned `post_after`/`wake_after`
+/// thread with no `Python<'_>` token already in hand. Re-acquires the GIL
+/// via `Python::attach` to clone the callable out before calling it, so the
+/// lock is never held across the call itself; prints (rather than
+/// propagates) an exception the callback raises, since there is no
+/// dispatch-in-progress error slot to record it into here, the same as any
+/// other fire-and-forget background callback.
+fn fire_wake_notify(wake_notify: &WakeNotify) {
+    Python::attach(|py| {
+        let callback = wake_notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|cb| cb.clone_ref(py));
+        if let Some(callback) = callback {
+            if let Err(err) = callback.call0(py) {
+                err.print(py);
+            }
+        }
+    });
+}
 
 #[pymethods]
 impl QuiAppWaker {
@@ -2035,13 +2087,15 @@ impl QuiAppWaker {
     /// and wakes whichever loop currently owns it — `step`/`run`'s drain of
     /// `pump_user_events` on the next call for the headless path, or
     /// promptly (not waiting for the next native/terminal event) while
-    /// `run_tui` is live. Safe to call from any thread, at any time,
-    /// including before the owning `QuiApp` has run a single step or after
-    /// it has exited (a post after exit is simply never observed — there is
-    /// no receiver left to drain it).
+    /// `run_tui` is live, or (once `arm_wake_notify` is armed)
+    /// `quadraui.aio.run`'s own asyncio loop. Safe to call from any thread,
+    /// at any time, including before the owning `QuiApp` has run a single
+    /// step or after it has exited (a post after exit is simply never
+    /// observed — there is no receiver left to drain it).
     fn post(&self, value: Py<PyAny>) {
         let waker = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
         waker(UserPayload::new(value));
+        fire_wake_notify(&self.1);
     }
 
     /// Equivalent to `post(None)`: wakes the owning `QuiApp`'s loop with no
@@ -2074,12 +2128,25 @@ impl QuiAppWaker {
     /// `asyncio`'s `call_later`) with `post` from plain Python — provided
     /// here directly so the common "run_tick again in N ms" case needs no
     /// import beyond `quadraui` itself.
+    /// Note on process shutdown: the spawned thread's sleep is not tied to
+    /// the interpreter's lifetime at all, so a `post_after(delay_ms, ...)`
+    /// call made shortly before the process exits can have its sleep still
+    /// pending when `main()` returns and the interpreter finalizes.
+    /// `fire_wake_notify`'s `Python::attach` then has no running
+    /// interpreter to re-acquire the GIL on — PyO3 aborts the process in
+    /// that case rather than returning an error, since there is no
+    /// Python-level call frame left to propagate one to. This is the same
+    /// hazard any `thread::spawn` that touches the Python C-API after
+    /// `main` returns has; callers scheduling a long `post_after`/
+    /// `wake_after` and then exiting promptly should await/join first.
     fn post_after(&self, delay_ms: u64, value: Py<PyAny>) {
         let shared = Arc::clone(&self.0);
+        let notify = Arc::clone(&self.1);
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(delay_ms));
             let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
             waker(UserPayload::new(value));
+            fire_wake_notify(&notify);
         });
     }
 
@@ -2087,6 +2154,22 @@ impl QuiAppWaker {
     /// for why a payload-free wake is useful on its own.
     fn wake_after(&self, py: Python<'_>, delay_ms: u64) {
         self.post_after(delay_ms, py.None());
+    }
+
+    /// Fires whatever callback `QuiApp.arm_wake_notify` has registered (if
+    /// any), same as `post`/`wake`/`post_after`/`wake_after` each do as a
+    /// side effect — but, unlike every one of those, queues no `{"User":
+    /// value}` event of its own into the owning `QuiApp`'s event stream.
+    /// `quadraui.aio.async_handler`'s own done-callback calls this (not
+    /// `wake()`) once an `async def` handler's task finishes: prompting a
+    /// re-step/re-render through the wake-notify hook must not also
+    /// replay as a spurious event the handler would otherwise see and
+    /// have to filter back out — worse, every such event would itself
+    /// dispatch through the same `async_handler`-wrapped handler, whose
+    /// own task finishing would call this again, forever. A harmless
+    /// no-op if nothing is armed.
+    fn notify(&self) {
+        fire_wake_notify(&self.1);
     }
 }
 
@@ -2854,6 +2937,7 @@ impl QuiApp {
             #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
             native_consumed: false,
             current_waker,
+            wake_notify: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -3008,7 +3092,35 @@ impl QuiApp {
                 "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
-        Ok(QuiAppWaker(self.current_waker.clone()))
+        Ok(QuiAppWaker(
+            self.current_waker.clone(),
+            self.wake_notify.clone(),
+        ))
+    }
+
+    /// Registers `callback` (a plain, no-argument callable) as the notifier
+    /// [`fire_wake_notify`] fires every time a handle this app's
+    /// [`Self::waker`] has ever returned delivers a `post`/`wake`/
+    /// `post_after`/`wake_after`, from whatever thread that happened on.
+    /// `quadraui.aio.run` arms this once per run with a callback that wakes
+    /// its own asyncio loop (via `loop.call_soon_threadsafe`), so a
+    /// background thread's delivery is observed promptly instead of only
+    /// on that run's own fallback poll interval — see `quadraui/aio.py`'s
+    /// module doc for the full story, including why real OS/terminal input
+    /// still needs that fallback poll.
+    ///
+    /// Replaces any callback a previous call armed; there is only ever one
+    /// slot. Does not raise `PoisonedError` on a poisoned app — unlike
+    /// [`Self::waker`], there is no live state here to read, just a cell to
+    /// overwrite.
+    fn arm_wake_notify(&self, callback: Py<PyAny>) {
+        *self.wake_notify.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
+    }
+
+    /// Clears whatever callback [`Self::arm_wake_notify`] last registered,
+    /// if any — a harmless no-op if none is armed.
+    fn disarm_wake_notify(&self) {
+        *self.wake_notify.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Returns a [`QuiAppActions`] handle: an object a registered event
@@ -6510,6 +6622,107 @@ mod tests {
                 .expect("\"User\" value must be present");
             let n: i32 = user_value.extract().expect("the posted int round-trips");
             assert_eq!(n, 42);
+        });
+    }
+
+    /// `arm_wake_notify`'s callback fires on `post`/`wake`/`notify` alike
+    /// (each incrementing a shared counter here), but — unlike `post`/
+    /// `wake` — `notify()` on its own queues no `{"User": ...}` event at
+    /// all: `step()` right after a bare `notify()` call still reports
+    /// nothing delivered. `disarm_wake_notify` then stops the counter
+    /// moving on a further `wake()`. This is the exact distinction
+    /// `quadraui.aio.async_handler`'s done-callback relies on — calling
+    /// `notify()` there instead of `wake()` is what keeps a completed
+    /// task's own re-render ping from re-entering the same handler.
+    #[test]
+    fn arm_wake_notify_fires_on_notify_without_queuing_an_event() {
+        let (handler, callback, locals) = Python::attach(|py| {
+            let locals = PyDict::new(py);
+            locals
+                .set_item("received", PyList::empty(py))
+                .expect("set received");
+            locals.set_item("calls", 0_i32).expect("set calls");
+            let handler = py
+                .eval(
+                    c"lambda event: received.append(event)",
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("lambda literal")
+                .unbind();
+            let callback = py
+                .eval(
+                    c"lambda: globals().__setitem__('calls', calls + 1)",
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("lambda literal")
+                .unbind();
+            (handler, callback, locals.unbind())
+        });
+        let mut app = QuiApp::new(10, 10, Some(handler), None).expect("valid width/height/handler");
+        app.arm_wake_notify(callback);
+        let waker = app.waker().expect("app is not poisoned");
+
+        waker.notify();
+        let running = app.step().expect("step must not raise");
+        assert!(running, "a bare notify() must not exit the app");
+        Python::attach(|py| {
+            let locals = locals.bind(py);
+            let calls: i32 = locals
+                .get_item("calls")
+                .expect("calls key lookup")
+                .expect("calls must be set")
+                .extract()
+                .expect("calls must be an int");
+            assert_eq!(calls, 1, "notify() must fire the armed callback");
+            let received: Bound<'_, PyList> = locals
+                .get_item("received")
+                .expect("received key lookup")
+                .expect("received must be set")
+                .extract()
+                .expect("received must be a list");
+            assert_eq!(
+                received.len(),
+                0,
+                "notify() on its own must queue no event for the handler to see"
+            );
+        });
+
+        Python::attach(|py| waker.wake(py));
+        app.step().expect("step must not raise");
+        Python::attach(|py| {
+            let locals = locals.bind(py);
+            let calls: i32 = locals
+                .get_item("calls")
+                .expect("calls key lookup")
+                .expect("calls must be set")
+                .extract()
+                .expect("calls must be an int");
+            assert_eq!(calls, 2, "wake() must also fire the armed callback");
+            let received: Bound<'_, PyList> = locals
+                .get_item("received")
+                .expect("received key lookup")
+                .expect("received must be set")
+                .extract()
+                .expect("received must be a list");
+            assert_eq!(received.len(), 1, "wake() must queue exactly one event");
+        });
+
+        app.disarm_wake_notify();
+        waker.notify();
+        Python::attach(|py| {
+            let calls: i32 = locals
+                .bind(py)
+                .get_item("calls")
+                .expect("calls key lookup")
+                .expect("calls must be set")
+                .extract()
+                .expect("calls must be an int");
+            assert_eq!(
+                calls, 2,
+                "a disarmed notify() must not fire anything further"
+            );
         });
     }
 

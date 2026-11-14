@@ -75,6 +75,15 @@ and wake whichever loop currently owns it, without exiting. Its
 delivery after a delay, from any thread, as a lightweight stand-in for a
 timer.
 
+``QuiApp.arm_wake_notify(callback)``/``disarm_wake_notify()`` register (or
+clear) a no-argument callable fired every time any ``QuiAppWaker`` handle
+this app has ever handed out delivers a ``post``/``wake``/``post_after``/
+``wake_after`` -- the low-level hook ``quadraui.asyncio.run(app)`` (an
+alias for the ``quadraui.aio`` module -- see its own module doc) arms to
+step promptly from a running asyncio loop instead of only on a fixed poll
+interval. Most callers reach for ``quadraui.asyncio.run``/
+``await app.run_async()`` directly rather than this pair.
+
 ``run_native()`` dispatches a ``"WindowClose"`` event to a registered
 handler when the window manager's close button (or Alt-F4, or the red
 traffic-light button on macOS) asks to close the window, same as any other
@@ -111,6 +120,20 @@ once ``step``/``run`` returns (not from inside the handler itself -- the
 same restriction as mutating any other ``QuiApp`` state mid-callback).
 """
 
+import sys
+
+from . import aio as asyncio
+
+# `from . import aio as asyncio` above only binds `quadraui.asyncio` as an
+# *attribute* of this package -- `import quadraui; quadraui.asyncio.run(...)`
+# resolves through it, but `import quadraui.asyncio` and
+# `from quadraui.asyncio import run` both go through the import system's own
+# submodule lookup on `__path__` first, which finds no `asyncio.py` there and
+# raises `ModuleNotFoundError` before ever consulting this attribute.
+# Registering the same module object under its dotted name in `sys.modules`
+# makes every import form resolve to the identical `aio` module.
+sys.modules[f"{__name__}.asyncio"] = asyncio
+
 from ._quadraui import (
     DecodeFailedError,
     InternalError,
@@ -142,6 +165,7 @@ from ._quadraui import (
 )
 
 __all__ = [
+    "asyncio",
     "QuiApp",
     "QuiAppWaker",
     "QuiShellApp",
