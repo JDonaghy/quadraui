@@ -3156,6 +3156,47 @@ impl QuiApp {
         self.driver.app_mut().render_callback = Some(callback);
     }
 
+    /// Sets this app's unknown-optional-wire-key policy for every
+    /// subsequent render: `True` turns an unrecognised *optional* key on a
+    /// render callback's returned descriptor (a misspelt `"cursr"`,
+    /// `"focussed"`, ...) into an `InvalidDescriptorError` raised out of
+    /// the render that found it, the same way a missing required field
+    /// already does. `False` (the default set by `__init__`'s own
+    /// `strict` argument unless overridden) instead reports it through
+    /// `set_on_unknown_key`'s registered callback, if any, and otherwise
+    /// decodes unaffected. Takes effect immediately, including for a
+    /// `QuiApp` already mid-`run`/`step`.
+    fn set_strict(&mut self, strict: bool) {
+        self.driver
+            .app_mut()
+            .host
+            .wire_diagnostics
+            .set_strict(strict);
+    }
+
+    /// Registers `callback` as this app's unknown-optional-wire-key
+    /// reporting hook: called as `callback(key, path)` at most once per
+    /// distinct `key` for this app's whole lifetime, whenever a render
+    /// callback's returned descriptor carries one and `set_strict` hasn't
+    /// turned that into a raised error instead. Replaces any previously
+    /// registered hook, including the one `__init__`'s `on_unknown_key`
+    /// argument may have registered.
+    fn set_on_unknown_key(&mut self, callback: Py<PyAny>) {
+        let pending_error = self.driver.app().pending_error.clone();
+        self.driver
+            .app_mut()
+            .host
+            .wire_diagnostics
+            .set_hook(move |path: &str, key: &str| {
+                let (key, path) = (key.to_string(), path.to_string());
+                Python::attach(|py| {
+                    if let Err(err) = callback.call1(py, (key, path)) {
+                        record_error(&pending_error, err);
+                    }
+                });
+            });
+    }
+
     /// Decodes `descriptor` into a `UiEvent` and queues it for the next
     /// `step`/`run` call. Raises `ValueError` on a shape mismatch.
     fn push_event(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {

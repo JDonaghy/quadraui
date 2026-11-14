@@ -10,6 +10,9 @@ Run against a built wheel/extension, e.g.:
     pytest quadraui-py/tests/test_app_layer.py
 """
 
+import pytest
+
+from quadraui import UnknownKeyError
 from quadraui.app import (
     App,
     Button,
@@ -372,3 +375,34 @@ def test_closing_and_reopening_a_row_does_not_resurrect_the_old_state():
     screen = app.screen()
     assert "count=2" not in screen
     assert screen.count("count=0") == 2
+
+
+def test_app_strict_true_raises_on_a_typo_in_a_raw_descriptor():
+    """`App(strict=True)` forwards `strict` straight to the underlying
+    `QuiApp`, so a misspelt optional key on a raw-dict escape-hatch node
+    (one `view()` returns unwrapped, bypassing every typed `Node`
+    constructor's own fixed keyword set) raises instead of decoding
+    silently -- the same policy `QuiApp(strict=True)` enforces on its own
+    `render` callback."""
+
+    def view():
+        return {"button": {"id": "b", "label": "Save", "labell": "typo"}}
+
+    app = App(20, 5, view=view, strict=True)
+    with pytest.raises(UnknownKeyError, match="labell"):
+        app.screen()
+
+
+def test_app_set_strict_toggles_the_policy_after_construction():
+    """`strict` can also be flipped at runtime through the underlying
+    `QuiApp`, reachable as `app.qui.set_strict`."""
+
+    def view():
+        return {"button": {"id": "b", "label": "Save", "labell": "typo"}}
+
+    app = App(20, 5, view=view)
+    app.screen()  # no `strict` set yet -- the typo is silently ignored
+
+    app.qui.set_strict(True)
+    with pytest.raises(UnknownKeyError, match="labell"):
+        app.screen()

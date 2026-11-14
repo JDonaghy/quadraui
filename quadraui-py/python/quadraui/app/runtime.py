@@ -175,6 +175,12 @@ class App:
     the escape hatch a keyboard-driven app (arrow keys moving a cursor with
     no single widget "owning" them) still needs; see `key_name` for
     pulling a key name out of whatever shape it arrived in.
+
+    `strict` and `on_unknown_key` set the underlying `QuiApp`'s
+    unknown-optional-wire-key policy for every `view()` render -- see
+    `QuiApp.set_strict`/`QuiApp.set_on_unknown_key` for the full contract.
+    Both can also be changed later, after construction, by calling
+    `app.qui.set_strict(...)`/`app.qui.set_on_unknown_key(...)` directly.
     """
 
     def __init__(
@@ -184,6 +190,8 @@ class App:
         *,
         view: Callable[[], Any],
         on_event: Optional[Callable[[Any], None]] = None,
+        strict: bool = False,
+        on_unknown_key: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         from quadraui import QuiApp  # local import: avoids a cycle with quadraui/__init__.py
 
@@ -199,7 +207,13 @@ class App:
         self._migrate_next_render = False
         self.reload_error: Optional[BaseException] = None
         self.reload_count = 0
-        self.qui = QuiApp(width, height, render=self._render)
+        self.qui = QuiApp(
+            width,
+            height,
+            render=self._render,
+            strict=strict,
+            on_unknown_key=on_unknown_key,
+        )
         self.qui.set_handler(self._handle)
         self.actions = self.qui.actions()
 

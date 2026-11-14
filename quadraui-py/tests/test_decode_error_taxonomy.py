@@ -229,3 +229,58 @@ def test_strict_true_rejects_the_same_unknown_optional_key():
         app.screen()
     assert excinfo.value.code == "unknown_key"
     assert excinfo.value.path == "render › tabs#frm"
+
+
+def test_set_strict_toggles_the_policy_after_construction():
+    # `set_strict` changes behaviour at runtime, not just at construction:
+    # off by default, flipping it on rejects the next render, and flipping
+    # it back off decodes the same descriptor unaffected again.
+    app = QuiApp(20, 5)
+
+    def render():
+        return {
+            "tabs": {"id": "frm", "tabs": [], "focussed": 0},
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    app.set_strict(True)
+    with pytest.raises(UnknownKeyError, match="focussed"):
+        app.screen()
+
+    app.set_strict(False)
+    app.screen()
+
+
+def test_set_on_unknown_key_registers_a_hook_after_construction():
+    calls = []
+    app = QuiApp(20, 5)
+
+    def render():
+        return {
+            "tabs": {"id": "frm", "tabs": [], "focussed": 0},
+        }
+
+    app.set_render(render)
+    app.set_on_unknown_key(lambda key, path: calls.append((key, path)))
+    app.screen()
+    app.screen()
+    assert calls == [("focussed", "render › tabs#frm")]
+
+
+def test_set_on_unknown_key_replaces_the_constructor_hook():
+    ctor_calls = []
+    replaced_calls = []
+    app = QuiApp(20, 5, on_unknown_key=lambda key, path: ctor_calls.append((key, path)))
+
+    def render():
+        return {
+            "tabs": {"id": "frm", "tabs": [], "focussed": 0},
+        }
+
+    app.set_render(render)
+    app.set_on_unknown_key(lambda key, path: replaced_calls.append((key, path)))
+    app.screen()
+    assert ctor_calls == []
+    assert replaced_calls == [("focussed", "render › tabs#frm")]
