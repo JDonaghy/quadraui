@@ -139,8 +139,8 @@ test("showContextMenu item with a codicon icon renders its fallback glyph", () =
   // but paints into the single-cell gutter `checked`'s checkmark shares
   // (only the fallback's first character renders) rather than a
   // measured-width slot -- the headless driver defaults to nerd fonts
-  // off, so that's the fallback's plain-text first character, directly
-  // left of the label with no gap.
+  // off, so that's the fallback's plain-text first character, followed
+  // by one blank gap cell ahead of the label.
   const app = new QuiApp(40, 20);
   app.showContextMenu(
     [
@@ -152,7 +152,8 @@ test("showContextMenu item with a codicon icon renders its fallback glyph", () =
     ],
     { x: 2.0, y: 2.0 },
   );
-  assert.ok(app.screenContains("NNew File"));
+  assert.ok(app.screenContains("N New File"));
+  assert.ok(!app.screenContains("NNew File"));
 });
 
 test("showContextMenu item with an unknown codicon name raises InvalidDescriptorError", () => {

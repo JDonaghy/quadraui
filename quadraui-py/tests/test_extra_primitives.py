@@ -3360,7 +3360,7 @@ def test_show_context_menu_item_with_codicon_icon_renders_fallback():
     # the fallback's first character renders) rather than a
     # measured-width slot -- `QuiApp`'s headless driver defaults to nerd
     # fonts off, so that's the fallback's plain-text first character,
-    # directly left of the label with no gap.
+    # followed by one blank gap cell ahead of the label.
     app = QuiApp(40, 20)
     items = [
         {
@@ -3370,7 +3370,8 @@ def test_show_context_menu_item_with_codicon_icon_renders_fallback():
         },
     ]
     app.show_context_menu(items, (2.0, 2.0))
-    assert app.screen_contains("NNew File")
+    assert app.screen_contains("N New File")
+    assert not app.screen_contains("NNew File")
 
 
 def test_show_context_menu_item_with_unknown_codicon_name_raises():
