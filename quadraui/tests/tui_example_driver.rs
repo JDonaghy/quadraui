@@ -10530,17 +10530,21 @@ fn context_menu_style_demo_click_activates_item() {
 /// The "Copy" item's `ContextMenuItem::icon` paints its resolved glyph in
 /// the row's leading gutter column — `TuiDriver` defaults to nerd fonts
 /// off, so that's the icon's plain-text fallback (`Icon::codicon("files",
-/// "C")`'s `C`), immediately left of the label with no gap (the TUI
-/// rasteriser always starts the label exactly one column after the
-/// gutter cell).
+/// "C")`'s `C`). Because the menu carries an icon, every row reserves a
+/// 2-cell gutter (glyph + one blank gap cell), so the glyph sits one
+/// blank cell left of the label rather than running straight into it.
 #[test]
 fn context_menu_style_demo_copy_item_shows_icon_glyph() {
     let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
     driver.right_click(10.0, 4.0);
     let screen = driver.screen();
     assert!(
-        screen.contains("CCopy"),
-        "the icon's fallback glyph should sit directly left of \"Copy\":\n{screen}"
+        screen.contains("C Copy"),
+        "the icon's fallback glyph should sit one blank cell left of \"Copy\":\n{screen}"
+    );
+    assert!(
+        !screen.contains("CCopy"),
+        "the icon glyph must not run directly into the label with no gap:\n{screen}"
     );
 }
 

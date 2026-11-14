@@ -1630,6 +1630,20 @@ fn context_menu_right_click_then_item_click_activates_it() {
         driver.screen()
     );
 
+    // "Cut"/"Copy" each carry a leading icon, so the menu reserves a
+    // 2-cell gutter for every row: the icon's fallback glyph (`X`/`C`)
+    // sits one blank cell left of the label, never running straight
+    // into it.
+    let screen = driver.screen();
+    assert!(
+        screen.contains("X Cut") && screen.contains("C Copy"),
+        "icon glyphs must sit one blank cell left of their labels:\n{screen}"
+    );
+    assert!(
+        !screen.contains("XCut") && !screen.contains("CCopy"),
+        "icon glyphs must not run directly into their labels with no gap:\n{screen}"
+    );
+
     let (cx, cy) = driver
         .find("Copy")
         .unwrap_or_else(|| panic!("Copy item should paint:\n{}", driver.screen()));
