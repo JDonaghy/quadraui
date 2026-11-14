@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
-from typing import Any, Awaitable, Callable, Union
+from typing import Any, Awaitable, Callable, Coroutine, Union, cast
 
 from ._quadraui import QuiApp
 
@@ -214,7 +214,7 @@ def async_handler(
 
     def _dispatch(event: Any) -> None:
         loop = asyncio.get_running_loop()
-        task = loop.create_task(handler(event))
+        task = loop.create_task(cast(Coroutine[Any, Any, Any], handler(event)))
 
         def _on_done(done: "asyncio.Task[Any]") -> None:
             if not done.cancelled():
