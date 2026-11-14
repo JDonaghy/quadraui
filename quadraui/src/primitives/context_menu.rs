@@ -245,11 +245,14 @@ pub struct ContextMenuItem {
     /// [`crate::types::Icon::new`] for an app-supplied glyph/fallback
     /// pair.
     ///
-    /// Unlike `checked`, `icon` has no `Some(false)`-style reservation
-    /// without a fill: the gutter is per-item, not per-menu, so in a menu
-    /// where only some items carry an icon, those items' labels shift
-    /// right relative to the rest. Give every item in the menu an icon
-    /// (or none) to keep labels aligned to one gutter.
+    /// Unlike `checked`, `icon` has no `Some(false)`-style per-item
+    /// reservation — the gutter column itself is decided menu-wide:
+    /// when *any* item in the menu has `checked.is_some()` or
+    /// `icon.is_some()`, every item's label (icon-bearing or not)
+    /// indents by the same fixed gutter width, so the column stays
+    /// aligned even when only some items fill it. Both
+    /// [`native_surface_paint::paint_with_glyphs`] (pixel backends) and
+    /// the TUI rasteriser apply this rule the same way.
     #[serde(default)]
     pub icon: Option<Icon>,
     /// Nested submenu. When `Some`, activating the item opens the child
@@ -648,6 +651,13 @@ pub(crate) mod native_surface_paint {
     use crate::types::{Color, WidgetId};
     use crate::{Point, Rect};
 
+    /// Pixel width of the leading check-mark/icon glyph itself, when the
+    /// menu-wide gutter column (see `has_icon_gutter` in
+    /// `paint_with_glyphs_impl`) is reserved.
+    const ICON_COLUMN_WIDTH: f32 = 16.0;
+    /// Gap between the glyph column and the label text that follows it.
+    const ICON_COLUMN_GAP: f32 = 4.0;
+
     /// Right-aligned shortcut text — sourced from `item.detail`
     /// (preferred, back-compat) or rendered from `item.key_equivalent`
     /// for `platform` (`⌘S` on macOS, `Ctrl+S` elsewhere). Returns
@@ -808,6 +818,21 @@ pub(crate) mod native_surface_paint {
                 crate::codicon::CHEVRON_RIGHT.to_string(),
             ));
 
+        // Whether *any* item in the menu carries a check state or an
+        // icon decides whether the whole menu reserves the leading
+        // gutter column — menu-wide, not per-item, so every label in
+        // the menu indents by the same amount and stays aligned even
+        // when only some items actually fill the slot.
+        let has_icon_gutter = menu
+            .items
+            .iter()
+            .any(|item| item.checked.is_some() || item.icon.is_some());
+        let gutter_width = if has_icon_gutter {
+            ICON_COLUMN_WIDTH + ICON_COLUMN_GAP
+        } else {
+            0.0
+        };
+
         let bg = menu.bg.unwrap_or(theme.hover_bg);
         // VS-Code-style elevated card — a shadow behind, a
         // rounded fill, and a border this popup never had before.
@@ -887,31 +912,22 @@ pub(crate) mod native_surface_paint {
             let item = &menu.items[vis.item_idx];
             let row = vis.bounds;
 
-            // Reserve a fixed-width leading slot for the check glyph /
-            // item icon so a column of mixed items aligns — `checked ==
-            // Some(false)` or an item with neither reserves it with two
-            // plain spaces, `checked == Some(true)` or `icon.is_some()`
-            // fills it with the codicon check glyph or the item's own
-            // icon, painted *separately* via `surface_draw_icon_glyph`
-            // (below) rather than embedded in this plain
-            // `surface_draw_text_run` call: a PUA codepoint baked into
-            // an ordinary text run resolves through whatever font that
-            // run's own call site already carries, which is not
-            // guaranteed to be the fallback-wrapped description
-            // `surface_draw_icon_glyph` resolves through — the same
-            // reason the submenu pull-right arrow below gets its own
-            // draw call instead of living in this label string. A
-            // checkable item's state mark always wins that one slot over
-            // a decorative icon — see [`ContextMenuItem::icon`]'s doc.
-            let has_check_slot = item.checked.is_some();
-            let has_icon_slot = !has_check_slot && item.icon.is_some();
-            let label_text: String = if has_check_slot || has_icon_slot {
-                std::iter::once("  ".to_string())
-                    .chain(item.label.spans.iter().map(|s| s.text.clone()))
-                    .collect()
-            } else {
-                item.label.spans.iter().map(|s| s.text.clone()).collect()
-            };
+            // The leading gutter column (check glyph or item icon) is
+            // reserved menu-wide via `gutter_width`, not per item — every
+            // label in the menu indents by the same fixed amount, so a
+            // mix of icon-bearing and plain items still lines up. The
+            // glyph itself paints separately via `surface_draw_icon_glyph`
+            // (below) rather than being embedded in this plain
+            // `surface_draw_text_run` call: a PUA codepoint baked into an
+            // ordinary text run resolves through whatever font that run's
+            // own call site already carries, which is not guaranteed to
+            // be the fallback-wrapped description `surface_draw_icon_glyph`
+            // resolves through — the same reason the submenu pull-right
+            // arrow below gets its own draw call instead of living in
+            // this label string. A checkable item's state mark always
+            // wins that one slot over a decorative icon — see
+            // [`ContextMenuItem::icon`]'s doc.
+            let label_text: String = item.label.spans.iter().map(|s| s.text.clone()).collect();
             let label_fg = if vis.clickable {
                 theme.foreground
             } else {
@@ -919,11 +935,13 @@ pub(crate) mod native_surface_paint {
             };
             let (_, lh) = surface.surface_measure_text(&label_text);
             let text_y = row.y + (row.height - lh) / 2.0;
+            let gutter_x = row.x + style.row_padding_x;
+            let label_x = gutter_x + gutter_width;
             surface.surface_draw_text_run(
                 Rect::new(
-                    row.x + style.row_padding_x,
+                    label_x,
                     text_y,
-                    (row.width - style.row_padding_x).max(0.0),
+                    (row.width - style.row_padding_x - gutter_width).max(0.0),
                     lh,
                 ),
                 &label_text,
@@ -933,21 +951,16 @@ pub(crate) mod native_surface_paint {
             if item.checked == Some(true) {
                 let (cw, ch) = surface.surface_measure_text(&check_glyph);
                 surface.surface_draw_icon_glyph(
-                    Rect::new(
-                        row.x + style.row_padding_x,
-                        text_y,
-                        cw.max(1.0),
-                        ch.max(1.0),
-                    ),
+                    Rect::new(gutter_x, text_y, cw.max(1.0), ch.max(1.0)),
                     &check_glyph,
                     label_fg,
                 );
-            } else if has_icon_slot {
+            } else if item.checked.is_none() {
                 if let Some(icon) = &item.icon {
                     let glyph = icon.resolve(nerd_fonts_enabled);
                     let (iw, ih) = surface.surface_measure_text(glyph);
                     surface.surface_draw_icon_glyph(
-                        Rect::new(row.x + 8.0, text_y, iw.max(1.0), ih.max(1.0)),
+                        Rect::new(gutter_x, text_y, iw.max(1.0), ih.max(1.0)),
                         glyph,
                         label_fg,
                     );
@@ -1184,6 +1197,66 @@ mod tests {
         assert_eq!(layout.hit_test(120.0, 150.0), ContextMenuHit::Inert);
         // Hit-test far outside → Empty.
         assert_eq!(layout.hit_test(500.0, 500.0), ContextMenuHit::Empty);
+    }
+
+    #[test]
+    fn context_menu_layout_anchor_point_near_bottom_fits_fully_in_viewport() {
+        // A right-click 10px above a 600px-tall window's bottom edge, on
+        // a 7-item menu that would overflow it by 130px if the box
+        // simply opened downward from the click. `AnchorPoint` has no
+        // directional flip of its own, but `Anchor::resolve`'s vertical
+        // clamp pulls the top edge up until the box's bottom edge lands
+        // flush with the viewport — functionally the same "stay fully
+        // on screen" outcome a `Below`→`Above` flip gives dropdown-style
+        // placements, just reached by clamping instead of flipping.
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: (0..7).map(|i| cm_action(&format!("i{i}"), "X")).collect(),
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = menu.layout(100.0, 590.0, viewport, 160.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(
+            layout.bounds.height, 140.0,
+            "all 7 rows should fit, none clipped"
+        );
+        assert_eq!(
+            layout.bounds.y, 460.0,
+            "top pulled up so bounds.y + height == 600"
+        );
+        assert!(
+            layout.bounds.y + layout.bounds.height <= viewport.y + viewport.height,
+            "menu bottom edge must stay inside the viewport: {:?}",
+            layout.bounds
+        );
+    }
+
+    #[test]
+    fn context_menu_layout_anchor_point_near_bottom_right_corner_clamps_both_axes() {
+        // Right-click in the bottom-right corner: both the horizontal
+        // and vertical clamps must apply together, independently of
+        // each other — neither one masks the other.
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: (0..7).map(|i| cm_action(&format!("i{i}"), "X")).collect(),
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = menu.layout(780.0, 590.0, viewport, 160.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.x, 640.0, "right edge clamped: 800 - 160");
+        assert_eq!(layout.bounds.y, 460.0, "bottom edge clamped: 600 - 140");
+        assert!(layout.bounds.x >= viewport.x);
+        assert!(layout.bounds.x + layout.bounds.width <= viewport.x + viewport.width);
+        assert!(layout.bounds.y >= viewport.y);
+        assert!(layout.bounds.y + layout.bounds.height <= viewport.y + viewport.height);
     }
 
     #[test]
@@ -1983,6 +2056,79 @@ mod tests {
                 (shortcut_right - expected_right).abs() < 0.01,
                 "shortcut's right edge ({shortcut_right}) must sit row_padding_x in from \
                  the row's right edge ({expected_right})"
+            );
+        }
+
+        /// The issue's icon-column acceptance bullet: when a menu has an
+        /// icon item, every label (including a plain sibling with no
+        /// icon of its own) indents past the reserved icon column
+        /// instead of starting at the same `row_padding_x` offset the
+        /// icon glyph itself paints at — the overlap that produced
+        /// `✂Cut`/`⎘Copy` in the capture this test pins against.
+        #[test]
+        fn icon_item_reserves_column_so_label_does_not_overlap_it() {
+            let mut cut = cm_action("cut", "Cut");
+            cut.icon = Some(crate::types::Icon::new("G", "X"));
+            let plain = cm_action("about", "About");
+            let m = menu(vec![cut, plain]);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let layout = m.layout(10.0, 10.0, viewport, 160.0, |_| {
+                ContextMenuItemMeasure::new(20.0)
+            });
+            let row = layout.visible_items[0].bounds;
+
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &style,
+            );
+
+            let (icon_rect, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t)| t == "X")
+                .expect("icon glyph painted");
+            assert_eq!(
+                icon_rect.x,
+                row.x + style.row_padding_x,
+                "icon glyph paints at the row's own padding offset"
+            );
+
+            let (cut_label_rect, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t)| t == "Cut")
+                .expect("Cut label painted");
+            let icon_right = icon_rect.x + icon_rect.width;
+            assert!(
+                cut_label_rect.x >= icon_right,
+                "label must start no earlier than the icon's right edge: \
+                 label.x={}, icon_right={}",
+                cut_label_rect.x,
+                icon_right
+            );
+            assert!(
+                cut_label_rect.x > row.x + style.row_padding_x,
+                "label must indent past the plain row_padding_x offset when an icon \
+                 column is reserved"
+            );
+
+            // The plain sibling (no icon of its own) still indents by the
+            // same reserved column — the menu reserves one shared gutter,
+            // not a per-item one.
+            let (about_label_rect, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t)| t == "About")
+                .expect("About label painted");
+            assert_eq!(
+                about_label_rect.x, cut_label_rect.x,
+                "every label in the menu indents by the same reserved gutter width"
             );
         }
     }

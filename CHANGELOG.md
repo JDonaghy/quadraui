@@ -80,6 +80,14 @@ save/clip/restore); `WinBackend` forwards to the same seam backed by
   the container is a follow-up.
 
 ### Fixed
+- `ContextMenu` item icons no longer run straight into their labels
+  (#2370): when any item in the menu carries an icon or a `checked`
+  state, every row now reserves a fixed leading gutter column (16px
+  icon + 4px gap on the pixel path via `native_surface_paint::paint`;
+  a 2-cell icon + gap column on TUI via `tui::draw_context_menu`) and
+  every label — icon-bearing or not — indents past it, so the column
+  stays aligned. A menu with no icon/checked items keeps the original
+  compact margin.
 - TUI `Button`: a leaf painted into a cell taller than its one row of
   chrome (an `EqualShare`-sized `Column` slot, say) now centres its label
   row vertically within that cell instead of pinning it to the top (#2394).
