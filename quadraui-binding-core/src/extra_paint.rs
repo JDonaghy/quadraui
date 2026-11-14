@@ -1516,11 +1516,11 @@ macro_rules! extra_primitives {
         /// [`decode_extra_primitive`] against an already-[`serde_json::Value`]
         /// descriptor body, routing an unrecognized key inside it through
         /// `diagnostics` the same way [`crate::wire::decode_value_checked`]
-        /// does for a fixed leaf's own body — the layout-tree leaf decode
+        /// does for a fixed leaf's own body. The layout-tree leaf decode
         /// (`crate::wire::layout_leaf_from_value`) and the flat render-frame
-        /// extra slot (`crate::wire::extra_slot_entry`) both call this
-        /// instead of [`decode_extra_primitive`] once they already have a
-        /// materialized `Value` and a session to report through.
+        /// extra slot (`crate::wire::extra_slot_entry`) both already hold a
+        /// materialized `Value` and a session to report through, so they
+        /// call this rather than [`decode_extra_primitive`].
         pub(crate) fn decode_extra_primitive_checked(
             diagnostics: &crate::wire::DecodeDiagnostics,
             what: &str,
@@ -1530,7 +1530,7 @@ macro_rules! extra_primitives {
             match kind {
                 $(
                     $kind => Ok(Rc::new(crate::wire::decode_value_checked::<$ty>(
-                        diagnostics, what, kind, value,
+                        diagnostics, what, kind, value, &[],
                     )?) as Rc<dyn ExtraPaint>),
                 )+
                 _ => Err(crate::DecodeError::unknown_variant(
