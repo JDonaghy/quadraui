@@ -1702,7 +1702,7 @@ export interface DialogChromeDescriptor {
   id: WidgetId;
   title?: string;
   body?: string; // Text shown above the content slot; split on newlines into one line each.
-  buttons: DialogButtonDescriptor[];
+  buttons?: DialogButtonDescriptor[];
   severity?: "info" | "question" | "warning" | "error";
   vertical_buttons?: boolean;
 }

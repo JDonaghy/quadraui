@@ -10,6 +10,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ## [Unreleased]
 
+### Changed
+
+- `show_overlay("layout_dialog", ...)`'s `"dialog"` chrome no longer
+  requires a `"buttons"` key: a content-bearing dialog may rely on its
+  own subtree (a form's Cancel/Save row, a close icon) instead of the
+  chrome's button row. `DialogChromeDescriptor.buttons` is now
+  `NotRequired[List[DialogButtonDescriptor]]` in `wire.pyi`.
+
 ### Added
 
 - `quadraui.app.App`'s typed layer now stamps a `"wire_version"` sibling

@@ -2991,9 +2991,17 @@ mod tests {
     /// A layout dialog with no buttons renders -- its content subtree is
     /// the only thing a caller needs to resolve it -- and closing it by
     /// the same path every other overlay kind closes through reports it
-    /// was open and removes it from the next frame.
+    /// was open and removes it from the next frame. Decodes the
+    /// descriptor through [`crate::wire::decode_layout_dialog`] (rather
+    /// than building [`quadraui::Dialog`] by struct literal) so the test
+    /// covers the whole chain a `show_overlay("layout_dialog", ...)`
+    /// caller with no `"buttons"` key actually goes through.
     #[test]
     fn a_layout_dialog_with_no_buttons_renders_and_closes() {
+        use serde_json::json;
+
+        use crate::wire::{decode_layout_dialog, DecodeDiagnostics, StyleContext};
+
         let logic = HostLogic {
             host: BindingHost::default(),
             engine: InteractionEngine::default(),
@@ -3001,27 +3009,26 @@ mod tests {
         };
         let mut driver = TuiDriver::new(logic, 40, 20);
 
-        let dialog = quadraui::Dialog {
-            id: WidgetId::new("dialog:prefs"),
-            title: StyledText::plain("Preferences"),
-            body: Vec::new(),
-            buttons: Vec::new(),
-            severity: None,
-            vertical_buttons: false,
-            table: None,
-            input: None,
-        };
-        let content = LayoutNode::Leaf(LayoutLeaf {
-            id: "go".to_string(),
-            descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("go"), "Go")),
-            scroll_px: None,
+        let descriptor = json!({
+            "dialog": {
+                "id": "dialog:prefs",
+                "title": "Preferences",
+            },
+            "content": {"id": "go", "button": {"id": "go", "label": "Go"}},
         });
+        let decoded = decode_layout_dialog(
+            "test",
+            &descriptor,
+            StyleContext::new(&StyleSets::new(), &Theme::default()),
+            &DecodeDiagnostics::warn(),
+        )
+        .expect("a layout dialog with no buttons decodes");
 
         {
             let (backend, app) = driver.parts_mut();
             app.engine.open_layout_dialog(
-                dialog,
-                content,
+                decoded.chrome,
+                decoded.content,
                 crate::engine::DialogContentSize::default(),
                 backend,
             );
