@@ -331,9 +331,13 @@ pub struct DataTable {
     ///
     /// **Currently only the TUI rasteriser (`crate::tui::draw_data_table`)
     /// paints the reserved margin as a border** — same opt-in-per-backend
-    /// precedent as `TreeStyle::bordered`. GTK/macOS/Win rasterisers
-    /// don't yet draw a frame in the reserved space; setting this on
-    /// those backends only shrinks the content area.
+    /// precedent as `TreeStyle::bordered`. GTK/macOS/Win rasterisers don't
+    /// yet draw a frame in the reserved space, but [`DataTable::layout`]
+    /// applies the inset unconditionally, so on those backends setting
+    /// this both shrinks the content area *and* shifts `hit_test`/
+    /// `column_hit`/`drag_divider` by the same margin their own paint
+    /// code doesn't move — a 1-unit click/paint mismatch until each
+    /// backend's rasteriser grows a border to match.
     #[serde(default)]
     pub bordered: bool,
 }

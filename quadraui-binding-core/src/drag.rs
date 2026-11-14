@@ -183,7 +183,7 @@ impl DataTableColumnDrag {
     /// for a Rust app driving the primitive directly.
     pub fn width_at(&self, point: Point) -> f32 {
         let local_x = point.x - self.area.x;
-        let content_x = local_x + self.layout.h_scroll;
+        let content_x = (local_x - self.layout.inset_x) + self.layout.h_scroll;
         let col_x = self.layout.columns[self.col].x;
         (content_x - col_x).max(Self::MIN_WIDTH)
     }
