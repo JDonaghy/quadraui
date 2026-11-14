@@ -5,7 +5,8 @@
 //! [`ButtonVariant::Warning`], and the bare label for
 //! [`ButtonVariant::Icon`] (no bracket chrome — an icon button typically
 //! carries a single glyph). The whole cell range is one hit target, same
-//! as [`crate::Button::layout`].
+//! as [`crate::Button::layout`]; in a taller cell the label row is centred
+//! so `crate::tui::draw_focus_ring`'s edge rows never cover it.
 //!
 //! [`ButtonVariant::Danger`]/[`ButtonVariant::Warning`] paint **no**
 //! background fill on TUI — unlike [`ButtonVariant::Primary`]'s solid
@@ -94,10 +95,13 @@ pub fn draw_button_interactive(
         return layout;
     }
 
-    let y = layout.bounds.y.round() as u16;
     let x0 = layout.bounds.x.round() as u16;
     let w = layout.bounds.width.round() as u16;
     let end = x0.saturating_add(w);
+    let area_height = layout.bounds.height.round() as u16;
+    // Centre the label row so a focus ring's top/bottom border (painted
+    // on the cell's edge rows) never overwrites it.
+    let y = layout.bounds.y.round() as u16 + area_height.saturating_sub(1) / 2;
 
     // `Danger`/`Warning` intent is carried entirely by foreground colour
     // on TUI — no background fill of their own, unlike `Primary`'s solid
@@ -263,6 +267,20 @@ mod tests {
         let theme = Theme::default();
         draw_button(&mut buf, area, &button, &theme, false);
         assert_eq!(cell_char(&buf, 2, 0), 'O');
+    }
+
+    /// A taller cell centres the label (keeping it off the focus ring's
+    /// edge rows) while the hit rect still covers the whole cell.
+    #[test]
+    fn taller_area_centres_the_label_and_keeps_whole_cell_hit_bounds() {
+        let area = Rect::new(0, 0, 8, 3);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_button(&mut buf, area, &mk_button("OK"), &Theme::default(), false);
+        assert_eq!(cell_char(&buf, 0, 1), '[', "label paints on the middle row");
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+        assert_eq!(cell_char(&buf, 0, 2), ' ');
+        assert_eq!(layout.bounds.height.round() as u16, area.height);
+        assert_eq!(layout.hit_test(Point::new(0.0, 0.0)), ButtonHit::Body);
     }
 
     #[test]

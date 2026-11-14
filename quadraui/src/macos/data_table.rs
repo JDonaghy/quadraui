@@ -220,6 +220,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         }
     }
 
@@ -668,6 +669,7 @@ mod multi_select_driver_tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         }
     }
 

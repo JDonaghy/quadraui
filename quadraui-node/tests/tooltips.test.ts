@@ -8,6 +8,13 @@
 // `HoverTooltipTracker` itself. Ports `quadraui-py/tests/test_tooltips.py`
 // to this binding.
 //
+// Deliberately still on the deprecated `insertButton` slot, not an inline
+// leaf: `NodeAppLogic::render`'s `RenderOutput::Tree` branch never calls
+// `BindingHost::set_leaf_tooltips` the way `quadraui-py`'s own `render`
+// does, so a `button` layout leaf's `tooltip` field has no host-driven
+// resolution path in this binding yet -- only the static `BindingHost::button`
+// slot does. See `makeApp`'s own comment below.
+//
 // `setTestClockMs` pins the headless clock `BindingHost::now_ms()` reads
 // to an absolute value this file picks, so every assertion below is
 // driven by an exact, deterministic millisecond count rather than a real
@@ -77,6 +84,15 @@ function makeApp(autoDismissMs = 0): any {
     tooltip_auto_dismiss_ms: autoDismissMs,
   });
   app.setTestClockMs(0);
+  // Deliberately kept on the deprecated `insertButton` slot rather than
+  // an inline leaf: unlike `quadraui-py`'s `PyAppLogic::render`, this
+  // binding's `NodeAppLogic::render` never calls
+  // `BindingHost::set_leaf_tooltips` for its own `RenderOutput::Tree`
+  // branch, so a layout-tree `button` leaf's `tooltip` field is not
+  // host-resolvable here yet -- only `BindingHost::button` (the static
+  // slot `insertButton` populates) is. Migrating this file to a `render`
+  // callback would silently stop testing the host-driven delay/
+  // auto-dismiss/pointer-leave behaviour this file exists to cover.
   app.insertButton({ id: "save", label: "Save", tooltip: "Save the file" });
   assert.ok(app.screenContains("Save"));
   return app;
@@ -205,7 +221,7 @@ test("handler shows and hides its own tooltip via actions", () => {
       actions.hideTooltip();
     }
   });
-  app.insertButton({ id: "act", label: "Act" });
+  app.setRender(() => ({ button: { id: "act", label: "Act" } }));
   const [row, col] = locate(app, "Act");
 
   // Entering the button dispatches the hit-tested `MouseEntered`; the

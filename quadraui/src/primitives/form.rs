@@ -69,7 +69,10 @@
 //! `FormEvent::FocusChanged { id }`. The *app* updates `focused_field`
 //! on the next frame — `FormController` computes `id`, it does not
 //! mutate `Form.focused_field` itself (the description stays app-owned,
-//! per this module's first paragraph).
+//! per this module's first paragraph). A `quadraui-py`/`quadraui-node`
+//! render callback can instead leave `focused_field` unset every frame
+//! and let its host move it — see [`Form::focused_field`]'s own doc for
+//! that controlled/uncontrolled split.
 //!
 //! `ToggleGroup` / `ButtonRow` / `Toolbar` carry more than one clickable
 //! item under a single field id. Tab/Shift-Tab still only move
@@ -138,8 +141,31 @@ use serde::{Deserialize, Serialize};
 pub struct Form {
     pub id: WidgetId,
     pub fields: Vec<FormField>,
-    /// `WidgetId` of the field that currently has keyboard focus, or
-    /// `None` if the form as a whole has focus but no field is active.
+    /// `WidgetId` of the field that currently has keyboard focus.
+    ///
+    /// A `quadraui-py`/`quadraui-node` host resolves this the same
+    /// controlled/uncontrolled way it resolves a scroll offset or a
+    /// checked flag (see `docs/bindings-wire-format.md`'s "Controlled vs.
+    /// uncontrolled fields"): `Some(id)` pins the focused field outright
+    /// (controlled) — the app owns it and must keep tracking Tab/
+    /// Shift-Tab/Up/Down/click itself to move it. `None` leaves focus
+    /// engine-owned (uncontrolled): the host's `InteractionEngine` moves
+    /// it on Tab/Shift-Tab between fields (leaving the form once a cycle
+    /// at either end has nowhere left to go inside it), on Up/Down
+    /// between fields the focused one doesn't already consume itself,
+    /// and on a field click — persisting the result itself rather than
+    /// requiring the app to echo a `FormEvent::FocusChanged` back onto
+    /// this field every frame. Either way, [`FormEvent::FocusChanged`]
+    /// still reports every change, so a controlled app has something to
+    /// assign back and an uncontrolled one can observe it without being
+    /// required to.
+    ///
+    /// A direct (non-binding) `FormController` consumer still owns this
+    /// field itself (see [`crate::compose::form_controller::FormController`]'s
+    /// own "Keyboard editing" doc) — the engine-owned mode above is a
+    /// `quadraui-py`/`quadraui-node` host behaviour, not a change to
+    /// `FormController`'s own contract.
+    #[serde(default)]
     pub focused_field: Option<WidgetId>,
     /// How many rows have been scrolled past. App-owned for now; a
     /// later primitive stage may lift this into `ScrollState` keyed by
@@ -718,6 +744,43 @@ pub(crate) fn focusable_items(kind: &FieldKind) -> Option<Vec<(WidgetId, bool)>>
     } else {
         Some(items)
     }
+}
+
+/// Whether `field` is a Tab stop: not a `Label`, not a non-interactive
+/// `ReadOnly` display field, and not disabled — this module's own doc
+/// ("Tab / Shift-Tab moves focused_field forward/backward through
+/// interactive fields (skip Label)").
+fn field_is_focusable(field: &FormField) -> bool {
+    !matches!(field.kind, FieldKind::Label | FieldKind::ReadOnly { .. }) && !field.disabled
+}
+
+/// Focusable field ids of `form`, in Tab-order: explicit `tab_index` wins,
+/// a field that leaves it `None` keeps its natural position in `fields`
+/// as its sort key (so a form where nobody sets `tab_index` still
+/// traverses in plain `Vec` order — see [`FormField::tab_index`]'s doc),
+/// and [`field_is_focusable`] filters out `Label`/`ReadOnly`/disabled
+/// fields.
+///
+/// Shared by [`crate::compose::form_controller::FormController`] (which
+/// wraps within the form) and
+/// [`crate::compose::form_dialog::FormDialogController`] (which needs to
+/// detect stepping off either end *before* forwarding a Tab/Shift-Tab
+/// keypress into the form, so it can hand focus to its own button row
+/// instead), and by a `quadraui-py`/`quadraui-node` host's own
+/// `InteractionEngine`, which needs the identical "detect either end"
+/// check to hand focus to the *next app-level tab stop* instead of a
+/// dialog's buttons — see [`Form::focused_field`]'s own doc for that
+/// uncontrolled mode.
+pub fn focus_order(form: &Form) -> Vec<WidgetId> {
+    let mut ordered: Vec<(i32, usize, WidgetId)> = form
+        .fields
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| field_is_focusable(f))
+        .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, f.id))
+        .collect();
+    ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
+    ordered.into_iter().map(|(_, _, id)| id).collect()
 }
 
 fn slider_default_step() -> f32 {
@@ -4471,6 +4534,20 @@ mod tests {
     }
 
     #[test]
+    fn form_deserialize_without_focused_field_key_defaults_to_none() {
+        // `focused_field` is the uncontrolled-by-default wire field (see
+        // its own doc): a `quadraui-py`/`quadraui-node` render callback
+        // that never sets it at all must still decode, same as omitting
+        // any other `#[serde(default)]` field.
+        let json = r#"{
+            "id": "settings",
+            "fields": []
+        }"#;
+        let form: Form = serde_json::from_str(json).unwrap();
+        assert_eq!(form.focused_field, None);
+    }
+
+    #[test]
     fn form_color_picker_field_serde() {
         let field = FormField {
             id: WidgetId::new("accent"),
@@ -4655,6 +4732,56 @@ mod tests {
         let layout = f.layout(40.0, 20.0, |_| FormFieldMeasure::new(1.0));
         assert_eq!(layout.visible_fields.len(), 0);
         assert_eq!(layout.hit_test(5.0, 5.0), FormHit::Empty);
+    }
+
+    #[test]
+    fn focus_order_skips_label_readonly_and_disabled_fields() {
+        let mut disabled =
+            make_form_field("skip-me", "Disabled", FieldKind::Toggle { value: false });
+        disabled.disabled = true;
+        let f = make_form(
+            vec![
+                make_form_field("header", "Section", FieldKind::Label),
+                make_form_field(
+                    "name",
+                    "Name",
+                    FieldKind::TextInput {
+                        value: String::new(),
+                        placeholder: String::new(),
+                        cursor: Some(0),
+                        selection_anchor: None,
+                    },
+                ),
+                disabled,
+                make_form_field(
+                    "readonly",
+                    "Read-only",
+                    FieldKind::ReadOnly {
+                        value: StyledText::plain("x"),
+                    },
+                ),
+                make_form_field("flag", "Flag", FieldKind::Toggle { value: true }),
+            ],
+            0,
+        );
+        assert_eq!(
+            focus_order(&f),
+            vec![WidgetId::new("name"), WidgetId::new("flag")]
+        );
+    }
+
+    #[test]
+    fn focus_order_sorts_by_explicit_tab_index_then_natural_position() {
+        let mut first = make_form_field("a", "A", FieldKind::Toggle { value: false });
+        first.tab_index = Some(5);
+        let mut second = make_form_field("b", "B", FieldKind::Toggle { value: false });
+        second.tab_index = Some(1);
+        let third = make_form_field("c", "C", FieldKind::Toggle { value: false });
+        let f = make_form(vec![first, second, third], 0);
+        assert_eq!(
+            focus_order(&f),
+            vec![WidgetId::new("b"), WidgetId::new("c"), WidgetId::new("a")]
+        );
     }
 
     #[test]

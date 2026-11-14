@@ -1,14 +1,17 @@
 {
   "name": "@quadraui/node",
-  "version": "0.1.0",
+  "version": "0.11.0",
   "private": true,
   "description": "napi-rs bindings: insert quadraui descriptors from JavaScript/TypeScript and render them headlessly.",
   "license": "MIT OR Apache-2.0",
   "type": "commonjs",
-  "main": "js/index.ts",
-  "types": "js/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
-    ".": "./js/index.ts",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
     "./jsx-runtime": "./js/jsx-runtime.ts",
     "./jsx-dev-runtime": "./js/jsx-dev-runtime.ts",
     "./testing": "./js/testing.ts",
@@ -21,6 +24,7 @@
   },
   "files": [
     "README.md",
+    "dist/",
     "js/index.ts",
     "js/testing.ts",
     "js/wire.d.ts",
@@ -34,8 +38,12 @@
   "scripts": {
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
+    "build:dist": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc --module commonjs --target es2020 --moduleResolution node --skipLibCheck --outDir dist --rootDir js js/index.ts && node -e \"require('fs').copyFileSync('js/index.d.ts','dist/index.d.ts');require('fs').copyFileSync('js/wire.d.ts','dist/wire.d.ts')\"",
+    "prepack": "npm run build:dist",
     "test": "node --test tests/*.test.ts",
-    "typecheck:jsx": "tsc -p tsconfig.jsx.json"
+    "typecheck:jsx": "tsc -p tsconfig.jsx.json",
+    "typecheck:examples": "tsc --strict --noEmit --module commonjs --target es2020 --moduleResolution node --skipLibCheck --types node examples/*.ts",
+    "typecheck:dist-types": "tsc --strict --noEmit --module commonjs --target es2020 --moduleResolution node --skipLibCheck --types node js/index.d.ts"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3",

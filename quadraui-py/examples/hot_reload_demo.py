@@ -15,8 +15,11 @@ The view lives in its own module because a script run directly is
 `__main__`, which the import system cannot re-import.
 """
 
+from __future__ import annotations
+
 import pathlib
 import sys
+from typing import Any, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -29,12 +32,12 @@ class _Quit(Exception):
     """Raised from `on_event` to unwind out of `run_tui()`/`run_native()`."""
 
 
-def _quit_on_q(event):
+def _quit_on_q(event: Any) -> None:
     if key_name(event) in ("q", "Escape"):
         raise _Quit
 
 
-def build(width=60, height=24, interval=0.5):
+def build(width: int = 60, height: int = 24, interval: float = 0.5) -> Tuple[App, notes_view.NotesApp]:
     """The demo's `App`, watching `notes_view` for edits."""
     notes = notes_view.NotesApp()
     app = App(width, height, view=notes.view, on_event=_quit_on_q)

@@ -251,6 +251,254 @@ def test_render_callback_tree_leaf_rejects_two_extra_descriptors_together():
         app.screen()
 
 
+# Parametrised table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry
+# that has a dedicated `FormEvent` (`switch` already has its own dedicated
+# test above the slot-path block below, and `progress`/`spinner`/`image`
+# have no event at all) round-trips through a literal inline layout-tree
+# leaf -- a `{"row": [{"id": ..., "<kind>": {...}}]}` dict, the exact shape
+# a render callback writes -- not just through `insert_extra`'s flat-slot
+# path. Each case pushes the events a real app would dispatch (a focusing
+# click, then a key/char where the kind needs one) and asserts the final
+# dispatched event the handler receives.
+_INLINE_LEAF_CASES = [
+    pytest.param(
+        {"row": [{"id": "ni:1", "number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}]},
+        [{"MouseDown": {"button": "Left", "position": {"x": 38.0, "y": 0.0}, "modifiers": {}}}],
+        [
+            {"FocusChanged": "ni:1"},
+            ("ni:1", {"TextInputChanged": {"id": "ni:1", "value": "43"}}),
+        ],
+        id="number_input",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "rg:1",
+                    "radio_group": {
+                        "id": "rg:1",
+                        "options": [
+                            {"id": "opt:a", "label": "Alpha"},
+                            {"id": "opt:b", "label": "Beta"},
+                        ],
+                        "focused": True,
+                    },
+                }
+            ]
+        },
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 1.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Down"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "rg:1"},
+            None,  # the focusing click itself falls through unclaimed
+            ("rg:1", {"SegmentedControlChanged": {"id": "rg:1", "selected_idx": 0}}),
+        ],
+        id="radio_group",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "dp:1",
+                    "date_picker": {
+                        "id": "dp:1",
+                        "visible_month": {"year": 2024, "month": 3, "day": 1},
+                        "focused": {"year": 2024, "month": 3, "day": 15},
+                        "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
+                        "has_focus": True,
+                    },
+                }
+            ]
+        },
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 1.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "dp:1"},
+            None,
+            (
+                "dp:1",
+                {"DateChanged": {"id": "dp:1", "value": {"year": 2024, "month": 3, "day": 15}}},
+            ),
+        ],
+        id="date_picker",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "cb:1",
+                    "combo_box": {
+                        "id": "cb:1",
+                        "options": ["alpha", "beta"],
+                        "text": "",
+                        "focused": True,
+                        "open": False,
+                    },
+                }
+            ]
+        },
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 1.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Char": "a"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "cb:1"},
+            None,
+            ("cb:1", {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}),
+        ],
+        id="combo_box",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "settings",
+                    "form": {
+                        "id": "settings",
+                        "fields": [
+                            {
+                                "id": "wrap",
+                                "label": {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]},
+                                "kind": {"Toggle": {"value": False}},
+                            },
+                        ],
+                    },
+                }
+            ]
+        },
+        [{"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}],
+        [
+            {"FocusChanged": "settings"},
+            ("settings", {"ToggleChanged": {"id": "wrap", "value": True}}),
+        ],
+        id="form",
+    ),
+    pytest.param(
+        {"row": [{"id": "ti:1", "text_input": {"id": "ti:1", "lines": ["hello"]}}]},
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}},
+            {"CharTyped": "!"},
+        ],
+        [
+            {"FocusChanged": "ti:1"},
+            None,
+            ("ti:1", {"TextInputChanged": {"id": "ti:1", "value": "!hello"}}),
+        ],
+        id="text_input",
+    ),
+    pytest.param(
+        {"row": [{"id": "cb:1", "checkbox": {"id": "cb:1", "value": False}}]},
+        [{"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}],
+        [
+            {"FocusChanged": "cb:1"},
+            ("cb:1", {"ToggleChanged": {"id": "cb:1", "value": True}}),
+        ],
+        id="checkbox",
+    ),
+    pytest.param(
+        {
+            "row": [
+                {
+                    "id": "sl:1",
+                    "slider": {"id": "sl:1", "value": 0.0, "min": 0.0, "max": 10.0, "step": 1.0},
+                }
+            ]
+        },
+        [
+            # x: 0.0 lands focus on the slider without moving it -- the
+            # mapped fraction is 0.0, same as the current value -- so the
+            # second event (Right) is what actually exercises the change.
+            {"MouseDown": {"button": "Left", "position": {"x": 0.0, "y": 0.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Right"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "sl:1"},
+            None,
+            ("sl:1", {"SliderChanged": {"id": "sl:1", "value": 1.0}}),
+        ],
+        id="slider",
+    ),
+    pytest.param(
+        {"row": [{"id": "se:1", "select": {"id": "se:1", "options": ["One", "Two", "Three"]}}]},
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Down"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "se:1"},
+            # Unlike `radio_group`'s click (unclaimed), a click on a
+            # standalone `select` leaf steps the selection itself, so it
+            # reaches the handler as `DropdownChanged` too, not `None`.
+            ("se:1", {"DropdownChanged": {"id": "se:1", "selected_idx": 1}}),
+            ("se:1", {"DropdownChanged": {"id": "se:1", "selected_idx": 1}}),
+        ],
+        id="select",
+    ),
+    pytest.param(
+        {"row": [{"id": "pw:1", "password": {"id": "pw:1", "value": "hi"}}]},
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}},
+            {"CharTyped": "!"},
+        ],
+        [
+            {"FocusChanged": "pw:1"},
+            None,
+            ("pw:1", {"TextInputChanged": {"id": "pw:1", "value": "hi!"}}),
+        ],
+        id="password",
+    ),
+    pytest.param(
+        {"row": [{"id": "ta:1", "textarea": {"id": "ta:1", "value": "hi"}}]},
+        [
+            {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}},
+            {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}},
+        ],
+        [
+            {"FocusChanged": "ta:1"},
+            None,
+            # The focusing click lands at column 0 (the default cursor
+            # position for a textarea with no explicit `cursor`), so
+            # Enter's inserted newline lands before "hi", not after it.
+            ("ta:1", {"TextInputChanged": {"id": "ta:1", "value": "\nhi"}}),
+        ],
+        id="textarea",
+    ),
+]
+
+
+@pytest.mark.parametrize("leaf_tree, events, expected", _INLINE_LEAF_CASES)
+def test_inline_tree_leaf_round_trips_semantic_event_per_kind(leaf_tree, events, expected):
+    app = QuiApp(40, 20)
+    app.set_render(lambda: leaf_tree)
+    # `set_render` itself never repaints -- force the first render so the
+    # hit map actually reflects this leaf before the events below.
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for event in events:
+        app.push_event(event)
+    app.run(len(events))
+
+    assert len(received) == len(expected), received
+    for actual, want in zip(received, expected):
+        if want is None:
+            # The focusing click itself lands as a raw, unclaimed hit --
+            # only its `FocusChanged` precursor and the later key/char's
+            # semantic event are asserted precisely.
+            assert "Form" not in actual, actual
+            continue
+        if isinstance(want, tuple):
+            widget_id, form_event = actual["Form"]
+            assert (widget_id, form_event) == want, actual
+        else:
+            assert actual == want, actual
+
+
 def test_insert_extra_text_input_renders_value():
     app = QuiApp(40, 20)
     app.insert_extra("text_input", {"id": "ti:1", "lines": ["hello"]})
@@ -683,6 +931,141 @@ def test_form_button_click_emits_button_clicked():
     assert form_event == {"ButtonClicked": {"id": "save"}}
 
 
+def test_form_toggle_space_and_enter_activate_via_keyboard():
+    # A focused plain `Toggle` field (not a `ToggleGroup`) flips on both
+    # Space and Enter, not just a mouse click -- `FormController`'s own
+    # key dispatch now has an arm for it, mirroring the item-row
+    # activation `ButtonRow`/`ToggleGroup`/`Toolbar` already had. Two Tabs
+    # (an uncontrolled form, mirroring
+    # `test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field`)
+    # land keyboard focus on the sole field without a mouse click.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "wrap",
+                        "label": {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]},
+                        "kind": {"Toggle": {"value": False}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for _ in range(2):
+        app.push_event(
+            {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+        )
+        app.run(1)
+    assert received[-1]["Form"] == ("settings", {"FocusChanged": {"id": "wrap"}})
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Char": " "}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ToggleChanged": {"id": "wrap", "value": True}}
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ToggleChanged": {"id": "wrap", "value": True}}
+
+    # A space delivered as a raw `CharTyped` (rather than a `KeyPressed`
+    # with `key: {"Char": " "}`) must activate the toggle too --
+    # `FormController::handle_inner`'s `CharTyped` arm used to go
+    # straight to inserting a literal character, bypassing every
+    # activation path entirely.
+    received.clear()
+    app.push_event({"CharTyped": " "})
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ToggleChanged": {"id": "wrap", "value": True}}
+
+
+def test_form_button_row_enter_and_space_activate_via_keyboard():
+    # A focused `ButtonRow` activates its current item-focused button on
+    # both Enter and Space, including a Space delivered as a raw
+    # `CharTyped` rather than `KeyPressed`. Two Tabs land keyboard focus
+    # on the row without a mouse click, same as the Toggle test above.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "row",
+                        "label": {"spans": [{"text": "Actions", "fg": None, "bg": None}]},
+                        "kind": {
+                            "ButtonRow": {
+                                "buttons": [
+                                    {"id": "a", "label": "A"},
+                                    {"id": "b", "label": "B"},
+                                ]
+                            }
+                        },
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for _ in range(2):
+        app.push_event(
+            {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+        )
+        app.run(1)
+    assert received[-1]["Form"] == ("settings", {"FocusChanged": {"id": "row"}})
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ButtonClicked": {"id": "a"}}
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Right"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    received.clear()
+    app.push_event({"CharTyped": " "})
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ButtonClicked": {"id": "b"}}
+
+
 def test_form_text_field_click_then_typing_routes_through_form_controller():
     # Clicking a `TextInput` field focuses it inside the form
     # (`FormEvent::FocusChanged`, which the host echoes back onto
@@ -910,6 +1293,267 @@ def test_form_wheel_scroll_advances_the_controller_scroll_offset():
     assert app.screen_contains("Field2")
     assert app.screen_contains("Field3")
     assert not app.screen_contains("Field0")
+
+
+def test_form_gaining_engine_focus_keeps_its_first_field_visible():
+    # The generic engine-focus ring the TUI runner paints over whatever
+    # tab stop currently holds engine focus must not apply to a `"form"`
+    # extra at all -- `FormController` owns its own per-field focus
+    # visuals. The very first Tab (an uncontrolled form, same shape as
+    # `test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field`
+    # below) lands engine focus on the form as a whole, before any field
+    # inside it is focused -- exactly the frame the generic ring used to
+    # paint a single box over the form's own multi-row rect, hiding
+    # "Field0" under its top border line.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": f"f{i}",
+                        "label": {"spans": [{"text": f"Field{i}", "fg": None, "bg": None}]},
+                        "kind": "Label",
+                    }
+                    for i in range(10)
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.set_handler(lambda event: None)
+    assert app.screen_contains("Field0")
+
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert app.screen_contains("Field0"), (
+        "\"Field0\" must still be visible the very first frame after the "
+        f"form gains engine focus:\n{app.screen()}"
+    )
+
+
+def test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field():
+    # Acceptance: an app that never sets `focused_field` (the key is
+    # omitted every frame) still gets Tab-driven field focus from the
+    # host itself, and typing afterward lands on the right field.
+    app = QuiApp(40, 20)
+    state = {"name": ""}
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": state["name"]}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+
+    def handler(event):
+        received.append(event)
+        if "Form" not in event:
+            return
+        _, form_event = event["Form"]
+        if "TextInputChanged" in form_event:
+            state["name"] = form_event["TextInputChanged"]["value"]
+
+    app.set_handler(handler)
+
+    # First Tab: nothing is focused anywhere yet, so the generic
+    # app-level cycle (the form is its only stop) lands engine focus on
+    # the form as a whole.
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert received[-1]["FocusChanged"] == "settings"
+
+    # Second Tab: the host's own field cycling takes over from here,
+    # landing on "name".
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    widget_id, form_event = received[-1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"FocusChanged": {"id": "name"}}
+
+    # Typing now lands on "name" even though the app never echoed
+    # `focused_field` back at all -- `None` is no longer a dead form.
+    received.clear()
+    app.push_event({"CharTyped": "x"})
+    app.run(1)
+    widget_id, form_event = received[-1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"TextInputChanged": {"id": "name", "value": "x"}}
+    assert state["name"] == "x"
+
+
+def test_uncontrolled_form_tab_cycles_fields_then_leaves_for_the_sibling_button():
+    # Regression coverage for the host's own Tab/Shift-Tab focus-cycling
+    # step: it must not run its generic cross-widget cycle while a
+    # main-tree "form" extra holds focus, even with another app-level tab
+    # stop sitting right next to it. Before this was fixed, the host saw
+    # a non-empty tab-stop list excluding the form's own stop, synced the
+    # focus manager's order to it (which clears focus because "settings"
+    # isn't in that list), and landed the next Tab on the *first* stop in
+    # that list regardless of which field the form was on -- so the
+    # second Tab below would jump straight to "go" instead of entering
+    # field "name" first.
+    app = QuiApp(40, 20)
+    state = {"name": ""}
+
+    def render():
+        return {
+            "column": [
+                {
+                    "id": "settings",
+                    "form": {
+                        "id": "settings",
+                        "fields": [
+                            {
+                                "id": "name",
+                                "label": {
+                                    "spans": [{"text": "Name", "fg": None, "bg": None}]
+                                },
+                                "kind": {"TextInput": {"value": state["name"]}},
+                            },
+                        ],
+                    },
+                },
+                {"id": "go", "button": {"id": "go", "label": "Go"}},
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    # First Tab: nothing is focused anywhere yet, so the generic
+    # app-level cycle lands engine focus on the form as a whole.
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert received[-1]["FocusChanged"] == "settings"
+
+    # Second Tab: must enter field "name" -- not jump straight to "go".
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    widget_id, form_event = received[-1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"FocusChanged": {"id": "name"}}
+
+    # Third Tab: "name" is the form's only field, so this leaves for "go".
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert received[-1]["FocusChanged"] == "go"
+
+
+def test_uncontrolled_form_click_focuses_and_types_with_no_focused_field_tracking():
+    # Same "`None` is no longer a dead form" property as the Tab test
+    # above, via a click instead -- the handler never reads or writes
+    # `focused_field` at all, and typing right after a click still lands
+    # on the clicked field.
+    app = QuiApp(40, 20)
+    state = {"name": ""}
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": state["name"]}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    def handler(event):
+        if "Form" not in event:
+            return
+        _, form_event = event["Form"]
+        if "TextInputChanged" in form_event:
+            state["name"] = form_event["TextInputChanged"]["value"]
+
+    app.set_handler(handler)
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 6.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.push_event({"CharTyped": "z"})
+    app.run(2)
+
+    assert state["name"] == "z"
+
+
+def test_controlled_form_focused_field_keeps_app_set_focus_despite_a_click():
+    # An app that sets `focused_field` explicitly stays controlled: a
+    # click that would otherwise move engine-owned focus to a different
+    # field must not change which row the next render paints as focused.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "focused_field": "a",
+                "fields": [
+                    {
+                        "id": "a",
+                        "label": {"spans": [{"text": "A", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": ""}},
+                    },
+                    {
+                        "id": "b",
+                        "label": {"spans": [{"text": "B", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": ""}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.set_handler(lambda event: None)
+    app.screen()
+
+    # Clicking field "b" (row 1) still moves engine focus onto the form
+    # and reports a click internally -- the app's own descriptor just
+    # keeps pinning "a" every frame, so the highlight stays put.
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 6.0, "y": 1.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert app.cell_colors(0, 0)[1] == (50, 60, 90)
+    assert app.cell_colors(0, 1)[1] == (20, 22, 30)
 
 
 def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
@@ -1340,9 +1984,270 @@ def test_clicking_an_activity_bar_item_emits_item_clicked():
     assert activity_event == {"ItemClicked": {"id": "activity:explorer"}}
 
 
+# The chrome kinds below (`toolbar`, `status_bar`, `activity_bar`,
+# `menu_bar`) already have dedicated flat-slot click tests above this
+# comment; these four mirror each one through a literal inline
+# `{"row": [{"id", "<kind>": {...}}]}` leaf -- the shape a render callback
+# writes -- instead of `insert_extra`, proving the chrome-bar leaf path
+# (`ExtraPaint::paint_chrome`'s `chrome_hits`, and for `menu_bar`,
+# `render_overlays`'s `sync_menu_bar`) carries the same semantic event all
+# the way to the handler, not just its paint.
+def test_inline_tree_leaf_toolbar_click_emits_toolbar_button_clicked():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "toolbar:main",
+                    "toolbar": {
+                        "id": "toolbar:main",
+                        "buttons": [
+                            {"Action": {"id": "toolbar:refresh", "label": "Refresh"}},
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    event = _click(app, 1.0, 0.0)
+
+    assert "MouseDown" not in event, event
+    bar, payload = event["Toolbar"]
+    assert bar == "toolbar:main"
+    assert payload == {"ButtonClicked": {"id": "toolbar:refresh", "is_active": True}}
+
+
+def test_inline_tree_leaf_status_bar_click_emits_segment_clicked():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "status_bar:main",
+                    "status_bar": {
+                        "id": "status_bar:main",
+                        "left_segments": [
+                            {
+                                "text": "main",
+                                "fg": {"r": 255, "g": 255, "b": 255, "a": 255},
+                                "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
+                                "action_id": "status:branch",
+                            },
+                        ],
+                        "right_segments": [],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    event = _click(app, 1.0, 0.0)
+
+    widget_id, status_event = event["StatusBar"]
+    assert widget_id == "status_bar:main"
+    assert status_event == {"SegmentClicked": {"id": "status:branch"}}
+
+
+def test_inline_tree_leaf_activity_bar_click_emits_item_clicked():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "activity_bar:main",
+                    "activity_bar": {
+                        "id": "activity_bar:main",
+                        "top_items": [
+                            {
+                                "id": "activity:explorer",
+                                "icon": {"glyph": "", "fallback": "E"},
+                                "tooltip": "Explorer",
+                                "is_active": True,
+                            },
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    event = _click(app, 0.0, 0.0)
+
+    widget_id, activity_event = event["ActivityBar"]
+    assert widget_id == "activity_bar:main"
+    assert activity_event == {"ItemClicked": {"id": "activity:explorer"}}
+
+
+def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
+    # `render_overlays`'s `sync_menu_bar` call reads this frame's hit map
+    # generically -- it never distinguishes a flat-slot `"menu_bar"` from
+    # one painted through an inline leaf -- so an `Alt+F` opens the bar's
+    # one top-level menu and `Enter` activates its sole leaf item exactly
+    # as it would for a slot-painted bar.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "menu_bar:main",
+                    "menu_bar": {
+                        "id": "menu_bar:main",
+                        "items": [
+                            {
+                                "id": "menu:file",
+                                "label": "&File",
+                                "submenu": [
+                                    {
+                                        "id": "menu:file:save",
+                                        "label": {
+                                            "spans": [
+                                                {"text": "Save", "fg": None, "bg": None}
+                                            ]
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"KeyPressed": {"key": {"Char": "f"}, "modifiers": {"alt": True}, "repeat": False}}
+    )
+    app.run(1)
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert {"MenuActivated": "menu:file:save"} in received, received
+
+
+def test_inline_tree_leaf_markdown_renders_formatting_and_link_click_emits_event():
+    # `"markdown"` reuses `render_markdown_to_styled` (the same adapter
+    # `push_turn_markdown`/`RichTextPopup` content already goes through),
+    # not a second parser -- asserted here by checking the raw syntax is
+    # gone from the painted screen (a renderer bypass that printed `source`
+    # verbatim would still pass a plain `screen_contains` check on each
+    # substring, since every one of them is also present in the raw text).
+    # The link click resolves through the same `ExtraChrome` chrome-hit
+    # mechanism `toolbar`/`status_bar`/`activity_bar` above use, into
+    # `RichTextLinkClicked` -- the event `RichTextPopup`'s own link click
+    # already dispatches -- so this gets its own test rather than a row in
+    # `_INLINE_LEAF_CASES`, matching those three.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "md:1",
+                    "markdown": {
+                        "id": "md:1",
+                        "source": "# Title\n**bold** *italic* `code`\n- item\n[docs](https://example.com/docs)",
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    assert app.screen_contains("Title")
+    assert app.screen_contains("bold")
+    assert app.screen_contains("italic")
+    assert app.screen_contains("code")
+    assert app.screen_contains("item")
+    assert app.screen_contains("docs")
+    assert not app.screen_contains("# Title")
+    assert not app.screen_contains("**bold**")
+    assert not app.screen_contains("*italic*")
+    assert not app.screen_contains("`code`")
+    assert not app.screen_contains("[docs]")
+    assert app.screen_contains("•")
+
+    # `QuiApp` (unlike `QuiShellApp`) has no `find` helper, so the link's
+    # cell position is located the same way `test_insert_extra_form_control_width_*`
+    # above locates a column: scan `screen()`'s own rows/columns directly.
+    lines = app.screen().splitlines()
+    y = next(i for i, line in enumerate(lines) if "docs" in line)
+    x = lines[y].find("docs")
+    event = _click(app, float(x), float(y))
+
+    widget_id, url = event["RichTextLinkClicked"]
+    assert widget_id == "md:1"
+    assert url == "https://example.com/docs"
+
+
+def test_inline_tree_leaf_find_replace_renders_query_text():
+    # `FindReplacePanel` carries no `id` field of its own (see
+    # `ExtraPaint::id`'s fixed-sentinel doc); `test_missing_primitives.py`
+    # already covers it via `insert_extra`, so this proves the same
+    # painter also works from an inline layout leaf. `hit_regions` drives
+    # both click routing AND which content the TUI rasteriser paints
+    # (`tui::draw_find_replace` walks it to place the find/replace input
+    # text) -- a real host builds it via `compute_find_replace_hit_regions`;
+    # this test supplies just the one entry it needs directly. An inline
+    # leaf gets the full 40-column viewport rather than `insert_extra`'s
+    # narrower band, so a `width` of 20 keeps the region inside it.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "fr:1",
+                    "find_replace": {
+                        "query": "needle",
+                        "group_bounds": {"x": 0.0, "y": 0.0, "width": 40.0, "height": 20.0},
+                        "hit_regions": [[{"col": 0, "row": 0, "width": 20}, {"FindInput": 0}]],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("needle")
+
+
 def test_command_line_renders_text():
     app = QuiApp(40, 20)
     app.insert_extra("command_line", {"id": "command_line:main", "text": ":wq"})
+    assert app.screen_contains(":wq")
+
+
+def test_inline_tree_leaf_command_line_renders_text():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "command_line:main",
+                    "command_line": {"id": "command_line:main", "text": ":wq"},
+                },
+            ]
+        }
+
+    app.set_render(render)
     assert app.screen_contains(":wq")
 
 
@@ -1357,6 +2262,28 @@ def test_command_center_renders_search_label():
             "search_label": "my-project",
         },
     )
+    assert app.screen_contains("my-project")
+
+
+def test_inline_tree_leaf_command_center_renders_search_label():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "command_center:main",
+                    "command_center": {
+                        "id": "command_center:main",
+                        "back_enabled": True,
+                        "forward_enabled": False,
+                        "search_label": "my-project",
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
     assert app.screen_contains("my-project")
 
 
@@ -1387,6 +2314,286 @@ def test_palette_renders_item_text():
 
     app.set_render(render)
     assert app.screen_contains("Save File")
+
+
+# The data-view kinds below (`message_list`, `board`, `diff_view`, `minimap`,
+# `multi_section_view`) already have a dedicated flat-slot `insert_extra`
+# paint test above this comment, the same way `chart`/`pipeline_view` do
+# just above `test_activity_bar_renders_item_fallback_glyph`. Each one here
+# mirrors that same descriptor through a literal inline
+# `{"row": [{"id", "<kind>": {...}}]}` leaf instead, proving
+# `layout_leaf_from_value`'s generic `EXTRA_PRIMITIVE_KINDS` decode (and
+# `paint_leaf`'s matching `LeafDescriptor::Extra` paint) covers every
+# data-view kind, not just the two already proven this way.
+def test_inline_tree_leaf_message_list_renders_row_text():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "messages:1",
+                    "message_list": {
+                        "id": "messages:1",
+                        "rows": [
+                            {
+                                "text": "Build succeeded",
+                                "fg": {"r": 0, "g": 200, "b": 0, "a": 255},
+                            },
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("Build succeeded")
+
+
+def test_inline_tree_leaf_board_renders_column_title():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "board:1",
+                    "board": {
+                        "id": "board:1",
+                        "columns": [
+                            {
+                                "id": "col:backlog",
+                                "title": "Backlog",
+                                "cards": [
+                                    {"id": "card:1", "title": "Fix flaky test"},
+                                ],
+                            },
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("Backlog")
+
+
+def test_inline_tree_leaf_diff_view_renders_unified_hunk_header():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "diff:1",
+                    "diff_view": {
+                        "id": "diff:1",
+                        "left": "foo\n",
+                        "right": "foo\nbar\n",
+                        "left_label": None,
+                        "right_label": None,
+                        "hunks": [
+                            {
+                                "left_start": 1,
+                                "right_start": 1,
+                                "rows": [
+                                    {"left": "foo", "right": "foo", "kind": "Same"},
+                                    {"left": None, "right": "bar", "kind": "Added"},
+                                ],
+                            },
+                        ],
+                        "mode": "Unified",
+                        "editability": "ReadOnly",
+                        "scroll_offset": 0,
+                        "focused_pane": "Left",
+                        "has_focus": False,
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("@@")
+
+
+def test_inline_tree_leaf_minimap_renders_braille_cells():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "minimap:1",
+                    "minimap": {
+                        "id": "minimap:1",
+                        "lines": [{"text": "fn main() {}", "line_idx": 0}],
+                        "syntax_spans": [],
+                        "visible_row_start": 0,
+                        "visible_row_count": 1,
+                        "total_buffer_lines": 1,
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("⠀")
+
+
+def test_inline_tree_leaf_multi_section_view_renders_section_header_title():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "sections:1",
+                    "multi_section_view": {
+                        "id": "sections:1",
+                        "sections": [
+                            {
+                                "id": "section:explorer",
+                                "header": {
+                                    "icon": None,
+                                    "title": {
+                                        "spans": [
+                                            {"text": "Explorer", "fg": None, "bg": None}
+                                        ]
+                                    },
+                                    "badge": None,
+                                },
+                                "body": {"Text": []},
+                                "size": "EqualShare",
+                            },
+                        ],
+                        "axis": "Vertical",
+                        "scroll_mode": "PerSection",
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("Explorer")
+
+
+# `editor`/`terminal`/`canvas` already have their own `insert_extra`
+# flat-slot paint-and-click coverage in `test_missing_primitives.py` (C17).
+# These three mirror that same click behaviour (click-to-focus for the two
+# tab stops, a bare routed hit for the non-focusable `Canvas`) through a
+# literal inline leaf instead, proving the generic `LeafDescriptor::Extra`
+# path carries `ExtraPaint::hit_test`/`tab_stop` the same way a flat-slot
+# descriptor does.
+def test_inline_tree_leaf_editor_focuses_it_and_routes_the_hit():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "editor:main",
+                    "editor": {
+                        "id": "editor:main",
+                        "rect": {"x": 0.0, "y": 0.0, "width": 40.0, "height": 10.0},
+                        "lines": [
+                            {
+                                "raw_text": "fn main() {}",
+                                "gutter_text": "1",
+                                "spans": [],
+                                "line_idx": 0,
+                            },
+                        ],
+                        "scroll_top": 0,
+                        "total_lines": 1,
+                        "is_active": True,
+                        "show_active_bg": False,
+                        "has_git_diff": False,
+                        "has_breakpoints": False,
+                        "tabstop": 4,
+                        "cursorline": False,
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = _click_events(app, 1.0, 1.0)
+
+    assert len(received) == 2
+    assert received[0]["FocusChanged"] == "editor:main"
+    assert received[1]["MouseDown"]["widget"] == "editor:main"
+
+
+def test_inline_tree_leaf_terminal_focuses_it_and_routes_the_hit():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "terminal:shell",
+                    "terminal": {
+                        "id": "terminal:shell",
+                        "cells": [
+                            [
+                                {
+                                    "text": "$",
+                                    "fg": {"r": 200, "g": 200, "b": 200, "a": 255},
+                                    "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
+                                }
+                            ]
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = _click_events(app, 1.0, 1.0)
+
+    assert len(received) == 2
+    assert received[0]["FocusChanged"] == "terminal:shell"
+    assert received[1]["MouseDown"]["widget"] == "terminal:shell"
+
+
+def test_inline_tree_leaf_canvas_routes_the_hit_without_focusing():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "canvas:sparkline",
+                    "canvas": {
+                        "id": "canvas:sparkline",
+                        "ops": [
+                            {
+                                "Rect": {
+                                    "rect": {
+                                        "x": 0.0,
+                                        "y": 0.0,
+                                        "width": 10.0,
+                                        "height": 1.0,
+                                    },
+                                    "color": {"r": 0, "g": 200, "b": 0, "a": 255},
+                                }
+                            }
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    event = _click(app, 1.0, 1.0)
+
+    assert event["MouseDown"]["widget"] == "canvas:sparkline"
 
 
 def _click(app, x, y):
@@ -2102,6 +3309,49 @@ def test_show_context_menu_escape_dismisses_without_item_activation():
     assert received == ["ContextMenuDismissed"]
 
 
+def test_show_context_menu_with_nested_submenu_opens_by_right_arrow_and_activates():
+    # `ContextMenuItem.submenu` nests through the same `show_context_menu`
+    # call -- opening the parent's child popup by Right arrow and
+    # activating a nested leaf reports that leaf's own id via
+    # `ContextMenuItemActivated`, the same shape a flat menu's activation
+    # already carries (`nesting depth is transparent to the caller`).
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    items = [
+        {
+            "id": "view",
+            "label": {"spans": [{"text": "View", "fg": None, "bg": None}]},
+            "submenu": [
+                {
+                    "id": "toggle_sidebar",
+                    "label": {
+                        "spans": [{"text": "Toggle Sidebar", "fg": None, "bg": None}]
+                    },
+                },
+            ],
+        },
+    ]
+    app.show_context_menu(items, (2.0, 2.0))
+    assert app.screen_contains("View")
+
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Right"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert app.screen_contains("Toggle Sidebar"), "the submenu must now be painted"
+    assert received == [], "pure navigation dispatches nothing to the app's handler"
+
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert received == [{"ContextMenuItemActivated": "toggle_sidebar"}]
+    assert not app.screen_contains("Toggle Sidebar"), "activation must close the popup"
+
+
 def test_show_context_menu_item_with_codicon_icon_renders_fallback():
     # `ContextMenuItem::icon` accepts the same `{"codicon": "...",
     # "fallback": "..."}` wire shape a tree row's `icon` does (see
@@ -2110,7 +3360,7 @@ def test_show_context_menu_item_with_codicon_icon_renders_fallback():
     # the fallback's first character renders) rather than a
     # measured-width slot -- `QuiApp`'s headless driver defaults to nerd
     # fonts off, so that's the fallback's plain-text first character,
-    # directly left of the label with no gap.
+    # followed by one blank gap cell ahead of the label.
     app = QuiApp(40, 20)
     items = [
         {
@@ -2120,7 +3370,8 @@ def test_show_context_menu_item_with_codicon_icon_renders_fallback():
         },
     ]
     app.show_context_menu(items, (2.0, 2.0))
-    assert app.screen_contains("NNew File")
+    assert app.screen_contains("N New File")
+    assert not app.screen_contains("NNew File")
 
 
 def test_show_context_menu_item_with_unknown_codicon_name_raises():

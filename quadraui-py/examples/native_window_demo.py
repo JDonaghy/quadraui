@@ -47,7 +47,16 @@ window first on every backend. All three end with the final
 `closed after N click(s)` line on stdout.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+
 from quadraui import QuiApp
+
+if TYPE_CHECKING:
+    # `quadraui.wire` is a stub-only module -- see its own module docstring --
+    # so this import only runs under a type checker.
+    from quadraui.wire import Key, UiEvent
 
 WIDTH = 80
 HEIGHT = 24
@@ -59,61 +68,72 @@ class _Quit(Exception):
     """Sentinel raised from the handler to unwind out of `run_native()`."""
 
 
-def make_app():
-    app = QuiApp(WIDTH, HEIGHT)
-    app.insert_button(
-        {
-            "id": "demo:ok",
-            "label": "OK (Enter/Space)",
-            "focused": True,
-        }
-    )
-    app.insert_text_display(
-        {
-            "id": "demo:label",
-            "lines": [
-                {
-                    "spans": [
+def _render() -> "Dict[str, Any]":
+    return {
+        "column": [
+            {
+                "id": "demo:ok",
+                "button": {
+                    "id": "demo:ok",
+                    "label": "OK (Enter/Space)",
+                    "focused": True,
+                },
+            },
+            {
+                "id": "demo:label",
+                "text_display": {
+                    "id": "demo:label",
+                    "lines": [
                         {
-                            "text": "native_window_demo: Enter/Space clicks, q quits",
-                            "fg": None,
-                            "bg": None,
+                            "spans": [
+                                {
+                                    "text": "native_window_demo: Enter/Space clicks, q quits",
+                                    "fg": None,
+                                    "bg": None,
+                                }
+                            ]
                         }
-                    ]
-                }
-            ],
-        }
-    )
-    app.insert_list(
-        {
-            "id": "demo:list",
-            "items": [
-                {"text": {"spans": [{"text": row, "fg": None, "bg": None}]}}
-                for row in ROWS
-            ],
-            "selected_idx": 0,
-            "scroll_offset": 0,
-            "has_focus": False,
-            "show_v_scrollbar": True,
-        }
-    )
+                    ],
+                },
+            },
+            {
+                "id": "demo:list",
+                "list": {
+                    "id": "demo:list",
+                    "items": [
+                        {"text": {"spans": [{"text": row, "fg": None, "bg": None}]}}
+                        for row in ROWS
+                    ],
+                    "selected_idx": 0,
+                    "scroll_offset": 0,
+                    "has_focus": False,
+                    "show_v_scrollbar": True,
+                },
+            },
+        ]
+    }
+
+
+def make_app() -> QuiApp:
+    app = QuiApp(WIDTH, HEIGHT)
+    app.set_render(_render)
     return app
 
 
-def _is_quit_key(key):
+def _is_quit_key(key: "Key") -> bool:
     return key == {"Char": "q"} or key == {"Named": "Escape"}
 
 
-def _is_activate_key(key):
+def _is_activate_key(key: "Key") -> bool:
     return key == {"Char": " "} or key == {"Named": "Enter"}
 
 
-def make_handler(clicks):
+def make_handler(clicks: List[int]) -> "Callable[[UiEvent], Optional[bool]]":
     """Builds a handler closing over a plain Python list used as an
     out-of-band click counter, since the handler cannot write back to the
     `QuiApp` it was invoked from."""
 
-    def handler(event):
+    def handler(event: "UiEvent") -> Optional[bool]:
         if event == "WindowClose":
             print("native_window_demo: window close requested")
             raise _Quit
@@ -127,13 +147,14 @@ def make_handler(clicks):
             if _is_activate_key(key):
                 clicks.append(1)
                 print(f"native_window_demo: button activated (click #{len(clicks)})")
+        return None
 
     return handler
 
 
 if __name__ == "__main__":
     app = make_app()
-    clicks = []
+    clicks: List[int] = []
     app.set_handler(make_handler(clicks))
     try:
         app.run_native(title="quadraui native window demo")

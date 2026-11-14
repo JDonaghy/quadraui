@@ -2337,6 +2337,61 @@ pub trait Backend: sealed::Sealed {
         h
     }
 
+    // ─── Clipping ────────────────────────────────────────────────────────
+    /// Push an axis-aligned clip `rect`, in the same screen-space units
+    /// every `draw_*` method's own `rect` argument already uses.
+    /// Intersects with whatever clip is already active — nested, not
+    /// replaced — so a widget that pushes its own clip inside a caller's
+    /// clip never escapes it. Every push must be balanced by a matching
+    /// [`Self::pop_clip`]; an unbalanced push leaks the narrowed clip
+    /// into painting that runs after it.
+    ///
+    /// The seam a compositing container (e.g. a scroll view) reaches for
+    /// before painting a child that may overflow its own viewport —
+    /// mirrors [`crate::PaintSurface::surface_push_clip`]'s semantics,
+    /// but lives on `Backend` because the binding-core layout painter
+    /// draws through `Backend::draw_*`, not through a `PaintSurface`
+    /// (which TUI never implements — see that trait's module doc).
+    ///
+    /// This only clips *painting*. Hit-testing (`zones`,
+    /// `register_text_region`) and the terminal cursor position recorded
+    /// by anything painted while a clip is active are **not** clipped —
+    /// a caller that routes clicks through those needs its own
+    /// visibility check for a child clipped out of view.
+    ///
+    /// Rect quantisation on a cell/pixel-quantised backend rounds
+    /// *outward* to the nearest whole unit (matching
+    /// [`crate::DrawOp::PushClip`]), not to nearest — a fractional clip
+    /// can let a child bleed up to one unit past it. This does not hold
+    /// on [`crate::gtk::backend::GtkBackend`]: cairo clips at sub-pixel
+    /// precision, so a fractional rect there antialiases the clip edge
+    /// instead of rounding it outward to a whole pixel.
+    ///
+    /// Default: no-op, so every backend without its own clip bookkeeping
+    /// keeps painting exactly as before this method existed.
+    /// [`crate::tui::backend::TuiBackend`] overrides this with the same
+    /// cell-quantised clip bookkeeping [`crate::tui::canvas`] already
+    /// uses for `Canvas`'s own `PushClip`/`PopClip` ops — see
+    /// [`crate::tui::canvas::TuiClipFrame`]'s doc for that backend's own
+    /// extra caveat (clipping is retroactive there, not a live scissor).
+    /// [`crate::gtk::backend::GtkBackend`] overrides this too, forwarding
+    /// straight to its own [`crate::PaintSurface::surface_push_clip`]
+    /// (a cairo save/clip pair) instead of a second clip stack — note
+    /// that call panics outside the backend's frame scope (see that
+    /// method's own doc), unlike this trait method's no-op default.
+    /// [`crate::win::backend::WinBackend`] overrides this too, forwarding
+    /// to its own [`crate::PaintSurface::surface_push_clip`] (Direct2D's
+    /// push/pop clip stack) instead of a second clip stack.
+    /// [`crate::macos::backend::MacBackend`] overrides this too, forwarding
+    /// to its own [`crate::PaintSurface::surface_push_clip`] (Core
+    /// Graphics' save/clip/restore stack) instead of a second clip stack.
+    fn push_clip(&mut self, _rect: Rect) {}
+
+    /// Pop the clip most recently pushed by [`Self::push_clip`],
+    /// restoring whatever clip (or none) was active before it. Default:
+    /// no-op, mirroring that method.
+    fn pop_clip(&mut self) {}
+
     // ─── Drawing — one method per primitive ────────────────────────────
     //
     // Implementations are thin wrappers around each backend crate's

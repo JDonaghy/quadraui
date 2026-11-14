@@ -4479,6 +4479,55 @@ fn data_table_f_key_toggles_footer_off() {
     );
 }
 
+/// `DataTable::bordered` (#2447): with the border on, the engine's focus
+/// ring must land on the frame, not the header/first-column/last-row
+/// content it used to paint over. `'b'` toggles it; this only checks the
+/// paint shape (top-left corner glyph, header inset one cell in) — the
+/// focus-ring-never-overwrites-content guarantee itself is covered by
+/// `tui::data_table::tests::focus_ring_over_bordered_table_never_overwrites_content`.
+#[test]
+fn data_table_b_key_toggles_the_border_and_insets_the_header() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 100, 20);
+    let before = driver.screen();
+    assert!(
+        before.starts_with("Name"),
+        "header starts flush at the top-left corner before 'b':\n{before}"
+    );
+    let (before_x, before_y) = driver.find("Name").expect("header title before 'b'");
+    assert_eq!(
+        (before_x, before_y),
+        (0.5, 0.5),
+        "the header title anchors at the unbordered top-left corner"
+    );
+
+    driver.type_char('b');
+    let after = driver.screen();
+    assert!(
+        after.starts_with('╭'),
+        "'b' should draw a rounded top-left border corner:\n{after}"
+    );
+    let header_row = after.lines().nth(1).expect("header row");
+    assert!(
+        header_row.starts_with('│') && header_row.contains("Name"),
+        "bordered header must inset the column title behind the left border, not paint flush at x=0:\n{after}"
+    );
+    let (after_x, after_y) = driver.find("Name").expect("header title after 'b'");
+    assert_eq!(
+        (after_x, after_y),
+        (1.5, 1.5),
+        "the 1-cell border inset must shift the header title's anchor by exactly \
+         (1, 1), tracking whatever layout the example paints rather than a \
+         hardcoded line/column"
+    );
+
+    driver.type_char('b');
+    let restored = driver.screen();
+    assert!(
+        restored.starts_with("Name"),
+        "'b' should toggle the border back off:\n{restored}"
+    );
+}
+
 /// `PageDown`/`PageUp` are the keyboard equivalent of
 /// clicking above/below the scrollbar thumb (a full-page jump) — before
 /// this fix the finest keyboard granularity was `j`/`k` (one row) with no
@@ -10530,17 +10579,21 @@ fn context_menu_style_demo_click_activates_item() {
 /// The "Copy" item's `ContextMenuItem::icon` paints its resolved glyph in
 /// the row's leading gutter column — `TuiDriver` defaults to nerd fonts
 /// off, so that's the icon's plain-text fallback (`Icon::codicon("files",
-/// "C")`'s `C`), immediately left of the label with no gap (the TUI
-/// rasteriser always starts the label exactly one column after the
-/// gutter cell).
+/// "C")`'s `C`). Because the menu carries an icon, every row reserves a
+/// 2-cell gutter (glyph + one blank gap cell), so the glyph sits one
+/// blank cell left of the label rather than running straight into it.
 #[test]
 fn context_menu_style_demo_copy_item_shows_icon_glyph() {
     let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
     driver.right_click(10.0, 4.0);
     let screen = driver.screen();
     assert!(
-        screen.contains("CCopy"),
-        "the icon's fallback glyph should sit directly left of \"Copy\":\n{screen}"
+        screen.contains("C Copy"),
+        "the icon's fallback glyph should sit one blank cell left of \"Copy\":\n{screen}"
+    );
+    assert!(
+        !screen.contains("CCopy"),
+        "the icon glyph must not run directly into the label with no gap:\n{screen}"
     );
 }
 
@@ -10562,6 +10615,80 @@ fn context_menu_style_demo_escape_dismisses() {
         !driver.screen_contains("Last action"),
         "dismissal must not report an activated action:\n{}",
         driver.screen()
+    );
+}
+
+/// "More..." carries a nested `submenu`: hovering its row opens the child
+/// popup pulled right of the parent, and clicking a nested leaf activates
+/// it (reporting that leaf's own `WidgetId`, not the parent's).
+#[test]
+fn context_menu_style_demo_submenu_opens_on_hover_and_activates_leaf() {
+    let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 80, 14);
+    driver.right_click(5.0, 4.0);
+    let (mx, my) = driver
+        .find("More...")
+        .unwrap_or_else(|| panic!("root menu must paint 'More...':\n{}", driver.screen()));
+
+    driver.mouse_move(mx, my);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Duplicate") && screen.contains("Rename"),
+        "hovering 'More...' must open its submenu:\n{screen}"
+    );
+
+    let parent_bounds = driver
+        .find_bounds("More...")
+        .expect("'More...' is still painted");
+    let child_bounds = driver
+        .find_bounds("Duplicate")
+        .expect("'Duplicate' is painted");
+    assert!(
+        child_bounds.x > parent_bounds.x,
+        "the child popup should pull right of the parent by default:\n{screen}"
+    );
+
+    let (dx, dy) = driver.find("Duplicate").expect("'Duplicate' is painted");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("Last action: ctx.more.duplicate"),
+        "clicking the nested leaf must report its own id, not the parent's:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Duplicate"),
+        "activation must close the whole stack:\n{}",
+        driver.screen()
+    );
+}
+
+/// Near the viewport's right edge the child popup has no room to pull
+/// right, so it flips to the parent's left edge instead — the same
+/// `ContextMenuLayout::submenu_anchor` rule `MenuSystem`'s menu-bar
+/// submenus use.
+#[test]
+fn context_menu_style_demo_submenu_flips_left_near_right_edge() {
+    let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 14);
+    driver.right_click(34.0, 4.0);
+    let (mx, my) = driver
+        .find("More...")
+        .unwrap_or_else(|| panic!("root menu must paint 'More...':\n{}", driver.screen()));
+
+    driver.mouse_move(mx, my);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Duplicate"),
+        "hovering 'More...' must open its submenu:\n{screen}"
+    );
+
+    let parent_bounds = driver
+        .find_bounds("More...")
+        .expect("'More...' is still painted");
+    let child_bounds = driver
+        .find_bounds("Duplicate")
+        .expect("'Duplicate' is painted");
+    assert!(
+        child_bounds.x < parent_bounds.x,
+        "near the right edge the child popup must flip to the parent's left:\n{screen}"
     );
 }
 

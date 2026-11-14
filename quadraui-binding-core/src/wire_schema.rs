@@ -68,6 +68,34 @@ use serde::Serialize;
 use crate::extra_paint::EXTRA_PRIMITIVE_KINDS;
 use crate::layout::LEAF_KIND_KEYS;
 
+// ─── Wire format version ───────────────────────────────────────────────────
+
+/// Version of the layout-tree / render-output wire shape a render
+/// callback's returned `dict`/object carries in its optional top-level
+/// `"wire_version"` key -- see [`crate::wire::check_wire_version`] for the
+/// decode-time check against this constant.
+///
+/// # Mismatch policy
+///
+/// - **Absent key**: treated as version `1` -- every render callback
+///   written before this field existed, in either binding, keeps decoding
+///   unchanged.
+/// - **`wire_version` <= this constant**: accepted. The wire shape only
+///   ever grows additively (new optional keys, never a changed or removed
+///   one -- see `quadraui/docs/PRIMITIVE_RULES.md` rule 8), so a tree
+///   built against an older version is still fully decodable by a newer
+///   host.
+/// - **`wire_version` > this constant**: rejected with a `DecodeError`
+///   naming both versions. A binding newer than this host may have
+///   started emitting a shape this decoder doesn't know about yet;
+///   accepting it silently risks silently dropping data the binding meant
+///   to send, so this host raises instead of guessing.
+///
+/// Bump this constant only alongside a real additive change to the wire
+/// shape, and only once both `quadraui-py` and `quadraui-node` emit the
+/// new value.
+pub const WIRE_VERSION: u32 = 1;
+
 // ─── A tiny two-target type expression, mirroring `gen_wire_types.py`'s `Ty` ──
 
 #[derive(Debug, Clone, Serialize)]
@@ -728,6 +756,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("h_scroll", float_()),
             field_opt("column_overrides", list(nullable(float_()))),
             field_opt("footer", nullable(data_row_descriptor)),
+            field_opt("bordered", bool_()),
             field_opt("scroll_px", float_()),
         ],
     ));
@@ -844,23 +873,104 @@ pub fn schema() -> Vec<DefJson> {
 
     let layout_node = re("LayoutNode");
 
+    // An optional `"wire_version"` sibling key, valid on *any* top-level
+    // `RenderOutput` shape (every variant below, plus `RenderFrameDict`
+    // further down) -- never on a nested child node. See
+    // `crate::wire_schema::WIRE_VERSION`'s own doc for the accept/reject
+    // policy `crate::wire::check_wire_version` checks it against.
+    let wire_version_field = field_opt("wire_version", int_());
+
+    // Every node-kind object below also accepts the three child-sizing
+    // keys a `"row"`/`"column"` parent reads off its own children
+    // (`crate::wire::layout_children_from_value`) -- `"size"` (a
+    // `SectionSize`, defaulting to `EqualShare`), `"min"`/`"max"` (a
+    // portable surface-native-pixel clamp, same unit as `padding`/
+    // `margin`/`gap`). They're meaningless on a node that isn't itself a
+    // row/column child, but harmless there too -- `layout_node_from_value`
+    // never reads them except via that one path.
+    let child_size_fields = || {
+        vec![
+            field_opt("size", re("SectionSize")),
+            field_opt("min", float_()),
+            field_opt("max", float_()),
+        ]
+    };
+
+    // An optional `"style"` sibling key, valid on every node-kind object
+    // below (`crate::wire::style_override_from_value` reads it off the
+    // same outer node dict `child_size_fields`/`wire_version_field` read
+    // theirs off) -- `crate::layout::StyleOverride`'s own wire shape: a
+    // dict of a known subset of `Theme` colour tokens and `Style` metric
+    // tokens, every one optional. `style_color_value` mirrors
+    // `crate::host::theme_color_value`'s hex-string convenience on top of
+    // the plain `Color` object shape.
+    let style_color_value = b.define(alias_doc(
+        "StyleColorValue",
+        uniont(vec![color.clone(), str_()]),
+        "A `\"style\"` colour token: a `Color` object, or a \"#rrggbb\"/\"#rrggbbaa\" hex string.",
+    ));
+    let style_value = b.define(obj_doc(
+        "StyleValue",
+        vec![
+            field_opt("bg", style_color_value.clone()),
+            field_opt("fg", style_color_value.clone()),
+            field_opt("border", style_color_value.clone()),
+            field_opt("accent", style_color_value.clone()),
+            field_opt("surface_bg", style_color_value.clone()),
+            field_opt("accent_bg", style_color_value.clone()),
+            field_opt("padding", float_()),
+            field_opt("corner_radius", float_()),
+            field_opt("border_width", float_()),
+        ],
+        "A per-node \"style\" override, scoped to that node's own subtree: \"bg\"/\"fg\"/\"border\"/\"accent\"/\"surface_bg\"/\"accent_bg\" override Theme colour tokens, \"padding\"/\"corner_radius\"/\"border_width\" override Style metric tokens. \"surface_bg\"/\"accent_bg\" are the aliases a Button/List/Dialog/... fill needs -- plain \"bg\" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.",
+    ));
+
+    // An optional `"class"` sibling key, valid everywhere `"style"` is
+    // (`crate::wire::style_classes_from_value` reads it off the same outer
+    // node dict) -- one or more names of style sets registered through a
+    // binding's own `define_style`, merged left to right underneath the
+    // node's own inline `"style"`. A bare string is split on whitespace,
+    // the CSS `class=` convention this key is the analogue of.
+    let class_value = b.define(alias_doc(
+        "ClassValue",
+        uniont(vec![str_(), list(str_())]),
+        "One or more named style sets (see define_style) applied to this node's own subtree: a single name, a whitespace-separated list of names in one string, or an array of names. Merged left to right, then overridden by this node's own \"style\" key. A name no set was ever defined under is ignored.",
+    ));
     let layout_row_node = b.define(obj(
         "LayoutRowNode",
-        vec![
-            field("row", list(layout_node.clone())),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-            field_opt("gap", float_()),
-        ],
+        [
+            vec![field("row", list(layout_node.clone()))],
+            vec![
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                field_opt("gap", float_()),
+                field_opt("justify", lit(&["start", "center", "end", "space_between"])),
+                field_opt("align", lit(&["start", "center", "end", "stretch"])),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_column_node = b.define(obj(
         "LayoutColumnNode",
-        vec![
-            field("column", list(layout_node.clone())),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-            field_opt("gap", float_()),
-        ],
+        [
+            vec![field("column", list(layout_node.clone()))],
+            vec![
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                field_opt("gap", float_()),
+                field_opt("justify", lit(&["start", "center", "end", "space_between"])),
+                field_opt("align", lit(&["start", "center", "end", "stretch"])),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_split_payload = b.define(obj(
         "LayoutSplitPayload",
@@ -876,12 +986,19 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_split_node = b.define(obj(
         "LayoutSplitNode",
-        vec![
-            field("split", layout_split_payload),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-            field_opt("gap", float_()),
-        ],
+        [
+            vec![
+                field("split", layout_split_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                field_opt("gap", float_()),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_tab_entry_node = b.define(obj(
         "LayoutTabEntryNode",
@@ -910,11 +1027,18 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_tabs_node = b.define(obj(
         "LayoutTabsNode",
-        vec![
-            field("tabs", layout_tabs_payload),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-        ],
+        [
+            vec![
+                field("tabs", layout_tabs_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_panel_payload = b.define(obj_doc(
         "LayoutPanelPayload",
@@ -930,11 +1054,18 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_panel_node = b.define(obj(
         "LayoutPanelNode",
-        vec![
-            field("panel", layout_panel_payload),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-        ],
+        [
+            vec![
+                field("panel", layout_panel_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_sidebar_panel_payload = b.define(obj(
         "LayoutSidebarPanelPayload",
@@ -947,7 +1078,41 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_sidebar_panel_node = b.define(obj(
         "LayoutSidebarPanelNode",
-        vec![field("sidebar_panel", layout_sidebar_panel_payload)],
+        [
+            vec![
+                field("sidebar_panel", layout_sidebar_panel_payload),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
+    ));
+
+    let layout_scroll_payload = b.define(obj(
+        "LayoutScrollPayload",
+        vec![
+            field("id", str_()),
+            field_opt("axis", lit(&["vertical", "horizontal"])),
+            field_opt("offset", float_()),
+            field("content", layout_node.clone()),
+        ],
+    ));
+    let layout_scroll_node = b.define(obj(
+        "LayoutScrollNode",
+        [
+            vec![
+                field("scroll", layout_scroll_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
 
     let split_tree_recursive_node = re("SplitTreeRecursiveNode");
@@ -982,7 +1147,16 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_split_tree_node = b.define(obj(
         "LayoutSplitTreeNode",
-        vec![field("split_tree", layout_split_tree_payload)],
+        [
+            vec![
+                field("split_tree", layout_split_tree_payload),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
 
     // ── Additive primitive descriptors (`EXTRA_PRIMITIVE_KINDS`) ─────────
@@ -1079,6 +1253,80 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("value", bool_()),
             field_opt("disabled", bool_()),
             field_opt("focused", bool_()),
+        ],
+    ));
+    let checkbox_descriptor = b.define(obj(
+        "CheckboxDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("value", bool_()),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let slider_descriptor = b.define(obj(
+        "SliderDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("value", float_()),
+            field("min", float_()),
+            field("max", float_()),
+            field_opt("step", float_()),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let select_descriptor = b.define(obj(
+        "SelectDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("options", list(str_())),
+            field_opt("selected_idx", int_()),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let password_descriptor = b.define(obj_doc(
+        "PasswordDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("value", str_()),
+            field_opt("cursor", nullable(int_())),
+            field_opt("has_focus", bool_()),
+            field_opt("mask_char", str_()),
+        ],
+        "`mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode.",
+    ));
+    // Mirrors `TextArea`'s own hand-written `Deserialize` in
+    // `extra_paint.rs` (`id`/`value`/`placeholder`/`cursor`/`has_focus`/
+    // `visible_rows`), NOT `TextInputDescriptor` above, even though both
+    // are standalone-leaf siblings of it -- `TextArea::inner` is a plain
+    // single-line-shaped `TextInput` buffer decoded from a flat `value`
+    // string and a byte-offset `cursor`, not `TextInputDescriptor`'s own
+    // multi-line `lines`/`cursor_line`/`cursor_col` convention.
+    let textarea_descriptor = b.define(obj(
+        "TextAreaDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("value", str_()),
+            field_opt("placeholder", nullable(str_())),
+            field_opt("cursor", nullable(int_())),
+            field_opt("has_focus", bool_()),
+            field_opt("visible_rows", int_()),
+        ],
+    ));
+    // `source` is raw markdown text re-rendered through
+    // `quadraui::compose::markdown::render_markdown_to_styled` on every
+    // paint (see `extra_paint::Markdown::render`) -- there is no separate
+    // `lines`/styling key here the way `TextInputDescriptor` has, since the
+    // adapter is the single source of truth for turning `source` into
+    // styled rows.
+    let markdown_descriptor = b.define(obj(
+        "MarkdownDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("source", str_()),
+            field_opt("scroll_offset", int_()),
         ],
     ));
     let scroll_axis = b.define(alias("ScrollAxis", lit(&["Vertical", "Horizontal"])));
@@ -1919,7 +2167,7 @@ pub fn schema() -> Vec<DefJson> {
         vec![
             field("id", re("WidgetId")),
             field("fields", list(form_field_descriptor)),
-            field("focused_field", nullable(re("WidgetId"))),
+            field_opt("focused_field", nullable(re("WidgetId"))),
             field_opt("scroll_offset", int_()),
             field_opt("has_focus", bool_()),
             field_opt("label_position", label_position),
@@ -2209,8 +2457,8 @@ pub fn schema() -> Vec<DefJson> {
     // from_value`'s `slot_entry` (`crate::wire`) treats a missing key and
     // an explicit `null` value identically ("draw nothing in this slot this
     // frame") -- so every kind field there must accept `null` too.
-    let mut leaf_fields = vec![field("id", str_())];
-    let mut render_frame_fields = Vec::new();
+    let mut leaf_fields = vec![field("id", str_()), wire_version_field.clone()];
+    let mut render_frame_fields = vec![wire_version_field.clone()];
     for key in LEAF_KIND_KEYS {
         let ty = match key {
             "button" => button_descriptor.clone(),
@@ -2263,11 +2511,26 @@ pub fn schema() -> Vec<DefJson> {
             "canvas" => canvas_descriptor.clone(),
             "scroll_view" => scroll_view_descriptor.clone(),
             "find_replace" => find_replace_panel_descriptor.clone(),
+            "checkbox" => checkbox_descriptor.clone(),
+            "slider" => slider_descriptor.clone(),
+            "select" => select_descriptor.clone(),
+            "password" => password_descriptor.clone(),
+            "textarea" => textarea_descriptor.clone(),
+            "markdown" => markdown_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
         render_frame_fields.push(field_opt(kind, nullable(ty)));
     }
+    // A `LayoutLeafNode` is itself a valid row/column child, so it takes
+    // the same `"size"`/`"min"`/`"max"` sibling keys every other
+    // node-kind object above does -- `RenderFrameDict` (the flat shape,
+    // never a row/column child) does not, so `render_frame_fields` stays
+    // untouched. Same reasoning for the `"style"` sibling key every other
+    // node-kind object above also takes.
+    leaf_fields.push(field_opt("style", style_value.clone()));
+    leaf_fields.push(field_opt("class", class_value.clone()));
+    leaf_fields.extend(child_size_fields());
     let layout_leaf_node = b.define(obj_doc(
         "LayoutLeafNode",
         leaf_fields,
@@ -2284,6 +2547,7 @@ pub fn schema() -> Vec<DefJson> {
             layout_panel_node,
             layout_sidebar_panel_node,
             layout_split_tree_node,
+            layout_scroll_node,
             layout_leaf_node,
         ],
         "One node of a render callback's returned layout tree.",
@@ -2298,6 +2562,77 @@ pub fn schema() -> Vec<DefJson> {
         "RenderOutput",
         uniont(vec![re("LayoutNode"), re("RenderFrameDict")]),
         "A render callback's return value: a layout tree or the flat shape.",
+    ));
+
+    // ── Content-bearing overlay descriptors ──────────────────────────────
+    let anchor_descriptor = b.define(obj_doc(
+        "AnchorDescriptor",
+        vec![
+            with_doc(
+                field("rect", re("Rect")),
+                "Bounds of the element the overlay opens against, in absolute coordinates.",
+            ),
+            field_opt(
+                "preferred",
+                lit(&["Top", "Bottom", "Left", "Right", "AtPoint"]),
+            ),
+            field_opt("margin", float_()),
+        ],
+        "Where a float/popover opens: a rect, the side of it to prefer, and the gap along that axis.",
+    ));
+    let float_descriptor = b.define(obj_doc(
+        "FloatDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("anchor", anchor_descriptor),
+            field_opt("focusable", bool_()),
+            field_opt("border", bool_()),
+            field_opt("bg", nullable(re("Color"))),
+        ],
+        "A floating surface's own chrome: anchor, border and background.",
+    ));
+    let dialog_button_descriptor = b.define(obj_doc(
+        "DialogButtonDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("label", str_()),
+            field_opt("is_default", bool_()),
+            field_opt("is_cancel", bool_()),
+            field_opt("tint", nullable(re("Color"))),
+            field_opt("spec", nullable(re("ButtonSpecDescriptor"))),
+        ],
+        "One button in a dialog's button row.",
+    ));
+    let dialog_chrome_descriptor = b.define(obj_doc(
+        "DialogChromeDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("title", str_()),
+            with_doc(
+                field_opt("body", str_()),
+                "Text shown above the content slot; split on newlines into one line each.",
+            ),
+            field("buttons", list(dialog_button_descriptor)),
+            field_opt("severity", lit(&["info", "question", "warning", "error"])),
+            field_opt("vertical_buttons", bool_()),
+        ],
+        "A layout dialog's own title/body/button chrome -- the same friendly shape the \"message_dialog\" overlay kind takes.",
+    ));
+    b.define(obj_doc(
+        "PopoverDescriptor",
+        vec![
+            field("float", float_descriptor),
+            field("content", re("LayoutNode")),
+        ],
+        "A `show_overlay(\"popover\", ...)` descriptor: float chrome plus the layout subtree painted inside it, whose leaves focus and emit events exactly as in the main tree.",
+    ));
+    b.define(obj_doc(
+        "LayoutDialogDescriptor",
+        vec![
+            field("dialog", dialog_chrome_descriptor),
+            field("content", re("LayoutNode")),
+        ],
+        "A `show_overlay(\"layout_dialog\", ...)` descriptor: modal dialog chrome plus the layout subtree painted in its body.",
     ));
 
     // ── `run_shell` config ───────────────────────────────────────────────
@@ -2728,6 +3063,22 @@ pub fn schema() -> Vec<DefJson> {
         ),
         ("_HitDetailExtraBody", "extra_body", &[]),
         ("_HitDetailExtraChrome", "extra_chrome", &[]),
+        ("_HitDetailScrollBody", "scroll_body", &[]),
+        (
+            "_HitDetailScrollScrollbarTrackBefore",
+            "scroll_scrollbar_track_before",
+            &[],
+        ),
+        (
+            "_HitDetailScrollScrollbarThumb",
+            "scroll_scrollbar_thumb",
+            &[],
+        ),
+        (
+            "_HitDetailScrollScrollbarTrackAfter",
+            "scroll_scrollbar_track_after",
+            &[],
+        ),
     ];
     let mut hit_detail_members = Vec::new();
     for (name, kind, extra_fields) in HIT_DETAIL_KINDS {
@@ -3314,6 +3665,10 @@ mod coverage {
             HitDetail::TreeScrollbarTrackAfter => {}
             HitDetail::ExtraBody => {}
             HitDetail::ExtraChrome { bar: _ } => {}
+            HitDetail::ScrollBody => {}
+            HitDetail::ScrollScrollbarTrackBefore => {}
+            HitDetail::ScrollScrollbarThumb => {}
+            HitDetail::ScrollScrollbarTrackAfter => {}
         }
     }
 
@@ -3339,6 +3694,8 @@ mod coverage {
             LayoutNode::Panel(_) => {}
             LayoutNode::SidebarPanel(_) => {}
             LayoutNode::SplitTree(_) => {}
+            LayoutNode::Scroll(_) => {}
+            LayoutNode::Styled(_) => {}
         }
     }
 
@@ -3606,7 +3963,8 @@ mod coverage {
             min_total_width,
             h_scroll,
             column_overrides,
-            footer
+            footer,
+            bordered
         }
     );
     assert_fields!(
@@ -3736,6 +4094,35 @@ mod coverage {
         }
     );
     assert_fields!(assert_scroll_delta_fields, ScrollDelta { x, y });
+    assert_fields!(
+        assert_anchor_fields,
+        quadraui::Anchor {
+            rect,
+            preferred,
+            margin
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_float_fields,
+        quadraui::Float {
+            id,
+            anchor,
+            focusable,
+            border,
+            bg
+        }
+    );
+    assert_fields!(
+        assert_dialog_button_fields,
+        quadraui::DialogButton {
+            id,
+            label,
+            is_default,
+            is_cancel,
+            tint,
+            spec
+        }
+    );
     assert_fields!(
         assert_button_mask_fields,
         ButtonMask {
@@ -4987,6 +5374,17 @@ mod coverage {
                 // `Button`'s own default variant ever changes.
                 let _ = ButtonVariant::Secondary;
             }
+        );
+
+        value_shape_test!(
+            float_json_keys_match_the_schema_field_list,
+            "Float",
+            "FloatDescriptor",
+            quadraui::Float::new(
+                WidgetId::new("test"),
+                quadraui::Anchor::new(Rect::new(0.0, 0.0, 1.0, 1.0), quadraui::Side::Bottom),
+            ),
+            ["id", "anchor", "focusable", "border", "bg"]
         );
 
         value_shape_test!(

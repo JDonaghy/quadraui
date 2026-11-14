@@ -6,10 +6,14 @@
 //! show a leading `✓` glyph in the row's left-padding column; an item
 //! with no `checked` state but a [`ContextMenuItem::icon`] shows that
 //! icon's resolved glyph in the same column instead (`checked` always
-//! wins the shared slot when both are set). Items with `submenu.is_some()`
-//! show a `▶` glyph at the far-right column instead of a
-//! keyboard-shortcut hint. The right-aligned shortcut hint is sourced
-//! from `item.detail` if set (back-compat), otherwise from
+//! wins the shared slot when both are set). When *any* item in the menu
+//! carries a `checked` state or an icon, every row reserves a two-cell
+//! gutter (glyph cell + one blank gap cell) ahead of its label, so a
+//! glyph never runs straight into the label text; menus with neither
+//! keep the original single-cell left margin. Items with
+//! `submenu.is_some()` show a `▶` glyph at the far-right column instead
+//! of a keyboard-shortcut hint. The right-aligned shortcut hint is
+//! sourced from `item.detail` if set (back-compat), otherwise from
 //! `render_accelerator(item.key_equivalent, Platform::Tui)`.
 //!
 //! [`draw_context_menu_with_submenus`] extends the basic rasteriser to
@@ -103,6 +107,16 @@ pub fn draw_context_menu_with_glyphs(
     let fg = ratatui_color(theme.foreground);
     let sep_fg = ratatui_color(theme.muted_fg);
     let dim_fg = ratatui_color(theme.muted_fg);
+
+    // Menu-wide decision, not per-item: when any item carries a checked
+    // state or an icon, every row's label indents by 2 cells (glyph +
+    // gap) instead of 1, so a glyph never runs straight into the label
+    // text that follows it.
+    let has_icon_gutter = menu
+        .items
+        .iter()
+        .any(|item| item.checked.is_some() || item.icon.is_some());
+    let label_col_offset: u16 = if has_icon_gutter { 2 } else { 1 };
 
     let inner_x = layout.bounds.x.round() as u16;
     let inner_y = layout.bounds.y.round() as u16;
@@ -210,7 +224,9 @@ pub fn draw_context_menu_with_glyphs(
             .map(|s| s.text.as_str())
             .unwrap_or("");
         for (i, ch) in label.chars().enumerate() {
-            let col = inner_x.saturating_add(1).saturating_add(i as u16);
+            let col = inner_x
+                .saturating_add(label_col_offset)
+                .saturating_add(i as u16);
             if col >= right {
                 break;
             }
@@ -675,6 +691,92 @@ mod tests {
             cell_char(&buf, inner_x, row_y),
             'F',
             "item icon should paint its resolved fallback glyph at inner_x",
+        );
+    }
+
+    #[test]
+    fn menu_with_icon_reserves_two_cell_gutter_with_blank_gap() {
+        // A menu where any item carries an icon reserves a 2-cell gutter
+        // (icon cell + one blank gap cell) for every row, so the icon
+        // never runs straight into the label — the "XCut"/"CCopy"
+        // overprint the icon column exists to prevent.
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::types::Icon;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("cut")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("Cut")],
+                },
+                icon: Some(Icon::new("G", "X")),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x, row_y),
+            'X',
+            "icon glyph at inner_x"
+        );
+        assert_eq!(
+            cell_char(&buf, inner_x + 1, row_y),
+            ' ',
+            "gap cell between icon and label must be blank, not the label's first char"
+        );
+        assert_eq!(
+            cell_char(&buf, inner_x + 2, row_y),
+            'C',
+            "label starts two cells after inner_x, past the icon + gap"
+        );
+    }
+
+    #[test]
+    fn menu_without_icon_or_checked_keeps_single_cell_left_margin() {
+        // A plain menu (no item carries `checked`/`icon`) keeps the
+        // original compact 1-cell left margin — the 2-cell gutter is
+        // reserved only when the menu actually needs it.
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("about")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("About")],
+                },
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x + 1, row_y),
+            'A',
+            "no icon/checked anywhere in the menu: label keeps the 1-cell margin"
         );
     }
 

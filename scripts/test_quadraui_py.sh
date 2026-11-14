@@ -68,9 +68,15 @@ fi
 phase "interpreter"
 "$venv_python" -VV
 
-phase "pip install (maturin + pytest)"
+phase "pip install (maturin + pytest + pytest-asyncio)"
 "$venv_python" -m pip install --upgrade pip
-"$venv_python" -m pip install maturin pytest
+# `pytest-asyncio` runs `tests/test_aio.py`'s `@pytest.mark.asyncio` coroutine
+# tests; without it those collect as plain functions returning an unawaited
+# coroutine, which recent pytest treats as a hard collection/run failure
+# rather than a silent skip. `asyncio_mode` is pinned in
+# `quadraui-py/pyproject.toml`'s `[tool.pytest.ini_options]`, not here, so a
+# local `pytest` invocation outside this script picks it up too.
+"$venv_python" -m pip install maturin pytest pytest-asyncio
 
 # `maturin develop` looks for an *activated* virtualenv (`VIRTUAL_ENV`) or
 # `.venv`, not just a python interpreter path — it never sees one since this

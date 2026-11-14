@@ -341,6 +341,13 @@ pub struct TuiBackend {
     /// differently, for a non-integral input) from what `editor_layout`
     /// saw.
     editor_right_reserve_w: Option<f32>,
+    /// Active [`Backend::push_clip`]/[`Backend::pop_clip`] stack — see
+    /// [`Self::push_clip`]'s doc for how each frame's snapshot lets
+    /// `pop_clip` roll back anything painted outside the narrowed clip.
+    /// Cleared at the start of every frame by [`Self::begin_frame`] (same
+    /// lifecycle as `zones`): an unbalanced push from a previous frame
+    /// must never narrow the next one's painting.
+    clip_stack: Vec<super::canvas::TuiClipFrame>,
 }
 
 impl TuiBackend {
@@ -381,6 +388,7 @@ impl TuiBackend {
             input_gone: false,
             minimap_sizing: None,
             editor_right_reserve_w: None,
+            clip_stack: Vec::new(),
         }
     }
 
@@ -1931,6 +1939,10 @@ impl Backend for TuiBackend {
         // Clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.borrow_mut().reset_frame_paint();
+        // Clear any unbalanced push_clip left over from the previous
+        // frame — see `clip_stack`'s own doc for why a stale narrowed
+        // clip must never leak into the next frame's painting.
+        self.clip_stack.clear();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -2386,6 +2398,50 @@ impl Backend for TuiBackend {
     /// when the menu is anchored flush against any of them.
     fn context_menu_border_inset(&self) -> f32 {
         super::context_menu::BORDER_INSET
+    }
+
+    // ─── Clipping ────────────────────────────────────────────────────────
+    fn push_clip(&mut self, rect: QRect) {
+        // `outer` is read before `current_frame_mut` because its `&mut
+        // Frame<'static>` reborrows `self` for as long as it (or `buf`,
+        // derived from it) stays alive.
+        let outer = self
+            .clip_stack
+            .last()
+            .map(super::canvas::TuiClipFrame::active);
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::push_clip called outside enter_frame_scope"
+            );
+            return;
+        };
+        let buf = frame.buffer_mut();
+        let outer = outer.unwrap_or(buf.area);
+        let clip_frame = super::canvas::TuiClipFrame::push(buf, outer, rect);
+        self.clip_stack.push(clip_frame);
+    }
+
+    fn pop_clip(&mut self) {
+        // Checked before popping `clip_stack` (and dropped again right
+        // away, so it doesn't hold `self` borrowed into the pop below):
+        // an out-of-scope call must leave the stack untouched, not
+        // discard an entry it then fails to restore.
+        if self.current_frame_mut().is_none() {
+            debug_assert!(
+                false,
+                "TuiBackend::pop_clip called outside enter_frame_scope"
+            );
+            return;
+        }
+        let Some(top) = self.clip_stack.pop() else {
+            debug_assert!(false, "TuiBackend::pop_clip called with an empty stack");
+            return;
+        };
+        let frame = self
+            .current_frame_mut()
+            .expect("checked non-null just above");
+        top.pop(frame.buffer_mut());
     }
 
     // ─── Drawing ───────────────────────────────────────────────────────────
@@ -4819,6 +4875,8 @@ mod tests {
                 h_scrollbar_height: 0.0,
                 footer_height: 0.0,
                 h_scroll: 0.0,
+                inset_x: 0.0,
+                inset_y: 0.0,
             }
         }
         fn data_table_layout(
@@ -4838,6 +4896,8 @@ mod tests {
                 h_scrollbar_height: 0.0,
                 footer_height: 0.0,
                 h_scroll: 0.0,
+                inset_x: 0.0,
+                inset_y: 0.0,
             }
         }
         fn list_hscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
@@ -6027,6 +6087,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         }
     }
 
@@ -7026,6 +7087,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         };
         let table_glyphs =
             crate::primitives::data_table::DataTableGlyphs::new().with_sort_ascending_glyph("^");

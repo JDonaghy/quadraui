@@ -50,10 +50,12 @@ use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::layout::{
     quantise_horizontal, quantise_vertical, LayoutLeaf, LayoutNode, LayoutTabs, LeafDescriptor,
+    StyleSets,
 };
 use crate::render::{
-    apply_split_gap, data_table_viewport_rows, list_viewport_rows, shrink_main_axis,
-    split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs,
+    apply_split_gap, data_table_viewport_rows, layout_container_rects, list_viewport_rows,
+    natural_main_length, scroll_content_slots, scroll_viewport_and_track, shrink_main_axis,
+    tree_viewport_rows, RenderFrame, RenderRefs, ScrollMetrics, ScrollSlots,
 };
 use crate::widget_state::WidgetState;
 
@@ -111,6 +113,15 @@ pub struct BindingHost {
     /// Set via a binding's own `set_style` surface; replayed the same way
     /// as [`Self::theme`].
     pub style: Option<Style>,
+    /// The named style sets a binding's own `define_style` surface fills,
+    /// and a layout node's `"class"` key refers to — see [`StyleSets`].
+    /// Unlike [`Self::theme`]/[`Self::style`] there is nothing to replay
+    /// onto a freshly constructed backend: a set is never pushed onto a
+    /// `Backend` at all, it is resolved during each frame's own render
+    /// callback decode (`crate::wire::decode_render_output_with_styles`),
+    /// so moving this host into a `run_tui`/`run_native` runner carries
+    /// every registered set with it for free.
+    pub style_sets: StyleSets,
     /// Set via a binding's own `set_nerd_fonts` surface; replayed the same
     /// way as [`Self::theme`].
     pub nerd_fonts: Option<bool>,
@@ -174,6 +185,27 @@ pub struct BindingHost {
     /// doc and this crate's `#[cfg(test)]` module already use directly —
     /// rather than sleeping past them in real wall-clock time.
     pub test_clock_ms: Cell<Option<u64>>,
+    /// Deprecated slot/extra-API method names (`"insert_button"`/
+    /// `"insertButton"`, ...) this host has already reported deprecated
+    /// once -- consulted by [`Self::first_deprecation_report`]. Per-app
+    /// (not process-wide) on purpose: a binding's own one-time warning
+    /// surface exists so a render loop re-inserting the same slot every
+    /// frame (the pattern the slot/extra API forces, since a descriptor is
+    /// immutable once inserted) reports it exactly once per *app*, rather
+    /// than flooding every call with the same warning -- and a fresh
+    /// `QuiApp` in a fresh test case gets a clean slate for free, with no
+    /// process-wide state to reset between tests.
+    pub warned_deprecations: RefCell<HashSet<String>>,
+    /// The session this host's own render-callback/`run_shell`-config
+    /// decode calls report an unknown optional wire key through — warn
+    /// (the default; once per key for this host's whole lifetime, the same
+    /// per-session dedup [`Self::warned_deprecations`] already gives a
+    /// deprecated method name) unless a binding's own `strict`
+    /// constructor argument/setter has called
+    /// [`crate::wire::DecodeDiagnostics::set_strict`]`(true)` on it. A
+    /// binding registers its own `on_unknown_key`-style callable via
+    /// [`crate::wire::DecodeDiagnostics::set_hook`].
+    pub wire_diagnostics: crate::wire::DecodeDiagnostics,
 }
 
 impl BindingHost {
@@ -225,6 +257,108 @@ impl BindingHost {
     /// anything.
     pub fn clear_extra_slot(&mut self, kind: &str) -> bool {
         self.extra_slots.remove(kind).is_some()
+    }
+
+    /// The shared deprecation message for the slot/extra API, naming `what`
+    /// (a binding's own idiomatic spelling of the deprecated method --
+    /// `"insert_list"` for `quadraui-py`, `"insertList"` for
+    /// `quadraui-node`) and `guidance` (a clause naming the inline
+    /// replacement, e.g. ``"render an inline `list` layout leaf from a
+    /// `render` callback instead"`` -- see [`Self::slot_kind_name`] for the
+    /// fixed-slot leaf-kind names a `slot_clear` caller doesn't otherwise
+    /// have on hand). Every one of a binding's own
+    /// `insert_*`/`store_extra`/`slot_clear`/`clear_extra_slot` leaves calls
+    /// this rather than building its own wording, so the shared "deprecated
+    /// and scheduled for removal" framing is written down exactly once
+    /// instead of copy-pasted per binding.
+    pub fn slot_deprecation_message(what: &str, guidance: &str) -> String {
+        format!(
+            "{what} is deprecated and scheduled for removal in a future \
+             breaking release; {guidance}."
+        )
+    }
+
+    /// [`Self::slot_deprecation_message`] for inserting primitive
+    /// `leaf_kind` via the deprecated `what` method -- the one call every
+    /// binding's own `insert_*`/`insert_extra` leaf makes, naming the
+    /// inline layout leaf of that same kind as the replacement. Shared here
+    /// (rather than built up by each binding's own `warn_insert_deprecated`
+    /// forward) so the exact wording lives in one place instead of being
+    /// copy-pasted per binding. Note this only names the *first* `leaf_kind`
+    /// a given app warns about for a dynamic `what` like `insert_extra` --
+    /// see [`Self::first_deprecation_report`]'s own doc for why the dedup
+    /// key is `what` alone.
+    pub fn insert_deprecation_message(what: &str, leaf_kind: &str) -> String {
+        Self::slot_deprecation_message(
+            what,
+            &format!("render an inline `{leaf_kind}` layout leaf from a `render` callback instead"),
+        )
+    }
+
+    /// [`Self::slot_deprecation_message`] for `clear_extra`/`clearExtra`,
+    /// naming omitting `kind`'s layout leaf from the next `render`
+    /// callback's returned layout as the replacement.
+    pub fn clear_extra_deprecation_message(what: &str, kind: &str) -> String {
+        Self::slot_deprecation_message(
+            what,
+            &format!(
+                "omit the `{kind}` layout leaf from the next `render` callback's \
+                 returned layout instead of calling `{what}`"
+            ),
+        )
+    }
+
+    /// [`Self::slot_deprecation_message`] for `slot_clear`/`slotClear`,
+    /// naming omitting `slot`'s fixed-primitive layout leaf from the next
+    /// `render` callback's returned layout as the replacement. Falls back
+    /// to the generic `"fixed-slot"` name for an unrecognized `slot` --
+    /// see [`Self::slot_kind_name`]'s own doc for when that fallback
+    /// actually fires.
+    pub fn slot_clear_deprecation_message(what: &str, slot: i64) -> String {
+        let kind = Self::slot_kind_name(slot).unwrap_or("fixed-slot");
+        Self::slot_deprecation_message(
+            what,
+            &format!(
+                "omit the `{kind}` layout leaf from the next `render` callback's \
+                 returned layout instead of calling `{what}`"
+            ),
+        )
+    }
+
+    /// The layout-leaf kind name for fixed slot id `slot` -- `"button"` for
+    /// [`SLOT_BUTTON`], `"text_display"` for [`SLOT_TEXT_DISPLAY`], and so
+    /// on through [`SLOT_TAB_BAR`] -- or `None` if `slot` doesn't name one
+    /// of the six (see [`Self::is_known_slot`]). A binding's own
+    /// `slot_clear` leaf uses this to name the inline replacement in its
+    /// own [`Self::slot_deprecation_message`] call without needing to track
+    /// which primitive it originally inserted into `slot`.
+    pub fn slot_kind_name(slot: i64) -> Option<&'static str> {
+        match slot {
+            SLOT_BUTTON => Some("button"),
+            SLOT_TEXT_DISPLAY => Some("text_display"),
+            SLOT_LIST => Some("list"),
+            SLOT_TREE => Some("tree"),
+            SLOT_DATA_TABLE => Some("data_table"),
+            SLOT_TAB_BAR => Some("tab_bar"),
+            _ => None,
+        }
+    }
+
+    /// Whether this is the first time this host has reported `what`
+    /// deprecated -- `true` only the first call for a given `what` on this
+    /// host, `false` on every call after. `quadraui-node`'s own one-time
+    /// `process.emitWarning` convention consults this before emitting, so a
+    /// render loop calling the same deprecated method every frame reports
+    /// it exactly once per app instead of flooding stderr -- see
+    /// [`Self::warned_deprecations`]'s own doc for why the dedup is
+    /// per-host. `quadraui-py` ignores this and raises a Python
+    /// `DeprecationWarning` on every call unconditionally, since that is
+    /// already a per-call-site event CPython's own `warnings` filter
+    /// machinery decides whether to print.
+    pub fn first_deprecation_report(&self, what: &str) -> bool {
+        self.warned_deprecations
+            .borrow_mut()
+            .insert(what.to_string())
     }
 
     /// Replays every accelerator and backend-settings field this host has
@@ -1169,6 +1303,47 @@ pub fn resolve_split_ratio(widget_state: &WidgetState, split: &Split) -> Split {
     }
 }
 
+// ─── Scroll offset, uncontrolled by default ────────────────────────────────
+//
+// Unlike `Split::ratio` above (a bare `f32` with no "unset" sentinel),
+// `LayoutScroll::offset` is already `Option<f32>` -- see that field's own
+// doc for why -- so [`WidgetState::resolve`]'s own controlled/uncontrolled
+// policy (its module doc's "Controlled / uncontrolled resolution" section)
+// applies directly here, with no baseline-latch struct of this module's
+// own to maintain.
+
+/// Resolves a [`crate::layout::LayoutNode::Scroll`]'s offset for painting
+/// — the `ScrollView` counterpart of [`resolve_split_ratio`]. `offset` is
+/// `scroll_node.offset` as decoded this frame (`Some` pins the controlled
+/// position, `None` leaves it to whatever this id's own [`WidgetState`]
+/// entry already holds, seeded at `0.0` the first time `id` is seen).
+/// The resolved value is clamped into `[0, max_offset]` on every call
+/// (not persisted pre-clamped) so a later frame whose content grows back
+/// out doesn't stay stuck at a smaller clamp than the one in effect when
+/// a previous, shorter-content frame stored it.
+pub fn resolve_scroll_offset(
+    widget_state: &WidgetState,
+    id: WidgetId,
+    offset: Option<f32>,
+    max_offset: f32,
+) -> f32 {
+    let raw = widget_state.resolve(id, offset, || 0.0_f32);
+    raw.clamp(0.0, max_offset.max(0.0))
+}
+
+/// Persists `new_offset` as `id`'s own stored scroll offset — call when the
+/// engine's wheel/keyboard/scrollbar-drag handling resolves a `Scroll`
+/// container to a new position. Always writes, mirroring
+/// [`apply_split_divider_drag`]'s own "the next frame's resolve decides
+/// whether this sticks" shape: [`resolve_scroll_offset`]'s own
+/// [`WidgetState::resolve`] call overwrites whatever this stores the
+/// moment the matching `LayoutScroll::offset` is `Some` again, so a
+/// controlled `Scroll` moving here never actually changes what's
+/// painted — only an uncontrolled one does.
+pub fn apply_scroll_offset(widget_state: &WidgetState, id: WidgetId, new_offset: f32) {
+    widget_state.set(id, new_offset);
+}
+
 // ─── TabBar active tab, uncontrolled by default ────────────────────────────
 //
 // Same "compare against the last-seen descriptor, not a fixed sentinel"
@@ -1577,9 +1752,9 @@ pub fn resolve_render_refs(
 /// and [`crate::engine::InteractionEngine`]'s nav/expand hooks write back
 /// under, so a render callback that leaves a descriptor's embedded id at
 /// its default (or reuses one across leaves) still resolves and persists
-/// correctly. Walks `Row`/`Column`'s own [`split_rects_with_gap`]
+/// correctly. Walks `Row`/`Column`'s own [`crate::render::layout_container_rects`]
 /// subdivision and `Split`'s own [`Split::layout`] exactly as
-/// [`crate::render::paint_layout`] does — including scaling `first_min`/
+/// [`crate::render::paint_layout`] does — including quantising `first_min`/
 /// `second_min` into native units and carving the quantised gap out
 /// before layout — so a `Tree`/`List`/`DataTable` leaf nested under either
 /// gets the same rect it will actually be painted into, for
@@ -1616,32 +1791,18 @@ pub fn resolve_layout_node(
             let char_width = backend.char_width();
             let line_height = backend.line_height();
             let inner = container.spacing.inset(area, char_width, line_height);
-            let rects = split_rects_with_gap(
-                inner,
-                container.children.len(),
-                true,
-                container.spacing.gap,
-                char_width,
-                line_height,
-            );
+            let rects = layout_container_rects(backend, inner, container, true);
             for (child, rect) in container.children.iter_mut().zip(rects) {
-                resolve_layout_node(widget_state, backend, rect, child);
+                resolve_layout_node(widget_state, backend, rect, &mut child.node);
             }
         }
         LayoutNode::Column(container) => {
             let char_width = backend.char_width();
             let line_height = backend.line_height();
             let inner = container.spacing.inset(area, char_width, line_height);
-            let rects = split_rects_with_gap(
-                inner,
-                container.children.len(),
-                false,
-                container.spacing.gap,
-                char_width,
-                line_height,
-            );
+            let rects = layout_container_rects(backend, inner, container, false);
             for (child, rect) in container.children.iter_mut().zip(rects) {
-                resolve_layout_node(widget_state, backend, rect, child);
+                resolve_layout_node(widget_state, backend, rect, &mut child.node);
             }
         }
         LayoutNode::Leaf(LayoutLeaf {
@@ -1769,6 +1930,73 @@ pub fn resolve_layout_node(
                 resolve_layout_node(widget_state, backend, area, leaf);
             }
         }
+        LayoutNode::Scroll(scroll_node) => {
+            let metrics = ScrollMetrics {
+                char_width: backend.char_width(),
+                line_height: backend.line_height(),
+            };
+            let inner = scroll_node
+                .spacing
+                .inset(area, metrics.char_width, metrics.line_height);
+            let (viewport, _track) =
+                scroll_viewport_and_track(inner, scroll_node.axis, metrics.line_height);
+            let content_len =
+                natural_main_length(backend, &scroll_node.content, scroll_node.axis, metrics);
+            let visible_len = match scroll_node.axis {
+                quadraui::ScrollAxis::Vertical => viewport.height,
+                quadraui::ScrollAxis::Horizontal => viewport.width,
+            };
+            let max_offset = (content_len - visible_len).max(0.0);
+            let id = WidgetId::new(scroll_node.id.as_str());
+            let offset = resolve_scroll_offset(widget_state, id, scroll_node.offset, max_offset);
+            scroll_node.offset = Some(offset);
+
+            let slots = scroll_content_slots(
+                backend,
+                viewport,
+                scroll_node.axis,
+                offset,
+                &scroll_node.content,
+                content_len,
+                metrics,
+            );
+            match slots {
+                ScrollSlots::Children(slots) => {
+                    // `scroll_node.content` may be a `LayoutNode::Styled`
+                    // wrapper around the `Row`/`Column` -- a `"style"` key
+                    // is purely cosmetic, so match against
+                    // `LayoutNode::unstyled_mut` here rather than the raw
+                    // node, the same structural match
+                    // `crate::render::scroll_content_slots`'s own
+                    // `matching_container` makes.
+                    if let LayoutNode::Row(container) | LayoutNode::Column(container) =
+                        scroll_node.content.unstyled_mut()
+                    {
+                        for (child, slot) in container.children.iter_mut().zip(slots) {
+                            if slot.visible {
+                                resolve_layout_node(
+                                    widget_state,
+                                    backend,
+                                    slot.rect,
+                                    &mut child.node,
+                                );
+                            }
+                        }
+                    }
+                }
+                ScrollSlots::Atomic(rect, visible) => {
+                    if visible {
+                        resolve_layout_node(widget_state, backend, rect, &mut scroll_node.content);
+                    }
+                }
+            }
+        }
+        // A `"style"` wrapper carries no widget state of its own -- it's
+        // purely a `crate::render::paint_layout`-time overlay -- so this
+        // resolve pass is a straight passthrough to whatever it wraps.
+        LayoutNode::Styled(styled) => {
+            resolve_layout_node(widget_state, backend, area, &mut styled.node);
+        }
     }
 }
 
@@ -1873,14 +2101,17 @@ pub fn widget_state_snapshot(
 
 /// The anchored-overlay paint pass every binding's `AppLogic::render` runs
 /// once, after painting its own fixed/additive slots (via [`crate::render::draw_bands`]
-/// or [`crate::render::paint_layout`]) and collecting `hits`: dialog on top of
-/// everything, then float/rich-text-popup/completions, then tooltip, then
-/// toast last of all — a correctness contract worth writing down in exactly
-/// one place rather than copy-pasted at each of a binding's render paths
-/// (the static-slots path and the render-callback path both reach this).
-/// Takes `hits` by value and hands it to [`InteractionEngine::set_hits`] at
-/// the end, after every `sync_*`/`render_*` call above has had a chance to
-/// read it by reference.
+/// or [`crate::render::paint_layout`]) and collecting `hits`: syncs the
+/// menu bar/forms/text-input carets against `hits`, then makes the one
+/// [`InteractionEngine::render_overlays`] call that paints every open
+/// overlay in z-order (dialog on top of everything but tooltip/toast, then
+/// float/rich-text-popup/completions below it, toast topmost of all) — a
+/// correctness contract worth writing down in exactly one place rather
+/// than copy-pasted at each of a binding's render paths (the static-slots
+/// path and the render-callback path both reach this). Takes `hits` by
+/// value and hands it to [`InteractionEngine::set_hits`] at the end, after
+/// every `sync_*`/`render_overlays` call above has had a chance to read it
+/// by reference.
 pub fn render_overlays(
     engine: &InteractionEngine,
     backend: &mut dyn Backend,
@@ -1889,13 +2120,7 @@ pub fn render_overlays(
     engine.sync_menu_bar(backend, &hits);
     engine.sync_forms(backend, &hits);
     engine.sync_text_input_carets(backend, &hits);
-    engine.render_ctx_menu(backend);
-    engine.render_float(backend);
-    engine.render_rich_text_popup(backend);
-    engine.render_completions(backend);
-    engine.render_dialog(backend);
-    engine.render_tooltip(backend);
-    engine.render_toast(backend);
+    engine.render_overlays(backend);
     engine.set_hits(hits);
 }
 
@@ -2070,6 +2295,7 @@ pub trait ErasedShellDriver {
     fn dispatch(&mut self, event: UiEvent) -> Reaction;
     fn pump_user_events(&mut self) -> Reaction;
     fn tick(&mut self) -> Reaction;
+    fn render(&mut self);
     fn resize(&mut self, width: u16, height: u16);
     fn exited(&self) -> bool;
     fn screen(&self) -> String;
@@ -2089,6 +2315,10 @@ impl<A: AppLogic> ErasedShellDriver for TuiDriver<A> {
 
     fn tick(&mut self) -> Reaction {
         self.tick()
+    }
+
+    fn render(&mut self) {
+        self.render()
     }
 
     fn resize(&mut self, width: u16, height: u16) {
@@ -2123,6 +2353,35 @@ impl<A: AppLogic> ErasedShellDriver for TuiDriver<A> {
 /// `step`/`step_once` surface needs identically; the one thing that differs
 /// between a headless app and a shell app — where a pending callback error
 /// is recorded, and in what shape it is re-raised — stays with the caller.
+///
+/// The idle ("nothing queued") branch always renders once at the end, even
+/// when neither `pump_user_events` nor `tick` asked for a
+/// [`Reaction::Redraw`] (each of those already repaints internally when
+/// they do, via `TuiDriver::pump_user_events`/`TuiDriver::tick`, so this
+/// skips a redundant second repaint in that case). Without this, a freshly
+/// registered render callback that decodes badly only surfaces its error
+/// the next time something explicitly forces a render — `screen`/
+/// `screen_contains`, or an event whose own dispatch happens to request a
+/// redraw — rather than on the very next idle `step`/`run` call, which is
+/// surprising for a caller stepping an app with nothing queued specifically
+/// to let it settle before inspecting it.
+///
+/// This is deliberately unconditional rather than gated on some "is the
+/// tree actually dirty" flag: no such flag exists anywhere upstream of
+/// this call (`Reaction::Continue` means "nothing *this event/tick* asked
+/// to redraw", not "nothing has changed since the last repaint"), and
+/// `TuiDriver::render`/`render_frame` has no cheaper early-out than
+/// re-walking the tree and re-painting `ratatui`'s cell buffer either. The
+/// cost this trades away is real: a caller `step`-ping or `run`-ning at a
+/// steady cadence with nothing queued now re-invokes the registered
+/// render callback (JS/Python decode included) on every idle poll, not
+/// only on an explicit redraw request — for a host polling at, say, 60 Hz
+/// while genuinely idle, that is 60 render-callback invocations/sec where
+/// there were none before. A future dirty-tracking flag (set on any state
+/// mutation, cleared after a render) would let this skip the repaint when
+/// nothing changed and only pay that cost on the very first idle step
+/// after a fresh registration — the one case this doc's "freshly
+/// registered render callback" paragraph above actually needs.
 pub fn step_driver(
     driver: &mut dyn ErasedShellDriver,
     pending_events: &mut VecDeque<UiEvent>,
@@ -2135,9 +2394,14 @@ pub fn step_driver(
             driver.dispatch(event);
         }
         None => {
-            driver.pump_user_events();
-            if !driver.exited() {
-                driver.tick();
+            let reaction = driver.pump_user_events();
+            let reaction = if driver.exited() {
+                reaction
+            } else {
+                reaction.merge(driver.tick())
+            };
+            if !driver.exited() && reaction != Reaction::Redraw {
+                driver.render();
             }
         }
     }
@@ -2162,6 +2426,27 @@ pub fn click_down_up_events(x: f32, y: f32) -> [UiEvent; 2] {
         mouse_down(MouseButton::Left, x, y, Modifiers::default()),
         mouse_up(MouseButton::Left, x, y),
     ]
+}
+
+/// Message for a `QuiApp` method restricted to top-level script code
+/// (one of the overlay/OS-call/window-control methods with a matching
+/// `QuiAppActions` method — `show_message_dialog`, `set_title`, ...) that
+/// a caller invoked re-entrantly, from inside that same app's own
+/// registered event/tick/render callback. Used by `quadraui-py`'s own
+/// `ReentrantCallError` guard (`guard_against_reentrant_call`) so the
+/// wording there stays in one place rather than duplicated at every one
+/// of its call sites. `quadraui-node` has no Rust-side caller of this
+/// function at all — its own FFI layer never gets a chance to run custom
+/// guard code before napi-rs's own borrow check rejects the re-entrant
+/// call (see `quadraui-node/js/index.ts`'s `wrapNativeErrors` doc) — so
+/// it hardcodes the identical wording in TypeScript instead; a reword
+/// here needs a matching manual edit there, since nothing pins the two
+/// strings together.
+pub fn reentrant_call_message(method: &str) -> String {
+    format!(
+        "app.{method} can't be called from inside a handler; use the \
+         actions() handle passed to / available in the handler"
+    )
 }
 
 /// Downcasts a caught panic payload to a human-readable message — shared by
@@ -3271,6 +3556,269 @@ mod tests {
         );
     }
 
+    /// An [`AppLogic`] whose `render` resolves then paints a
+    /// `LayoutNode::Scroll` hosting a column of buttons -- drives
+    /// [`resolve_layout_node`]'s own `LayoutNode::Scroll` arm through a
+    /// real [`TuiDriver`] frame, the way a binding's own `render` would
+    /// (resolve, then paint, never paint alone).
+    struct ScrollLeafLogic {
+        button_count: usize,
+        offset: Option<f32>,
+        engine: InteractionEngine,
+    }
+
+    impl AppLogic for ScrollLeafLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let content = LayoutNode::Column(LayoutContainer::new(
+                (0..self.button_count)
+                    .map(|i| {
+                        let label = i.to_string();
+                        LayoutNode::Leaf(LayoutLeaf {
+                            id: label.clone(),
+                            descriptor: LeafDescriptor::Button(Button::new(
+                                WidgetId::new(label.clone()),
+                                label,
+                            )),
+                            scroll_px: None,
+                        })
+                    })
+                    .collect(),
+                Default::default(),
+            ));
+            let mut node = LayoutNode::Scroll(crate::layout::LayoutScroll {
+                id: "scroll".to_string(),
+                axis: quadraui::ScrollAxis::Vertical,
+                offset: self.offset,
+                content: Box::new(content),
+                spacing: Default::default(),
+            });
+            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    fn painted_button_ids(hits: &[PaintedHit]) -> Vec<String> {
+        hits.iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Button { id, .. } => Some(id.as_str().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A controlled offset resolved through [`resolve_layout_node`] (not
+    /// just [`crate::render::paint_layout`] called alone, as
+    /// `crate::render::tests` already covers) still paints exactly the
+    /// ten buttons the issue's own acceptance scenario names.
+    #[test]
+    fn resolve_layout_node_scroll_paints_the_ten_buttons_at_a_controlled_offset() {
+        let logic = ScrollLeafLogic {
+            button_count: 40,
+            offset: Some(20.0),
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let want: Vec<String> = (20..30).map(|i| i.to_string()).collect();
+        assert_eq!(painted_button_ids(&hits), want);
+    }
+
+    /// An uncontrolled (`None`) offset resolves to `0.0` the first frame,
+    /// and — unlike a bare [`crate::render::paint_layout`] call with no
+    /// `resolve_layout_node` pass first — persists across a further
+    /// uncontrolled render rather than being swept by
+    /// [`crate::widget_state::WidgetState::gc`], mirroring
+    /// [`resolve_layout_node_keys_a_leaf_whose_descriptor_id_differs_from_its_own_on_the_outer_leaf_id`]'s
+    /// own "survives a further render" assertion for a `Tree` leaf.
+    #[test]
+    fn resolve_layout_node_scroll_uncontrolled_offset_persists_across_renders() {
+        let logic = ScrollLeafLogic {
+            button_count: 40,
+            offset: None,
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let want: Vec<String> = (0..10).map(|i| i.to_string()).collect();
+        assert_eq!(painted_button_ids(&driver.app().engine.hit_map()), want);
+
+        driver.render();
+        assert_eq!(
+            painted_button_ids(&driver.app().engine.hit_map()),
+            want,
+            "an uncontrolled scroll offset must survive a further render unchanged"
+        );
+    }
+
+    /// [`ScrollLeafLogic`]'s own scenario, but with `content` wrapped in a
+    /// `LayoutNode::Styled` (a `"style"` key on the `"scroll"` node's
+    /// `"content"` dict) -- a purely cosmetic `"style"` sibling must not
+    /// change the scroll's own structural behaviour: `resolve_layout_node`
+    /// must still resolve each child's own offset against the wrapped
+    /// `Column`'s children (not fall back to the atomic "whole subtree is
+    /// one leaf" path), `scroll_content_slots` must still report one slot
+    /// per child, and the painted button whose own `style` overrides `fg`
+    /// must show that colour. Covers the review's own "a `Styled` wrapper
+    /// is invisible to the `"scroll"` path's structural matches" finding.
+    struct StyledScrollContentLogic {
+        button_count: usize,
+        offset: Option<f32>,
+        engine: InteractionEngine,
+    }
+
+    impl AppLogic for StyledScrollContentLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let content = LayoutNode::Column(LayoutContainer::new(
+                (0..self.button_count)
+                    .map(|i| {
+                        let label = i.to_string();
+                        let leaf = LayoutNode::Leaf(LayoutLeaf {
+                            id: label.clone(),
+                            descriptor: LeafDescriptor::Button(Button::new(
+                                WidgetId::new(label.clone()),
+                                label,
+                            )),
+                            scroll_px: None,
+                        });
+                        if i == 0 {
+                            LayoutNode::Styled(crate::layout::LayoutStyled {
+                                style: crate::layout::StyleOverride {
+                                    fg: Some(quadraui::Color::rgb(0, 255, 0)),
+                                    ..Default::default()
+                                },
+                                node: Box::new(leaf),
+                            })
+                        } else {
+                            leaf
+                        }
+                    })
+                    .collect(),
+                Default::default(),
+            ));
+            // Wrap the whole content in its own `"style"` override too --
+            // a cosmetic `bg` that must never flip `scroll_content_slots`
+            // from `Children` to `Atomic`.
+            let styled_content = LayoutNode::Styled(crate::layout::LayoutStyled {
+                style: crate::layout::StyleOverride {
+                    bg: Some(quadraui::Color::rgb(255, 0, 0)),
+                    ..Default::default()
+                },
+                node: Box::new(content),
+            });
+            let mut node = LayoutNode::Scroll(crate::layout::LayoutScroll {
+                id: "scroll".to_string(),
+                axis: quadraui::ScrollAxis::Vertical,
+                offset: self.offset,
+                content: Box::new(styled_content),
+                spacing: Default::default(),
+            });
+            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// A `"style"` key on a scroll's `content` node must not change which
+    /// buttons paint at a given offset -- the same ten-of-forty window
+    /// [`resolve_layout_node_scroll_paints_the_ten_buttons_at_a_controlled_offset`]
+    /// asserts for an unstyled `Column`.
+    #[test]
+    fn resolve_layout_node_scroll_paints_the_ten_buttons_when_content_is_styled() {
+        let logic = StyledScrollContentLogic {
+            button_count: 40,
+            offset: Some(20.0),
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let want: Vec<String> = (20..30).map(|i| i.to_string()).collect();
+        assert_eq!(
+            painted_button_ids(&hits),
+            want,
+            "a styled scroll content must resolve/paint the same per-child \
+             slots as an unstyled one"
+        );
+    }
+
+    /// A styled scroll's own `PaintedHit::Scroll::children` must still be
+    /// populated per-child -- a `LayoutNode::Styled` wrapper around the
+    /// content `Column` must not drop `ScrollSlots::Children` down to
+    /// `ScrollSlots::Atomic`, which would report an empty `children` list
+    /// (`crate::render::paint_scroll`'s own `ScrollChildHit` match).
+    #[test]
+    fn resolve_layout_node_scroll_children_hits_survive_a_styled_content_wrapper() {
+        let logic = StyledScrollContentLogic {
+            button_count: 5,
+            offset: Some(0.0),
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        let scroll_children = hits.iter().find_map(|hit| match hit {
+            PaintedHit::Scroll { children, .. } => Some(children.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            scroll_children.map(|c| c.len()),
+            Some(5),
+            "a styled scroll content column must still report one \
+             ScrollChildHit per child"
+        );
+    }
+
+    /// The styled first button's own `"fg"` override must still paint --
+    /// proof [`crate::render::paint_scroll`]'s own `push_styled_scope`
+    /// call actually brackets the per-child paint, not just the atomic
+    /// fallback path.
+    #[test]
+    fn resolve_layout_node_scroll_content_child_style_override_still_paints() {
+        let logic = StyledScrollContentLogic {
+            button_count: 5,
+            offset: Some(0.0),
+            engine: InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+
+        let (x, y) = driver.find("0").expect("button \"0\" should paint");
+        let fg = driver
+            .style_at(x as u16, y as u16)
+            .expect("style at button 0")
+            .fg;
+        assert_eq!(
+            fg,
+            quadraui::tui::ratatui_color(quadraui::Color::rgb(0, 255, 0)),
+            "button \"0\"'s own nested \"style\" override must still apply \
+             when painted through a styled scroll content wrapper"
+        );
+    }
+
     /// An [`AppLogic`] whose `render` paints a focused, bordered
     /// [`TextInput`] across the whole viewport directly (not through a
     /// [`BindingHost`] slot — `TextInput` is a `"text_input"` additive
@@ -3932,8 +4480,8 @@ mod tests {
         let mut save_button = Button::new(WidgetId::new("save"), "Save");
         save_button.tooltip = Some("Save the file".to_string());
         let other_button = Button::new(WidgetId::new("other"), "Other");
-        let tree = LayoutNode::Row(LayoutContainer {
-            children: vec![
+        let tree = LayoutNode::Row(LayoutContainer::new(
+            vec![
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:save".to_string(),
                     descriptor: LeafDescriptor::Button(save_button),
@@ -3945,8 +4493,8 @@ mod tests {
                     scroll_px: None,
                 }),
             ],
-            spacing: Spacing::default(),
-        });
+            Spacing::default(),
+        ));
         let logic = TreeHoverHostLogic {
             host: BindingHost::default(),
             engine: InteractionEngine::default(),
@@ -4014,8 +4562,8 @@ mod tests {
         alpha.tooltip = Some("Tooltip for Alpha".to_string());
         let mut bravo = Button::new(shared_id, "Bravo");
         bravo.tooltip = Some("Tooltip for Bravo".to_string());
-        let tree = LayoutNode::Row(LayoutContainer {
-            children: vec![
+        let tree = LayoutNode::Row(LayoutContainer::new(
+            vec![
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:alpha".to_string(),
                     descriptor: LeafDescriptor::Button(alpha),
@@ -4027,8 +4575,8 @@ mod tests {
                     scroll_px: None,
                 }),
             ],
-            spacing: Spacing::default(),
-        });
+            Spacing::default(),
+        ));
         let logic = TreeHoverHostLogic {
             host: BindingHost::default(),
             engine: InteractionEngine::default(),
@@ -4293,6 +4841,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         }
     }
 
@@ -4586,6 +5135,48 @@ mod tests {
             resolved.ratio, 0.3,
             "an app explicitly supplying a new ratio must override the stored drag"
         );
+    }
+
+    /// Uncontrolled (`None`) resolves to `0.0` the first time an id is
+    /// seen, same "never touched = default" rule every other
+    /// uncontrolled-by-default field in this module follows.
+    #[test]
+    fn resolve_scroll_offset_defaults_to_zero_when_never_set() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:scroll");
+        assert_eq!(resolve_scroll_offset(&widget_state, id, None, 100.0), 0.0);
+    }
+
+    /// `Some(offset)` pins the controlled position outright, and is
+    /// written back so a later uncontrolled frame resumes from it rather
+    /// than re-seeding `0.0` -- mirroring
+    /// [`apply_split_divider_drag_persists_across_an_uncontrolled_render`]'s
+    /// own contract for `Split::ratio`.
+    #[test]
+    fn resolve_scroll_offset_controlled_value_is_written_back() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:scroll");
+        assert_eq!(
+            resolve_scroll_offset(&widget_state, id, Some(20.0), 100.0),
+            20.0
+        );
+        assert_eq!(
+            resolve_scroll_offset(&widget_state, id, None, 100.0),
+            20.0,
+            "an uncontrolled frame right after must resume from the pinned offset"
+        );
+    }
+
+    /// The resolved offset is clamped into `[0, max_offset]` on every
+    /// call, even for an already-stored (previously valid) value whose
+    /// content has since shrunk -- `resolve_scroll_offset` re-clamps
+    /// rather than trusting a stale stored clamp.
+    #[test]
+    fn resolve_scroll_offset_clamps_a_stored_value_whose_max_offset_shrank() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:scroll");
+        resolve_scroll_offset(&widget_state, id, Some(90.0), 100.0);
+        assert_eq!(resolve_scroll_offset(&widget_state, id, None, 30.0), 30.0);
     }
 
     fn test_tab_bar(tabs: Vec<bool>) -> TabBar {
@@ -5117,5 +5708,55 @@ mod tests {
         let snapshot = widget_state_snapshot(&widget_state, id).expect("tree state stored");
         assert_eq!(snapshot.expanded, Some(vec![path.clone()]));
         assert_eq!(snapshot.selected_path, Some(path));
+    }
+
+    /// The shared slot/extra deprecation message names both the deprecated
+    /// method and the inline-leaf guidance a binding's own leaf passes in.
+    #[test]
+    fn slot_deprecation_message_names_the_method_and_the_guidance() {
+        let message = BindingHost::slot_deprecation_message(
+            "insert_list",
+            "render an inline `list` layout leaf instead",
+        );
+        assert!(message.contains("insert_list"));
+        assert!(message.contains("render an inline `list` layout leaf instead"));
+    }
+
+    /// Every fixed `SLOT_*` constant resolves to its own layout-leaf kind
+    /// name; an id outside the six resolves to `None`.
+    #[test]
+    fn slot_kind_name_covers_every_fixed_slot() {
+        assert_eq!(BindingHost::slot_kind_name(SLOT_BUTTON), Some("button"));
+        assert_eq!(
+            BindingHost::slot_kind_name(SLOT_TEXT_DISPLAY),
+            Some("text_display")
+        );
+        assert_eq!(BindingHost::slot_kind_name(SLOT_LIST), Some("list"));
+        assert_eq!(BindingHost::slot_kind_name(SLOT_TREE), Some("tree"));
+        assert_eq!(
+            BindingHost::slot_kind_name(SLOT_DATA_TABLE),
+            Some("data_table")
+        );
+        assert_eq!(BindingHost::slot_kind_name(SLOT_TAB_BAR), Some("tab_bar"));
+        assert_eq!(BindingHost::slot_kind_name(999), None);
+    }
+
+    /// [`BindingHost::first_deprecation_report`] reports `true` only the
+    /// first time a given method name is passed for this host, `false` on
+    /// every call after -- and independently per method name.
+    #[test]
+    fn first_deprecation_report_is_true_only_once_per_method_per_host() {
+        let host = BindingHost::default();
+        assert!(host.first_deprecation_report("insert_list"));
+        assert!(!host.first_deprecation_report("insert_list"));
+        assert!(!host.first_deprecation_report("insert_list"));
+        // A different method name on the same host still reports `true`
+        // its own first time.
+        assert!(host.first_deprecation_report("slot_clear"));
+        assert!(!host.first_deprecation_report("slot_clear"));
+
+        // A fresh host starts with a clean slate.
+        let other_host = BindingHost::default();
+        assert!(other_host.first_deprecation_report("insert_list"));
     }
 }

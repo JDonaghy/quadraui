@@ -69,7 +69,7 @@ test(
     const body = `
       const { QuiApp } = require(${JSON.stringify(indexPath)});
       const app = new QuiApp(10, 5);
-      app.insertButton({ id: "demo:ok", label: "OK", focused: true });
+      app.setRender(() => ({ button: { id: "demo:ok", label: "OK", focused: true } }));
       app.startNative();
       console.log("STEP1:" + app.step());
       console.log("STEP2:" + app.step());

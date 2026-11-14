@@ -8,6 +8,10 @@
 //!   (the default) it's a real `NSMenu`; on every other backend (and on
 //!   macOS under `Custom`) it's painted in-window via
 //!   [`ContextMenuController`] — same call either way.
+//! - "More..." carries a nested `submenu`: Right-arrow/Enter or hovering
+//!   its row opens the child popup beside it (flipping to the left edge
+//!   near the viewport's right edge), Left/Escape closes it, and
+//!   activating a nested item reports that item's own `WidgetId`.
 //! - Press `m` to cycle [`MenuStyle`] (`Auto` → `Native` → `Custom` →
 //!   `Auto`) at runtime via `Backend::set_menu_style`. The status bar
 //!   shows both the requested style and [`Backend::effective_menu_style`]
@@ -62,6 +66,15 @@ impl ContextMenuStyleDemo {
                 },
                 action_item("ctx.paste", "Paste"),
                 ContextMenuItem::default(), // separator
+                ContextMenuItem {
+                    id: Some(WidgetId::new("ctx.more")),
+                    label: StyledText::plain("More..."),
+                    submenu: Some(vec![
+                        action_item("ctx.more.duplicate", "Duplicate"),
+                        action_item("ctx.more.rename", "Rename"),
+                    ]),
+                    ..Default::default()
+                },
                 action_item("ctx.about", "About this demo"),
             ],
             selected_idx: 0,
@@ -159,8 +172,13 @@ impl AppLogic for ContextMenuStyleDemo {
         // Route through the controller first — on the `Custom` path
         // this may return one of the same two events the `Native` path
         // delivers later via the top-level match below.
-        if let ContextMenuOutcome::Event(ev) = self.ctx_menu.handle(&event, backend) {
-            return self.handle_menu_event(ev);
+        match self.ctx_menu.handle(&event, backend) {
+            ContextMenuOutcome::Event(ev) => return self.handle_menu_event(ev),
+            // Navigation/hover moved the selection or opened/closed a
+            // submenu level with nothing further to route — still needs
+            // a repaint to show it.
+            ContextMenuOutcome::Consumed => return Reaction::Redraw,
+            ContextMenuOutcome::Ignored => {}
         }
 
         match event {

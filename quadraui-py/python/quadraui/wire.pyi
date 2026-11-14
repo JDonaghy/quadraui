@@ -269,6 +269,7 @@ class DataTableDescriptor(TypedDict):
     h_scroll: NotRequired[float]
     column_overrides: NotRequired[List[Optional[float]]]
     footer: NotRequired[Optional[DataRowDescriptor]]
+    bordered: NotRequired[bool]
     scroll_px: NotRequired[float]
 
 class TabItemDescriptor(TypedDict):
@@ -342,17 +343,59 @@ class PaddingSides(TypedDict):
 # A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", "right", "bottom", "left"}` -- never both shapes at once.
 PaddingValue = Union[float, PaddingAxis, PaddingSides]
 
-class LayoutRowNode(TypedDict):
-    row: List[LayoutNode]
-    padding: NotRequired[PaddingValue]
-    margin: NotRequired[float]
-    gap: NotRequired[float]
+# A `"style"` colour token: a `Color` object, or a "#rrggbb"/"#rrggbbaa" hex string.
+StyleColorValue = Union[Color, str]
 
-class LayoutColumnNode(TypedDict):
-    column: List[LayoutNode]
-    padding: NotRequired[PaddingValue]
-    margin: NotRequired[float]
-    gap: NotRequired[float]
+class StyleValue(TypedDict):
+    """A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent"/"surface_bg"/"accent_bg" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping."""
+    bg: NotRequired[StyleColorValue]
+    fg: NotRequired[StyleColorValue]
+    border: NotRequired[StyleColorValue]
+    accent: NotRequired[StyleColorValue]
+    surface_bg: NotRequired[StyleColorValue]
+    accent_bg: NotRequired[StyleColorValue]
+    padding: NotRequired[float]
+    corner_radius: NotRequired[float]
+    border_width: NotRequired[float]
+
+# One or more named style sets (see define_style) applied to this node's own subtree: a single name, a whitespace-separated list of names in one string, or an array of names. Merged left to right, then overridden by this node's own "style" key. A name no set was ever defined under is ignored.
+ClassValue = Union[str, List[str]]
+
+LayoutRowNode = TypedDict(
+    "LayoutRowNode",
+    {
+        "row": List[LayoutNode],
+        "padding": NotRequired[PaddingValue],
+        "margin": NotRequired[float],
+        "gap": NotRequired[float],
+        "justify": NotRequired[Literal['start', 'center', 'end', 'space_between']],
+        "align": NotRequired[Literal['start', 'center', 'end', 'stretch']],
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
+
+LayoutColumnNode = TypedDict(
+    "LayoutColumnNode",
+    {
+        "column": List[LayoutNode],
+        "padding": NotRequired[PaddingValue],
+        "margin": NotRequired[float],
+        "gap": NotRequired[float],
+        "justify": NotRequired[Literal['start', 'center', 'end', 'space_between']],
+        "align": NotRequired[Literal['start', 'center', 'end', 'stretch']],
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
 
 class LayoutSplitPayload(TypedDict):
     id: str
@@ -363,11 +406,21 @@ class LayoutSplitPayload(TypedDict):
     first: LayoutNode
     second: LayoutNode
 
-class LayoutSplitNode(TypedDict):
-    split: LayoutSplitPayload
-    padding: NotRequired[PaddingValue]
-    margin: NotRequired[float]
-    gap: NotRequired[float]
+LayoutSplitNode = TypedDict(
+    "LayoutSplitNode",
+    {
+        "split": LayoutSplitPayload,
+        "padding": NotRequired[PaddingValue],
+        "margin": NotRequired[float],
+        "gap": NotRequired[float],
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
 
 class LayoutTabEntryNode(TypedDict):
     id: str
@@ -388,10 +441,20 @@ class LayoutTabsPayload(TypedDict):
     active_accent: NotRequired[Optional[Color]]
     compact: NotRequired[bool]
 
-class LayoutTabsNode(TypedDict):
-    tabs: LayoutTabsPayload
-    padding: NotRequired[PaddingValue]
-    margin: NotRequired[float]
+LayoutTabsNode = TypedDict(
+    "LayoutTabsNode",
+    {
+        "tabs": LayoutTabsPayload,
+        "padding": NotRequired[PaddingValue],
+        "margin": NotRequired[float],
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
 
 class LayoutPanelPayload(TypedDict):
     """The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`."""
@@ -402,10 +465,20 @@ class LayoutPanelPayload(TypedDict):
     collapsed: NotRequired[bool]
     content: LayoutNode
 
-class LayoutPanelNode(TypedDict):
-    panel: LayoutPanelPayload
-    padding: NotRequired[PaddingValue]
-    margin: NotRequired[float]
+LayoutPanelNode = TypedDict(
+    "LayoutPanelNode",
+    {
+        "panel": LayoutPanelPayload,
+        "padding": NotRequired[PaddingValue],
+        "margin": NotRequired[float],
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
 
 class LayoutSidebarPanelPayload(TypedDict):
     id: str
@@ -413,8 +486,39 @@ class LayoutSidebarPanelPayload(TypedDict):
     toolbar_height: NotRequired[Optional[float]]
     content: LayoutNode
 
-class LayoutSidebarPanelNode(TypedDict):
-    sidebar_panel: LayoutSidebarPanelPayload
+LayoutSidebarPanelNode = TypedDict(
+    "LayoutSidebarPanelNode",
+    {
+        "sidebar_panel": LayoutSidebarPanelPayload,
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
+
+class LayoutScrollPayload(TypedDict):
+    id: str
+    axis: NotRequired[Literal['vertical', 'horizontal']]
+    offset: NotRequired[float]
+    content: LayoutNode
+
+LayoutScrollNode = TypedDict(
+    "LayoutScrollNode",
+    {
+        "scroll": LayoutScrollPayload,
+        "padding": NotRequired[PaddingValue],
+        "margin": NotRequired[float],
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
 
 class _SplitTreeLeaf(TypedDict):
     leaf: LayoutNode
@@ -434,8 +538,18 @@ class LayoutSplitTreePayload(TypedDict):
     id: str
     root: SplitTreeRecursiveNode
 
-class LayoutSplitTreeNode(TypedDict):
-    split_tree: LayoutSplitTreePayload
+LayoutSplitTreeNode = TypedDict(
+    "LayoutSplitTreeNode",
+    {
+        "split_tree": LayoutSplitTreePayload,
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
 
 class ProgressBarDescriptor(TypedDict):
     id: WidgetId
@@ -505,6 +619,49 @@ class SwitchDescriptor(TypedDict):
     value: NotRequired[bool]
     disabled: NotRequired[bool]
     focused: NotRequired[bool]
+
+class CheckboxDescriptor(TypedDict):
+    id: WidgetId
+    value: NotRequired[bool]
+    disabled: NotRequired[bool]
+    focused: NotRequired[bool]
+
+class SliderDescriptor(TypedDict):
+    id: WidgetId
+    value: float
+    min: float
+    max: float
+    step: NotRequired[float]
+    disabled: NotRequired[bool]
+    focused: NotRequired[bool]
+
+class SelectDescriptor(TypedDict):
+    id: WidgetId
+    options: List[str]
+    selected_idx: NotRequired[int]
+    disabled: NotRequired[bool]
+    focused: NotRequired[bool]
+
+class PasswordDescriptor(TypedDict):
+    """`mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode."""
+    id: WidgetId
+    value: NotRequired[str]
+    cursor: NotRequired[Optional[int]]
+    has_focus: NotRequired[bool]
+    mask_char: NotRequired[str]
+
+class TextAreaDescriptor(TypedDict):
+    id: WidgetId
+    value: NotRequired[str]
+    placeholder: NotRequired[Optional[str]]
+    cursor: NotRequired[Optional[int]]
+    has_focus: NotRequired[bool]
+    visible_rows: NotRequired[int]
+
+class MarkdownDescriptor(TypedDict):
+    id: WidgetId
+    source: str
+    scroll_offset: NotRequired[int]
 
 ScrollAxis = Literal['Vertical', 'Horizontal']
 
@@ -1111,7 +1268,7 @@ class FormFieldDescriptor(TypedDict):
 class FormDescriptor(TypedDict):
     id: WidgetId
     fields: List[FormFieldDescriptor]
-    focused_field: Optional[WidgetId]
+    focused_field: NotRequired[Optional[WidgetId]]
     scroll_offset: NotRequired[int]
     has_focus: NotRequired[bool]
     label_position: NotRequired[LabelPosition]
@@ -1299,51 +1456,68 @@ class DiffViewDescriptor(TypedDict):
     focused_pane: DiffPane
     has_focus: bool
 
-class LayoutLeafNode(TypedDict):
-    """One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed."""
-    id: str
-    button: NotRequired[ButtonDescriptor]
-    text_display: NotRequired[TextDisplayDescriptor]
-    list: NotRequired[ListViewDescriptor]
-    tree: NotRequired[TreeViewDescriptor]
-    data_table: NotRequired[DataTableDescriptor]
-    tab_bar: NotRequired[TabBarDescriptor]
-    status_bar: NotRequired[StatusBarDescriptor]
-    progress: NotRequired[ProgressBarDescriptor]
-    spinner: NotRequired[SpinnerDescriptor]
-    image: NotRequired[ImageDescriptor]
-    form: NotRequired[FormDescriptor]
-    text_input: NotRequired[TextInputDescriptor]
-    number_input: NotRequired[NumberInputDescriptor]
-    combo_box: NotRequired[ComboBoxDescriptor]
-    date_picker: NotRequired[DatePickerDescriptor]
-    radio_group: NotRequired[RadioGroupDescriptor]
-    switch: NotRequired[SwitchDescriptor]
-    chart: NotRequired[ChartDescriptor]
-    message_list: NotRequired[MessageListDescriptor]
-    board: NotRequired[BoardModelDescriptor]
-    pipeline_view: NotRequired[PipelineViewDescriptor]
-    minimap: NotRequired[MinimapDescriptor]
-    multi_section_view: NotRequired[MultiSectionViewDescriptor]
-    diff_view: NotRequired[DiffViewDescriptor]
-    activity_bar: NotRequired[ActivityBarDescriptor]
-    toolbar: NotRequired[ToolbarDescriptor]
-    menu_bar: NotRequired[MenuBarDescriptor]
-    command_line: NotRequired[CommandLineDescriptor]
-    command_center: NotRequired[CommandCenterDescriptor]
-    palette: NotRequired[PaletteDescriptor]
-    scrollbar: NotRequired[ScrollbarDescriptor]
-    editor: NotRequired[EditorDescriptor]
-    terminal: NotRequired[TerminalDescriptor]
-    canvas: NotRequired[CanvasDescriptor]
-    scroll_view: NotRequired[ScrollViewDescriptor]
-    find_replace: NotRequired[FindReplacePanelDescriptor]
+LayoutLeafNode = TypedDict(
+    "LayoutLeafNode",
+    {
+        "id": str,
+        "wire_version": NotRequired[int],
+        "button": NotRequired[ButtonDescriptor],
+        "text_display": NotRequired[TextDisplayDescriptor],
+        "list": NotRequired[ListViewDescriptor],
+        "tree": NotRequired[TreeViewDescriptor],
+        "data_table": NotRequired[DataTableDescriptor],
+        "tab_bar": NotRequired[TabBarDescriptor],
+        "status_bar": NotRequired[StatusBarDescriptor],
+        "progress": NotRequired[ProgressBarDescriptor],
+        "spinner": NotRequired[SpinnerDescriptor],
+        "image": NotRequired[ImageDescriptor],
+        "form": NotRequired[FormDescriptor],
+        "text_input": NotRequired[TextInputDescriptor],
+        "number_input": NotRequired[NumberInputDescriptor],
+        "combo_box": NotRequired[ComboBoxDescriptor],
+        "date_picker": NotRequired[DatePickerDescriptor],
+        "radio_group": NotRequired[RadioGroupDescriptor],
+        "switch": NotRequired[SwitchDescriptor],
+        "chart": NotRequired[ChartDescriptor],
+        "message_list": NotRequired[MessageListDescriptor],
+        "board": NotRequired[BoardModelDescriptor],
+        "pipeline_view": NotRequired[PipelineViewDescriptor],
+        "minimap": NotRequired[MinimapDescriptor],
+        "multi_section_view": NotRequired[MultiSectionViewDescriptor],
+        "diff_view": NotRequired[DiffViewDescriptor],
+        "activity_bar": NotRequired[ActivityBarDescriptor],
+        "toolbar": NotRequired[ToolbarDescriptor],
+        "menu_bar": NotRequired[MenuBarDescriptor],
+        "command_line": NotRequired[CommandLineDescriptor],
+        "command_center": NotRequired[CommandCenterDescriptor],
+        "palette": NotRequired[PaletteDescriptor],
+        "scrollbar": NotRequired[ScrollbarDescriptor],
+        "editor": NotRequired[EditorDescriptor],
+        "terminal": NotRequired[TerminalDescriptor],
+        "canvas": NotRequired[CanvasDescriptor],
+        "scroll_view": NotRequired[ScrollViewDescriptor],
+        "find_replace": NotRequired[FindReplacePanelDescriptor],
+        "checkbox": NotRequired[CheckboxDescriptor],
+        "slider": NotRequired[SliderDescriptor],
+        "select": NotRequired[SelectDescriptor],
+        "password": NotRequired[PasswordDescriptor],
+        "textarea": NotRequired[TextAreaDescriptor],
+        "markdown": NotRequired[MarkdownDescriptor],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
+"""One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed."""
 
 # One node of a render callback's returned layout tree.
-LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutSplitNode, LayoutTabsNode, LayoutPanelNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutLeafNode]
+LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutSplitNode, LayoutTabsNode, LayoutPanelNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutScrollNode, LayoutLeafNode]
 
 class RenderFrameDict(TypedDict):
     """The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed."""
+    wire_version: NotRequired[int]
     button: NotRequired[Optional[ButtonDescriptor]]
     text_display: NotRequired[Optional[TextDisplayDescriptor]]
     list: NotRequired[Optional[ListViewDescriptor]]
@@ -1380,9 +1554,57 @@ class RenderFrameDict(TypedDict):
     canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
+    checkbox: NotRequired[Optional[CheckboxDescriptor]]
+    slider: NotRequired[Optional[SliderDescriptor]]
+    select: NotRequired[Optional[SelectDescriptor]]
+    password: NotRequired[Optional[PasswordDescriptor]]
+    textarea: NotRequired[Optional[TextAreaDescriptor]]
+    markdown: NotRequired[Optional[MarkdownDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
+
+class AnchorDescriptor(TypedDict):
+    """Where a float/popover opens: a rect, the side of it to prefer, and the gap along that axis."""
+    rect: Rect  # Bounds of the element the overlay opens against, in absolute coordinates.
+    preferred: NotRequired[Literal['Top', 'Bottom', 'Left', 'Right', 'AtPoint']]
+    margin: NotRequired[float]
+
+class FloatDescriptor(TypedDict):
+    """A floating surface's own chrome: anchor, border and background."""
+    id: WidgetId
+    anchor: AnchorDescriptor
+    focusable: NotRequired[bool]
+    border: NotRequired[bool]
+    bg: NotRequired[Optional[Color]]
+
+class DialogButtonDescriptor(TypedDict):
+    """One button in a dialog's button row."""
+    id: WidgetId
+    label: str
+    is_default: NotRequired[bool]
+    is_cancel: NotRequired[bool]
+    tint: NotRequired[Optional[Color]]
+    spec: NotRequired[Optional[ButtonSpecDescriptor]]
+
+class DialogChromeDescriptor(TypedDict):
+    """A layout dialog's own title/body/button chrome -- the same friendly shape the "message_dialog" overlay kind takes."""
+    id: WidgetId
+    title: NotRequired[str]
+    body: NotRequired[str]  # Text shown above the content slot; split on newlines into one line each.
+    buttons: List[DialogButtonDescriptor]
+    severity: NotRequired[Literal['info', 'question', 'warning', 'error']]
+    vertical_buttons: NotRequired[bool]
+
+class PopoverDescriptor(TypedDict):
+    """A `show_overlay("popover", ...)` descriptor: float chrome plus the layout subtree painted inside it, whose leaves focus and emit events exactly as in the main tree."""
+    float: FloatDescriptor
+    content: LayoutNode
+
+class LayoutDialogDescriptor(TypedDict):
+    """A `show_overlay("layout_dialog", ...)` descriptor: modal dialog chrome plus the layout subtree painted in its body."""
+    dialog: DialogChromeDescriptor
+    content: LayoutNode
 
 class PanelDefinitionDescriptor(TypedDict):
     id: str
@@ -1761,8 +1983,20 @@ class _HitDetailExtraChrome(TypedDict):
     kind: Literal['extra_chrome']
     bar: WidgetId
 
+class _HitDetailScrollBody(TypedDict):
+    kind: Literal['scroll_body']
+
+class _HitDetailScrollScrollbarTrackBefore(TypedDict):
+    kind: Literal['scroll_scrollbar_track_before']
+
+class _HitDetailScrollScrollbarThumb(TypedDict):
+    kind: Literal['scroll_scrollbar_thumb']
+
+class _HitDetailScrollScrollbarTrackAfter(TypedDict):
+    kind: Literal['scroll_scrollbar_track_after']
+
 # The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
-HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailExtraChrome]
+HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 class _UiKeyPressedPayload(TypedDict):
     key: Key

@@ -10,6 +10,24 @@ window with them.
 const { QuiApp } = require("@quadraui/node");
 ```
 
+## Version compatibility
+
+This package's minor version always equals the `quadraui` Rust crate's own
+minor version; the patch component moves independently in either direction
+(see
+[`BINDING_VERSION_POLICY.md`](https://github.com/JDonaghy/quadraui/blob/main/quadraui/docs/decisions/BINDING_VERSION_POLICY.md)).
+`@quadraui/node` is not yet published to npm (tracked by #2239) — this
+package stays `"private": true` until then — but its `package.json`
+`"version"` field already follows this table:
+
+| `quadraui` (Rust crate) | `@quadraui/node` |
+|---|---|
+| 0.*Y*.x | 0.*Y*.x — any patch |
+
+For example, both `quadraui` crate `0.10.1` and `0.10.3` pair with any
+`@quadraui/node` `0.10.x` version; a crate `0.11.0` needs a `0.11.x`
+`package.json` bump, not `0.10.x`.
+
 ## Building and testing an app
 
 `@quadraui/node/app` (`js/app/`) is a thin layer over `QuiApp`: a `view()`

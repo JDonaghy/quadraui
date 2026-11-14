@@ -509,7 +509,11 @@ jobs:
     # quadraui/Cargo.toml's version — the same check `release.yml`'s
     # `check` job runs, but here it runs before the merge instead of after,
     # so a CHANGELOG still titled `## [Unreleased]` fails the PR instead of
-    # `main`.
+    # `main`. Also verifies, via `check-binding-versions`, that
+    # quadraui-py/quadraui-node/quadraui-binding-core's own minor versions
+    # still agree with that same quadraui/Cargo.toml version — see
+    # `quadraui/docs/decisions/BINDING_VERSION_POLICY.md` for why minor
+    # tracking (not an exact match) is the rule.
     #
     # Deliberately NOT the same job as `changelog-check` above: that one
     # enforces (on every PR) that a `quadraui/src/**` change adds a line
@@ -525,15 +529,16 @@ jobs:
     # meaningful advisory signal to show on a non-promotion PR for a check
     # about a version bump that PR likely isn't making.
     #
-    # No toolchain/cache steps: `version` and `notes` both read
-    # `quadraui/Cargo.toml`/`CHANGELOG.md` directly, the same hermetic,
-    # checkout-only design as `check-lock` (see that command's module doc
-    # in `scripts/release_decide.py` for why this matters on a fresh
-    # runner with no registry cache).
-    name: CHANGELOG has a versioned section for this release (develop -> main gate)
+    # No toolchain/cache steps: `version`, `notes`, and
+    # `check-binding-versions` all read local files directly
+    # (`quadraui/Cargo.toml`, `CHANGELOG.md`, the binding manifests), the
+    # same hermetic, checkout-only design as `check-lock` (see each
+    # command's module doc in `scripts/release_decide.py` for why this
+    # matters on a fresh runner with no registry cache).
+    name: CHANGELOG + binding versions are release-ready (develop -> main gate)
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    # Two Python-script steps reading local files, normally a few seconds.
+    # Three Python-script steps reading local files, normally a few seconds.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -548,6 +553,8 @@ jobs:
             --changelog CHANGELOG.md \
             --version "${VERSION}" \
             --out "${RUNNER_TEMP}/notes-preview.md"
+      - name: Verify quadraui-py/quadraui-node/quadraui-binding-core minor versions match quadraui's
+        run: python3 scripts/release_decide.py check-binding-versions
 
   comment-lint:
     # #1112: comments describe the code as it is; history (what it used to
@@ -598,25 +605,64 @@ jobs:
       - name: introduction.md / README.md hello-world sync check
         run: python3 tools/test_introduction_matches_readme.py
 
+  backend-loc-ratchet:
+    # #2373: the four per-backend directories under `quadraui/src/`
+    # (`tui`, `macos`, `win`, `gtk`) grew by roughly 4.1k lines in three days
+    # while the consolidation epics' shared engines landed *beside* them
+    # instead of replacing code inside them -- "consolidation" quietly added
+    # code instead of removing it. `scripts/backend_loc_ratchet.py` counts
+    # each directory's `.rs` lines and compares against the committed
+    # baseline in `scripts/backend_loc_baseline.json`, the same ratchet shape
+    # as the `comment-lint` job above: it doesn't fail on today's tree, but
+    # fails the instant a directory's count climbs past its baseline by more
+    # than the script's small allowance. A real shrink is expected to lower
+    # the baseline as part of that PR (the script prints the number to
+    # commit); a real growth that needs to cross the allowance raises the
+    # baseline in the same PR instead, so the increase is a visible line in
+    # the diff rather than something this gate papers over.
+    name: Backend line-count ratchet
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
+    runs-on: ubuntu-latest
+    # Two Python-script steps reading local files, normally well under a
+    # minute.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: backend_loc_ratchet.py unit tests
+        run: python3 scripts/test_backend_loc_ratchet.py
+      - name: Backend line-count ratchet
+        run: python3 scripts/backend_loc_ratchet.py
+
   wire-types-check:
-    # Staleness + acceptance gate for the generated wire types
-    # (`scripts/gen_wire_types.py`): fails if regenerating would change
-    # either committed output (`quadraui-py/python/quadraui/wire.pyi` /
-    # `quadraui-node/js/wire.d.ts`), if the "good" fixture scripts
-    # (`scripts/fixtures/wire_types_sample.{py,ts}`) fail to type-check under
-    # `mypy --strict`/`tsc --strict`, or if the "bad" misspelled-key
-    # fixtures (`scripts/fixtures/wire_types_sample_bad.{py,ts}`) type-check clean
-    # when they should not. `gen_wire_types.py` builds its schema by
-    # running `quadraui-binding-core`'s `export_wire_schema` binary (built
-    # from `quadraui-binding-core/src/wire_schema.rs`), so this job needs a
-    # Rust toolchain too -- a field or variant added to a wire-decoded Rust
-    # type without updating `wire_schema.rs` already fails `cargo test -p
-    # quadraui-binding-core` (or `cargo check --tests -p
-    # quadraui-binding-core`; the `coverage` drift guards live in a
+    # Staleness + acceptance gate for the generated wire types, native-
+    # extension stub, and Markdown reference page (`scripts/
+    # gen_wire_types.py`): fails if regenerating would change any committed
+    # output (`quadraui-py/python/quadraui/wire.pyi`,
+    # `quadraui-node/js/wire.d.ts`, `quadraui-py/python/quadraui/
+    # _quadraui.pyi`, and the generated section of
+    # `docs/bindings-wire-format.md`), if the "good" fixture
+    # scripts (`scripts/fixtures/wire_types_sample.{py,ts}`, or every real
+    # example under `quadraui-py/examples/` for the `_quadraui.pyi` side)
+    # fail to type-check under `mypy --strict`/`pyright`/`tsc --strict`, or if the
+    # "bad" misspelled-key fixtures
+    # (`scripts/fixtures/wire_types_sample_bad.{py,ts}`) type-check clean
+    # when they should not. `gen_wire_types.py` builds its wire-data schema
+    # by running `quadraui-binding-core`'s `export_wire_schema` binary
+    # (built from `quadraui-binding-core/src/wire_schema.rs`), so this job
+    # needs a Rust toolchain too -- a field or variant added to a
+    # wire-decoded Rust type without updating `wire_schema.rs` already
+    # fails `cargo test -p quadraui-binding-core` (or `cargo check --tests
+    # -p quadraui-binding-core`; the `coverage` drift guards live in a
     # `#[cfg(test)]` module, so a bare `cargo check`/`cargo build` does not
     # compile them); the regeneration step below is what catches the
-    # matching "`wire_schema.rs` changed but `wire.pyi`/`wire.d.ts` weren't
-    # regenerated" half.
+    # matching "Rust side changed but the generated `.pyi`/`.d.ts` weren't
+    # regenerated" half -- `_quadraui.pyi`'s own source of truth is instead
+    # `quadraui-py/src/lib.rs`'s `#[pymethods]`/`#[pyfunction]` items,
+    # parsed by `gen_wire_types.py` directly (no Rust-side JSON export for
+    # those), so a method signature change there is caught by the same
+    # `--check` without needing its own coverage guard.
     name: Wire types (generated .pyi / .d.ts) staleness + type-check
     runs-on: ubuntu-latest
     needs: bump-shape

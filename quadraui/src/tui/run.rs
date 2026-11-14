@@ -704,14 +704,6 @@ where
     A: AppLogic,
     B: ratatui::backend::Backend,
 {
-    // Resolve the currently-focused widget's rect (if any)
-    // from this frame's tab stops *before* entering the frame scope —
-    // `AppLogic::tab_stops` is `&self`-only and cheap for an app that
-    // already has this on hand from building its `ScreenLayout`. This
-    // read is independent of `begin_frame`'s per-frame state (focus
-    // tracking isn't touched by it), so it's safe to keep it ahead of
-    // the `terminal.draw` call.
-    let focus_ring_rect = crate::runtime::focused_stop_rect(backend, app, A::AreaId::default());
     terminal
         .draw(|frame| {
             // Derive the layout-sizing viewport from the *actual*
@@ -763,6 +755,25 @@ where
             // via `draw_focus_ring_on_buffer` rather than the
             // `enter_frame_scope`-bound `Backend::draw_focus_ring`, since
             // this runs after that scope has already ended.
+            //
+            // Resolved here, from this frame's own just-updated tab
+            // stops, rather than before `app.render` ran above:
+            // `AppLogic::tab_stops` is `&self`-only, but for an engine
+            // backing a `"form"` extra it isn't purely a cheap read of
+            // already-built layout — `InteractionEngine::tab_stops`
+            // excludes a `"form"` extra's own stop only once
+            // `InteractionEngine::sync_forms` (called from `app.render`
+            // above) has recorded that engine focus actually landed on
+            // it. Resolving the rect before `app.render` ran used
+            // whichever frame *last* updated that record — the frame
+            // engine focus actually moved onto the form, one frame too
+            // early — so this ring painted the form's own multi-row
+            // rect as a single-box border, overwriting its first and
+            // last visible field rows with border glyphs instead of
+            // leaving the paint only `FormController`'s own per-field
+            // focus visuals already handle.
+            let focus_ring_rect =
+                crate::runtime::focused_stop_rect(backend, app, A::AreaId::default());
             if let Some(rect) = focus_ring_rect {
                 backend.draw_focus_ring_on_buffer(frame.buffer_mut(), rect);
             }

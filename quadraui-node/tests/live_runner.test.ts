@@ -288,7 +288,7 @@ test("startTui raises without a real tty and leaves the headless app usable", ()
   const body = `
     const { QuiApp } = require(${JSON.stringify(indexPath)});
     const app = new QuiApp(10, 10);
-    app.insertButton({ id: "demo:ok", label: "OK", focused: true });
+    app.setRender(() => ({ button: { id: "demo:ok", label: "OK", focused: true } }));
     try {
       app.startTui();
       console.log("START_TUI_DID_NOT_RAISE");
@@ -336,7 +336,7 @@ test("startTui accepts mouse: false and fails the same way without a real tty", 
     { skip: nativeBackend !== null && `built with the ${nativeBackend} native feature` },
     () => {
       const app = new QuiApp(10, 10);
-      app.insertButton({ id: "demo:ok", label: "OK", focused: true });
+      app.setRender(() => ({ button: { id: "demo:ok", label: "OK", focused: true } }));
       assert.throws(
         () => app.startNative(),
         (err: unknown) => {

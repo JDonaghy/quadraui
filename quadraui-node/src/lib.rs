@@ -307,22 +307,23 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction_for_render,
     caret_shape, clear_recent_documents, click_down_up_events, color_depth_name,
-    decode_extra_primitive, decode_render_output, decode_shell_config, dialog_severity, draw_bands,
-    end_power_save_block, font_role, guarded as core_guarded, install_crash_handler,
-    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
-    merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
-    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
-    resolve_layout_node, resolve_render_refs, set_app_identifier, set_as_default_protocol_client,
-    set_dock_menu, set_jump_list, set_login_item, step_driver,
-    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    toast_corner, update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    decode_extra_primitive, decode_layout_dialog, decode_popover, decode_render_output_with_styles,
+    decode_shell_config, decode_style_overrides, dialog_severity, draw_bands, end_power_save_block,
+    font_role, guarded as core_guarded, install_crash_handler, is_default_protocol_client,
+    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
+    message_dialog_options_from_buttons, paint_layout, pointer_shape, record_pending_error,
+    remove_as_default_protocol_client, render_overlays, resolve_app_path, resolve_layout_node,
+    resolve_render_refs, set_app_identifier, set_as_default_protocol_client, set_dock_menu,
+    set_jump_list, set_login_item, step_driver, take_pending_error as core_take_pending_error,
+    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
+    update_check_for_update, update_download_and_stage, validate_style_set_name,
     widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
-    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
-    RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
-    SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    DialogContentSize, ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine,
+    OverrideError, RenderOutput, ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling,
+    SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 #[cfg(test)]
-use quadraui_binding_core::{decode_layout_node, LayoutNode};
+use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode};
 
 mod accelerators;
 mod clipboard;
@@ -674,8 +675,9 @@ struct NodeAppLogic {
     on_tick: Option<NodeCallback>,
     /// Registered via `QuiApp::setRender`; called with no meaningful
     /// argument once per frame and expected to return a plain object
-    /// decodable via [`decode_render_output`] (the same flat-vs-tree shape
-    /// every binding's render callback returns). When set, this overrides
+    /// decodable via [`quadraui_binding_core::decode_render_output`] (the
+    /// same flat-vs-tree shape every binding's render callback returns).
+    /// When set, this overrides
     /// [`Self::host`]'s static slots for every render.
     render_callback: Option<NodeCallback>,
     /// Set by [`AppLogic::handle`]/[`AppLogic::tick`]/[`AppLogic::render`]
@@ -832,7 +834,18 @@ impl AppLogic for NodeAppLogic {
             render_overlays(&self.engine, backend, hits);
             return;
         };
-        match render_output_from_callback(env, callback, &self.pending_error) {
+        // The theme every `"class"` key in this frame's tree resolves its
+        // built-in sets against -- read once, before the callback runs, so
+        // every node in the tree resolves against the same palette.
+        let theme = backend.theme();
+        let styles = StyleContext::new(&self.host.style_sets, &theme);
+        match render_output_from_callback(
+            env,
+            callback,
+            &self.pending_error,
+            styles,
+            &self.host.wire_diagnostics,
+        ) {
             Some(RenderOutput::Flat(frame)) => {
                 let resolved =
                     resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
@@ -997,7 +1010,8 @@ fn bool_from_return(value: Unknown<'static>) -> Option<bool> {
 }
 
 /// Invokes a registered render callback and decodes its returned plain
-/// object into a [`RenderOutput`] via [`decode_render_output`], through the
+/// object into a [`RenderOutput`] via
+/// [`quadraui_binding_core::decode_render_output_with_styles`], through the
 /// same [`to_descriptor_value`] materialization every other kind-dispatched
 /// decoder in this crate uses -- the napi-rs analog of `quadraui-py`'s own
 /// `render_output_from_callback`. On any failure -- the callback raising,
@@ -1009,6 +1023,8 @@ fn render_output_from_callback(
     env: Env,
     callback: &NodeCallback,
     pending_error: &Rc<RefCell<Option<Error>>>,
+    styles: StyleContext<'_>,
+    diagnostics: &quadraui_binding_core::DecodeDiagnostics,
 ) -> Option<RenderOutput> {
     let result = invoke_callback(env, callback, pending_error)?;
     let value = match to_descriptor_value(result) {
@@ -1021,10 +1037,25 @@ fn render_output_from_callback(
             return None;
         }
     };
-    match decode_render_output("render", &value) {
+    // `to_descriptor_value` happily turns a JS array into a `JsonValue::Array`
+    // -- valid JSON, just not a shape `decode_render_output_with_styles` ever
+    // means to accept. That function's own `obj_get`-based field lookups all
+    // return `None` for a non-object `Value` exactly the way they would for an
+    // object missing that key, so an array silently decodes as an empty flat
+    // frame instead of raising -- unlike `quadraui-py`, whose `render_output_from_callback`
+    // rejects a non-`dict` return before ever reaching the shared decoder.
+    // Mirror that rejection here, with the same message, before decoding.
+    if !value.is_object() {
+        record_error(
+            pending_error,
+            invalid_descriptor_error("render callback must return a dict"),
+        );
+        return None;
+    }
+    match decode_render_output_with_styles("render", &value, styles, diagnostics) {
         Ok(output) => Some(output),
         Err(err) => {
-            record_error(pending_error, invalid_descriptor_error(err));
+            record_error(pending_error, decode_error_to_js(err));
             None
         }
     }
@@ -1403,11 +1434,126 @@ fn invalid_descriptor_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("InvalidDescriptorError: {detail}"))
 }
 
+/// [`invalid_descriptor_error`]'s counterpart for an actual
+/// [`DecodeError`] value: tags the thrown `Error`'s message with the
+/// specific subclass name `js/index.ts`'s `ERROR_CLASSES_BY_TAG` maps
+/// back to that variant's own JS class (`MissingFieldError`,
+/// `UnknownVariantError`, `TypeMismatchError`, `UnknownKeyError`,
+/// `VersionMismatchError`, `DecodeFailedError`), chosen by matching the
+/// enum directly rather than parsing [`DecodeError`]'s own rendered
+/// message. Any future core variant this match doesn't name falls back to
+/// the shared `InvalidDescriptorError` tag. The message itself is
+/// `err.to_string()` unchanged (`"<what>: at <path>: <problem>"`), so an
+/// author sees exactly which widget in the tree a nested decode failed on.
+fn decode_error_to_js(err: DecodeError) -> Error {
+    let message = err.to_string();
+    let tag = match err {
+        DecodeError::MissingField { .. } => "MissingFieldError",
+        DecodeError::UnknownVariant { .. } => "UnknownVariantError",
+        DecodeError::TypeMismatch { .. } => "TypeMismatchError",
+        DecodeError::UnknownKey { .. } => "UnknownKeyError",
+        DecodeError::VersionMismatch { .. } => "VersionMismatchError",
+        DecodeError::Borrow { .. } => "DecodeFailedError",
+        // `DecodeError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises the common base tag
+        // rather than failing to compile.
+        _ => "InvalidDescriptorError",
+    };
+    Error::from_reason(format!("{tag}: {message}"))
+}
+
 /// Mirrors [`invalid_descriptor_error`] for an already-occupied fixed slot
 /// or additive-primitive kind -- the napi-rs analog of `quadraui-py`'s
 /// `SlotOccupiedError` exception subclass.
 fn slot_occupied_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("SlotOccupiedError: {detail}"))
+}
+
+/// Reports a deprecated slot/extra-API call to Node via
+/// `process.emitWarning(message, "DeprecationWarning")` -- the host
+/// language's own one-time deprecation channel (`util.deprecate`'s own
+/// convention). Called only when `host.first_deprecation_report(what)` says
+/// this is the first time this app has reported `what` -- see
+/// [`BindingHost::first_deprecation_report`]'s own doc for why the dedup is
+/// per-app rather than process-wide.
+///
+/// A missing or replaced `process.emitWarning` (an embedder, an unusual
+/// host, a test stubbing `process`) is swallowed rather than propagated: a
+/// deprecation notice must never turn a previously-working call into a hard
+/// error just because the notice itself couldn't be delivered.
+fn emit_slot_deprecation_warning(env: Env, message: &str) {
+    let report = || -> Result<()> {
+        let global = env.get_global()?;
+        let process: Object = global.get_named_property_unchecked("process")?;
+        let emit_warning: Function<FnArgs<(String, String)>, Unknown> =
+            process.get_named_property_unchecked("emitWarning")?;
+        emit_warning.call(FnArgs {
+            data: (message.to_string(), "DeprecationWarning".to_string()),
+        })?;
+        Ok(())
+    };
+    let _ = report();
+}
+
+/// The shared slot/extra-API deprecation report every `QuiApp` slot/extra
+/// method calls before doing its own work: -- only on the first call for
+/// `what` this app has made, per [`BindingHost::first_deprecation_report`]
+/// -- reports `message` via [`emit_slot_deprecation_warning`]. `message` is
+/// built by the caller from a `BindingHost::*_deprecation_message` call, so
+/// the wording lives once, shared with `quadraui-py`'s own forward.
+fn warn_slot_deprecated(host: &BindingHost, env: Env, what: &str, message: String) {
+    if !host.first_deprecation_report(what) {
+        return;
+    }
+    emit_slot_deprecation_warning(env, &message)
+}
+
+/// [`warn_slot_deprecated`] for inserting primitive `leaf_kind` via the
+/// deprecated `what` method -- the one call every `insert*`/`insertExtra`
+/// method makes, naming the inline layout leaf of that same kind as the
+/// replacement. Builds the shared message via
+/// [`BindingHost::insert_deprecation_message`].
+///
+/// The dedup key passed to [`BindingHost::first_deprecation_report`] is
+/// `what` alone, so for `insertExtra` specifically -- where `leaf_kind` is
+/// a caller-supplied `kind` string, not fixed by `what` -- only the first
+/// `kind` a given app passes is ever named: `insertExtra("progress", ...)`
+/// followed by `insertExtra("spinner", ...)` warns once, naming only
+/// `progress`.
+fn warn_insert_deprecated(host: &BindingHost, env: Env, what: &str, leaf_kind: &str) {
+    warn_slot_deprecated(
+        host,
+        env,
+        what,
+        BindingHost::insert_deprecation_message(what, leaf_kind),
+    )
+}
+
+/// [`warn_slot_deprecated`] for `clearExtra`, naming omitting `kind`'s
+/// layout leaf from the next `render` callback as the replacement. Builds
+/// the shared message via [`BindingHost::clear_extra_deprecation_message`].
+fn warn_clear_extra_deprecated(host: &BindingHost, env: Env, kind: &str) {
+    warn_slot_deprecated(
+        host,
+        env,
+        "clearExtra",
+        BindingHost::clear_extra_deprecation_message("clearExtra", kind),
+    )
+}
+
+/// [`warn_slot_deprecated`] for `slotClear`, naming omitting `slot`'s
+/// fixed-primitive layout leaf from the next `render` callback as the
+/// replacement. `slot` is assumed already validated by
+/// [`NodeAppLogic::is_known_slot`] -- see [`BindingHost::slot_kind_name`]'s
+/// own doc for why this never actually sees an unrecognized slot. Builds
+/// the shared message via [`BindingHost::slot_clear_deprecation_message`].
+fn warn_slot_clear_deprecated(host: &BindingHost, env: Env, slot: i64) {
+    warn_slot_deprecated(
+        host,
+        env,
+        "slotClear",
+        BindingHost::slot_clear_deprecation_message("slotClear", slot),
+    )
 }
 
 /// Mirrors [`invalid_descriptor_error`] for a failure internal to this
@@ -1654,7 +1800,7 @@ fn decode_via_core<T>(
 ) -> Result<T> {
     let value = to_descriptor_value(descriptor)
         .map_err(|detail| invalid_descriptor_error(format!("{what}: {detail}")))?;
-    core(&value).map_err(invalid_descriptor_error)
+    core(&value).map_err(decode_error_to_js)
 }
 
 /// Decodes `descriptor` by first materializing it into one
@@ -2445,8 +2591,12 @@ impl QuiApp {
 
     /// Advances the runner by one step: dispatches the oldest event queued
     /// by `pushKeyEvent`, or ticks (invoking a registered tick handler) if
-    /// none is queued. Returns `true` if the app is still running
-    /// afterwards, `false` once it has exited.
+    /// none is queued. With nothing queued, this also renders once after
+    /// the tick -- `quadraui_binding_core::step_driver`'s own doc has the
+    /// full rationale and cost tradeoff -- so a registered render
+    /// callback that raises can surface that error from this call too.
+    /// Returns `true` if the app is still running afterwards, `false`
+    /// once it has exited.
     #[napi]
     pub fn step(&mut self, env: Env) -> Result<bool> {
         self.guarded(env, |app| app.step_once())
@@ -2501,6 +2651,10 @@ impl QuiApp {
     /// so `screen()` no longer shows it. Returns whether the slot held
     /// anything. Raises if `slot` doesn't name one of the six, or
     /// `LiveRunnerActiveError` while `startTui` is active.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming
+    /// omitting the relevant fixed-slot layout leaf from the next `render`
+    /// callback as the replacement; removal is a later breaking release.
     #[napi(js_name = "slotClear")]
     pub fn slot_clear(&mut self, env: Env, slot: i64) -> Result<bool> {
         self.check_not_dispatching()?;
@@ -2508,6 +2662,7 @@ impl QuiApp {
         if !NodeAppLogic::is_known_slot(slot) {
             return Err(unknown_slot_error(format!("unknown slot id: {slot}")));
         }
+        warn_slot_clear_deprecated(&self.driver.app().host, env, slot);
         self.guarded(env, |app| {
             let cleared = app.driver.app_mut().clear_slot(slot);
             if cleared {
@@ -2573,6 +2728,72 @@ impl QuiApp {
         Ok(())
     }
 
+    /// Sets this app's unknown-optional-wire-key policy: `true` turns an
+    /// unrecognised *optional* key on a render callback's returned
+    /// descriptor (a misspelt `"cursr"`, `"focussed"`, ...) into an
+    /// `InvalidDescriptorError` raised out of the render that found it, the
+    /// same way a missing required field already does. `false` (the
+    /// default) instead reports it through [`Self::set_on_unknown_key`]'s
+    /// registered callback, if any, and otherwise decodes unaffected.
+    #[napi(js_name = "setStrict")]
+    pub fn set_strict(&mut self, strict: bool) -> Result<()> {
+        self.check_not_dispatching()?;
+        self.check_not_live()?;
+        self.driver
+            .app_mut()
+            .host
+            .wire_diagnostics
+            .set_strict(strict);
+        Ok(())
+    }
+
+    /// Registers `callback` as this app's unknown-optional-wire-key
+    /// reporting hook: called as `callback({key, path})` at most once per
+    /// distinct `key` for this app's whole lifetime, whenever a render
+    /// callback's returned descriptor carries one and [`Self::set_strict`]
+    /// hasn't turned that into a raised error instead. Replaces any
+    /// callback a previous call registered. Raises if called re-entrantly,
+    /// or `LiveRunnerActiveError` once `startTui` is active -- see
+    /// [`Self::set_handler`]'s doc.
+    #[napi(js_name = "setOnUnknownKey")]
+    pub fn set_on_unknown_key(
+        &mut self,
+        callback: Function<'_, Unknown<'static>, Unknown<'static>>,
+    ) -> Result<()> {
+        self.check_not_dispatching()?;
+        self.check_not_live()?;
+        let callback = callback.create_ref()?;
+        let app = self.driver.app_mut();
+        let env = app.env.clone();
+        let pending_error = app.pending_error.clone();
+        app.host
+            .wire_diagnostics
+            .set_hook(move |path: &str, key: &str| {
+                let Some(env) = env.get() else {
+                    return;
+                };
+                let payload: Unknown<'static> =
+                    match env.to_js_value(&serde_json::json!({"key": key, "path": path})) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            record_error(&pending_error, err);
+                            return;
+                        }
+                    };
+                let func = match callback.borrow_back(&env) {
+                    Ok(func) => func,
+                    Err(err) => {
+                        record_error(&pending_error, err);
+                        return;
+                    }
+                };
+                if let Err(err) = func.call(payload) {
+                    record_error(&pending_error, err);
+                }
+            });
+        Ok(())
+    }
+
     /// Returns a [`QuiAppActions`] handle sharing this app's deferred-action
     /// queue -- the sanctioned way for a registered handler/tick callback to
     /// request a dialog/context-menu/toast/notification/file action without
@@ -2635,8 +2856,14 @@ impl QuiApp {
     /// Inserts a `Button` descriptor from a JS object, returning its slot
     /// handle. Raises `SlotOccupiedError` if the button slot is already
     /// occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `button` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertButton")]
     pub fn insert_button(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertButton", "button");
         self.insert_fixed(
             env,
             SLOT_BUTTON,
@@ -2649,8 +2876,19 @@ impl QuiApp {
     /// Inserts a `TextDisplay` descriptor from a JS object, returning its
     /// slot handle. Raises `SlotOccupiedError` if the text-display slot is
     /// already occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `text_display` layout leaf as the replacement; removal is a
+    /// later breaking release.
     #[napi(js_name = "insertTextDisplay")]
     pub fn insert_text_display(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.check_not_live()?;
+        warn_insert_deprecated(
+            &self.driver.app().host,
+            env,
+            "insertTextDisplay",
+            "text_display",
+        );
         self.insert_fixed(
             env,
             SLOT_TEXT_DISPLAY,
@@ -2663,8 +2901,14 @@ impl QuiApp {
     /// Inserts a `ListView` descriptor from a JS object, returning its slot
     /// handle. Raises `SlotOccupiedError` if the list slot is already
     /// occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `list` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertList")]
     pub fn insert_list(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertList", "list");
         self.insert_fixed(
             env,
             SLOT_LIST,
@@ -2677,8 +2921,14 @@ impl QuiApp {
     /// Inserts a `TreeView` descriptor from a JS object, returning its slot
     /// handle. Raises `SlotOccupiedError` if the tree slot is already
     /// occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `tree` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertTree")]
     pub fn insert_tree(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertTree", "tree");
         self.insert_fixed(
             env,
             SLOT_TREE,
@@ -2691,8 +2941,19 @@ impl QuiApp {
     /// Inserts a `DataTable` descriptor from a JS object, returning its
     /// slot handle. Raises `SlotOccupiedError` if the data-table slot is
     /// already occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `data_table` layout leaf as the replacement; removal is a
+    /// later breaking release.
     #[napi(js_name = "insertDataTable")]
     pub fn insert_data_table(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.check_not_live()?;
+        warn_insert_deprecated(
+            &self.driver.app().host,
+            env,
+            "insertDataTable",
+            "data_table",
+        );
         self.insert_fixed(
             env,
             SLOT_DATA_TABLE,
@@ -2705,8 +2966,14 @@ impl QuiApp {
     /// Inserts a `TabBar` descriptor from a JS object, returning its slot
     /// handle. Raises `SlotOccupiedError` if the tab-bar slot is already
     /// occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `tab_bar` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertTabBar")]
     pub fn insert_tab_bar(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertTabBar", "tab_bar");
         self.insert_fixed(
             env,
             SLOT_TAB_BAR,
@@ -2720,8 +2987,14 @@ impl QuiApp {
     /// `"progress"` back. Raises `SlotOccupiedError` if `"progress"` is
     /// already occupied -- call `clearExtra("progress")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `progress` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertProgress")]
     pub fn insert_progress(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertProgress", "progress");
         self.store_extra(env, "progress", "insertProgress", descriptor)
     }
 
@@ -2729,8 +3002,14 @@ impl QuiApp {
     /// `"spinner"` back. Raises `SlotOccupiedError` if `"spinner"` is
     /// already occupied -- call `clearExtra("spinner")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `spinner` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertSpinner")]
     pub fn insert_spinner(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertSpinner", "spinner");
         self.store_extra(env, "spinner", "insertSpinner", descriptor)
     }
 
@@ -2738,8 +3017,14 @@ impl QuiApp {
     /// back. Raises `SlotOccupiedError` if `"image"` is already occupied --
     /// call `clearExtra("image")` first. A thin, typed-descriptor
     /// convenience over [`Self::insert_extra`].
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `image` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertImage")]
     pub fn insert_image(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertImage", "image");
         self.store_extra(env, "image", "insertImage", descriptor)
     }
 
@@ -2750,8 +3035,14 @@ impl QuiApp {
     /// if `kind` is already occupied -- call `clearExtra(kind)` first. Lets
     /// a consumer insert a future additive primitive by name alone, with no
     /// new napi method needed on this class.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `kind` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertExtra")]
     pub fn insert_extra(&mut self, env: Env, kind: String, descriptor: Unknown) -> Result<String> {
+        self.check_not_live()?;
+        warn_insert_deprecated(&self.driver.app().host, env, "insertExtra", &kind);
         self.store_extra(env, &kind, "insertExtra", descriptor)
     }
 
@@ -2761,9 +3052,14 @@ impl QuiApp {
     /// slot held anything; an unrecognized `kind` simply has nothing to
     /// clear (unlike `slotClear`, this never raises for an unknown key).
     /// Raises `LiveRunnerActiveError` once `startTui` is active.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming omitting
+    /// `kind`'s layout leaf from the next `render` callback as the
+    /// replacement; removal is a later breaking release.
     #[napi(js_name = "clearExtra")]
     pub fn clear_extra(&mut self, env: Env, kind: String) -> Result<bool> {
         self.check_not_live()?;
+        warn_clear_extra_deprecated(&self.driver.app().host, env, &kind);
         self.guarded(env, |app| {
             let cleared = app.driver.app_mut().clear_extra_slot(&kind);
             if cleared {
@@ -3760,9 +4056,16 @@ fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> Result<()> {
 /// in this crate uses -- `&serde_json::Value` implements
 /// `serde::Deserializer` directly, so [`decode_shell_config`] is handed the
 /// materialized value with no further wrapper. The napi-rs analog of
-/// `quadraui-py`'s own `shell_config_from_dict`.
-fn shell_config_from_descriptor(descriptor: Unknown) -> Result<ShellConfig> {
-    decode_via_core("runShell", descriptor, |value| decode_shell_config(value))
+/// `quadraui-py`'s own `shell_config_from_dict`. `diagnostics` is
+/// `runShell`'s own `strict`/`onUnknownKey` session -- see
+/// [`QuiApp::run_shell`]'s own doc.
+fn shell_config_from_descriptor(
+    descriptor: Unknown,
+    diagnostics: &quadraui_binding_core::DecodeDiagnostics,
+) -> Result<ShellConfig> {
+    decode_via_core("runShell", descriptor, |value| {
+        decode_shell_config(value, diagnostics)
+    })
 }
 
 /// Headless [`ShellApp`]-backed app: an AppShell (activity bar + sidebar +
@@ -3906,10 +4209,13 @@ impl QuiShellApp {
 
     /// Advances the runner by one step, mirroring [`QuiApp::step`]'s
     /// queued-event / tick order (a `runShell` app has no waker/`User`
-    /// event path, so there is no posted-value step to interleave).
-    /// Returns `true` if still running, `false` once exited. Re-raises
-    /// whatever exception a registered callback raised while handling this
-    /// step.
+    /// event path, so there is no posted-value step to interleave). With
+    /// nothing queued, this also renders once after the tick -- see
+    /// [`QuiApp::step`]'s own doc for why -- so it can re-raise whatever a
+    /// registered `render` callback itself raises, not only an event/tick
+    /// handler's own exception. Returns `true` if still running, `false`
+    /// once exited. Re-raises whatever exception a registered callback
+    /// raised while handling this step.
     #[napi]
     pub fn step(&mut self, env: Env) -> Result<bool> {
         self.guarded(env, |app| app.step_once())
@@ -4039,6 +4345,14 @@ impl QuiApp {
     ///
     /// Raises if `width`/`height` is zero, or `InvalidDescriptorError` if
     /// `config` doesn't decode.
+    ///
+    /// `strict`/`onUnknownKey` apply to that one `config` decode, the same
+    /// policy [`QuiApp::set_strict`]/[`QuiApp::set_on_unknown_key`] apply to
+    /// a render callback's returned descriptor -- see those methods' own
+    /// docs for the full contract. Unlike a plain `QuiApp`, `runShell`
+    /// decodes `config` exactly once, synchronously, during this call, so a
+    /// hook raising is surfaced as this call's own `Result::Err` rather than
+    /// deferred to a later `step`/`run`.
     #[napi(js_name = "runShell")]
     #[allow(clippy::too_many_arguments)]
     pub fn run_shell(
@@ -4051,9 +4365,45 @@ impl QuiApp {
         on_shell_event: Option<Function<'_, Unknown<'static>, Unknown<'static>>>,
         on_bottom_panel_event: Option<Function<'_, Unknown<'static>, Unknown<'static>>>,
         on_tick: Option<Function<'_, Unknown<'static>, Unknown<'static>>>,
+        strict: Option<bool>,
+        on_unknown_key: Option<Function<'_, Unknown<'static>, Unknown<'static>>>,
     ) -> Result<QuiShellApp> {
         let (width, height) = checked_dimensions(width, height)?;
-        let shell_config = shell_config_from_descriptor(config)?;
+        let diagnostics = quadraui_binding_core::DecodeDiagnostics::warn();
+        diagnostics.set_strict(strict.unwrap_or(false));
+        // `config` decodes exactly once, synchronously, right here -- so a
+        // hook error is captured into this plain cell and raised directly
+        // below, rather than queued in a `ShellState::pending_error` no
+        // `QuiShellApp` exists yet to hold.
+        let hook_error: Rc<RefCell<Option<Error>>> = Rc::new(RefCell::new(None));
+        if let Some(callback) = on_unknown_key {
+            let callback = callback.create_ref()?;
+            let hook_error = hook_error.clone();
+            diagnostics.set_hook(move |path: &str, key: &str| {
+                let payload: Unknown<'static> =
+                    match env.to_js_value(&serde_json::json!({"key": key, "path": path})) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            record_error(&hook_error, err);
+                            return;
+                        }
+                    };
+                let func = match callback.borrow_back(&env) {
+                    Ok(func) => func,
+                    Err(err) => {
+                        record_error(&hook_error, err);
+                        return;
+                    }
+                };
+                if let Err(err) = func.call(payload) {
+                    record_error(&hook_error, err);
+                }
+            });
+        }
+        let shell_config = shell_config_from_descriptor(config, &diagnostics)?;
+        if let Some(err) = hook_error.borrow_mut().take() {
+            return Err(err);
+        }
         let state = Rc::new(RefCell::new(ShellState {
             handler: on_event.map(|f| f.create_ref()).transpose()?,
             on_tick: on_tick.map(|f| f.create_ref()).transpose()?,
@@ -4517,6 +4867,41 @@ mod tests {
         assert_eq!(container.spacing.padding.left, 12.0);
         assert_eq!(container.spacing.gap, 8.0);
         assert_eq!(container.spacing.margin, 4.0);
+    }
+
+    /// A row child's own `"size"`/`"min"`/`"max"` keys are siblings of
+    /// whatever key names its node kind, in the same child dict, decoded
+    /// into [`quadraui::SectionSize`] alongside the row's own
+    /// `"justify"`/`"align"` keys -- see
+    /// [`decode_layout_node_round_trips_a_row_of_leaves`]'s doc for why
+    /// this needs no live napi `Env`.
+    #[test]
+    fn decode_layout_node_round_trips_row_child_sizing_and_container_justify_align() {
+        use quadraui_binding_core::layout::{Align, Justify};
+
+        let value = serde_json::json!({
+            "row": [
+                {"id": "left", "text_display": {"id": "text:left", "lines": []}, "size": {"Fixed": 40}, "min": 10, "max": 50},
+                {"id": "right", "text_display": {"id": "text:right", "lines": []}},
+            ],
+            "justify": "center",
+            "align": "end",
+        });
+        let node = decode_layout_node("test", &value).expect("valid layout tree");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row");
+        };
+        assert_eq!(container.children[0].size, quadraui::SectionSize::Fixed(40));
+        assert_eq!(container.children[0].min, Some(10.0));
+        assert_eq!(container.children[0].max, Some(50.0));
+        // A child with no "size" key defaults to `EqualShare`, with no
+        // min/max -- the pre-per-child-sizing shape.
+        assert_eq!(
+            container.children[1].size,
+            quadraui::SectionSize::EqualShare
+        );
+        assert_eq!(container.justify, Justify::Center);
+        assert_eq!(container.align, Align::End);
     }
 
     /// `decode_render_output` round-trips a flat render-callback payload

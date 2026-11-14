@@ -1020,6 +1020,14 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          verifying it against TUI's own tree row pitch is a TUI pixel-smooth-tree-scroll \
          sibling issue's job",
     ),
+    // ── push_clip / pop_clip: the backend-neutral clip-rect seam.
+    // `TuiBackend` overrides both, reusing `tui::canvas`'s own
+    // cell-quantised clip bookkeeping; `GtkBackend`, `WinBackend` and
+    // `MacBackend` override both too, forwarding to their own
+    // `PaintSurface::surface_push_clip`/`surface_pop_clip` (cairo's
+    // save/clip/restore on GTK, Direct2D's clip stack on Win, Core
+    // Graphics' save/clip/restore on macOS) instead of a second clip
+    // stack.
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

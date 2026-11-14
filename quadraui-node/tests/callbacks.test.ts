@@ -3,11 +3,13 @@
 // queue -- ports the shape of `quadraui-py/src/lib.rs`'s
 // `reaction_from_return_treats_only_explicit_false_as_exit`, its
 // `native_app_logic_window_close_handler_*` cases, and
-// `handler_queues_show_message_dialog_via_actions_handle_without_reentrant_borrow`,
-// plus a new case this crate's own `QuiApp::check_not_dispatching` needs
-// that PyO3's runtime borrow guard already covers for `quadraui-py`: a
-// handler calling back into `QuiApp` mid-dispatch must raise, not corrupt
-// state.
+// `handler_queues_show_message_dialog_via_actions_handle_without_reentrant_borrow`:
+// a handler calling back into `QuiApp` mid-dispatch must raise, not corrupt
+// state. `tests/reentrant_call_guard.test.ts` covers the tagged
+// `ReentrantCallError` message `js/index.ts`'s `wrapNativeErrors` raises
+// for each restricted method instead of napi-rs's own generic rejection;
+// `setRender` has no `actions()` counterpart, so the reentrant call below
+// still surfaces that generic rejection unchanged.
 //
 // Run against a built addon, e.g.:
 //
@@ -16,7 +18,12 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("../js/index.ts");
+
+/** A bespoke layout validation failure: `DecodeFailedError`, still an `InvalidDescriptorError`. */
+function isDecodeFailed(err: unknown): boolean {
+  return err instanceof DecodeFailedError && err instanceof InvalidDescriptorError;
+}
 
 test("setHandler is called with the converted event payload", () => {
   const app = new QuiApp(10, 5);
@@ -155,7 +162,7 @@ test("setRender rejects a gap key on a panel node", () => {
     },
     gap: 8,
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), isDecodeFailed);
 });
 
 test("setRender rejects a gap key on a tabs node", () => {
@@ -165,7 +172,7 @@ test("setRender rejects a gap key on a tabs node", () => {
     tabs: { id: "tabbar:1", tabs: [] },
     gap: 8,
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), isDecodeFailed);
 });
 
 test("setRender accepts an optional focused_index on a tabs node", () => {
@@ -238,7 +245,7 @@ test("setRender rejects an out-of-range focused_index on a tabs node", () => {
       ],
     },
   }));
-  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+  assert.throws(() => app.screen(), isDecodeFailed);
 });
 
 test("setRender honours a split's padding/margin/gap spacing keys", () => {
@@ -274,12 +281,90 @@ test("setRender honours a split's padding/margin/gap spacing keys", () => {
   );
 });
 
-test("a handler calling back into QuiApp (e.g. insertButton) mid-dispatch raises instead of corrupting state", () => {
+test("setRender honours first_min as a portable minimum pane size", () => {
+  // `first_min`/`second_min` are in the same portable surface-native-pixel
+  // unit `"padding"`/`"margin"`/`"gap"` use, not a backend-native one.
+  // `80` quantises to `ceil(80 / 8) == 10` TUI columns.
+  const divider = (firstMin: number) => {
+    const app = new QuiApp(40, 10);
+    app.setRender(() => ({
+      split: {
+        id: "split:1",
+        orientation: "horizontal",
+        ratio: 0.02,
+        first_min: firstMin,
+        first: { id: "text:left", text_display: { id: "text:left", lines: [{ spans: [{ text: "L", fg: null, bg: null }] }] } },
+        second: { id: "text:right", text_display: { id: "text:right", lines: [{ spans: [{ text: "R", fg: null, bg: null }] }] } },
+      },
+    }));
+    return app.screen().split("\n")[0].indexOf("│");
+  };
+  assert.ok(divider(0) < 5);
+  assert.ok(divider(80) >= 10);
+});
+
+test("setRender: a row child's size/min/max keys build a sidebar(fixed) + content(weight) + inspector(percent) layout", () => {
+  // The acceptance scenario: a sidebar (`"Fixed"`), a content pane
+  // (`"Weight"`), and an inspector (`"Percent"`) sharing one row. `size`
+  // is a sibling of whatever key names a child's own node kind -- here
+  // that's the leaf dict's own `"id"`/`"text_display"` pair. `Fixed(80)`
+  // quantises to `ceil(80 / 8) == 10` TUI columns; `Percent(0.2)` of the
+  // 40-column screen is 8 columns; the only `Weight` child absorbs the
+  // entire 22-column remainder.
+  const app = new QuiApp(40, 1);
+  const leaf = (id: string, text: string) => ({
+    id,
+    text_display: { id, lines: [{ spans: [{ text, fg: null, bg: null }] }] },
+  });
+  app.setRender(() => ({
+    row: [
+      { ...leaf("text:sidebar", "S"), size: { Fixed: 80 } },
+      { ...leaf("text:content", "C"), size: { Weight: 1.0 } },
+      { ...leaf("text:inspector", "I"), size: { Percent: 0.2 } },
+    ],
+  }));
+  const line = app.screen().split("\n")[0];
+  assert.equal(line.indexOf("S"), 0);
+  assert.equal(line.indexOf("C"), 10);
+  assert.equal(line.indexOf("I"), 32);
+});
+
+test("setRender: a row's justify/align keys are siblings of the row key", () => {
+  // Two 80px (10-column) `Fixed` children in a 40-column row leave 20
+  // columns of leftover; `"justify": "space_between"` puts all of it
+  // between them rather than after the last one (the `"start"` default).
+  const app = new QuiApp(40, 1);
+  const leaf = (id: string, text: string) => ({
+    id,
+    text_display: { id, lines: [{ spans: [{ text, fg: null, bg: null }] }] },
+  });
+  app.setRender(() => ({
+    row: [
+      { ...leaf("text:left", "L"), size: { Fixed: 80 } },
+      { ...leaf("text:right", "R"), size: { Fixed: 80 } },
+    ],
+    justify: "space_between",
+  }));
+  const line = app.screen().split("\n")[0];
+  assert.equal(line.indexOf("L"), 0);
+  assert.equal(line.indexOf("R"), 30);
+});
+
+test("setRender rejects an unknown justify value", () => {
+  const app = new QuiApp(20, 3);
+  app.setRender(() => ({
+    row: [{ id: "a", text_display: { id: "a", lines: [] } }],
+    justify: "spread",
+  }));
+  assert.throws(() => app.screen(), /UnknownVariantError/);
+});
+
+test("a handler calling back into QuiApp (e.g. setRender) mid-dispatch raises instead of corrupting state", () => {
   const app = new QuiApp(20, 5);
   let reentrantCallThrew = false;
   app.setHandler(() => {
     try {
-      app.insertButton({ id: "demo:ok", label: "OK" });
+      app.setRender(() => ({ button: { id: "demo:ok", label: "OK" } }));
     } catch {
       reentrantCallThrew = true;
     }
@@ -287,7 +372,7 @@ test("a handler calling back into QuiApp (e.g. insertButton) mid-dispatch raises
   app.pushKeyEvent("a".codePointAt(0));
   app.step();
   assert.ok(reentrantCallThrew, "a reentrant call into QuiApp must raise, not succeed");
-  assert.ok(!app.screenContains("OK"), "the reentrant insertButton call must not have applied");
+  assert.ok(!app.screenContains("OK"), "the reentrant setRender call must not have applied");
 });
 
 test("actions().showMessageDialog queues a dialog a handler cannot open directly mid-dispatch", () => {

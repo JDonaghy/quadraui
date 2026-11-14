@@ -1,16 +1,22 @@
 """Python bindings over quadraui's TUI driver, headless or real.
 
-``QuiApp`` is a cell-grid app: insert one dict-shaped descriptor per core
-primitive (button, text display, list, tree, data table, tab bar), then
-either read the rendered frame back headlessly with ``screen()`` /
-``screen_contains()``, or call ``run_tui()`` to hand the same descriptors to
-a real terminal -- raw mode, alternate screen, live redraw on real
-keyboard/resize events -- until a registered handler raises to quit.
-Any number of further primitives (``progress``, ``spinner``, ``image``, ...)
-insert additively through ``insert_extra(kind, descriptor)`` /
-``clear_extra(kind)`` alongside the six core ones, with no fixed slot table
-to grow; ``insert_progress``/``insert_spinner``/``insert_image`` are typed
-convenience wrappers over the same mechanism.
+``QuiApp`` is a cell-grid app: register a ``render`` callback with
+``set_render(callback)`` that returns a layout tree of dict-shaped
+descriptors (button, text display, list, tree, data table, tab bar,
+``progress``/``spinner``/``image``/..., or a ``"row"``/``"column"``
+container nesting any number of them), then either read the rendered frame
+back headlessly with ``screen()`` / ``screen_contains()``, or call
+``run_tui()`` to hand the same descriptors to a real terminal -- raw mode,
+alternate screen, live redraw on real keyboard/resize events -- until a
+registered handler raises to quit.
+
+The older fixed-slot ``insert_button``/``insert_text_display``/
+``insert_list``/``insert_tree``/``insert_data_table``/``insert_tab_bar``,
+the additive ``insert_extra(kind, descriptor)``/``clear_extra(kind)`` (and
+its typed ``insert_progress``/``insert_spinner``/``insert_image``
+convenience wrappers), and ``slot_clear`` still work but are **deprecated**:
+each one raises a ``DeprecationWarning`` naming the inline layout leaf that
+replaces it, and is scheduled for removal in a future breaking release.
 
 Every error ``QuiApp`` raises itself (as opposed to one a registered
 Python callback raised, which passes through unchanged) is a
@@ -18,7 +24,17 @@ Python callback raised, which passes through unchanged) is a
 ``UnknownSlotError``, ``InvalidDimensionsError``, ``InvalidCharError``,
 ``PanicError``, ``PoisonedError``, ``InternalError``,
 ``NativeAlreadyRunError``, ``NoDisplayError``, ``NotOnMainThreadError``,
-``InvalidAppIdError``, ``InvalidFontRoleError``, and ``UnsupportedError``.
+``InvalidAppIdError``, ``InvalidFontRoleError``, ``UnsupportedError``, and
+``ReentrantCallError`` (a restricted ``QuiApp`` method -- one with a
+matching ``QuiAppActions`` method, e.g. ``show_message_dialog`` --  called
+from inside that same app's own registered handler/tick/render callback;
+use the ``actions()`` handle passed to the handler instead).
+A descriptor-decode failure (``quadraui_binding_core::DecodeError``) raises
+one of ``InvalidDescriptorError``'s own subclasses -- ``MissingFieldError``,
+``UnknownVariantError``, ``TypeMismatchError``, ``UnknownKeyError``,
+``VersionMismatchError``, or ``DecodeFailedError``, chosen by the decoder's
+own variant, each with a ``code`` class attribute and a message naming the
+full path into the layout tree the problem was found at.
 
 ``QuiApp``'s platform-services methods -- ``check_for_update``/
 ``download_and_stage``/``apply_on_quit`` (auto-update), ``begin_power_save_block``/
@@ -63,6 +79,15 @@ and wake whichever loop currently owns it, without exiting. Its
 delivery after a delay, from any thread, as a lightweight stand-in for a
 timer.
 
+``QuiApp.arm_wake_notify(callback)``/``disarm_wake_notify()`` register (or
+clear) a no-argument callable fired every time any ``QuiAppWaker`` handle
+this app has ever handed out delivers a ``post``/``wake``/``post_after``/
+``wake_after`` -- the low-level hook ``quadraui.asyncio.run(app)`` (an
+alias for the ``quadraui.aio`` module -- see its own module doc) arms to
+step promptly from a running asyncio loop instead of only on a fixed poll
+interval. Most callers reach for ``quadraui.asyncio.run``/
+``await app.run_async()`` directly rather than this pair.
+
 ``run_native()`` dispatches a ``"WindowClose"`` event to a registered
 handler when the window manager's close button (or Alt-F4, or the red
 traffic-light button on macOS) asks to close the window, same as any other
@@ -99,13 +124,29 @@ once ``step``/``run`` returns (not from inside the handler itself -- the
 same restriction as mutating any other ``QuiApp`` state mid-callback).
 """
 
+import sys
+
+from . import aio as asyncio
+
+# `from . import aio as asyncio` above only binds `quadraui.asyncio` as an
+# *attribute* of this package -- `import quadraui; quadraui.asyncio.run(...)`
+# resolves through it, but `import quadraui.asyncio` and
+# `from quadraui.asyncio import run` both go through the import system's own
+# submodule lookup on `__path__` first, which finds no `asyncio.py` there and
+# raises `ModuleNotFoundError` before ever consulting this attribute.
+# Registering the same module object under its dotted name in `sys.modules`
+# makes every import form resolve to the identical `aio` module.
+sys.modules[f"{__name__}.asyncio"] = asyncio
+
 from ._quadraui import (
+    DecodeFailedError,
     InternalError,
     InvalidAppIdError,
     InvalidCharError,
     InvalidDescriptorError,
     InvalidDimensionsError,
     InvalidFontRoleError,
+    MissingFieldError,
     NativeAlreadyRunError,
     NoDisplayError,
     NotOnMainThreadError,
@@ -115,20 +156,32 @@ from ._quadraui import (
     QuiApp,
     QuiAppWaker,
     QuiShellApp,
+    ReentrantCallError,
     SlotOccupiedError,
+    TypeMismatchError,
+    UnknownKeyError,
     UnknownSlotError,
+    UnknownVariantError,
     UnsupportedError,
+    VersionMismatchError,
     app_path,
     install_crash_handler,
     set_app_identifier,
 )
 
 __all__ = [
+    "asyncio",
     "QuiApp",
     "QuiAppWaker",
     "QuiShellApp",
     "QuadrauiError",
     "InvalidDescriptorError",
+    "MissingFieldError",
+    "UnknownVariantError",
+    "TypeMismatchError",
+    "UnknownKeyError",
+    "VersionMismatchError",
+    "DecodeFailedError",
     "SlotOccupiedError",
     "UnknownSlotError",
     "InvalidDimensionsError",
@@ -142,6 +195,7 @@ __all__ = [
     "InvalidAppIdError",
     "InvalidFontRoleError",
     "UnsupportedError",
+    "ReentrantCallError",
     "app_path",
     "set_app_identifier",
     "install_crash_handler",

@@ -114,8 +114,8 @@ three load-bearing properties** (`working-directory:` not `--manifest-path`,
 4. **One breaking change per PR.** Don't batch unrelated removals.
 5. **Declare it.** A PR touching a `pub` item has a `## Downstream impact` section
    naming each consumer file that must move (or "no consumer hits" + the grep), and
-   a `CHANGELOG.md` `[Unreleased]` entry (`Added` / `Deprecated` / `Removed` /
-   `Fixed`). Review sends back a public-API PR missing either.
+   a `changelog.d/<issue>.<kind>.md` fragment (`added` / `deprecated` / `removed` /
+   `fixed`). Review sends back a public-API PR missing either.
 
 Mechanics and shim patterns: `quadraui/docs/PRIMITIVE_RULES.md` rule 8.
 
@@ -152,12 +152,15 @@ cargo test  -p quadraui --features win
 cargo fmt --all --check
 ```
 
-**CHANGELOG enforcement (#1500).** CI rejects PRs that change non-test
-`quadraui/src/**` Rust files without adding a line inside `CHANGELOG.md`'s
-`## [Unreleased]` section. Add an entry under the appropriate `### Added` /
-`### Fixed` / `### Changed` / `### Deprecated` / `### Removed` heading.
-Comment-only and test-only (`#[cfg(test)]` block) diffs are exempt
-automatically; the `no-changelog` label skips the check entirely.
+**CHANGELOG enforcement (#1500, #2419).** CI rejects PRs that change non-test
+`quadraui/src/**` Rust files without adding a new changelog fragment:
+`changelog.d/<issue>.<kind>.md`, `<kind>` one of `added` / `changed` /
+`deprecated` / `removed` / `fixed`, holding the bullet exactly as it would read
+under `[Unreleased]` (see `changelog.d/README.md`). **Never edit `CHANGELOG.md`'s
+`[Unreleased]` section directly** — CI rejects that too; `scripts/release.py
+prepare` assembles the fragments at release time. Comment-only and test-only
+(`#[cfg(test)]` block) diffs are exempt automatically; the `no-changelog` label
+skips the check entirely.
 
 ## Win-GUI: building and testing for real
 

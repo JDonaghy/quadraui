@@ -123,7 +123,7 @@ def test_run_tui_does_not_consume_the_headless_app_on_failure(tmp_path):
     body = (
         "from quadraui import QuiApp, InternalError\n"
         "app = QuiApp(40, 20)\n"
-        'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
+        'app.set_render(lambda: {"button": {"id": "demo:ok", "label": "OK", "focused": True}})\n'
         "try:\n"
         "    app.run_tui()\n"
         "except InternalError:\n"

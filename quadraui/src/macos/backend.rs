@@ -5021,6 +5021,24 @@ impl Backend for MacBackend {
         // `ctx` after confirming it's non-null.
         unsafe { super::image::draw_image_cached(ctx, rect, image, &mut self.image_cache, scale) }
     }
+
+    // ─── Clipping ────────────────────────────────────────────────────────
+    //
+    // Core Graphics already owns a push/pop clip stack reached through
+    // `surface_push_clip`/`surface_pop_clip` (this module's own `impl
+    // PaintSurface for MacBackend` block, below), itself a
+    // `CGContextSaveGState`/clip/`CGContextRestoreGState` pair. These two
+    // forward straight to that same stack instead of layering a second one
+    // on top, so a caller that mixes `Backend::push_clip` (binding-core's
+    // layout painter) and `PaintSurface::surface_push_clip` (in-tree
+    // primitive paint code) on the same frame nests correctly either way.
+    fn push_clip(&mut self, rect: Rect) {
+        self.surface_push_clip(rect);
+    }
+
+    fn pop_clip(&mut self) {
+        self.surface_pop_clip();
+    }
 }
 
 /// macOS's `WindowControl` surface, backed by exactly the
@@ -8089,6 +8107,115 @@ mod tests {
         });
 
         backend.surface_end_frame();
+    }
+
+    // ── Backend::push_clip/pop_clip ─────────────────────────────────────
+    //
+    // `MacBackend::push_clip`/`pop_clip` forward straight to this same
+    // module's `surface_push_clip`/`surface_pop_clip` (Core Graphics'
+    // `CGContextSaveGState`/clip/`CGContextRestoreGState` stack). These
+    // two exercise the `Backend` trait entry point itself — the seam a
+    // backend-generic caller (binding-core's layout painter, a future
+    // `ScrollContainer`) reaches for — rather than the `PaintSurface` one
+    // in-tree primitives call directly, and pin both that an overflowing
+    // fill is confined to the clip's exact pixel edge and that a nested
+    // pop restores the outer clip rather than dropping it. Mirrors
+    // `win::backend::tests::win_backend_push_clip_confines_an_overflowing_fill_to_the_clipped_pixels`
+    // / `win_backend_nested_pop_clip_restores_the_outer_clip`.
+
+    #[test]
+    fn mac_backend_push_clip_confines_an_overflowing_fill_to_the_clipped_pixels() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::Color;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+
+        let red = Color::rgb(200, 20, 20);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            Backend::push_clip(b, Rect::new(0.0, 0.0, 10.0, 10.0));
+            b.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), red);
+            Backend::pop_clip(b);
+        });
+        backend.end_frame();
+
+        let (r, g, b, _a) = surface.pixel(9, 9);
+        assert_eq!(
+            (r, g, b),
+            (red.r, red.g, red.b),
+            "the last pixel inside the pushed clip must keep the overflowing fill"
+        );
+        let (r, g, b, _a) = surface.pixel(10, 10);
+        assert_eq!(
+            (r, g, b),
+            (0, 0, 0),
+            "the first pixel outside the pushed clip must stay untouched by the \
+             fill, which reaches well past it"
+        );
+    }
+
+    #[test]
+    fn mac_backend_nested_pop_clip_restores_the_outer_clip() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::Color;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+
+        let green = Color::rgb(0, 200, 0);
+        let white = Color::rgb(255, 255, 255);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            // Outer clip: pixels (0,0)..(20,20).
+            Backend::push_clip(b, Rect::new(0.0, 0.0, 20.0, 20.0));
+            // Inner clip, nested inside the outer one: pixels (5,5)..(15,15).
+            Backend::push_clip(b, Rect::new(5.0, 5.0, 10.0, 10.0));
+            Backend::pop_clip(b);
+            // Paint only after the inner pop: if it restored the outer clip,
+            // this reaches (0,0)..(20,20) but not past it; if it dropped
+            // clipping entirely, it would reach the whole 40x40 surface,
+            // including (30,30) checked below.
+            b.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), green);
+            Backend::pop_clip(b);
+            // Paint only after the outer pop, confined to pixels
+            // (20,20)..(40,40) — entirely outside the now-popped outer clip,
+            // so this fill can only land there if the outer pop actually
+            // cleared clipping rather than leaving the outer rect active.
+            b.draw_solid_fill(Rect::new(20.0, 20.0, 20.0, 20.0), white);
+        });
+        backend.end_frame();
+
+        let (r, g, b, _a) = surface.pixel(17, 17);
+        assert_eq!(
+            (r, g, b),
+            (green.r, green.g, green.b),
+            "inside the outer clip but outside the inner one, the inner pop must have \
+             restored the outer clip rather than leaving it narrowed to the inner rect, \
+             letting the post-pop fill land here"
+        );
+        let (r, g, b, _a) = surface.pixel(35, 5);
+        assert_eq!(
+            (r, g, b),
+            (0, 0, 0),
+            "outside the outer clip entirely, the fill painted after the inner pop \
+             must not have reached here — proving that pop restored the outer clip \
+             rather than dropping clipping entirely"
+        );
+        let (r, g, b, _a) = surface.pixel(30, 30);
+        assert_eq!(
+            (r, g, b),
+            (white.r, white.g, white.b),
+            "the fill painted after the outer pop must reach here, proving that pop \
+             cleared the clip rather than leaving the outer rect active"
+        );
     }
 
     // ── #1073: surface_fill_rounded_rect / surface_fill_rect_alpha /

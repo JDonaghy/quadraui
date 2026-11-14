@@ -765,6 +765,7 @@ pub const CASES: &[Case] = &[
                 h_scroll: 0.0,
                 column_overrides: vec![],
                 footer: None,
+                bordered: false,
             };
             let _ = b.draw_data_table(area, &table, None);
         },
@@ -799,6 +800,7 @@ pub const CASES: &[Case] = &[
                 h_scroll: 0.0,
                 column_overrides: vec![],
                 footer: None,
+                bordered: false,
             };
             let _ = b.draw_data_table_with_state(
                 area,
@@ -1846,6 +1848,7 @@ pub const CASES: &[Case] = &[
                 h_scroll: 0.0,
                 column_overrides: vec![],
                 footer: None,
+                bordered: false,
             };
             let _ = b.draw_data_table_with_glyphs(area, &table, None, None);
         },

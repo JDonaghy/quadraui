@@ -1,8 +1,18 @@
 """Black-box coverage for the container/layout primitives bound to Python:
-`Panel`, `SidebarPanel` and `SplitTree`, each a `LayoutNode` variant exactly
-like the pre-existing `row`/`column`/`split`/`tabs` -- constructed from a
-plain Python dict behind a `set_render` callback and recursively holding
-any other `LayoutNode` as content/children.
+`Panel`, `SidebarPanel`, `SplitTree` and `Scroll`, each a `LayoutNode`
+variant exactly like the pre-existing `row`/`column`/`split`/`tabs` --
+constructed from a plain Python dict behind a `set_render` callback and
+recursively holding any other `LayoutNode` as content/children.
+
+`Scroll` additionally covers an uncontrolled scroll position actually
+moving: a wheel notch over its own body/scrollbar (or a page key on a
+focused child) must both dispatch `ScrollOffsetChanged` through the
+handler *and* show up in the next render -- the two are driven by separate
+code paths (`InteractionEngine::handle`'s own wheel/key translation writes
+the new offset into `WidgetState`; `resolve_layout_node_state`'s own
+`LayoutNode::Scroll` arm has to read it back before the next
+`paint_layout`), so a test asserting only the dispatched event, or only
+the resulting screen, would each miss half of the round trip.
 
 Also covers the two render-callback layout-node gaps closed alongside this
 binding work:
@@ -12,8 +22,10 @@ binding work:
   before any file is open) doesn't need to special-case the empty case
   itself.
 - a `"split"` node's `"first_min"`/`"second_min"` are honoured as a minimum
-  pane size, specified in portable line-count units rather than a
-  backend-native one.
+  pane size, specified in the same portable surface-native-pixel unit
+  `"padding"`/`"margin"`/`"gap"` use (quantised against whichever axis the
+  split's own `"orientation"` actually bounds -- width for `"horizontal"`,
+  height for `"vertical"`), rather than a backend-native one.
 - a `"row"`/`"column"` node's optional `"padding"`/`"gap"`/`"margin"`
   spacing keys, siblings of the `"row"`/`"column"` key in the same node
   dict, are honoured by the shared layout pass.
@@ -284,12 +296,14 @@ def test_tabs_with_empty_list_renders_without_error():
 
 
 def test_split_honors_first_min_as_a_portable_minimum_pane_size():
-    # #1745: `first_min`/`second_min` are portable line-count units, not a
-    # backend-native one -- at an extreme ratio that would otherwise
-    # collapse the first pane to ~0, a non-zero `first_min` still reserves
-    # it a minimum width. The divider's `'|'` column is found by scanning
-    # the plain-text `screen()` dump (no bounds/position pymethod is
-    # exposed to Python), and compared with vs. without a minimum.
+    # `first_min`/`second_min` are in the same portable surface-native-pixel
+    # unit `"padding"`/`"margin"`/`"gap"` use, not a backend-native one -- at
+    # an extreme ratio that would otherwise collapse the first pane to ~0, a
+    # non-zero `first_min` still reserves it a minimum width. `80` quantises
+    # to `ceil(80 / 8) == 10` TUI columns, the same 8px-wide nominal cell
+    # `"padding"` converts against. The divider's `'|'` column is found by
+    # scanning the plain-text `screen()` dump (no bounds/position pymethod
+    # is exposed to Python), and compared with vs. without a minimum.
     def divider_column(app):
         screen = app.screen()
         line = screen.splitlines()[0]
@@ -315,11 +329,12 @@ def test_split_honors_first_min_as_a_portable_minimum_pane_size():
     col_no_min = divider_column(app_no_min)
 
     app_with_min = QuiApp(40, 10)
-    app_with_min.set_render(render_with_min(10))
+    app_with_min.set_render(render_with_min(80))
     col_with_min = divider_column(app_with_min)
 
-    # Without a minimum the divider sits near ratio*width (~1); with a
-    # 10-line minimum it's pushed out to at least that many columns.
+    # Without a minimum the divider sits near ratio*width (~1); with an
+    # 80px (10-column) minimum it's pushed out to at least that many
+    # columns.
     assert col_no_min < 5
     assert col_with_min >= 10
 
@@ -571,3 +586,294 @@ def test_duplicate_leaf_id_inside_panel_content_is_rejected():
     app.set_render(render)
     with pytest.raises(InvalidDescriptorError):
         app.screen()
+
+
+def test_row_sidebar_fixed_content_weight_inspector_percent_layout():
+    # The acceptance scenario: a sidebar (`"Fixed"`), a content pane
+    # (`"Weight"`), and an inspector (`"Percent"`) sharing one row. `size`
+    # is a sibling of whatever key names a child's own node kind, same as
+    # `"padding"` is a sibling of `"row"` -- here that's the leaf dict's
+    # own `"id"`/`"text_display"` pair. `Fixed(80)` quantises to `ceil(80
+    # / 8) == 10` TUI columns; `Percent(0.2)` of the 40-column screen is
+    # 8 columns; the only `Weight` child (there's no `EqualShare` sibling
+    # here) absorbs the entire 22-column remainder.
+    app = QuiApp(40, 1)
+
+    def render():
+        return {
+            "row": [
+                {**_text("text:sidebar", "S"), "size": {"Fixed": 80}},
+                {**_text("text:content", "C"), "size": {"Weight": 1.0}},
+                {**_text("text:inspector", "I"), "size": {"Percent": 0.2}},
+            ],
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("S") == 0
+    assert line.index("C") == 10
+    assert line.index("I") == 32
+
+
+def test_row_child_min_floors_a_fixed_size_below_its_natural_width():
+    # A child's `"min"` key is in the same portable pixel unit as `"size"`
+    # `Fixed`/`padding`/`margin`/`gap` -- `"size": {"Fixed": 8}` alone
+    # would quantise to 1 column, but `"min": 80` floors it to 10.
+    app = QuiApp(40, 1)
+
+    def render():
+        return {
+            "row": [
+                {**_text("text:left", "L"), "size": {"Fixed": 8}, "min": 80},
+                _text("text:right", "R"),
+            ],
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("L") == 0
+    assert line.index("R") == 10
+
+
+def test_row_justify_space_between_spreads_leftover_between_fixed_children():
+    # Two 80px (10-column) `Fixed` children in a 40-column row leave 20
+    # columns of leftover; `"justify": "space_between"` puts all of it
+    # between them rather than after the last one (the `"start"` default).
+    app = QuiApp(40, 1)
+
+    def render():
+        return {
+            "row": [
+                {**_text("text:left", "L"), "size": {"Fixed": 80}},
+                {**_text("text:right", "R"), "size": {"Fixed": 80}},
+            ],
+            "justify": "space_between",
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("L") == 0
+    assert line.index("R") == 30
+
+
+def test_row_justify_end_with_a_nonzero_gap_still_reaches_the_far_edge():
+    # Two 80px (10-column-wide) `Fixed` children plus an 8px (1-column)
+    # `"gap"` in a 40-column row: `"justify": "end"` must push the second
+    # child's 10-column-wide rect flush with the row's right edge (so it
+    # starts at column 30, filling 30..40), not one column short of it --
+    # the gap between children is reserved once, not twice.
+    app = QuiApp(40, 1)
+
+    def render():
+        return {
+            "row": [
+                {**_text("text:left", "L"), "size": {"Fixed": 80}},
+                {**_text("text:right", "R"), "size": {"Fixed": 80}},
+            ],
+            "gap": 8,
+            "justify": "end",
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("R") == 30
+
+
+def test_column_align_center_centers_a_narrower_than_stretch_child():
+    # `"align": "center"` sizes a child to its own natural cross-axis
+    # extent (here, a one-character button's measured width) and centers
+    # it, instead of stretching it across the full row width -- the
+    # `"stretch"` default every pre-`align` column used.
+    app = QuiApp(10, 1)
+
+    def render():
+        return {
+            "column": [
+                {"id": "btn", "button": {"id": "btn", "label": "X"}},
+            ],
+            "align": "center",
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("X") > 0, "a centered 1-column-wide button is not flush with the left edge"
+
+
+def test_row_with_no_size_key_still_decodes_the_legacy_leaf_shape():
+    # A bare leaf dict with no `"size"`/`"min"`/`"max"` keys -- the shape
+    # every pre-existing render callback uses -- still decodes to
+    # `EqualShare`, unchanged from before per-child sizing existed.
+    app = QuiApp(10, 1)
+
+    def render():
+        return {"row": [_text("text:left", "L"), _text("text:right", "R")]}
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("L") == 0
+    assert line.index("R") == 5
+
+
+def _buttons(count):
+    return [
+        {"id": f"btn:{i}", "button": {"id": f"btn:{i}", "label": f"Item{i:02d}"}}
+        for i in range(count)
+    ]
+
+
+def test_scroll_renders_its_content_subtree_and_clips_whatever_overflows_it():
+    app = QuiApp(40, 10)
+
+    def render():
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(40)}}}
+
+    app.set_render(render)
+    assert app.screen_contains("Item00")
+    assert app.screen_contains("Item09")
+    assert not app.screen_contains(
+        "Item10"
+    ), "content past the viewport must not paint until the scroll actually moves"
+
+
+def test_scroll_wheel_notch_on_the_scrollbar_dispatches_and_persists_the_new_offset():
+    app = QuiApp(40, 10)
+
+    def render():
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(40)}}}
+
+    app.set_render(render)
+    # Force the first paint so the scrollbar's own track is on the hit map
+    # before the wheel notch below -- see the `panel` click test's own
+    # comment above for why `push_event`/`run` alone would miss it.
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    # x=39 lands on the vertical scrollbar's own track/thumb (the
+    # rightmost column the viewport reserves once content overflows it),
+    # so the wheel resolves through `HitDetail::ScrollScrollbarThumb`
+    # directly rather than needing a child leaf's own id to look up its
+    # enclosing scroll. `ScrollView::handle_wheel`'s own convention: a
+    # positive `delta.y` is forward/down.
+    app.push_event(
+        {"Scroll": {"delta": {"x": 0.0, "y": 3.0}, "position": {"x": 39.0, "y": 1.0}}}
+    )
+    app.run(1)
+
+    assert received == [{"ScrollOffsetChanged": {"widget": "scroll:main", "new_offset": 3}}]
+    assert not app.screen_contains(
+        "Item00"
+    ), "the resolved offset must reach the next paint, not stay pinned at 0"
+    assert app.screen_contains("Item04")
+
+    # The hit map itself must have moved with the paint, not just the
+    # pixels: clicking row 0 -- Item00's old screen position -- now hits
+    # "btn:3", the child the scroll brought to the top, proving the click
+    # router (not only the repainted text) is offset-aware end to end.
+    received.clear()
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
+    assert mouse_downs, received
+    assert mouse_downs[0]["widget"] == "btn:3", received
+
+
+def test_scroll_page_down_on_a_focused_child_scrolls_the_whole_container():
+    app = QuiApp(40, 10)
+
+    def render():
+        return {"scroll": {"id": "scroll:main", "axis": "vertical", "content": {"column": _buttons(40)}}}
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    # Row 5, not row 1 -- far enough from the row-0 click below (more than
+    # `DoubleClickDetector`'s 1.5-cell radius) that the two don't fold
+    # into a single `DoubleClick`, which would make that second click's
+    # own `MouseDown` assertion vacuous.
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 5.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "PageDown"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert received == [{"ScrollOffsetChanged": {"widget": "scroll:main", "new_offset": 10}}]
+    assert app.screen_contains("Item10")
+    assert not app.screen_contains("Item00")
+
+    # Clicking the viewport's top row now resolves to "btn:10" -- the
+    # button PageDown brought there -- not "btn:0", proving the hit map
+    # scrolled along with the paint.
+    received.clear()
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
+    assert mouse_downs, received
+    assert mouse_downs[0]["widget"] == "btn:10", received
+
+
+def test_scroll_with_a_controlled_offset_pins_it_from_the_very_first_paint():
+    # A controlled `Scroll` (`offset` set on every render) must paint
+    # pinned on the FIRST frame, before this id has ever appeared in the
+    # hit map -- `resolve_layout_node_state`'s `Scroll` arm has no prior
+    # frame's `ScrollView` to measure a real `max_offset` from yet, and a
+    # `0.0` fallback there would clamp the controlled 15.0 straight back
+    # down to the top, exactly the frame this mode exists to pin.
+    app = QuiApp(40, 10)
+
+    def render():
+        return {
+            "scroll": {
+                "id": "scroll:main",
+                "axis": "vertical",
+                "offset": 15.0,
+                "content": {"column": _buttons(40)},
+            }
+        }
+
+    app.set_render(render)
+    assert not app.screen_contains(
+        "Item00"
+    ), "a controlled offset must pin the very first paint, not clamp to 0 for lack of a prior hit"
+    assert app.screen_contains("Item15")
+
+
+def test_scroll_node_helper_builds_the_expected_wire_shape_and_omits_defaults():
+    from quadraui.app import Scroll, TextDisplay
+
+    node = Scroll(TextDisplay([]))
+    assert node.kind == "scroll"
+    assert node.id is None
+    built = node.build("scroll:1", {"content": {"text_display": {"id": "x", "lines": []}}})
+    assert built == {"scroll": {"id": "scroll:1", "content": {"text_display": {"id": "x", "lines": []}}}}
+
+    pinned = Scroll(
+        TextDisplay([]),
+        id="scroll:pinned",
+        axis="horizontal",
+        offset=4.0,
+        padding=2,
+        margin=1.0,
+    )
+    assert pinned.id == "scroll:pinned"
+    built_pinned = pinned.build("scroll:pinned", {"content": {"ignored": True}})
+    assert built_pinned == {
+        "scroll": {
+            "id": "scroll:pinned",
+            "axis": "horizontal",
+            "offset": 4.0,
+            "content": {"ignored": True},
+        },
+        "padding": 2,
+        "margin": 1.0,
+    }

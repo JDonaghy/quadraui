@@ -279,7 +279,8 @@ pub(crate) trait PreprocessBackend {
 ///    normal `handle` — `ShellAdapter`'s built-in activity-bar keyboard
 ///    cursor depends on this.
 /// 3. Tab / Shift+Tab focus cycling, only when
-///    [`AppLogic::tab_stops`] returns non-empty for the current frame:
+///    [`AppLogic::tab_stops`] returns non-empty for the current frame
+///    *and* the currently-focused id (if any) is actually named by it:
 ///    sync [`FocusManager`]'s tab order, cycle it
 ///    ([`FocusManager::focus_next`]/[`FocusManager::focus_prev`] —
 ///    `NamedKey::BackTab`, or `NamedKey::Tab` with Shift held, retreats;
@@ -288,7 +289,14 @@ pub(crate) trait PreprocessBackend {
 ///    held is left alone (reserved for app-level chords like
 ///    `TabGroupController`'s Ctrl-Tab pane switching). While an app's
 ///    `tab_stops` stays empty — the default — this step never fires and
-///    Tab/Shift+Tab pass through unchanged, exactly as before.
+///    Tab/Shift+Tab pass through unchanged, exactly as before. When the
+///    currently-focused id is focused but deliberately absent from
+///    `tab_stops` (e.g. a main-tree `"form"` extra holding engine focus —
+///    see `InteractionEngine::tab_stops`'s own doc), this step also stays
+///    out of the way instead of reading the omission as "this id went
+///    away" and clearing focus: the raw key press falls through to
+///    `app.handle` unchanged, so whatever excluded it can claim it with
+///    its own more specific handling.
 /// 4. `KeyPressed` matching a registered `Global`-scope accelerator:
 ///    rewrite to `UiEvent::Accelerator`.
 /// 5. Ctrl-C ([`PreprocessBackend::is_copy_keypress`]) with an active
@@ -367,7 +375,23 @@ where
     {
         if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd {
             let stops = app.tab_stops(A::AreaId::default());
-            if !stops.is_empty() {
+            let currently_focused = backend.focus_manager().focused().cloned();
+            // A focused id this frame's `stops` doesn't name is never "an
+            // id this cycle lost track of" — `AppLogic::tab_stops` only
+            // ever omits one deliberately, to hand the key to its own
+            // more specific handling instead (the main-tree `"form"`
+            // extra case: `InteractionEngine::tab_stops` excludes its own
+            // stop for as long as it holds engine focus, so the raw key
+            // below reaches `InteractionEngine::handle_form_tab`). Running
+            // `sync_tab_order` anyway would read that omission as "this id
+            // went away" and clear focus (`FocusManager::sync_tab_order`'s
+            // own doc), landing the next `focus_next()`/`focus_prev()` on
+            // the first/last stop instead of leaving the key alone for
+            // whoever excluded it on purpose.
+            let focus_excluded_from_stops = currently_focused
+                .as_ref()
+                .is_some_and(|id| !stops.iter().any(|(stop_id, _)| stop_id == id));
+            if !stops.is_empty() && !focus_excluded_from_stops {
                 backend.focus_manager_mut().sync_tab_order(&stops);
                 let retreat = matches!(named, NamedKey::BackTab) || modifiers.shift;
                 let fm = backend.focus_manager_mut();

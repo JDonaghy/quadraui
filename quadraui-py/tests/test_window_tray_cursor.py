@@ -152,9 +152,9 @@ def test_set_title_queued_from_a_handler_does_not_raise_already_borrowed():
 
     app.set_handler(on_event)
 
-    # A direct `app.set_title(...)` call from inside `on_event` would hit
-    # the PyO3 "already borrowed" wall instead -- this only proves the
-    # deferred path doesn't.
+    # A direct `app.set_title(...)` call from inside `on_event` would raise
+    # `ReentrantCallError` instead -- this only proves the deferred path
+    # doesn't.
     app.push_key_event(ord("a"))
     app.run(1)
 

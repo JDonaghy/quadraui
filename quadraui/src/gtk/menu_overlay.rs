@@ -17,7 +17,7 @@
 //!
 //! ```ignore
 //! let overlay = MenuOverlay::new();
-//! overlay.connect(menu_system, backend, bar_rect_cell, "Sans 11", |ev| {
+//! overlay.connect(menu_system, backend, bar_rect_cell, "Sans 9.75", |ev| {
 //!     match ev {
 //!         MenuEvent::Activated(id) => { /* dispatch action */ }
 //!         MenuEvent::Ignored => {}
@@ -125,7 +125,7 @@ impl MenuOverlay {
     /// - `bar_rect` — the menu bar's rect in its own local coordinates,
     ///   updated each frame by the menu bar DA's draw function. The
     ///   helper applies the negative-y transform internally.
-    /// - `font` — Pango font description string (e.g. `"Sans 11"`).
+    /// - `font` — Pango font description string (e.g. `"Sans 9.75"`).
     ///   Used to measure line_height and char_width for the overlay's
     ///   independent draw callback.
     /// - `on_event` — callback invoked with every `MenuEvent` returned

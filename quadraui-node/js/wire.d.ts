@@ -287,6 +287,7 @@ export interface DataTableDescriptor {
   h_scroll?: number;
   column_overrides?: (number | null)[];
   footer?: DataRowDescriptor | null;
+  bordered?: boolean;
   scroll_px?: number;
 }
 
@@ -372,11 +373,38 @@ export interface PaddingSides {
 /** A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", "right", "bottom", "left"}` -- never both shapes at once. */
 export type PaddingValue = number | PaddingAxis | PaddingSides;
 
+/** A `"style"` colour token: a `Color` object, or a "#rrggbb"/"#rrggbbaa" hex string. */
+export type StyleColorValue = Color | string;
+
+/** A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent"/"surface_bg"/"accent_bg" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping. */
+export interface StyleValue {
+  bg?: StyleColorValue;
+  fg?: StyleColorValue;
+  border?: StyleColorValue;
+  accent?: StyleColorValue;
+  surface_bg?: StyleColorValue;
+  accent_bg?: StyleColorValue;
+  padding?: number;
+  corner_radius?: number;
+  border_width?: number;
+}
+
+/** One or more named style sets (see define_style) applied to this node's own subtree: a single name, a whitespace-separated list of names in one string, or an array of names. Merged left to right, then overridden by this node's own "style" key. A name no set was ever defined under is ignored. */
+export type ClassValue = string | string[];
+
 export interface LayoutRowNode {
   row: LayoutNode[];
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
+  justify?: "start" | "center" | "end" | "space_between";
+  align?: "start" | "center" | "end" | "stretch";
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface LayoutColumnNode {
@@ -384,6 +412,14 @@ export interface LayoutColumnNode {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
+  justify?: "start" | "center" | "end" | "space_between";
+  align?: "start" | "center" | "end" | "stretch";
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface LayoutSplitPayload {
@@ -401,6 +437,12 @@ export interface LayoutSplitNode {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface LayoutTabEntryNode {
@@ -428,6 +470,12 @@ export interface LayoutTabsNode {
   tabs: LayoutTabsPayload;
   padding?: PaddingValue;
   margin?: number;
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 /** The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`. */
@@ -444,6 +492,12 @@ export interface LayoutPanelNode {
   panel: LayoutPanelPayload;
   padding?: PaddingValue;
   margin?: number;
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface LayoutSidebarPanelPayload {
@@ -455,6 +509,31 @@ export interface LayoutSidebarPanelPayload {
 
 export interface LayoutSidebarPanelNode {
   sidebar_panel: LayoutSidebarPanelPayload;
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
+}
+
+export interface LayoutScrollPayload {
+  id: string;
+  axis?: "vertical" | "horizontal";
+  offset?: number;
+  content: LayoutNode;
+}
+
+export interface LayoutScrollNode {
+  scroll: LayoutScrollPayload;
+  padding?: PaddingValue;
+  margin?: number;
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface _SplitTreeLeaf {
@@ -481,6 +560,12 @@ export interface LayoutSplitTreePayload {
 
 export interface LayoutSplitTreeNode {
   split_tree: LayoutSplitTreePayload;
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface ProgressBarDescriptor {
@@ -559,6 +644,55 @@ export interface SwitchDescriptor {
   value?: boolean;
   disabled?: boolean;
   focused?: boolean;
+}
+
+export interface CheckboxDescriptor {
+  id: WidgetId;
+  value?: boolean;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+export interface SliderDescriptor {
+  id: WidgetId;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+export interface SelectDescriptor {
+  id: WidgetId;
+  options: string[];
+  selected_idx?: number;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+/** `mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode. */
+export interface PasswordDescriptor {
+  id: WidgetId;
+  value?: string;
+  cursor?: number | null;
+  has_focus?: boolean;
+  mask_char?: string;
+}
+
+export interface TextAreaDescriptor {
+  id: WidgetId;
+  value?: string;
+  placeholder?: string | null;
+  cursor?: number | null;
+  has_focus?: boolean;
+  visible_rows?: number;
+}
+
+export interface MarkdownDescriptor {
+  id: WidgetId;
+  source: string;
+  scroll_offset?: number;
 }
 
 export type ScrollAxis = "Vertical" | "Horizontal";
@@ -1210,7 +1344,7 @@ export interface FormFieldDescriptor {
 export interface FormDescriptor {
   id: WidgetId;
   fields: FormFieldDescriptor[];
-  focused_field: WidgetId | null;
+  focused_field?: WidgetId | null;
   scroll_offset?: number;
   has_focus?: boolean;
   label_position?: LabelPosition;
@@ -1434,6 +1568,7 @@ export interface DiffViewDescriptor {
 /** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed. */
 export interface LayoutLeafNode {
   id: string;
+  wire_version?: number;
   button?: ButtonDescriptor;
   text_display?: TextDisplayDescriptor;
   list?: ListViewDescriptor;
@@ -1470,13 +1605,25 @@ export interface LayoutLeafNode {
   canvas?: CanvasDescriptor;
   scroll_view?: ScrollViewDescriptor;
   find_replace?: FindReplacePanelDescriptor;
+  checkbox?: CheckboxDescriptor;
+  slider?: SliderDescriptor;
+  select?: SelectDescriptor;
+  password?: PasswordDescriptor;
+  textarea?: TextAreaDescriptor;
+  markdown?: MarkdownDescriptor;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 /** One node of a render callback's returned layout tree. */
-export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutLeafNode;
+export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode;
 
 /** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed. */
 export interface RenderFrameDict {
+  wire_version?: number;
   button?: ButtonDescriptor | null;
   text_display?: TextDisplayDescriptor | null;
   list?: ListViewDescriptor | null;
@@ -1513,10 +1660,64 @@ export interface RenderFrameDict {
   canvas?: CanvasDescriptor | null;
   scroll_view?: ScrollViewDescriptor | null;
   find_replace?: FindReplacePanelDescriptor | null;
+  checkbox?: CheckboxDescriptor | null;
+  slider?: SliderDescriptor | null;
+  select?: SelectDescriptor | null;
+  password?: PasswordDescriptor | null;
+  textarea?: TextAreaDescriptor | null;
+  markdown?: MarkdownDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */
 export type RenderOutput = LayoutNode | RenderFrameDict;
+
+/** Where a float/popover opens: a rect, the side of it to prefer, and the gap along that axis. */
+export interface AnchorDescriptor {
+  rect: Rect; // Bounds of the element the overlay opens against, in absolute coordinates.
+  preferred?: "Top" | "Bottom" | "Left" | "Right" | "AtPoint";
+  margin?: number;
+}
+
+/** A floating surface's own chrome: anchor, border and background. */
+export interface FloatDescriptor {
+  id: WidgetId;
+  anchor: AnchorDescriptor;
+  focusable?: boolean;
+  border?: boolean;
+  bg?: Color | null;
+}
+
+/** One button in a dialog's button row. */
+export interface DialogButtonDescriptor {
+  id: WidgetId;
+  label: string;
+  is_default?: boolean;
+  is_cancel?: boolean;
+  tint?: Color | null;
+  spec?: ButtonSpecDescriptor | null;
+}
+
+/** A layout dialog's own title/body/button chrome -- the same friendly shape the "message_dialog" overlay kind takes. */
+export interface DialogChromeDescriptor {
+  id: WidgetId;
+  title?: string;
+  body?: string; // Text shown above the content slot; split on newlines into one line each.
+  buttons: DialogButtonDescriptor[];
+  severity?: "info" | "question" | "warning" | "error";
+  vertical_buttons?: boolean;
+}
+
+/** A `show_overlay("popover", ...)` descriptor: float chrome plus the layout subtree painted inside it, whose leaves focus and emit events exactly as in the main tree. */
+export interface PopoverDescriptor {
+  float: FloatDescriptor;
+  content: LayoutNode;
+}
+
+/** A `show_overlay("layout_dialog", ...)` descriptor: modal dialog chrome plus the layout subtree painted in its body. */
+export interface LayoutDialogDescriptor {
+  dialog: DialogChromeDescriptor;
+  content: LayoutNode;
+}
 
 export interface PanelDefinitionDescriptor {
   id: string;
@@ -1899,8 +2100,24 @@ export interface _HitDetailExtraChrome {
   bar: WidgetId;
 }
 
+export interface _HitDetailScrollBody {
+  kind: "scroll_body";
+}
+
+export interface _HitDetailScrollScrollbarTrackBefore {
+  kind: "scroll_scrollbar_track_before";
+}
+
+export interface _HitDetailScrollScrollbarThumb {
+  kind: "scroll_scrollbar_thumb";
+}
+
+export interface _HitDetailScrollScrollbarTrackAfter {
+  kind: "scroll_scrollbar_track_after";
+}
+
 /** The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`. */
-export type HitDetail = _HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome;
+export type HitDetail = _HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
 
 export interface _UiKeyPressedPayload {
   key: Key;

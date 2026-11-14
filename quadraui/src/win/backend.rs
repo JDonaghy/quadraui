@@ -250,10 +250,16 @@ const DEFAULT_EDITOR_FONT_FAMILY: &str = "Consolas";
 const DEFAULT_UI_FONT_FAMILY: &str = "Segoe UI";
 
 /// Default chrome font size in points, paired with
-/// [`DEFAULT_UI_FONT_FAMILY`] — matches [`WinBackend::editor_font_size_pt`]'s
-/// default.
-#[cfg(target_os = "windows")]
-const DEFAULT_UI_FONT_SIZE_PT: f32 = 11.0;
+/// [`DEFAULT_UI_FONT_FAMILY`]. Unlike macOS (where 1pt == 1px), the Win
+/// backend converts points to DIPs via `pt_to_dip` (`size_pt * 96 / 72`,
+/// see `win/msg.rs`), so this is deliberately not a round point value: it's
+/// chosen so the *rendered* size lands on VS Code's own 13 DIP Windows
+/// chrome text size (`9.75 * 96 / 72 == 13.0`). Not `#[cfg(target_os =
+/// "windows")]`, unlike most consts in this module — [`Backend::default_fonts`]
+/// reads it directly (on every host, per that method's doc) so the font
+/// `WinBackend::new` actually installs and the size `default_fonts()`
+/// advertises can never drift apart again.
+const DEFAULT_UI_FONT_SIZE_PT: f32 = 9.75;
 
 /// Parse a Pango-style font description (e.g. `"Segoe UI 11"`) into a
 /// DirectWrite-ready `(family, size_pt)` pair. A trailing whitespace-separated
@@ -2081,22 +2087,27 @@ impl Backend for WinBackend {
     }
 
     /// Win-GUI's platform-native convention: `Consolas
-    /// 14` for editor content, `Segoe UI 13` for UI chrome — VS Code's
-    /// own Windows defaults, and the same family names
-    /// `DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY` already
-    /// fall back to (sizes differ: those exist for the "unset" runtime
-    /// default, `11pt`, not to model this platform recommendation).
-    /// Plain literals rather than those `cfg(target_os = "windows")`
-    /// consts themselves — unlike [`Self::set_ui_font`] above, this
-    /// method has no DirectWrite call to gate, and must type-check on
-    /// every host per this crate's cross-platform commitment (see
-    /// `CLAUDE.md`'s Win-GUI section).
+    /// 14` for editor content, `Segoe UI` (rendered at VS Code's 13 DIP
+    /// chrome size) for UI chrome — VS Code's own Windows defaults.
+    /// `editor_family`/`ui_family` are plain literals rather than the
+    /// `DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY` consts
+    /// themselves — unlike [`Self::set_ui_font`] above, this method has no
+    /// DirectWrite call to gate, and must type-check on every host per
+    /// this crate's cross-platform commitment (see `CLAUDE.md`'s Win-GUI
+    /// section) — and `editor_size_pt` stays a plain `14.0` literal: it
+    /// models this platform recommendation, distinct from
+    /// `editor_font_size_pt`'s own `11.0` "unset" runtime default.
+    /// `ui_size_pt` is the one exception: it reads [`DEFAULT_UI_FONT_SIZE_PT`]
+    /// (itself not `cfg`-gated, so it type-checks on every host too)
+    /// rather than a second literal, so the chrome size `WinBackend::new`
+    /// actually installs and the size advertised here can never drift
+    /// apart — see that const's doc.
     fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
         crate::backend::PlatformFontDefaults {
             editor_family: "Consolas".to_string(),
             editor_size_pt: 14.0,
             ui_family: "Segoe UI".to_string(),
-            ui_size_pt: 13.0,
+            ui_size_pt: DEFAULT_UI_FONT_SIZE_PT,
         }
     }
 
@@ -2555,6 +2566,23 @@ impl Backend for WinBackend {
         {
             None
         }
+    }
+
+    // ─── Clipping ────────────────────────────────────────────────────────
+    //
+    // Direct2D already owns a push/pop clip stack reached through
+    // `surface_push_clip`/`surface_pop_clip` (this module's own `impl
+    // PaintSurface for WinBackend`, below). These two forward to that same
+    // stack instead of layering a second one on top, so a caller that mixes
+    // `Backend::push_clip` (binding-core's layout painter) and
+    // `PaintSurface::surface_push_clip` (in-tree primitive paint code) on
+    // the same frame nests correctly either way.
+    fn push_clip(&mut self, rect: Rect) {
+        self.surface_push_clip(rect);
+    }
+
+    fn pop_clip(&mut self) {
+        self.surface_pop_clip();
     }
 
     // ─── Tray / status-bar icon ─────────────────────────────────────────
@@ -7473,7 +7501,8 @@ mod tests {
     }
 
     /// `default_fonts()` reports Win-GUI's VS-Code-alignment convention
-    /// (`Consolas 14`/`Segoe UI 13`) — cross-platform, no `target_os =
+    /// (`Consolas 14`/`Segoe UI` at `DEFAULT_UI_FONT_SIZE_PT`, which renders
+    /// at VS Code's 13 DIP chrome size) — cross-platform, no `target_os =
     /// "windows"` gate needed, same rationale as
     /// `win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height` above.
     #[test]
@@ -7483,7 +7512,7 @@ mod tests {
         assert_eq!(defaults.editor_family, "Consolas");
         assert_eq!(defaults.editor_size_pt, 14.0);
         assert_eq!(defaults.ui_family, "Segoe UI");
-        assert_eq!(defaults.ui_size_pt, 13.0);
+        assert_eq!(defaults.ui_size_pt, DEFAULT_UI_FONT_SIZE_PT);
     }
 
     /// A prior `set_editor_font`/`set_ui_font` call must not perturb
@@ -7503,7 +7532,64 @@ mod tests {
         assert_eq!(defaults.editor_family, "Consolas");
         assert_eq!(defaults.editor_size_pt, 14.0);
         assert_eq!(defaults.ui_family, "Segoe UI");
-        assert_eq!(defaults.ui_size_pt, 13.0);
+        assert_eq!(defaults.ui_size_pt, DEFAULT_UI_FONT_SIZE_PT);
+    }
+
+    /// The chrome `ui_font_size_pt` [`WinBackend::new`] installs before any
+    /// [`Backend::set_ui_font`] call must carry the exact point size
+    /// [`Backend::default_fonts`] advertises as `ui_size_pt` — a consumer
+    /// that renders chrome straight off a fresh backend (never calling
+    /// `set_ui_font` itself) still gets the size it would see by reading
+    /// `default_fonts()`, rather than a smaller, un-advertised runtime
+    /// default. And that shared point size must actually render at VS
+    /// Code's 13 DIP Windows chrome text size once converted through
+    /// `pt_to_dip` — not just agree with itself in points while still
+    /// landing on the wrong pixel size.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_installed_ui_font_size_matches_default_fonts_and_renders_at_13_dip() {
+        let backend = WinBackend::new();
+        let advertised = Backend::default_fonts(&backend).ui_size_pt;
+        assert_eq!(
+            backend.ui_font_size_pt, advertised,
+            "WinBackend::new's installed ui_font_size_pt must match \
+             default_fonts().ui_size_pt"
+        );
+        assert_eq!(
+            DEFAULT_UI_FONT_SIZE_PT, advertised,
+            "DEFAULT_UI_FONT_SIZE_PT must stay in lockstep with default_fonts()'s \
+             ui_size_pt so the two cannot drift again"
+        );
+
+        let rendered_dip = super::super::msg::pt_to_dip(advertised);
+        assert!(
+            (rendered_dip - 13.0).abs() < 0.5,
+            "the installed chrome font must render at VS Code's 13 DIP Windows chrome \
+             size (±0.5), got {rendered_dip} DIP from {advertised}pt"
+        );
+    }
+
+    /// Changing the chrome (`ui_font_size_pt`) default must never move the
+    /// 22px list/tree row-height token: row pitch is resolved from
+    /// `Style::row_height`/the *editor* font's line height
+    /// ([`WinBackend::resolved_row_height`]), never from the chrome font
+    /// size this issue adjusts. Asserted against the real resolved row
+    /// height, not just read off `Style::default()`, so a future change
+    /// that *does* wire the chrome font into row pitch would fail this
+    /// test rather than silently drifting.
+    #[test]
+    fn win_backend_default_ui_font_size_change_does_not_move_the_22px_row_token() {
+        let backend = WinBackend::new();
+        let tree = flat_tree(3);
+        // A 200px-tall viewport against 3 rows leaves every row
+        // unclipped, so `bounds.height` is the real resolved row pitch,
+        // not a viewport-truncated remainder.
+        let layout = Backend::tree_layout(&backend, Rect::new(0.0, 0.0, 200.0, 200.0), &tree);
+        assert_eq!(
+            layout.visible_rows[0].bounds.height, 22.0,
+            "tree_layout's resolved row height must stay at the Style::row_height \
+             default (22px) regardless of DEFAULT_UI_FONT_SIZE_PT"
+        );
     }
 
     /// A host-set `TreeStyle::row_height` must be honored
@@ -11282,6 +11368,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         };
         let diff = chrome_font_diff_pixel_count(
             200,
@@ -11634,6 +11721,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            bordered: false,
         };
         let (small, big) = chrome_font_diff_layout(
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
@@ -12064,6 +12152,128 @@ mod tests {
         let _ = backend.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
 
         backend.surface_end_frame();
+    }
+
+    // ── Backend::push_clip/pop_clip ─────────────────────────────────────
+    //
+    // `WinBackend::push_clip`/`pop_clip` forward straight to this same
+    // module's `surface_push_clip`/`surface_pop_clip` (Direct2D's own
+    // `PushAxisAlignedClip`/`PopAxisAlignedClip` stack). These two
+    // exercise the `Backend` trait entry point itself — the seam a
+    // backend-generic caller (binding-core's layout painter, a future
+    // `ScrollContainer`) reaches for — rather than the `PaintSurface` one
+    // in-tree primitives call directly, and pin both that an overflowing
+    // fill is confined to the clip's exact pixel edge and that a nested
+    // pop restores the outer clip rather than dropping it.
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_push_clip_confines_an_overflowing_fill_to_the_clipped_pixels() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let background = cleared_frame_background(W, H);
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let red = Color::rgb(200, 20, 20);
+        assert_ne!(
+            background,
+            (red.r, red.g, red.b),
+            "the fill colour must differ from the frame's clear colour, or \
+             'this pixel stayed untouched' is unprovable"
+        );
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        Backend::push_clip(&mut backend, Rect::new(0.0, 0.0, 10.0, 10.0));
+        backend.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), red);
+        Backend::pop_clip(&mut backend);
+        backend.end_frame();
+
+        let inside = surface.pixel_at(9, 9);
+        assert_eq!(
+            (inside.r, inside.g, inside.b),
+            (red.r, red.g, red.b),
+            "the last pixel inside the pushed clip must keep the overflowing fill"
+        );
+        let outside = surface.pixel_at(10, 10);
+        assert_eq!(
+            (outside.r, outside.g, outside.b),
+            background,
+            "the first pixel outside the pushed clip must stay untouched by the \
+             fill, which reaches well past it"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_nested_pop_clip_restores_the_outer_clip() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let background = cleared_frame_background(W, H);
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let green = Color::rgb(0, 200, 0);
+        let white = Color::rgb(255, 255, 255);
+        assert_ne!(background, (green.r, green.g, green.b));
+        assert_ne!(background, (white.r, white.g, white.b));
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        // Outer clip: pixels (0,0)..(20,20).
+        Backend::push_clip(&mut backend, Rect::new(0.0, 0.0, 20.0, 20.0));
+        // Inner clip, nested inside the outer one: pixels (5,5)..(15,15).
+        Backend::push_clip(&mut backend, Rect::new(5.0, 5.0, 10.0, 10.0));
+        Backend::pop_clip(&mut backend);
+        // Paint only after the inner pop: if it restored the outer clip,
+        // this reaches (0,0)..(20,20) but not past it; if it dropped
+        // clipping entirely, it would reach the whole 40x40 surface,
+        // including (30,30) checked below.
+        backend.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), green);
+        Backend::pop_clip(&mut backend);
+        // Paint only after the outer pop, confined to pixels
+        // (20,20)..(40,40) — entirely outside the now-popped outer clip,
+        // so this fill can only land there if the outer pop actually
+        // cleared clipping rather than leaving the outer rect active.
+        backend.draw_solid_fill(Rect::new(20.0, 20.0, 20.0, 20.0), white);
+        backend.end_frame();
+
+        let inside_outer = surface.pixel_at(17, 17);
+        assert_eq!(
+            (inside_outer.r, inside_outer.g, inside_outer.b),
+            (green.r, green.g, green.b),
+            "inside the outer clip but outside the inner one, the inner pop must have \
+             restored the outer clip rather than leaving it narrowed to the inner rect, \
+             letting the post-pop fill land here"
+        );
+        let outside_outer = surface.pixel_at(35, 5);
+        assert_eq!(
+            (outside_outer.r, outside_outer.g, outside_outer.b),
+            background,
+            "outside the outer clip entirely, the fill painted after the inner pop \
+             must not have reached here — proving that pop restored the outer clip \
+             rather than dropping clipping entirely"
+        );
+        let after_outer_pop = surface.pixel_at(30, 30);
+        assert_eq!(
+            (after_outer_pop.r, after_outer_pop.g, after_outer_pop.b),
+            (white.r, white.g, white.b),
+            "the fill painted after the outer pop must reach here, proving that pop \
+             cleared the clip rather than leaving the outer rect active"
+        );
     }
 
     // ── #810: draw_chart real-pixel driver tests ──────────────────────────────
@@ -13227,14 +13437,18 @@ mod tests {
         );
         // The tooltip's own fill is present at its centre — a positive
         // assertion that `draw_tooltip` actually painted something there,
-        // not just that the ring's colour is absent.
-        let cx = (rect.x + rect.width / 2.0) as u32;
-        let cy = (rect.y + rect.height / 2.0) as u32;
-        let px = surface.pixel_at(cx, cy);
+        // not just that the ring's colour is absent. Probed at mid-height
+        // just inside the right border: the left-aligned "Hover text" label
+        // ends well short of there at any chrome font size, so the pixel
+        // is pure fill rather than a glyph whose position depends on the
+        // installed font metrics.
+        let fx = (rect.x + rect.width - 4.0) as u32;
+        let fy = (rect.y + rect.height / 2.0) as u32;
+        let px = surface.pixel_at(fx, fy);
         assert_eq!(
             (px.r, px.g, px.b),
             (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
-            "the tooltip's own fill must paint at its centre",
+            "the tooltip's own fill must paint inside its bounds",
         );
     }
 

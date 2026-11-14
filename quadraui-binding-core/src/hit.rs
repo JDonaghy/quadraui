@@ -8,9 +8,10 @@ use std::rc::Rc;
 
 use quadraui::{
     ButtonHit, ButtonLayout, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, PanelHit,
-    PanelLayout, Point, PressZone, Rect, Scrollbar, SidebarPanelHit, SidebarPanelLayout, SplitHit,
-    SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout, TextDisplayHit, TextDisplayLayout,
-    Toolbar, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    PanelLayout, Point, PressZone, Rect, ScrollAxis, Scrollbar, SidebarPanelHit,
+    SidebarPanelLayout, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout,
+    TextDisplayHit, TextDisplayLayout, Toolbar, TreePath, TreeRowEditState, TreeViewHit,
+    TreeViewLayout, UiEvent, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -27,26 +28,35 @@ pub enum PaintedHit {
     /// `Button`'s layout is in the backend's ABSOLUTE coordinate frame, so
     /// no `area` is stored alongside it — same as [`Self::Split`].
     Button { id: WidgetId, layout: ButtonLayout },
-    /// `area` is the absolute rect this tree was painted into. `Tree`'s
-    /// layout (like `List`/`DataTable`/`TabBar`'s) is in the LOCAL
-    /// coordinate frame, relative to `area`'s origin, so a hit-test
-    /// against it must first translate the click into that frame.
-    /// `row_paths[i]` is the `TreePath` of the row at visual index `i`
-    /// (i.e. `TreeView::rows[i].path`), kept alongside the layout so a
-    /// `TreeViewHit::Row(i)` can be turned into a semantic
-    /// `UiEvent::Tree(RowClicked)` without re-borrowing the `TreeView`
-    /// itself. `area` is already narrowed to exclude `scrollbar`'s own
-    /// gutter (see `draw_tree_with_scrollbar`), so a row hit-test never
-    /// sees a point that landed on the scrollbar. `scrollbar` is `None`
-    /// when the tree's rows fit without scrolling. `scroll_offset` is the
-    /// tree's own offset as painted; `viewport_rows` is how many rows fit
-    /// in `area` at a zero offset (snapshotted at paint time, since a
-    /// `Scrollbar`'s `thumb_len` alone can't be inverted back to it once
-    /// `min_thumb_len` clamping has applied). Both feed the scrollbar
-    /// drag/page/wheel math in the binding's own event handler without needing to
-    /// re-borrow the `TreeView` or re-touch the backend. `editing` is the
-    /// path and edit state of whichever row currently has `TreeRow::edit`
-    /// set (`None` when no row is mid-rename), read by
+    /// `area` is the absolute rect this tree was painted into, and the
+    /// frame `layout` is relative to (like `List`/`DataTable`/`TabBar`'s
+    /// own layout) — a hit-test must translate a click into it via
+    /// `area`'s origin before calling `layout.hit_test`, and `area` is
+    /// never narrowed by [`clip_hits_to_viewport`] for exactly that
+    /// reason. `clip` is the sub-rect of `area` actually inside every
+    /// enclosing `Scroll`'s own viewport (equal to `area` until a `Scroll`
+    /// narrows it) — checked for containment in `clip`'s place, so a point
+    /// outside an enclosing scroll's viewport never resolves to this tree
+    /// even though `area`'s own origin (hence the frame `layout.hit_test`
+    /// translates into) is untouched. `row_paths[i]` is the `TreePath` of
+    /// the row at visual index `i` (i.e. `TreeView::rows[i].path`), kept
+    /// alongside the layout so a `TreeViewHit::Row(i)` can be turned into a
+    /// semantic `UiEvent::Tree(RowClicked)` without re-borrowing the
+    /// `TreeView` itself. `area` is already narrowed to exclude
+    /// `scrollbar`'s own gutter (see `draw_tree_with_scrollbar`), so a row
+    /// hit-test never sees a point that landed on the scrollbar.
+    /// `scrollbar` is `None` when the tree's rows fit without scrolling —
+    /// its own `track` is an absolute rect (see [`quadraui::Scrollbar`]'s
+    /// own doc), so [`clip_hits_to_viewport`] narrows it directly, the same
+    /// way it narrows [`Self::Button`]'s `layout.bounds`. `scroll_offset`
+    /// is the tree's own offset as painted; `viewport_rows` is how many
+    /// rows fit in `area` at a zero offset (snapshotted at paint time,
+    /// since a `Scrollbar`'s `thumb_len` alone can't be inverted back to
+    /// it once `min_thumb_len` clamping has applied). Both feed the
+    /// scrollbar drag/page/wheel math in the binding's own event handler
+    /// without needing to re-borrow the `TreeView` or re-touch the backend.
+    /// `editing` is the path and edit state of whichever row currently has
+    /// `TreeRow::edit` set (`None` when no row is mid-rename), read by
     /// [`crate::semantic::focus_scoped_key_event`] so a key pressed while
     /// that row is being renamed is resolved by
     /// [`crate::tree_row_rename_key_event`] instead of falling straight
@@ -54,6 +64,7 @@ pub enum PaintedHit {
     Tree {
         id: WidgetId,
         area: Rect,
+        clip: Rect,
         layout: TreeViewLayout,
         row_paths: Vec<TreePath>,
         scrollbar: Option<Scrollbar>,
@@ -64,6 +75,11 @@ pub enum PaintedHit {
     List {
         id: WidgetId,
         area: Rect,
+        /// See [`Self::Tree`]'s own doc: the sub-rect of `area` inside
+        /// every enclosing `Scroll`'s viewport, checked for containment in
+        /// `area`'s place so `area`'s origin (hence the frame
+        /// `layout.hit_test` translates a click into) stays untouched.
+        clip: Rect,
         layout: ListViewLayout,
         /// The list's current row selection and item count, as painted —
         /// read by [`crate::semantic::focus_scoped_key_event`] so Enter on
@@ -86,6 +102,8 @@ pub enum PaintedHit {
     DataTable {
         id: WidgetId,
         area: Rect,
+        /// See [`Self::Tree`]'s own doc.
+        clip: Rect,
         layout: DataTableLayout,
         scroll_offset: usize,
         total_rows: usize,
@@ -105,6 +123,8 @@ pub enum PaintedHit {
     TabBar {
         id: WidgetId,
         area: Rect,
+        /// See [`Self::Tree`]'s own doc.
+        clip: Rect,
         layout: TabBarLayout,
         /// The bar's own tab count and keyboard-focused tab, as painted —
         /// read by [`crate::semantic::focus_scoped_key_event`] so an arrow
@@ -127,14 +147,17 @@ pub enum PaintedHit {
     /// separately above it. `body_offset` is that row's height (one
     /// `Backend::line_height`, or `0.0` when there's no title), so a
     /// hit-test must subtract `area`'s origin AND `body_offset` before
-    /// calling `layout.hit_test`. `total_lines` and `viewport_lines` (the
-    /// row capacity at a zero scroll offset, snapshotted the same way
-    /// [`Self::Tree`]'s own `viewport_rows` is) feed the wheel-scroll
-    /// `max_offset` clamp in `InteractionEngine::handle` without
-    /// re-touching the backend.
+    /// calling `layout.hit_test`. `clip` is [`Self::Tree`]'s own
+    /// enclosing-viewport sub-rect of `area`, checked for containment in
+    /// `area`'s place for the same reason. `total_lines` and
+    /// `viewport_lines` (the row capacity at a zero scroll offset,
+    /// snapshotted the same way [`Self::Tree`]'s own `viewport_rows` is)
+    /// feed the wheel-scroll `max_offset` clamp in
+    /// `InteractionEngine::handle` without re-touching the backend.
     TextDisplay {
         id: WidgetId,
         area: Rect,
+        clip: Rect,
         layout: TextDisplayLayout,
         body_offset: f32,
         total_lines: usize,
@@ -206,6 +229,192 @@ pub enum PaintedHit {
         /// on the bar".
         chrome_hits: Vec<(Rect, WidgetId)>,
     },
+    /// A [`crate::layout::LayoutNode::Scroll`]'s own viewport, in the
+    /// ABSOLUTE frame (matching [`Self::Split`]) — `viewport` already
+    /// excludes the scrollbar gutter `crate::render::paint_layout`'s
+    /// `LayoutNode::Scroll` arm reserves. Pushed BEFORE that arm recurses
+    /// into its (culled, offset) content, same ordering as [`Self::Panel`]/
+    /// [`Self::SidebarPanel`]'s own chrome hit — a descendant content hit
+    /// (pushed after, so checked first in reverse order) wins over this
+    /// one. Content scrolled out of view never gets its own
+    /// [`PaintedHit`] at all (culled before painting), so there is nothing
+    /// for this entry to mask; it exists so a click or wheel landing on
+    /// empty space inside the viewport (nothing painted under the pointer)
+    /// still resolves to the `Scroll` itself, via [`HitDetail::ScrollBody`].
+    /// `axis`/`content_len`/`offset` are the same values
+    /// [`crate::render::paint_scroll`] fed its own [`quadraui::ScrollView`]
+    /// this frame — read back by the engine's wheel/page-key/drag handling
+    /// to resolve a new offset without re-measuring the content. `scrollbar`
+    /// is `None` when the content fits without scrolling, mirroring
+    /// [`Self::Tree`]'s own `scrollbar` field; its `track` is an absolute
+    /// rect, outside `viewport` (reserved alongside it, not inside it), and
+    /// is narrowed by [`clip_hits_to_viewport`] the same way it narrows
+    /// [`Self::Tree`]'s — a `Scroll` nested inside another `Scroll`'s
+    /// viewport needs its own track clipped to the OUTER viewport too, the
+    /// same class of leak a nested `Tree`'s track is already guarded
+    /// against. `children` is one [`ScrollChildHit`] per direct
+    /// [`crate::layout::LayoutNode::Leaf`] child when this scroll's
+    /// content is a `Column`/`Row` matching its own axis — read by the
+    /// engine to scroll a child that just received focus fully into view.
+    /// Empty for `Atomic` content or a non-`Leaf` direct child (a nested
+    /// `Row`/`Column`/`Split`/…), where that scroll-into-view isn't
+    /// implemented yet.
+    Scroll {
+        id: WidgetId,
+        viewport: Rect,
+        axis: ScrollAxis,
+        content_len: f32,
+        offset: f32,
+        scrollbar: Option<Scrollbar>,
+        children: Vec<ScrollChildHit>,
+    },
+}
+
+/// One [`PaintedHit::Scroll::children`] entry: `id` is the direct
+/// [`crate::layout::LayoutNode::Leaf`] child's own id; `start`/`len` are
+/// its main-axis span within the scroll's content, content-relative — NOT
+/// yet offset by [`PaintedHit::Scroll::offset`], and not clamped to
+/// `viewport` the way the child's own painted rect may be, since the
+/// engine's scroll-into-view math needs the un-clamped span. Mirrors
+/// [`crate::render::ScrollChildSlot`]'s own `start`/`len` fields, which
+/// this struct is built from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollChildHit {
+    pub id: WidgetId,
+    pub start: f32,
+    pub len: f32,
+}
+
+/// Intersects `hits[start..]` — one [`crate::render::paint_scroll`] call's
+/// own descendant content, painted inside `viewport` between its
+/// `Backend::push_clip(viewport)`/`pop_clip` pair — with `viewport`
+/// itself, dropping an entry whose bounds don't overlap it at all.
+///
+/// Without this, a descendant's own recorded bounds can reach past
+/// `viewport` on a backend whose `Rect` carries a negative-origin main
+/// axis correctly (every non-cell-grid one — see
+/// [`crate::render::scroll_content_slots`]'s own `cell_grid` doc, which
+/// already clips a cell-grid backend's bounds before they're ever
+/// painted, making this pass a no-op there), or on any backend whose
+/// `ScrollSlots::Atomic` content is sized to the scroll's full
+/// `content_len` rather than clamped to one viewport's worth (the common
+/// case — see `scroll_content_slots`'s own doc). Checked in reverse paint
+/// order by [`hit_test_painted`], a hit whose bounds leak past its own
+/// scroll's viewport can otherwise mask a sibling painted earlier at that
+/// same screen position (e.g. a button above a scroll whose own
+/// oversized content reaches back up over it) — this keeps every
+/// descendant's bounds inside the viewport it was actually painted into,
+/// so a point outside it never resolves to that scroll's content and a
+/// sibling painted before the scroll keeps its own clicks.
+///
+/// Only the hit kinds whose containment test lives in a plain field this
+/// module can reach are narrowed, via [`primary_bounds_mut`]:
+/// [`PaintedHit::Button`]'s `layout.bounds`; [`PaintedHit::Extra`]'s
+/// `area`; [`PaintedHit::Tree`]/[`PaintedHit::List`]/
+/// [`PaintedHit::DataTable`]/[`PaintedHit::TabBar`]/
+/// [`PaintedHit::TextDisplay`]'s own `clip` (NOT `area` — see
+/// [`PaintedHit::Tree`]'s own doc for why moving a local-frame kind's
+/// `area` instead would desync it from the layout `area`'s origin
+/// translates a click into); and a nested [`PaintedHit::Scroll`]'s own
+/// `viewport`. Two more sub-rect collections, checked by
+/// [`hit_test_painted`] ahead of a kind's own primary bounds, are narrowed
+/// alongside it: [`PaintedHit::Tree`]'s and [`PaintedHit::Scroll`]'s own
+/// `scrollbar.track` (an absolute rect, like `Button`'s `layout.bounds` —
+/// narrowed directly, never dropping the surrounding `Tree`/`Scroll` entry
+/// even when the track itself ends up with no overlap) and
+/// [`PaintedHit::Extra`]'s `chrome_hits` (each
+/// entry independently intersected and dropped on no overlap, the same
+/// per-entry treatment `hits` itself gets). The chrome-layout kinds
+/// (`Split`/`SplitTree`/`Panel`/`SidebarPanel`) carry several independent
+/// sub-region rects apiece with no single outer bounds to narrow, and
+/// aren't realistic `Scroll` content — left as-is.
+pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, viewport: Rect) {
+    let mut i = start;
+    while i < hits.len() {
+        let Some(bounds) = primary_bounds_mut(&mut hits[i]).map(|r| *r) else {
+            i += 1;
+            continue;
+        };
+        let Some(clipped) = intersect_rect(bounds, viewport) else {
+            hits.remove(i);
+            continue;
+        };
+        *primary_bounds_mut(&mut hits[i]).expect("checked above") = clipped;
+        match &mut hits[i] {
+            PaintedHit::Tree {
+                scrollbar: Some(scrollbar),
+                ..
+            }
+            | PaintedHit::Scroll {
+                scrollbar: Some(scrollbar),
+                ..
+            } => {
+                scrollbar.track = clip_or_empty(scrollbar.track, viewport);
+            }
+            PaintedHit::Extra { chrome_hits, .. } => {
+                chrome_hits.retain_mut(|(rect, _)| match intersect_rect(*rect, viewport) {
+                    Some(clipped) => {
+                        *rect = clipped;
+                        true
+                    }
+                    None => false,
+                });
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+/// The hit kind's own containment-test rect — [`PaintedHit::Button`]'s
+/// `layout.bounds`, [`PaintedHit::Extra`]'s `area`, the local-frame kinds'
+/// own `clip` (see [`PaintedHit::Tree`]'s doc), and a nested
+/// [`PaintedHit::Scroll`]'s own `viewport` — or `None` for a chrome-layout
+/// kind with no single outer bounds. The one place [`clip_hits_to_viewport`]
+/// reaches into a [`PaintedHit`] by mutable reference, so narrowing one
+/// kind's field and narrowing a different kind's field can't drift apart
+/// into two independently-maintained match arms.
+fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
+    match hit {
+        PaintedHit::Button { layout, .. } => Some(&mut layout.bounds),
+        PaintedHit::Tree { clip, .. }
+        | PaintedHit::List { clip, .. }
+        | PaintedHit::DataTable { clip, .. }
+        | PaintedHit::TabBar { clip, .. }
+        | PaintedHit::TextDisplay { clip, .. } => Some(clip),
+        PaintedHit::Extra { area, .. } => Some(area),
+        PaintedHit::Scroll { viewport, .. } => Some(viewport),
+        PaintedHit::Split { .. }
+        | PaintedHit::SplitTree { .. }
+        | PaintedHit::Panel { .. }
+        | PaintedHit::SidebarPanel { .. } => None,
+    }
+}
+
+/// `rect` intersected with `viewport`, or a zero-area rect at `rect`'s own
+/// origin when they don't overlap at all — for a hit's own secondary
+/// sub-rect (a scrollbar's `track`, one `chrome_hits` entry) where "no
+/// longer inside the viewport" should make just that sub-rect
+/// unreachable, never drop the [`PaintedHit`] entry it's attached to (its
+/// own primary bounds, narrowed separately by [`clip_hits_to_viewport`],
+/// already decides that).
+fn clip_or_empty(rect: Rect, viewport: Rect) -> Rect {
+    intersect_rect(rect, viewport).unwrap_or(Rect::new(rect.x, rect.y, 0.0, 0.0))
+}
+
+/// The overlapping region of `a` and `b`, or `None` when they don't
+/// overlap at all (zero-width/height counts as no overlap, matching
+/// [`Rect::contains`]'s own half-open convention).
+fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = (a.x + a.width).min(b.x + b.width);
+    let y1 = (a.y + a.height).min(b.y + b.height);
+    if x1 > x0 && y1 > y0 {
+        Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+    } else {
+        None
+    }
 }
 
 /// The sub-region of a primitive an incoming pointer event landed on,
@@ -321,6 +530,21 @@ pub enum HitDetail {
     ExtraChrome {
         bar: WidgetId,
     },
+    /// Landed inside a [`crate::layout::LayoutNode::Scroll`]'s viewport but
+    /// on no more specific descendant hit — e.g. empty space between
+    /// stacked content items. Carries no sub-region detail, mirroring
+    /// [`Self::ExtraBody`]; the binding's own wheel routing uses this to
+    /// resolve which `Scroll` a wheel event targets.
+    ScrollBody,
+    /// Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone)
+    /// — mirrors [`Self::TreeScrollbarTrackBefore`].
+    ScrollScrollbarTrackBefore,
+    /// Landed on a `Scroll`'s own scrollbar thumb — mirrors
+    /// [`Self::TreeScrollbarThumb`].
+    ScrollScrollbarThumb,
+    /// Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone)
+    /// — mirrors [`Self::TreeScrollbarTrackAfter`].
+    ScrollScrollbarTrackAfter,
 }
 
 /// Hit-tests `point` (in the backend's native absolute coordinate space,
@@ -344,6 +568,7 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
             PaintedHit::Tree {
                 id,
                 area,
+                clip,
                 layout,
                 scrollbar,
                 ..
@@ -360,7 +585,12 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                         ));
                     }
                 }
-                if !area.contains(point) {
+                // `clip`, not `area` — `area`'s own origin is what
+                // `layout.hit_test` below translates the click into
+                // (see `PaintedHit::Tree`'s own doc), and `clip` is the
+                // sub-rect of it actually inside every enclosing scroll's
+                // viewport.
+                if !clip.contains(point) {
                     continue;
                 }
                 match layout.hit_test(point.x - area.x, point.y - area.y) {
@@ -372,9 +602,13 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 }
             }
             PaintedHit::List {
-                id, area, layout, ..
+                id,
+                area,
+                clip,
+                layout,
+                ..
             } => {
-                if !area.contains(point) {
+                if !clip.contains(point) {
                     continue;
                 }
                 match layout.hit_test(point.x - area.x, point.y - area.y) {
@@ -386,12 +620,13 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
             PaintedHit::DataTable {
                 id,
                 area,
+                clip,
                 layout,
                 scroll_offset,
                 total_rows,
                 ..
             } => {
-                if !area.contains(point) {
+                if !clip.contains(point) {
                     continue;
                 }
                 match layout.hit_test(
@@ -414,9 +649,13 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 }
             }
             PaintedHit::TabBar {
-                id, area, layout, ..
+                id,
+                area,
+                clip,
+                layout,
+                ..
             } => {
-                if !area.contains(point) {
+                if !clip.contains(point) {
                     continue;
                 }
                 match layout.hit_test(point.x - area.x, point.y - area.y) {
@@ -435,11 +674,12 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
             PaintedHit::TextDisplay {
                 id,
                 area,
+                clip,
                 layout,
                 body_offset,
                 ..
             } => {
-                if !area.contains(point) {
+                if !clip.contains(point) {
                     continue;
                 }
                 match layout.hit_test(point.x - area.x, point.y - area.y - body_offset) {
@@ -515,6 +755,32 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 }
                 if extra.hit_test(*area, point) {
                     return Some((*id, HitDetail::ExtraBody));
+                }
+            }
+            PaintedHit::Scroll {
+                id,
+                viewport,
+                scrollbar,
+                ..
+            } => {
+                if let Some(scrollbar) = scrollbar {
+                    if scrollbar.track.contains(point) {
+                        let pos = match scrollbar.axis {
+                            ScrollAxis::Vertical => point.y,
+                            ScrollAxis::Horizontal => point.x,
+                        };
+                        return Some((
+                            *id,
+                            match scrollbar.press_zone(pos) {
+                                PressZone::Before => HitDetail::ScrollScrollbarTrackBefore,
+                                PressZone::Thumb => HitDetail::ScrollScrollbarThumb,
+                                PressZone::After => HitDetail::ScrollScrollbarTrackAfter,
+                            },
+                        ));
+                    }
+                }
+                if viewport.contains(point) {
+                    return Some((*id, HitDetail::ScrollBody));
                 }
             }
         }
@@ -644,7 +910,8 @@ pub fn set_event_widget(event: &mut UiEvent, id: WidgetId) {
 mod tests {
     use super::*;
     use quadraui::{
-        Decoration, SelectionMode, StyledText, TreeRow, TreeRowMeasure, TreeStyle, TreeView,
+        Decoration, SelectionMode, StyledSpan, StyledText, TextDisplay, TextDisplayLine, TreeRow,
+        TreeRowMeasure, TreeStyle, TreeView,
     };
 
     /// A single-row `Tree` hit, painted at a real `TreeView::layout` call
@@ -674,9 +941,11 @@ mod tests {
             has_focus: true,
         };
         let layout = tree.layout(80.0, 24.0, |_| TreeRowMeasure::new(1.0));
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
         PaintedHit::Tree {
             id: tree.id,
-            area: Rect::new(0.0, 0.0, 80.0, 24.0),
+            area,
+            clip: area,
             layout,
             row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
             scrollbar: None,
@@ -720,5 +989,290 @@ mod tests {
         let hit_map = vec![single_row_tree_hit(editing)];
         let id = WidgetId::new("hit-test:tree");
         assert_eq!(tree_rows_and_viewport(&hit_map, id), None);
+    }
+
+    /// A `TextDisplay` hit whose own `area` reaches past `viewport` — the
+    /// shape a `ScrollSlots::Atomic` leaf sized to its whole `content_len`
+    /// and shifted by `-offset` gets on a backend that keeps the
+    /// unclipped rect (see [`crate::render::scroll_content_slots`]'s own
+    /// `cell_grid` doc), independent of whatever `viewport` it's painted
+    /// inside.
+    fn oversized_text_display_hit(viewport: Rect) -> PaintedHit {
+        let mut td = TextDisplay::new(WidgetId::new("log"));
+        for i in 0..100 {
+            td.append_line(TextDisplayLine {
+                spans: vec![StyledSpan::plain(format!("line {i}"))],
+                decoration: Decoration::default(),
+                timestamp: None,
+            });
+        }
+        td.auto_scroll = false;
+        let area = Rect::new(viewport.x, viewport.y - 4.0, viewport.width, 100.0);
+        let layout = td.layout(area.width, area.height, |_| {
+            quadraui::TextDisplayLineMeasure::new(1.0)
+        });
+        PaintedHit::TextDisplay {
+            id: td.id,
+            area,
+            clip: area,
+            layout,
+            body_offset: 0.0,
+            total_lines: 100,
+            viewport_lines: viewport.height as usize,
+        }
+    }
+
+    /// [`clip_hits_to_viewport`]'s whole acceptance scenario: a button
+    /// painted above a scroll, whose own descendant content's `area`
+    /// leaked up past the scroll's `viewport` and over the button's own
+    /// row. A click on the button's row still resolves to the button —
+    /// not the leaked content — and a point well above either never
+    /// resolves to anything.
+    #[test]
+    fn clip_hits_to_viewport_keeps_a_sibling_painted_before_the_scroll() {
+        let viewport = Rect::new(0.0, 1.0, 20.0, 9.0);
+        let button = PaintedHit::Button {
+            id: WidgetId::new("above"),
+            layout: ButtonLayout {
+                bounds: Rect::new(0.0, 0.0, 20.0, 1.0),
+            },
+        };
+        let scroll = PaintedHit::Scroll {
+            id: WidgetId::new("scroll"),
+            viewport,
+            axis: ScrollAxis::Vertical,
+            content_len: 0.0,
+            offset: 0.0,
+            scrollbar: None,
+            children: Vec::new(),
+        };
+        let mut hits = vec![button, scroll];
+        let hits_before = hits.len();
+        hits.push(oversized_text_display_hit(viewport));
+        clip_hits_to_viewport(&mut hits, hits_before, viewport);
+
+        // The button's own row (y=0) sits outside the scroll's
+        // `viewport` (which starts at y=1) and inside the leaked hit's
+        // own pre-clip bounds, so an unclipped hit map would resolve this
+        // click to the scroll's content instead of the button.
+        assert_eq!(
+            hit_test_painted(&hits, Point { x: 0.0, y: 0.0 }),
+            Some((WidgetId::new("above"), HitDetail::ButtonBody))
+        );
+
+        // Still resolves to the `TextDisplay` for a point genuinely
+        // inside the viewport -- narrowing a hit's bounds doesn't drop
+        // it outright.
+        let (id, detail) = hit_test_painted(&hits, Point { x: 0.0, y: 5.0 })
+            .expect("a point inside the viewport still hits the text display");
+        assert_eq!(id, WidgetId::new("log"));
+        assert!(matches!(detail, HitDetail::TextDisplayLine { .. }));
+    }
+
+    /// A hit whose bounds don't overlap `viewport` at all is dropped
+    /// outright, not just narrowed to an empty rect that would never
+    /// match any point anyway — so a caller iterating `hits` directly
+    /// (rather than through [`hit_test_painted`]) never sees a
+    /// zero-sized leftover.
+    #[test]
+    fn clip_hits_to_viewport_drops_a_hit_with_no_overlap() {
+        let viewport = Rect::new(0.0, 10.0, 20.0, 5.0);
+        let mut hits = vec![PaintedHit::Button {
+            id: WidgetId::new("far-above"),
+            layout: ButtonLayout {
+                bounds: Rect::new(0.0, 0.0, 20.0, 1.0),
+            },
+        }];
+        clip_hits_to_viewport(&mut hits, 0, viewport);
+        assert!(hits.is_empty());
+    }
+
+    /// A 100-item `List`, painted into `area = (0, -320, 200, 1600)` by a
+    /// `cell_grid: false` (GTK/macOS/Win) backend's own `scroll_content_slots`
+    /// `Atomic` branch — `char_width: 8.0`, `line_height: 16.0`, a 200x160
+    /// viewport, scrolled by `offset: 320.0` (`20` whole rows). A click at
+    /// the viewport's own top-left (absolute `y: 8.0`) must still resolve
+    /// to item `20` — `local y = 8.0 - area.y = 328.0`, `328.0 / 16.0 =
+    /// 20.5`, floor `20` — the same row actually under the pointer, which
+    /// only holds when [`clip_hits_to_viewport`] narrows `clip`
+    /// (`(0, 0, 200, 160)`, the intersection with `viewport`) rather than
+    /// moving `area` itself: `area`'s own origin is what the translation
+    /// above is computed against, so clamping it to `(0, 0, ...)` the way
+    /// narrowing `area` in place would have shifted every resolved row by
+    /// the clipped amount (here, down to item `0`).
+    #[test]
+    fn clip_hits_to_viewport_keeps_a_local_frame_hits_translation_origin_unmoved() {
+        use quadraui::{ListItem, ListItemMeasure, ListView, StyledText};
+
+        let list = ListView {
+            id: WidgetId::new("pixel-list"),
+            title: None,
+            items: (0..100)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("item {i}")),
+                    icon: None,
+                    detail: None,
+                    decoration: Decoration::default(),
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let area = Rect::new(0.0, -320.0, 200.0, 1600.0);
+        let layout = list.layout(area.width, area.height, 0.0, |_| ListItemMeasure::new(16.0));
+        let mut hits = vec![PaintedHit::List {
+            id: list.id,
+            area,
+            clip: area,
+            layout,
+            selected_idx: 0,
+            total_items: 100,
+            scroll_offset: 0,
+            viewport_rows: 10,
+        }];
+        let viewport = Rect::new(0.0, 0.0, 200.0, 160.0);
+        clip_hits_to_viewport(&mut hits, 0, viewport);
+
+        let PaintedHit::List {
+            area: kept_area,
+            clip,
+            ..
+        } = &hits[0]
+        else {
+            panic!("still a List hit");
+        };
+        assert_eq!(*kept_area, area, "area keeps its own painted origin");
+        assert_eq!(*clip, viewport, "clip narrows to the viewport intersection");
+
+        let (id, detail) = hit_test_painted(&hits, Point { x: 0.0, y: 8.0 })
+            .expect("inside the viewport, still resolves to the list");
+        assert_eq!(id, list.id);
+        assert_eq!(detail, HitDetail::ListItem { index: 20 });
+
+        // A point outside the viewport (but still inside the pre-clip
+        // `area`) doesn't resolve to anything.
+        assert_eq!(hit_test_painted(&hits, Point { x: 0.0, y: 200.0 }), None);
+    }
+
+    /// A `Tree`'s own `scrollbar.track` is an absolute rect (see
+    /// [`quadraui::Scrollbar`]'s own doc), so [`clip_hits_to_viewport`]
+    /// narrows it directly — a track that reaches past `viewport` (as it
+    /// would painted at a negative `area.y`) doesn't claim a click below
+    /// the viewport's own bottom edge, even though the surrounding `Tree`
+    /// entry is kept (its own `clip` still overlaps `viewport`).
+    #[test]
+    fn clip_hits_to_viewport_narrows_a_trees_scrollbar_track() {
+        let viewport = Rect::new(0.0, 0.0, 20.0, 10.0);
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let track = Rect::new(19.0, 0.0, 1.0, 24.0);
+        let scrollbar = Some(Scrollbar::vertical("track", track, 0.0, 100.0, 24.0, 1.0));
+        let tree = TreeView {
+            id: WidgetId::new("hit-test:tree"),
+            rows: Vec::new(),
+            selection_mode: SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: true,
+        };
+        let mut hits = vec![PaintedHit::Tree {
+            id: tree.id,
+            area,
+            clip: area,
+            layout: tree.layout(area.width, area.height, |_| TreeRowMeasure::new(1.0)),
+            row_paths: Vec::new(),
+            scrollbar,
+            scroll_offset: 0,
+            viewport_rows: 24,
+            editing: None,
+        }];
+        clip_hits_to_viewport(&mut hits, 0, viewport);
+
+        let PaintedHit::Tree {
+            scrollbar: Some(scrollbar),
+            ..
+        } = &hits[0]
+        else {
+            panic!("still a Tree hit with a scrollbar");
+        };
+        // The track's own pre-clip span (`y` in `[0, 24)`) reached past
+        // `viewport`'s bottom edge (`y` in `[0, 10)`) -- narrowed, a point
+        // past the viewport's own edge doesn't resolve to it.
+        assert!(!scrollbar.track.contains(Point { x: 19.0, y: 20.0 }));
+        assert!(scrollbar.track.contains(Point { x: 19.0, y: 5.0 }));
+    }
+
+    /// [`PaintedHit::Scroll`]'s own `scrollbar.track` is narrowed the same
+    /// way [`PaintedHit::Tree`]'s is (see the test just above) — a nested
+    /// `Scroll` painted inside an outer one, straddling the OUTER
+    /// viewport's own edge, must not keep a clickable track reaching past
+    /// it.
+    #[test]
+    fn clip_hits_to_viewport_narrows_a_scrolls_scrollbar_track() {
+        let viewport = Rect::new(0.0, 0.0, 20.0, 10.0);
+        let track = Rect::new(19.0, 0.0, 1.0, 24.0);
+        let scrollbar = Some(Scrollbar::vertical("track", track, 0.0, 100.0, 24.0, 1.0));
+        let mut hits = vec![PaintedHit::Scroll {
+            id: WidgetId::new("hit-test:scroll"),
+            viewport: Rect::new(0.0, 0.0, 20.0, 24.0),
+            axis: ScrollAxis::Vertical,
+            content_len: 100.0,
+            offset: 0.0,
+            scrollbar,
+            children: Vec::new(),
+        }];
+        clip_hits_to_viewport(&mut hits, 0, viewport);
+
+        let PaintedHit::Scroll {
+            scrollbar: Some(scrollbar),
+            ..
+        } = &hits[0]
+        else {
+            panic!("still a Scroll hit with a scrollbar");
+        };
+        // Same assertion as the `Tree` test: the track's own pre-clip span
+        // (`y` in `[0, 24)`) reached past `viewport`'s bottom edge (`y` in
+        // `[0, 10)`) -- narrowed, a point past the viewport's own edge
+        // doesn't resolve to it.
+        assert!(!scrollbar.track.contains(Point { x: 19.0, y: 20.0 }));
+        assert!(scrollbar.track.contains(Point { x: 19.0, y: 5.0 }));
+    }
+
+    /// [`PaintedHit::Extra::chrome_hits`] entries are absolute rects,
+    /// checked by [`hit_test_painted`] ahead of the surrounding `Extra`'s
+    /// own `area`/[`ExtraPaint::hit_test`] — [`clip_hits_to_viewport`]
+    /// narrows each one independently (dropping it outright when it
+    /// doesn't overlap `viewport` at all), the same per-entry treatment
+    /// `hits` itself gets, so a chrome child painted partly or fully
+    /// outside the viewport it's actually inside never keeps claiming
+    /// clicks there.
+    #[test]
+    fn clip_hits_to_viewport_drops_a_chrome_hit_with_no_overlap() {
+        let extra: Rc<dyn ExtraPaint> = Rc::new(quadraui::ProgressBar {
+            id: WidgetId::new("bar"),
+            label: String::new(),
+            value: None,
+            frame_idx: 0,
+            cancellable: false,
+            accent: None,
+        });
+        let viewport = Rect::new(0.0, 0.0, 20.0, 10.0);
+        let mut hits = vec![PaintedHit::Extra {
+            id: WidgetId::new("bar"),
+            area: Rect::new(0.0, 0.0, 20.0, 20.0),
+            extra,
+            chrome_hits: vec![(Rect::new(0.0, 15.0, 5.0, 1.0), WidgetId::new("button"))],
+        }];
+        clip_hits_to_viewport(&mut hits, 0, viewport);
+
+        let PaintedHit::Extra { chrome_hits, .. } = &hits[0] else {
+            panic!("still an Extra hit");
+        };
+        assert!(chrome_hits.is_empty());
     }
 }

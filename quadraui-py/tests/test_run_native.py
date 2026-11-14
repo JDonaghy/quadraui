@@ -96,7 +96,7 @@ def test_run_native_opens_and_runs_handler_until_smoke_timeout(tmp_path):
     body = (
         "from quadraui import QuiApp, NoDisplayError\n"
         "app = QuiApp(40, 20)\n"
-        'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
+        'app.set_render(lambda: {"button": {"id": "demo:ok", "label": "OK", "focused": True}})\n'
         "seen = []\n"
         "app.set_handler(lambda event: seen.append(event))\n"
         "try:\n"
@@ -147,7 +147,7 @@ def test_run_native_waker_post_delivers_promptly_while_window_is_open(tmp_path):
         "import threading\n"
         "from quadraui import QuiApp, NoDisplayError\n"
         "app = QuiApp(40, 20)\n"
-        'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
+        'app.set_render(lambda: {"button": {"id": "demo:ok", "label": "OK", "focused": True}})\n'
         "seen = []\n"
         "app.set_handler(lambda event: seen.append(event))\n"
         "waker = app.waker()\n"
@@ -197,7 +197,7 @@ def test_run_native_propagates_tick_handler_exception(tmp_path):
     body = (
         "from quadraui import QuiApp, NoDisplayError\n"
         "app = QuiApp(40, 20)\n"
-        'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
+        'app.set_render(lambda: {"button": {"id": "demo:ok", "label": "OK", "focused": True}})\n'
         "def on_tick():\n"
         '    raise RuntimeError("tick handler asked to exit")\n'
         "app.set_tick_handler(on_tick)\n"

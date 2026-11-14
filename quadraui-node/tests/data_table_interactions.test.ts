@@ -37,11 +37,18 @@ function row(name: string, age: string) {
 }
 
 function insertTable(app: any) {
-  app.insertDataTable({
-    id: "table",
-    columns: COLUMNS,
-    rows: [row("Alice", "30"), row("Bob", "40"), row("Cleo", "50")],
-  });
+  app.setRender(() => ({
+    data_table: {
+      id: "table",
+      columns: COLUMNS,
+      rows: [row("Alice", "30"), row("Bob", "40"), row("Cleo", "50")],
+    },
+  }));
+  // Force the first paint so the table's hit-test layout is on the hit
+  // map before any interaction below -- `pushEvent`/`run` only ever
+  // re-render on a handler-returned `Reaction::Redraw`, never on their
+  // own.
+  app.screen();
 }
 
 test("single click on a data table row emits RowSelected, not RowActivated", () => {
@@ -98,14 +105,17 @@ test("a FixedPx column degrades to a nominal cell count on TUI", () => {
   // viewport x == 5.0 (inside the 10-cell-wide column) hits column 0, and
   // a click at x == 15.0 (well past its right edge) hits column 1.
   const app = new QuiApp(30, 8);
-  app.insertDataTable({
-    id: "table",
-    columns: [
-      { title: "Name", width: { FixedPx: 80.0 } },
-      { title: "Age", width: { Flex: 1.0 } },
-    ],
-    rows: [row("Alice", "30")],
-  });
+  app.setRender(() => ({
+    data_table: {
+      id: "table",
+      columns: [
+        { title: "Name", width: { FixedPx: 80.0 } },
+        { title: "Age", width: { Flex: 1.0 } },
+      ],
+      rows: [row("Alice", "30")],
+    },
+  }));
+  app.screen();
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
@@ -141,14 +151,16 @@ test("a FixedPx column degrades to a nominal cell count on TUI", () => {
 
 test("double click on a list item emits ItemDoubleClicked, not ItemActivated", () => {
   const app = new QuiApp(40, 10);
-  app.insertList({
-    id: "list:main",
-    items: [
-      { text: { spans: [{ text: "Alpha", fg: null, bg: null }] } },
-      { text: { spans: [{ text: "Beta", fg: null, bg: null }] } },
-    ],
-    selected_idx: 0,
-  });
+  app.setRender(() => ({
+    list: {
+      id: "list:main",
+      items: [
+        { text: { spans: [{ text: "Alpha", fg: null, bg: null }] } },
+        { text: { spans: [{ text: "Beta", fg: null, bg: null }] } },
+      ],
+      selected_idx: 0,
+    },
+  }));
   assert.ok(app.screenContains("Beta"));
 
   const received: any[] = [];
@@ -169,14 +181,16 @@ test("double click on a list item emits ItemDoubleClicked, not ItemActivated", (
 
 test("enter on a focused list item emits the semantic ItemActivated, not ItemDoubleClicked", () => {
   const app = new QuiApp(40, 10);
-  app.insertList({
-    id: "list:main",
-    items: [
-      { text: { spans: [{ text: "Alpha", fg: null, bg: null }] } },
-      { text: { spans: [{ text: "Beta", fg: null, bg: null }] } },
-    ],
-    selected_idx: 0,
-  });
+  app.setRender(() => ({
+    list: {
+      id: "list:main",
+      items: [
+        { text: { spans: [{ text: "Alpha", fg: null, bg: null }] } },
+        { text: { spans: [{ text: "Beta", fg: null, bg: null }] } },
+      ],
+      selected_idx: 0,
+    },
+  }));
   assert.ok(app.screenContains("Alpha"));
 
   const received: any[] = [];

@@ -3,7 +3,9 @@
 // `showMessageDialog`/`dismissMessageDialog`, `showToast`/`dismissToast`,
 // `showTooltip`/`hideTooltip`, `showCompletions`/`dismissCompletions`,
 // `showFloat`/`dismissFloat`, and
-// `showRichTextPopup`/`dismissRichTextPopup` -- a port of
+// `showRichTextPopup`/`dismissRichTextPopup` -- plus the generic
+// `showOverlay`/`dismissOverlay` pair every one of those 13 methods is a
+// one-line forward onto -- a port of
 // `quadraui-py/tests/test_overlay_primitives.py` and
 // `quadraui-py/tests/test_extra_primitives.py`'s `show_message_dialog`/
 // `show_context_menu` cases. `QuiAppActions.showMessageDialog`
@@ -87,6 +89,49 @@ test("showContextMenu escape dismisses without item activation", () => {
   assert.ok(!app.screenContains("Copy"));
 });
 
+test("showContextMenu with a nested submenu opens by Right arrow and activates the nested item", () => {
+  // An item's `submenu` nests through the same `showContextMenu` call;
+  // opening the child popup by Right arrow and activating its leaf
+  // reports that leaf's own id via `ContextMenuItemActivated` -- the
+  // same shape a flat menu's activation already carries, regardless of
+  // nesting depth.
+  const app = new QuiApp(40, 20);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showContextMenu(
+    [
+      {
+        id: "view",
+        label: { spans: [{ text: "View", fg: null, bg: null }] },
+        submenu: [
+          {
+            id: "toggle_sidebar",
+            label: { spans: [{ text: "Toggle Sidebar", fg: null, bg: null }] },
+          },
+        ],
+      },
+    ],
+    { x: 2.0, y: 2.0 },
+  );
+  assert.ok(app.screenContains("View"));
+
+  app.pushEvent({
+    KeyPressed: { key: { Named: "Right" }, modifiers: {}, repeat: false },
+  });
+  app.run(1);
+  assert.ok(app.screenContains("Toggle Sidebar"), "the submenu must now be painted");
+  assert.deepEqual(received, []);
+
+  app.pushEvent({
+    KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false },
+  });
+  app.run(1);
+
+  assert.deepEqual(received, [{ ContextMenuItemActivated: "toggle_sidebar" }]);
+  assert.ok(!app.screenContains("Toggle Sidebar"));
+});
+
 test("showContextMenu item with a codicon icon renders its fallback glyph", () => {
   // `ContextMenuItem.icon` accepts the same `{codicon: "...", fallback:
   // "..."}` wire shape a tree row's `icon` does (see
@@ -94,8 +139,8 @@ test("showContextMenu item with a codicon icon renders its fallback glyph", () =
   // but paints into the single-cell gutter `checked`'s checkmark shares
   // (only the fallback's first character renders) rather than a
   // measured-width slot -- the headless driver defaults to nerd fonts
-  // off, so that's the fallback's plain-text first character, directly
-  // left of the label with no gap.
+  // off, so that's the fallback's plain-text first character, followed
+  // by one blank gap cell ahead of the label.
   const app = new QuiApp(40, 20);
   app.showContextMenu(
     [
@@ -107,7 +152,8 @@ test("showContextMenu item with a codicon icon renders its fallback glyph", () =
     ],
     { x: 2.0, y: 2.0 },
   );
-  assert.ok(app.screenContains("NNew File"));
+  assert.ok(app.screenContains("N New File"));
+  assert.ok(!app.screenContains("NNew File"));
 });
 
 test("showContextMenu item with an unknown codicon name raises InvalidDescriptorError", () => {
@@ -198,7 +244,7 @@ test("showToast paints over base content and action click routes", () => {
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.insertButton({ id: "ok", label: "OK" });
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
   assert.ok(app.screenContains("OK"));
 
   app.showToast({
@@ -260,7 +306,7 @@ test("showTooltip paints over base content then auto-dismisses on click", () => 
   const app = new QuiApp(40, 20);
   app.setHandler(() => undefined);
 
-  app.insertButton({ id: "ok", label: "OK" });
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
   app.showTooltip(
     { id: "tip:hint", text: "Hello tip" },
     { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
@@ -358,7 +404,7 @@ test("showFloat paints chrome then escape dismisses", () => {
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.insertButton({ id: "ok", label: "OK" });
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
   app.showFloat({ id: "float:hints", anchor: anchor(2.0, 2.0) }, 10.0, 4.0);
 
   assert.ok(app.screenContains("OK"));
@@ -453,4 +499,299 @@ test("dismissRichTextPopup closes without input", () => {
   );
   assert.equal(app.dismissRichTextPopup(), true);
   assert.equal(app.dismissRichTextPopup(), false);
+});
+
+// ── Generic showOverlay/dismissOverlay ──────────────────────────────────
+//
+// All 13 kind-specific methods above are one-line forwards onto these two;
+// this section exercises the generic pair directly rather than re-covering
+// every behavior already pinned above.
+
+test("showOverlay toast returns its own id and dismissOverlay closes it", () => {
+  const app = new QuiApp(40, 20);
+  const returnedId = app.showOverlay(
+    "toast",
+    { id: "toast:saved", title: "Saved", body: "" },
+    null,
+  );
+  assert.equal(returnedId, "toast:saved");
+  assert.ok(app.screenContains("Saved"));
+
+  assert.equal(app.dismissOverlay(returnedId), true);
+  assert.ok(!app.screenContains("Saved"));
+  // Dismissing the same id again is a no-op, not an error.
+  assert.equal(app.dismissOverlay(returnedId), false);
+});
+
+test("showOverlay message_dialog returns a sentinel and dismissOverlay closes it", () => {
+  const app = new QuiApp(40, 20);
+  const returnedId = app.showOverlay(
+    "message_dialog",
+    { title: "Quit?", body: "", buttons: [{ id: "ok", label: "OK" }] },
+    null,
+  );
+  assert.equal(returnedId, "message_dialog");
+  assert.ok(app.screenContains("Quit?"));
+
+  assert.equal(app.dismissOverlay("message_dialog"), true);
+  assert.ok(!app.screenContains("Quit?"));
+});
+
+test("showOverlay context_menu then dismissOverlay closes it", () => {
+  // `dismissOverlay("context_menu")` is a new capability `dismiss*` never
+  // had: there was no `dismissContextMenu` among the original 13.
+  const app = new QuiApp(40, 20);
+  const returnedId = app.showOverlay(
+    "context_menu",
+    { items: contextMenuItems() },
+    { x: 2.0, y: 2.0 },
+  );
+  assert.equal(returnedId, "context_menu");
+  assert.ok(app.screenContains("Copy"));
+
+  assert.equal(app.dismissOverlay("context_menu"), true);
+  assert.ok(!app.screenContains("Copy"));
+  assert.equal(app.dismissOverlay("context_menu"), false);
+});
+
+test("showOverlay tooltip matches showTooltip's own screen output", () => {
+  // `showTooltip` is itself a one-line forward onto `showOverlay`; this
+  // pins that the generic entry point paints identically to the
+  // kind-specific one it replaces.
+  const direct = new QuiApp(40, 20);
+  direct.showTooltip(
+    { id: "tip:hint", text: "Hello tip" },
+    { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
+  );
+
+  const generic = new QuiApp(40, 20);
+  const returnedId = generic.showOverlay(
+    "tooltip",
+    { id: "tip:hint", text: "Hello tip" },
+    { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
+  );
+
+  assert.equal(returnedId, "tip:hint");
+  assert.equal(generic.screen(), direct.screen());
+});
+
+test("showOverlay rejects an unknown kind", () => {
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () => app.showOverlay("not_a_real_kind", {}, null),
+    /InvalidDescriptorError/,
+  );
+});
+
+test("showOverlay rejects a missing anchor when one is required", () => {
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () =>
+      app.showOverlay("tooltip", { id: "tip:hint", text: "Hello tip" }, null),
+    /InvalidDescriptorError/,
+  );
+});
+
+test("dismissOverlay with an unknown id is a no-op", () => {
+  const app = new QuiApp(40, 20);
+  assert.equal(app.dismissOverlay("not-a-known-overlay-id"), false);
+});
+
+// ── Content-bearing overlays (popover / layout dialog) ──────────────────
+
+function toggleFormLeaf() {
+  return {
+    id: "settings",
+    form: {
+      id: "settings",
+      fields: [
+        {
+          id: "wrap",
+          label: { spans: [{ text: "Word wrap", fg: null, bg: null }] },
+          kind: { Toggle: { value: false } },
+        },
+      ],
+    },
+  };
+}
+
+// The button comes first deliberately: opening a content-bearing overlay
+// seeds keyboard focus onto its first tab stop, and the TUI focus-ring
+// convention paints a border box over the focused widget's own edge rows
+// (`quadraui/src/tui/focus_ring.rs`). A single-row form field as the
+// *first* stop would have its only row covered by that ring, which would
+// make the assertions below read as "the content never painted".
+function popoverDescriptor() {
+  return {
+    float: { id: "popover:menu", anchor: anchor(2.0, 2.0) },
+    content: {
+      column: [
+        { id: "submit", button: { id: "submit", label: "Submit" } },
+        toggleFormLeaf(),
+      ],
+    },
+  };
+}
+
+function layoutDialogDescriptor() {
+  return {
+    dialog: {
+      id: "dialog:prefs",
+      title: "Preferences",
+      buttons: [
+        { id: "save", label: "Save", is_default: true },
+        { id: "cancel", label: "Cancel", is_cancel: true },
+      ],
+    },
+    content: {
+      column: [
+        { id: "apply", button: { id: "apply", label: "Apply" } },
+        toggleFormLeaf(),
+      ],
+    },
+  };
+}
+
+function formToggles(received: unknown[]) {
+  return received.filter(
+    (event) =>
+      typeof event === "object" &&
+      event !== null &&
+      "Form" in (event as object) &&
+      "ToggleChanged" in ((event as any).Form[1] as object),
+  );
+}
+
+test("showOverlay popover paints its content and routes a button click", () => {
+  const app = new QuiApp(60, 24);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
+
+  const returnedId = app.showOverlay("popover", popoverDescriptor(), {
+    width: 24.0,
+    height: 8.0,
+  });
+
+  assert.equal(returnedId, "popover:menu");
+  assert.ok(app.screenContains("Submit"));
+  assert.ok(app.screenContains("Word wrap"));
+
+  const [row, col] = locate(app, "Submit");
+  click(app, row, col);
+
+  assert.ok(
+    received.some(
+      (event) =>
+        typeof event === "object" && event !== null && "Form" in (event as object),
+    ),
+    JSON.stringify(received),
+  );
+});
+
+test("showOverlay popover toggle emits the normal semantic event", () => {
+  const app = new QuiApp(60, 24);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showOverlay("popover", popoverDescriptor(), { width: 24.0, height: 8.0 });
+  const [row, col] = locate(app, "Word wrap");
+  click(app, row, col);
+
+  const toggles = formToggles(received);
+  assert.ok(toggles.length > 0, JSON.stringify(received));
+  assert.equal((toggles[0] as any).Form[1].ToggleChanged.value, true);
+});
+
+test("showOverlay popover is dismissed by an outside click", () => {
+  const app = new QuiApp(60, 24);
+  // A registered handler is what routes events through the engine at all,
+  // so the dismissal below needs one even though it asserts on the screen.
+  app.setHandler(() => undefined);
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
+  app.showOverlay("popover", popoverDescriptor(), { width: 24.0, height: 8.0 });
+  assert.ok(app.screenContains("Submit"));
+
+  click(app, 23, 59);
+
+  assert.ok(!app.screenContains("Submit"));
+});
+
+test("showOverlay layout_dialog paints chrome plus content", () => {
+  const app = new QuiApp(60, 24);
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
+
+  const returnedId = app.showOverlay("layout_dialog", layoutDialogDescriptor(), {
+    width: 40.0,
+    height: 6.0,
+  });
+
+  assert.equal(returnedId, "dialog:prefs");
+  assert.ok(app.screenContains("Preferences"));
+  assert.ok(app.screenContains("Cancel"));
+  assert.ok(app.screenContains("Word wrap"));
+});
+
+test("showOverlay layout_dialog toggle emits the normal semantic event", () => {
+  const app = new QuiApp(60, 24);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showOverlay("layout_dialog", layoutDialogDescriptor(), {
+    width: 40.0,
+    height: 6.0,
+  });
+  const [row, col] = locate(app, "Word wrap");
+  click(app, row, col);
+
+  assert.ok(formToggles(received).length > 0, JSON.stringify(received));
+});
+
+test("showOverlay layout_dialog escape resolves its cancel button", () => {
+  const app = new QuiApp(60, 24);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showOverlay("layout_dialog", layoutDialogDescriptor(), {
+    width: 40.0,
+    height: 6.0,
+  });
+  escape(app);
+
+  const resolved = received.filter(
+    (event) =>
+      typeof event === "object" &&
+      event !== null &&
+      "MessageDialogResolved" in (event as object),
+  );
+  assert.ok(resolved.length > 0, JSON.stringify(received));
+  assert.equal((resolved[0] as any).MessageDialogResolved, "cancel");
+  assert.ok(!app.screenContains("Preferences"));
+});
+
+test("dismissOverlay closes a popover and a layout dialog", () => {
+  const app = new QuiApp(60, 24);
+  app.showOverlay("popover", popoverDescriptor(), { width: 24.0, height: 8.0 });
+  assert.equal(app.dismissOverlay("popover"), true);
+  assert.equal(app.dismissOverlay("popover"), false);
+
+  app.showOverlay("layout_dialog", layoutDialogDescriptor(), {
+    width: 40.0,
+    height: 6.0,
+  });
+  assert.equal(app.dismissOverlay("layout_dialog"), true);
+  assert.equal(app.dismissOverlay("layout_dialog"), false);
+});
+
+test("showOverlay popover rejects a descriptor missing its content", () => {
+  const app = new QuiApp(60, 24);
+  assert.throws(
+    () =>
+      app.showOverlay(
+        "popover",
+        { float: { id: "popover:menu", anchor: anchor(2.0, 2.0) } },
+        { width: 24.0, height: 8.0 },
+      ),
+    /MissingFieldError/,
+  );
 });

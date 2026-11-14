@@ -202,12 +202,15 @@ pub fn with_machine(self, _machine: impl Into<String>) -> Self { self }
 - **PR 2** — delete the shims, once those migrations have merged.
   Reference them by number.
 
-**Both PRs get a `CHANGELOG.md` entry** (repo root — see that file's own
-header for the format): PR 1 adds a line under `### Deprecated` naming the
-old item, its replacement, and the PR-2 tracking issue; PR 2 moves that same
-line to `### Removed`. This is the two-PR protocol made visible outside a
-diff — a reader of `CHANGELOG.md` alone should be able to follow a
-deprecation from introduction to removal without pulling up either PR.
+**Both PRs get a `changelog.d/<issue>.<kind>.md` fragment** (repo root —
+see `changelog.d/README.md` for the format and why fragments, not a direct
+`CHANGELOG.md` edit): PR 1 adds a `deprecated`-kind fragment naming the old
+item, its replacement, and the PR-2 tracking issue; PR 2 adds a
+`removed`-kind fragment with that same wording. `scripts/release.py
+prepare` assembles both into `CHANGELOG.md` at release time — PR 1's under
+`### Deprecated`, PR 2's under `### Removed` — so a reader of the released
+`CHANGELOG.md` can still follow a deprecation from introduction to removal
+without pulling up either PR.
 
 **One breaking change per PR.** #476 removed a type, renamed a variant,
 deleted two struct fields and gutted a keymap in a single commit, so the

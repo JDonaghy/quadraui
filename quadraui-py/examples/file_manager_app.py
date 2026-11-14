@@ -27,12 +27,24 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
-from quadraui.app import App, SidebarPanel, Split, StatusBar, Tab, Table, Tabs, TextDisplay, Toolbar, Tree, key_name
+from quadraui.app import App, Node as AppNode, SidebarPanel, Split, StatusBar, Tab, Table, Tabs, TextDisplay, Toolbar, Tree, key_name
 
 if TYPE_CHECKING:
-    from quadraui.wire import Color, DataRowDescriptor, Icon, StyledText, TreeRowDescriptor, TreeStyle
+    from quadraui.wire import (
+        Color,
+        ColumnDescriptor,
+        DataRowDescriptor,
+        Icon,
+        Key,
+        StatusBarSegment,
+        StyledText,
+        ToolbarButtonDescriptor,
+        TreeRowDescriptor,
+        TreeStyle,
+        UiEvent,
+    )
 
 
 @dataclass
@@ -172,29 +184,27 @@ def details_rows(folder: Node) -> list["DataRowDescriptor"]:
         rows.append({"cells": [_styled_text(name), _styled_text(size), _styled_text(kind)]})
     return rows
 
-DETAILS_COLUMNS = [
+DETAILS_COLUMNS: "list[ColumnDescriptor]" = [
     {"title": "Name", "width": {"Flex": 2.0}, "align": "Left"},
     {"title": "Size", "width": {"Flex": 1.0}, "align": "Right"},
     {"title": "Kind", "width": {"Flex": 1.0}, "align": "Left"},
 ]
 
-TOOLBAR = Toolbar(
-    id="fm:toolbar",
-    buttons=[
-        {"Action": {"id": "fm:k:move", "label": "↑↓ Move"}},
-        {"Action": {"id": "fm:k:expand", "label": "→ Expand"}},
-        {"Action": {"id": "fm:k:collapse", "label": "← Collapse"}},
-        {"Action": {"id": "fm:k:open", "label": "↵ Open"}},
-        {"Action": {"id": "fm:k:refresh", "label": "r Refresh"}},
-    ],
-)
+_TOOLBAR_BUTTONS: "list[ToolbarButtonDescriptor]" = [
+    {"Action": {"id": "fm:k:move", "label": "↑↓ Move"}},
+    {"Action": {"id": "fm:k:expand", "label": "→ Expand"}},
+    {"Action": {"id": "fm:k:collapse", "label": "← Collapse"}},
+    {"Action": {"id": "fm:k:open", "label": "↵ Open"}},
+    {"Action": {"id": "fm:k:refresh", "label": "r Refresh"}},
+]
+TOOLBAR = Toolbar(id="fm:toolbar", buttons=_TOOLBAR_BUTTONS)
 
 _STATUS_FG: "Color" = {"r": 220, "g": 220, "b": 230, "a": 255}
 _STATUS_BG: "Color" = {"r": 30, "g": 32, "b": 48, "a": 255}
 _STATUS_ACCENT: "Color" = {"r": 245, "g": 224, "b": 138, "a": 255}
 
 
-def _segment(text: str, *, accent: bool = False, bold: bool = False) -> dict:
+def _segment(text: str, *, accent: bool = False, bold: bool = False) -> "StatusBarSegment":
     return {"text": text, "fg": _STATUS_ACCENT if accent else _STATUS_FG, "bg": _STATUS_BG, "bold": bold}
 
 
@@ -317,19 +327,26 @@ class FileManager:
 
     # --- view + global keys ---------------------------------------------------
 
-    def _details_pane(self):
+    def _details_pane(self) -> AppNode:
         if not self.open:
             return TextDisplay(
                 [{"spans": [{"text": "Select a folder and press Enter to open it.", "fg": None, "bg": None}]}],
                 id="fm:empty",
             )
+
+        def _make_on_activate(folder: Node) -> Callable[[int], None]:
+            def on_activate(idx: int) -> None:
+                self._activate_detail(folder, idx)
+
+            return on_activate
+
         tabs = [
             Tab(
                 Table(
                     DETAILS_COLUMNS,
                     details_rows(folder),
                     id=f"fm:grid:{i}",
-                    on_activate=lambda idx, folder=folder: self._activate_detail(folder, idx),
+                    on_activate=_make_on_activate(folder),
                 ),
                 title=folder.name,
                 closable=True,
@@ -338,7 +355,7 @@ class FileManager:
         ]
         return Tabs(tabs, id="fm:tabs", closable=True, on_close=self._close_tab)
 
-    def _status_leaf(self):
+    def _status_leaf(self) -> AppNode:
         node = self.cursor
         count_text = "unopened" if node.children is None else f"{len(node.children)} items"
         left = [_segment(f" {node.name} ", accent=True, bold=True), _segment(f" {count_text} ")]
@@ -348,7 +365,7 @@ class FileManager:
         right = [_segment(f" {open_n} tab{'s' if open_n != 1 else ''} ")] if open_n else [_segment(" no tabs ")]
         return StatusBar(left, right, id="fm:status")
 
-    def _view(self):
+    def _view(self) -> AppNode:
         rows, nodes = self._visible()
         selected_path = rows[nodes.index(self.cursor)]["path"]
         tree = Tree(
@@ -373,7 +390,7 @@ class FileManager:
             second_min=1.0,
         )
 
-    def _on_event(self, event) -> None:
+    def _on_event(self, event: "UiEvent") -> None:
         """Only truly global input lands here: every click/row-activation
         the view's own node callbacks above already claim never reaches
         this at all (`App._dispatch` returns `True` for those)."""
@@ -402,32 +419,32 @@ class _Quit(Exception):
 def _wrap_quit(fm: FileManager) -> None:
     inner = fm._on_event
 
-    def on_event(event) -> None:
+    def on_event(event: "UiEvent") -> None:
         if key_name(event) in ("q", "Escape"):
             raise _Quit
         inner(event)
 
     fm.app.set_on_event(on_event)
 
-UP_KEY = {"Named": "Up"}
-DOWN_KEY = {"Named": "Down"}
-LEFT_KEY = {"Named": "Left"}
-RIGHT_KEY = {"Named": "Right"}
-ENTER_KEY = {"Named": "Enter"}
+UP_KEY: "Key" = {"Named": "Up"}
+DOWN_KEY: "Key" = {"Named": "Down"}
+LEFT_KEY: "Key" = {"Named": "Left"}
+RIGHT_KEY: "Key" = {"Named": "Right"}
+ENTER_KEY: "Key" = {"Named": "Enter"}
 
 
-def _key_event(key) -> dict:
+def _key_event(key: "Key") -> "UiEvent":
     return {"KeyPressed": {"key": key, "modifiers": {"shift": False, "ctrl": False, "alt": False, "cmd": False}, "repeat": False}}
 
 
 def _run_headless(fm: FileManager) -> None:
     """Expand a folder, open it as a tab, drill into a subfolder from its
     details table, then print the final screen."""
-    steps = [
+    steps: "list[UiEvent]" = [
         _key_event(DOWN_KEY),
         _key_event(RIGHT_KEY),
         _key_event(ENTER_KEY),
-        {"DataTable": ["fm:grid:0", {"RowDoubleClicked": {"idx": 0}}]},
+        {"DataTable": ("fm:grid:0", {"RowDoubleClicked": {"idx": 0}})},
     ]
     for event in steps:
         fm.app.push_event(event)

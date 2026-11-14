@@ -97,7 +97,7 @@ impl From<BackendError> for ServiceError {
 
 impl From<DecodeError> for ServiceError {
     fn from(err: DecodeError) -> Self {
-        ServiceError::InvalidArgument(err.0)
+        ServiceError::InvalidArgument(err.to_string())
     }
 }
 

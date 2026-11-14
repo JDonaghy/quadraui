@@ -14,6 +14,10 @@
 //! - [`crate::DrawOp::PushClip`] / [`crate::DrawOp::PopClip`] quantise
 //!   their rect outward to whole cells.
 //!
+//! [`CellClip`]'s quantise-and-intersect math also backs
+//! [`crate::Backend::push_clip`]/[`crate::Backend::pop_clip`] on
+//! [`crate::tui::backend::TuiBackend`] — see [`TuiClipFrame`].
+//!
 //! # Z-order: shapes under text, not strict declared order
 //!
 //! Every pixel backend paints `ops` in exactly the order the app
@@ -42,7 +46,7 @@
 //! segments; a future pass could rasterise directly with clipping built
 //! into the stepper instead.
 
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::Rect as RRect;
 
 use super::braille::{interpolate_dots, pack_braille_cell};
@@ -78,11 +82,12 @@ pub fn tui_canvas_layout(canvas: &Canvas, area: RRect) -> CanvasLayout {
     ))
 }
 
-/// Axis-aligned clip in whole cells, local to the canvas (`0..cols`,
-/// `0..rows`) — the cell-quantised degrade for
-/// [`DrawOp::PushClip`]/[`DrawOp::PopClip`] (module doc).
+/// Axis-aligned clip in whole cells, local to a `Canvas` (`0..cols`,
+/// `0..rows`) or to an absolute screen-cell rect ([`Self::from_rrect`]) —
+/// the cell-quantised degrade for [`DrawOp::PushClip`]/[`DrawOp::PopClip`]
+/// (module doc), reused by [`TuiClipFrame`] below.
 #[derive(Clone, Copy)]
-struct CellClip {
+pub(crate) struct CellClip {
     x0: i32,
     y0: i32,
     x1: i32,
@@ -99,9 +104,19 @@ impl CellClip {
         }
     }
 
-    /// Quantise `rect` (local canvas units) outward to whole cells and
-    /// intersect with `self`.
-    fn push(&self, rect: Rect) -> Self {
+    /// Bound by an absolute screen-cell `rect`, no quantisation.
+    pub(crate) fn from_rrect(rect: RRect) -> Self {
+        Self {
+            x0: rect.x as i32,
+            y0: rect.y as i32,
+            x1: rect.x as i32 + rect.width as i32,
+            y1: rect.y as i32 + rect.height as i32,
+        }
+    }
+
+    /// Quantise `rect` (same units as `self`'s own bounds) outward to
+    /// whole cells and intersect with `self`.
+    pub(crate) fn push(&self, rect: Rect) -> Self {
         let x0 = rect.x.floor() as i32;
         let y0 = rect.y.floor() as i32;
         let x1 = (rect.x + rect.width).ceil() as i32;
@@ -116,6 +131,90 @@ impl CellClip {
 
     fn contains_cell(&self, cx: i32, cy: i32) -> bool {
         cx >= self.x0 && cx < self.x1 && cy >= self.y0 && cy < self.y1
+    }
+}
+
+/// One entry in [`crate::tui::backend::TuiBackend`]'s
+/// [`crate::Backend::push_clip`]/[`crate::Backend::pop_clip`] stack.
+///
+/// TUI has no per-cell scissor every `draw_*` call site checks, so this
+/// is a retroactive undo rather than a real filter: [`Self::push`]
+/// snapshots the region a push is about to put off-limits (`outer`),
+/// lets painting run unclipped, and [`Self::pop`] restores whatever part
+/// of `outer` still sits outside the narrowed `clip`. A `draw_*` that
+/// reads the buffer between push and pop (a translucent fill blending
+/// against what's "underneath", a test asserting mid-frame) sees
+/// unclipped content — this degrade is only sound for paint that writes
+/// once and is read back after the matching `pop`.
+///
+/// Expected call frequency: one push per visible viewport (a scroll
+/// container clipping one child), not one per row — each push clones a
+/// full `outer`-sized cell snapshot, so a per-row push pays that cost
+/// once per row.
+pub(crate) struct TuiClipFrame {
+    /// Absolute screen-cell area active just before this push — what
+    /// [`Self::pop`] restores, outside `clip`, to its pre-push contents.
+    outer: RRect,
+    /// This push's own narrowed clip: `rect` quantised outward to whole
+    /// cells (same rounding as [`DrawOp::PushClip`], coarser than the
+    /// `.round()` every `draw_*` rect otherwise gets — a fractional
+    /// clip can let a child bleed up to one cell past it) and
+    /// intersected with `outer`.
+    clip: RRect,
+    /// `outer`'s cells, snapshotted at push time, row-major
+    /// (`outer.width` cells per row).
+    snapshot: Vec<Cell>,
+}
+
+impl TuiClipFrame {
+    /// Snapshot `outer`'s cells from `buf`, then quantise `rect`
+    /// (absolute screen-cell units — the same space every
+    /// `Backend::draw_*` rect already uses) outward to whole cells and
+    /// intersect with `outer`, reusing [`CellClip`]'s own math rather
+    /// than a second copy of it.
+    pub(crate) fn push(buf: &Buffer, outer: RRect, rect: Rect) -> Self {
+        let bound = CellClip::from_rrect(outer).push(rect);
+        let clip = RRect::new(
+            bound.x0 as u16,
+            bound.y0 as u16,
+            bound.x1.saturating_sub(bound.x0).max(0) as u16,
+            bound.y1.saturating_sub(bound.y0).max(0) as u16,
+        );
+        let mut snapshot = Vec::with_capacity(outer.area() as usize);
+        for y in outer.y..outer.y.saturating_add(outer.height) {
+            for x in outer.x..outer.x.saturating_add(outer.width) {
+                snapshot.push(buf[(x, y)].clone());
+            }
+        }
+        Self {
+            outer,
+            clip,
+            snapshot,
+        }
+    }
+
+    /// This push's own narrowed clip — what a nested push intersects
+    /// against, and what [`crate::Backend::push_clip`]'s caller sees as
+    /// "the active clip" until the matching [`Self::pop`].
+    pub(crate) fn active(&self) -> RRect {
+        self.clip
+    }
+
+    /// Restore `buf`'s cells inside `outer` but outside `clip` to their
+    /// snapshotted contents — the donut a clipped-out paint could have
+    /// reached — leaving cells inside `clip` exactly as whatever painted
+    /// there left them.
+    pub(crate) fn pop(self, buf: &mut Buffer) {
+        let clip = CellClip::from_rrect(self.clip);
+        let mut i = 0;
+        for y in self.outer.y..self.outer.y.saturating_add(self.outer.height) {
+            for x in self.outer.x..self.outer.x.saturating_add(self.outer.width) {
+                if !clip.contains_cell(x as i32, y as i32) {
+                    buf[(x, y)] = self.snapshot[i].clone();
+                }
+                i += 1;
+            }
+        }
     }
 }
 

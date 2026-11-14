@@ -1,20 +1,32 @@
 // Hand-maintained facade over the native napi-rs addon this package builds
 // at `../index.js`/`../index.d.ts`/`../*.node` (via `npm run build`, which
 // runs `napi build --platform --release` -- see package.json's `build`
-// script). Those three are generated build artifacts, not checked in; this
-// file is this package's actual `main`/`types` entry, so a consumer's
-// import path never names the generated loader directly, and any future
-// TS-only ergonomics (overloads, a narrower public type) have exactly one
-// place to be added without touching the generated file.
+// script). Those three are generated build artifacts, not checked in; a
+// consumer's import path never names the generated loader directly, and
+// any future TS-only ergonomics (overloads, a narrower public type) have
+// exactly one place to be added without touching the generated file.
+//
+// This package's published `main`/`types` entry is `dist/index.js`/
+// `dist/index.d.ts` instead of this file directly: `npm pack`/`npm
+// publish`'s own `prepack` hook (`package.json`'s `build:dist` script)
+// compiles this file with `tsc` into `dist/index.js`, and copies
+// `index.d.ts` -- this file's own hand-maintained sibling declaration,
+// not a `tsc --declaration` output; see that file's own header doc for
+// why -- next to it as `dist/index.d.ts`. In-repo, every direct consumer
+// (`js/app/runtime.ts`, every example, every test) still `require()`s
+// this file by its own `.ts` path unchanged, so it still needs to run
+// standalone under Node's native TypeScript support with no compile step
+// at all; the paragraph below's constraint exists for that path, not the
+// packaged one.
 //
 // Runtime exports go through `require`/`exports` rather than `import`/
 // `export`: Node's native TypeScript support determines a `.ts` file's
 // module format the same way it would a `.js` file with this package's
 // `"type": "commonjs"`, so top-level `import`/runtime `export` syntax here
-// would be a hard parse error, not silently transpiled -- there is no
-// `tsc`/bundler step between this file and the Node process that runs it.
-// `export type` below is exempt: it is erasable (type-only, no runtime
-// value), so it disappears entirely rather than needing ESM semantics.
+// would be a hard parse error, not silently transpiled, when this file
+// runs standalone (every in-repo consumer's own path). `export type`
+// below is exempt: it is erasable (type-only, no runtime value), so it
+// disappears entirely rather than needing ESM semantics.
 const native: typeof import("../index.js") = require("../index.js");
 
 // ─── Error subclasses ───────────────────────────────────────────────────
@@ -61,9 +73,52 @@ class QuadrauiError extends Error {
 }
 exports.QuadrauiError = QuadrauiError;
 
-/** A descriptor/event shape this binding's decode adapter rejected -- mirrors `quadraui-py`'s `InvalidDescriptorError`. */
+/**
+ * A descriptor/event shape this binding's decode adapter rejected --
+ * mirrors `quadraui-py`'s `InvalidDescriptorError`. Every
+ * `quadraui_binding_core::DecodeError` variant raises one of the six
+ * subclasses below instead of this base class directly, chosen on the
+ * Rust side by matching the enum, never by parsing this exception's own
+ * message.
+ */
 class InvalidDescriptorError extends QuadrauiError {}
 exports.InvalidDescriptorError = InvalidDescriptorError;
+
+/** A descriptor dict was missing a field this decoder requires -- mirrors `quadraui_binding_core::DecodeError::MissingField` (and `quadraui-py`'s `MissingFieldError`). `code` is `"missing_field"`. */
+class MissingFieldError extends InvalidDescriptorError {
+  readonly code = "missing_field";
+}
+exports.MissingFieldError = MissingFieldError;
+
+/** A field held a value outside the specific set this decoder accepts -- mirrors `quadraui_binding_core::DecodeError::UnknownVariant` (and `quadraui-py`'s `UnknownVariantError`). `code` is `"unknown_variant"`. */
+class UnknownVariantError extends InvalidDescriptorError {
+  readonly code = "unknown_variant";
+}
+exports.UnknownVariantError = UnknownVariantError;
+
+/** A field held a value of the wrong JSON shape -- mirrors `quadraui_binding_core::DecodeError::TypeMismatch` (and `quadraui-py`'s `TypeMismatchError`). `code` is `"type_mismatch"`. */
+class TypeMismatchError extends InvalidDescriptorError {
+  readonly code = "type_mismatch";
+}
+exports.TypeMismatchError = TypeMismatchError;
+
+/** A dict carried a key this decoder does not recognize there -- mirrors `quadraui_binding_core::DecodeError::UnknownKey` (and `quadraui-py`'s `UnknownKeyError`). `code` is `"unknown_key"`. */
+class UnknownKeyError extends InvalidDescriptorError {
+  readonly code = "unknown_key";
+}
+exports.UnknownKeyError = UnknownKeyError;
+
+/** A render callback's `"wire_version"` is newer than this host understands -- mirrors `quadraui_binding_core::DecodeError::VersionMismatch` (and `quadraui-py`'s `VersionMismatchError`). `code` is `"version_mismatch"`. */
+class VersionMismatchError extends InvalidDescriptorError {
+  readonly code = "version_mismatch";
+}
+exports.VersionMismatchError = VersionMismatchError;
+
+/** A decode failure none of the subclasses above names -- a bespoke cross-field validation this crate's own decoders perform (a duplicate leaf id, an out-of-range ratio), or a lower-level `serde` error neither of them diagnosed further -- mirrors `quadraui_binding_core::DecodeError::Borrow` (and `quadraui-py`'s `DecodeFailedError`). `code` is `"borrow"`. */
+class DecodeFailedError extends InvalidDescriptorError {
+  readonly code = "borrow";
+}
+exports.DecodeFailedError = DecodeFailedError;
 
 /** A fixed slot or additive-primitive kind that already holds a descriptor -- mirrors `quadraui-py`'s `SlotOccupiedError`. */
 class SlotOccupiedError extends QuadrauiError {}
@@ -98,12 +153,19 @@ class InvalidFontRoleError extends QuadrauiError {}
 exports.InvalidFontRoleError = InvalidFontRoleError;
 
 /**
- * A method called re-entrantly from inside this same app's own registered
- * event/tick/render callback. napi-rs's own per-instance borrow tracking
- * already rejects most of these at the FFI boundary; this is this
- * binding's own explicit, defense-in-depth guard for the rest -- no
- * `quadraui-py` equivalent (PyO3's runtime borrow check already covers the
- * whole surface there).
+ * One of `QuiApp`'s methods restricted to top-level script code (the ones
+ * with a matching `QuiAppActions` method -- `showMessageDialog`,
+ * `setTitle`, ...) called re-entrantly, from inside this same app's own
+ * registered event/tick/render callback. napi-rs's own per-instance
+ * native-borrow tracking rejects the underlying call at the FFI boundary,
+ * before any of this package's own code -- including this class -- ever
+ * runs, with a generic message untagged with a method name or an
+ * actionable next step ("the same native value cannot be borrowed
+ * mutably while another borrow is active"); `wrapNativeErrors` recognizes
+ * that exact rejection for each restricted method and rethrows this
+ * instead. Mirrors `quadraui-py`'s own `ReentrantCallError`, which
+ * recognizes PyO3's own equally generic `RuntimeError: Already borrowed`
+ * the same way, via `guard_against_reentrant_call`.
  */
 class ReentrantCallError extends QuadrauiError {}
 exports.ReentrantCallError = ReentrantCallError;
@@ -142,6 +204,12 @@ exports.UnsupportedError = UnsupportedError;
  */
 const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiError> = {
   InvalidDescriptorError,
+  MissingFieldError,
+  UnknownVariantError,
+  TypeMismatchError,
+  UnknownKeyError,
+  VersionMismatchError,
+  DecodeFailedError,
   SlotOccupiedError,
   UnknownSlotError,
   InvalidDimensionsError,
@@ -187,6 +255,63 @@ function toQuadrauiError(err: unknown): unknown {
 exports.toQuadrauiError = toQuadrauiError;
 
 /**
+ * `QuiApp` methods restricted to top-level script code -- the ones with a
+ * matching `QuiAppActions` method, see that class's own doc for the full
+ * list -- keyed by their JS (camelCase) name. `wrapNativeErrors` checks
+ * this set before translating {@link NATIVE_BORROW_CONFLICT_PATTERN}: a
+ * reentrant call to one of these gets {@link ReentrantCallError}'s own
+ * tailored message naming the method and `actions()`; a reentrant call to
+ * anything else (`insertButton`, `slotClear`, ...) still surfaces napi-rs's
+ * own generic rejection unchanged, since there is no `actions()`
+ * counterpart to point a caller at.
+ */
+const REENTRANT_RESTRICTED_METHODS: ReadonlySet<string> = new Set([
+  "showMessageDialog",
+  "showContextMenu",
+  "showToast",
+  "showTooltip",
+  "hideTooltip",
+  "sendNotification",
+  "openPath",
+  "revealInFileManager",
+  "moveToTrash",
+  "restoreFromTrash",
+  "setDocumentEdited",
+  "setRepresentedFilename",
+  "setTrayIcon",
+  "setTrayTooltip",
+  "setTrayMenu",
+  "setCursor",
+  "setTheme",
+  "defineStyle",
+  "addRecentDocument",
+  "clearRecentDocuments",
+  "setDockMenu",
+  "setJumpList",
+  "setLoginItem",
+  "setAsDefaultProtocolClient",
+  "removeAsDefaultProtocolClient",
+  "beginDragOut",
+  "endPowerSaveBlock",
+  "applyOnQuit",
+]);
+
+/**
+ * napi-rs's own native-borrow-conflict rejection: "The same native value
+ * cannot be borrowed mutably while another borrow is active" -- the
+ * generic message every reentrant call into a `#[napi]` instance method
+ * raises, regardless of which method, before any of this package's own
+ * code runs. Anchored on the full sentence (not just "cannot be
+ * borrowed") so a user's own handler error that happens to contain that
+ * shorter substring, and gets propagated out of a restricted method
+ * unchanged, isn't misread as this rejection and rethrown with the wrong
+ * "can't be called from inside a handler" advice. See
+ * {@link REENTRANT_RESTRICTED_METHODS}'s doc for which methods
+ * `wrapNativeErrors` translates this into {@link ReentrantCallError} for.
+ */
+const NATIVE_BORROW_CONFLICT_PATTERN = /the same native value cannot be borrowed/i;
+
+/**
  * Replaces every own, writable, configurable function-valued property on
  * `target` (a native addon prototype, or a constructor used for its
  * static methods) with a wrapper that converts a thrown native `Error`
@@ -196,8 +321,17 @@ exports.toQuadrauiError = toQuadrauiError;
  * non-configurable is left alone the same way, which is what keeps
  * `QuiApp.runShell` (see this file's own "Error subclasses" section doc)
  * from needing special-case handling here.
+ *
+ * `restrictedMethods`, when given, additionally recognizes
+ * {@link NATIVE_BORROW_CONFLICT_PATTERN} on a property whose key is in
+ * that set and rethrows {@link ReentrantCallError} instead of the generic
+ * native rejection -- see {@link REENTRANT_RESTRICTED_METHODS}'s own doc
+ * for why this can't just be another `toQuadrauiError` tag: the
+ * rejection this recognizes comes from napi-rs itself, at the FFI
+ * boundary, before this crate's own Rust code -- which is what would
+ * otherwise tag it -- ever runs.
  */
-function wrapNativeErrors(target: object): void {
+function wrapNativeErrors(target: object, restrictedMethods?: ReadonlySet<string>): void {
   for (const key of Object.getOwnPropertyNames(target)) {
     if (key === "constructor") continue;
     const descriptor = Object.getOwnPropertyDescriptor(target, key);
@@ -214,13 +348,22 @@ function wrapNativeErrors(target: object): void {
       try {
         return original.apply(this, args);
       } catch (err) {
+        if (
+          restrictedMethods?.has(key) &&
+          err instanceof Error &&
+          NATIVE_BORROW_CONFLICT_PATTERN.test(err.message)
+        ) {
+          throw new ReentrantCallError(
+            `app.${key} can't be called from inside a handler; use the actions() handle passed to / available in the handler`,
+          );
+        }
         throw toQuadrauiError(err);
       }
     };
   }
 }
 
-wrapNativeErrors(native.QuiApp.prototype);
+wrapNativeErrors(native.QuiApp.prototype, REENTRANT_RESTRICTED_METHODS);
 wrapNativeErrors(native.QuiShellApp.prototype);
 wrapNativeErrors(native.QuiAppWaker.prototype);
 wrapNativeErrors(native.QuiAppActions.prototype);
@@ -288,11 +431,14 @@ exports.installCrashHandler = installCrashHandler;
 /**
  * A headless quadraui app, driven entirely from JavaScript/TypeScript.
  *
- * Construct it with a `width`/`height` cell grid, insert descriptors with
- * `insertButton`/`insertTextDisplay`/.../`insertExtra`, and inspect the
- * rendered frame with `screen()`/`screenContains()`. See the native
- * binding's own doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the
- * full method list and panic/poison behaviour.
+ * Construct it with a `width`/`height` cell grid, call `setRender` with a
+ * callback that returns a layout tree of inline leaves, and inspect the
+ * rendered frame with `screen()`/`screenContains()`. The fixed-slot
+ * `insertButton`/`insertTextDisplay`/.../`insertExtra`/`clearExtra`/
+ * `slotClear` methods still work but are deprecated -- each one warns once,
+ * naming the inline layout leaf that replaces it. See the native binding's
+ * own doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the full
+ * method list and panic/poison behaviour.
  *
  * A thin subclass of the native constructor rather than a bare re-export:
  * every other method is already wrapped in place on

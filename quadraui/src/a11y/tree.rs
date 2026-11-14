@@ -2531,6 +2531,7 @@ mod tests {
                 cells: vec![StyledText::plain("Total"), StyledText::plain("2")],
                 decoration: Decoration::default(),
             }),
+            bordered: false,
         };
         let frame = frame_with(vec![Surface::DataTable {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
@@ -2582,6 +2583,7 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            bordered: false,
         };
         let frame = frame_with(vec![Surface::DataTable {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),

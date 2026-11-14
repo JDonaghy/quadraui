@@ -938,7 +938,7 @@ fn activate<A: AppLogic + 'static>(
     // measurement outside the draw callback.
     {
         let pctx = da.pango_context();
-        let font_desc = pg::FontDescription::from_string("Sans 11");
+        let font_desc = pg::FontDescription::from_string(&super::backend::default_ui_font_desc());
         // pango tightened `Context::set_font_description` to no longer accept
         // `Option`, so the wrapper is just dropped.
         pctx.set_font_description(&font_desc);

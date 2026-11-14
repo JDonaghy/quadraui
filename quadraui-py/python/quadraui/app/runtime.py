@@ -30,7 +30,7 @@ mutation a callback makes is already visible by the time that same
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 from . import hot_reload as _hr
 from .component import Component
@@ -104,13 +104,13 @@ def _raw_key_name(key: Any) -> Optional[str]:
         return None
     char = key.get("Char")
     if char is not None:
-        return char
+        return str(char)
     named = key.get("Named")
     if named is None:
         return None
     if isinstance(named, dict):
         return f"F{named['F']}"
-    return named
+    return str(named)
 
 
 def key_name(event: Any) -> Optional[str]:
@@ -142,7 +142,7 @@ def _is_activate_key(name: Optional[str]) -> bool:
 # Maps a container-event wrapper's own key (`event["Tree"]`, `event["DataTable"]`,
 # ...) to {variant_name: (callback_name, args_from_payload)} -- the shape
 # every typed leaf node constructor's own `on_*` keyword documents.
-_CONTAINER_EVENT_MAP: Dict[str, Dict[str, Tuple[str, Callable[[dict], tuple]]]] = {
+_CONTAINER_EVENT_MAP: Dict[str, Dict[str, Tuple[str, Callable[[Dict[str, Any]], Tuple[Any, ...]]]]] = {
     "Tree": {
         "RowClicked": ("on_row_click", lambda p: (p["path"],)),
         "RowToggleExpand": ("on_toggle_expand", lambda p: (p["path"],)),
@@ -341,9 +341,43 @@ class App:
         if self._on_event is not None:
             self._on_event(event)
 
+    def _dispatch_button_clicked(self, event: Dict[str, Any]) -> bool:
+        """The `{"Form": [id, {"ButtonClicked": ...}]}` half of `_dispatch`:
+        the semantic activation a `button` leaf emits for *both* a pointer
+        click on its body and an Enter/Space while it holds keyboard focus.
+
+        Only the keyboard-originated one runs `on_click` here. The
+        pointer-originated one carries the same `"hit"` dict as the raw
+        `MouseDown` that follows it, and that raw event is what `_dispatch`
+        above fires `on_click` from -- keying the callback off the press
+        keeps one `on_click` per press, where claiming every semantic
+        activation would fire twice for a fast double-click (whose second
+        press arrives as `DoubleClick`, carrying its own activation).
+        Either way the semantic event is claimed rather than left to fall
+        through to `on_event`, so a button's own activation never reaches
+        the global escape hatch.
+
+        An id this layer registered no `on_click` for is not one of its
+        `Button` nodes (an embedded `form` field's button, say), so its
+        event falls through untouched."""
+        inner = event["Form"]
+        if not (isinstance(inner, (list, tuple)) and len(inner) == 2):
+            return False
+        widget_id, activation = inner
+        if not isinstance(activation, dict) or "ButtonClicked" not in activation:
+            return False
+        callback = self._registry.get(widget_id, {}).get("on_click")
+        if callback is None:
+            return False
+        if "hit" not in event:
+            callback()
+        return True
+
     def _dispatch(self, event: Any) -> bool:
-        """Tries every node-callback dispatch path in turn; `True` means a
-        callback ran (so `_handle` must not also call `on_event`)."""
+        """Tries every node-callback dispatch path in turn; `True` means the
+        event was claimed -- a callback ran, or (see
+        `_dispatch_button_clicked`) it is the semantic twin of one that
+        does -- so `_handle` must not also call `on_event`."""
         if not isinstance(event, dict):
             return False
 
@@ -366,6 +400,9 @@ class App:
                     callback()
                     return True
             return False
+
+        if "Form" in event:
+            return self._dispatch_button_clicked(event)
 
         for container, variants in _CONTAINER_EVENT_MAP.items():
             if container not in event:
@@ -404,8 +441,8 @@ class App:
     def screen_contains(self, needle: str) -> bool:
         return self.qui.screen_contains(needle)
 
-    def widget_state(self, widget_id: str) -> Optional[dict]:
-        return self.qui.widget_state(widget_id)
+    def widget_state(self, widget_id: str) -> Optional[Dict[str, Any]]:
+        return cast(Optional[Dict[str, Any]], self.qui.widget_state(widget_id))
 
     def run_tui(self, mouse: bool = True) -> None:
         self.qui.run_tui(mouse)

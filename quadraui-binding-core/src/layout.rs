@@ -6,7 +6,7 @@
 //! module owns what the decoded shape looks like and how it paints
 //! ([`crate::render::paint_layout`]).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 // `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
@@ -14,8 +14,8 @@ use std::rc::Rc;
 // — the `"panel"` wire node itself is a separate breaking change.
 #[allow(deprecated)]
 use quadraui::{
-    Button, DataTable, ListView, Panel, Rect, SidebarPanel, Split, SplitTree, TabBar, TextDisplay,
-    TreeView,
+    Button, Color, DataTable, ListView, Panel, Rect, ScrollAxis, SectionSize, SidebarPanel, Split,
+    SplitTree, Style, TabBar, TextDisplay, Theme, TreeView,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -27,8 +27,10 @@ use crate::DecodeError;
 /// draggable ratio, a `Tabs` holding a tab strip plus one content subtree
 /// per tab (of which only the selected one paints), a `Panel` or
 /// `SidebarPanel` holding one chrome descriptor plus a single content
-/// subtree, or a `SplitTree` holding an arbitrarily nested divider tree of
-/// content subtrees.
+/// subtree, a `SplitTree` holding an arbitrarily nested divider tree of
+/// content subtrees, a `Scroll` holding one content subtree painted at
+/// its own natural size and offset inside a clipped viewport, or a `Styled`
+/// wrapper applying a [`StyleOverride`] to one wrapped subtree.
 pub enum LayoutNode {
     Row(LayoutContainer),
     Column(LayoutContainer),
@@ -38,18 +40,713 @@ pub enum LayoutNode {
     Panel(LayoutPanel),
     SidebarPanel(LayoutSidebarPanel),
     SplitTree(LayoutSplitTree),
+    Scroll(LayoutScroll),
+    Styled(LayoutStyled),
+}
+
+impl LayoutNode {
+    /// Peels every nested [`LayoutNode::Styled`] wrapper, returning the
+    /// first node underneath that isn't one. A `"style"` key is purely
+    /// cosmetic — it never changes what a node structurally *is* — so
+    /// every structural match against a node's own kind (a scroll's
+    /// content being a `Row`/`Column` vs. an atomic leaf, a direct scroll
+    /// child being a `Leaf`, a leaf's descriptor kind) must match against
+    /// this, not the raw (possibly `Styled`) node, or a purely cosmetic
+    /// `"style"` sibling key would silently change that structural
+    /// decision — see `crate::render::scroll_content_slots`,
+    /// `natural_main_length`, `is_offset_windowed_leaf`,
+    /// `offset_windowed_leaf_scrolled_to_offset`, and
+    /// `crate::host::resolve_layout_node`'s own `LayoutNode::Scroll` arm,
+    /// each of which calls this (or [`Self::unstyled_mut`]) rather than
+    /// matching the node directly. The override(s) peeled off here still
+    /// apply to the subtree's own *paint* — see
+    /// `crate::render::push_styled_scope`, which brackets
+    /// `Backend::set_theme`/`set_style` around the same nested layers this
+    /// unwraps, so a caller that needs the structural node AND the correct
+    /// paint state calls both.
+    pub fn unstyled(&self) -> &LayoutNode {
+        let mut node = self;
+        while let LayoutNode::Styled(styled) = node {
+            node = &styled.node;
+        }
+        node
+    }
+
+    /// [`Self::unstyled`]'s mutable counterpart, for a resolve pass that
+    /// needs to mutate the real node underneath any `Styled` wrapper(s)
+    /// (`crate::host::resolve_layout_node`'s `LayoutNode::Scroll` arm,
+    /// which writes a resolved cursor/scroll position back onto a content
+    /// child).
+    pub fn unstyled_mut(&mut self) -> &mut LayoutNode {
+        let mut node = self;
+        while let LayoutNode::Styled(styled) = node {
+            node = &mut styled.node;
+        }
+        node
+    }
+}
+
+/// A [`LayoutNode::Styled`]'s decoded shape: a [`StyleOverride`] paired
+/// with the single wrapped subtree it applies to. Every node kind's own
+/// `"style"` wire sibling key decodes to this wrapper around whatever node
+/// the rest of that same dict already decoded to — see
+/// `crate::wire::layout_node_from_value`'s own wrapping, applied uniformly
+/// after the row/column/split/tabs/panel/sidebar_panel/split_tree/scroll/
+/// leaf dispatch, so every node kind gets the same `"style"` key for free
+/// rather than each needing its own decode of it.
+pub struct LayoutStyled {
+    pub style: StyleOverride,
+    pub node: Box<LayoutNode>,
+}
+
+/// A scoped subset of the backend-wide [`quadraui::Theme`] colour tokens
+/// and [`quadraui::Style`] metric tokens a `"style"` wire key may override
+/// for one [`LayoutNode::Styled`] subtree — merged onto whichever theme/
+/// style were already in effect above that node (see
+/// [`crate::render::paint_layout`]'s `LayoutNode::Styled` arm, which
+/// brackets `Backend::set_theme`/`set_style` around the wrapped subtree's
+/// own paint and restores the outer values once it returns — the same
+/// "vary the theme per-pane" contract [`quadraui::Backend::set_theme`]'s
+/// own doc already documents, just driven by the wire format instead of a
+/// host's own render code). Every field left `None` (the default,
+/// [`StyleOverride::is_empty`]) falls through to whatever the parent
+/// already set, so a nested override only ever narrows what it names —
+/// never resets a field an ancestor already overrode.
+///
+/// A node reaches this shape two ways, which merge into one
+/// [`LayoutNode::Styled`] wrapper: its own inline `"style"` dict, and a
+/// `"class"` key naming one or more registered [`StyleSets`] entries.
+/// Inline wins — see [`StyleSets`]'s own precedence doc.
+///
+/// # Token mapping
+///
+/// | Wire key | Resolved onto | Read by (examples) |
+/// |---|---|---|
+/// | `bg` | [`quadraui::Theme::background`] | plain `Row`/`Column`/`Split`/`Tabs`/`SplitTree` areas; `Button`'s `Icon` variant; a non-`bordered` `List`/`Tree` |
+/// | `fg` | [`quadraui::Theme::foreground`] | generic chrome text (`TabBar`'s dirty-tab glyph, `List`/`Tree`/`DataTable` body/header text) |
+/// | `border` | [`quadraui::Theme::border_fg`] | bordered-surface border glyphs (`List`/`Dialog`/bordered `Panel`) |
+/// | `accent` | [`quadraui::Theme::accent_fg`] | focus/active-state accents (`Form` toggle, slider fill, `TabBar`'s active-tab underline) |
+/// | `surface_bg` | [`quadraui::Theme::surface_bg`] | `Button`'s `Secondary`/`Danger`/`Warning` variants and disabled state, a `bordered` `List`, `Dialog`/`Toast`/`Palette`/`Toolbar`/`Float` chrome |
+/// | `accent_bg` | [`quadraui::Theme::accent_bg`] | `Button`'s `Primary` variant's solid fill, `Switch`/`Progress`'s active fill, `Panel`'s active-action fill |
+/// | `padding` | [`quadraui::Style::padding`] | inner inset shared by `Button`/`Toast`/`Tooltip`/`ContextMenu`/`Palette`/`Dialog` |
+/// | `corner_radius` | [`quadraui::Style::corner_radius`] | rounded-rect radius shared by every rounded overlay |
+/// | `border_width` | [`quadraui::Style::border_width`] | border stroke width on a pixel backend (no-op on TUI, same as the token itself) |
+///
+/// A generic `bg` override does **not** change a `Button`'s fill on any
+/// variant but `Icon` — `Button`'s own TUI/GTK painters read `surface_bg`
+/// (`Secondary`/`Danger`/`Warning`/disabled) or `accent_bg` (`Primary`),
+/// never `background`, so `{"style": {"bg": "#…"}}` on a `"button"` leaf is
+/// a silent no-op. Use `surface_bg`/`accent_bg` instead — see the table
+/// above for which variant reads which. The same split applies to every
+/// other bordered/filled surface (`List`, `Dialog`, `Toast`, `Palette`,
+/// `Switch`, `Progress`, `Toolbar`, `FindReplace`, `Float`): `bg` only ever
+/// reaches `background`. `TreeView`/`DataTable`/`TabBar`'s own row/header
+/// fill (`Theme::tab_bar_bg`) and `List`'s header fill (`Theme::header_bg`)
+/// have no `"style"` alias yet — overriding either still needs a host-wide
+/// `Backend::set_theme` call.
+///
+/// `bg`/`fg`/`border`/`accent`/`surface_bg`/`accent_bg` decode from the
+/// same shapes [`quadraui::Color`]'s own `Deserialize` accepts (an
+/// `{"r","g","b","a"}` object or `[r, g, b[, a]]` array), plus a
+/// `"#rrggbb"`/`"#rrggbbaa"` hex string convenience — see
+/// `crate::wire::style_override_from_value`.
+///
+/// # Metric overrides don't re-run layout
+///
+/// `padding`/`corner_radius`/`border_width` only ever change how this
+/// subtree *paints* this frame, never this frame's already-resolved
+/// layout/measurement — [`crate::render::natural_size`] always measures a
+/// `Styled` leaf by unwrapping straight through to the wrapped node with
+/// whatever theme/style was already active, so a `Content`/`Align`-sized
+/// sibling never shifts because of a metric override deeper in the tree. A
+/// future revision that needs a metric override to affect sizing would
+/// have to thread it into that measurement pass too.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StyleOverride {
+    pub bg: Option<Color>,
+    pub fg: Option<Color>,
+    pub border: Option<Color>,
+    pub accent: Option<Color>,
+    pub surface_bg: Option<Color>,
+    pub accent_bg: Option<Color>,
+    pub padding: Option<f32>,
+    pub corner_radius: Option<f32>,
+    pub border_width: Option<f32>,
+}
+
+impl StyleOverride {
+    /// `true` when every field is `None` — an override that changes
+    /// nothing, equivalent to no `"style"` key at all.
+    /// `crate::wire::style_override_from_value` folds an all-empty
+    /// `{"style": {}}` down to `None` via this check, rather than
+    /// threading a no-op [`LayoutNode::Styled`] wrapper through the tree.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Applies this override onto `theme`, leaving every field this
+    /// override didn't name unchanged.
+    pub fn apply_theme(&self, theme: Theme) -> Theme {
+        Theme {
+            background: self.bg.unwrap_or(theme.background),
+            foreground: self.fg.unwrap_or(theme.foreground),
+            border_fg: self.border.unwrap_or(theme.border_fg),
+            accent_fg: self.accent.unwrap_or(theme.accent_fg),
+            surface_bg: self.surface_bg.unwrap_or(theme.surface_bg),
+            accent_bg: self.accent_bg.unwrap_or(theme.accent_bg),
+            ..theme
+        }
+    }
+
+    /// [`Self::apply_theme`]'s [`quadraui::Style`] counterpart. `Style` is
+    /// `#[non_exhaustive]`, so this goes through its own `with_*` builder
+    /// methods rather than struct-update syntax.
+    pub fn apply_style(&self, style: Style) -> Style {
+        let mut style = style;
+        if let Some(padding) = self.padding {
+            style = style.with_padding(padding);
+        }
+        if let Some(corner_radius) = self.corner_radius {
+            style = style.with_corner_radius(corner_radius);
+        }
+        if let Some(border_width) = self.border_width {
+            style = style.with_border_width(border_width);
+        }
+        style
+    }
+
+    /// Merges `self` *over* `base`: every token `self` names wins, every
+    /// token it leaves `None` falls through to whatever `base` named (or
+    /// stays `None` if neither did). The merge a `"class"` list and a
+    /// node's own inline `"style"` key resolve through — see
+    /// [`StyleSets::resolve`] for the full precedence chain.
+    pub fn merged_over(&self, base: StyleOverride) -> StyleOverride {
+        StyleOverride {
+            bg: self.bg.or(base.bg),
+            fg: self.fg.or(base.fg),
+            border: self.border.or(base.border),
+            accent: self.accent.or(base.accent),
+            surface_bg: self.surface_bg.or(base.surface_bg),
+            accent_bg: self.accent_bg.or(base.accent_bg),
+            padding: self.padding.or(base.padding),
+            corner_radius: self.corner_radius.or(base.corner_radius),
+            border_width: self.border_width.or(base.border_width),
+        }
+    }
+}
+
+/// One [`BUILTIN_STYLE_SETS`] entry: a name paired with the `Theme`-deriving
+/// function it resolves through.
+type BuiltinStyleSet = (&'static str, fn(&Theme) -> StyleOverride);
+
+/// Each built-in style-set name paired with the `Theme`-deriving function
+/// [`StyleSets::new`] registers it under — the one source both `new()`
+/// and [`BUILTIN_STYLE_SET_NAMES`] read from, so a future fifth built-in
+/// (or a renamed one) can't update one and forget the other.
+const BUILTIN_STYLE_SETS: [BuiltinStyleSet; 4] = [
+    ("primary", builtin_primary),
+    ("secondary", builtin_secondary),
+    ("danger", builtin_danger),
+    ("subtle", builtin_subtle),
+];
+
+/// The names [`BUILTIN_STYLE_SETS`] registers, in that table's own order —
+/// **not** the sorted order [`StyleSets::names`] reports them in. Each
+/// maps onto existing `Theme` tokens (and, through them, onto an existing
+/// `ButtonVariant`'s own resting fill) rather than onto fixed literal
+/// colours, so a built-in set follows an app's own `set_theme` palette —
+/// see [`StyleSets`]'s own doc table.
+pub const BUILTIN_STYLE_SET_NAMES: [&str; 4] = [
+    BUILTIN_STYLE_SETS[0].0,
+    BUILTIN_STYLE_SETS[1].0,
+    BUILTIN_STYLE_SETS[2].0,
+    BUILTIN_STYLE_SETS[3].0,
+];
+
+/// How one named style set produces the [`StyleOverride`] a `"class"`
+/// reference to it resolves to.
+#[derive(Clone, Copy)]
+enum StyleSetDef {
+    /// A set a host defined through its own `define_style` surface: fixed
+    /// tokens, independent of the active [`Theme`].
+    Defined(StyleOverride),
+    /// One of [`BUILTIN_STYLE_SET_NAMES`], derived from whichever `Theme`
+    /// is active when it resolves.
+    Builtin(fn(&Theme) -> StyleOverride),
+}
+
+/// The named style sets a layout node's `"class"` key refers to — the
+/// CSS-class analogue of this wire format's own per-node `"style"` key.
+/// A host registers a set under a name through its binding's own
+/// `define_style(name, overrides)` surface; any node in any later frame's
+/// tree then carries `{"class": "<name>"}` (or a list of names) to pull in
+/// that set's tokens, instead of restating them inline on every node that
+/// wants them.
+///
+/// # Precedence
+///
+/// [`Self::resolve`] merges the named sets left to right (a later name in
+/// the list wins a token an earlier one also named), and
+/// `crate::wire::layout_node_from_value` then merges the node's own inline
+/// `"style"` dict over that result — so inline always wins, exactly like a
+/// CSS `style=` attribute beating a `class=` rule. A name this registry
+/// has never heard of contributes nothing and is **not** an error, the
+/// same data-format-v1 unknown-key policy an unrecognised sibling key on a
+/// node dict already gets.
+///
+/// # Built-in sets
+///
+/// [`Self::new`] starts with four sets, each derived from the live
+/// [`Theme`] rather than from literal colours:
+///
+/// | Name | Tokens | Intent |
+/// |---|---|---|
+/// | `primary` | `accent_bg`/`surface_bg` = [`Theme::accent_bg`], `accent` = [`Theme::accent_fg`] | [`quadraui::ButtonVariant::Primary`]'s own resting fill, extended to every filled surface in the subtree |
+/// | `secondary` | `accent_bg`/`surface_bg` = [`Theme::surface_bg`], `fg` = [`Theme::surface_fg`] | [`quadraui::ButtonVariant::Secondary`]'s own resting fill |
+/// | `danger` | `accent_bg`/`surface_bg` = [`Theme::button_danger_bg`], `border`/`accent` = [`Theme::error_fg`] | [`quadraui::ButtonVariant::Danger`]'s own resting fill |
+/// | `subtle` | `fg`/`border` = [`Theme::muted_fg`], `accent_bg`/`surface_bg` = [`Theme::background`] | de-emphasised chrome: muted text, no raised surface |
+///
+/// Each sets *both* `accent_bg` and `surface_bg` because which of the two
+/// a `Button` reads depends on its variant ([`Theme::accent_bg`] for
+/// `Primary`, [`Theme::surface_bg`] for `Secondary`/`Icon`) — naming only
+/// one would make `{"class": "danger"}` land on some buttons and silently
+/// no-op on others. See [`StyleOverride`]'s own token table for which
+/// other primitives read which.
+///
+/// [`Self::define`] replaces a built-in under the same name, so an app
+/// that wants its own `primary` simply defines one.
+///
+/// # Which theme a built-in resolves against
+///
+/// A built-in resolves against the theme passed to [`Self::resolve`] —
+/// the backend's own app-wide [`Theme`] at the start of the frame, since
+/// `"class"` is resolved during the render callback's decode. An ancestor
+/// node's `"style"` key that changes `surface_bg` for its subtree does
+/// *not* re-derive a descendant's `{"class": "secondary"}` against that
+/// narrowed theme.
+#[derive(Clone)]
+pub struct StyleSets {
+    sets: HashMap<String, StyleSetDef>,
+}
+
+impl Default for StyleSets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StyleSets {
+    /// A registry holding exactly the [`BUILTIN_STYLE_SETS`] sets.
+    pub fn new() -> Self {
+        let mut sets: HashMap<String, StyleSetDef> = HashMap::new();
+        for (name, derive) in BUILTIN_STYLE_SETS {
+            sets.insert(name.to_owned(), StyleSetDef::Builtin(derive));
+        }
+        Self { sets }
+    }
+
+    /// Registers `overrides` under `name`, replacing whatever set (built-in
+    /// or previously defined) that name already held. Redefining a name
+    /// takes effect on the next frame: nothing caches a resolved override,
+    /// so every `"class"` reference in the next tree re-resolves through
+    /// this registry.
+    pub fn define(&mut self, name: impl Into<String>, overrides: StyleOverride) {
+        self.sets
+            .insert(name.into(), StyleSetDef::Defined(overrides));
+    }
+
+    /// Every registered set name, sorted so a caller enumerating them gets
+    /// a stable order out of the underlying [`HashMap`].
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.sets.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// One set's own [`StyleOverride`], resolved against `theme` if it is a
+    /// built-in. `None` for a name this registry has never heard of.
+    pub fn get(&self, name: &str, theme: &Theme) -> Option<StyleOverride> {
+        self.sets.get(name).map(|def| match def {
+            StyleSetDef::Defined(overrides) => *overrides,
+            StyleSetDef::Builtin(derive) => derive(theme),
+        })
+    }
+
+    /// Merges every set `names` refers to into one [`StyleOverride`], left
+    /// to right — a later name wins any token an earlier one also named.
+    /// A name this registry doesn't hold contributes nothing (see this
+    /// type's own doc for why that is not an error).
+    pub fn resolve(&self, names: &[String], theme: &Theme) -> StyleOverride {
+        let mut merged = StyleOverride::default();
+        for name in names {
+            if let Some(overrides) = self.get(name, theme) {
+                merged = overrides.merged_over(merged);
+            }
+        }
+        merged
+    }
+}
+
+/// The `primary` built-in — see [`StyleSets`]'s own table.
+fn builtin_primary(theme: &Theme) -> StyleOverride {
+    StyleOverride {
+        accent_bg: Some(theme.accent_bg),
+        surface_bg: Some(theme.accent_bg),
+        accent: Some(theme.accent_fg),
+        ..StyleOverride::default()
+    }
+}
+
+/// The `secondary` built-in — see [`StyleSets`]'s own table.
+fn builtin_secondary(theme: &Theme) -> StyleOverride {
+    StyleOverride {
+        accent_bg: Some(theme.surface_bg),
+        surface_bg: Some(theme.surface_bg),
+        fg: Some(theme.surface_fg),
+        ..StyleOverride::default()
+    }
+}
+
+/// The `danger` built-in — see [`StyleSets`]'s own table.
+fn builtin_danger(theme: &Theme) -> StyleOverride {
+    let fill = theme.button_danger_bg();
+    StyleOverride {
+        accent_bg: Some(fill),
+        surface_bg: Some(fill),
+        border: Some(theme.error_fg),
+        accent: Some(theme.error_fg),
+        ..StyleOverride::default()
+    }
+}
+
+/// The `subtle` built-in — see [`StyleSets`]'s own table.
+fn builtin_subtle(theme: &Theme) -> StyleOverride {
+    StyleOverride {
+        fg: Some(theme.muted_fg),
+        border: Some(theme.muted_fg),
+        accent_bg: Some(theme.background),
+        surface_bg: Some(theme.background),
+        ..StyleOverride::default()
+    }
 }
 
 /// A [`LayoutNode::Row`]/[`LayoutNode::Column`]'s decoded shape: its child
-/// nodes paired with the [`Spacing`] (`padding`/`margin`/`gap`) the render
+/// slots ([`LayoutChild`], each pairing one child node with its own
+/// main-axis size/min/max) paired with the [`Spacing`] (`padding`/`margin`/
+/// `gap`) and the main-axis [`Justify`]/cross-axis [`Align`] the render
 /// callback's `"row"`/`"column"` dict declared alongside them — see
 /// `crate::wire::layout_node_from_value`'s decode for the wire shape.
-/// `spacing` defaults to [`Spacing::default`] (no inset, no gap), so an
-/// existing tree with no spacing keys paints bit-for-bit identical to
-/// before this field existed.
+/// `spacing`/`justify`/`align` each default to no inset/no gap/`Start`/
+/// `Stretch`, and every child's own size defaults to
+/// [`SectionSize::EqualShare`] with no min/max, so an existing tree with
+/// none of these keys paints the same shares as before they existed:
+/// every child gets the same share of the full container, the way
+/// [`crate::render::split_rects_with_gap`] (this container's own
+/// predecessor) always divided it — down to floating-point tolerance, not
+/// necessarily the identical bit pattern, since the two now reach that
+/// share by different arithmetic (see
+/// `crate::render::layout_container_rects`).
 pub struct LayoutContainer {
-    pub children: Vec<LayoutNode>,
+    pub children: Vec<LayoutChild>,
     pub spacing: Spacing,
+    pub justify: Justify,
+    pub align: Align,
+}
+
+impl LayoutContainer {
+    /// Builds a container whose every child uses the default
+    /// [`LayoutChild::new`] sizing (`EqualShare`, no min/max) and whose
+    /// `justify`/`align` are both their defaults — the equal-share-only
+    /// shape every `"row"`/`"column"` node had before per-child sizing
+    /// existed. Convenient for a call site that only ever deals in bare
+    /// [`LayoutNode`]s (most of this crate's own tests, and any decode
+    /// path that hasn't been taught the new per-child keys).
+    pub fn new(children: Vec<LayoutNode>, spacing: Spacing) -> Self {
+        Self {
+            children: children.into_iter().map(LayoutChild::new).collect(),
+            spacing,
+            justify: Justify::default(),
+            align: Align::default(),
+        }
+    }
+}
+
+/// One [`LayoutContainer`] child slot: the child [`LayoutNode`] itself,
+/// paired with the main-axis [`SectionSize`] strategy it resolves under
+/// (default [`SectionSize::EqualShare`], the only strategy that existed
+/// before per-child sizing), and an optional `min`/`max` clamp in the same
+/// portable surface-native-pixel unit [`Spacing`]'s fields use (quantised
+/// to a whole native unit at paint time, same as `padding`/`margin`/`gap`
+/// — see `crate::render::layout_container_rects`).
+pub struct LayoutChild {
+    pub node: LayoutNode,
+    pub size: SectionSize,
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+}
+
+impl LayoutChild {
+    /// A child with the pre-existing default sizing: `EqualShare`, no
+    /// min/max.
+    pub fn new(node: LayoutNode) -> Self {
+        Self {
+            node,
+            size: SectionSize::default(),
+            min: None,
+            max: None,
+        }
+    }
+}
+
+/// A [`LayoutContainer`]'s main-axis distribution of any leftover space
+/// once every child's own size is resolved — CSS flexbox's
+/// `justify-content`, restricted to the four values this layout tree
+/// supports. Only visible when the children's resolved sizes sum to less
+/// than the container's own main-axis extent (the common case — all
+/// `EqualShare`, or a `Weight`/`EqualShare` mix with no min/max clamp —
+/// always consumes the whole extent, so `justify` is a no-op there; it
+/// matters once every child is `Fixed`/`Percent`/`Content`/clamped and
+/// together they fall short of the container).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Justify {
+    /// Leftover space goes after the last child.
+    #[default]
+    Start,
+    /// Leftover space is split evenly before the first and after the
+    /// last child.
+    Center,
+    /// Leftover space goes before the first child.
+    End,
+    /// No leading/trailing leftover; it is split evenly *between*
+    /// children instead (a no-op with zero or one child).
+    SpaceBetween,
+}
+
+/// A [`LayoutContainer`]'s cross-axis treatment of each child — CSS
+/// flexbox's `align-items`, restricted to the four values this layout tree
+/// supports. `Stretch` (the default) gives every child the container's
+/// full cross-axis extent, exactly like every `Row`/`Column` child before
+/// `align` existed. `Start`/`Center`/`End` instead size a child to its own
+/// natural cross-axis extent (see `crate::render::natural_size`) and
+/// position it within the container's cross-axis extent; a child with no
+/// cheap natural-size measurement on that axis (anything but a `Button`/
+/// `TextDisplay`/`TabBar` leaf) degrades to `Stretch` instead of collapsing
+/// to zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Align {
+    Start,
+    Center,
+    End,
+    #[default]
+    Stretch,
+}
+
+/// One [`LayoutContainer`] child's main-axis sizing input to
+/// [`resolve_main_axis_sizes`]: its [`SectionSize`] strategy, optional
+/// `min`/`max` clamp (already converted to native units — see
+/// `crate::render::layout_container_rects`), and `content` — the child's
+/// own natural main-axis extent, consulted only when `size` is
+/// [`SectionSize::Content`] (`0.0` for every other strategy, including a
+/// `Content` child with no cheap natural-size measurement available).
+#[derive(Clone, Copy, Debug)]
+pub struct MainAxisSpec {
+    pub size: SectionSize,
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+    pub content: f32,
+}
+
+/// Clamps `raw` between `spec.min`/`spec.max` (either bound optional),
+/// then floors at `0.0` — a negative resolved size never reaches a
+/// [`Rect`], regardless of how aggressively a caller-supplied `max` or a
+/// `Percent`/`Weight` overflow squeezed it. `max` is applied first, then
+/// `min` — so a child declaring a conflicting `min > max` resolves to
+/// `min`, the same precedence CSS's own `min-width`/`max-width` conflict
+/// resolution uses.
+fn apply_min_max(spec: &MainAxisSpec, raw: f32) -> f32 {
+    let mut v = raw;
+    if let Some(max) = spec.max {
+        v = v.min(max);
+    }
+    if let Some(min) = spec.min {
+        v = v.max(min);
+    }
+    v.max(0.0)
+}
+
+/// Three-pass main-axis size resolution for a [`LayoutContainer`]'s
+/// children — the same `Fixed` → `Percent` → `Weight`/`EqualShare` pass
+/// order `quadraui::MultiSectionView`'s own per-section layout uses for
+/// the identical [`SectionSize`] vocabulary, adapted for a plain
+/// `Row`/`Column` child (no header chrome cost, no collapsed state).
+///
+/// Pass 1 resolves every `Fixed`/`Content` child exactly (clamped by its
+/// own min/max). Pass 2 resolves every `Percent` child against
+/// `container_main` (the container's full main-axis extent, before any
+/// child consumed part of it); if the percentages overflow what's left of
+/// `usable_main`, every `Percent` child scales down proportionally. Pass 3
+/// splits whatever remains of `usable_main` across every `Weight`/
+/// `EqualShare` child by weight ratio (`EqualShare` is `Weight(1.0)`); with
+/// no such child, the remainder goes unused (same as before per-child
+/// sizing existed only when every child was `EqualShare` and consumed the
+/// whole extent by construction). `usable_main` is `container_main` minus
+/// whatever gap the caller already reserved between children.
+pub fn resolve_main_axis_sizes(
+    specs: &[MainAxisSpec],
+    container_main: f32,
+    usable_main: f32,
+) -> Vec<f32> {
+    let n = specs.len();
+    let mut out = vec![0.0_f32; n];
+    let mut done = vec![false; n];
+    let mut consumed = 0.0_f32;
+
+    // Pass 1: Fixed + Content.
+    for (i, spec) in specs.iter().enumerate() {
+        let raw = match spec.size {
+            SectionSize::Fixed(v) => v as f32,
+            SectionSize::Content => spec.content,
+            _ => continue,
+        };
+        let v = apply_min_max(spec, raw);
+        out[i] = v;
+        consumed += v;
+        done[i] = true;
+    }
+
+    // Pass 2: Percent, against the original `container_main`.
+    let mut percent_indices = Vec::new();
+    let mut percent_raw = Vec::new();
+    for (i, spec) in specs.iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        if let SectionSize::Percent(p) = spec.size {
+            percent_indices.push(i);
+            percent_raw.push(p.clamp(0.0, 1.0) * container_main);
+        }
+    }
+    let percent_total: f32 = percent_raw.iter().sum();
+    let percent_budget = (usable_main - consumed).max(0.0);
+    let percent_scale = if percent_total > percent_budget && percent_total > 0.0 {
+        percent_budget / percent_total
+    } else {
+        1.0
+    };
+    for (k, &i) in percent_indices.iter().enumerate() {
+        let v = apply_min_max(&specs[i], percent_raw[k] * percent_scale);
+        out[i] = v;
+        consumed += v;
+        done[i] = true;
+    }
+
+    // Pass 3: Weight + EqualShare share whatever remains.
+    let remainder = (usable_main - consumed).max(0.0);
+    let mut flex_indices = Vec::new();
+    let mut weights = Vec::new();
+    for (i, spec) in specs.iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        match spec.size {
+            SectionSize::Weight(w) => {
+                flex_indices.push(i);
+                weights.push(w.max(0.0));
+            }
+            SectionSize::EqualShare => {
+                flex_indices.push(i);
+                weights.push(1.0);
+            }
+            SectionSize::Fixed(_) | SectionSize::Content | SectionSize::Percent(_) => {
+                // Every `done[i]` slot from pass 1/2 is skipped above, so
+                // this arm is unreachable today. `debug_assert!` instead
+                // of `unreachable!` so a future `SectionSize` variant
+                // this match hasn't been taught yet degrades to an
+                // `EqualShare`-like flex share in a release build rather
+                // than panicking the per-frame layout path.
+                debug_assert!(false, "already resolved in pass 1/2");
+                flex_indices.push(i);
+                weights.push(1.0);
+            }
+        }
+    }
+    let weight_sum: f32 = weights.iter().sum();
+    if !flex_indices.is_empty() && weight_sum > 0.0 {
+        for (k, &i) in flex_indices.iter().enumerate() {
+            let raw = remainder * (weights[k] / weight_sum);
+            out[i] = apply_min_max(&specs[i], raw);
+        }
+    } else {
+        for &i in &flex_indices {
+            out[i] = apply_min_max(&specs[i], 0.0);
+        }
+    }
+
+    out
+}
+
+/// Main-axis starting offset of each child, relative to the container's
+/// own main-axis origin, once [`resolve_main_axis_sizes`] has resolved
+/// every `sizes[i]`. `gap` (already in native units) is inserted between
+/// every pair of adjacent children regardless of `justify`; `justify`
+/// only disposes of `usable_main - (sum(sizes) + total gap)` — the
+/// leftover once sizing and the declared gap are both accounted for. A
+/// negative leftover (children overflow `usable_main`) clamps to `0.0`,
+/// so `justify` never pushes a child to a negative offset.
+pub fn justify_starts(sizes: &[f32], usable_main: f32, gap: f32, justify: Justify) -> Vec<f32> {
+    let n = sizes.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let total: f32 = sizes.iter().sum::<f32>() + gap * (n - 1) as f32;
+    let leftover = (usable_main - total).max(0.0);
+    let (lead, extra) = match justify {
+        Justify::Start => (0.0, 0.0),
+        Justify::Center => (leftover / 2.0, 0.0),
+        Justify::End => (leftover, 0.0),
+        Justify::SpaceBetween => {
+            if n > 1 {
+                (0.0, leftover / (n - 1) as f32)
+            } else {
+                (0.0, 0.0)
+            }
+        }
+    };
+    let mut starts = Vec::with_capacity(n);
+    let mut cursor = lead;
+    for (i, &size) in sizes.iter().enumerate() {
+        starts.push(cursor);
+        cursor += size;
+        if i + 1 < n {
+            cursor += gap + extra;
+        }
+    }
+    starts
+}
+
+/// A child's cross-axis `(offset, size)` within `cross_extent`, given its
+/// own natural cross-axis extent (`None` when no cheap measurement exists
+/// — see [`Align`]'s own doc) and the container's [`Align`]. `Stretch`
+/// ignores `natural_cross` entirely and always returns `(0.0,
+/// cross_extent)` — the pre-`align` behaviour. Every other value sizes the
+/// child to `natural_cross` (falling back to `cross_extent` — i.e.
+/// degrading to `Stretch` — when `None`), clamped to fit inside
+/// `cross_extent`, then positions it at the start/middle/end of whatever
+/// cross-axis space that size didn't use.
+pub fn align_cross(cross_extent: f32, natural_cross: Option<f32>, align: Align) -> (f32, f32) {
+    if align == Align::Stretch {
+        return (0.0, cross_extent.max(0.0));
+    }
+    let size = natural_cross
+        .unwrap_or(cross_extent)
+        .clamp(0.0, cross_extent.max(0.0));
+    let offset = match align {
+        Align::Start => 0.0,
+        Align::Center => ((cross_extent - size) / 2.0).max(0.0),
+        Align::End => (cross_extent - size).max(0.0),
+        Align::Stretch => 0.0,
+    };
+    (offset, size)
 }
 
 /// One edge inset a `padding` spacing key decodes into: all four sides
@@ -298,6 +995,35 @@ pub struct LayoutSidebarPanel {
     pub content: Box<LayoutNode>,
 }
 
+/// A [`LayoutNode::Scroll`]'s decoded shape: a generic scrollable region
+/// hosting one content subtree, built on [`quadraui::ScrollView`] for
+/// offset clamping, visible-range, and scrollbar geometry — never
+/// reimplemented here, see that primitive's own module doc. `content`'s
+/// natural size along `axis` becomes `ScrollView::content_len`;
+/// [`crate::render::paint_layout`]/[`crate::host::resolve_layout_node`] lay
+/// it out at that natural size, offset by the resolved scroll position,
+/// and clip to the viewport via `Backend::push_clip`/`Backend::pop_clip`.
+/// `id` is a bare `String`, not a `WidgetId`, matching [`LayoutSplitTree::id`]/
+/// [`LayoutLeaf::id`]'s own convention — wrapped at each use site instead.
+pub struct LayoutScroll {
+    pub id: String,
+    pub axis: ScrollAxis,
+    /// Controlled scroll offset from the wire — `None` means uncontrolled
+    /// (the engine owns it, resolved in [`crate::host::resolve_layout_node`]
+    /// against [`crate::widget_state::WidgetState`] the same way
+    /// [`crate::host::resolve_split_ratio`] resolves a `Split`'s divider).
+    /// Unlike `Split::ratio` (a bare `f32` with no "unset" sentinel), this
+    /// field is already `Option<f32>`, so `WidgetState::resolve`'s own
+    /// controlled/uncontrolled policy applies directly — no baseline latch
+    /// needed.
+    pub offset: Option<f32>,
+    pub content: Box<LayoutNode>,
+    /// Inset around the viewport before scroll content is measured/painted
+    /// — this node's own `padding`/`margin` (no `gap`: there's only one
+    /// content subtree).
+    pub spacing: Spacing,
+}
+
 /// A [`LayoutNode::SplitTree`]'s decoded shape: the `quadraui::SplitTree`
 /// geometry tree (every leaf position holding a synthetic, internal-only
 /// `WidgetId`) paired with `leaves`, the matching content subtree for each
@@ -359,6 +1085,18 @@ pub const LEAF_KIND_KEYS: [&str; 6] = [
     "tab_bar",
 ];
 
+/// Builds the [`DecodeError::Borrow`] [`validate_unique_leaf_ids`]'s walk
+/// raises on the first repeated id, naming both the offending `kind` (the
+/// node currently being visited -- the second, colliding occurrence of
+/// `id`, not whichever earlier node first claimed its namespace) and `id`
+/// itself.
+fn duplicate_leaf_id_error(what: &str, kind: &str, id: &str) -> DecodeError {
+    DecodeError::borrow(
+        format!("{what} › {kind}#{id}"),
+        format!("duplicate leaf id {id:?}"),
+    )
+}
+
 /// Walks `node` collecting every leaf and split `id` into one namespace,
 /// returning a [`DecodeError`] on the first repeat. A unique id per
 /// leaf/split lets host code address one instance unambiguously even when a
@@ -366,45 +1104,49 @@ pub const LEAF_KIND_KEYS: [&str; 6] = [
 /// shadowing a leaf's. `what` labels the error message the same way every
 /// other decoder in this crate does — [`crate::wire::decode_render_output`]
 /// passes its own caller-supplied label through unchanged.
+///
+/// `what` accumulates every ancestor's `kind#id` segment on the way down
+/// (the same ` › `-joined shape every other decoder in this crate builds),
+/// so a collision five levels into a tree names the whole subtree it was
+/// found in, not just the colliding leaf's bare `kind#id` hung directly off
+/// the tree's root label.
 pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), DecodeError> {
     fn walk(what: &str, node: &LayoutNode, seen: &mut HashSet<String>) -> Result<(), DecodeError> {
         match node {
             LayoutNode::Row(container) | LayoutNode::Column(container) => {
-                for child in &container.children {
-                    walk(what, child, seen)?;
+                for (index, child) in container.children.iter().enumerate() {
+                    let context = format!("{what} › children[{index}]");
+                    walk(&context, &child.node, seen)?;
                 }
                 Ok(())
             }
             LayoutNode::Leaf(leaf) => {
                 if !seen.insert(leaf.id.clone()) {
-                    return Err(DecodeError(format!(
-                        "{what}: duplicate leaf id {:?}",
-                        leaf.id
-                    )));
+                    return Err(duplicate_leaf_id_error(what, "leaf", &leaf.id));
                 }
                 Ok(())
             }
             LayoutNode::Split(split) => {
                 let id = split.split.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
+                    return Err(duplicate_leaf_id_error(what, "split", &id));
                 }
-                walk(what, &split.first, seen)?;
-                walk(what, &split.second, seen)
+                let context = format!("{what} › split#{id}");
+                walk(&context, &split.first, seen)?;
+                walk(&context, &split.second, seen)
             }
             LayoutNode::Tabs(tabs) => {
                 let id = tabs.tab_bar.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
+                    return Err(duplicate_leaf_id_error(what, "tabs", &id));
                 }
+                let context = format!("{what} › tabs#{id}");
                 for entry in &tabs.entries {
                     if !seen.insert(entry.id.clone()) {
-                        return Err(DecodeError(format!(
-                            "{what}: duplicate leaf id {:?}",
-                            entry.id
-                        )));
+                        return Err(duplicate_leaf_id_error(&context, "tab", &entry.id));
                     }
-                    walk(what, &entry.content, seen)?;
+                    let entry_context = format!("{context} › tab#{}", entry.id);
+                    walk(&entry_context, &entry.content, seen)?;
                 }
                 Ok(())
             }
@@ -412,29 +1154,40 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
             LayoutNode::Panel(panel_node) => {
                 let id = panel_node.panel.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
+                    return Err(duplicate_leaf_id_error(what, "panel", &id));
                 }
-                walk(what, &panel_node.content, seen)
+                let context = format!("{what} › panel#{id}");
+                walk(&context, &panel_node.content, seen)
             }
             LayoutNode::SidebarPanel(sidebar_node) => {
                 let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
+                    return Err(duplicate_leaf_id_error(what, "sidebar_panel", &id));
                 }
-                walk(what, &sidebar_node.content, seen)
+                let context = format!("{what} › sidebar_panel#{id}");
+                walk(&context, &sidebar_node.content, seen)
             }
             LayoutNode::SplitTree(split_tree) => {
                 if !seen.insert(split_tree.id.clone()) {
-                    return Err(DecodeError(format!(
-                        "{what}: duplicate leaf id {:?}",
-                        split_tree.id
-                    )));
+                    return Err(duplicate_leaf_id_error(what, "split_tree", &split_tree.id));
                 }
+                let context = format!("{what} › split_tree#{}", split_tree.id);
                 for leaf in &split_tree.leaves {
-                    walk(what, leaf, seen)?;
+                    walk(&context, leaf, seen)?;
                 }
                 Ok(())
             }
+            LayoutNode::Scroll(scroll_node) => {
+                if !seen.insert(scroll_node.id.clone()) {
+                    return Err(duplicate_leaf_id_error(what, "scroll", &scroll_node.id));
+                }
+                let context = format!("{what} › scroll#{}", scroll_node.id);
+                walk(&context, &scroll_node.content, seen)
+            }
+            // A `"style"` wrapper carries no id of its own -- it's purely
+            // a paint-time overlay around whatever node it wraps, so this
+            // walk passes straight through to it.
+            LayoutNode::Styled(styled) => walk(what, &styled.node, seen),
         }
     }
     let mut seen = HashSet::new();
@@ -498,5 +1251,346 @@ mod tests {
         let insets = EdgeInsets::uniform(12.0);
         let inset = insets.inset(rect, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
         assert_eq!(inset, Rect::new(2.0, 1.0, 76.0, 22.0));
+    }
+
+    fn spec(size: SectionSize) -> MainAxisSpec {
+        MainAxisSpec {
+            size,
+            min: None,
+            max: None,
+            content: 0.0,
+        }
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_all_equal_share_divides_evenly() {
+        let specs = vec![
+            spec(SectionSize::EqualShare),
+            spec(SectionSize::EqualShare),
+            spec(SectionSize::EqualShare),
+        ];
+        assert_eq!(resolve_main_axis_sizes(&specs, 90.0, 90.0), vec![30.0; 3]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_fixed_plus_weight_mix() {
+        // Fixed(20) first, the 80 that's left split 2:1 between the two
+        // Weight children -- 53.333.. and 26.666...
+        let specs = vec![
+            spec(SectionSize::Fixed(20)),
+            spec(SectionSize::Weight(2.0)),
+            spec(SectionSize::Weight(1.0)),
+        ];
+        let sizes = resolve_main_axis_sizes(&specs, 100.0, 100.0);
+        assert_eq!(sizes[0], 20.0);
+        assert!((sizes[1] - 53.333_332).abs() < 0.01);
+        assert!((sizes[2] - 26.666_666).abs() < 0.01);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_percent_is_against_the_original_container() {
+        let specs = vec![
+            spec(SectionSize::Percent(0.25)),
+            spec(SectionSize::EqualShare),
+        ];
+        let sizes = resolve_main_axis_sizes(&specs, 200.0, 200.0);
+        assert_eq!(sizes, vec![50.0, 150.0]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_percent_overflow_scales_down_proportionally() {
+        // Two 70% children overflow the 100-wide container; both scale
+        // down by the same factor so they still sum to the full width.
+        let specs = vec![
+            spec(SectionSize::Percent(0.7)),
+            spec(SectionSize::Percent(0.7)),
+        ];
+        let sizes = resolve_main_axis_sizes(&specs, 100.0, 100.0);
+        assert_eq!(sizes, vec![50.0, 50.0]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_content_uses_the_supplied_content_size() {
+        let specs = vec![
+            MainAxisSpec {
+                size: SectionSize::Content,
+                min: None,
+                max: None,
+                content: 15.0,
+            },
+            spec(SectionSize::EqualShare),
+        ];
+        let sizes = resolve_main_axis_sizes(&specs, 100.0, 100.0);
+        assert_eq!(sizes, vec![15.0, 85.0]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_min_floors_a_fixed_child() {
+        let specs = vec![MainAxisSpec {
+            size: SectionSize::Fixed(5),
+            min: Some(20.0),
+            max: None,
+            content: 0.0,
+        }];
+        assert_eq!(resolve_main_axis_sizes(&specs, 100.0, 100.0), vec![20.0]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_max_caps_an_equal_share_child() {
+        let specs = vec![
+            MainAxisSpec {
+                size: SectionSize::EqualShare,
+                min: None,
+                max: Some(10.0),
+                content: 0.0,
+            },
+            spec(SectionSize::EqualShare),
+        ];
+        // Each would get 50 by equal share; the first is capped to 10.
+        assert_eq!(
+            resolve_main_axis_sizes(&specs, 100.0, 100.0),
+            vec![10.0, 50.0]
+        );
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_with_no_flex_child_leaves_the_remainder_unused() {
+        let specs = vec![spec(SectionSize::Fixed(30))];
+        assert_eq!(resolve_main_axis_sizes(&specs, 100.0, 100.0), vec![30.0]);
+    }
+
+    #[test]
+    fn justify_starts_start_puts_leftover_after_the_last_child() {
+        assert_eq!(
+            justify_starts(&[10.0, 10.0], 100.0, 0.0, Justify::Start),
+            vec![0.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_center_splits_leftover_before_and_after() {
+        // 100 - 20 = 80 leftover, 40 leads.
+        assert_eq!(
+            justify_starts(&[10.0, 10.0], 100.0, 0.0, Justify::Center),
+            vec![40.0, 50.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_end_puts_leftover_before_the_first_child() {
+        assert_eq!(
+            justify_starts(&[10.0, 10.0], 100.0, 0.0, Justify::End),
+            vec![80.0, 90.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_space_between_spreads_leftover_between_children() {
+        // 100 - 30 = 70 leftover split between the 2 gaps between 3
+        // children -- 35 each.
+        assert_eq!(
+            justify_starts(&[10.0, 10.0, 10.0], 100.0, 0.0, Justify::SpaceBetween),
+            vec![0.0, 45.0, 90.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_space_between_with_one_child_is_a_no_op() {
+        assert_eq!(
+            justify_starts(&[10.0], 100.0, 0.0, Justify::SpaceBetween),
+            vec![0.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_respects_a_declared_gap_regardless_of_justify() {
+        // 100 - (10 + 10 + 5 gap) = 75 leftover, split before/after by
+        // Center.
+        assert_eq!(
+            justify_starts(&[10.0, 10.0], 100.0, 5.0, Justify::Center),
+            vec![37.5, 52.5]
+        );
+    }
+
+    #[test]
+    fn align_cross_stretch_ignores_natural_size_and_fills_the_extent() {
+        assert_eq!(align_cross(40.0, Some(10.0), Align::Stretch), (0.0, 40.0));
+    }
+
+    #[test]
+    fn align_cross_start_sizes_to_natural_and_anchors_at_zero() {
+        assert_eq!(align_cross(40.0, Some(10.0), Align::Start), (0.0, 10.0));
+    }
+
+    #[test]
+    fn align_cross_center_sizes_to_natural_and_centers_it() {
+        assert_eq!(align_cross(40.0, Some(10.0), Align::Center), (15.0, 10.0));
+    }
+
+    #[test]
+    fn align_cross_end_sizes_to_natural_and_anchors_at_the_far_edge() {
+        assert_eq!(align_cross(40.0, Some(10.0), Align::End), (30.0, 10.0));
+    }
+
+    #[test]
+    fn align_cross_with_no_natural_size_degrades_to_stretch() {
+        assert_eq!(align_cross(40.0, None, Align::Center), (0.0, 40.0));
+    }
+
+    /// `align_cross`/`justify_starts` dispose of an odd leftover with a
+    /// fractional (half-cell) offset -- unlike every resolved *size*,
+    /// which is `ceil`-quantised to a whole native unit before either
+    /// function ever sees it (see `crate::render::layout_container_rects`).
+    /// A real TUI paint still renders at an integer cell, so a half-cell
+    /// `x`/`y` origin biases one way or the other when it's eventually
+    /// floored/rounded -- a known rounding hazard pinned here rather than
+    /// fixed, since hit-testing reads the same geometry and stays
+    /// internally consistent either way.
+    #[test]
+    fn align_cross_with_an_odd_leftover_yields_a_fractional_offset() {
+        assert_eq!(align_cross(41.0, Some(10.0), Align::Center), (15.5, 10.0));
+    }
+
+    #[test]
+    fn layout_child_new_defaults_to_equal_share_with_no_min_max() {
+        let child = LayoutChild::new(LayoutNode::Row(LayoutContainer::new(
+            Vec::new(),
+            Spacing::default(),
+        )));
+        assert_eq!(child.size, SectionSize::EqualShare);
+        assert_eq!(child.min, None);
+        assert_eq!(child.max, None);
+    }
+
+    #[test]
+    fn style_override_default_is_empty() {
+        assert!(StyleOverride::default().is_empty());
+    }
+
+    #[test]
+    fn style_override_with_any_field_set_is_not_empty() {
+        let over = StyleOverride {
+            bg: Some(quadraui::Color::rgb(1, 2, 3)),
+            ..StyleOverride::default()
+        };
+        assert!(!over.is_empty());
+    }
+
+    #[test]
+    fn style_override_apply_theme_only_touches_named_fields() {
+        let base = Theme::default();
+        let over = StyleOverride {
+            bg: Some(quadraui::Color::rgb(10, 20, 30)),
+            ..StyleOverride::default()
+        };
+        let derived = over.apply_theme(base);
+        assert_eq!(derived.background, quadraui::Color::rgb(10, 20, 30));
+        // Every other field passes through unchanged.
+        assert_eq!(derived.foreground, base.foreground);
+        assert_eq!(derived.border_fg, base.border_fg);
+        assert_eq!(derived.accent_fg, base.accent_fg);
+    }
+
+    #[test]
+    fn style_override_apply_style_only_touches_named_fields() {
+        let base = Style::default();
+        let over = StyleOverride {
+            corner_radius: Some(99.0),
+            ..StyleOverride::default()
+        };
+        let derived = over.apply_style(base);
+        assert_eq!(derived.corner_radius, 99.0);
+        assert_eq!(derived.padding, base.padding);
+        assert_eq!(derived.border_width, base.border_width);
+    }
+
+    #[test]
+    fn validate_unique_leaf_ids_passes_through_a_styled_wrapper() {
+        let node = LayoutNode::Styled(LayoutStyled {
+            style: StyleOverride {
+                bg: Some(quadraui::Color::rgb(1, 1, 1)),
+                ..StyleOverride::default()
+            },
+            node: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                id: "a".to_string(),
+                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new("a"), "A")),
+                scroll_px: None,
+            })),
+        });
+        assert!(validate_unique_leaf_ids("test", &node).is_ok());
+    }
+
+    /// A repeated leaf id is a [`DecodeError::Borrow`] naming the offending
+    /// node's own path, not just the bare id string -- `"test ›
+    /// children[1] › leaf#a"`, not just `"a"`, so a binding can tell which
+    /// of two leaves sharing an id is the second (colliding) one.
+    #[test]
+    fn validate_unique_leaf_ids_names_the_colliding_nodes_path() {
+        let leaf = |id: &str| {
+            LayoutNode::Leaf(LayoutLeaf {
+                id: id.to_string(),
+                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new(id), id)),
+                scroll_px: None,
+            })
+        };
+        let node = LayoutNode::Row(LayoutContainer {
+            children: vec![LayoutChild::new(leaf("a")), LayoutChild::new(leaf("a"))],
+            spacing: Spacing::default(),
+            justify: Justify::default(),
+            align: Align::default(),
+        });
+        let error = validate_unique_leaf_ids("test", &node).unwrap_err();
+        assert_eq!(error.code(), "borrow");
+        assert_eq!(error.path(), "test › children[1] › leaf#a");
+        assert!(
+            error.to_string().contains("duplicate leaf id \"a\""),
+            "{error}"
+        );
+    }
+
+    /// The same collision, but found several levels deep inside a
+    /// `split`/`panel` nesting -- every ancestor's own `kind#id`
+    /// accumulates into the error's path, so it names the whole subtree
+    /// the collision was found in, not just the colliding leaf hung
+    /// directly off the tree's root label.
+    #[test]
+    fn validate_unique_leaf_ids_accumulates_every_ancestors_path() {
+        let leaf = |id: &str| {
+            LayoutNode::Leaf(LayoutLeaf {
+                id: id.to_string(),
+                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new(id), id)),
+                scroll_px: None,
+            })
+        };
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
+        let panel = LayoutNode::Panel(LayoutPanel {
+            panel: quadraui::Panel {
+                id: quadraui::WidgetId::new("chrome"),
+                title: None,
+                actions: Vec::new(),
+                accent: None,
+                collapsed: false,
+            },
+            content: Box::new(leaf("dup")),
+            spacing: Spacing::default(),
+        });
+        let split = LayoutNode::Split(LayoutSplit {
+            split: quadraui::Split {
+                id: quadraui::WidgetId::new("body"),
+                direction: quadraui::SplitDirection::Horizontal,
+                ratio: 0.5,
+                first_min: 0.0,
+                second_min: 0.0,
+            },
+            first: Box::new(leaf("dup")),
+            second: Box::new(panel),
+            spacing: Spacing::default(),
+        });
+        let error = validate_unique_leaf_ids("render", &split).unwrap_err();
+        assert_eq!(error.code(), "borrow");
+        assert_eq!(
+            error.path(),
+            "render › split#body › panel#chrome › leaf#dup"
+        );
     }
 }

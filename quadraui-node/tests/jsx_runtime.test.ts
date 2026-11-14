@@ -74,6 +74,7 @@ function stubNodeConstructors(): Record<string, (...args: unknown[]) => unknown>
     Column: stub("Column"),
     Row: stub("Row"),
     SidebarPanel: stub("SidebarPanel"),
+    Scroll: stub("Scroll"),
     Tabs: stub("Tabs"),
     Tree: stub("Tree"),
     Table: stub("Table"),
@@ -136,6 +137,17 @@ test("<column> passes an absent children prop through as an empty list", () => {
   const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
   const result = jsx("column", { gap: 2 });
   assert.deepEqual(result.args, [[], { gap: 2 }]);
+});
+
+test("<scroll> passes its own content child through, defaulting to null when absent", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const result = jsx("scroll", { id: "scroll:main", axis: "vertical", children: "content" });
+  assert.equal(result.__call, "Scroll");
+  assert.deepEqual(result.args, ["content", { id: "scroll:main", axis: "vertical" }]);
+
+  const empty = jsx("scroll", { id: "scroll:empty" });
+  assert.deepEqual(empty.args, [null, { id: "scroll:empty" }]);
 });
 
 test("<tree> forwards its own leaf props with no children slot to unpack", () => {

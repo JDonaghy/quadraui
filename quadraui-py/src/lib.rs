@@ -138,7 +138,7 @@ use std::thread;
 use std::time::Duration;
 
 use pyo3::create_exception;
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyDeprecationWarning, PyException};
 use pyo3::prelude::*;
 #[cfg(test)]
 use pyo3::types::PyTuple;
@@ -178,6 +178,7 @@ use quadraui::{
 // `quadraui-binding-core/src/lib.rs`'s module doc. Imported under their
 // bare names (rather than a `qbc::` path prefix) so this file's own call
 // sites, most of which predate the crate split, need no further change.
+use quadraui_binding_core::decode_style_overrides;
 #[cfg(test)]
 use quadraui_binding_core::tree_scroll_state;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
@@ -186,20 +187,23 @@ use quadraui_binding_core::{
     add_recent_document, apply_tab_activated, begin_drag_out, begin_power_save_block,
     callback_reaction, caret_shape, clear_recent_documents, click_down_up_events,
     collect_leaf_tooltips, color_depth_name, data_table_rows_and_viewport, decode_extra_primitive,
-    dialog_severity, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
-    is_default_protocol_client, key_pressed_event, list_rows_and_viewport, login_item_enabled,
-    menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout,
-    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
-    resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
-    resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
-    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
-    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    toast_corner, tree_rows_and_viewport, update_apply_on_quit, update_check_for_update,
-    update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
-    with_window, BindingHost, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, PaintedHit,
-    RenderFrame, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
+    dialog_severity, drag::scroll_view_at, draw_bands, end_power_save_block, font_role,
+    guarded as core_guarded, is_default_protocol_client, key_pressed_event, list_rows_and_viewport,
+    login_item_enabled, menu_for_surface, merge_overrides, message_dialog_options_from_buttons,
+    paint_layout, pointer_shape, record_pending_error, remove_as_default_protocol_client,
+    render_overlays, resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active,
+    resolve_list_cursor, resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active,
+    resolve_tree_cursor, resolve_tree_expansion, set_as_default_protocol_client, set_dock_menu,
+    set_jump_list, set_login_item, step_driver, take_pending_error as core_take_pending_error,
+    text_display_from_lines, theme_color_value, toast_corner, tree_rows_and_viewport,
+    update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
+    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf,
+    LayoutNode, LeafDescriptor, OverrideError, PaintedHit, RenderFrame, RenderOutput, ServiceError,
+    StyleContext, UpdateInfoWire, WindowCloseHandling,
 };
+use quadraui_binding_core::{decode_layout_dialog, decode_popover, DialogContentSize};
+use quadraui_binding_core::{validate_style_set_name, StyleOverride};
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`
 /// and `QuiApp::run_native`) between a [`QuiApp`] and every [`QuiAppWaker`]
@@ -208,6 +212,20 @@ use quadraui_binding_core::{
 /// the bare nested `Arc<Mutex<Arc<dyn Fn(...) + Send + Sync>>>` spelling
 /// under `-D warnings`.
 type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
+
+/// The no-argument Python callable [`QuiApp::arm_wake_notify`] registers,
+/// shared with every [`QuiAppWaker`] handle [`QuiApp::waker`] has ever
+/// returned — [`fire_wake_notify`] calls it (re-acquiring the GIL via
+/// `Python::attach`) every time a `post`/`wake`/`post_after`/`wake_after`
+/// call delivers, from whatever thread that happened on, so arming it once
+/// covers every handle regardless of which one a background thread calls
+/// through. `None` until `arm_wake_notify` is called, and again after
+/// `disarm_wake_notify`. `quadraui-py/python/quadraui/aio.py`'s `run` arms
+/// this once per run to step promptly instead of only on its own fallback
+/// poll interval — the pyo3 analog of `quadraui-node`'s `WakeNotify`
+/// (`ThreadsafeFunction` there, a plain `Py<PyAny>` re-acquiring the GIL
+/// here, since pyo3 has no `ThreadsafeFunction` equivalent).
+type WakeNotify = Arc<Mutex<Option<Py<PyAny>>>>;
 
 /// A single [`Backend::waker`] closure, captured once by
 /// [`PyAppLogic::setup`] and read back exactly once by [`QuiApp::run_native`]'s
@@ -260,7 +278,71 @@ create_exception!(
     QuadrauiError,
     "A descriptor dict passed to `push_event` or an `insert_*` method did \
     not decode into the shape it was expected to have (mirrors \
-    `QUI_ERR_INVALID_JSON`)."
+    `QUI_ERR_INVALID_JSON`). [`decode_error_to_py`] raises one of the \
+    subclasses below for every `quadraui_binding_core::DecodeError` \
+    variant, chosen by matching the enum, never by parsing this \
+    exception's own message; this base class itself is only ever raised \
+    directly by the dozens of other `InvalidDescriptorError::new_err(...)` \
+    call sites in this module that have no `DecodeError` behind them at \
+    all."
+);
+
+create_exception!(
+    _quadraui,
+    MissingFieldError,
+    InvalidDescriptorError,
+    "A descriptor dict was missing a field this decoder requires (mirrors \
+    `quadraui_binding_core::DecodeError::MissingField`). Its `code` class \
+    attribute is `\"missing_field\"`."
+);
+
+create_exception!(
+    _quadraui,
+    UnknownVariantError,
+    InvalidDescriptorError,
+    "A field held a value outside the specific set this decoder accepts \
+    (mirrors `quadraui_binding_core::DecodeError::UnknownVariant`). Its \
+    `code` class attribute is `\"unknown_variant\"`."
+);
+
+create_exception!(
+    _quadraui,
+    TypeMismatchError,
+    InvalidDescriptorError,
+    "A field held a value of the wrong JSON shape (mirrors \
+    `quadraui_binding_core::DecodeError::TypeMismatch`). Its `code` class \
+    attribute is `\"type_mismatch\"`."
+);
+
+create_exception!(
+    _quadraui,
+    UnknownKeyError,
+    InvalidDescriptorError,
+    "A dict carried a key this decoder does not recognize there (mirrors \
+    `quadraui_binding_core::DecodeError::UnknownKey`). Its `code` class \
+    attribute is `\"unknown_key\"`."
+);
+
+create_exception!(
+    _quadraui,
+    VersionMismatchError,
+    InvalidDescriptorError,
+    "A render callback's `\"wire_version\"` is newer than this host \
+    understands (mirrors `quadraui_binding_core::DecodeError::VersionMismatch`). \
+    Its `code` class attribute is `\"version_mismatch\"`."
+);
+
+create_exception!(
+    _quadraui,
+    DecodeFailedError,
+    InvalidDescriptorError,
+    "A descriptor decode failed in a way none of the more specific \
+    subclasses above names -- a lower-level `serde`/`serde_json` \
+    deserialize error handed back verbatim, or a bespoke cross-field \
+    validation this crate performs itself (a duplicate leaf id, an \
+    out-of-range \"ratio\") -- mirrors \
+    `quadraui_binding_core::DecodeError::Borrow`. Its `code` class \
+    attribute is `\"borrow\"`."
 );
 
 create_exception!(
@@ -387,6 +469,26 @@ create_exception!(
     (`InvalidDescriptorError`)."
 );
 
+create_exception!(
+    _quadraui,
+    ReentrantCallError,
+    QuadrauiError,
+    "A `QuiApp` method restricted to top-level script code (one with a \
+    matching `QuiAppActions` method -- `show_message_dialog`, `set_title`, \
+    ...) was called re-entrantly, from inside that same app's own \
+    registered event/tick/render callback. PyO3 refuses the second \
+    mutable borrow this requires with a generic `RuntimeError: Already \
+    borrowed`, raised while extracting the method's own `self` argument -- \
+    before any of this crate's code, including the guard that raises this \
+    exception, ever runs. Every one of those restricted methods takes \
+    `slf: Py<Self>` plus an explicit `py: Python<'_>` instead of the usual \
+    `&mut self` so it can attempt that borrow itself, via \
+    [`guard_against_reentrant_call`], and raise this instead on failure. \
+    The napi-rs analog lives in `quadraui-node`'s own \
+    `toQuadrauiError`/`wrapNativeErrors` (see that package's `js/index.ts`), \
+    which translates the matching generic napi-rs rejection the same way."
+);
+
 /// Slot id of the app's `Button` descriptor.
 const SLOT_BUTTON: i64 = quadraui_binding_core::SLOT_BUTTON;
 /// Slot id of the app's `TextDisplay` descriptor.
@@ -408,7 +510,7 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
-/// `set_theme`) — carrying exactly the already-decoded arguments the
+/// `set_theme`, `define_style`) — carrying exactly the already-decoded arguments the
 /// matching `QuiApp` method passes to the same underlying
 /// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
 /// with no further decoding or validation left to do.
@@ -486,6 +588,7 @@ enum DeferredAction {
     SetDockMenu(serde_json::Value),
     SetJumpList(serde_json::Value),
     ActivateTab(WidgetId, usize),
+    DefineStyle(String, StyleOverride),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -697,6 +800,80 @@ fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<
         .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
 }
 
+/// Which of [`QuiApp::show_overlay`]'s seven in-canvas overlay kinds a
+/// `kind` string names. The 13 existing `show_*`/`dismiss_*` methods
+/// (`show_context_menu`, `show_message_dialog`/`dismiss_message_dialog`,
+/// `show_toast`/`dismiss_toast`, `show_tooltip`/`hide_tooltip`,
+/// `show_completions`/`dismiss_completions`, `show_float`/`dismiss_float`,
+/// `show_rich_text_popup`/`dismiss_rich_text_popup`) are one-line forwards
+/// onto [`QuiApp::show_overlay`]/[`QuiApp::dismiss_overlay`] built on this
+/// enum; see those two methods' own docs for the shared `descriptor`/
+/// `anchor` shape each variant below expects.
+#[derive(Clone, Copy)]
+enum OverlayKind {
+    ContextMenu,
+    MessageDialog,
+    Toast,
+    Tooltip,
+    Completions,
+    Float,
+    RichTextPopup,
+    /// A float with a layout subtree painted inside it, whose leaves take
+    /// focus and emit events exactly as in the main tree — see
+    /// [`quadraui_binding_core::InteractionEngine::show_popover_layout`].
+    Popover,
+    /// A modal dialog with a layout subtree painted in its body — see
+    /// [`quadraui_binding_core::InteractionEngine::open_layout_dialog`].
+    LayoutDialog,
+}
+
+impl OverlayKind {
+    /// Parses one of `show_overlay`'s seven recognized `kind` strings,
+    /// prefixing an unrecognized one's error with `what` (the calling
+    /// method's own name).
+    fn parse(what: &str, kind: &str) -> PyResult<Self> {
+        match kind {
+            "context_menu" => Ok(Self::ContextMenu),
+            "message_dialog" => Ok(Self::MessageDialog),
+            "toast" => Ok(Self::Toast),
+            "tooltip" => Ok(Self::Tooltip),
+            "completions" => Ok(Self::Completions),
+            "float" => Ok(Self::Float),
+            "rich_text_popup" => Ok(Self::RichTextPopup),
+            "popover" => Ok(Self::Popover),
+            "layout_dialog" => Ok(Self::LayoutDialog),
+            other => Err(InvalidDescriptorError::new_err(format!(
+                "{what}: unknown overlay kind {other:?}; expected one of \"context_menu\", \
+                 \"message_dialog\", \"toast\", \"tooltip\", \"completions\", \"float\", \
+                 \"rich_text_popup\", \"popover\", \"layout_dialog\""
+            ))),
+        }
+    }
+}
+
+/// Looks up `key` in `dict`, raising `InvalidDescriptorError` (prefixed
+/// with `what`) rather than panicking or silently defaulting if it's
+/// missing. `show_overlay`'s own per-kind `descriptor` fields that have no
+/// primitive-level default (`"items"`, `"title"`, `"body"`, `"buttons"`)
+/// all read through this.
+fn dict_item<'py>(what: &str, dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+    dict.get_item(key)?
+        .ok_or_else(|| InvalidDescriptorError::new_err(format!("{what}: missing {key:?} key")))
+}
+
+/// Requires `anchor` to be `Some` for a `show_overlay` `kind` that needs
+/// one (every kind but `"message_dialog"`/`"toast"`), raising
+/// `InvalidDescriptorError` otherwise.
+fn require_anchor(
+    what: &str,
+    kind: &str,
+    anchor: Option<(f32, f32, f32, f32)>,
+) -> PyResult<(f32, f32, f32, f32)> {
+    anchor.ok_or_else(|| {
+        InvalidDescriptorError::new_err(format!("{what}: {kind:?} overlay needs an anchor"))
+    })
+}
+
 /// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
 /// `what` -- the same shape `open_path`/`move_to_trash`/... already use
 /// for `PlatformServices`' own `ServiceResult`-returning methods.
@@ -730,6 +907,30 @@ fn service_error_to_py(what: &str, err: ServiceError) -> PyErr {
         // leaf doesn't know about yet still raises a typed exception
         // rather than failing to compile.
         other => InternalError::new_err(format!("{what}: {other}")),
+    }
+}
+
+/// Maps a [`quadraui_binding_core::DecodeError`] to this binding's own
+/// exception taxonomy -- one subclass of [`InvalidDescriptorError`] per
+/// variant, chosen by matching the enum directly rather than parsing its
+/// rendered message. The exception's message is [`DecodeError::to_string`]
+/// unchanged (`"<what>: at <path>: <problem>"`), so an author sees exactly
+/// which widget in the tree a nested decode failed on; its *class* and
+/// `code` class attribute (set once at module init, in `_quadraui`) are
+/// what a caller matches on instead of grepping that message.
+fn decode_error_to_py(err: DecodeError) -> PyErr {
+    let message = err.to_string();
+    match err {
+        DecodeError::MissingField { .. } => MissingFieldError::new_err(message),
+        DecodeError::UnknownVariant { .. } => UnknownVariantError::new_err(message),
+        DecodeError::TypeMismatch { .. } => TypeMismatchError::new_err(message),
+        DecodeError::UnknownKey { .. } => UnknownKeyError::new_err(message),
+        DecodeError::VersionMismatch { .. } => VersionMismatchError::new_err(message),
+        DecodeError::Borrow { .. } => DecodeFailedError::new_err(message),
+        // `DecodeError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises the common base class
+        // rather than failing to compile.
+        _ => InvalidDescriptorError::new_err(message),
     }
 }
 
@@ -781,7 +982,17 @@ impl AppLogic for PyAppLogic {
             render_overlays(&self.engine, backend, hits);
             return;
         };
-        match render_output_from_callback(callback, &self.pending_error) {
+        // The theme every `"class"` key in this frame's tree resolves its
+        // built-in sets against -- read once, before the callback runs, so
+        // every node in the tree resolves against the same palette.
+        let theme = backend.theme();
+        let styles = StyleContext::new(&self.host.style_sets, &theme);
+        match render_output_from_callback(
+            callback,
+            &self.pending_error,
+            styles,
+            &self.host.wire_diagnostics,
+        ) {
             Some(RenderOutput::Flat(mut frame)) => {
                 // Merges the engine's own stored cursor/scroll/active-tab
                 // into whatever the callback's `tree`/`list`/`data_table`/
@@ -1232,11 +1443,15 @@ impl ShellApp for PyShellApp {
 /// impl on `ShellConfig`/`PanelDefinition`/`BottomPanelConfig` upstream, so
 /// that decoder reads the subset of `ShellConfig`'s builder surface this
 /// binding supports field-by-field instead of depending on one — see its
-/// own doc for the recognized key vocabulary.
-fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
+/// own doc for the recognized key vocabulary. `diagnostics` is
+/// `run_shell`'s own `strict`/`on_unknown_key` session — see
+/// [`QuiApp::run_shell`]'s own doc.
+fn shell_config_from_dict(
+    dict: &Bound<'_, PyDict>,
+    diagnostics: &quadraui_binding_core::DecodeDiagnostics,
+) -> PyResult<ShellConfig> {
     let mut de = pythonize::Depythonizer::from_object(dict.as_any());
-    quadraui_binding_core::decode_shell_config(&mut de)
-        .map_err(|err| InvalidDescriptorError::new_err(err.0))
+    quadraui_binding_core::decode_shell_config(&mut de, diagnostics).map_err(decode_error_to_py)
 }
 
 /// Takes and returns this session's pending callback-raised error, if any
@@ -1349,10 +1564,13 @@ impl QuiShellApp {
 
     /// Advances the runner by one step, mirroring [`QuiApp::step`]'s
     /// queued-event / tick order (`run_shell` apps have no waker/`User`
-    /// event path, so there is no posted-value step to interleave).
-    /// Returns `True` if still running, `False` once exited. Re-raises
-    /// whatever exception a registered callback raised while handling this
-    /// step.
+    /// event path, so there is no posted-value step to interleave). With
+    /// nothing queued, this also renders once (see [`QuiApp::step`]'s own
+    /// doc for why), so it can re-raise whatever a registered `render`
+    /// callback itself raises, not only an event/tick handler's own
+    /// exception. Returns `True` if still running, `False` once exited.
+    /// Re-raises whatever exception a registered callback raised while
+    /// handling this step.
     fn step(&mut self) -> PyResult<bool> {
         self.guarded(|app| app.step_once())
     }
@@ -1467,6 +1685,8 @@ const RENDER_CALLBACK_WHAT: &str = "render";
 fn render_output_from_callback(
     callback: &Py<PyAny>,
     pending_error: &Rc<RefCell<Option<PyErr>>>,
+    styles: StyleContext<'_>,
+    diagnostics: &quadraui_binding_core::DecodeDiagnostics,
 ) -> Option<RenderOutput> {
     Python::attach(|py| {
         let result = match callback.call0(py) {
@@ -1489,10 +1709,15 @@ fn render_output_from_callback(
         };
 
         let mut de = pythonize::Depythonizer::from_object(dict.as_any());
-        match quadraui_binding_core::decode_render_output(RENDER_CALLBACK_WHAT, &mut de) {
+        match quadraui_binding_core::decode_render_output_with_styles(
+            RENDER_CALLBACK_WHAT,
+            &mut de,
+            styles,
+            diagnostics,
+        ) {
             Ok(output) => Some(output),
             Err(err) => {
-                record_error(pending_error, InvalidDescriptorError::new_err(err.0));
+                record_error(pending_error, decode_error_to_py(err));
                 None
             }
         }
@@ -1586,7 +1811,7 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
     match node {
         LayoutNode::Row(container) | LayoutNode::Column(container) => {
             for child in &mut container.children {
-                resolve_layout_node_state(engine, child);
+                resolve_layout_node_state(engine, &mut child.node);
             }
         }
         LayoutNode::Leaf(leaf) => resolve_layout_leaf_state(engine, leaf),
@@ -1612,6 +1837,50 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
             for leaf in &mut split_tree_node.leaves {
                 resolve_layout_node_state(engine, leaf);
             }
+        }
+        // Mirrors `resolved_viewport_rows`'s own "read the previous
+        // frame's painted geometry, not this frame's backend/area" shape
+        // (this walker takes neither) -- `scroll_view_at` rebuilds the
+        // exact `quadraui::ScrollView` `crate::render::paint_scroll`
+        // painted for this id last frame, straight off its own
+        // `PaintedHit::Scroll` fields, so `max_offset()` here is the same
+        // clamp paint already applied, not a re-derived one. Without this
+        // resolve, `InteractionEngine::handle`'s own wheel/key/scrollbar-
+        // drag `apply_scroll_offset` write would sit in `WidgetState`
+        // forever unread, since `scroll_node.offset` -- left `None`
+        // (uncontrolled) by every render callback that doesn't pin it
+        // itself -- would otherwise reach `paint_layout` still unresolved
+        // and paint from `0.0` every frame.
+        //
+        // `None` (no hit yet -- the very first render, or any render
+        // where this id fell out of the hit map, e.g. a `Tabs` entry
+        // that wasn't selected last frame) falls back to
+        // `f32::INFINITY` rather than `0.0`: `resolve_scroll_offset`
+        // clamps into `[0, max_offset]` before returning, so a `0.0`
+        // fallback here would clamp away a *controlled* offset
+        // (`scroll_node.offset` decoded as `Some(50.0)` this frame) back
+        // down to `0.0` on exactly the frame there's no prior paint to
+        // measure against. `paint_scroll` re-clamps against the real,
+        // freshly measured content/viewport regardless (its own
+        // `scroll_view.clamp_offset()` call), so deferring the clamp to
+        // it here is safe -- and for the uncontrolled case this fallback
+        // is never seen anyway, since a never-before-seen id's
+        // `WidgetState` entry is itself seeded at `0.0`.
+        LayoutNode::Scroll(scroll_node) => {
+            let id = WidgetId::new(scroll_node.id.as_str());
+            let max_offset = scroll_view_at(&engine.hit_map(), id)
+                .map(|view| view.max_offset())
+                .unwrap_or(f32::INFINITY);
+            let offset =
+                resolve_scroll_offset(engine.widget_state(), id, scroll_node.offset, max_offset);
+            scroll_node.offset = Some(offset);
+            resolve_layout_node_state(engine, &mut scroll_node.content);
+        }
+        // A `"style"` wrapper carries no cursor/scroll/active-tab state of
+        // its own -- it's purely a paint-time overlay -- so this resolve
+        // pass is a straight passthrough to whatever it wraps.
+        LayoutNode::Styled(styled_node) => {
+            resolve_layout_node_state(engine, &mut styled_node.node);
         }
     }
 }
@@ -1794,6 +2063,17 @@ struct QuiApp {
     /// instant of a clone or a swap, never across a call into the wrapped
     /// closure itself.
     current_waker: SharedWaker,
+    /// The no-argument Python callable [`QuiApp::arm_wake_notify`]
+    /// registers, shared with every [`QuiAppWaker`] handle [`QuiApp::waker`]
+    /// has ever returned — [`fire_wake_notify`] calls it every time a
+    /// `post`/`wake`/`post_after`/`wake_after` call delivers, from whatever
+    /// thread that happened on. `None` until `arm_wake_notify` is called,
+    /// and again after `disarm_wake_notify`. The napi-rs analog
+    /// (`quadraui-node`'s `WakeNotify`) holds a `ThreadsafeFunction`
+    /// instead; this binding has no equivalent construct, so it stores the
+    /// plain `Py<PyAny>` callable directly and re-acquires the GIL (via
+    /// `Python::attach`) each time it is called instead.
+    wake_notify: WakeNotify,
 }
 
 /// A thread-safe handle, returned by [`QuiApp::waker`], that a background
@@ -1806,8 +2086,35 @@ struct QuiApp {
 /// (`Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>`, and `Py<PyAny>`
 /// is itself always `Send + Sync`) — so PyO3 lets Python pass it to another
 /// thread freely, unlike `QuiApp`.
+///
+/// The second field mirrors [`QuiApp::wake_notify`] the same way the first
+/// mirrors [`QuiApp::current_waker`] — see [`WakeNotify`]'s own doc.
 #[pyclass(module = "quadraui")]
-struct QuiAppWaker(SharedWaker);
+struct QuiAppWaker(SharedWaker, WakeNotify);
+
+/// Fires the no-argument callable [`QuiApp::arm_wake_notify`] registered in
+/// `wake_notify` (if any) — shared by every [`QuiAppWaker`] delivery path
+/// below, including the ones running on a spawned `post_after`/`wake_after`
+/// thread with no `Python<'_>` token already in hand. Re-acquires the GIL
+/// via `Python::attach` to clone the callable out before calling it, so the
+/// lock is never held across the call itself; prints (rather than
+/// propagates) an exception the callback raises, since there is no
+/// dispatch-in-progress error slot to record it into here, the same as any
+/// other fire-and-forget background callback.
+fn fire_wake_notify(wake_notify: &WakeNotify) {
+    Python::attach(|py| {
+        let callback = wake_notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|cb| cb.clone_ref(py));
+        if let Some(callback) = callback {
+            if let Err(err) = callback.call0(py) {
+                err.print(py);
+            }
+        }
+    });
+}
 
 #[pymethods]
 impl QuiAppWaker {
@@ -1815,13 +2122,15 @@ impl QuiAppWaker {
     /// and wakes whichever loop currently owns it — `step`/`run`'s drain of
     /// `pump_user_events` on the next call for the headless path, or
     /// promptly (not waiting for the next native/terminal event) while
-    /// `run_tui` is live. Safe to call from any thread, at any time,
-    /// including before the owning `QuiApp` has run a single step or after
-    /// it has exited (a post after exit is simply never observed — there is
-    /// no receiver left to drain it).
+    /// `run_tui` is live, or (once `arm_wake_notify` is armed)
+    /// `quadraui.aio.run`'s own asyncio loop. Safe to call from any thread,
+    /// at any time, including before the owning `QuiApp` has run a single
+    /// step or after it has exited (a post after exit is simply never
+    /// observed — there is no receiver left to drain it).
     fn post(&self, value: Py<PyAny>) {
         let waker = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
         waker(UserPayload::new(value));
+        fire_wake_notify(&self.1);
     }
 
     /// Equivalent to `post(None)`: wakes the owning `QuiApp`'s loop with no
@@ -1854,12 +2163,25 @@ impl QuiAppWaker {
     /// `asyncio`'s `call_later`) with `post` from plain Python — provided
     /// here directly so the common "run_tick again in N ms" case needs no
     /// import beyond `quadraui` itself.
+    /// Note on process shutdown: the spawned thread's sleep is not tied to
+    /// the interpreter's lifetime at all, so a `post_after(delay_ms, ...)`
+    /// call made shortly before the process exits can have its sleep still
+    /// pending when `main()` returns and the interpreter finalizes.
+    /// `fire_wake_notify`'s `Python::attach` then has no running
+    /// interpreter to re-acquire the GIL on — PyO3 aborts the process in
+    /// that case rather than returning an error, since there is no
+    /// Python-level call frame left to propagate one to. This is the same
+    /// hazard any `thread::spawn` that touches the Python C-API after
+    /// `main` returns has; callers scheduling a long `post_after`/
+    /// `wake_after` and then exiting promptly should await/join first.
     fn post_after(&self, delay_ms: u64, value: Py<PyAny>) {
         let shared = Arc::clone(&self.0);
+        let notify = Arc::clone(&self.1);
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(delay_ms));
             let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
             waker(UserPayload::new(value));
+            fire_wake_notify(&notify);
         });
     }
 
@@ -1867,6 +2189,22 @@ impl QuiAppWaker {
     /// for why a payload-free wake is useful on its own.
     fn wake_after(&self, py: Python<'_>, delay_ms: u64) {
         self.post_after(delay_ms, py.None());
+    }
+
+    /// Fires whatever callback `QuiApp.arm_wake_notify` has registered (if
+    /// any), same as `post`/`wake`/`post_after`/`wake_after` each do as a
+    /// side effect — but, unlike every one of those, queues no `{"User":
+    /// value}` event of its own into the owning `QuiApp`'s event stream.
+    /// `quadraui.aio.async_handler`'s own done-callback calls this (not
+    /// `wake()`) once an `async def` handler's task finishes: prompting a
+    /// re-step/re-render through the wake-notify hook must not also
+    /// replay as a spurious event the handler would otherwise see and
+    /// have to filter back out — worse, every such event would itself
+    /// dispatch through the same `async_handler`-wrapped handler, whose
+    /// own task finishing would call this again, forever. A harmless
+    /// no-op if nothing is armed.
+    fn notify(&self) {
+        fire_wake_notify(&self.1);
     }
 }
 
@@ -1878,7 +2216,11 @@ impl QuiAppWaker {
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
-/// `set_theme` — plus [`Self::apply_tab_activated`], a write into the
+/// `set_theme`, `define_style`, `apply_on_quit`, `end_power_save_block`,
+/// `set_login_item`, `set_as_default_protocol_client`,
+/// `remove_as_default_protocol_client`, `begin_drag_out`,
+/// `add_recent_document`, `clear_recent_documents`, `set_dock_menu`,
+/// `set_jump_list` — plus [`Self::apply_tab_activated`], a write into the
 /// engine's own widget-state store with no restricted `QuiApp` method of
 /// its own at all (see its own doc) — so a registered event handler can
 /// request one of them without re-entering `QuiApp`'s own PyO3 cell.
@@ -1886,9 +2228,11 @@ impl QuiAppWaker {
 /// A handler already holds `QuiApp`'s one mutable borrow for the whole
 /// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
 /// describes), so calling `app.show_message_dialog(...)` straight from
-/// inside a handler raises "already borrowed" — PyO3 refuses a second
-/// borrow of the same cell while the first is still outstanding. Calling
-/// the matching method here instead touches none of that: each method
+/// inside a handler raises [`ReentrantCallError`] — see
+/// [`guard_against_reentrant_call`]'s own doc for how each of those
+/// restricted `QuiApp` methods raises that instead of PyO3's own raw
+/// `RuntimeError: Already borrowed`. Calling the matching method here
+/// instead touches none of that: each method
 /// below decodes and validates its arguments immediately (so a malformed
 /// descriptor still raises synchronously, from the handler's own call) and
 /// records the already-decoded action on a queue shared with the owning
@@ -1996,7 +2340,7 @@ impl QuiAppActions {
     /// row), the handler is the only thing that knows when to dismiss it —
     /// typically on the hit-tested `MouseLeft` for the widget it showed on
     /// `MouseEntered`. Calling `app.hide_tooltip()` straight from inside
-    /// that same handler would hit the same "already borrowed" wall
+    /// that same handler would raise [`ReentrantCallError`] the same way
     /// [`Self::show_tooltip`]'s own doc describes; this queues the exact
     /// same engine call instead.
     fn hide_tooltip(&self) -> PyResult<()> {
@@ -2296,6 +2640,30 @@ impl QuiAppActions {
             .borrow_mut()
             .push_back(DeferredAction::ActivateTab(WidgetId::new(id), index));
     }
+
+    /// Queues a [`DeferredAction::DefineStyle`] — same arguments and the
+    /// same per-key decoding/validation (via [`decode_style_overrides`]) as
+    /// `QuiApp::define_style`. `overrides` needs no live backend to decode
+    /// against (unlike [`Self::set_theme`]'s theme-field merge), so this
+    /// raises the same `InvalidDescriptorError` synchronously on an empty
+    /// `name` or an unknown/mistyped key, and only the registration itself
+    /// — `StyleSets::define` plus the `Backend::request_frame_in` nudge —
+    /// waits for [`flush_deferred_actions`], which runs against whichever
+    /// live backend `run_tui`/`run_native` is actually driving (the
+    /// `backend` argument `PyAppLogic::handle`/`tick` is given), so this is
+    /// the path that makes a redefinition from inside a handler repaint
+    /// that running loop immediately rather than waiting for the next
+    /// unrelated event.
+    fn define_style(&self, name: &str, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        validate_style_set_name("define_style", name).map_err(decode_error_to_py)?;
+        let json = pyany_to_json(overrides.as_any())
+            .map_err(|err| InvalidDescriptorError::new_err(format!("define_style: {err}")))?;
+        let parsed = decode_style_overrides("define_style", &json).map_err(decode_error_to_py)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::DefineStyle(name.to_string(), parsed));
+        Ok(())
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -2536,6 +2904,10 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
             DeferredAction::ActivateTab(id, index) => {
                 apply_tab_activated(app_logic.engine.widget_state(), id, index);
             }
+            DeferredAction::DefineStyle(name, overrides) => {
+                app_logic.host.style_sets.define(name, overrides);
+                backend.request_frame_in(Duration::ZERO);
+            }
         }
     }
     applied
@@ -2578,13 +2950,26 @@ impl QuiApp {
     /// to calling `set_handler` right after construction. `render`, if
     /// given, is registered as the render callback — equivalent to calling
     /// `set_render` right after construction.
+    ///
+    /// `strict`, when true, turns an unrecognised *optional* key on a
+    /// render callback's returned descriptor (a misspelt `"cursr"`,
+    /// `"focussed"`, ...) into an `InvalidDescriptorError` raised out of
+    /// the render that found it, the same way a missing required field
+    /// already does. The default (`False`) instead reports it through
+    /// `on_unknown_key`, if given — called as `on_unknown_key(key, path)`
+    /// at most once per distinct `key` for this app's whole lifetime — and
+    /// otherwise decodes unaffected, matching the pre-existing "an unknown
+    /// key is silently ignored" behaviour everywhere `on_unknown_key` is
+    /// left unset.
     #[new]
-    #[pyo3(signature = (width, height, on_event=None, render=None))]
+    #[pyo3(signature = (width, height, on_event=None, render=None, strict=false, on_unknown_key=None))]
     fn new(
         width: u16,
         height: u16,
         on_event: Option<Py<PyAny>>,
         render: Option<Py<PyAny>>,
+        strict: bool,
+        on_unknown_key: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         if width == 0 || height == 0 {
             return Err(InvalidDimensionsError::new_err(
@@ -2596,6 +2981,21 @@ impl QuiApp {
             render_callback: render,
             ..PyAppLogic::default()
         };
+        app_logic.host.wire_diagnostics.set_strict(strict);
+        if let Some(callback) = on_unknown_key {
+            let pending_error = app_logic.pending_error.clone();
+            app_logic
+                .host
+                .wire_diagnostics
+                .set_hook(move |path: &str, key: &str| {
+                    let (key, path) = (key.to_string(), path.to_string());
+                    Python::attach(|py| {
+                        if let Err(err) = callback.call1(py, (key, path)) {
+                            record_error(&pending_error, err);
+                        }
+                    });
+                });
+        }
         let driver = TuiDriver::new(app_logic, width, height);
         let current_waker = Arc::new(Mutex::new(driver.backend().waker()));
         Ok(QuiApp {
@@ -2606,6 +3006,7 @@ impl QuiApp {
             #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
             native_consumed: false,
             current_waker,
+            wake_notify: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -2621,6 +3022,14 @@ impl QuiApp {
     /// exactly as the matching `QuiShellApp.set_*` method would right
     /// after construction.
     ///
+    /// `strict`/`on_unknown_key` apply to that one `config` decode, the
+    /// same policy [`Self::new`]'s own `strict`/`on_unknown_key` apply to a
+    /// render callback's returned descriptor — see that constructor's doc
+    /// for the full contract. Unlike `QuiApp::new`, `run_shell` decodes
+    /// `config` exactly once, synchronously, during this call, so a hook
+    /// raising is surfaced as this call's own `PyResult::Err` rather than
+    /// deferred to a later `step`/`run`.
+    ///
     /// This is a separate class ([`QuiShellApp`], not a mode switch on this
     /// `QuiApp`) rather than an instance method: a plain `QuiApp` wraps a
     /// fixed `TuiDriver<PyAppLogic>`, and `run_shell` drives a different
@@ -2632,7 +3041,8 @@ impl QuiApp {
     /// mode-dispatching wrapper.
     ///
     /// Raises `InvalidDimensionsError` if `width`/`height` is zero, or
-    /// `InvalidDescriptorError` if `config` doesn't decode.
+    /// `InvalidDescriptorError` if `config` doesn't decode (including a
+    /// `strict=True` unknown-key rejection).
     #[staticmethod]
     #[pyo3(signature = (
         width,
@@ -2643,6 +3053,8 @@ impl QuiApp {
         on_shell_event=None,
         on_bottom_panel_event=None,
         on_tick=None,
+        strict=false,
+        on_unknown_key=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn run_shell(
@@ -2654,13 +3066,36 @@ impl QuiApp {
         on_shell_event: Option<Py<PyAny>>,
         on_bottom_panel_event: Option<Py<PyAny>>,
         on_tick: Option<Py<PyAny>>,
+        strict: bool,
+        on_unknown_key: Option<Py<PyAny>>,
     ) -> PyResult<QuiShellApp> {
         if width == 0 || height == 0 {
             return Err(InvalidDimensionsError::new_err(
                 "width and height must both be non-zero",
             ));
         }
-        let shell_config = shell_config_from_dict(config)?;
+        let diagnostics = quadraui_binding_core::DecodeDiagnostics::warn();
+        diagnostics.set_strict(strict);
+        // `config` decodes exactly once, synchronously, right here -- so a
+        // hook error is captured into this plain cell and raised directly
+        // below, rather than queued in a `ShellState::pending_error` no
+        // `QuiShellApp` exists yet to hold.
+        let hook_error: Rc<RefCell<Option<PyErr>>> = Rc::new(RefCell::new(None));
+        if let Some(callback) = on_unknown_key {
+            let hook_error = hook_error.clone();
+            diagnostics.set_hook(move |path: &str, key: &str| {
+                let (key, path) = (key.to_string(), path.to_string());
+                Python::attach(|py| {
+                    if let Err(err) = callback.call1(py, (key, path)) {
+                        record_error(&hook_error, err);
+                    }
+                });
+            });
+        }
+        let shell_config = shell_config_from_dict(config, &diagnostics)?;
+        if let Some(err) = hook_error.borrow_mut().take() {
+            return Err(err);
+        }
         let state = Rc::new(RefCell::new(ShellState {
             handler: on_event,
             on_tick,
@@ -2760,7 +3195,35 @@ impl QuiApp {
                 "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
-        Ok(QuiAppWaker(self.current_waker.clone()))
+        Ok(QuiAppWaker(
+            self.current_waker.clone(),
+            self.wake_notify.clone(),
+        ))
+    }
+
+    /// Registers `callback` (a plain, no-argument callable) as the notifier
+    /// [`fire_wake_notify`] fires every time a handle this app's
+    /// [`Self::waker`] has ever returned delivers a `post`/`wake`/
+    /// `post_after`/`wake_after`, from whatever thread that happened on.
+    /// `quadraui.aio.run` arms this once per run with a callback that wakes
+    /// its own asyncio loop (via `loop.call_soon_threadsafe`), so a
+    /// background thread's delivery is observed promptly instead of only
+    /// on that run's own fallback poll interval — see `quadraui/aio.py`'s
+    /// module doc for the full story, including why real OS/terminal input
+    /// still needs that fallback poll.
+    ///
+    /// Replaces any callback a previous call armed; there is only ever one
+    /// slot. Does not raise `PoisonedError` on a poisoned app — unlike
+    /// [`Self::waker`], there is no live state here to read, just a cell to
+    /// overwrite.
+    fn arm_wake_notify(&self, callback: Py<PyAny>) {
+        *self.wake_notify.lock().unwrap_or_else(|e| e.into_inner()) = Some(callback);
+    }
+
+    /// Clears whatever callback [`Self::arm_wake_notify`] last registered,
+    /// if any — a harmless no-op if none is armed.
+    fn disarm_wake_notify(&self) {
+        *self.wake_notify.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Returns a [`QuiAppActions`] handle: an object a registered event
@@ -2812,9 +3275,15 @@ impl QuiApp {
     /// still nothing was dispatched. A `push_event`/`push_key_event` call
     /// always takes priority over a pending `post`/`wake`, so a steady
     /// stream of pushed events can delay (but never drop) a posted value.
-    /// Returns `True` if the app is still running afterwards, `False` once
-    /// it has exited. Re-raises whatever exception a registered
-    /// handler/tick callback raised while handling this step.
+    /// With nothing queued and nothing posted, this also renders once
+    /// after the tick — [`quadraui_binding_core::step_driver`]'s own doc
+    /// has the full rationale and cost tradeoff — so a `render` callback
+    /// that raises (e.g. on a malformed descriptor) can surface that error
+    /// from this call too, not only from an explicit `screen`/
+    /// `screen_contains` or a redraw-requesting event/tick. Returns `True`
+    /// if the app is still running afterwards, `False` once it has
+    /// exited. Re-raises whatever exception a registered handler/tick/
+    /// render callback raised while handling this step.
     fn step(&mut self) -> PyResult<bool> {
         self.guarded(|app| app.step_once())
     }
@@ -3690,7 +4159,12 @@ impl QuiApp {
     /// Inserts a `Button` descriptor from a Python dict, returning its slot
     /// handle. Raises `RuntimeError` if the button slot is already
     /// occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `button` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_button(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_button", "button")?;
         self.insert(
             SLOT_BUTTON,
             "insert_button",
@@ -3704,7 +4178,12 @@ impl QuiApp {
     /// Inserts a `TextDisplay` descriptor from a Python dict, returning its
     /// slot handle. Raises `RuntimeError` if the text-display slot is
     /// already occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `text_display` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_text_display(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_text_display", "text_display")?;
         self.insert(
             SLOT_TEXT_DISPLAY,
             "insert_text_display",
@@ -3718,7 +4197,12 @@ impl QuiApp {
     /// Inserts a `ListView` descriptor from a Python dict, returning its
     /// slot handle. Raises `RuntimeError` if the list slot is already
     /// occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `list` layout leaf as the replacement; removal is a later breaking
+    /// release.
     fn insert_list(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_list", "list")?;
         self.insert(
             SLOT_LIST,
             "insert_list",
@@ -3732,7 +4216,12 @@ impl QuiApp {
     /// Inserts a `TreeView` descriptor from a Python dict, returning its
     /// slot handle. Raises `RuntimeError` if the tree slot is already
     /// occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `tree` layout leaf as the replacement; removal is a later breaking
+    /// release.
     fn insert_tree(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_tree", "tree")?;
         self.insert(
             SLOT_TREE,
             "insert_tree",
@@ -3746,7 +4235,12 @@ impl QuiApp {
     /// Inserts a `DataTable` descriptor from a Python dict, returning its
     /// slot handle. Raises `RuntimeError` if the data-table slot is
     /// already occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `data_table` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_data_table(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_data_table", "data_table")?;
         self.insert(
             SLOT_DATA_TABLE,
             "insert_data_table",
@@ -3760,7 +4254,12 @@ impl QuiApp {
     /// Inserts a `TabBar` descriptor from a Python dict, returning its slot
     /// handle. Raises `RuntimeError` if the tab-bar slot is already
     /// occupied — call `slot_clear` first.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `tab_bar` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_tab_bar(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
+        warn_insert_deprecated(descriptor.py(), "insert_tab_bar", "tab_bar")?;
         self.insert(
             SLOT_TAB_BAR,
             "insert_tab_bar",
@@ -3775,7 +4274,12 @@ impl QuiApp {
     /// `"progress"` back. Raises `RuntimeError` if `"progress"` is already
     /// occupied — call `clear_extra("progress")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `progress` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_progress(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        warn_insert_deprecated(descriptor.py(), "insert_progress", "progress")?;
         self.store_extra("progress", "insert_progress", descriptor)
     }
 
@@ -3783,7 +4287,12 @@ impl QuiApp {
     /// `"spinner"` back. Raises `RuntimeError` if `"spinner"` is already
     /// occupied — call `clear_extra("spinner")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `spinner` layout leaf as the replacement; removal is a later
+    /// breaking release.
     fn insert_spinner(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        warn_insert_deprecated(descriptor.py(), "insert_spinner", "spinner")?;
         self.store_extra("spinner", "insert_spinner", descriptor)
     }
 
@@ -3791,7 +4300,12 @@ impl QuiApp {
     /// `"image"` back. Raises `RuntimeError` if `"image"` is already
     /// occupied — call `clear_extra("image")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `image` layout leaf as the replacement; removal is a later breaking
+    /// release.
     fn insert_image(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        warn_insert_deprecated(descriptor.py(), "insert_image", "image")?;
         self.store_extra("image", "insert_image", descriptor)
     }
 
@@ -3802,7 +4316,12 @@ impl QuiApp {
     /// if `kind` is already occupied — call `clear_extra(kind)` first.
     /// Lets a consumer insert a future additive primitive by name alone,
     /// with no new pymethod needed on this class.
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
+    /// `kind` layout leaf as the replacement; removal is a later breaking
+    /// release.
     fn insert_extra(&mut self, kind: &str, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        warn_insert_deprecated(descriptor.py(), "insert_extra", kind)?;
         self.store_extra(kind, "insert_extra", descriptor)
     }
 
@@ -3812,7 +4331,12 @@ impl QuiApp {
     /// Returns whether the slot held anything; an unrecognized `kind`
     /// simply has nothing to clear (unlike `slot_clear`, this never raises
     /// for an unknown key).
-    fn clear_extra(&mut self, kind: &str) -> PyResult<bool> {
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming omitting
+    /// `kind`'s layout leaf from the next `render` callback as the
+    /// replacement; removal is a later breaking release.
+    fn clear_extra(&mut self, py: Python<'_>, kind: &str) -> PyResult<bool> {
+        warn_clear_extra_deprecated(py, kind)?;
         self.guarded(|app| {
             let cleared = app.driver.app_mut().clear_extra_slot(kind);
             if cleared {
@@ -3821,6 +4345,285 @@ impl QuiApp {
             }
             Ok(cleared)
         })
+    }
+
+    /// Opens one of this app's seven in-canvas overlay kinds by name — the
+    /// generic counterpart [`Self::show_context_menu`]/
+    /// [`Self::show_message_dialog`]/[`Self::show_toast`]/
+    /// [`Self::show_tooltip`]/[`Self::show_completions`]/
+    /// [`Self::show_float`]/[`Self::show_rich_text_popup`] each forward
+    /// onto (see each one's own doc for the exact user-facing shape and
+    /// event-routing behavior its `kind` carries over unchanged).
+    ///
+    /// `kind` is one of `"context_menu"`, `"message_dialog"`, `"toast"`,
+    /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"`,
+    /// `"popover"`, `"layout_dialog"` —
+    /// `InvalidDescriptorError` names the full list for anything else.
+    ///
+    /// `"popover"` and `"layout_dialog"` are the content-bearing kinds:
+    /// each takes a `{"float"|"dialog": {...}, "content": <layout node>}`
+    /// descriptor (`PopoverDescriptor`/`LayoutDialogDescriptor` in
+    /// `wire.pyi`) whose `"content"` subtree is laid out inside the
+    /// overlay and whose leaves take focus and emit the same semantic
+    /// events they would in the main tree. `anchor`'s first two
+    /// components are the popover's own `width`/`height`, like
+    /// `"float"`; for `"layout_dialog"` they size the content slot and
+    /// may be omitted entirely for a viewport-relative default.
+    /// `descriptor` holds that kind's own fields: for `"toast"`,
+    /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"`, the
+    /// same dict shape the matching `show_*` method's own `Deserialize`
+    /// primitive documents (plus an extra `"corner"` key for `"toast"`,
+    /// the named method's own scalar argument); for `"context_menu"`, a
+    /// single `"items"` key wrapping that method's own list argument; for
+    /// `"message_dialog"`, `"title"`/`"body"`/`"buttons"`/`"severity"`
+    /// keys matching that method's own scalar arguments.
+    ///
+    /// `anchor` reshapes each kind's own positional argument into one
+    /// `(f32, f32, f32, f32)` tuple: the first two components are the
+    /// `(x, y)` pair `"context_menu"`/`"completions"`/`"rich_text_popup"`
+    /// each already take as a 2-tuple, all four are `"tooltip"`'s own
+    /// `(x, y, width, height)` anchor rect, the first two double as
+    /// `"float"`'s own `width`/`height`, and `"message_dialog"`/`"toast"`
+    /// ignore it entirely (`None` is fine for both; every other kind
+    /// raises `InvalidDescriptorError` if `anchor` is `None`).
+    ///
+    /// Returns an id this overlay can later be named by in
+    /// [`Self::dismiss_overlay`]: the descriptor's own `"id"` field for
+    /// every kind that has one (`"toast"`, `"tooltip"`, `"completions"`,
+    /// `"float"`, `"rich_text_popup"`), or a fixed sentinel —
+    /// `kind` itself — for the two that don't (`"context_menu"`,
+    /// `"message_dialog"`).
+    ///
+    /// Same "call from top-level script code only" restriction as
+    /// [`Self::show_message_dialog`] — every kind routes through this
+    /// app's one `(Backend, PyAppLogic)` pair, so a reentrant call from
+    /// inside the registered event handler or render callback hits the
+    /// same PyO3 runtime-borrow wall.
+    #[pyo3(signature = (kind, descriptor, anchor=None))]
+    fn show_overlay(
+        &mut self,
+        kind: &str,
+        descriptor: &Bound<'_, PyDict>,
+        anchor: Option<(f32, f32, f32, f32)>,
+    ) -> PyResult<String> {
+        let overlay_kind = OverlayKind::parse("show_overlay", kind)?;
+        match overlay_kind {
+            OverlayKind::ContextMenu => {
+                let items: Vec<ContextMenuItem> =
+                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "items")?)
+                        .map_err(|err| {
+                            InvalidDescriptorError::new_err(format!(
+                                "show_overlay: invalid items: {err}"
+                            ))
+                        })?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                self.open_overlay(|backend, app_logic| {
+                    app_logic
+                        .engine
+                        .open_context_menu(items, Point::new(x, y), backend);
+                })?;
+                Ok(kind.to_string())
+            }
+            OverlayKind::MessageDialog => {
+                let title: String = dict_item("show_overlay", descriptor, "title")?.extract()?;
+                let body: String = dict_item("show_overlay", descriptor, "body")?.extract()?;
+                let buttons: Vec<DialogButton> =
+                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "buttons")?)
+                        .map_err(|err| {
+                            InvalidDescriptorError::new_err(format!(
+                                "show_overlay: invalid buttons: {err}"
+                            ))
+                        })?;
+                let severity: Option<String> = descriptor
+                    .get_item("severity")?
+                    .map(|v| v.extract())
+                    .transpose()?;
+                let severity = severity
+                    .map(|s| parse_dialog_severity("show_overlay", &s))
+                    .transpose()?;
+                let opts = message_dialog_options_from_buttons(title, body, buttons, severity)
+                    .map_err(|err| {
+                        InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
+                    })?;
+                self.open_overlay(|backend, app_logic| {
+                    app_logic.engine.open_message_dialog(opts, backend);
+                })?;
+                Ok(kind.to_string())
+            }
+            OverlayKind::Toast => {
+                let toast: Toast = decode("show_overlay", descriptor)?;
+                let corner: Option<String> = descriptor
+                    .get_item("corner")?
+                    .map(|v| v.extract())
+                    .transpose()?;
+                let corner = corner
+                    .map(|c| parse_toast_corner("show_overlay", &c))
+                    .transpose()?;
+                let id = toast.id.to_string();
+                self.open_overlay(|_backend, app_logic| {
+                    app_logic
+                        .engine
+                        .show_toast(toast, corner.unwrap_or_default());
+                })?;
+                Ok(id)
+            }
+            OverlayKind::Tooltip => {
+                let tooltip: Tooltip = decode("show_overlay", descriptor)?;
+                let (x, y, w, h) = require_anchor("show_overlay", kind, anchor)?;
+                let id = tooltip.id.to_string();
+                self.open_overlay(|_backend, app_logic| {
+                    app_logic
+                        .engine
+                        .show_tooltip(tooltip, Rect::new(x, y, w, h));
+                })?;
+                Ok(id)
+            }
+            OverlayKind::Completions => {
+                let completions: Completions = decode("show_overlay", descriptor)?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let id = completions.id.to_string();
+                self.open_overlay(|_backend, app_logic| {
+                    app_logic
+                        .engine
+                        .show_completions(completions, Point::new(x, y));
+                })?;
+                Ok(id)
+            }
+            OverlayKind::Float => {
+                let float: Float = decode("show_overlay", descriptor)?;
+                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let measure = FloatMeasure::new(width, height);
+                let id = float.id.to_string();
+                self.open_overlay(|backend, app_logic| {
+                    app_logic.engine.show_float(float, measure, backend);
+                })?;
+                Ok(id)
+            }
+            OverlayKind::RichTextPopup => {
+                let popup: RichTextPopup = decode("show_overlay", descriptor)?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let id = popup.id.to_string();
+                self.open_overlay(|_backend, app_logic| {
+                    app_logic
+                        .engine
+                        .show_rich_text_popup(popup, Point::new(x, y));
+                })?;
+                Ok(id)
+            }
+            OverlayKind::Popover => {
+                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let measure = FloatMeasure::new(width, height);
+                let mut id = String::new();
+                self.open_overlay_try(|backend, app_logic| {
+                    let decoded = {
+                        let theme = backend.theme();
+                        let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
+                        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
+                        decode_popover(
+                            "show_overlay",
+                            &mut de,
+                            styles,
+                            &app_logic.host.wire_diagnostics,
+                        )
+                        .map_err(decode_error_to_py)?
+                    };
+                    id = decoded.chrome.id.to_string();
+                    app_logic.engine.show_popover_layout(
+                        decoded.chrome,
+                        measure,
+                        decoded.content,
+                        backend,
+                    );
+                    Ok(())
+                })?;
+                Ok(id)
+            }
+            OverlayKind::LayoutDialog => {
+                // Unlike every other anchored kind, the anchor is
+                // optional here: it sizes the dialog's content slot, and
+                // omitting it takes `DialogContentSize`'s own
+                // viewport-relative defaults.
+                let size = match anchor {
+                    Some((width, height, ..)) => DialogContentSize {
+                        width: Some(width),
+                        height: Some(height),
+                    },
+                    None => DialogContentSize::default(),
+                };
+                let mut id = String::new();
+                self.open_overlay_try(|backend, app_logic| {
+                    let decoded = {
+                        let theme = backend.theme();
+                        let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
+                        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
+                        decode_layout_dialog(
+                            "show_overlay",
+                            &mut de,
+                            styles,
+                            &app_logic.host.wire_diagnostics,
+                        )
+                        .map_err(decode_error_to_py)?
+                    };
+                    id = decoded.chrome.id.to_string();
+                    app_logic.engine.open_layout_dialog(
+                        decoded.chrome,
+                        decoded.content,
+                        size,
+                        backend,
+                    );
+                    Ok(())
+                })?;
+                Ok(id)
+            }
+        }
+    }
+
+    /// Closes the overlay named by `id` — the generic counterpart
+    /// [`Self::dismiss_message_dialog`]/[`Self::dismiss_toast`]/
+    /// [`Self::hide_tooltip`]/[`Self::dismiss_completions`]/
+    /// [`Self::dismiss_float`]/[`Self::dismiss_rich_text_popup`] each
+    /// forward onto, plus a `"context_menu"` case none of those six had a
+    /// dismiss counterpart for at all. Returns whether an overlay was
+    /// actually open to close; no event is dispatched either way — the
+    /// same "close without resolving" shape every one of those six
+    /// methods already documents.
+    ///
+    /// `id` is either one of `show_overlay`'s own six singleton
+    /// sentinels (`"context_menu"`, `"message_dialog"`, `"tooltip"`,
+    /// `"completions"`, `"float"`, `"rich_text_popup"` — closing the
+    /// matching kind's open overlay regardless of whether it's the one
+    /// that returned this exact id) or any other string, read as a toast
+    /// id (closing the toast with that id, if one is showing). A toast
+    /// whose own id happens to collide with one of those six sentinels is
+    /// the one case this can't address by id; name toasts something else.
+    fn dismiss_overlay(&mut self, id: &str) -> PyResult<bool> {
+        match id {
+            "context_menu" => self
+                .dismiss_via(|backend, app_logic| app_logic.engine.dismiss_context_menu(backend)),
+            "message_dialog" => self
+                .dismiss_via(|backend, app_logic| app_logic.engine.close_message_dialog(backend)),
+            "tooltip" => self.dismiss_via(|_backend, app_logic| app_logic.engine.hide_tooltip()),
+            "completions" => {
+                self.dismiss_via(|_backend, app_logic| app_logic.engine.dismiss_completions())
+            }
+            // A `"popover"` *is* a float (one this engine paints content
+            // into), so either sentinel closes it.
+            "float" | "popover" => {
+                self.dismiss_via(|backend, app_logic| app_logic.engine.dismiss_float(backend))
+            }
+            "layout_dialog" => {
+                self.dismiss_via(|backend, app_logic| app_logic.engine.close_layout_dialog(backend))
+            }
+            "rich_text_popup" => {
+                self.dismiss_via(|_backend, app_logic| app_logic.engine.dismiss_rich_text_popup())
+            }
+            toast_id => {
+                let toast_id = WidgetId::new(toast_id);
+                self.dismiss_via(move |_backend, app_logic| {
+                    app_logic.engine.dismiss_toast(toast_id)
+                })
+            }
+        }
     }
 
     /// Opens a right-click-style popup menu at `position` (view-local
@@ -3850,30 +4653,23 @@ impl QuiApp {
     /// returns, having seen a raw `MouseDown { button: Right, .. }` land
     /// where a menu should open), never from inside the registered event
     /// handler or render callback: both already hold this `QuiApp`'s one
-    /// mutable borrow for the whole dispatch, so a reentrant call here hits
-    /// the same PyO3 runtime-borrow wall `QuiApp.insert_*`/`slot_clear` do —
-    /// see the module doc's "cannot call back into `QuiApp`" note. From
-    /// inside a handler, call [`QuiAppActions::show_context_menu`] (via
+    /// mutable borrow for the whole dispatch, so a reentrant call here
+    /// raises [`ReentrantCallError`] (unlike `QuiApp.insert_*`/
+    /// `slot_clear`, which have no `actions()` counterpart to point to and
+    /// so still raise PyO3's raw `RuntimeError: Already borrowed` on the
+    /// same reentrant call) — see [`guard_against_reentrant_call`]'s own
+    /// doc. From inside a handler, call [`QuiAppActions::show_context_menu`] (via
     /// [`QuiApp::actions`]) instead — see that type's doc for why it can
-    /// succeed where this can't.
+    /// succeed where this can't. A one-line forward onto
+    /// [`Self::show_overlay`].
     fn show_context_menu(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         items: &Bound<'_, PyList>,
         position: (f32, f32),
     ) -> PyResult<()> {
-        let items: Vec<ContextMenuItem> =
-            pythonize::depythonize(items.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!("show_context_menu: invalid items: {err}"))
-            })?;
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            app_logic
-                .engine
-                .open_context_menu(items, Point::new(position.0, position.1), backend);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        guard_against_reentrant_call(&slf, py, "show_context_menu")?
+            .open_context_menu(items, position)
     }
 
     /// Opens an in-canvas confirm/alert/prompt dialog built from `title`/
@@ -3923,8 +4719,8 @@ impl QuiApp {
     ///
     /// Call from top-level script code only, never from inside the
     /// registered event handler or render callback — see
-    /// `show_context_menu`'s own doc for why (the same PyO3 runtime-borrow
-    /// wall applies here). From inside a handler, call
+    /// `show_context_menu`'s own doc for why (the same `ReentrantCallError`
+    /// applies here). From inside a handler, call
     /// [`QuiAppActions::show_message_dialog`] (via [`QuiApp::actions`])
     /// instead.
     ///
@@ -3934,34 +4730,18 @@ impl QuiApp {
     /// list, keyboard-focus cursor rather than a blocking popup) needs a
     /// differently-shaped surface than this "one call, blocks input
     /// until resolved" method and isn't wired here either.
+    /// A one-line forward onto [`Self::show_overlay`].
     #[pyo3(signature = (title, body, buttons, severity=None))]
     fn show_message_dialog(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         title: String,
         body: String,
         buttons: &Bound<'_, PyList>,
         severity: Option<String>,
     ) -> PyResult<()> {
-        let buttons: Vec<DialogButton> =
-            pythonize::depythonize(buttons.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "show_message_dialog: invalid buttons: {err}"
-                ))
-            })?;
-        let severity = severity
-            .map(|s| parse_dialog_severity("show_message_dialog", &s))
-            .transpose()?;
-        let opts =
-            message_dialog_options_from_buttons(title, body, buttons, severity).map_err(|err| {
-                InvalidDescriptorError::new_err(format!("show_message_dialog: {err}"))
-            })?;
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            app_logic.engine.open_message_dialog(opts, backend);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        guard_against_reentrant_call(&slf, py, "show_message_dialog")?
+            .open_message_dialog(title, body, buttons, severity)
     }
 
     /// Closes the open message dialog (if any) without resolving it —
@@ -3970,17 +4750,9 @@ impl QuiApp {
     /// top-level script code without driving it through input; mirrors
     /// `show_message_dialog`'s own "call from top-level script code only"
     /// restriction and re-renders so `screen()` reflects the dismissal
-    /// immediately.
+    /// immediately. A one-line forward onto [`Self::dismiss_overlay`].
     fn dismiss_message_dialog(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            let closed = app_logic.engine.close_message_dialog(backend);
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay("message_dialog")
     }
 
     // ── Remaining in-canvas overlays: Toast / Tooltip / Completions /
@@ -3993,8 +4765,9 @@ impl QuiApp {
     // slot, re-rendered immediately so `screen()`/`screen_contains()`
     // reflect the open overlay without a separate step. Call each from
     // top-level script code only, never from inside the registered event
-    // handler or render callback — same PyO3 runtime-borrow wall
-    // `show_message_dialog`'s own doc explains.
+    // handler or render callback — raises `ReentrantCallError` the same
+    // way `show_message_dialog`'s own doc explains. Each is a one-line
+    // forward onto `show_overlay`/`dismiss_overlay`.
 
     /// Shows `toast` (a dict matching [`quadraui::Toast`]'s shape — `id`,
     /// `title`, `body`, `severity`, `actions`, `accent`) stacked in
@@ -4013,34 +4786,26 @@ impl QuiApp {
     /// `show_message_dialog`; from inside a handler, call
     /// [`QuiAppActions::show_toast`] (via [`QuiApp::actions`]) instead.
     #[pyo3(signature = (toast, corner=None))]
-    fn show_toast(&mut self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
-        let toast: Toast = decode("show_toast", toast)?;
-        let corner = corner
-            .map(|c| parse_toast_corner("show_toast", &c))
-            .transpose()?;
-        self.guarded(|app| {
-            app.driver
-                .app_mut()
-                .engine
-                .show_toast(toast, corner.unwrap_or_default());
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+    fn show_toast(
+        slf: Py<Self>,
+        py: Python<'_>,
+        toast: &Bound<'_, PyDict>,
+        corner: Option<String>,
+    ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "show_toast")?;
+        let descriptor = toast.copy()?;
+        if let Some(corner) = corner {
+            descriptor.set_item("corner", corner)?;
+        }
+        this.show_overlay("toast", &descriptor, None)?;
+        Ok(())
     }
 
     /// Closes the toast with this id, if showing. Returns whether one was
     /// closed. No event is dispatched — mirrors `dismiss_message_dialog`'s
     /// "close without resolving" shape.
     fn dismiss_toast(&mut self, id: String) -> PyResult<bool> {
-        self.guarded(|app| {
-            let closed = app.driver.app_mut().engine.dismiss_toast(WidgetId::new(id));
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay(&id)
     }
 
     /// Shows `tooltip` (a dict matching [`quadraui::Tooltip`]'s shape —
@@ -4055,30 +4820,20 @@ impl QuiApp {
     /// auto-dismisses it; call `hide_tooltip` to dismiss it sooner (e.g.
     /// the hovered widget itself changed).
     fn show_tooltip(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         tooltip: &Bound<'_, PyDict>,
         anchor: (f32, f32, f32, f32),
     ) -> PyResult<()> {
-        let tooltip: Tooltip = decode("show_tooltip", tooltip)?;
-        let anchor = Rect::new(anchor.0, anchor.1, anchor.2, anchor.3);
-        self.guarded(|app| {
-            app.driver.app_mut().engine.show_tooltip(tooltip, anchor);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        let mut this = guard_against_reentrant_call(&slf, py, "show_tooltip")?;
+        this.show_overlay("tooltip", tooltip, Some(anchor))?;
+        Ok(())
     }
 
     /// Hides the open tooltip (if any). Returns whether one was open.
-    fn hide_tooltip(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let hidden = app.driver.app_mut().engine.hide_tooltip();
-            if hidden {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(hidden)
-        })
+    fn hide_tooltip(slf: Py<Self>, py: Python<'_>) -> PyResult<bool> {
+        let mut this = guard_against_reentrant_call(&slf, py, "hide_tooltip")?;
+        this.dismiss_overlay("tooltip")
     }
 
     /// Shows `completions` (a dict matching [`quadraui::Completions`]'s
@@ -4095,30 +4850,18 @@ impl QuiApp {
         completions: &Bound<'_, PyDict>,
         cursor: (f32, f32),
     ) -> PyResult<()> {
-        let completions: Completions = decode("show_completions", completions)?;
-        let cursor = Point::new(cursor.0, cursor.1);
-        self.guarded(|app| {
-            app.driver
-                .app_mut()
-                .engine
-                .show_completions(completions, cursor);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        self.show_overlay(
+            "completions",
+            completions,
+            Some((cursor.0, cursor.1, 0.0, 0.0)),
+        )?;
+        Ok(())
     }
 
     /// Closes the open completions popup (if any) without reporting a
     /// selection. Returns whether one was open.
     fn dismiss_completions(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let closed = app.driver.app_mut().engine.dismiss_completions();
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay("completions")
     }
 
     /// Opens `float` (a dict matching [`quadraui::Float`]'s shape — `id`,
@@ -4138,29 +4881,14 @@ impl QuiApp {
     /// Escape, matching [`quadraui::ModalStack::top_focusable`]'s own
     /// "never steals keys" doc.
     fn show_float(&mut self, float: &Bound<'_, PyDict>, width: f32, height: f32) -> PyResult<()> {
-        let float: Float = decode("show_float", float)?;
-        let measure = FloatMeasure::new(width, height);
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            app_logic.engine.show_float(float, measure, backend);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        self.show_overlay("float", float, Some((width, height, 0.0, 0.0)))?;
+        Ok(())
     }
 
     /// Closes the open float (if any) with no event. Returns whether one
     /// was open.
     fn dismiss_float(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            let closed = app_logic.engine.dismiss_float(backend);
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay("float")
     }
 
     /// Shows `popup` (a dict matching [`quadraui::RichTextPopup`]'s shape
@@ -4178,42 +4906,35 @@ impl QuiApp {
         popup: &Bound<'_, PyDict>,
         anchor: (f32, f32),
     ) -> PyResult<()> {
-        let popup: RichTextPopup = decode("show_rich_text_popup", popup)?;
-        let anchor = Point::new(anchor.0, anchor.1);
-        self.guarded(|app| {
-            app.driver
-                .app_mut()
-                .engine
-                .show_rich_text_popup(popup, anchor);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
+        self.show_overlay(
+            "rich_text_popup",
+            popup,
+            Some((anchor.0, anchor.1, 0.0, 0.0)),
+        )?;
+        Ok(())
     }
 
     /// Closes the open rich-text popup (if any) without reporting a link
     /// click. Returns whether one was open.
     fn dismiss_rich_text_popup(&mut self) -> PyResult<bool> {
-        self.guarded(|app| {
-            let closed = app.driver.app_mut().engine.dismiss_rich_text_popup();
-            if closed {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(closed)
-        })
+        self.dismiss_overlay("rich_text_popup")
     }
 
     /// Empties a slot (one of the integers returned by an `insert_*` call),
     /// re-rendering so `screen()` no longer shows it. Returns whether the
     /// slot held anything. Raises `UnknownSlotError` if `slot` doesn't name
     /// one of this app's six fixed primitive slots.
-    fn slot_clear(&mut self, slot: i64) -> PyResult<bool> {
+    ///
+    /// **Deprecated**: raises a `DeprecationWarning` naming omitting the
+    /// relevant fixed-slot layout leaf from the next `render` callback as
+    /// the replacement; removal is a later breaking release.
+    fn slot_clear(&mut self, py: Python<'_>, slot: i64) -> PyResult<bool> {
         if !PyAppLogic::is_known_slot(slot) {
             return Err(UnknownSlotError::new_err(format!(
                 "unknown slot id: {slot}"
             )));
         }
+        warn_slot_clear_deprecated(py, slot)?;
         self.guarded(|app| {
             let cleared = app.driver.app_mut().clear_slot(slot);
             if cleared {
@@ -4555,8 +5276,9 @@ impl QuiApp {
     /// headless `TuiBackend` this emits the OSC 0/2 terminal escape
     /// sequence (crossterm's `SetTitle`) to retitle the terminal
     /// emulator's tab/window -- genuinely applied, not a no-op.
-    fn set_title(&mut self, title: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_title(slf: Py<Self>, py: Python<'_>, title: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_title")?;
+        this.guarded(|app| {
             service_result(
                 "set_title",
                 with_window(app.driver.parts_mut().0, |w| w.set_title(title)),
@@ -4569,8 +5291,9 @@ impl QuiApp {
     /// `InternalError` on every in-tree backend except a macOS
     /// `run_native` window, which has no reachable equivalent from this
     /// headless app.
-    fn set_document_edited(&mut self, edited: bool) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_document_edited(slf: Py<Self>, py: Python<'_>, edited: bool) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_document_edited")?;
+        this.guarded(|app| {
             service_result(
                 "set_document_edited",
                 with_window(app.driver.parts_mut().0, |w| w.set_document_edited(edited)),
@@ -4582,8 +5305,9 @@ impl QuiApp {
     /// association when `None`) -- [`quadraui::WindowControl::set_represented_filename`].
     /// Same macOS-only story as [`Self::set_document_edited`].
     #[pyo3(signature = (path=None))]
-    fn set_represented_filename(&mut self, path: Option<&str>) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_represented_filename(slf: Py<Self>, py: Python<'_>, path: Option<&str>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_represented_filename")?;
+        this.guarded(|app| {
             service_result(
                 "set_represented_filename",
                 with_window(app.driver.parts_mut().0, |w| {
@@ -4600,11 +5324,12 @@ impl QuiApp {
     /// `InternalError` on every in-tree backend except a `gtk`/`macos`/
     /// `win` `run_native` window: TUI has no tray/status-bar concept at all
     /// ([`Backend::tray`] stays `None` there permanently).
-    fn set_tray_icon(&mut self, icon: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_tray_icon(slf: Py<Self>, py: Python<'_>, icon: &Bound<'_, PyAny>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_tray_icon")?;
         let icon: ImageSource = pythonize::depythonize(icon).map_err(|err| {
             InvalidDescriptorError::new_err(format!("set_tray_icon: invalid icon: {err}"))
         })?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             service_result(
                 "set_tray_icon",
                 with_tray(app.driver.parts_mut().0, |t| t.set_icon(icon)),
@@ -4614,8 +5339,9 @@ impl QuiApp {
 
     /// Sets the tray icon's hover tooltip text -- [`quadraui::backend::TrayService::set_tooltip`].
     /// Same tray-less-on-TUI story as [`Self::set_tray_icon`].
-    fn set_tray_tooltip(&mut self, tooltip: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_tray_tooltip(slf: Py<Self>, py: Python<'_>, tooltip: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_tray_tooltip")?;
+        this.guarded(|app| {
             service_result(
                 "set_tray_tooltip",
                 with_tray(app.driver.parts_mut().0, |t| t.set_tooltip(tooltip)),
@@ -4630,12 +5356,13 @@ impl QuiApp {
     /// `UiEvent::ContextMenuItemActivated` the same way a right-click
     /// context menu's does. Same tray-less-on-TUI story as
     /// [`Self::set_tray_icon`].
-    fn set_tray_menu(&mut self, items: &Bound<'_, PyList>) -> PyResult<()> {
+    fn set_tray_menu(slf: Py<Self>, py: Python<'_>, items: &Bound<'_, PyList>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_tray_menu")?;
         let items: Vec<ContextMenuItem> =
             pythonize::depythonize(items.as_any()).map_err(|err| {
                 InvalidDescriptorError::new_err(format!("set_tray_menu: invalid items: {err}"))
             })?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             service_result(
                 "set_tray_menu",
                 with_tray(app.driver.parts_mut().0, |t| t.set_menu(&tray_menu(items))),
@@ -4654,9 +5381,15 @@ impl QuiApp {
     /// native pointer concept at all, same as [`Backend::set_cursor`]'s
     /// own "no window yet" case on a windowed backend.
     #[pyo3(signature = (shape, edge=None))]
-    fn set_cursor(&mut self, shape: &str, edge: Option<&str>) -> PyResult<bool> {
+    fn set_cursor(
+        slf: Py<Self>,
+        py: Python<'_>,
+        shape: &str,
+        edge: Option<&str>,
+    ) -> PyResult<bool> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_cursor")?;
         let shape = parse_pointer_shape("set_cursor", shape, edge)?;
-        self.guarded(|app| Ok(app.driver.parts_mut().0.set_cursor(shape)))
+        this.guarded(|app| Ok(app.driver.parts_mut().0.set_cursor(shape)))
     }
 
     // ─── Theme, style & fonts ────────────────────────────────────────────
@@ -4687,9 +5420,10 @@ impl QuiApp {
     /// also replayed onto whichever real backend `run_tui`/`run_native`
     /// goes on to construct, via [`AppLogic::setup`] -- mirrors
     /// [`Self::register_accelerator`]'s replay contract.
-    fn set_theme(&mut self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+    fn set_theme(slf: Py<Self>, py: Python<'_>, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_theme")?;
         let keys = dict_keys(overrides)?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let theme = merge_overrides(backend.theme(), keys, |key| {
                 let val = overrides
@@ -4738,6 +5472,78 @@ impl QuiApp {
             backend.set_style(style);
             app_logic.host.style = Some(style);
             Ok(())
+        })
+    }
+
+    /// Registers a named style set under `name` -- the CSS-class analogue
+    /// of [`Self::set_theme`]'s whole-app override. `overrides` takes the
+    /// same keys a layout node's own `"style"` dict does (`"bg"`/`"fg"`/
+    /// `"border"`/`"accent"`/`"surface_bg"`/`"accent_bg"`/`"padding"`/
+    /// `"corner_radius"`/`"border_width"`; an unknown key raises
+    /// `InvalidDescriptorError`). Any node in any later frame's tree then
+    /// names the set through its own `"class"` key -- a single name, a
+    /// whitespace-separated string of them, or a list -- instead of
+    /// restating the same tokens inline on every node that wants them.
+    ///
+    /// Several classes merge left to right (a later name wins a token an
+    /// earlier one also named), and the node's own inline `"style"` dict
+    /// beats all of them. A class name no set was ever defined under is
+    /// ignored rather than raising, the same unknown-key policy an
+    /// unrecognised sibling key on a node dict gets.
+    ///
+    /// Four sets exist before any call here -- `"primary"`, `"secondary"`,
+    /// `"danger"`, `"subtle"` -- each derived from the app's live `Theme`
+    /// (so they follow a [`Self::set_theme`] call) rather than from fixed
+    /// colours. Defining one of those names replaces it.
+    ///
+    /// Redefining a set applies from the next frame on: nothing caches a
+    /// resolved override. This requests a repaint immediately
+    /// ([`Backend::request_frame_in`]) on whichever backend this app is
+    /// driving at the call site -- for a call from top-level script code
+    /// before `run_tui`/`run_native` starts (or from `step`/`run`), that is
+    /// the only backend this app has, so there is no other loop around to
+    /// nudge.
+    ///
+    /// Call from top-level script code only, never from inside the
+    /// registered event handler or render callback -- see
+    /// `show_context_menu`'s own doc for why (the same `ReentrantCallError`
+    /// applies here). From inside a handler, call
+    /// [`QuiAppActions::define_style`] (via [`Self::actions`]) instead --
+    /// that path flushes against the real backend a running `run_tui`/
+    /// `run_native` loop is driving, so its `request_frame_in` call
+    /// repaints that loop rather than a backend nothing is reading from.
+    fn define_style(
+        slf: Py<Self>,
+        py: Python<'_>,
+        name: &str,
+        overrides: &Bound<'_, PyDict>,
+    ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "define_style")?;
+        validate_style_set_name("define_style", name).map_err(decode_error_to_py)?;
+        let json = pyany_to_json(overrides.as_any())
+            .map_err(|err| InvalidDescriptorError::new_err(format!("define_style: {err}")))?;
+        let parsed = decode_style_overrides("define_style", &json).map_err(decode_error_to_py)?;
+        this.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic.host.style_sets.define(name, parsed);
+            backend.request_frame_in(Duration::ZERO);
+            Ok(())
+        })
+    }
+
+    /// Every style-set name currently registered, sorted -- the four
+    /// built-ins plus whatever [`Self::define_style`] has added.
+    fn style_set_names(&mut self) -> PyResult<Vec<String>> {
+        self.guarded(|app| {
+            Ok(app
+                .driver
+                .app()
+                .host
+                .style_sets
+                .names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect())
         })
     }
 
@@ -5006,14 +5812,16 @@ impl QuiApp {
     /// known to have failed to reach any notification channel at all.
     #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
     fn send_notification(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         title: String,
         body: String,
         urgent: bool,
         silent: bool,
         tag: Option<String>,
     ) -> PyResult<()> {
-        self.guarded(|app| {
+        let mut this = guard_against_reentrant_call(&slf, py, "send_notification")?;
+        this.guarded(|app| {
             let mut n = Notification::new(title, body).with_silent(silent);
             if let Some(tag) = tag {
                 n = n.with_tag(tag);
@@ -5052,13 +5860,14 @@ impl QuiApp {
     /// has no file-manager window, but the session running it usually
     /// does. Raises `InternalError` when no such session is reachable.
     ///
-    /// Like every other `&mut self` method here, calling this from inside
-    /// the registered event handler or render callback hits the same PyO3
-    /// runtime-borrow wall `show_message_dialog`'s own doc describes —
-    /// call [`QuiAppActions::reveal_in_file_manager`] (via
+    /// Like every other method restricted this way, calling this from
+    /// inside the registered event handler or render callback raises
+    /// `ReentrantCallError` the same way `show_message_dialog`'s own doc
+    /// describes — call [`QuiAppActions::reveal_in_file_manager`] (via
     /// [`QuiApp::actions`]) from a handler instead.
-    fn reveal_in_file_manager(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn reveal_in_file_manager(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "reveal_in_file_manager")?;
+        this.guarded(|app| {
             app.driver
                 .backend()
                 .services()
@@ -5076,8 +5885,9 @@ impl QuiApp {
     /// Same handler restriction as `reveal_in_file_manager` — call
     /// [`QuiAppActions::open_path`] (via [`QuiApp::actions`]) from a
     /// handler instead.
-    fn open_path(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn open_path(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "open_path")?;
+        this.guarded(|app| {
             app.driver
                 .backend()
                 .services()
@@ -5096,8 +5906,9 @@ impl QuiApp {
     /// Same handler restriction as `reveal_in_file_manager` — call
     /// [`QuiAppActions::move_to_trash`] (via [`QuiApp::actions`]) from a
     /// handler instead.
-    fn move_to_trash(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn move_to_trash(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "move_to_trash")?;
+        this.guarded(|app| {
             app.driver
                 .backend()
                 .services()
@@ -5119,8 +5930,9 @@ impl QuiApp {
     /// Same handler restriction as `reveal_in_file_manager` — call
     /// [`QuiAppActions::restore_from_trash`] (via [`QuiApp::actions`]) from
     /// a handler instead.
-    fn restore_from_trash(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn restore_from_trash(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "restore_from_trash")?;
+        this.guarded(|app| {
             app.driver
                 .backend()
                 .services()
@@ -5235,8 +6047,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::apply_on_quit`] (via [`Self::actions`]) from a
     /// handler instead.
-    fn apply_on_quit(&mut self, handle: u64) -> PyResult<()> {
-        self.guarded(|app| {
+    fn apply_on_quit(slf: Py<Self>, py: Python<'_>, handle: u64) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "apply_on_quit")?;
+        this.guarded(|app| {
             update_apply_on_quit(app.driver.backend().services(), handle)
                 .map_err(|err| service_error_to_py("apply_on_quit", err))
         })
@@ -5260,8 +6073,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::end_power_save_block`] (via [`Self::actions`])
     /// from a handler instead.
-    fn end_power_save_block(&mut self, handle: u64) -> PyResult<()> {
-        self.guarded(|app| {
+    fn end_power_save_block(slf: Py<Self>, py: Python<'_>, handle: u64) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "end_power_save_block")?;
+        this.guarded(|app| {
             end_power_save_block(app.driver.backend().services(), handle)
                 .map_err(|err| service_error_to_py("end_power_save_block", err))
         })
@@ -5275,12 +6089,14 @@ impl QuiApp {
     /// a handler instead.
     #[pyo3(signature = (enabled, open_hidden=false, args=Vec::new()))]
     fn set_login_item(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         enabled: bool,
         open_hidden: bool,
         args: Vec<String>,
     ) -> PyResult<()> {
-        self.guarded(|app| {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_login_item")?;
+        this.guarded(|app| {
             set_login_item(app.driver.backend().services(), enabled, open_hidden, args)
                 .map_err(|err| service_error_to_py("set_login_item", err))
         })
@@ -5300,8 +6116,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::set_as_default_protocol_client`] (via
     /// [`Self::actions`]) from a handler instead.
-    fn set_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn set_as_default_protocol_client(slf: Py<Self>, py: Python<'_>, scheme: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_as_default_protocol_client")?;
+        this.guarded(|app| {
             set_as_default_protocol_client(app.driver.backend().services(), scheme)
                 .map_err(|err| service_error_to_py("set_as_default_protocol_client", err))
         })
@@ -5321,8 +6138,13 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::remove_as_default_protocol_client`] (via
     /// [`Self::actions`]) from a handler instead.
-    fn remove_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn remove_as_default_protocol_client(
+        slf: Py<Self>,
+        py: Python<'_>,
+        scheme: &str,
+    ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "remove_as_default_protocol_client")?;
+        this.guarded(|app| {
             remove_as_default_protocol_client(app.driver.backend().services(), scheme)
                 .map_err(|err| service_error_to_py("remove_as_default_protocol_client", err))
         })
@@ -5335,8 +6157,14 @@ impl QuiApp {
     /// Call [`QuiAppActions::begin_drag_out`] (via [`Self::actions`]) from
     /// a handler instead.
     #[pyo3(signature = (files=Vec::new(), text=None))]
-    fn begin_drag_out(&mut self, files: Vec<String>, text: Option<String>) -> PyResult<()> {
-        self.guarded(|app| {
+    fn begin_drag_out(
+        slf: Py<Self>,
+        py: Python<'_>,
+        files: Vec<String>,
+        text: Option<String>,
+    ) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "begin_drag_out")?;
+        this.guarded(|app| {
             begin_drag_out(app.driver.backend().services(), files, text)
                 .map_err(|err| service_error_to_py("begin_drag_out", err))
         })
@@ -5347,8 +6175,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::add_recent_document`] (via [`Self::actions`])
     /// from a handler instead.
-    fn add_recent_document(&mut self, path: &str) -> PyResult<()> {
-        self.guarded(|app| {
+    fn add_recent_document(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "add_recent_document")?;
+        this.guarded(|app| {
             add_recent_document(app.driver.backend().services(), path)
                 .map_err(|err| service_error_to_py("add_recent_document", err))
         })
@@ -5359,8 +6188,9 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::clear_recent_documents`] (via
     /// [`Self::actions`]) from a handler instead.
-    fn clear_recent_documents(&mut self) -> PyResult<()> {
-        self.guarded(|app| {
+    fn clear_recent_documents(slf: Py<Self>, py: Python<'_>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "clear_recent_documents")?;
+        this.guarded(|app| {
             clear_recent_documents(app.driver.backend().services())
                 .map_err(|err| service_error_to_py("clear_recent_documents", err))
         })
@@ -5372,11 +6202,12 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::set_dock_menu`] (via [`Self::actions`]) from a
     /// handler instead.
-    fn set_dock_menu(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_dock_menu(slf: Py<Self>, py: Python<'_>, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_dock_menu")?;
         let items = pyany_to_json(items).map_err(|err| {
             InvalidDescriptorError::new_err(format!("set_dock_menu: invalid items: {err}"))
         })?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             set_dock_menu(app.driver.backend().services(), items)
                 .map_err(|err| service_error_to_py("set_dock_menu", err))
         })
@@ -5388,11 +6219,12 @@ impl QuiApp {
     ///
     /// Call [`QuiAppActions::set_jump_list`] (via [`Self::actions`]) from a
     /// handler instead.
-    fn set_jump_list(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_jump_list(slf: Py<Self>, py: Python<'_>, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let mut this = guard_against_reentrant_call(&slf, py, "set_jump_list")?;
         let items = pyany_to_json(items).map_err(|err| {
             InvalidDescriptorError::new_err(format!("set_jump_list: invalid items: {err}"))
         })?;
-        self.guarded(|app| {
+        this.guarded(|app| {
             set_jump_list(app.driver.backend().services(), items)
                 .map_err(|err| service_error_to_py("set_jump_list", err))
         })
@@ -5459,7 +6291,140 @@ fn take_pending_error(app: &mut PyAppLogic) -> PyResult<()> {
     core_take_pending_error(&mut app.pending_error.borrow_mut())
 }
 
+/// Raises a `DeprecationWarning` carrying `message` -- the one call
+/// [`warn_insert_deprecated`]/[`warn_clear_extra_deprecated`]/
+/// [`warn_slot_clear_deprecated`] below make, each having already built
+/// `message` from a `BindingHost::*_deprecation_message` call, unconditionally
+/// on every call -- see [`BindingHost::first_deprecation_report`]'s own doc
+/// for why only `quadraui-node` needs the per-app "have I already reported
+/// this" dedup. Raises only if Python's own warning filters have escalated
+/// `DeprecationWarning` to an error (`-W error::DeprecationWarning` or an
+/// equivalent `simplefilter`), in which case the slot/extra call itself
+/// never runs.
+///
+/// `message` can embed caller-supplied data (`insert_extra`/`clear_extra`'s
+/// own `kind` argument is an arbitrary Python `str`, which may legally
+/// contain a NUL byte), and a C string can't carry an interior NUL. Rather
+/// than asserting that invariant with an `.expect()` a caller can actually
+/// violate, a NUL byte is stripped before building the `CString` -- the
+/// warning still names the kind (minus any NUL) instead of the whole call
+/// panicking on previously-valid input.
+fn emit_deprecation_warning(py: Python<'_>, message: String) -> PyResult<()> {
+    let message = if message.contains('\0') {
+        message.replace('\0', "")
+    } else {
+        message
+    };
+    let message = std::ffi::CString::new(message)
+        .unwrap_or_else(|_| std::ffi::CString::new("deprecation warning").unwrap());
+    PyErr::warn(py, &py.get_type::<PyDeprecationWarning>(), &message, 1)
+}
+
+/// [`emit_deprecation_warning`] for inserting primitive `leaf_kind` via the
+/// deprecated `what` method -- the one call every `insert_*`/`insert_extra`
+/// pymethod makes, naming the inline layout leaf of that same kind as the
+/// replacement. Builds the shared message via
+/// [`BindingHost::insert_deprecation_message`] so the wording lives once,
+/// shared with `quadraui-node`'s own forward.
+fn warn_insert_deprecated(py: Python<'_>, what: &str, leaf_kind: &str) -> PyResult<()> {
+    emit_deprecation_warning(py, BindingHost::insert_deprecation_message(what, leaf_kind))
+}
+
+/// [`emit_deprecation_warning`] for `clear_extra`, naming omitting `kind`'s
+/// layout leaf from the next `render` callback as the replacement. Builds
+/// the shared message via [`BindingHost::clear_extra_deprecation_message`].
+fn warn_clear_extra_deprecated(py: Python<'_>, kind: &str) -> PyResult<()> {
+    emit_deprecation_warning(
+        py,
+        BindingHost::clear_extra_deprecation_message("clear_extra", kind),
+    )
+}
+
+/// [`emit_deprecation_warning`] for `slot_clear`, naming omitting `slot`'s
+/// fixed-primitive layout leaf from the next `render` callback as the
+/// replacement. `slot` is assumed already validated by
+/// [`PyAppLogic::is_known_slot`] -- see [`BindingHost::slot_kind_name`]'s
+/// own doc for why this never actually sees an unrecognized slot. Builds
+/// the shared message via [`BindingHost::slot_clear_deprecation_message`].
+fn warn_slot_clear_deprecated(py: Python<'_>, slot: i64) -> PyResult<()> {
+    emit_deprecation_warning(
+        py,
+        BindingHost::slot_clear_deprecation_message("slot_clear", slot),
+    )
+}
+
+/// Attempts the one mutable borrow `method` needs, converting PyO3's own
+/// generic `BorrowMutError` into [`ReentrantCallError`] (via
+/// [`quadraui_binding_core::reentrant_call_message`]) instead of letting it
+/// surface as PyO3's raw `RuntimeError: Already borrowed`.
+///
+/// Every `QuiApp` method restricted to top-level script code (the set
+/// [`QuiAppActions`]'s own doc lists) takes `slf: Py<Self>` plus this
+/// explicit `py: Python<'py>` instead of the usual `&mut self`/`&self`
+/// receiver specifically so it can call this first, *before* attempting
+/// anything else: a plain `&mut self` receiver has PyO3's
+/// macro-generated method wrapper perform this same `try_borrow_mut`
+/// itself, as part of extracting that receiver — which happens before the
+/// method's own body (including a guard written inside that body) ever
+/// runs, so a body-level check can never intercept the failure. Calling
+/// this explicitly, against the owning `Py<Self>` handle instead of
+/// through the receiver PyO3 would otherwise extract automatically, is
+/// what lets this crate's own code run first and raise its own tagged
+/// exception instead.
+fn guard_against_reentrant_call<'py>(
+    slf: &Py<QuiApp>,
+    py: Python<'py>,
+    method: &str,
+) -> PyResult<PyRefMut<'py, QuiApp>> {
+    slf.bind(py).try_borrow_mut().map_err(|_| {
+        ReentrantCallError::new_err(quadraui_binding_core::reentrant_call_message(method))
+    })
+}
+
 impl QuiApp {
+    /// Builds the `context_menu` overlay descriptor from `items`/`position`
+    /// and opens it — the whole body of [`QuiApp::show_context_menu`], split
+    /// out so it takes an ordinary `&mut self` receiver. That method itself
+    /// takes an owning `Py<Self>` handle instead, so it can run
+    /// [`guard_against_reentrant_call`] before the borrow is attempted; it
+    /// forwards here once the borrow succeeds.
+    fn open_context_menu(
+        &mut self,
+        items: &Bound<'_, PyList>,
+        position: (f32, f32),
+    ) -> PyResult<()> {
+        let descriptor = PyDict::new(items.py());
+        descriptor.set_item("items", items)?;
+        self.show_overlay(
+            "context_menu",
+            &descriptor,
+            Some((position.0, position.1, 0.0, 0.0)),
+        )?;
+        Ok(())
+    }
+
+    /// Builds the `message_dialog` overlay descriptor from `title`/`body`/
+    /// `buttons`/`severity` and opens it — the whole body of
+    /// [`QuiApp::show_message_dialog`], split out the same way (and for the
+    /// same reason) as [`Self::open_context_menu`].
+    fn open_message_dialog(
+        &mut self,
+        title: String,
+        body: String,
+        buttons: &Bound<'_, PyList>,
+        severity: Option<String>,
+    ) -> PyResult<()> {
+        let descriptor = PyDict::new(buttons.py());
+        descriptor.set_item("title", title)?;
+        descriptor.set_item("body", body)?;
+        descriptor.set_item("buttons", buttons)?;
+        if let Some(severity) = severity {
+            descriptor.set_item("severity", severity)?;
+        }
+        self.show_overlay("message_dialog", &descriptor, None)?;
+        Ok(())
+    }
+
     /// Runs `body` on `self`, catching a Rust panic instead of letting it
     /// unwind across the PyO3 boundary. On success returns `body`'s result
     /// unchanged; on a panic, poisons this app and raises `PanicError`. If
@@ -5535,8 +6500,7 @@ impl QuiApp {
             )));
         }
         let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-        let value = decode_extra_primitive(what, kind, &mut de)
-            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
+        let value = decode_extra_primitive(what, kind, &mut de).map_err(decode_error_to_py)?;
         self.guarded(|app| {
             app.driver
                 .app_mut()
@@ -5546,6 +6510,66 @@ impl QuiApp {
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
             Ok(kind.to_string())
+        })
+    }
+
+    /// Shared body of every [`QuiApp::show_overlay`] match arm: runs
+    /// `open` against this app's live `(Backend, PyAppLogic)` pair, then
+    /// re-renders so `screen()`/`screen_contains()` reflect the newly
+    /// opened overlay without a separate step — the same immediate-render
+    /// contract each of the 13 kind-specific `show_*` methods already
+    /// documents.
+    fn open_overlay(
+        &mut self,
+        open: impl FnOnce(&mut dyn Backend, &mut PyAppLogic),
+    ) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            open(backend, app_logic);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// [`Self::open_overlay`] for a kind whose descriptor can only be
+    /// decoded once the live `(Backend, PyAppLogic)` pair is in hand —
+    /// `"popover"`/`"layout_dialog"`, whose `"content"` subtree resolves
+    /// its `"class"` keys against the backend's current theme and this
+    /// app's own registered style sets. `open` reports a decode failure
+    /// as the same `InvalidDescriptorError` every other kind raises
+    /// before ever reaching the engine, and nothing is rendered when it
+    /// does.
+    fn open_overlay_try(
+        &mut self,
+        open: impl FnOnce(&mut dyn Backend, &mut PyAppLogic) -> PyResult<()>,
+    ) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            open(backend, app_logic)?;
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Shared body of every [`QuiApp::dismiss_overlay`] match arm: runs
+    /// `close` against this app's live `(Backend, PyAppLogic)` pair,
+    /// re-rendering only when it reports something was actually closed —
+    /// the same "no-op re-render" contract each of the six kind-specific
+    /// `dismiss_*`/`hide_tooltip` methods already documents.
+    fn dismiss_via(
+        &mut self,
+        close: impl FnOnce(&mut dyn Backend, &mut PyAppLogic) -> bool,
+    ) -> PyResult<bool> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let closed = close(backend, app_logic);
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
         })
     }
 
@@ -5627,6 +6651,28 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "InvalidDescriptorError",
         py.get_type::<InvalidDescriptorError>(),
     )?;
+    // Each `DecodeError` subclass's `code` class attribute mirrors
+    // `quadraui_binding_core::DecodeError::code` -- set once here, not per
+    // raise, since every instance of one class shares the same code.
+    for (ty, code) in [
+        (py.get_type::<MissingFieldError>(), "missing_field"),
+        (py.get_type::<UnknownVariantError>(), "unknown_variant"),
+        (py.get_type::<TypeMismatchError>(), "type_mismatch"),
+        (py.get_type::<UnknownKeyError>(), "unknown_key"),
+        (py.get_type::<VersionMismatchError>(), "version_mismatch"),
+        (py.get_type::<DecodeFailedError>(), "borrow"),
+    ] {
+        ty.setattr("code", code)?;
+    }
+    m.add("MissingFieldError", py.get_type::<MissingFieldError>())?;
+    m.add("UnknownVariantError", py.get_type::<UnknownVariantError>())?;
+    m.add("TypeMismatchError", py.get_type::<TypeMismatchError>())?;
+    m.add("UnknownKeyError", py.get_type::<UnknownKeyError>())?;
+    m.add(
+        "VersionMismatchError",
+        py.get_type::<VersionMismatchError>(),
+    )?;
+    m.add("DecodeFailedError", py.get_type::<DecodeFailedError>())?;
     m.add("SlotOccupiedError", py.get_type::<SlotOccupiedError>())?;
     m.add("UnknownSlotError", py.get_type::<UnknownSlotError>())?;
     m.add(
@@ -5652,6 +6698,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<InvalidFontRoleError>(),
     )?;
     m.add("UnsupportedError", py.get_type::<UnsupportedError>())?;
+    m.add("ReentrantCallError", py.get_type::<ReentrantCallError>())?;
     // Which native *feature* (if any) this build was compiled with — `gtk`
     // wins over `macos`, and both win over `win`, when more than one is
     // enabled (see `run_native`'s doc). This is a build configuration
@@ -5679,13 +6726,45 @@ mod tests {
     use super::*;
     use quadraui::{ButtonMask, ScrollDelta};
 
+    /// Unwrap one pythonized `UiEvent::Form(id, FormEvent::ButtonClicked
+    /// { id })` payload -- `{"Form": (id, {"ButtonClicked": {"id": id}})}`
+    /// on the wire -- down to the clicked button's own id, asserting the
+    /// whole shape on the way so a drift in any layer names the layer that
+    /// drifted.
+    fn form_button_clicked_id(event: &Bound<'_, PyDict>) -> String {
+        let form = event
+            .get_item("Form")
+            .expect("dict lookup")
+            .expect("a semantic button click must carry a Form key")
+            .cast_into::<PyTuple>()
+            .expect("Form must pythonize to a (id, event) tuple");
+        assert_eq!(form.len(), 2, "Form must carry (id, event)");
+        let inner = form
+            .get_item(1)
+            .expect("second element")
+            .cast_into::<PyDict>()
+            .expect("the inner FormEvent must pythonize to a dict");
+        let clicked = inner
+            .get_item("ButtonClicked")
+            .expect("dict lookup")
+            .expect("a button click must carry a ButtonClicked key")
+            .cast_into::<PyDict>()
+            .expect("ButtonClicked payload must be a dict");
+        clicked
+            .get_item("id")
+            .expect("dict lookup")
+            .expect("id key must be present")
+            .extract()
+            .expect("id must be a string")
+    }
+
     /// A Rust panic raised from inside `guarded`'s body is caught and
     /// re-raised as `PanicError`, and poisons the app so a later call
     /// raises `PoisonedError` without running its body.
     #[test]
     fn guarded_catches_panic_then_poisons() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None, false, None).expect("valid dimensions");
 
             let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
             let err = panicked.expect_err("a caught panic must surface as an error");
@@ -5710,7 +6789,7 @@ mod tests {
     #[test]
     fn waker_raises_poisoned_error_on_a_poisoned_app() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None, false, None).expect("valid dimensions");
 
             let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
             panicked.expect_err("a caught panic must surface as an error");
@@ -5749,7 +6828,8 @@ mod tests {
                 .unbind();
             (handler, locals.unbind())
         });
-        let mut app = QuiApp::new(10, 10, Some(handler), None).expect("valid width/height/handler");
+        let mut app = QuiApp::new(10, 10, Some(handler), None, false, None)
+            .expect("valid width/height/handler");
         let waker = app.waker().expect("app is not poisoned");
 
         let value = Python::attach(|py| 42_i32.into_pyobject(py).expect("int").into_any().unbind());
@@ -5779,6 +6859,108 @@ mod tests {
                 .expect("\"User\" value must be present");
             let n: i32 = user_value.extract().expect("the posted int round-trips");
             assert_eq!(n, 42);
+        });
+    }
+
+    /// `arm_wake_notify`'s callback fires on `post`/`wake`/`notify` alike
+    /// (each incrementing a shared counter here), but — unlike `post`/
+    /// `wake` — `notify()` on its own queues no `{"User": ...}` event at
+    /// all: `step()` right after a bare `notify()` call still reports
+    /// nothing delivered. `disarm_wake_notify` then stops the counter
+    /// moving on a further `wake()`. This is the exact distinction
+    /// `quadraui.aio.async_handler`'s done-callback relies on — calling
+    /// `notify()` there instead of `wake()` is what keeps a completed
+    /// task's own re-render ping from re-entering the same handler.
+    #[test]
+    fn arm_wake_notify_fires_on_notify_without_queuing_an_event() {
+        let (handler, callback, locals) = Python::attach(|py| {
+            let locals = PyDict::new(py);
+            locals
+                .set_item("received", PyList::empty(py))
+                .expect("set received");
+            locals.set_item("calls", 0_i32).expect("set calls");
+            let handler = py
+                .eval(
+                    c"lambda event: received.append(event)",
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("lambda literal")
+                .unbind();
+            let callback = py
+                .eval(
+                    c"lambda: globals().__setitem__('calls', calls + 1)",
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("lambda literal")
+                .unbind();
+            (handler, callback, locals.unbind())
+        });
+        let mut app = QuiApp::new(10, 10, Some(handler), None, false, None)
+            .expect("valid width/height/handler");
+        app.arm_wake_notify(callback);
+        let waker = app.waker().expect("app is not poisoned");
+
+        waker.notify();
+        let running = app.step().expect("step must not raise");
+        assert!(running, "a bare notify() must not exit the app");
+        Python::attach(|py| {
+            let locals = locals.bind(py);
+            let calls: i32 = locals
+                .get_item("calls")
+                .expect("calls key lookup")
+                .expect("calls must be set")
+                .extract()
+                .expect("calls must be an int");
+            assert_eq!(calls, 1, "notify() must fire the armed callback");
+            let received: Bound<'_, PyList> = locals
+                .get_item("received")
+                .expect("received key lookup")
+                .expect("received must be set")
+                .extract()
+                .expect("received must be a list");
+            assert_eq!(
+                received.len(),
+                0,
+                "notify() on its own must queue no event for the handler to see"
+            );
+        });
+
+        Python::attach(|py| waker.wake(py));
+        app.step().expect("step must not raise");
+        Python::attach(|py| {
+            let locals = locals.bind(py);
+            let calls: i32 = locals
+                .get_item("calls")
+                .expect("calls key lookup")
+                .expect("calls must be set")
+                .extract()
+                .expect("calls must be an int");
+            assert_eq!(calls, 2, "wake() must also fire the armed callback");
+            let received: Bound<'_, PyList> = locals
+                .get_item("received")
+                .expect("received key lookup")
+                .expect("received must be set")
+                .extract()
+                .expect("received must be a list");
+            assert_eq!(received.len(), 1, "wake() must queue exactly one event");
+        });
+
+        app.disarm_wake_notify();
+        waker.notify();
+        Python::attach(|py| {
+            let calls: i32 = locals
+                .bind(py)
+                .get_item("calls")
+                .expect("calls key lookup")
+                .expect("calls must be set")
+                .extract()
+                .expect("calls must be an int");
+            assert_eq!(
+                calls, 2,
+                "a disarmed notify() must not fire anything further"
+            );
         });
     }
 
@@ -5892,7 +7074,7 @@ mod tests {
     #[test]
     fn tick_handler_returning_false_exits_without_raising() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None, false, None).expect("valid dimensions");
             let on_tick = py
                 .eval(c"lambda: False", None, None)
                 .expect("lambda literal")
@@ -6341,7 +7523,7 @@ mod tests {
     #[test]
     fn render_callback_row_places_children_side_by_side() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(40, 20, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, None, None, false, None).expect("valid dimensions");
             let callback = py
                 .eval(
                     c"lambda: {\"row\": [\
@@ -6408,13 +7590,162 @@ mod tests {
         });
     }
 
+    /// A render callback's `"style"` key on a `"row"` and a nested `"style"`
+    /// on one of its `"button"` leaves each scope to their own subtree: an
+    /// unstyled sibling button inherits the row's own override, while the
+    /// styled leaf's own override wins over it -- the same acceptance
+    /// scenario `quadraui_binding_core::render::tests::
+    /// styled_wrapper_scopes_an_override_to_its_own_subtree_and_composes_with_nesting`
+    /// covers at the binding-core layer, exercised here end to end through
+    /// a real Python render callback.
+    #[test]
+    fn render_callback_style_key_scopes_an_override_to_its_own_subtree() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(42, 3, None, None, false, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {\"row\": [\
+                        {\"id\": \"a\", \"button\": {\"id\": \"a\", \"label\": \"Alpha\"}}, \
+                        {\
+                            \"id\": \"b\", \"button\": {\"id\": \"b\", \"label\": \"Bravo\"}, \
+                            \"style\": {\"fg\": \"#00ff00\"}\
+                        }, \
+                        {\"id\": \"c\", \"button\": {\"id\": \"c\", \"label\": \"Charlie\"}}\
+                    ], \"style\": {\"fg\": \"#ff0000\"}}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+            app.screen().expect("render must not raise");
+
+            let (ax, ay) = app.driver.find("Alpha").expect("Alpha must be on screen");
+            let (bx, by) = app.driver.find("Bravo").expect("Bravo must be on screen");
+            let (cx, cy) = app
+                .driver
+                .find("Charlie")
+                .expect("Charlie must be on screen");
+
+            let alpha_fg = app
+                .driver
+                .style_at(ax as u16, ay as u16)
+                .expect("style at Alpha")
+                .fg;
+            let bravo_fg = app
+                .driver
+                .style_at(bx as u16, by as u16)
+                .expect("style at Bravo")
+                .fg;
+            let charlie_fg = app
+                .driver
+                .style_at(cx as u16, cy as u16)
+                .expect("style at Charlie")
+                .fg;
+
+            assert_eq!(
+                ratatui_rgb(alpha_fg),
+                (255, 0, 0),
+                "Alpha has no override of its own, so it inherits the row's"
+            );
+            assert_eq!(
+                ratatui_rgb(bravo_fg),
+                (0, 255, 0),
+                "Bravo's own nested override wins over the row's"
+            );
+            assert_eq!(
+                ratatui_rgb(charlie_fg),
+                (255, 0, 0),
+                "Charlie (Bravo's sibling) is unaffected by Bravo's own override, \
+                 and still inherits the row's"
+            );
+        });
+    }
+
+    /// The headline `"style"` case: a plain `"bg"` override is a no-op on
+    /// a `"button"` leaf's own fill -- `Button`'s TUI painter reads
+    /// `Theme::surface_bg` (every variant but `Primary`/`Icon`), never
+    /// `Theme::background` -- while `"surface_bg"` (the semantic alias
+    /// `quadraui_binding_core::layout::StyleOverride`'s own doc calls out)
+    /// actually reaches it. Exercised end to end through a real Python
+    /// render callback, the same way
+    /// `render_callback_style_key_scopes_an_override_to_its_own_subtree`
+    /// covers `"fg"`.
+    #[test]
+    fn render_callback_style_key_surface_bg_is_the_alias_a_button_fill_actually_reads() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(60, 3, None, None, false, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {\"row\": [\
+                        {\
+                            \"id\": \"plain\", \
+                            \"button\": {\"id\": \"plain\", \"label\": \"Plain\", \"variant\": \"Secondary\"}\
+                        }, \
+                        {\
+                            \"id\": \"bg\", \
+                            \"button\": {\"id\": \"bg\", \"label\": \"BgOnly\", \"variant\": \"Secondary\"}, \
+                            \"style\": {\"bg\": \"#00ff00\"}\
+                        }, \
+                        {\
+                            \"id\": \"surface\", \
+                            \"button\": {\"id\": \"surface\", \"label\": \"SurfaceBg\", \"variant\": \"Secondary\"}, \
+                            \"style\": {\"surface_bg\": \"#00ff00\"}\
+                        }\
+                    ]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+            app.screen().expect("render must not raise");
+
+            let (px, py_) = app.driver.find("Plain").expect("Plain must be on screen");
+            let (bx, by) = app.driver.find("BgOnly").expect("BgOnly must be on screen");
+            let (sx, sy) = app
+                .driver
+                .find("SurfaceBg")
+                .expect("SurfaceBg must be on screen");
+
+            let plain_bg = app
+                .driver
+                .style_at(px as u16, py_ as u16)
+                .expect("style at Plain")
+                .bg;
+            let bg_only_bg = app
+                .driver
+                .style_at(bx as u16, by as u16)
+                .expect("style at BgOnly")
+                .bg;
+            let surface_bg_bg = app
+                .driver
+                .style_at(sx as u16, sy as u16)
+                .expect("style at SurfaceBg")
+                .bg;
+
+            assert_eq!(
+                ratatui_rgb(bg_only_bg),
+                ratatui_rgb(plain_bg),
+                "a plain \"bg\" override must not change a Secondary button's fill \
+                 -- it reads Theme::surface_bg, not Theme::background"
+            );
+            assert_eq!(
+                ratatui_rgb(surface_bg_bg),
+                (0, 255, 0),
+                "\"surface_bg\" is the alias that actually reaches a Secondary \
+                 button's fill"
+            );
+        });
+    }
+
     /// A render callback may place more than one instance of the same
     /// primitive kind in a layout tree -- two `data_table`s in a `Row` both
     /// render, each addressable by its own leaf `id`.
     #[test]
     fn render_callback_row_supports_multiple_instances_of_the_same_kind() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(60, 20, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, None, None, false, None).expect("valid dimensions");
             let callback = py
                 .eval(
                     c"lambda: {\"row\": [\
@@ -6499,8 +7830,8 @@ def handle(event):
                 .unbind();
 
             let width = 40u16;
-            let mut app =
-                QuiApp::new(width, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(width, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
 
             assert!(
                 app.screen_contains("LEFT").expect("render must not raise"),
@@ -6598,8 +7929,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
 
             assert!(
                 app.screen_contains("Alpha").expect("render must not raise"),
@@ -6640,6 +7971,248 @@ def handle(event):
                 !app.screen_contains("AlphaRow")
                     .expect("render must not raise"),
                 "the first tab's content must no longer render once deselected"
+            );
+        });
+    }
+
+    /// A render callback returning `{"scroll": {...}}` paints its `content`
+    /// subtree, and that subtree's own uncontrolled widget state is
+    /// resolved every frame just as it would be outside a scroll: a
+    /// `Tree`/`RowToggleExpand` event the engine stores (no Python state
+    /// involved — the callback keeps sending the same `is_expanded: True`
+    /// descriptor) collapses the branch on the next frame, pruning its
+    /// child row from the screen.
+    #[test]
+    fn scroll_container_content_resolves_its_own_uncontrolled_widget_state() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'scroll': {
+        'id': 'scroll:main',
+        'axis': 'vertical',
+        'content': {'id': 'tree:files', 'tree': {
+            'id': 'tree:files',
+            'rows': [
+                {
+                    'path': [0], 'indent': 0, 'icon': None,
+                    'text': {'spans': [{'text': 'SrcDir', 'fg': None, 'bg': None}]},
+                    'badge': None, 'is_expanded': True,
+                },
+                {
+                    'path': [0, 0], 'indent': 1, 'icon': None,
+                    'text': {'spans': [{'text': 'MainFile', 'fg': None, 'bg': None}]},
+                    'badge': None, 'is_expanded': None,
+                },
+            ],
+            'selection_mode': 'Single', 'selected_path': None,
+            'scroll_offset': 0, 'has_focus': True,
+            'style': {
+                'indent': 2, 'show_chevrons': True,
+                'chevron_expanded': '▾', 'chevron_collapsed': '▸',
+                'row_height': 22,
+            },
+        }},
+    }}
+
+def handle(event):
+    pass
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
+            assert!(
+                app.screen_contains("SrcDir")
+                    .expect("render must not raise"),
+                "a scroll container must paint its content subtree"
+            );
+            assert!(
+                app.screen_contains("MainFile")
+                    .expect("render must not raise"),
+                "the expanded branch's child row must paint inside the viewport"
+            );
+
+            let event = py
+                .eval(
+                    c"{'Tree': ['tree:files', {'RowToggleExpand': {'path': [0]}}]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate");
+            let event_dict = event.cast::<PyDict>().expect("dict literal must be a dict");
+            app.push_event(event_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                app.screen_contains("SrcDir")
+                    .expect("render must not raise"),
+                "the collapsed branch row itself must stay on screen"
+            );
+            assert!(
+                !app.screen_contains("MainFile")
+                    .expect("render must not raise"),
+                "collapsing the branch must prune its child row from the scroll's content"
+            );
+        });
+    }
+
+    /// A wheel `Scroll` landing on an uncontrolled `{"scroll": {...}}`
+    /// container's own body/scrollbar moves its stored offset in
+    /// `InteractionEngine::widget_state` — `resolve_layout_node_state`'s
+    /// own `LayoutNode::Scroll` arm must read that back (via
+    /// `scroll_view_at`'s rebuilt `ScrollView::max_offset`, the same
+    /// previous-frame-geometry source `resolved_viewport_rows` already
+    /// uses for `Tree`/`List`/`DataTable`) and resolve `scroll_node.offset`
+    /// to it before the next `paint_layout`, or an uncontrolled scroll
+    /// would stay pinned at its unresolved `None` -> `0.0` default forever,
+    /// no matter how many wheel notches the engine already applied.
+    #[test]
+    fn scroll_container_wheel_notch_persists_its_offset_into_the_next_render() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'scroll': {
+        'id': 'scroll:main',
+        'axis': 'vertical',
+        'content': {'column': [
+            {'id': f'btn:{i}', 'button': {'id': f'btn:{i}', 'label': f'Item{i:02d}'}}
+            for i in range(30)
+        ]},
+    }}
+
+def handle(event):
+    pass
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
+            assert!(
+                app.screen_contains("Item00")
+                    .expect("render must not raise"),
+                "the scroll must start painting from its own top"
+            );
+            assert!(
+                !app.screen_contains("Item12")
+                    .expect("render must not raise"),
+                "a button far enough down must start out of the viewport"
+            );
+
+            // Lands on the vertical scrollbar's own track/thumb (the
+            // rightmost column of the viewport, reserved whenever the
+            // content overflows it) rather than on a button directly, so
+            // the wheel resolves through `HitDetail::ScrollScrollbarThumb`'s
+            // own `Some(*id)` shortcut -- `ScrollView::handle_wheel`'s own
+            // doc: positive `delta.y` is forward/down.
+            let event = py
+                .eval(
+                    c"{'Scroll': {'delta': {'x': 0.0, 'y': 3.0}, 'position': {'x': 39.0, 'y': 1.0}}}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate");
+            let event_dict = event.cast::<PyDict>().expect("dict literal must be a dict");
+            app.push_event(event_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                !app.screen_contains("Item00")
+                    .expect("render must not raise"),
+                "three notches down must scroll button 0 out of the viewport"
+            );
+            assert!(
+                app.screen_contains("Item04")
+                    .expect("render must not raise"),
+                "the resolved offset must actually reach the next paint, not stay at 0"
+            );
+        });
+    }
+
+    /// A **controlled** `Scroll` (`offset` set on every render) must
+    /// paint pinned on the very first frame, before `scroll_view_at`
+    /// has any previous `PaintedHit::Scroll` to measure a real
+    /// `max_offset` from. `resolve_layout_node_state`'s `Scroll` arm
+    /// falls back to `f32::INFINITY` (not `0.0`) for that no-hit case,
+    /// deferring the clamp to `paint_scroll`'s own measured-this-frame
+    /// clamp instead of pre-emptively clamping a controlled 15.0 down
+    /// to 0.0 for lack of prior geometry.
+    #[test]
+    fn scroll_container_with_a_controlled_offset_pins_it_on_the_first_frame() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'scroll': {
+        'id': 'scroll:main',
+        'axis': 'vertical',
+        'offset': 15.0,
+        'content': {'column': [
+            {'id': f'btn:{i}', 'button': {'id': f'btn:{i}', 'label': f'Item{i:02d}'}}
+            for i in range(30)
+        ]},
+    }}
+
+def handle(event):
+    pass
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
+            assert!(
+                !app.screen_contains("Item00")
+                    .expect("render must not raise"),
+                "a controlled offset must pin the very first paint, not clamp to 0 \
+                 for lack of a prior hit"
+            );
+            assert!(
+                app.screen_contains("Item15")
+                    .expect("render must not raise"),
+                "offset 15.0 must actually reach the first paint"
             );
         });
     }
@@ -6693,8 +8266,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Beta").expect("render must not raise"),
                 "the second tab's title must render before it is closed"
@@ -6736,7 +8309,7 @@ def handle(event):
     #[test]
     fn tabs_nested_in_split_form_a_tab_group_rendered_side_by_side() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(60, 20, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, None, None, false, None).expect("valid dimensions");
             let callback = py
                 .eval(
                     c"lambda: {'split': {\
@@ -6855,7 +8428,8 @@ def render():
                 .expect("render must be defined")
                 .unbind();
 
-            let mut app = QuiApp::new(60, 20, None, Some(render)).expect("valid dimensions");
+            let mut app =
+                QuiApp::new(60, 20, None, Some(render), false, None).expect("valid dimensions");
 
             assert!(
                 app.screen_contains("Alpha").expect("render must not raise"),
@@ -6879,6 +8453,11 @@ def render():
     /// attaches a `"hit"` key naming the sub-region struck -- `button_body`
     /// for a click anywhere on its body. Located via `find_bounds`, never a
     /// hardcoded coordinate.
+    ///
+    /// The semantic `Form` / `ButtonClicked` dispatch the click also
+    /// produces is additive: it sits between the click-to-focus
+    /// `FocusChanged` and the raw `MouseDown`, and the raw event still
+    /// arrives with its `"hit"` dict intact.
     #[test]
     fn mouse_down_over_a_painted_button_is_enriched_with_its_widget_id() {
         Python::attach(|py| {
@@ -6908,8 +8487,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("OK").expect("render must not raise"),
                 "the button's label must be painted"
@@ -6939,9 +8518,9 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                2,
-                "the click must emit both a FocusChanged (nothing was focused yet) and \
-                 the MouseDown itself"
+                3,
+                "the click must emit a FocusChanged (nothing was focused yet), the \
+                 semantic Form/ButtonClicked, and the MouseDown itself"
             );
             let focus_dict = received_list
                 .get_item(0)
@@ -6955,9 +8534,20 @@ def handle(event):
                 .extract()
                 .expect("FocusChanged must carry the newly focused widget's id as a string");
             assert_eq!(focused, "btn:ok", "the clicked button must receive focus");
+            assert_eq!(
+                form_button_clicked_id(
+                    &received_list
+                        .get_item(1)
+                        .expect("second item")
+                        .cast_into::<PyDict>()
+                        .expect("event payload must be a dict")
+                ),
+                "btn:ok",
+                "the semantic Form/ButtonClicked must name the clicked button"
+            );
             let event_dict = received_list
-                .get_item(1)
-                .expect("second item")
+                .get_item(2)
+                .expect("third item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let mouse_down = event_dict
@@ -6991,6 +8581,68 @@ def handle(event):
             assert_eq!(
                 kind, "button_body",
                 "a click on the body must report button_body"
+            );
+        });
+    }
+
+    /// A `MouseDown` on a painted `button` leaf focuses it (see
+    /// `mouse_down_over_a_painted_button_is_enriched_with_its_widget_id`
+    /// above), and the TUI host's generic focus-ring convention repaints a
+    /// border around that leaf's own cell on every frame after. When the
+    /// leaf's cell is taller than its one row of label (this app's bare
+    /// `{'button': ...}` root fills the whole 40x10 viewport, far taller
+    /// than one row), the label must still be on screen next render, not
+    /// silently replaced by the ring's own top/bottom border glyphs.
+    #[test]
+    fn clicking_a_painted_button_leaves_its_label_on_screen_next_render() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'button': {'id': 'btn:ok', 'label': 'OK'}}
+
+def handle(event):
+    pass
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
+            let bounds = app
+                .driver
+                .find_bounds("OK")
+                .expect("button label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                app.screen_contains("OK").expect("render must not raise"),
+                "the button's label must still be on screen after the click that focused it"
             );
         });
     }
@@ -7031,8 +8683,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("OK").expect("render must not raise"),
                 "the button's label must be painted"
@@ -7185,8 +8837,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("OK").expect("render must not raise"),
                 "the nested button's label must be painted"
@@ -7216,9 +8868,9 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                2,
-                "the click must emit both a FocusChanged (nothing was focused yet) and \
-                 the MouseDown itself"
+                3,
+                "the click must emit a FocusChanged (nothing was focused yet), the \
+                 semantic Form/ButtonClicked, and the MouseDown itself"
             );
             let focus_dict = received_list
                 .get_item(0)
@@ -7232,9 +8884,20 @@ def handle(event):
                 .extract()
                 .expect("FocusChanged must carry the newly focused widget's id as a string");
             assert_eq!(focused, "btn:left", "the clicked button must receive focus");
+            assert_eq!(
+                form_button_clicked_id(
+                    &received_list
+                        .get_item(1)
+                        .expect("second item")
+                        .cast_into::<PyDict>()
+                        .expect("event payload must be a dict")
+                ),
+                "btn:left",
+                "the semantic Form/ButtonClicked must name the nested button"
+            );
             let event_dict = received_list
-                .get_item(1)
-                .expect("second item")
+                .get_item(2)
+                .expect("third item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let mouse_down = event_dict
@@ -7349,8 +9012,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("BetaRow")
                     .expect("render must not raise"),
@@ -7506,8 +9169,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("BetaTab")
                     .expect("render must not raise"),
@@ -7650,7 +9313,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app = QuiApp::new(40, 5, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 5, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Filter")
                     .expect("render must not raise"),
@@ -7788,8 +9452,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             // Force the first render so `hit_map`/`tab_stops` are populated
             // before any key is dispatched.
             let screen = app.screen().expect("render must not raise");
@@ -7990,8 +9654,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("AlphaRow")
                     .expect("render must not raise"),
@@ -8134,8 +9798,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             let screen = app.screen().expect("render must not raise");
             assert!(
                 screen.contains("fi"),
@@ -8319,8 +9983,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("BetaRow")
                     .expect("render must not raise"),
@@ -8455,8 +10119,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Beta1").expect("render must not raise"),
                 "the second leaf's first item must be painted"
@@ -8645,8 +10309,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Beta").expect("render must not raise"),
                 "the second item must be painted"
@@ -8760,8 +10424,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Alpha").expect("render must not raise"),
                 "the first item must be painted"
@@ -8882,8 +10546,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("Beta").expect("render must not raise"),
                 "the second item must be painted"
@@ -9021,7 +10685,7 @@ def handle(event):
             .expect("dict lookup")
             .expect("handle must be defined")
             .unbind();
-        QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions")
+        QuiApp::new(40, 10, Some(handle), Some(render), false, None).expect("valid dimensions")
     }
 
     /// Reads back the real painted `(Scrollbar, total_rows, viewport_rows,
@@ -9484,8 +11148,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
             assert!(
                 app.screen_contains("File").expect("render must not raise"),
                 "the menu bar's top-level item must be painted"
@@ -9586,7 +11250,7 @@ def handle(event):
                 .expect("list literal must evaluate");
             let items = items_any.cast::<PyList>().expect("literal must be a list");
 
-            app.show_context_menu(items, (2.0, 2.0))
+            app.open_context_menu(items, (2.0, 2.0))
                 .expect("show_context_menu must open the popup");
             assert!(
                 app.screen_contains("Copy").expect("render must not raise"),
@@ -9656,7 +11320,7 @@ def handle(event):
             .expect("dict lookup")
             .expect("handle must be defined")
             .unbind();
-        let app = QuiApp::new(40, 20, Some(handle), None).expect("valid dimensions");
+        let app = QuiApp::new(40, 20, Some(handle), None, false, None).expect("valid dimensions");
         (app, locals)
     }
 
@@ -9684,7 +11348,7 @@ def handle(event):
                 .cast::<PyList>()
                 .expect("literal must be a list");
 
-            app.show_message_dialog(
+            app.open_message_dialog(
                 "Unsaved changes".to_string(),
                 "Do you want to save?".to_string(),
                 buttons,
@@ -9788,7 +11452,7 @@ def handle(event):
             // Title/body deliberately avoid the word "Delete" so
             // `find_bounds("Delete")` below can only match the button's
             // own label, not an earlier occurrence painted above it.
-            app.show_message_dialog(
+            app.open_message_dialog(
                 "Confirm".to_string(),
                 "This cannot be undone.".to_string(),
                 buttons,
@@ -9835,7 +11499,7 @@ def handle(event):
                 .cast::<PyList>()
                 .expect("literal must be a list");
 
-            app.show_message_dialog(
+            app.open_message_dialog(
                 "Unsaved changes".to_string(),
                 "Do you want to save?".to_string(),
                 buttons,
@@ -9931,8 +11595,8 @@ def handle(event):
                 .expect("handle must be defined")
                 .unbind();
 
-            let mut app =
-                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
 
             let bar_bounds = app
                 .driver
@@ -9968,7 +11632,7 @@ def handle(event):
             let buttons = buttons_any
                 .cast::<PyList>()
                 .expect("literal must be a list");
-            app.show_message_dialog(
+            app.open_message_dialog(
                 "Heads up".to_string(),
                 "Something happened.".to_string(),
                 buttons,
@@ -10034,7 +11698,7 @@ def handle(event):
             let (mut app, _locals) = app_recording_events(py);
             let empty = PyList::empty(py);
             let err = app
-                .show_message_dialog("Title".to_string(), "Body".to_string(), &empty, None)
+                .open_message_dialog("Title".to_string(), "Body".to_string(), &empty, None)
                 .expect_err("an empty buttons list must be rejected");
             assert!(err.is_instance_of::<InvalidDescriptorError>(py));
         });
@@ -10061,13 +11725,13 @@ def handle(event):
                 .cast::<PyList>()
                 .expect("literal must be a list");
             let err = app
-                .show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
+                .open_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
                 .expect_err("a tinted button must be rejected");
             assert!(err.is_instance_of::<InvalidDescriptorError>(py));
         });
     }
 
-    /// A handler cannot call `app.show_message_dialog(...)` directly — it
+    /// A handler cannot call `app.open_message_dialog(...)` directly — it
     /// already holds this `QuiApp`'s one mutable borrow for the whole
     /// dispatch that invoked it, so a reentrant call there raises — but it
     /// can queue the same request through the `QuiAppActions` handle
@@ -10079,7 +11743,7 @@ def handle(event):
     #[test]
     fn handler_queues_show_message_dialog_via_actions_handle_without_reentrant_borrow() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(40, 20, None, None).expect("valid dimensions");
+            let mut app = QuiApp::new(40, 20, None, None, false, None).expect("valid dimensions");
             let actions = app.actions().expect("app is not poisoned");
 
             let locals = PyDict::new(py);
@@ -10150,7 +11814,7 @@ def handle(event):
             let buttons = buttons_any
                 .cast::<PyList>()
                 .expect("literal must be a list");
-            app.show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
+            app.open_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
                 .expect("show_message_dialog must open the dialog");
             assert!(app.screen_contains("OK").expect("render must not raise"));
 

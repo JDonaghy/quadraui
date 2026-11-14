@@ -25,6 +25,13 @@ which every platform's wheel supports unchanged.
 Full docs, the primitive reference, and worked examples live on the project
 site: <https://jdonaghy.github.io/quadraui/>.
 
+**Building an app with a coding agent?** The package ships its own guide,
+`AGENTS.md`. It covers how to structure a `quadraui.app` app, test it with
+the harness, use hot reload, and which gotchas to avoid. It sits next to the
+installed module, so it always matches your installed version:
+`python -c "import quadraui, os; print(os.path.join(os.path.dirname(quadraui.__file__), 'AGENTS.md'))"`.
+[Read it on GitHub](https://github.com/JDonaghy/quadraui/blob/main/quadraui-py/python/quadraui/AGENTS.md).
+
 ## Building and testing an app
 
 `quadraui.app` is a thin layer over `QuiApp`: a `view()` returning typed
@@ -46,6 +53,23 @@ def test_opening_a_folder(quadraui_harness):      # fixture ships with the packa
     assert h.find(role="data_table").row_texts == ["a1.txt", "a2.txt"]
     h.assert_text("alpha")
 ```
+
+## Version compatibility
+
+This package's minor version always equals the `quadraui` Rust crate's own
+minor version; the patch component moves independently in either direction
+(see
+[`BINDING_VERSION_POLICY.md`](https://github.com/JDonaghy/quadraui/blob/main/quadraui/docs/decisions/BINDING_VERSION_POLICY.md)).
+A released `quadraui` version is always `pip install`-able as the matching
+`quadraui-py` minor:
+
+| `quadraui` (Rust crate) | `quadraui` (this PyPI package) |
+|---|---|
+| 0.*Y*.x | 0.*Y*.x — any patch |
+
+For example, both `quadraui` crate `0.10.1` and `0.10.3` pair with any
+`quadraui-py` `0.10.x` release; a crate `0.11.0` needs a `quadraui-py`
+`0.11.x` release, not `0.10.x`.
 
 ## Wheels
 

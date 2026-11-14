@@ -6,6 +6,8 @@
 //! - `s` — cycle sort column (Name → Status → Age → Restarts → none)
 //! - `d` — toggle sort direction
 //! - `f` — toggle the pinned footer/summary row
+//! - `b` — toggle `DataTable::bordered` (reserves a 1-cell margin for
+//!   the engine's focus ring)
 //! - `H` / `←`, `L` / `→` — scroll horizontally by 5 units
 //! - `PageDown` / `PageUp` — page down/up a full screen (keyboard
 //!   equivalent of clicking the scrollbar track, #828)
@@ -65,6 +67,10 @@ pub struct DataTableApp {
     hovered_idx: Option<usize>,
     /// Toggle for the pinned footer/summary row demo.
     show_footer: bool,
+    /// Toggle for `DataTable::bordered` — reserves a 1-cell margin on
+    /// every edge so the host's focus ring lands on the frame rather
+    /// than the header, first column, or last row.
+    bordered: bool,
 }
 
 impl DataTableApp {
@@ -83,6 +89,7 @@ impl DataTableApp {
             h_scroll: 0.0,
             hovered_idx: None,
             show_footer: true,
+            bordered: false,
         }
     }
 
@@ -236,6 +243,7 @@ impl DataTableApp {
             } else {
                 None
             },
+            bordered: self.bordered,
         }
     }
 
@@ -406,6 +414,9 @@ impl AppLogic for DataTableApp {
                     }
                     Key::Char('f') => {
                         self.show_footer = !self.show_footer;
+                    }
+                    Key::Char('b') => {
+                        self.bordered = !self.bordered;
                     }
                     Key::Named(NamedKey::Home) => {
                         self.selected = Some(0);

@@ -17,21 +17,23 @@ quadraui has 1000+ commits of history predating this file (see `git log`);
 none of it is backfilled here. `[Unreleased]` below is where changelog
 discipline begins — every PR from this point forward that changes `quadraui`'s
 public API, in the sense `quadraui/docs/PRIMITIVE_RULES.md` rule 8 defines,
-adds an entry here in the same PR. A public-API PR that skips this file is
-incomplete for the same reason rule 8 already treats a missing
-`## Downstream impact` section as incomplete — this file's `Deprecated` /
+adds a `changelog.d/<issue>.<kind>.md` fragment in the same PR, never a direct
+edit here — `scripts/release.py prepare` assembles the fragments into
+`[Unreleased]` at release time (see `changelog.d/README.md`). A public-API PR
+that skips its fragment is incomplete for the same reason rule 8 already treats
+a missing `## Downstream impact` section as incomplete — this file's `Deprecated` /
 `Removed` sections are rule 8's two-PR protocol made visible outside a diff:
 
 - **PR 1 of a rule-8 change** (new shape added, old one kept behind
-  `#[deprecated]`) adds an entry under `### Deprecated` naming the old item,
+  `#[deprecated]`) adds a `deprecated` fragment naming the old item,
   its replacement, and the tracking issue for PR 2.
-- **PR 2** (shim deleted) moves that same line to `### Removed` and closes the
-  loop — same wording, one section down, so the deprecation's full lifecycle
-  reads as two adjacent lines rather than being lost across two disconnected
+- **PR 2** (shim deleted) adds a `removed` fragment with that same wording and
+  closes the loop — same line, one section down, so the deprecation's full
+  lifecycle reads as two adjacent lines rather than being lost across two disconnected
   PRs.
 - A non-breaking addition (new primitive, new optional field, new `Backend`
-  method with no default per rule 7) goes under `### Added`.
-- A behavior fix with no API shape change goes under `### Fixed`.
+  method with no default per rule 7) is an `added` fragment.
+- A behavior fix with no API shape change is a `fixed` fragment.
 
 See `quadraui/docs/PRIMITIVE_RULES.md` rule 8 for the full lifecycle policy
 (what counts as breaking, the deprecation-shim patterns, the two-PR split)
@@ -58,6 +60,181 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.11.0] - 2026-11-14
+### Added
+- `Backend::push_clip`/`pop_clip`: a backend-neutral, nested clip-rect seam
+  for a compositing container (a scroll view clipping a partly-visible
+  child) that paints through `Backend::draw_*` rather than a
+  `PaintSurface`. Default no-op, so this is additive. `TuiBackend` reuses
+  `tui::canvas`'s cell-quantised clip bookkeeping; `GtkBackend` forwards to
+  its own `PaintSurface::surface_push_clip`/`surface_pop_clip` (cairo's
+save/clip/restore); `WinBackend` forwards to the same seam backed by
+  Direct2D's `PushAxisAlignedClip`/`PopAxisAlignedClip` stack; `MacBackend`
+  forwards to the same seam backed by Core Graphics'
+  `CGContextSaveGState`/clip/`CGContextRestoreGState` stack.
+- `quadraui-binding-core`'s `"scroll"` layout node (`LayoutNode::Scroll` /
+  `LayoutScroll`): a generic scrollable container holding one content
+  subtree, measured at its natural length along its own axis, painted at a
+  resolved offset inside a `Backend::push_clip`-clipped viewport with a
+  shared `ScrollView` scrollbar, and hit-tested through
+  `PaintedHit::Scroll`/`HitDetail::ScrollBody`. The offset is uncontrolled
+  by default, resolved against `WidgetState` by `resolve_scroll_offset` the
+  way a `Split`'s divider ratio already is. Wheel and keyboard routing onto
+  the container is a follow-up.
+- Named style sets for the bindings' layout-tree wire format (#2347):
+  `app.define_style(name, overrides)` (Python) / `app.defineStyle(name,
+  overrides)` (Node) registers a reusable bundle of the same `StyleValue`
+  tokens a node's inline `"style"` key accepts, and any node may then name
+  one or more of them through a new optional `"class"` key — a single
+  name, a whitespace-separated string of names, or a list, the CSS
+  `class=` analogue. Classes merge left to right and the node's own
+  inline `"style"` beats all of them; an unknown class *name* is ignored
+  under the data-format-v1 unknown-key policy (unlike an unknown key
+  *inside* `"style"`, which is still a decode error). Four theme-derived
+  sets — `primary`, `secondary`, `danger`, `subtle` — exist before any
+  `define_style` call and map onto the matching `ButtonVariant`'s own
+  resting fill; defining one of those names replaces it. Redefining a set
+  repaints from the next frame on. Backed by
+  `quadraui_binding_core::{StyleSets, StyleContext,
+  decode_layout_node_with_styles, decode_render_output_with_styles,
+  decode_style_overrides}` and a new `BindingHost::style_sets` field.
+- Content-bearing overlays (#2349): a float/popover and a modal dialog can
+  now carry a whole layout subtree, not just chrome.
+  `InteractionEngine::show_popover_layout` and
+  `InteractionEngine::open_layout_dialog` lay a `LayoutNode` out inside the
+  overlay and route focus, clicks and keys into its leaves exactly as the
+  main tree does (`Button`, `"form"`, `Tree`, `List`, `DataTable`,
+  `TabBar`, `TextDisplay`, …). Tab cycles the subtree's own stops — plus
+  the dialog's buttons — and never leaves the overlay; a popover dismisses
+  on outside click or Escape, a dialog resolves to its cancel/default
+  button on Escape and emits `UiEvent::MessageDialogResolved`. Reachable
+  from both bindings as the new `"popover"` and `"layout_dialog"` kinds of
+  `show_overlay`/`showOverlay`, whose `{"float"|"dialog", "content"}`
+  descriptors are documented in `wire.pyi`/`wire.d.ts`.
+- `ContextMenuLayout::submenu_anchor`: the shared layout rule for
+  positioning a nested submenu beside its parent item (pull-right by
+  default, flip to the parent's left edge near the viewport's right
+  edge, clamp fully inside the viewport as a last resort) — now backs
+  both `MenuSystem`'s menu-bar submenus and `ContextMenuController`'s
+  right-click submenus. `ContextMenuController` (and the
+  `quadraui-binding-core`/`quadraui-py`/`quadraui-node` `show_context_menu`
+  surfaces routed through it) now opens an item's `submenu` by
+  Right-arrow/Enter or by hovering its row, closes the deepest open
+  level on Left/Escape, and reports an activated nested item's own
+  `WidgetId` via `ContextMenuItemActivated` regardless of nesting depth.
+  `ContextMenuController::handle` now also consumes `UiEvent::MouseMoved`
+  while a painted menu is open (updating `selected_idx` to the hovered
+  row) instead of falling through as `Ignored` — a behaviour change for
+  an app that was relying on `MouseMoved` reaching it unconsumed while its
+  own context menu was open.
+- `Form.focused_field`: engine-owned (uncontrolled) by default, the same
+  controlled/uncontrolled split `LayoutScroll::offset` already has. An app
+  that leaves the key `None`/omitted gets Tab/Shift-Tab field cycling
+  (leaving the form once a cycle at either end has nowhere left to go
+  inside it), Up/Down between fields the focused one doesn't already
+  consume, and click-to-focus, all persisted by `quadraui-py`'s/
+  `quadraui-node`'s `InteractionEngine` with no app code; an app that sets
+  it explicitly stays controlled, same as before (#2362). `#[serde(default)]`
+  keeps the wire shape additive -- `Form::focus_order` is the new public
+  Tab-order helper backing it.
+- `DataTable::bordered` (#2447): mirrors `ListView::bordered` /
+  `TreeStyle::bordered`. Reserves a 1-cell/pixel margin on every edge —
+  `DataTable::layout` insets the header, body rows, footer and scrollbars
+  by this margin (`DataTableLayout::inset_x`/`inset_y`), and `hit_test`/
+  `column_hit` translate pointer positions through it automatically — so
+  a host that always overlays a focus ring on the table's full tab-stop
+  rect no longer paints over the header, first column or last row.
+  `crate::tui::draw_data_table` is the first rasteriser to paint the
+  reserved margin as a rounded `╭─╮ │ ╰─╯` frame; GTK/macOS/Win only
+  shrink the content area for now. Default `false`, so every existing
+  non-bordered table paints and hit-tests bit-for-bit as before.
+
+### Changed
+- Changelog entries now go in `changelog.d/<issue>.<kind>.md` fragments
+  instead of directly under `CHANGELOG.md`'s `[Unreleased]` section
+  (#2419): `tools/changelog_check.py` requires a new fragment per PR
+  instead of a direct `[Unreleased]` edit (and rejects a direct edit
+  outright), and `scripts/release.py prepare` assembles every fragment
+  into `[Unreleased]`, grouped by `### Kind` heading and sorted by issue
+  number, before retitling it — then deletes the fragments it just
+  assembled. See `changelog.d/README.md` for the authoring convention.
+
+### Fixed
+- TUI `Button`: a leaf painted into a cell taller than its one row of
+  chrome (an `EqualShare`-sized `Column` slot, say) now centres its label
+  row vertically within that cell instead of pinning it to the top (#2394).
+  Clicking the button focuses it, and the host's generic focus-ring
+  overlay (`crate::tui::draw_focus_ring`) clears that cell's own top/bottom
+  edge rows — previously those coincided with the top-pinned label row, so
+  the ring's `╭──╮`/`╰──╯` border silently replaced `[ Label ]` the moment
+  the button gained focus from a click.
+- Win-GUI's chrome (UI) font now installs at the same size
+  `Backend::default_fonts().ui_size_pt` advertises (#2385): previously the
+  installed `DEFAULT_UI_FONT_SIZE_PT` (`11pt`, ≈14.7 DIP) silently diverged
+  from the `13.0` literal `default_fonts()` reported. Both now read a
+  single `9.75pt` constant, which renders at VS Code's own 13 DIP Windows
+  chrome text size (`size_pt * 96 / 72`) — list/tree row height (22px) is
+  derived from the editor font and `Style::row_height`, not this constant,
+  so it is unaffected.
+- GTK: `GtkBackend::new` now installs the chrome (UI) font at `9.75pt`
+  (#2384), matching the `ui_size_pt` `Backend::default_fonts` already
+  advertised — previously it installed at `11pt`. Pango point sizes are
+  DPI-scaled (unlike macOS/Win-GUI, where 1pt == 1px), so `9.75pt`, not
+  `13.0pt`, is the value that renders chrome at VS Code's 13px UI-font
+  target at a standard 96 DPI. `Style::row_height`'s `22px` token is
+  resolved from the *editor* font's line height, independent of `ui_font`,
+  so list/tree row heights are unaffected.
+- A layout-tree `button` leaf now emits a semantic `UiEvent::Form(id,
+  FormEvent::ButtonClicked { id })` when it is activated — by a pointer click
+  on its body, or by Enter/Space while it holds keyboard focus (#2343). The
+  pointer-click dispatch is additive: the raw `MouseDown`/`DoubleClick` still
+  follows it with its `"hit"` dict attached, so a binding that already
+  synthesizes its own click from that raw event keeps working. The Python and
+  Node app layers claim the new event, so a button's `on_click`/`onClick`
+  fires once per press whichever modality activated it, and the semantic event
+  never leaks to the global `on_event`/`onEvent` escape hatch. A
+  `text_input`/`password_input`/`textarea` descriptor's `has_focus` field is
+  documented as cosmetic — the engine's own focus state decides where a key
+  routes, so a host that never echoes `has_focus: true` back after a
+  `FocusChanged` still has every keystroke reach the focused field.
+- `FormController`: a focused `Toggle` field now flips on Enter/Space
+  (#2363), not just a mouse click -- `handle_key` had no arm for the
+  plain, non-grouped `FieldKind::Toggle`, unlike the `ButtonRow`/
+  `ToggleGroup`/`Toolbar` item-row activation it already had. A space
+  delivered as a `CharTyped(' ')` (rather than `KeyPressed { key:
+  Char(' '), .. }`) now also activates a focused item-row field or
+  `Toggle` instead of always falling straight through to inserting a
+  literal character. TUI `paint_frame` also no longer paints the generic
+  single-box engine-focus ring over a `"form"` extra's own multi-row
+  content the first frame it gains engine focus: the ring's rect used to
+  be resolved from `AppLogic::tab_stops` *before* that frame's
+  `app.render` ran, one frame behind `InteractionEngine::sync_forms`'s
+  own exclusion of a focused `"form"`'s stop -- so on that one frame the
+  ring still painted the whole form rect as a bordered box, overwriting
+  its first and last visible field rows with border glyphs
+  (`FormController` already owns the form's own per-field focus visuals).
+- `ContextMenu` item icons no longer run straight into their labels
+  (#2370): when any item in the menu carries an icon or a `checked`
+  state, every row now reserves a fixed leading gutter column (16px
+  icon + 4px gap on the pixel path via `native_surface_paint::paint`;
+  a 2-cell icon + gap column on TUI via `tui::draw_context_menu`) and
+  every label — icon-bearing or not — indents past it, so the column
+  stays aligned. A menu with no icon/checked items keeps the original
+  compact margin.
+- `quadraui-binding-core`'s `"scroll"` container clips its content to the
+  viewport instead of relying on a negative origin (which TUI clamps to 0),
+  so atomic content and a partly visible boundary child now scroll and cut
+  at the viewport edge on TUI; and every descendant hit is intersected with
+  the viewport, so clicks outside it (on a sibling painted before the scroll)
+  never resolve to scrolled-out content (#2420). `clip_hits_to_viewport`
+  narrows a local-frame hit kind's (`Tree`/`List`/`DataTable`/`TabBar`/
+  `TextDisplay`) new `clip` field rather than moving its `area`, so a click's
+  translation into that primitive's layout frame still uses the rect it was
+  painted at; it also narrows a `Tree`'s `scrollbar.track` and an `Extra`'s
+  `chrome_hits`. An atomic `List`/`Tree`/`DataTable` leaf scrolled as a
+  `Scroll`'s whole content paints with `scroll_offset` advanced to the right
+  row, the same as `TextDisplay`.
 
 ## [0.10.1] - 2026-11-11
 ### Added
