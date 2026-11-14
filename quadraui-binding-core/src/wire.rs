@@ -42,7 +42,7 @@ use quadraui::{
     SplitTree, TabBar, TabBarSegment, TabItem, Theme, WidgetId,
 };
 
-use crate::extra_paint::{ExtraPaint, EXTRA_PRIMITIVE_KINDS};
+use crate::extra_paint::{decode_extra_primitive_checked, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 use crate::host::text_display_from_lines;
 use crate::layout::{
     validate_unique_leaf_ids, Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutLeaf,
@@ -221,6 +221,14 @@ impl<'de> Visitor<'de> for ValueVisitor {
 const UNIVERSAL_NODE_SIBLING_KEYS: [&str; 6] =
     ["style", "class", "size", "min", "max", "wire_version"];
 
+/// The one wire key [`decode_value_checked`] accepts inside a `"list"`/
+/// `"tree"`/`"data_table"` descriptor body despite none of `ListView`/
+/// `TreeView`/`DataTable` having a field for it — [`crate::scroll_px_from_value`]
+/// reads it straight out of the same `Value` dict, so it must stay out of the
+/// unknown-key check's reject set for exactly those three kinds. Every other
+/// descriptor-body kind passes `&[]` instead.
+const SCROLL_PX_EXTRA_KEYS: [&str; 1] = ["scroll_px"];
+
 /// Session-scoped sink for a wire decode's unknown-*optional*-key findings
 /// — a dict key none of this crate's decoders recognize there, outside the
 /// small number of closed-vocabulary sub-dicts (`"padding"`'s object shape,
@@ -395,17 +403,22 @@ fn check_node_sibling_keys(
 /// by [`decode_value_checked`]: every method but [`Self::deserialize_struct`]
 /// forwards straight through to `value`'s own `Deserializer` impl, and that
 /// one method diffs `value`'s own keys against the field-name list `T`'s
-/// derived `Deserialize` impl hands it, reporting anything outside it
+/// derived `Deserialize` impl hands it, unioned with `extra_keys` (a
+/// call-site-supplied allow-list for wire keys `T` deliberately has no
+/// field for, e.g. `"scroll_px"` on `list`/`tree`/`data_table` — see
+/// [`crate::scroll_px_from_value`]), reporting anything outside that union
 /// through `diagnostics` before continuing the real decode. A `T` whose
 /// derive reaches this instead through `deserialize_map` (a `#[serde(flatten)]`
 /// field, a hand-written `Deserialize` impl) skips the check silently rather
-/// than tripping it falsely -- this only ever *adds* a finding, never
-/// changes what otherwise decodes successfully.
+/// than tripping it falsely — for every key in `fields` union `extra_keys`,
+/// this adds a finding only for keys outside both, never for a key either
+/// one already accepts.
 struct DescriptorBodyDeserializer<'de, 'b> {
     value: &'de Value,
     diagnostics: &'b DecodeDiagnostics,
     path: &'b str,
     field: &'b str,
+    extra_keys: &'b [&'b str],
     unknown_key: &'b Cell<Option<DecodeError>>,
 }
 
@@ -422,11 +435,16 @@ impl<'de, 'b> serde::Deserializer<'de> for DescriptorBodyDeserializer<'de, 'b> {
         V: Visitor<'de>,
     {
         if let Some(obj) = self.value.as_object() {
+            let known: Vec<&str> = fields
+                .iter()
+                .copied()
+                .chain(self.extra_keys.iter().copied())
+                .collect();
             for key in obj.keys() {
-                if !fields.contains(&key.as_str()) {
+                if !known.contains(&key.as_str()) {
                     if let Err(err) = self
                         .diagnostics
-                        .report_unknown_key(self.path, self.field, key, fields)
+                        .report_unknown_key(self.path, self.field, key, &known)
                     {
                         self.unknown_key.replace(Some(err));
                         return Err(serde::de::Error::custom(
@@ -455,17 +473,22 @@ impl<'de, 'b> serde::Deserializer<'de> for DescriptorBodyDeserializer<'de, 'b> {
 
 /// [`decode_value`] for a descriptor *body* dict -- a leaf's `"button"`/
 /// `"slider"`/... value, decoded straight into its fixed or additive-primitive
-/// type -- except an unrecognized key inside that dict now goes through
+/// type -- except an unrecognized key inside that dict goes through
 /// `diagnostics` exactly like a layout-tree node's own sibling keys already
-/// do via [`check_unknown_keys`], instead of decoding silently either way.
+/// do via [`check_unknown_keys`], rather than decoding silently either way.
 /// `field` is the descriptor-body's own kind name (`"button"`, `"slider"`,
 /// ...), reported alongside `path` the same way [`check_unknown_keys`]'s
-/// callers already name their own dict.
+/// callers already name their own dict. `extra_keys` names wire keys this
+/// kind's dict accepts outside of `T`'s own derived fields -- e.g.
+/// `"scroll_px"` for `"list"`/`"tree"`/`"data_table"`, which
+/// [`crate::scroll_px_from_value`] reads out of this same dict rather than
+/// `T` ever having a field for it; `&[]` for every kind with no such key.
 pub(crate) fn decode_value_checked<'de, T>(
     diagnostics: &DecodeDiagnostics,
     path: &str,
     field: &str,
     value: &'de Value,
+    extra_keys: &[&str],
 ) -> Result<T, DecodeError>
 where
     T: serde::Deserialize<'de>,
@@ -476,6 +499,7 @@ where
         diagnostics,
         path,
         field,
+        extra_keys,
         unknown_key: &unknown_key,
     };
     T::deserialize(guard).map_err(|err| {
@@ -1874,12 +1898,14 @@ fn layout_leaf_from_value(
                 &context,
                 key,
                 value_dict,
+                &[],
             )?),
             "text_display" => LeafDescriptor::TextDisplay(decode_value_checked(
                 diagnostics,
                 &context,
                 key,
                 value_dict,
+                &[],
             )?),
             "list" => {
                 scroll_px = crate::scroll_px_from_value(v);
@@ -1888,6 +1914,7 @@ fn layout_leaf_from_value(
                     &context,
                     key,
                     value_dict,
+                    &SCROLL_PX_EXTRA_KEYS,
                 )?)
             }
             "tree" => {
@@ -1897,6 +1924,7 @@ fn layout_leaf_from_value(
                     &context,
                     key,
                     value_dict,
+                    &SCROLL_PX_EXTRA_KEYS,
                 )?)
             }
             "data_table" => {
@@ -1906,6 +1934,7 @@ fn layout_leaf_from_value(
                     &context,
                     key,
                     value_dict,
+                    &SCROLL_PX_EXTRA_KEYS,
                 )?)
             }
             "tab_bar" => LeafDescriptor::TabBar(decode_value_checked(
@@ -1913,6 +1942,7 @@ fn layout_leaf_from_value(
                 &context,
                 key,
                 value_dict,
+                &[],
             )?),
             _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
         });
@@ -1932,14 +1962,12 @@ fn layout_leaf_from_value(
                 "has more than one descriptor kind",
             ));
         }
-        found = Some(LeafDescriptor::Extra(
-            crate::extra_paint::decode_extra_primitive_checked(
-                diagnostics,
-                &context,
-                kind,
-                value_dict,
-            )?,
-        ));
+        found = Some(LeafDescriptor::Extra(decode_extra_primitive_checked(
+            diagnostics,
+            &context,
+            kind,
+            value_dict,
+        )?));
     }
 
     let descriptor = found.ok_or_else(|| {
@@ -2205,19 +2233,28 @@ pub fn decode_render_output_with_styles<'de, D: Deserializer<'de>>(
 /// nothing in this slot this frame"; anything else must be a `dict`
 /// decodable into `T`. An unrecognized key inside that dict routes through
 /// `diagnostics` via [`decode_value_checked`], the same strict/warn policy
-/// a layout-tree leaf's own body already gets.
+/// a layout-tree leaf's own body already gets. `extra_keys` is forwarded
+/// straight to [`decode_value_checked`] — `&SCROLL_PX_EXTRA_KEYS` for
+/// `"list"`/`"tree"`/`"data_table"`, `&[]` for every other slot.
 fn slot_entry<T: serde::de::DeserializeOwned>(
     diagnostics: &DecodeDiagnostics,
     what: &str,
     value: &Value,
     key: &str,
+    extra_keys: &[&str],
 ) -> Result<Option<T>, DecodeError> {
     match obj_get(value, key) {
         Some(v) => {
             if !v.is_object() {
                 return Err(DecodeError::type_mismatch(what, key, "an object or null"));
             }
-            Ok(Some(decode_value_checked(diagnostics, what, key, v)?))
+            Ok(Some(decode_value_checked(
+                diagnostics,
+                what,
+                key,
+                v,
+                extra_keys,
+            )?))
         }
         None => Ok(None),
     }
@@ -2227,8 +2264,8 @@ fn slot_entry<T: serde::de::DeserializeOwned>(
 /// `kind` (one of [`EXTRA_PRIMITIVE_KINDS`]), from a render callback's
 /// returned `dict`. Mirrors [`slot_entry`]'s missing/`null`/dict-or-error
 /// shape (including its `diagnostics` routing), dispatching the decode
-/// through [`crate::extra_paint::decode_extra_primitive_checked`] instead of
-/// a single fixed type.
+/// through [`decode_extra_primitive_checked`] instead of a single fixed
+/// type.
 fn extra_slot_entry(
     diagnostics: &DecodeDiagnostics,
     what: &str,
@@ -2240,7 +2277,7 @@ fn extra_slot_entry(
             if !v.is_object() {
                 return Err(DecodeError::type_mismatch(what, kind, "an object or null"));
             }
-            Ok(Some(crate::extra_paint::decode_extra_primitive_checked(
+            Ok(Some(decode_extra_primitive_checked(
                 diagnostics,
                 what,
                 kind,
@@ -2282,12 +2319,18 @@ pub(crate) fn render_frame_from_value(
     let tree_scroll_px = obj_get(value, "tree").and_then(crate::scroll_px_from_value);
     let data_table_scroll_px = obj_get(value, "data_table").and_then(crate::scroll_px_from_value);
     Ok(RenderFrame {
-        button: slot_entry(diagnostics, what, value, "button")?,
-        text_display: slot_entry(diagnostics, what, value, "text_display")?,
-        list: slot_entry(diagnostics, what, value, "list")?,
-        tree: slot_entry(diagnostics, what, value, "tree")?,
-        data_table: slot_entry(diagnostics, what, value, "data_table")?,
-        tab_bar: slot_entry(diagnostics, what, value, "tab_bar")?,
+        button: slot_entry(diagnostics, what, value, "button", &[])?,
+        text_display: slot_entry(diagnostics, what, value, "text_display", &[])?,
+        list: slot_entry(diagnostics, what, value, "list", &SCROLL_PX_EXTRA_KEYS)?,
+        tree: slot_entry(diagnostics, what, value, "tree", &SCROLL_PX_EXTRA_KEYS)?,
+        data_table: slot_entry(
+            diagnostics,
+            what,
+            value,
+            "data_table",
+            &SCROLL_PX_EXTRA_KEYS,
+        )?,
+        tab_bar: slot_entry(diagnostics, what, value, "tab_bar", &[])?,
         extra,
         list_scroll_px,
         tree_scroll_px,
@@ -4567,6 +4610,149 @@ mod tests {
         assert_eq!(
             diagnostics.warned_keys(),
             HashSet::from(["labl".to_string()])
+        );
+    }
+
+    /// A minimal `"list"`/`"tree"`/`"data_table"` descriptor body carrying
+    /// `"scroll_px"` -- the documented `scroll_px_from_value` extension key,
+    /// not a field any of `ListView`/`TreeView`/`DataTable` declares (see
+    /// `docs/bindings-wire-format.md`'s own `"scroll_px"` entries and
+    /// [`crate::scroll_px_from_value`]'s doc). Covers both the layout-tree
+    /// leaf shape (`{"id": ..., "list": {...}}`) and the flat per-slot shape
+    /// (`{"list": {...}}`) [`decode_render_output_with_styles`] dispatches
+    /// between.
+    fn scrollable_body_with_scroll_px(kind: &str) -> Value {
+        let body = match kind {
+            "list" => json!({
+                "id": "l1",
+                "items": [],
+                "selected_idx": 0,
+                "scroll_px": 3.5,
+            }),
+            "tree" => json!({
+                "id": "t1",
+                "rows": [],
+                "selection_mode": "Single",
+                "selected_path": null,
+                "style": {
+                    "indent": 2,
+                    "show_chevrons": true,
+                    "chevron_expanded": "v",
+                    "chevron_collapsed": ">",
+                },
+                "scroll_px": 1.5,
+            }),
+            "data_table" => json!({
+                "id": "dt1",
+                "columns": [{"title": "Name"}],
+                "rows": [],
+                "scroll_px": 2.5,
+            }),
+            other => panic!("not a scrollable kind: {other}"),
+        };
+        json!({ kind: body })
+    }
+
+    /// `"scroll_px"` inside a `"list"`/`"tree"`/`"data_table"` descriptor
+    /// body decodes cleanly under both `warn` (leaving [`DecodeDiagnostics::warned_keys`]
+    /// empty -- no false "unknown key" finding) and `strict` (no
+    /// [`DecodeError::UnknownKey`]), on both the layout-tree leaf shape and
+    /// the flat per-slot shape [`decode_render_output_with_styles`]
+    /// dispatches between. This is the regression
+    /// [`button_leaf_body_warns_once_under_default_policy`]'s typo'd-key
+    /// coverage doesn't exercise: `scroll_px` is a real, documented key
+    /// outside the decoded type's own fields.
+    #[test]
+    fn scroll_px_in_a_scrollable_body_is_not_reported_as_unknown() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        for kind in ["list", "tree", "data_table"] {
+            let body = scrollable_body_with_scroll_px(kind);
+
+            // Flat per-slot shape: `{"list": {...}}` etc., no top-level
+            // `"id"`.
+            let warn = DecodeDiagnostics::warn();
+            decode_render_output_with_styles(
+                "test",
+                &body,
+                StyleContext::new(&sets, &theme),
+                &warn,
+            )
+            .unwrap_or_else(|e| panic!("{kind} flat frame with scroll_px: {e}"));
+            assert!(
+                warn.warned_keys().is_empty(),
+                "{kind} flat frame: scroll_px must not warn as unknown, got {:?}",
+                warn.warned_keys()
+            );
+            let strict = DecodeDiagnostics::strict();
+            decode_render_output_with_styles(
+                "test",
+                &body,
+                StyleContext::new(&sets, &theme),
+                &strict,
+            )
+            .unwrap_or_else(|e| panic!("{kind} flat frame with scroll_px under strict: {e}"));
+
+            // Layout-tree leaf shape: the same body dict, now under a
+            // top-level `"id"` so `is_layout_tree` routes it through
+            // `layout_leaf_from_value` instead.
+            let mut leaf = body.as_object().unwrap().clone();
+            leaf.insert("id".to_string(), json!("leaf-1"));
+            let leaf = Value::Object(leaf);
+
+            let warn = DecodeDiagnostics::warn();
+            decode_render_output_with_styles(
+                "test",
+                &leaf,
+                StyleContext::new(&sets, &theme),
+                &warn,
+            )
+            .unwrap_or_else(|e| panic!("{kind} layout-tree leaf with scroll_px: {e}"));
+            assert!(
+                warn.warned_keys().is_empty(),
+                "{kind} layout-tree leaf: scroll_px must not warn as unknown, got {:?}",
+                warn.warned_keys()
+            );
+            let strict = DecodeDiagnostics::strict();
+            decode_render_output_with_styles(
+                "test",
+                &leaf,
+                StyleContext::new(&sets, &theme),
+                &strict,
+            )
+            .unwrap_or_else(|e| panic!("{kind} layout-tree leaf with scroll_px under strict: {e}"));
+        }
+    }
+
+    /// A genuine typo next to `"scroll_px"` in a scrollable body -- e.g.
+    /// `"scroll_pxx"` -- still reports as unknown; the fix above only
+    /// widens the accepted set by the one documented key, not by anything
+    /// else.
+    #[test]
+    fn a_typo_near_scroll_px_still_rejects_under_strict() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let value = json!({
+            "id": "leaf-1",
+            "list": {
+                "id": "l1",
+                "items": [],
+                "selected_idx": 0,
+                "scroll_pxx": 3.5,
+            },
+        });
+        let strict = DecodeDiagnostics::strict();
+        let error = err(decode_render_output_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &strict,
+        ));
+        assert_eq!(error.code(), "unknown_key");
+        assert!(
+            error.to_string().contains("\"scroll_pxx\""),
+            "{}",
+            error.to_string()
         );
     }
 
