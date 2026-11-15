@@ -562,8 +562,11 @@ pub struct MainAxisSpec {
 /// `Percent`/`Weight` overflow squeezed it. `max` is applied first, then
 /// `min` — so a child declaring a conflicting `min > max` resolves to
 /// `min`, the same precedence CSS's own `min-width`/`max-width` conflict
-/// resolution uses.
-fn apply_min_max(spec: &MainAxisSpec, raw: f32) -> f32 {
+/// resolution uses. `pub(crate)` so [`crate::render`]'s
+/// `matching_axis_child_length` can clamp a `Fixed` child's own declared
+/// size the same way [`resolve_main_axis_sizes`] clamps it when actually
+/// laying children out.
+pub(crate) fn apply_min_max(spec: &MainAxisSpec, raw: f32) -> f32 {
     let mut v = raw;
     if let Some(max) = spec.max {
         v = v.min(max);

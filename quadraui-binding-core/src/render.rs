@@ -18,9 +18,9 @@ use quadraui::{
 use crate::extra_paint::ExtraPaint;
 use crate::hit::{PaintedHit, ScrollChildHit};
 use crate::layout::{
-    align_cross, justify_starts, quantise_horizontal, quantise_vertical, resolve_main_axis_sizes,
-    Align, LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutStyled, LeafDescriptor,
-    MainAxisSpec,
+    align_cross, apply_min_max, justify_starts, quantise_horizontal, quantise_vertical,
+    resolve_main_axis_sizes, Align, LayoutChild, LayoutContainer, LayoutLeaf, LayoutNode,
+    LayoutScroll, LayoutStyled, LeafDescriptor, MainAxisSpec,
 };
 
 /// Owned decode of a render callback's returned descriptor set — one
@@ -1020,13 +1020,18 @@ pub(crate) struct ScrollMetrics {
 /// `Row`/`Column` whose own main axis matches `axis` (a `Column` under a
 /// vertical scroll, a `Row` under a horizontal one), the sum of every
 /// child's own natural length along `axis` plus the quantised gap between
-/// them — this container's `padding`/`margin`/`justify`/`align` and each
-/// child's own `size`/`min`/`max` are NOT applied here, unlike
-/// [`layout_container_rects`]'s equal-share division: a `Scroll`'s content
-/// stacks every child at its own natural size, not flexed to fill a fixed
-/// viewport, which is the entire point of putting it in a `Scroll`. For a
-/// `Row`/`Column` on the cross axis, the max over its children's own
-/// natural length along `axis`. For anything else (`Split`/`Tabs`/`Panel`/
+/// them — this container's `padding`/`margin`/`justify`/`align` are NOT
+/// applied here, unlike [`layout_container_rects`]'s equal-share division: a
+/// `Scroll`'s content stacks every child at its own natural size, not
+/// flexed to fill a fixed viewport, which is the entire point of putting it
+/// in a `Scroll`. A child declaring [`SectionSize::Fixed`] on that matching
+/// main axis is the one `size`/`min`/`max` exception: see
+/// [`matching_axis_child_length`]'s own doc for why its declared width
+/// wins over [`natural_size`]'s content-based guess — every other
+/// `SectionSize` is still a relative share with no intrinsic length of its
+/// own, so it keeps falling through to [`natural_size`]. For a `Row`/
+/// `Column` on the cross axis, the max over its children's own natural
+/// length along `axis`. For anything else (`Split`/`Tabs`/`Panel`/
 /// `SidebarPanel`/`SplitTree`, or a nested `Scroll`), the same one-unit
 /// fallback a `Leaf` with no intrinsic size gets — deeper measurement of
 /// those node kinds as `Scroll` content is unimplemented today. `node` is
@@ -1064,6 +1069,11 @@ pub(crate) fn natural_main_length(
 /// main axis = height) — compared against `axis` to decide "stack and sum"
 /// (own main axis matches `axis`) vs. "cross-stack and take the max" (it
 /// doesn't).
+///
+/// On the "stack and sum" branch, each child's length comes from
+/// [`matching_axis_child_length`] rather than a bare recursive
+/// [`natural_main_length`] call — see that function's own doc for why a
+/// [`SectionSize::Fixed`] child needs the detour.
 fn container_natural_main_length(
     backend: &mut dyn Backend,
     container: &LayoutContainer,
@@ -1075,26 +1085,84 @@ fn container_natural_main_length(
         return 0.0;
     }
     let horizontal = matches!(axis, ScrollAxis::Horizontal);
+    let on_main_axis = container_is_row == horizontal;
     let lengths: Vec<f32> = container
         .children
         .iter()
-        .map(|child| natural_main_length(backend, &child.node, axis, metrics))
+        .map(|child| {
+            if on_main_axis {
+                matching_axis_child_length(backend, child, axis, metrics)
+            } else {
+                natural_main_length(backend, &child.node, axis, metrics)
+            }
+        })
         .collect();
-    if container_is_row == horizontal {
-        let gap_metric = if horizontal {
+    if on_main_axis {
+        let main_metric = if horizontal {
             metrics.char_width
         } else {
             metrics.line_height
         };
-        let gap = if horizontal {
-            quantise_horizontal(container.spacing.gap, gap_metric)
+        let quantise_main: fn(f32, f32) -> f32 = if horizontal {
+            quantise_horizontal
         } else {
-            quantise_vertical(container.spacing.gap, gap_metric)
+            quantise_vertical
         };
+        let gap = quantise_main(container.spacing.gap, main_metric);
         lengths.iter().sum::<f32>() + gap * (lengths.len() - 1) as f32
     } else {
         lengths.into_iter().fold(0.0_f32, f32::max)
     }
+}
+
+/// A `Row`/`Column` child's own main-axis length along `axis`, when that
+/// container's main axis matches `axis` (the "stack and sum" case both
+/// [`container_natural_main_length`] and [`scroll_content_slots`] walk — a
+/// `Row` directly or nested under a horizontal `Scroll`, a `Column` under a
+/// vertical one). A child declaring [`SectionSize::Fixed`] uses that
+/// declared size directly — quantised into native units and clamped by its
+/// own `min`/`max` via [`apply_min_max`], the same treatment
+/// [`layout_container_rects`] gives it when actually painting — instead of
+/// [`natural_main_length`]'s content-based measurement. A `List`/
+/// `DataTable`/`Tree` leaf's [`natural_size`] never reports a width (only a
+/// content-driven height), so without this detour, a `Fixed`-width `list`/
+/// `data_table` child inside a `scroll`+`row` fell back to
+/// [`natural_main_length`]'s one-unit placeholder on the horizontal axis —
+/// the `Row`'s total declared width collapsed to a handful of cells
+/// regardless of how many `Fixed` columns it held, so the `Scroll`'s own
+/// `content_len` never exceeded the viewport and `offset` had nothing to
+/// scroll, and (via [`scroll_content_slots`]) each child's own painted rect
+/// shrank the same way even when `content_len` happened to be big enough.
+/// Every other `SectionSize` (`Percent`/`Weight`/`EqualShare`/`Content`) is
+/// a relative share, not an intrinsic length, so it keeps falling through
+/// to [`natural_main_length`] unchanged.
+fn matching_axis_child_length(
+    backend: &mut dyn Backend,
+    child: &LayoutChild,
+    axis: ScrollAxis,
+    metrics: ScrollMetrics,
+) -> f32 {
+    let horizontal = matches!(axis, ScrollAxis::Horizontal);
+    if let SectionSize::Fixed(raw) = child.size {
+        let main_metric = if horizontal {
+            metrics.char_width
+        } else {
+            metrics.line_height
+        };
+        let quantise_main: fn(f32, f32) -> f32 = if horizontal {
+            quantise_horizontal
+        } else {
+            quantise_vertical
+        };
+        let spec = MainAxisSpec {
+            size: child.size,
+            min: child.min.map(|v| quantise_main(v, main_metric)),
+            max: child.max.map(|v| quantise_main(v, main_metric)),
+            content: 0.0,
+        };
+        return apply_min_max(&spec, quantise_main(raw as f32, main_metric));
+    }
+    natural_main_length(backend, &child.node, axis, metrics)
 }
 
 /// One [`LayoutNode::Scroll`]'s content, resolved into paintable/
@@ -1188,7 +1256,7 @@ pub(crate) fn scroll_content_slots(
         let mut cursor = 0.0_f32;
         let mut rects = Vec::with_capacity(container.children.len());
         for child in &container.children {
-            let len = natural_main_length(backend, &child.node, axis, metrics);
+            let len = matching_axis_child_length(backend, child, axis, metrics);
             let start = cursor;
             cursor += len + gap;
             let visible = scroll.is_visible(start, len);
@@ -3848,5 +3916,84 @@ mod tests {
             panic!("a Column matching the scroll's own axis yields Children slots");
         };
         assert_eq!(slots[1].rect, Rect::new(0.0, 6.0, 100.0, 16.0));
+    }
+
+    /// A `List` leaf's own `natural_size` never reports a width (only a
+    /// row-count-driven height), so a `Row` matching a horizontal
+    /// `Scroll`'s axis, holding two `SectionSize::Fixed` `List` children,
+    /// must still measure `content_len` as the sum of their two declared
+    /// `Fixed` widths — not `natural_main_length`'s one-unit placeholder
+    /// for an unmeasurable leaf, which would collapse the whole row far
+    /// enough below the viewport that nothing is left to scroll to. Two
+    /// `Fixed(500)` `List`s plus a `20`-wide gap must report `1020.0`, well
+    /// past the `100`-wide viewport this test's `Scroll` would sit inside.
+    #[test]
+    fn container_natural_main_length_honors_a_fixed_list_childs_own_width() {
+        fn fixed_list_child(id: &str, width: u16) -> LayoutChild {
+            LayoutChild {
+                node: LayoutNode::Leaf(LayoutLeaf {
+                    id: id.to_string(),
+                    descriptor: LeafDescriptor::List(ListView {
+                        id: WidgetId::new(id),
+                        title: None,
+                        items: vec![quadraui::ListItem {
+                            text: quadraui::StyledText::plain("item"),
+                            icon: None,
+                            detail: None,
+                            decoration: Decoration::default(),
+                        }],
+                        selected_idx: 0,
+                        scroll_offset: 0,
+                        has_focus: false,
+                        bordered: false,
+                        h_scroll: 0,
+                        max_content_width: None,
+                        show_v_scrollbar: false,
+                    }),
+                    scroll_px: None,
+                }),
+                size: SectionSize::Fixed(width),
+                min: None,
+                max: None,
+            }
+        }
+
+        let metrics = ScrollMetrics {
+            char_width: 8.0,
+            line_height: 16.0,
+        };
+        let content = LayoutNode::Row(LayoutContainer {
+            children: vec![
+                fixed_list_child("left", 500),
+                fixed_list_child("right", 500),
+            ],
+            spacing: Spacing {
+                padding: EdgeInsets::default(),
+                margin: 0.0,
+                gap: 20.0,
+            },
+            justify: Justify::default(),
+            align: Align::default(),
+        });
+        let mut tui = tui();
+        let content_len = natural_main_length(&mut tui, &content, ScrollAxis::Horizontal, metrics);
+        assert_eq!(content_len, 1020.0);
+
+        let viewport = Rect::new(0.0, 0.0, 100.0, 20.0);
+        let slots = scroll_content_slots(
+            &mut tui,
+            viewport,
+            ScrollAxis::Horizontal,
+            0.0,
+            &content,
+            content_len,
+            metrics,
+        );
+        let ScrollSlots::Children(slots) = slots else {
+            panic!("a Row matching the scroll's own axis yields Children slots");
+        };
+        assert_eq!(slots[0].len, 500.0);
+        assert_eq!(slots[1].len, 500.0);
+        assert_eq!(slots[1].start, 520.0);
     }
 }
