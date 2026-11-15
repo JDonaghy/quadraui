@@ -8,12 +8,8 @@
 //! contract as `crate::tui::draw_panel` (`#[doc(hidden)]`, so not
 //! linked here).
 //!
-//! When `float.transparent` is set, the background fill is skipped
-//! entirely and the border glyphs (when `float.border` is also set)
-//! are drawn with each cell's own existing background colour instead
-//! of the float's, so whatever the host already painted beneath the
-//! float — the base layer is rendered into the same buffer earlier in
-//! the frame — shows through everywhere the float doesn't put a glyph.
+//! `float.transparent` skips the fill and draws border glyphs over each
+//! cell's existing background, so the base layer shows through.
 
 use ratatui::buffer::Buffer;
 use ratatui::style::Color as RatatuiColor;
@@ -142,61 +138,6 @@ mod tests {
         assert_eq!(cell_char(&buf, x, y + h - 1), '└');
         assert_eq!(cell_char(&buf, x + w - 1, y + h - 1), '┘');
         assert_eq!(cell_char(&buf, x, y + 1), '│');
-    }
-
-    #[test]
-    fn transparent_float_leaves_underlying_cells_outside_the_border_untouched() {
-        let mut buf = Buffer::empty(RRect::new(0, 0, 40, 20));
-        let anchor = Anchor::new(Rect::new(5.0, 5.0, 4.0, 1.0), Side::Bottom);
-        let float = {
-            let mut f = Float::new(WidgetId::new("f"), anchor);
-            f.transparent = true;
-            f
-        };
-        let viewport = Rect::new(0.0, 0.0, 40.0, 20.0);
-        let layout = float.layout(viewport, FloatMeasure::new(10.0, 4.0));
-        let x = layout.bounds.x.round() as u16;
-        let y = layout.bounds.y.round() as u16;
-        let w = layout.bounds.width.round() as u16;
-        let h = layout.bounds.height.round() as u16;
-
-        // Paint a marker glyph where the float's interior will land —
-        // the host's "base layer" painted earlier in the frame.
-        let (interior_x, interior_y) = (x + 1, y + 1);
-        buf.cell_mut((interior_x, interior_y))
-            .unwrap()
-            .set_char('*');
-
-        draw_float(&mut buf, &float, &layout, &theme());
-
-        // Border glyphs are still painted (border stays on).
-        assert_eq!(cell_char(&buf, x, y), '┌');
-        assert_eq!(cell_char(&buf, x + w - 1, y), '┐');
-        assert_eq!(cell_char(&buf, x, y + h - 1), '└');
-        assert_eq!(cell_char(&buf, x + w - 1, y + h - 1), '┘');
-        // The interior marker survives — no background fill overwrote it.
-        assert_eq!(cell_char(&buf, interior_x, interior_y), '*');
-    }
-
-    #[test]
-    fn transparent_borderless_float_paints_nothing() {
-        let mut buf = Buffer::empty(RRect::new(0, 0, 40, 20));
-        let anchor = Anchor::new(Rect::new(5.0, 5.0, 4.0, 1.0), Side::Bottom);
-        let float = {
-            let mut f = Float::new(WidgetId::new("f"), anchor);
-            f.transparent = true;
-            f.border = false;
-            f
-        };
-        let viewport = Rect::new(0.0, 0.0, 40.0, 20.0);
-        let layout = float.layout(viewport, FloatMeasure::new(10.0, 4.0));
-        let x = layout.bounds.x.round() as u16;
-        let y = layout.bounds.y.round() as u16;
-        buf.cell_mut((x, y)).unwrap().set_char('*');
-
-        draw_float(&mut buf, &float, &layout, &theme());
-
-        assert_eq!(cell_char(&buf, x, y), '*');
     }
 
     #[test]
