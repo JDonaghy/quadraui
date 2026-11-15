@@ -54,6 +54,16 @@ def test_dunder_all_names_all_resolve():
     assert unresolvable == [], f"listed in `__all__` but not importable: {unresolvable}"
 
 
+def test_version_is_exported_and_importable():
+    # `quadraui.__version__` is read from installer-recorded packaging
+    # metadata, not hardcoded -- this only asserts it is present and
+    # listed, since the installed version itself varies by how this test
+    # suite was set up (`maturin develop` vs. a wheel install).
+    assert isinstance(quadraui.__version__, str)
+    assert quadraui.__version__ != ""
+    assert "__version__" in quadraui.__all__
+
+
 def test_not_on_main_thread_error_is_importable_and_catchable():
     # `run_native`'s doc promises callers can catch this by name on the
     # `macos` feature; the import below is the form that doc implies, and
