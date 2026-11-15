@@ -15,7 +15,10 @@ name: quadraui-node release
 # (`@quadraui/node-darwin-arm64`, `-linux-x64-gnu`, `-win32-x64-msvc`, each
 # scaffolded once under `quadraui-node/npm/<platform>/` by `napi
 # create-npm-dirs` and checked in). The root package's `optionalDependencies`
-# (one entry per platform package, same version) is how `npm install
+# (one entry per platform package, same version -- written at publish time
+# by `napi pre-publish` below, never checked in, since `npm ci` on every
+# push/PR would otherwise need those packages to already exist on npm) is
+# how `npm install
 # @quadraui/node` on a given OS/arch ends up with exactly that platform's
 # `.node` file and no others -- npm's own install-time `os`/`cpu` matching
 # on each platform package's `package.json` skips the ones that don't
@@ -218,8 +221,8 @@ jobs:
       # Publishes `@quadraui/node-darwin-arm64`/`-linux-x64-gnu`/
       # `-win32-x64-msvc` (each `npm/<platform>/package.json`'s
       # `publishConfig.access: public`, needed since every one is scoped)
-      # and rewrites this checkout's `quadraui-node/package.json`
-      # `optionalDependencies` to match -- that rewrite is never committed
+      # and writes this checkout's `quadraui-node/package.json`
+      # `optionalDependencies` from the `napi.targets` list -- that rewrite is never committed
       # back; it only needs to be on disk for the `npm publish` step below,
       # the same "prepare in the ephemeral checkout, never push it back"
       # shape `quadraui-py-wheels.yml` uses for its own build-time file

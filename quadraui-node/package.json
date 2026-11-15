@@ -62,10 +62,5 @@
       "x86_64-unknown-linux-gnu",
       "x86_64-pc-windows-msvc"
     ]
-  },
-  "optionalDependencies": {
-    "@quadraui/node-darwin-arm64": "0.11.0",
-    "@quadraui/node-linux-x64-gnu": "0.11.0",
-    "@quadraui/node-win32-x64-msvc": "0.11.0"
   }
 }
