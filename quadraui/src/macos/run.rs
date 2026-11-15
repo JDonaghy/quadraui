@@ -1751,6 +1751,21 @@ define_class!(
             true
         }
 
+        // ── Stale-session activation hint ────────────────────────────
+        //
+        // Schedules the one-shot delayed check below. Can't sample
+        // `NSApp.isActive()`/`keyWindow()` right here: this method fires
+        // partway through AppKit's own launch sequence (per Apple's doc,
+        // "at `-[NSApplication finishLaunching]`"), before the window this
+        // same `bootstrap` call opens has had a chance to become key —
+        // every launch, healthy or not, reads as "not yet active" at this
+        // exact point. See `schedule_session_hint_check`'s doc for the
+        // delay this schedules and `sessionHintCheck:` for what it reads.
+        #[unsafe(method(applicationDidFinishLaunching:))]
+        fn application_did_finish_launching(&self, _notification: &NSNotification) {
+            self.schedule_session_hint_check();
+        }
+
         // ── Cmd-Q / menu Quit, and the last-window-closed follow-up ──
         //
         // `[NSApp terminate:]` — which Cmd-Q and the auto-prepended app
@@ -1813,6 +1828,17 @@ define_class!(
         #[unsafe(method(application:openFiles:))]
         fn application_open_files(&self, _sender: &NSApplication, filenames: &NSArray<NSString>) {
             self.dispatch_open_requested(ns_filenames_to_open_requested(filenames));
+        }
+    }
+
+    impl QuadraAppDelegate {
+        /// Fires once, [`SESSION_HINT_DELAY`] after
+        /// `applicationDidFinishLaunching:` scheduled it — see
+        /// [`QuadraAppDelegate::schedule_session_hint_check`]'s doc for
+        /// why a plain delayed check, not a polling loop, is enough.
+        #[unsafe(method(sessionHintCheck:))]
+        fn session_hint_check(&self, _timer: &NSTimer) {
+            self.run_session_hint_check();
         }
     }
 );
@@ -1918,7 +1944,77 @@ impl QuadraAppDelegate {
             );
         }
     }
+
+    /// Arms the one-shot [`SESSION_HINT_DELAY`] timer that lands on
+    /// [`QuadraAppDelegate::session_hint_check`] — called from
+    /// `applicationDidFinishLaunching:` (see that method's doc for why
+    /// the check can't just run inline there). A fixed delay rather than
+    /// polling: this is a diagnostic for a condition that, once true, is
+    /// true for the rest of the process's life (AppKit does not revoke
+    /// activation moments after granting it), so one sample well after
+    /// launch has settled is enough — no case has been observed where
+    /// activation arrives late and this would need to retry.
+    ///
+    /// No-op when [`crate::macos_session_hint::session_hint_disabled`]
+    /// — set by a headless build/test lane so it stays quiet about a
+    /// condition that's expected there, not a regression.
+    fn schedule_session_hint_check(&self) {
+        if crate::macos_session_hint::session_hint_disabled() {
+            return;
+        }
+        // SAFETY: `self` is a valid, live `QuadraAppDelegate` (an
+        // `NSObject` subclass) for at least as long as this method
+        // call — the same no-op upcast `QuadraView`'s own timer-arming
+        // call sites use (e.g. `view_frame_did_change`'s `self_obj`).
+        let self_obj: &AnyObject = unsafe { &*(self as *const Self as *const AnyObject) };
+        // The returned `Retained<NSTimer>` is intentionally dropped:
+        // once scheduled on the run loop (the non-`with_invocation`
+        // `scheduled...` constructor registers it there directly), the
+        // run loop itself retains a non-repeating timer until it fires
+        // — nothing here needs to invalidate it early the way a
+        // superseded resize/momentum timer does.
+        let _timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                SESSION_HINT_DELAY.as_secs_f64(),
+                self_obj,
+                sel!(sessionHintCheck:),
+                None,
+                false,
+            )
+        };
+    }
+
+    /// Samples `NSApp.isActive()`/`keyWindow()`, consults
+    /// [`crate::macos_session_hint::activation_hint`], and `eprintln!`s
+    /// the result — the backing logic for `sessionHintCheck:`.
+    ///
+    /// `print_stderr` is denied crate-wide (see `lib.rs`'s module doc) so
+    /// a stray print from library code never corrupts a host's live TUI
+    /// screen — but here `eprintln!` reaches the terminal that launched
+    /// this binary, straight to the person sitting at it: the exact
+    /// "human running a tool directly" case that deny's doc carves out.
+    #[allow(clippy::print_stderr)]
+    fn run_session_hint_check(&self) {
+        let mtm = MainThreadMarker::from(self);
+        let ns_app = NSApplication::sharedApplication(mtm);
+        let is_active = ns_app.isActive();
+        let has_key_window = ns_app.keyWindow().is_some();
+        let tmux = std::env::var("TMUX").ok();
+        if let Some(hint) =
+            crate::macos_session_hint::activation_hint(is_active, has_key_window, tmux.as_deref())
+        {
+            eprintln!("{hint}");
+        }
+    }
 }
+
+/// Delay between `applicationDidFinishLaunching:` and
+/// [`QuadraAppDelegate::run_session_hint_check`]'s sample — long enough
+/// that a normal launch's activation has settled (the stale-tmux failure
+/// this diagnoses is a hard failure, not a slow one: activation never
+/// arrives, it doesn't just arrive late), short enough that a person
+/// staring at a window that isn't responding sees the hint promptly.
+const SESSION_HINT_DELAY: Duration = Duration::from_millis(1500);
 
 /// Translate `application:openURLs:`'s `NSArray<NSURL>` into
 /// [`UiEvent::OpenRequested`]. `NSURL::isFileURL` splits
