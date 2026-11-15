@@ -67,6 +67,7 @@ from .component import Component
 from .nodes import (
     Button,
     Column,
+    List,
     Node,
     Row,
     Scroll,
@@ -96,6 +97,7 @@ __all__ = [
     "Tabs",
     "Tree",
     "Table",
+    "List",
     "StatusBar",
     "TextDisplay",
     "Button",

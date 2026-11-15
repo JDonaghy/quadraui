@@ -17,7 +17,16 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, Literal, Optional, Sequence
+
+# `list[...]` (lowercase, PEP 585) rather than `typing.List` throughout this
+# module's own annotations -- `List` is this module's own node constructor
+# (`List(items, ...)`, the typed-widget counterpart of `Table`/`Tree`), so
+# importing `typing.List` under that same name would shadow it the moment
+# the constructor is defined below. `from __future__ import annotations`
+# (above) means every annotation here is a deferred string, never evaluated
+# at import time, so the lowercase builtin generic is safe on this package's
+# minimum-supported interpreter too.
 
 if TYPE_CHECKING:
     # `quadraui.wire` is a stub-only module (no backing `.py`) -- see its own
@@ -27,7 +36,9 @@ if TYPE_CHECKING:
         ColumnDescriptor,
         DataRowDescriptor,
         Icon,
+        ListItemDescriptor,
         StatusBarSegment,
+        StyledText,
         TabBarSegmentDescriptor,
         TextDisplayLineDescriptor,
         ToolbarButtonDescriptor,
@@ -47,6 +58,7 @@ __all__ = [
     "Tabs",
     "Tree",
     "Table",
+    "List",
     "StatusBar",
     "TextDisplay",
     "Button",
@@ -252,7 +264,7 @@ def Tabs(
     *,
     id: Optional[str] = None,
     closable: Optional[bool] = None,
-    right_segments: Optional[List["TabBarSegmentDescriptor"]] = None,
+    right_segments: Optional[list["TabBarSegmentDescriptor"]] = None,
     active_accent: Optional["Color"] = None,
     compact: Optional[bool] = None,
     on_close: Optional[Callable[[int], None]] = None,
@@ -301,17 +313,17 @@ def Tabs(
 
 
 def Tree(
-    rows: List["TreeRowDescriptor"],
+    rows: list["TreeRowDescriptor"],
     *,
     id: Optional[str] = None,
     selection_mode: str = "Single",
-    selected_path: Optional[List[int]] = None,
+    selected_path: Optional[list[int]] = None,
     has_focus: bool = False,
     style: Optional["TreeStyle"] = None,
-    on_row_click: Optional[Callable[[List[int]], None]] = None,
-    on_toggle_expand: Optional[Callable[[List[int]], None]] = None,
-    on_activate: Optional[Callable[[List[int]], None]] = None,
-    on_select: Optional[Callable[[List[int]], None]] = None,
+    on_row_click: Optional[Callable[[list[int]], None]] = None,
+    on_toggle_expand: Optional[Callable[[list[int]], None]] = None,
+    on_activate: Optional[Callable[[list[int]], None]] = None,
+    on_select: Optional[Callable[[list[int]], None]] = None,
 ) -> Node:
     """A `TreeRowDescriptor` list. `on_row_click` fires on `RowClicked`
     (a row body click -- select it); `on_toggle_expand` on
@@ -340,8 +352,8 @@ def Tree(
 
 
 def Table(
-    columns: List["ColumnDescriptor"],
-    rows: List["DataRowDescriptor"],
+    columns: list["ColumnDescriptor"],
+    rows: list["DataRowDescriptor"],
     *,
     id: Optional[str] = None,
     on_activate: Optional[Callable[[int], None]] = None,
@@ -367,9 +379,47 @@ def Table(
     return Node("data_table", id, callbacks, {}, build)
 
 
+def List(
+    items: list["ListItemDescriptor"],
+    *,
+    id: Optional[str] = None,
+    selected: Optional[int] = None,
+    title: Optional["StyledText"] = None,
+    has_focus: bool = False,
+    bordered: Optional[bool] = None,
+    on_select: Optional[Callable[[int], None]] = None,
+    on_activate: Optional[Callable[[int], None]] = None,
+) -> Node:
+    """A `ListViewDescriptor`. `on_select` fires on `SelectionChanged` (a
+    plain click, or `j`/`k` moving the keyboard selection); `on_activate`
+    fires on either `ItemDoubleClicked` (a mouse double-click) or
+    `ItemActivated` (Enter while a row holds the selection) -- the same
+    "open this row" pairing `Table`'s own `on_activate` documents.
+    `selected` is the row index to render as selected (defaults to `0`,
+    the same as the underlying `ListView` field it fills); the caller
+    still owns advancing it on `on_select`, the same uncontrolled-unless-
+    pinned shape `Tree`'s `selected_path` follows."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "id": node_id,
+            "items": items,
+            "selected_idx": selected if selected is not None else 0,
+            "has_focus": has_focus,
+        }
+        if title is not None:
+            payload["title"] = title
+        if bordered is not None:
+            payload["bordered"] = bordered
+        return {"id": node_id, "list": payload}
+
+    callbacks = _callbacks(on_select=on_select, on_activate=on_activate)
+    return Node("list", id, callbacks, {}, build)
+
+
 def StatusBar(
-    left_segments: List["StatusBarSegment"],
-    right_segments: List["StatusBarSegment"],
+    left_segments: list["StatusBarSegment"],
+    right_segments: list["StatusBarSegment"],
     *,
     id: Optional[str] = None,
     on_segment_click: Optional[Callable[[str], None]] = None,
@@ -391,7 +441,7 @@ def StatusBar(
     return Node("status_bar", id, callbacks, {}, build)
 
 
-def TextDisplay(lines: List["TextDisplayLineDescriptor"], *, id: Optional[str] = None) -> Node:
+def TextDisplay(lines: list["TextDisplayLineDescriptor"], *, id: Optional[str] = None) -> Node:
     """A `TextDisplayDescriptor` leaf -- plain read-only text."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
@@ -441,7 +491,7 @@ def Button(
 _toolbar_auto_ids = itertools.count()
 
 
-def Toolbar(buttons: List["ToolbarButtonDescriptor"], *, id: Optional[str] = None) -> "ToolbarDescriptor":
+def Toolbar(buttons: list["ToolbarButtonDescriptor"], *, id: Optional[str] = None) -> "ToolbarDescriptor":
     """A raw `ToolbarDescriptor` -- not a `Node`: every place a toolbar can
     go (`SidebarPanel`'s own `toolbar=`, a `LayoutLeafNode`'s `"toolbar"`
     key) wants the descriptor dict directly, and the bindings don't yet

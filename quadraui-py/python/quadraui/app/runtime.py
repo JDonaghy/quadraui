@@ -166,6 +166,11 @@ _CONTAINER_EVENT_MAP: Dict[str, Dict[str, Tuple[str, Callable[[Dict[str, Any]], 
         "RowSelected": ("on_select", lambda p: (p["idx"],)),
         "HeaderClicked": ("on_header_click", lambda p: (p["col"],)),
     },
+    "List": {
+        "SelectionChanged": ("on_select", lambda p: (p["idx"],)),
+        "ItemDoubleClicked": ("on_activate", lambda p: (p["idx"],)),
+        "ItemActivated": ("on_activate", lambda p: (p["idx"],)),
+    },
     "TabBar": {
         "TabClosed": ("on_close", lambda p: (p["index"],)),
         "TabActivated": ("on_activate", lambda p: (p["index"],)),
