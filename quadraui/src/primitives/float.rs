@@ -78,6 +78,15 @@
 //! `float.border` is set, a 1-unit border stroke — nothing else. No
 //! text, no sub-widgets. The host paints its own content into
 //! `layout.content_bounds` afterwards, same as `Panel`.
+//!
+//! Setting [`Float::transparent`] skips the background fill entirely —
+//! a pure border-only overlay through which whatever is already
+//! painted underneath shows. On TUI this falls out for free: every
+//! backend paints floats directly onto the shared cell buffer in
+//! z-order, so not overwriting a cell leaves the layer below it
+//! exactly as the host last drew it. On a pixel surface (GTK/macOS/
+//! Win) skipping `surface_fill_rect` leaves the surface's existing
+//! contents in place for the same reason.
 
 use crate::event::{Point, Rect};
 use crate::layout::{Anchor, ResolvedSide, Side};
@@ -121,9 +130,21 @@ pub struct Float {
     /// `false`.
     #[serde(default = "default_border")]
     pub border: bool,
-    /// Background colour override. `None` = theme default.
+    /// Background colour override. `None` = theme default. Ignored
+    /// when [`Float::transparent`] is `true` — there is no fill to
+    /// colour.
     #[serde(default)]
     pub bg: Option<Color>,
+    /// Skip the background fill entirely, leaving a border-only (when
+    /// `border` is set) overlay through which whatever is already
+    /// painted underneath shows. `false` by default, matching
+    /// [`Float::new`] — most floats (menus, popups, panels) want an
+    /// opaque surface; a sticky header or inline hint banner that must
+    /// not obscure the content behind it sets this to `true`. Takes
+    /// priority over [`Float::bg`]: a transparent float paints no
+    /// fill regardless of what `bg` is set to.
+    #[serde(default)]
+    pub transparent: bool,
 }
 
 fn default_border() -> bool {
@@ -136,12 +157,12 @@ fn default_focusable() -> bool {
 
 impl Float {
     /// A focusable-by-default float with a border, at `anchor`, no
-    /// colour override — the common case for an interactive popup.
-    /// Builder-free convenience matching `Tooltip::new`'s shape; set
-    /// `focusable`/`border`/`bg` directly afterwards (every field is
-    /// `pub`) rather than via a `with_*` chain — see
-    /// `docs/PRIMITIVE_RULES.md`'s rule-8 history of why this crate
-    /// stopped adding those.
+    /// colour override, opaque background — the common case for an
+    /// interactive popup. Builder-free convenience matching
+    /// `Tooltip::new`'s shape; set `focusable`/`border`/`bg`/
+    /// `transparent` directly afterwards (every field is `pub`) rather
+    /// than via a `with_*` chain — see `docs/PRIMITIVE_RULES.md`'s
+    /// rule-8 history of why this crate stopped adding those.
     pub fn new(id: WidgetId, anchor: Anchor) -> Self {
         Self {
             id,
@@ -149,6 +170,7 @@ impl Float {
             focusable: true,
             border: true,
             bg: None,
+            transparent: false,
         }
     }
 }
@@ -274,7 +296,9 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`Float`]'s chrome (background fill + optional border
     /// stroke) at `layout.bounds`. Content is NOT painted — the host
     /// draws into `layout.content_bounds`, same contract as
-    /// `Backend::draw_panel`.
+    /// `Backend::draw_panel`. Skips the fill entirely when
+    /// `float.transparent` is set, leaving whatever the surface
+    /// already holds in place underneath the border.
     pub(crate) fn paint(
         float: &Float,
         layout: &FloatLayout,
@@ -285,8 +309,10 @@ pub(crate) mod native_surface_paint {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return;
         }
-        let bg = float.bg.unwrap_or(theme.surface_bg);
-        surface.surface_fill_rect(bounds, bg);
+        if !float.transparent {
+            let bg = float.bg.unwrap_or(theme.surface_bg);
+            surface.surface_fill_rect(bounds, bg);
+        }
         if float.border {
             surface.surface_stroke_rect(bounds, theme.border_fg, 1.0);
         }
@@ -412,6 +438,38 @@ pub(crate) mod native_surface_paint {
             paint(&f, &layout, &mut surface, &theme);
             assert_eq!(surface.fills[0].1, Color::rgb(1, 2, 3));
         }
+
+        #[test]
+        fn paint_skips_fill_but_keeps_border_when_transparent() {
+            let mut f = float(true);
+            f.transparent = true;
+            f.bg = Some(Color::rgb(1, 2, 3)); // ignored — transparent wins.
+            let layout = f.layout(
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                FloatMeasure::new(20.0, 10.0),
+            );
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&f, &layout, &mut surface, &theme);
+            assert!(surface.fills.is_empty());
+            assert_eq!(surface.strokes.len(), 1);
+            assert_eq!(surface.strokes[0].0, layout.bounds);
+        }
+
+        #[test]
+        fn paint_skips_fill_and_border_when_transparent_and_borderless() {
+            let mut f = float(false);
+            f.transparent = true;
+            let layout = f.layout(
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                FloatMeasure::new(20.0, 10.0),
+            );
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&f, &layout, &mut surface, &theme);
+            assert!(surface.fills.is_empty());
+            assert!(surface.strokes.is_empty());
+        }
     }
 }
 
@@ -486,6 +544,7 @@ mod tests {
         assert!(f.focusable);
         assert!(f.border);
         assert!(f.bg.is_none());
+        assert!(!f.transparent);
     }
 
     #[test]
@@ -494,13 +553,14 @@ mod tests {
         let mut f = Float::new(WidgetId::new("hint"), anchor);
         f.focusable = false;
         f.bg = Some(Color::rgb(10, 20, 30));
+        f.transparent = true;
         let json = serde_json::to_string(&f).unwrap();
         let back: Float = serde_json::from_str(&json).unwrap();
         assert_eq!(f, back);
     }
 
     #[test]
-    fn serde_defaults_focusable_true_and_border_true_when_omitted() {
+    fn serde_defaults_focusable_true_border_true_and_transparent_false_when_omitted() {
         // Backward/forward-compat: a serialised float that predates a
         // field addition (or a hand-written JSON descriptor from a Lua
         // extension that only sets `id`/`anchor`) must still deserialise,
@@ -511,6 +571,7 @@ mod tests {
         assert!(f.focusable);
         assert!(f.border);
         assert!(f.bg.is_none());
+        assert!(!f.transparent);
     }
 
     #[test]
