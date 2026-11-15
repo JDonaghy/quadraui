@@ -560,6 +560,18 @@ export type QuiShellApp = InstanceType<typeof native.QuiShellApp>;
 export type QuiAppWaker = InstanceType<typeof native.QuiAppWaker>;
 
 /**
+ * A `QuiApp.actions()` handle -- the sanctioned way to open a dialog/
+ * toast/context menu/... from inside a render/event/tick callback, where
+ * the matching `QuiApp` method itself would raise `ReentrantCallError`
+ * (see {@link REENTRANT_RESTRICTED_METHODS} above for the full method
+ * list this mirrors). See the native binding's own doc comment
+ * (`quadraui-node/src/lib.rs`'s `QuiAppActions`) for the full method
+ * list; `app/runtime.ts`'s `App.confirm`/`App.alert` build on
+ * `showMessageDialog` through this type.
+ */
+export type QuiAppActions = InstanceType<typeof native.QuiAppActions>;
+
+/**
  * A handle returned by `pump()`: stops the `setInterval` loop it started.
  * Calling `stop()` more than once, or after the loop already stopped
  * itself (because `step()` reported the app exited), is a harmless no-op --

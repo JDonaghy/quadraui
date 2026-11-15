@@ -34,7 +34,7 @@
 // same reason `../index.ts`'s own header comment gives.
 
 import type { Node, Renderable, ComponentLike } from "./nodes";
-import type { WidgetState, RunHandle } from "../index";
+import type { QuiAppActions, WidgetState, RunHandle } from "../index";
 import type { Poller, ReboundPrototypes, Watcher } from "./hotReload";
 
 const { QuiApp, run } = require("../index.ts");
@@ -289,6 +289,23 @@ const FORM_FIELD_EVENT_MAP: Record<string, [string, (payload: Record<string, unk
   DropdownChanged: ["on_change", (p) => [p.selected_idx]],
 };
 
+/**
+ * One button `App.confirm`/`App.alert` offers -- the same shape
+ * `showMessageDialog`'s own `buttons` argument takes. Kept local rather
+ * than imported from `../wire`: that generated module has no standalone
+ * name for this shape, only `DialogButtonDescriptor`'s `tint`/`spec`
+ * extras this layer's own two helpers don't expose.
+ */
+export interface DialogButton {
+  id: string;
+  label: string;
+  is_default?: boolean;
+  is_cancel?: boolean;
+}
+
+/** `App.confirm`/`App.alert`'s own `severity` option -- an optional tint on the dialog chrome; has no effect on which button resolves the returned promise. */
+export type DialogSeverity = "info" | "question" | "warning" | "error";
+
 export interface AppOptions {
   /**
    * Builds this frame's tree. `Renderable` permits `null`/`undefined` for
@@ -349,8 +366,15 @@ export interface HotReloadOptions {
  */
 class App {
   qui: InstanceType<typeof QuiApp>;
-  /** A `QuiAppActions` handle -- see `../index.ts`'s own facade doc for why this package doesn't type-export that native class. */
-  actions: unknown;
+  /**
+   * A `QuiAppActions` handle, shared with every render/event/tick callback
+   * -- the sanctioned way to open a dialog/toast/context menu/... from
+   * inside one instead of calling the matching `qui` method directly (that
+   * would raise `ReentrantCallError` mid-dispatch); see `../index.ts`'s own
+   * facade doc for the full restricted-method list. `confirm`/`alert` queue
+   * through this rather than `qui` for exactly that reason.
+   */
+  actions: QuiAppActions;
   /**
    * The id -> {eventName: callback} registry the most recent render built
    * -- leading-underscore, not actually private: an own test (or a REPL
@@ -360,6 +384,15 @@ class App {
   _registry: Registry = {};
   _componentStates: ComponentStates = new Map();
   _focusedId: string | null = null;
+  /**
+   * The resolver for a pending `confirm`/`alert` promise, waiting on
+   * `UiEvent::MessageDialogResolved` -- `null` when none is outstanding. A
+   * dialog opened some other way (a raw `actions.showMessageDialog`/
+   * `qui.showMessageDialog` call `confirm`/`alert` never wrapped a promise
+   * around) resolves nothing here; its event falls through `_dispatch` to
+   * `onEvent` like any other unclaimed one.
+   */
+  private _pendingDialogResolve: ((id: string) => void) | null = null;
   /** The exception a failed reload recorded, or `null` after a successful one. */
   reloadError: unknown = null;
   /** How many reloads have succeeded and rendered. */
@@ -409,6 +442,56 @@ class App {
    */
   setOnEvent(onEvent: ((event: unknown) => void) | undefined): void {
     this._onEvent = onEvent;
+  }
+
+  // --- dialogs --------------------------------------------------------------
+
+  /**
+   * Opens an in-canvas confirm/alert/prompt dialog and resolves with
+   * whichever button's `id` the user picked -- a click, or Enter/Escape
+   * activating the button marked `is_default`/`is_cancel` respectively.
+   * Queues through `actions` rather than calling `qui.showMessageDialog`
+   * directly, so this is safe to call from inside a node callback (a
+   * `Button`'s `onClick`, say) as well as from top-level script code --
+   * see {@link actions}'s own doc for why.
+   *
+   * Calling `confirm`/`alert` again while an earlier call's dialog is
+   * still open replaces it silently, the same "replaces any dialog
+   * already open" behaviour `showMessageDialog` itself documents: the
+   * earlier call's promise is then abandoned, never resolved or
+   * rejected. Only one `confirm`/`alert` call should be outstanding at a
+   * time.
+   */
+  confirm(
+    title: string,
+    body: string,
+    buttons: ReadonlyArray<DialogButton>,
+    severity?: DialogSeverity,
+  ): Promise<string> {
+    return new Promise<string>((resolve) => {
+      this._pendingDialogResolve = resolve;
+      this.actions.showMessageDialog(title, body, buttons as unknown[], severity);
+    });
+  }
+
+  /**
+   * `confirm` with a single button (`"ok"` unless `options.id`
+   * overrides it), both `is_default` and `is_cancel` -- Enter, Escape,
+   * and a click on it all resolve the same returned promise. `options.label`
+   * overrides its text (`"OK"` by default).
+   */
+  alert(
+    title: string,
+    body: string,
+    options: { id?: string; label?: string; severity?: DialogSeverity } = {},
+  ): Promise<string> {
+    const id = options.id ?? "ok";
+    return this.confirm(
+      title,
+      body,
+      [{ id, label: options.label ?? "OK", is_default: true, is_cancel: true }],
+      options.severity,
+    );
   }
 
   // --- hot reload -----------------------------------------------------------
@@ -651,6 +734,22 @@ class App {
   }
 
   /**
+   * Resolves a pending `confirm`/`alert` promise with the clicked button's
+   * id. `false` (so the event falls through to `onEvent` like any other
+   * unclaimed one, per {@link _pendingDialogResolve}'s own doc) when no
+   * `confirm`/`alert` call is waiting on this dialog.
+   */
+  private _dispatchMessageDialogResolved(obj: Record<string, unknown>): boolean {
+    const resolve = this._pendingDialogResolve;
+    if (resolve === null) {
+      return false;
+    }
+    this._pendingDialogResolve = null;
+    resolve(obj.MessageDialogResolved as string);
+    return true;
+  }
+
+  /**
    * Tries every node-callback dispatch path in turn; `true` means the event
    * was claimed -- a callback ran, or (see `_dispatchButtonClicked`) it is
    * the semantic twin of one that does -- so `_handle` must not also call
@@ -693,6 +792,10 @@ class App {
         return true;
       }
       return this._dispatchFormField(obj);
+    }
+
+    if ("MessageDialogResolved" in obj) {
+      return this._dispatchMessageDialogResolved(obj);
     }
 
     for (const [container, variants] of Object.entries(CONTAINER_EVENT_MAP)) {

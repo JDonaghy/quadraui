@@ -566,6 +566,96 @@ test("button onClick fires on Enter after a click moved real focus to it", () =>
   assert.deepEqual(clicks, [1, 1], "Enter on the clicked (and so really focused) button must fire too");
 });
 
+// --- confirm / alert ---------------------------------------------------------
+
+function locateText(app: any, needle: string): [number, number] {
+  const lines = app.screen().split("\n");
+  for (let row = 0; row < lines.length; row++) {
+    const col = lines[row].indexOf(needle);
+    if (col !== -1) {
+      return [row, col];
+    }
+  }
+  throw new Error(`${JSON.stringify(needle)} not found on screen`);
+}
+
+function clickText(app: any, needle: string) {
+  const [row, col] = locateText(app, needle);
+  clickAt(app, col, row);
+}
+
+test("confirm resolves with the id of whichever button is clicked", async () => {
+  const app = new App(40, 10, { view: () => TextDisplay([], { id: "t:text" }) });
+  const pending = app.confirm("Unsaved changes", "Do you want to save?", [
+    { id: "save", label: "Save", is_default: true },
+    { id: "discard", label: "Discard" },
+    { id: "cancel", label: "Cancel", is_cancel: true },
+  ]);
+  app.step();
+  assert.ok(app.screenContains("Save"), "the dialog must be painted once step() applies the queued action");
+
+  clickText(app, "Discard");
+  assert.equal(await pending, "discard");
+});
+
+test("confirm resolves the default button on Enter", async () => {
+  const app = new App(40, 10, { view: () => TextDisplay([], { id: "t:text" }) });
+  const pending = app.confirm("Unsaved changes", "Do you want to save?", [
+    { id: "save", label: "Save", is_default: true },
+    { id: "cancel", label: "Cancel", is_cancel: true },
+  ]);
+  app.step();
+  app.pushEvent(keyEvent({ Named: "Enter" }));
+  app.step();
+  assert.equal(await pending, "save");
+});
+
+test("confirm resolves the cancel button on Escape", async () => {
+  const app = new App(40, 10, { view: () => TextDisplay([], { id: "t:text" }) });
+  const pending = app.confirm("Unsaved changes", "Do you want to save?", [
+    { id: "save", label: "Save", is_default: true },
+    { id: "cancel", label: "Cancel", is_cancel: true },
+  ]);
+  app.step();
+  app.pushEvent(keyEvent({ Named: "Escape" }));
+  app.step();
+  assert.equal(await pending, "cancel");
+});
+
+test("alert resolves with ok (its default button id) from any dismissal route", async () => {
+  const app = new App(40, 10, { view: () => TextDisplay([], { id: "t:text" }) });
+  const pending = app.alert("Heads up", "Something happened.");
+  app.step();
+  assert.ok(app.screenContains("OK"));
+  app.pushEvent(keyEvent({ Named: "Enter" }));
+  app.step();
+  assert.equal(await pending, "ok");
+});
+
+test("alert's button id/label are overridable", async () => {
+  const app = new App(40, 10, { view: () => TextDisplay([], { id: "t:text" }) });
+  const pending = app.alert("Heads up", "Something happened.", { id: "dismiss", label: "Got it" });
+  app.step();
+  assert.ok(app.screenContains("Got it"));
+  clickText(app, "Got it");
+  assert.equal(await pending, "dismiss");
+});
+
+test("a MessageDialogResolved with no pending confirm/alert falls through to onEvent", () => {
+  const seen: unknown[] = [];
+  const app = new App(40, 10, {
+    view: () => TextDisplay([], { id: "t:text" }),
+    onEvent: (event: unknown) => seen.push(event),
+  });
+  // Opened through the lower-level `actions` escape hatch directly, not
+  // through `confirm`/`alert` -- its resolution must not be swallowed.
+  app.actions.showMessageDialog("Title", "Body", [{ id: "ok", label: "OK", is_default: true }], undefined);
+  app.step();
+  app.pushEvent(keyEvent({ Named: "Enter" }));
+  app.step();
+  assert.deepEqual(seen, [{ MessageDialogResolved: "ok" }]);
+});
+
 test("an unmatched event falls through to onEvent", () => {
   const seen: unknown[] = [];
   const { keyName } = require("../js/app/index.ts");

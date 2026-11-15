@@ -161,6 +161,16 @@ export type QuiShellApp = InstanceType<typeof native.QuiShellApp>;
 /** A thread-safe handle, returned by `QuiApp.waker()` -- see `index.ts`'s own doc comment. */
 export type QuiAppWaker = InstanceType<typeof native.QuiAppWaker>;
 
+/**
+ * A `QuiApp.actions()` handle -- the sanctioned way to open a dialog/
+ * toast/context menu/... from inside a render/event/tick callback, where
+ * the matching `QuiApp` method itself would raise `ReentrantCallError`;
+ * see `index.ts`'s own doc comment (`REENTRANT_RESTRICTED_METHODS`) for
+ * the full list of methods this mirrors, and `app/runtime.ts`'s `App.confirm`/
+ * `App.alert` for the typed-app-layer wrapper built on `showMessageDialog`.
+ */
+export type QuiAppActions = InstanceType<typeof native.QuiAppActions>;
+
 /** A handle returned by `pump()`: stops the `setInterval` loop it started. */
 export interface PumpHandle {
   stop(): void;
