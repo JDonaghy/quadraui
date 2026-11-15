@@ -710,6 +710,24 @@ fn form_field_measure_inner(
             let button_box_h = crate::style::Style::default().control_height;
             FormFieldMeasure::new(row_h.max(button_box_h + 4.0))
         }
+        // A single-line text box needs the same floor: `native_surface_
+        // paint::paint_text_input_box` strokes its box at `row_h - 4.0`
+        // (2px top/bottom padding, mirroring the `FieldKind::Button` box
+        // math above), so the row itself has to reach
+        // `Style::control_height + 4.0` for the stroked box to reach
+        // `control_height` (see [`crate::primitives::text_input::
+        // TextInputMetrics::resolve`]). Only `TextInput`/`PasswordInput`
+        // rows grow; `TextArea`'s row (which shares the same painter for
+        // its single-line preview) is intentionally excluded — its
+        // `visible_rows` hint already documents that no pixel backend
+        // paints a real multi-row body yet.
+        FieldKind::TextInput { .. } | FieldKind::PasswordInput { .. } => {
+            let input_box_h = crate::primitives::text_input::TextInputMetrics::resolve(
+                &crate::style::Style::default(),
+            )
+            .height;
+            FormFieldMeasure::new(row_h.max(input_box_h + 4.0))
+        }
         _ => FormFieldMeasure::new(row_h),
     }
 }
@@ -1348,6 +1366,56 @@ mod tests {
         assert_eq!(large.height, 40.0);
     }
 
+    /// `FieldKind::TextInput`'s row floors at the same
+    /// `Style::default().control_height + 4.0` (`30.0`) as
+    /// `FieldKind::Button`, so the painted box
+    /// (`row_h - 4.0`, see `form.rs`'s shared `paint_text_input_box`)
+    /// reaches the full `26px` `control_height` even at a `row_h` a
+    /// small line-height computes. A `row_h` already at or above the
+    /// floor is left untouched.
+    #[test]
+    fn form_field_measure_text_input_row_floors_at_control_height_plus_four() {
+        let field = field_with(
+            "name",
+            "Name",
+            FieldKind::TextInput {
+                value: "hello".into(),
+                placeholder: String::new(),
+                cursor: Some(2),
+                selection_anchor: None,
+            },
+        );
+
+        let small = form_field_measure(&field, 22.0, &FakeMeasure);
+        assert_eq!(small.height, 30.0);
+
+        let large = form_field_measure(&field, 40.0, &FakeMeasure);
+        assert_eq!(large.height, 40.0);
+    }
+
+    /// `FieldKind::PasswordInput` shares `FieldKind::TextInput`'s floor —
+    /// same shared `paint_text_input_box` painter, same single-line
+    /// control.
+    #[test]
+    fn form_field_measure_password_input_row_floors_at_control_height_plus_four() {
+        let field = field_with(
+            "secret",
+            "Password",
+            FieldKind::PasswordInput {
+                value: "hunter2".into(),
+                placeholder: String::new(),
+                cursor: Some(3),
+                mask_char: '•',
+            },
+        );
+
+        let small = form_field_measure(&field, 22.0, &FakeMeasure);
+        assert_eq!(small.height, 30.0);
+
+        let large = form_field_measure(&field, 40.0, &FakeMeasure);
+        assert_eq!(large.height, 40.0);
+    }
+
     /// A field with a non-empty validation message measures one extra
     /// approximate text line beyond `row_h`, so the GUI painter has
     /// real room to put the message below the label instead of
@@ -1385,9 +1453,10 @@ mod tests {
     /// for *every* `FieldKind`, regardless of any field-specific content
     /// (multiple toggles, a long `TextArea` value, a large `visible_rows`).
     ///
-    /// `FieldKind::Button` and `FieldKind::RadioGroup` are deliberate
-    /// exceptions (own dedicated tests below / `form_field_measure_inner`'s
-    /// own arm) and are not in `kinds`.
+    /// `FieldKind::Button`, `FieldKind::TextInput`,
+    /// `FieldKind::PasswordInput` and `FieldKind::RadioGroup` are
+    /// deliberate exceptions (own dedicated tests below /
+    /// `form_field_measure_inner`'s own arms) and are not in `kinds`.
     #[test]
     fn form_field_measure_height_is_one_row_for_every_field_kind() {
         use crate::primitives::form::{ButtonRowItem, ToggleGroupItem};
@@ -1399,15 +1468,6 @@ mod tests {
         let kinds = vec![
             ("label", FieldKind::Label),
             ("toggle", FieldKind::Toggle { value: true }),
-            (
-                "text-input",
-                FieldKind::TextInput {
-                    value: "hello".into(),
-                    placeholder: String::new(),
-                    cursor: Some(2),
-                    selection_anchor: None,
-                },
-            ),
             (
                 "read-only",
                 FieldKind::ReadOnly {
@@ -1445,15 +1505,6 @@ mod tests {
                     placeholder: String::new(),
                     cursor: Some(3),
                     visible_rows: 6,
-                },
-            ),
-            (
-                "password",
-                FieldKind::PasswordInput {
-                    value: "hunter2".into(),
-                    placeholder: String::new(),
-                    cursor: Some(3),
-                    mask_char: '•',
                 },
             ),
             (
