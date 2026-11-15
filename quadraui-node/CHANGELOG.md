@@ -18,6 +18,14 @@ fragment step for this package (that mechanism, and
 
 ### Added
 
+- `App.confirm(title, body, buttons, severity?)` and `App.alert(title,
+  body, options?)`: queue an in-canvas dialog through `App.actions`
+  (never the direct, mid-dispatch-unsafe `QuiApp.showMessageDialog`) and
+  resolve a `Promise<string>` with whichever button's id the user picked
+  -- a click, or Enter/Escape activating the `is_default`/`is_cancel`
+  button. `App.actions` is now typed as `QuiAppActions` (exported from
+  both `js/index.ts` and `js/index.d.ts`) instead of `unknown`, so no
+  `as any` cast is needed to call a method on it.
 - `List(items, options)` (and the `<list>` JSX intrinsic): a typed node for
   a `ListViewDescriptor` leaf, routing `SelectionChanged` to `onSelect` and
   either `ItemDoubleClicked` or `ItemActivated` to `onActivate` -- no raw
