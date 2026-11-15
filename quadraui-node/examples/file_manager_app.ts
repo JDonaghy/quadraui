@@ -41,6 +41,7 @@ const {
 } = require("../js/app/index.ts");
 
 import type { Renderable } from "../js/app/index";
+import type { QuiAppActions } from "../js/index";
 import type {
   Color,
   ColumnDescriptor,
@@ -254,7 +255,7 @@ class FileManager {
    */
   activeTabIndex: number;
   app: InstanceType<typeof App>;
-  actions: unknown;
+  actions: QuiAppActions;
 
   constructor(rootPath: string, width = 100, height = 30) {
     this.root = buildRoot(rootPath);

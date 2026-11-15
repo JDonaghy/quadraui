@@ -53,6 +53,7 @@ separate compile step, once `npm run build` has built the native addon:
 ```bash
 node examples/appshell_demo.ts
 node examples/file_manager_app.ts
+node examples/sample_app.ts
 ```
 
 (`examples/file_manager_app_jsx.tsx` is the one exception — Node doesn't
@@ -146,12 +147,16 @@ file directly, or a consumer who copies that same pattern into their own
 ## Building and testing an app
 
 `@quadraui/node/app` (`js/app/`) is a thin layer over `QuiApp`: a `view()`
-returning typed node trees (`Split`, `Tree`, `Button`, ...), `on*` callbacks
-on those nodes instead of one app-wide event switch, `Component` for
+returning typed node trees (`Split`, `Tree`, `List`, `Form`, `Button`, ...),
+`on*` callbacks on those nodes instead of one app-wide event switch,
+`App.confirm`/`App.alert` for an in-canvas dialog that resolves a promise
+instead of a hand-written `MessageDialogResolved` branch, `Component` for
 reusable view + local state, and `App.enableHotReload(...)` to pick up
 edits to your view code while the app runs, keeping the state you built up.
-See `js/app/index.ts`'s own module doc for the full contract, and
-`examples/file_manager_app.ts` for a worked example.
+See `js/app/index.ts`'s own module doc for the full contract,
+`examples/sample_app.ts` for the smallest list + detail form + confirm
+dialog + status bar app that uses all of those, and
+`examples/file_manager_app.ts` for a larger worked example.
 
 `js/testing.ts` is the harness you write that app's own tests against — it
 queries the frame the app actually rendered and synthesises the gestures a
