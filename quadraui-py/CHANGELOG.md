@@ -20,6 +20,11 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `quadraui.app.List(items, selected=, title=, has_focus=, bordered=,
+  on_select=, on_activate=, id=)`: a typed node for a `ListViewDescriptor`
+  leaf, routing `SelectionChanged` to `on_select` and either
+  `ItemDoubleClicked` or `ItemActivated` to `on_activate` -- no raw wire
+  dict or `"List"` branch in `on_event` needed to build a selectable list.
 - `quadraui.app.App`'s typed layer now stamps a `"wire_version"` sibling
   key onto every tree its `view()` renders (`quadraui.app.runtime.
   WIRE_VERSION`, mirroring `quadraui_binding_core::wire_schema::

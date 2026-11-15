@@ -118,12 +118,12 @@ Rules that follow from the model:
 ### Available nodes
 
 `Split`, `Column`, `Row`, `SidebarPanel`, `Scroll`, `Tabs`/`Tab`, `Tree`,
-`Table`, `StatusBar`, `TextDisplay`, `Button`, plus `Toolbar`. `Toolbar`
-is not a node: it returns a raw descriptor for `SidebarPanel(toolbar=...)`,
-and its buttons do **not** raise events yet. Use `Button` for anything
-clickable.
+`Table`, `List`, `StatusBar`, `TextDisplay`, `Button`, plus `Toolbar`.
+`Toolbar` is not a node: it returns a raw descriptor for
+`SidebarPanel(toolbar=...)`, and its buttons do **not** raise events yet.
+Use `Button` for anything clickable.
 
-Anything else in the toolkit (progress, spinner, image, list, overlays,
+Anything else in the toolkit (progress, spinner, image, overlays,
 ...) has no typed node yet. A `view()` may return a **raw wire dict**
 anywhere a node goes, mixed freely with nodes. Get the shape from
 `quadraui.wire`:

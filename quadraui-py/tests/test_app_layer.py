@@ -233,6 +233,70 @@ def test_list_without_selected_defaults_selected_idx_to_zero():
     assert wire["list"]["selected_idx"] == 0
 
 
+def test_list_selected_title_and_bordered_reach_the_payload_when_passed():
+    def view():
+        return List(
+            items=[],
+            id="t:list",
+            selected=2,
+            title={"spans": [{"text": "Files", "fg": None, "bg": None}]},
+            bordered=True,
+        )
+
+    app = App(20, 5, view=view)
+    payload = app._render()["list"]
+    assert payload["selected_idx"] == 2
+    assert payload["title"] == {"spans": [{"text": "Files", "fg": None, "bg": None}]}
+    assert payload["bordered"] is True
+
+
+def test_list_title_and_bordered_are_omitted_when_not_passed():
+    def view():
+        return List(items=[], id="t:list")
+
+    app = App(20, 5, view=view)
+    payload = app._render()["list"]
+    assert "title" not in payload
+    assert "bordered" not in payload
+
+
+def test_list_key_pressed_falls_through_to_on_event():
+    """A focus-scoped `{"List": [id, {"KeyPressed": ...}]}` is not one of
+    `List`'s own callback variants (`SelectionChanged`/`ItemDoubleClicked`/
+    `ItemActivated`), so it must still reach the global `on_event` escape
+    hatch rather than being silently swallowed."""
+    fallen_through = []
+
+    def view():
+        return List(items=[], id="t:list", on_select=lambda idx: None)
+
+    app = App(20, 5, view=view, on_event=lambda event: fallen_through.append(event))
+    # `ListViewEvent::KeyPressed` carries a plain string key, unlike the
+    # top-level `{"KeyPressed": {"key": {...}, ...}}` shape -- see
+    # `quadraui.wire.ListViewEvent`'s own `_KeyPressedStrPayload`.
+    app.push_event({"List": ["t:list", {"KeyPressed": {"key": "j", "modifiers": _NO_MODS}}]})
+    app.step()
+    assert len(fallen_through) == 1
+    widget_id, activation = fallen_through[0]["List"]
+    assert widget_id == "t:list"
+    assert activation == {"KeyPressed": {"key": "j", "modifiers": _NO_MODS}}
+
+
+def test_list_selection_changed_with_no_on_select_falls_through_to_on_event():
+    fallen_through = []
+
+    def view():
+        return List(items=[], id="t:list")
+
+    app = App(20, 5, view=view, on_event=lambda event: fallen_through.append(event))
+    app.push_event({"List": ["t:list", {"SelectionChanged": {"idx": 0}}]})
+    app.step()
+    assert len(fallen_through) == 1
+    widget_id, activation = fallen_through[0]["List"]
+    assert widget_id == "t:list"
+    assert activation == {"SelectionChanged": {"idx": 0}}
+
+
 def test_tabs_closed_dispatches_on_close_with_the_index():
     closed = []
 

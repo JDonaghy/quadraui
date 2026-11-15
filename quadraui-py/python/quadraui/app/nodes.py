@@ -396,9 +396,14 @@ def List(
     `ItemActivated` (Enter while a row holds the selection) -- the same
     "open this row" pairing `Table`'s own `on_activate` documents.
     `selected` is the row index to render as selected (defaults to `0`,
-    the same as the underlying `ListView` field it fills); the caller
-    still owns advancing it on `on_select`, the same uncontrolled-unless-
-    pinned shape `Tree`'s `selected_path` follows."""
+    the same as the underlying `ListView` field it fills). While
+    `selected_idx` stays `0`, the host owns and advances the cursor on its
+    own (clicks, `j`/`k`, arrow keys) -- the same uncontrolled-unless-pinned
+    shape `Tree`'s `selected_path` follows; pass a non-zero `selected` on
+    every render only to pin the cursor from app state, and once sent it
+    latches as controlled for this widget id and does not go back.
+    `KeyPressed`/`SelectionSet` on a `List` are not routed to either
+    callback and fall through to `on_event` instead."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
