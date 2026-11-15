@@ -1878,43 +1878,44 @@ mod native_surface_paint {
                         }
                     }
                     FieldKind::Button => {
+                        // A real button, painted through the shared
+                        // `button` chrome (fill/border/focus-ring at
+                        // `Style::button_radius`) instead of `<label>`
+                        // bracket glyphs — the TUI painter keeps the
+                        // brackets, which read as a terminal affordance
+                        // on a pixel canvas, not a GUI one.
                         let cap = label_text.clone();
-                        let total_w = label_w + 24.0;
+                        let button_style = Style::default();
+                        let metrics = button::ButtonMetrics::resolve(&button_style);
+                        let total_w =
+                            surface.surface_measure_text(&cap).0 + metrics.padding_x * 2.0;
                         // A standalone `Button`'s caption *is*
                         // `field.label` — unlike every other kind,
                         // there's no separate column-label/value split,
                         // so it doesn't participate in the shared
                         // control column: it keeps its own
-                        // content-sized `<label>` box, right-anchored
-                        // against the row's edge.
+                        // content-sized box, right-anchored against the
+                        // row's edge.
                         let ix = if no_label {
                             label_x
                         } else {
                             input_right - total_w
                         };
                         if no_label || ix > row_rect.x + 8.0 {
-                            let brk = if is_focused {
-                                theme.accent_fg
-                            } else {
-                                theme.muted_fg
-                            };
-                            let (_, h) = surface.surface_measure_text("<");
-                            let y = row_rect.y + (row_h - h) / 2.0;
-                            surface.surface_draw_text_run(Rect::new(ix, y, 12.0, h), "<", brk);
-                            let text_fg = if field.disabled {
-                                theme.muted_fg
-                            } else {
-                                field_fg
-                            };
-                            surface.surface_draw_text_run(
-                                Rect::new(ix + 12.0, y, label_w, h),
-                                &cap,
-                                text_fg,
-                            );
-                            surface.surface_draw_text_run(
-                                Rect::new(ix + 12.0 + label_w + 4.0, y, 12.0, h),
-                                ">",
-                                brk,
+                            let mut field_button = button::Button::new(field.id, cap);
+                            field_button.variant = button::ButtonVariant::Secondary;
+                            field_button.disabled = field.disabled;
+                            field_button.focused = is_focused;
+                            let rect =
+                                Rect::new(ix, row_rect.y + 2.0, total_w, (row_h - 4.0).max(1.0));
+                            button::native_surface_paint::paint(
+                                &field_button,
+                                surface,
+                                theme,
+                                rect,
+                                &button_style,
+                                false,
+                                false,
                             );
                         }
                     }
@@ -1990,23 +1991,49 @@ mod native_surface_paint {
                         options,
                         selected_idx,
                     } => {
+                        // A boxed field with a trailing chevron, like a
+                        // native `<select>` — not bare text next to a
+                        // floating glyph, so the control reads as
+                        // clickable even before its option list opens.
                         let chosen = options
                             .get(*selected_idx)
                             .map(plain_text)
                             .unwrap_or_default();
-                        let (cw, ch) = surface.surface_measure_text(&chosen);
-                        let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
-                        let ix = control_start;
                         if available > 0.0 {
-                            let ty = row_rect.y + (row_h - ch) / 2.0;
+                            let chevron = "\u{25BE}";
+                            let (chev_w, _) = surface.surface_measure_text(chevron);
+                            let natural_w = surface.surface_measure_text(&chosen).0
+                                + TEXT_BOX_PADDING * 2.0
+                                + chev_w
+                                + 4.0;
+                            let control_w = resolved_control_width.resolve(
+                                natural_w,
+                                available,
+                                min_control_width,
+                            );
+                            let box_w = control_w.max(TEXT_BOX_PADDING * 2.0 + chev_w);
+                            let box_rect = Rect::new(
+                                control_start,
+                                row_rect.y + 2.0,
+                                box_w,
+                                (row_h - 4.0).max(1.0),
+                            );
+                            surface.surface_stroke_rect(box_rect, theme.muted_fg, 1.0);
+                            let text_budget =
+                                (box_w - TEXT_BOX_PADDING * 2.0 - chev_w - 4.0).max(0.0);
+                            let (drawn_len, cw, ch) =
+                                clip_run_to_width(surface, &chosen, text_budget);
+                            let shown = &chosen[..drawn_len];
+                            let ty = box_rect.y + (box_rect.height - ch) / 2.0;
                             surface.surface_draw_text_run(
-                                Rect::new(ix, ty, cw, ch),
-                                &chosen,
+                                Rect::new(control_start + TEXT_BOX_PADDING, ty, cw, ch),
+                                shown,
                                 field_fg,
                             );
+                            let chev_x = box_rect.x + box_rect.width - TEXT_BOX_PADDING - chev_w;
                             surface.surface_draw_text_run(
-                                Rect::new(ix + cw + 4.0, ty, chev_w, ch),
-                                "\u{25BE}",
+                                Rect::new(chev_x, ty, chev_w, ch),
+                                chevron,
                                 theme.muted_fg,
                             );
                         }
@@ -2920,6 +2947,72 @@ mod native_surface_paint {
                 surface.text_runs.iter().any(|(_, t, _)| t == "Delete all"),
                 "the button label must still be painted through the shared \
                  Button path; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// A standalone `FieldKind::Button` paints through the shared
+        /// `button::native_surface_paint::paint` chrome — a filled box
+        /// carrying its caption — instead of `<label>` bracket glyphs.
+        #[test]
+        fn button_field_paints_through_shared_button_chrome_not_bracket_glyphs() {
+            let mut form = one_field_form("save", FieldKind::Button);
+            form.fields[0].label = StyledText::plain("Save");
+            let theme = Theme::default();
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.surface_bg),
+                "a plain (Secondary-variant) Button must fill through \
+                 the shared button chrome; fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Save"),
+                "the caption must still be painted; text runs were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                !surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t == "<" || t == ">"),
+                "no `<`/`>` bracket glyphs: text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// `FieldKind::Dropdown` paints a stroked box around its chosen
+        /// option and trailing chevron, instead of bare text next to a
+        /// floating glyph with no box.
+        #[test]
+        fn dropdown_field_paints_a_boxed_chevron_field() {
+            let mut form = one_field_form(
+                "theme-choice",
+                FieldKind::Dropdown {
+                    options: vec![StyledText::plain("Dark"), StyledText::plain("Light")],
+                    selected_idx: 0,
+                },
+            );
+            form.fields[0].label = StyledText::plain("Theme");
+            let theme = Theme::default();
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(
+                surface.strokes.iter().any(|(_, c, _)| *c == theme.muted_fg),
+                "the dropdown's value must be boxed with a stroked \
+                 rect; strokes were {:?}",
+                surface.strokes,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Dark"),
+                "the chosen option must still be painted; text runs \
+                 were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "\u{25BE}"),
+                "the chevron must still be painted; text runs were {:?}",
                 surface.text_runs,
             );
         }
