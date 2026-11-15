@@ -2264,6 +2264,13 @@ struct MacBootstrap {
     _idle_poll_timer: Retained<NSTimer>,
     _blink_target: Retained<super::caret_blink::QuadraBlinkTarget>,
     _blink_timer: Retained<NSTimer>,
+    /// `None` when `QUADRAUI_NO_SESSION_HINT` opted the one-shot
+    /// activation-hint check out — see
+    /// [`super::session_hint::install_session_hint_timer`]'s doc.
+    _session_hint: Option<(
+        Retained<super::session_hint::QuadraSessionHintTarget>,
+        Retained<NSTimer>,
+    )>,
     /// The `_window`-is-gone latch [`MacRunner::window_open`] reads —
     /// the same `Rc` the view sets from `windowWillClose:`. See
     /// [`WindowCloseFlag`]'s doc for why this is a latch rather than a
@@ -2568,6 +2575,12 @@ fn bootstrap<A: AppLogic + 'static>(
         ns_app.activateIgnoringOtherApps(true);
     }
 
+    // One-shot "did that actually work?" check — see
+    // `session_hint`'s module doc. Scheduled last, after the real
+    // activation attempt above, so its ~1.5s delay starts counting from
+    // as close to the real attempt as possible.
+    let session_hint = super::session_hint::install_session_hint_timer(mtm, window_title(&config));
+
     MacBootstrap {
         ns_app,
         _window: window,
@@ -2576,6 +2589,7 @@ fn bootstrap<A: AppLogic + 'static>(
         _idle_poll_timer,
         _blink_target,
         _blink_timer,
+        _session_hint: session_hint,
         window_closed,
     }
 }

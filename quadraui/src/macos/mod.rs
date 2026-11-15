@@ -107,6 +107,10 @@ mod run;
 #[doc(hidden)]
 pub mod scrollbar;
 pub mod services;
+// One-shot "app never activated" stderr diagnostic. `pub(crate)`, not
+// `pub`: only `run::run_with` calls into it, mirroring `caret_blink`'s
+// visibility above.
+pub(crate) mod session_hint;
 pub mod shell_runner;
 #[doc(hidden)]
 pub mod sidebar_panel;
