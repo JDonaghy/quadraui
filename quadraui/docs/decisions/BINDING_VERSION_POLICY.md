@@ -47,11 +47,6 @@ story at a glance, and a future extraction (per that policy's two options)
 inherits a version that already means something instead of starting from
 `0.1.0`.
 
-The minor-tracking rule applied to `quadraui-node/package.json` even while it
-still carried `"private": true` and had no npm release of its own, so there
-was no backlog of catch-up bumps waiting for publish day once that flag came
-off.
-
 Enforced by `scripts/release_decide.py check-binding-versions`, wired into
 `ci.yml`'s `changelog-version-check` job (the `develop` -> `main` promotion
 gate) alongside that job's existing `version`/`notes` steps: a crate minor

@@ -40,12 +40,15 @@ an optional dependency, matching the installing machine's platform:
 - **Linux (x86_64, glibc)** — `@quadraui/node-linux-x64-gnu`
 - **Windows (x86_64)** — `@quadraui/node-win32-x64-msvc`
 
-All three are headless/TUI builds — `startNative` raises `InternalError`
+All three are headless/TUI builds — `startNative` raises `NoNativeBackendError`
 rather than opening a real window on any of them, the same as building from
 source with no native-window feature enabled. A different platform (Linux
-arm64, musl, etc.) has no prebuilt binary and needs a Rust toolchain to
-build from source: clone the repo, `cd quadraui-node`, `npm install`, `npm
-run build`.
+arm64, musl, etc.) has no prebuilt binary; `npm install` still succeeds
+there (optional dependencies that don't match the install platform are
+silently skipped) but the generated loader then fails at runtime with
+"Failed to load native binding" — that platform needs a Rust toolchain to
+build from source instead: clone the repo, `cd quadraui-node`, `npm install`,
+`npm run build`.
 
 ## Building and testing an app
 

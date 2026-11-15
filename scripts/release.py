@@ -83,12 +83,19 @@ the next promotion's merge-base. When `quadraui-py`'s current version has no
 `py-v<version>` tag yet, `promote` also prints the `git tag py-v<version>` +
 `git push` step to run after the promotion merges — the trigger that
 publishes the wheel to PyPI — so one `--with-py` release flows crate and
-wheel through together.
+wheel through together. Independently of that, when `quadraui-node`'s
+current version (`quadraui-node/package.json`) has no `node-v<version>` tag
+yet, `promote` also prints the matching `git tag node-v<version>` + `git
+push` step — the trigger that publishes `@quadraui/node` to npm. The two
+checks are unconditional (no `--with-node` flag): `quadraui-node/package.json`
+always carries a version per `BINDING_VERSION_POLICY.md`, so `promote` can
+always tell whether it is already tagged.
 """
 from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import re
 import subprocess
 import sys
@@ -311,6 +318,22 @@ def set_version_line(text: str, new_version: str, *, label: str) -> str:
     if count != 1:
         raise ReleaseError(f'could not find a `version = "..."` line in {label}')
     return new_text
+
+
+def read_package_json_version(text: str, *, label: str) -> str:
+    """Return a `package.json` document's top-level `"version"` field.
+
+    Mirrors `scripts/release_decide.py`'s `package_json_version`, but raises
+    `ReleaseError` instead of returning `None` — `promote` has no "report,
+    don't guess" caller to hand a missing/malformed version back to."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"{label} is not valid JSON: {exc}") from exc
+    value = data.get("version") if isinstance(data, dict) else None
+    if not isinstance(value, str):
+        raise ReleaseError(f'could not find a string "version" field in {label}')
+    return value
 
 
 def read_package_version(cargo_toml_text: str) -> str:
@@ -765,6 +788,37 @@ def cmd_promote(args: argparse.Namespace) -> int:
             print(
                 f"\nThe {tag} push triggers `quadraui-py-release.yml`, which asserts "
                 "the tag matches quadraui-py/pyproject.toml before building."
+            )
+
+    # npm lockstep, unconditional (no flag gates it): if quadraui-node's
+    # current version has no `node-v<version>` tag yet, this promotion also
+    # carries an unreleased npm package — print the tag step that
+    # `quadraui-node-release.yml` fires on.
+    node_package_json_path = repo_dir / "quadraui-node" / "package.json"
+    if node_package_json_path.exists():
+        try:
+            node_version = read_package_json_version(
+                node_package_json_path.read_text(encoding="utf-8"),
+                label="quadraui-node/package.json",
+            )
+        except ReleaseError as exc:
+            print(f"::error::{exc}", file=sys.stderr)
+            return 1
+        tag = f"node-v{node_version}"
+        existing_tag = run_git(["tag", "-l", tag], repo_dir).stdout.strip()
+        if not existing_tag:
+            print(
+                f"\nquadraui-node is at {node_version} with no {tag} tag yet, so "
+                "this promotion also carries an unpublished npm package. After "
+                "the promotion merges to `main`, publish it to npm:\n"
+            )
+            print("  git fetch origin main")
+            print(f"  git tag {tag} origin/main")
+            print(f"  git push origin {tag}")
+            print(
+                f"\nThe {tag} push triggers `quadraui-node-release.yml`, which "
+                "asserts the tag matches quadraui-node/package.json before "
+                "building."
             )
     return 0
 

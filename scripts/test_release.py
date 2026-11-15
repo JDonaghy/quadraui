@@ -14,6 +14,7 @@ and runs `release.py` against it as a subprocess — exercising the real
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -90,10 +91,13 @@ class ReleaseFixtureRepo:
         *,
         with_py: bool = False,
         py_version: str = "0.1.0",
+        with_node: bool = False,
+        node_version: str = "0.1.0",
     ):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.with_py = with_py
+        self.with_node = with_node
         (self.root / "quadraui" / "src").mkdir(parents=True)
         members = '"quadraui"' + (', "quadraui-py"' if with_py else "")
         (self.root / "Cargo.toml").write_text(
@@ -120,6 +124,11 @@ class ReleaseFixtureRepo:
                 "[project]\n"
                 'name = "quadraui"\n'
                 f'version = "{py_version}"\n'
+            )
+        if with_node:
+            (self.root / "quadraui-node").mkdir(parents=True)
+            (self.root / "quadraui-node" / "package.json").write_text(
+                json.dumps({"name": "@quadraui/node", "version": node_version}) + "\n"
             )
         (self.root / "quadraui" / "src" / "lib.rs").write_text(
             "//! ## Status\n"
@@ -183,6 +192,9 @@ class ReleaseFixtureRepo:
 
     def py_cargo_toml_text(self) -> str:
         return (self.root / "quadraui-py" / "Cargo.toml").read_text(encoding="utf-8")
+
+    def node_package_json_text(self) -> str:
+        return (self.root / "quadraui-node" / "package.json").read_text(encoding="utf-8")
 
     def current_branch(self) -> str:
         return run_git(["branch", "--show-current"], self.root).stdout.strip()
@@ -785,6 +797,31 @@ class PromoteCommandTests(unittest.TestCase):
             result = run_release(["promote", "--repo-dir", str(repo.root)], repo.root)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("py-v", result.stdout)
+
+    def test_promote_prints_node_tag_when_package_untagged(self):
+        with ReleaseFixtureRepo(with_node=True, node_version="0.2.0") as repo:
+            result = run_release(["promote", "--repo-dir", str(repo.root)], repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Crate promotion commands still printed.
+            self.assertIn("gh pr create --base main --head develop", result.stdout)
+            # Plus the npm package tag step, since no node-v0.2.0 tag exists yet.
+            self.assertIn("git tag node-v0.2.0 origin/main", result.stdout)
+            self.assertIn("git push origin node-v0.2.0", result.stdout)
+
+    def test_promote_omits_node_tag_when_package_already_tagged(self):
+        with ReleaseFixtureRepo(with_node=True, node_version="0.2.0") as repo:
+            run_git(["tag", "node-v0.2.0"], repo.root)
+            result = run_release(["promote", "--repo-dir", str(repo.root)], repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("gh pr create --base main --head develop", result.stdout)
+            # npm package already released at this version — no tag step.
+            self.assertNotIn("node-v0.2.0", result.stdout)
+
+    def test_promote_no_node_tag_without_package(self):
+        with ReleaseFixtureRepo(with_node=False) as repo:
+            result = run_release(["promote", "--repo-dir", str(repo.root)], repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("node-v", result.stdout)
 
 
 if __name__ == "__main__":
