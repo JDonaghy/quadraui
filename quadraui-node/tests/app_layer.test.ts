@@ -1,6 +1,6 @@
 // Unit tests for `js/app/`: id auto-assignment stability across re-render,
-// callback dispatch (`Tree`, `Table`, `Tabs`, `Button`), component state
-// survival, and redraw-on-mutation -- the four properties the app layer's
+// callback dispatch (`Tree`, `Table`, `List`, `Tabs`, `Button`), component
+// state survival, and redraw-on-mutation -- the four properties the app layer's
 // own module doc (`js/app/index.ts`) promises and `examples/file_manager_app.ts`
 // relies on wholesale. Mirrors `quadraui-py/tests/test_app_layer.py` 1:1.
 //
@@ -13,6 +13,7 @@ const {
   Button,
   Column,
   Component,
+  List,
   SidebarPanel,
   Split,
   StatusBar,
@@ -59,10 +60,11 @@ test("every id-bearing node constructor accepts an omitted id", () => {
     view: () => {
       const tree = Tree([], { onActivate: () => {} });
       const table = Table([], []);
+      const lst = List([], { onSelect: () => {} });
       const status = StatusBar([], []);
       const text = TextDisplay([]);
       const tabs = Tabs([Tab(text, { title: "one" })]);
-      const panel = SidebarPanel(Column([tree, table, status, tabs]));
+      const panel = SidebarPanel(Column([tree, table, lst, status, tabs]));
       return Split(panel, text);
     },
   });
@@ -143,6 +145,108 @@ test("table row double-clicked dispatches onActivate, not onSelect", () => {
   app.pushEvent({ DataTable: ["t:grid", { RowDoubleClicked: { idx: 0 } }] });
   app.step();
   assert.deepEqual(activated, [0]);
+});
+
+test("list selection changed dispatches onSelect, not onActivate", () => {
+  const selected: unknown[] = [];
+  const activated: unknown[] = [];
+
+  const app = new App(20, 5, {
+    view: () =>
+      List([{ text: { spans: [{ text: "a", fg: null, bg: null }] } }], {
+        id: "t:list",
+        onSelect: (idx: unknown) => selected.push(idx),
+        onActivate: (idx: unknown) => activated.push(idx),
+      }),
+  });
+
+  app.pushEvent({ List: ["t:list", { SelectionChanged: { idx: 0 } }] });
+  app.step();
+  assert.deepEqual(selected, [0]);
+  assert.deepEqual(activated, []);
+});
+
+test("list item double-clicked and item activated both dispatch onActivate", () => {
+  const activated: unknown[] = [];
+
+  const app = new App(20, 5, {
+    view: () =>
+      List([{ text: { spans: [{ text: "a", fg: null, bg: null }] } }], {
+        id: "t:list",
+        onActivate: (idx: unknown) => activated.push(idx),
+      }),
+  });
+
+  app.pushEvent({ List: ["t:list", { ItemDoubleClicked: { idx: 0 } }] });
+  app.step();
+  assert.deepEqual(activated, [0]);
+
+  app.pushEvent({ List: ["t:list", { ItemActivated: { idx: 0 } }] });
+  app.step();
+  assert.deepEqual(activated, [0, 0]);
+});
+
+test("list without selected defaults selected_idx to zero", () => {
+  const app = new App(20, 5, { view: () => List([], { id: "t:list" }) });
+  const wire = app._render() as Record<string, Record<string, unknown>>;
+  assert.equal(wire.list.selected_idx, 0);
+});
+
+test("list selected/title/bordered reach the payload when passed", () => {
+  const app = new App(20, 5, {
+    view: () =>
+      List([], {
+        id: "t:list",
+        selected: 2,
+        title: { spans: [{ text: "Files", fg: null, bg: null }] },
+        bordered: true,
+      }),
+  });
+  const payload = (app._render() as Record<string, Record<string, unknown>>).list;
+  assert.equal(payload.selected_idx, 2);
+  assert.deepEqual(payload.title, { spans: [{ text: "Files", fg: null, bg: null }] });
+  assert.equal(payload.bordered, true);
+});
+
+test("list title and bordered are omitted when not passed", () => {
+  const app = new App(20, 5, { view: () => List([], { id: "t:list" }) });
+  const payload = (app._render() as Record<string, Record<string, unknown>>).list;
+  assert.ok(!("title" in payload));
+  assert.ok(!("bordered" in payload));
+});
+
+test("list KeyPressed falls through to onEvent", () => {
+  // A focus-scoped `{List: [id, {KeyPressed: ...}]}` is not one of `List`'s
+  // own callback variants (`SelectionChanged`/`ItemDoubleClicked`/
+  // `ItemActivated`), so it must still reach the global `onEvent` escape
+  // hatch rather than being silently swallowed.
+  const fallenThrough: unknown[] = [];
+
+  const app = new App(20, 5, {
+    view: () => List([], { id: "t:list", onSelect: () => {} }),
+    onEvent: (event: unknown) => fallenThrough.push(event),
+  });
+  app.pushEvent({ List: ["t:list", { KeyPressed: { key: "j", modifiers: NO_MODS } }] });
+  app.step();
+  assert.equal(fallenThrough.length, 1);
+  const [widgetId, activation] = (fallenThrough[0] as Record<string, unknown>).List as [string, unknown];
+  assert.equal(widgetId, "t:list");
+  assert.deepEqual(activation, { KeyPressed: { key: "j", modifiers: NO_MODS } });
+});
+
+test("list SelectionChanged with no onSelect falls through to onEvent", () => {
+  const fallenThrough: unknown[] = [];
+
+  const app = new App(20, 5, {
+    view: () => List([], { id: "t:list" }),
+    onEvent: (event: unknown) => fallenThrough.push(event),
+  });
+  app.pushEvent({ List: ["t:list", { SelectionChanged: { idx: 0 } }] });
+  app.step();
+  assert.equal(fallenThrough.length, 1);
+  const [widgetId, activation] = (fallenThrough[0] as Record<string, unknown>).List as [string, unknown];
+  assert.equal(widgetId, "t:list");
+  assert.deepEqual(activation, { SelectionChanged: { idx: 0 } });
 });
 
 test("tabs closed dispatches onClose with the index", () => {

@@ -65,6 +65,7 @@ import type {
   ButtonOptions,
   ColumnOptions,
   ComponentLike,
+  ListOptions,
   Node as QuiNode,
   Renderable,
   RowOptions,
@@ -80,6 +81,7 @@ import type {
 import type {
   ColumnDescriptor,
   DataRowDescriptor,
+  ListItemDescriptor,
   StatusBarSegment,
   TextDisplayLineDescriptor,
   TreeRowDescriptor,
@@ -104,6 +106,7 @@ const nodeConstructors = require("./app/nodes.ts") as {
   Tabs(tabs: TabEntry[], options?: TabsOptions): QuiNode;
   Tree(rows: TreeRowDescriptor[], options?: TreeOptions): QuiNode;
   Table(columns: ColumnDescriptor[], rows: DataRowDescriptor[], options?: TableOptions): QuiNode;
+  List(items: ListItemDescriptor[], options?: ListOptions): QuiNode;
   StatusBar(leftSegments: StatusBarSegment[], rightSegments: StatusBarSegment[], options?: StatusBarOptions): QuiNode;
   TextDisplay(lines: TextDisplayLineDescriptor[], options?: TextDisplayOptions): QuiNode;
   Button(label: string, options?: ButtonOptions): QuiNode;
@@ -156,6 +159,10 @@ export interface TableProps extends TableOptions {
   rows: DataRowDescriptor[];
 }
 
+export interface ListProps extends ListOptions {
+  items: ListItemDescriptor[];
+}
+
 export interface StatusBarProps extends StatusBarOptions {
   leftSegments: StatusBarSegment[];
   rightSegments: StatusBarSegment[];
@@ -188,6 +195,7 @@ export namespace JSX {
     tabs: TabsProps;
     tree: TreeProps;
     table: TableProps;
+    list: ListProps;
     statusBar: StatusBarProps;
     textDisplay: TextDisplayProps;
     button: ButtonProps;
@@ -288,6 +296,10 @@ const INTRINSICS: Record<IntrinsicTag, IntrinsicBuilder> = {
   table: (props) => {
     const { columns, rows, ...options } = props as unknown as TableProps;
     return nodeConstructors.Table(columns, rows, options);
+  },
+  list: (props) => {
+    const { items, ...options } = props as unknown as ListProps;
+    return nodeConstructors.List(items, options);
   },
   statusBar: (props) => {
     const { leftSegments, rightSegments, ...options } = props as unknown as StatusBarProps;

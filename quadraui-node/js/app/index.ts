@@ -106,6 +106,7 @@ exports.Tab = nodes.Tab;
 exports.Tabs = nodes.Tabs;
 exports.Tree = nodes.Tree;
 exports.Table = nodes.Table;
+exports.List = nodes.List;
 exports.StatusBar = nodes.StatusBar;
 exports.TextDisplay = nodes.TextDisplay;
 exports.Button = nodes.Button;
@@ -122,6 +123,7 @@ export type {
   TabsOptions,
   TreeOptions,
   TableOptions,
+  ListOptions,
   StatusBarOptions,
   TextDisplayOptions,
   ButtonOptions,

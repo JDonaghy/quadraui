@@ -78,6 +78,7 @@ function stubNodeConstructors(): Record<string, (...args: unknown[]) => unknown>
     Tabs: stub("Tabs"),
     Tree: stub("Tree"),
     Table: stub("Table"),
+    List: stub("List"),
     StatusBar: stub("StatusBar"),
     TextDisplay: stub("TextDisplay"),
     Button: stub("Button"),
@@ -157,6 +158,15 @@ test("<tree> forwards its own leaf props with no children slot to unpack", () =>
   const result = jsx("tree", { rows, id: "fm:tree", hasFocus: true });
   assert.equal(result.__call, "Tree");
   assert.deepEqual(result.args, [rows, { id: "fm:tree", hasFocus: true }]);
+});
+
+test("<list> forwards its own leaf props with no children slot to unpack", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const items = [{ text: { spans: [] } }];
+  const result = jsx("list", { items, id: "fm:list", hasFocus: true });
+  assert.equal(result.__call, "List");
+  assert.deepEqual(result.args, [items, { id: "fm:list", hasFocus: true }]);
 });
 
 test("<button> splits its required label out of the options bag", () => {

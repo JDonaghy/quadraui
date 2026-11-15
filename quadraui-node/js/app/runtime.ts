@@ -238,6 +238,11 @@ const CONTAINER_EVENT_MAP: Record<
     RowSelected: ["on_select", (p) => [p.idx]],
     HeaderClicked: ["on_header_click", (p) => [p.col]],
   },
+  List: {
+    SelectionChanged: ["on_select", (p) => [p.idx]],
+    ItemDoubleClicked: ["on_activate", (p) => [p.idx]],
+    ItemActivated: ["on_activate", (p) => [p.idx]],
+  },
   TabBar: {
     TabClosed: ["on_close", (p) => [p.index]],
     TabActivated: ["on_activate", (p) => [p.index]],

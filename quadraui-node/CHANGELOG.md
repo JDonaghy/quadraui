@@ -18,6 +18,11 @@ fragment step for this package (that mechanism, and
 
 ### Added
 
+- `List(items, options)` (and the `<list>` JSX intrinsic): a typed node for
+  a `ListViewDescriptor` leaf, routing `SelectionChanged` to `onSelect` and
+  either `ItemDoubleClicked` or `ItemActivated` to `onActivate` -- no raw
+  wire object or `"List"` branch in `onEvent` needed to build a selectable
+  list.
 - `README.md` now documents install (npm vs. from source), build and run
   steps, the CommonJS-vs-ESM `.ts`/`require` constraint the examples and
   tests rely on, and this `CHANGELOG.md` itself.
