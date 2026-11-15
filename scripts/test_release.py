@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release  # noqa: E402
 
 RELEASE_PY = str(Path(release.__file__))
+RELEASE_DECIDE_PY = str(Path(release.__file__).parent / "release_decide.py")
 
 CHANGELOG_TEMPLATE = """\
 # Changelog
@@ -76,6 +77,19 @@ def run_release(
     )
 
 
+def run_release_decide(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    """Run the real `release_decide.py` gate as a subprocess -- the same
+    `check-binding-versions` check `ci.yml`'s `changelog-version-check` job
+    runs on a `develop` -> `main` promotion PR."""
+    return subprocess.run(
+        [sys.executable, RELEASE_DECIDE_PY, *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=_hermetic_git_env(),
+    )
+
+
 class ReleaseFixtureRepo:
     """A git repo with a minimal cargo workspace, mirroring quadraui's shape.
 
@@ -93,13 +107,20 @@ class ReleaseFixtureRepo:
         py_version: str = "0.1.0",
         with_node: bool = False,
         node_version: str = "0.1.0",
+        with_binding_core: bool = False,
+        binding_core_version: str = "0.1.0",
     ):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.with_py = with_py
         self.with_node = with_node
+        self.with_binding_core = with_binding_core
         (self.root / "quadraui" / "src").mkdir(parents=True)
-        members = '"quadraui"' + (', "quadraui-py"' if with_py else "")
+        members = '"quadraui"'
+        if with_py:
+            members += ', "quadraui-py"'
+        if with_binding_core:
+            members += ', "quadraui-binding-core"'
         (self.root / "Cargo.toml").write_text(
             f'[workspace]\nmembers = [{members}]\nresolver = "2"\n'
         )
@@ -129,6 +150,17 @@ class ReleaseFixtureRepo:
             (self.root / "quadraui-node").mkdir(parents=True)
             (self.root / "quadraui-node" / "package.json").write_text(
                 json.dumps({"name": "@quadraui/node", "version": node_version}) + "\n"
+            )
+        if with_binding_core:
+            (self.root / "quadraui-binding-core" / "src").mkdir(parents=True)
+            (self.root / "quadraui-binding-core" / "Cargo.toml").write_text(
+                "[package]\n"
+                'name = "quadraui-binding-core"\n'
+                f'version = "{binding_core_version}"\n'
+                'edition = "2021"\n'
+            )
+            (self.root / "quadraui-binding-core" / "src" / "lib.rs").write_text(
+                "pub fn b() {}\n"
             )
         (self.root / "quadraui" / "src" / "lib.rs").write_text(
             "//! ## Status\n"
@@ -195,6 +227,11 @@ class ReleaseFixtureRepo:
 
     def node_package_json_text(self) -> str:
         return (self.root / "quadraui-node" / "package.json").read_text(encoding="utf-8")
+
+    def binding_core_cargo_toml_text(self) -> str:
+        return (self.root / "quadraui-binding-core" / "Cargo.toml").read_text(
+            encoding="utf-8"
+        )
 
     def current_branch(self) -> str:
         return run_git(["branch", "--show-current"], self.root).stdout.strip()
@@ -752,6 +789,101 @@ class PrepareWithPyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("quadraui-py/pyproject.toml", result.stderr)
             self.assertEqual(repo.current_branch(), "develop")
+
+
+class PrepareBindingVersionTrackingTests(unittest.TestCase):
+    """`prepare` keeping `quadraui-binding-core`/`quadraui-node` in step with
+    the crate's minor, unconditionally -- the gap #2486 found: `--with-py`
+    bumped the crate and `quadraui-py` but left these two behind, so
+    `release_decide.py check-binding-versions` failed on the v0.11.0
+    promotion (fixed by hand afterwards)."""
+
+    def test_prepare_bumps_binding_core_and_node_on_minor_release(self):
+        with ReleaseFixtureRepo(with_node=True, with_binding_core=True) as repo:
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('version = "0.2.0"', repo.cargo_toml_text())
+            self.assertIn('"version": "0.2.0"', repo.node_package_json_text())
+            self.assertIn('version = "0.2.0"', repo.binding_core_cargo_toml_text())
+
+            # The lock carries binding-core's new version too (it's a
+            # workspace member); quadraui-node's `package.json` isn't a
+            # Cargo manifest, so it never touches the lock.
+            lock = repo.lock_text()
+            self.assertIn('name = "quadraui-binding-core"', lock)
+            self.assertGreaterEqual(lock.count('version = "0.2.0"'), 2)
+
+            self.assertIn("Also bumped", result.stdout)
+            self.assertIn("quadraui-binding-core/Cargo.toml", result.stdout)
+            self.assertIn("quadraui-node/package.json", result.stdout)
+
+            commit_subject = run_git(
+                ["log", "-1", "--format=%s"], repo.root
+            ).stdout.strip()
+            # Only the crate's own release-commit shape is asserted here --
+            # the binding bumps ride along in the same commit regardless of
+            # subject wording.
+            self.assertIn("Release v0.2.0", commit_subject)
+
+    def test_prepare_leaves_already_tracking_binding_untouched(self):
+        with ReleaseFixtureRepo(
+            with_node=True,
+            node_version="0.1.7",
+            with_binding_core=True,
+            binding_core_version="0.1.3",
+        ) as repo:
+            result = run_release(
+                ["prepare", "0.1.9", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Same minor (0.1) before and after -- patch independence means
+            # neither binding's own patch number is disturbed.
+            self.assertIn('"version": "0.1.7"', repo.node_package_json_text())
+            self.assertIn('version = "0.1.3"', repo.binding_core_cargo_toml_text())
+            self.assertNotIn("Also bumped", result.stdout)
+
+    def test_prepare_skips_missing_binding_manifests(self):
+        with ReleaseFixtureRepo() as repo:
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("Also bumped", result.stdout)
+
+    def test_with_py_minor_release_leaves_check_binding_versions_passing(self):
+        """The acceptance scenario: `prepare X.Y.0 --with-py` on a minor
+        release must leave every binding manifest's minor tracking the
+        crate's, so the real `check-binding-versions` gate passes."""
+        with ReleaseFixtureRepo(
+            with_py=True,
+            py_version="0.1.0",
+            with_node=True,
+            node_version="0.1.0",
+            with_binding_core=True,
+            binding_core_version="0.1.0",
+        ) as repo:
+            result = run_release(
+                [
+                    "prepare", "0.2.0",
+                    "--repo-dir", str(repo.root),
+                    "--date", "2026-10-11",
+                    "--with-py",
+                ],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            decide_result = run_release_decide(
+                ["check-binding-versions", "--repo-dir", str(repo.root)], repo.root
+            )
+            self.assertEqual(
+                decide_result.returncode, 0, decide_result.stderr
+            )
 
 
 class PromoteCommandTests(unittest.TestCase):

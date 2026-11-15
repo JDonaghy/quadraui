@@ -51,8 +51,17 @@ Two subcommands:
      above it;
   9. deletes every fragment file `changelog.d/*.md` (except `README.md`)
      it just assembled;
-  10. commits the five version-string files plus the deleted fragments;
-  11. prints the `git push` and `gh pr create --base develop` commands for
+  10. unconditionally (no flag) bumps `quadraui-binding-core/Cargo.toml`'s
+      `[package] version` and `quadraui-node/package.json`'s `"version"` to
+      the same `X.Y.Z`, but only when each one's own minor doesn't already
+      match `X.Y` — leaving a binding's independent patch number alone
+      otherwise. `BINDING_VERSION_POLICY.md` requires every binding's minor
+      to track the crate's at all times, and `release_decide.py
+      check-binding-versions` enforces it on every `develop` -> `main`
+      promotion regardless of which `prepare` flags produced that
+      promotion's bump commit, so this step is not gated behind `--with-py`;
+  11. commits the version-string files plus the deleted fragments;
+  12. prints the `git push` and `gh pr create --base develop` commands for
       a human to run.
 
 `--with-py` additionally releases the `quadraui` PyPI wheel (`quadraui-py`)
@@ -344,6 +353,26 @@ def set_package_version(cargo_toml_text: str, new_version: str) -> str:
     return set_version_line(cargo_toml_text, new_version, label="quadraui/Cargo.toml")
 
 
+def set_package_json_version(text: str, new_version: str, *, label: str) -> str:
+    """Rewrite a `package.json` document's top-level `"version"` field to
+    `new_version` in place, by regex rather than a `json.loads`/`json.dumps`
+    round-trip -- so every other field (key order, indentation) is left
+    byte-for-byte untouched. Mirrors `set_version_line`'s TOML counterpart;
+    pairs with `read_package_json_version` above."""
+    pattern = re.compile(r'("version"\s*:\s*)"[^"]*"')
+    new_text, count = pattern.subn(rf'\1"{new_version}"', text, count=1)
+    if count != 1:
+        raise ReleaseError(f'could not find a "version" field in {label}')
+    return new_text
+
+
+def minor_pair(version: str) -> tuple[int, int]:
+    """`(major, minor)` of an `X.Y.Z` version string -- what
+    `BINDING_VERSION_POLICY.md`'s minor-tracking comparison is keyed on."""
+    major, minor, _ = parse_version(version)
+    return (major, minor)
+
+
 def pre_1_0_status_string(version: str) -> str:
     """The `` `X.Y.x` `` pre-1.0 status marker for `version`, e.g. "0.3.1"
     -> "0.3.x". Mirrors `tests/readme_truth.rs`'s `major_minor_x()`."""
@@ -546,6 +575,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     lib_rs_path = repo_dir / "quadraui" / "src" / "lib.rs"
     py_pyproject_path = repo_dir / "quadraui-py" / "pyproject.toml"
     py_cargo_toml_path = repo_dir / "quadraui-py" / "Cargo.toml"
+    binding_core_cargo_toml_path = repo_dir / "quadraui-binding-core" / "Cargo.toml"
+    node_package_json_path = repo_dir / "quadraui-node" / "package.json"
 
     try:
         if not git_is_clean(repo_dir):
@@ -647,6 +678,54 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             )
             lock_packages = ("quadraui", "quadraui-py")
 
+        # Unconditional (no flag gates this, unlike quadraui-py above):
+        # BINDING_VERSION_POLICY.md requires every binding's minor to track
+        # the crate's at all times, not just on a release that also ships
+        # that binding, and `release_decide.py check-binding-versions`
+        # enforces it on every `develop` -> `main` promotion regardless of
+        # which `prepare` flags produced that promotion's bump commit. Only
+        # touch a binding manifest whose minor actually needs to move —
+        # leave it alone (and its independent patch number) when its minor
+        # already matches the crate's new minor. Skip a manifest that
+        # doesn't exist in this checkout (mirrors `cmd_promote`'s own
+        # `.exists()` guards for the same two files).
+        target_minor = minor_pair(args.version)
+
+        bump_binding_core = False
+        if binding_core_cargo_toml_path.exists():
+            binding_core_text = binding_core_cargo_toml_path.read_text(encoding="utf-8")
+            binding_core_current = read_version_line(
+                binding_core_text, label="quadraui-binding-core/Cargo.toml"
+            )
+            bump_binding_core = minor_pair(binding_core_current) != target_minor
+            if bump_binding_core:
+                binding_core_cargo_toml_path.write_text(
+                    set_version_line(
+                        binding_core_text,
+                        args.version,
+                        label="quadraui-binding-core/Cargo.toml",
+                    ),
+                    encoding="utf-8",
+                )
+                lock_packages = (*lock_packages, "quadraui-binding-core")
+
+        bump_node = False
+        if node_package_json_path.exists():
+            node_package_json_text = node_package_json_path.read_text(encoding="utf-8")
+            node_current = read_package_json_version(
+                node_package_json_text, label="quadraui-node/package.json"
+            )
+            bump_node = minor_pair(node_current) != target_minor
+            if bump_node:
+                node_package_json_path.write_text(
+                    set_package_json_version(
+                        node_package_json_text,
+                        args.version,
+                        label="quadraui-node/package.json",
+                    ),
+                    encoding="utf-8",
+                )
+
         refresh_lock(repo_dir, lock_packages)
         verify_lock_diff_is_version_lines_only(repo_dir)
 
@@ -692,6 +771,10 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         ]
         if args.with_py:
             paths_to_add += ["quadraui-py/pyproject.toml", "quadraui-py/Cargo.toml"]
+        if bump_binding_core:
+            paths_to_add.append("quadraui-binding-core/Cargo.toml")
+        if bump_node:
+            paths_to_add.append("quadraui-node/package.json")
         run_git(["add", *paths_to_add], repo_dir)
 
         commit_subject = (
@@ -730,6 +813,20 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             f"\nThis release also bumps quadraui-py to {args.version}. After the "
             f"develop -> main promotion merges, `promote` will print the "
             f"`py-v{args.version}` tag step that publishes the wheel to PyPI."
+        )
+    bumped_bindings = [
+        name
+        for name, bumped in (
+            ("quadraui-binding-core/Cargo.toml", bump_binding_core),
+            ("quadraui-node/package.json", bump_node),
+        )
+        if bumped
+    ]
+    if bumped_bindings:
+        print(
+            f"\nAlso bumped {' and '.join(bumped_bindings)} to {args.version} to "
+            "keep their minor in step with the crate's, per "
+            "quadraui/docs/decisions/BINDING_VERSION_POLICY.md."
         )
     return 0
 
