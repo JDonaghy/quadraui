@@ -95,9 +95,56 @@ jobs:
           path: quadraui-py/dist/*.tar.gz
           if-no-files-found: error
 
+  verify-wheel:
+    name: Install the built wheel into a clean venv and verify it
+    # `quadraui-py-wheels.yml`'s own build job already imports `quadraui`
+    # right after building each OS's wheel, so a wheel that can't load at
+    # all never gets this far. This job runs once, against the Linux
+    # wheel only, and checks the three things that job doesn't: the
+    # `quadraui.asyncio` submodule actually resolves (not just the `aio`
+    # attribute alias -- see `python/quadraui/__init__.py`'s own comment
+    # on why those are different import paths), `AGENTS.md` made it into
+    # the wheel next to the compiled module, and the installed
+    # `__version__` matches the tag this release is cutting.
+    needs: [check-version, wheels]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download the Linux wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: quadraui-py-wheel-ubuntu-latest
+          path: dist
+      - name: Install into a clean venv and verify contents
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          python -m venv /tmp/quadraui-py-release-check
+          PYTHON=/tmp/quadraui-py-release-check/bin/python
+          "$PYTHON" -m pip install --no-index --find-links dist quadraui
+          "$PYTHON" -c "
+          import os
+          import quadraui
+          import quadraui.asyncio
+
+          package_dir = os.path.dirname(quadraui.__file__)
+          agents_md = os.path.join(package_dir, 'AGENTS.md')
+          assert os.path.isfile(agents_md), f'AGENTS.md missing from wheel: {agents_md}'
+
+          expected = os.environ['EXPECTED_VERSION']
+          assert quadraui.__version__ == expected, (
+              f'quadraui.__version__ {quadraui.__version__!r} != expected {expected!r}'
+          )
+          print(f'quadraui {quadraui.__version__} verified at {package_dir}')
+          "
+
   publish:
     name: Publish to PyPI
-    needs: [wheels, sdist]
+    needs: [wheels, sdist, verify-wheel]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15

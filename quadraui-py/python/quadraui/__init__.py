@@ -122,9 +122,15 @@ these take effect immediately and are replayed onto a real backend a later
 ``SystemThemeChanged`` event by recording it and calling ``set_theme``
 once ``step``/``run`` returns (not from inside the handler itself -- the
 same restriction as mutating any other ``QuiApp`` state mid-callback).
+
+``quadraui.__version__`` reports the installed distribution's version (read
+from the wheel's own packaging metadata), the same string that appears in
+``pyproject.toml``'s ``[project] version`` at release time.
 """
 
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _metadata_version
 
 from . import aio as asyncio
 
@@ -169,8 +175,25 @@ from ._quadraui import (
     set_app_identifier,
 )
 
+try:
+    # Reads the version PyPI's own installer metadata recorded for this
+    # distribution -- the wheel's `quadraui-<version>.dist-info/`, written
+    # from `pyproject.toml`'s `[project] version` at build time -- rather
+    # than hardcoding a second copy of the version string here that could
+    # drift from the one that actually got published.
+    __version__ = _metadata_version("quadraui")
+except PackageNotFoundError:
+    # `python/quadraui/` imported straight off a source checkout with no
+    # `pip install`/`maturin develop` run first (no `dist-info` to read)
+    # -- e.g. a doctest runner pointed at this tree directly. Not the
+    # normal path; every CI job and every documented install command goes
+    # through `maturin develop`/`pip install`, which both write the
+    # `dist-info` this `try` is for.
+    __version__ = "0+unknown"
+
 __all__ = [
     "asyncio",
+    "__version__",
     "QuiApp",
     "QuiAppWaker",
     "QuiShellApp",
