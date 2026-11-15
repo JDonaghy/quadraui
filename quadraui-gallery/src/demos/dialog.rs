@@ -179,7 +179,17 @@ impl DialogDemo {
             .max(char_w);
         let title_height = lh;
         let body_height = lh * dialog.body.len() as f32;
-        let button_row_height = lh;
+        // On a pixel backend (`lh > 1.0`), size the button row at
+        // `Style::control_height` — the same fixed-pixel row
+        // `MessageDialogController::layout` sizes its own OK/Cancel row
+        // at, via `Dialog::measure_generic_with_style`'s `is_pixel`
+        // split. TUI's one-cell row (`lh == 1.0`) is unaffected.
+        let is_pixel = lh > 1.0;
+        let button_row_height = if is_pixel {
+            backend.style().control_height
+        } else {
+            lh
+        };
         let padding = lh;
         // A vertical button stack reserves one row per button instead
         // of one row total — matches the block height `Dialog::layout`
@@ -545,5 +555,44 @@ mod tests {
             "a click at the bottom-most stacked button's own top-left cell must hit it: {:?}",
             cancel_button.bounds
         );
+    }
+
+    /// On a pixel backend (`RecordingBackend`'s `line_height` set above
+    /// `1.0`, simulating GTK/macOS/Win), the painted button row is
+    /// exactly `Style::control_height` tall — matching
+    /// `MessageDialogController::layout`'s own OK/Cancel row, the
+    /// acceptance bullet this demo's bare `Dialog` previously missed by
+    /// sizing its button row at the raw chrome line height instead.
+    #[test]
+    fn button_row_matches_control_height_on_a_pixel_backend() {
+        let demo = DialogDemo::new();
+        let backend = quadraui::testing::RecordingBackend {
+            line_height: 20.0,
+            char_width: 9.0,
+            ..quadraui::testing::RecordingBackend::new()
+        };
+        let area = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let layout = demo.dialog_layout(&backend, area, 0);
+
+        assert_eq!(
+            layout.button_row_bounds.height,
+            quadraui::Style::default().control_height,
+            "the button row must be sized at `Style::control_height` on \
+             a pixel backend: {:?}",
+            layout.button_row_bounds
+        );
+    }
+
+    /// Same scenario on a TUI-shaped backend (`line_height == 1.0`): the
+    /// button row stays exactly one char cell tall, unaffected by the
+    /// `Style::control_height` floor above.
+    #[test]
+    fn button_row_stays_one_cell_tall_on_a_char_grid_backend() {
+        let demo = DialogDemo::new();
+        let backend = quadraui::testing::RecordingBackend::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let layout = demo.dialog_layout(&backend, area, 0);
+
+        assert_eq!(layout.button_row_bounds.height, 1.0);
     }
 }
