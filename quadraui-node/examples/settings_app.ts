@@ -1,6 +1,6 @@
-// A small list/detail form app on `js/app/index.ts`: a `ListView` of
-// setting categories on the left, a two-field form (a `text_input` and a
-// `switch`) for whichever category is selected on the right. `text_input`
+// A small list/detail form app on `js/app/index.ts`: a typed `List` node
+// of setting categories on the left, a two-field form (a `text_input` and
+// a `switch`) for whichever category is selected on the right. `text_input`
 // and `switch` have no dedicated `Node` constructor in `./nodes.ts` (only
 // the fixed-slot primitives and a handful of additive ones do) -- this
 // example reaches for the documented escape hatch instead: a raw wire
@@ -24,7 +24,7 @@
 // "Reset" button to restore that category's defaults. `q`/Escape quits a
 // live session.
 
-const { App, Button, Column, Row, SidebarPanel, StatusBar, TextDisplay, keyName } = require("../js/app/index.ts");
+const { App, Button, Column, List, Row, SidebarPanel, StatusBar, TextDisplay, keyName } = require("../js/app/index.ts");
 
 import type { Renderable } from "../js/app/index";
 import type { Color, LayoutLeafNode, ListItemDescriptor, StatusBarSegment, StyledText } from "../js/wire";
@@ -130,17 +130,18 @@ class SettingsApp {
 
   // --- view --------------------------------------------------------------
 
-  private _listLeaf(): LayoutLeafNode {
+  private _listLeaf(): Renderable {
     const items: ListItemDescriptor[] = CATEGORIES.map((name) => ({ text: styledText(name) }));
-    return {
+    return List(items, {
       id: "settings:list",
-      list: {
-        id: "settings:list",
-        items,
-        selected_idx: this.selectedIdx,
-        has_focus: true,
+      selected: this.selectedIdx,
+      hasFocus: true,
+      onSelect: (idx: number) => this._select(idx),
+      onActivate: (idx: number) => {
+        this._select(idx);
+        this.message = `Opened ${this._selectedName}`;
       },
-    };
+    });
   }
 
   private _detailPane(): Renderable {
@@ -181,21 +182,10 @@ class SettingsApp {
 
   // --- events --------------------------------------------------------------
 
-  /** Only truly global input, plus `List`/`Form` events (neither has a `CONTAINER_EVENT_MAP`/node-callback path) land here. */
+  /** Only truly global input, plus `Form` events (the `text_input`/`switch` leaves have no `CONTAINER_EVENT_MAP`/node-callback path) land here -- the category `List`'s own `SelectionChanged`/`ItemActivated` go through its `onSelect`/`onActivate` node callbacks instead. */
   onEvent(event: unknown): void {
     if (typeof event !== "object" || event === null) return;
     const obj = event as Record<string, unknown>;
-
-    if ("List" in obj) {
-      const [, activation] = obj.List as [string, Record<string, unknown>];
-      if ("SelectionChanged" in activation) {
-        this._select((activation.SelectionChanged as { idx: number }).idx);
-      } else if ("ItemActivated" in activation) {
-        this._select((activation.ItemActivated as { idx: number }).idx);
-        this.message = `Opened ${this._selectedName}`;
-      }
-      return;
-    }
 
     if ("Form" in obj) {
       const [, formEvent] = obj.Form as [string, Record<string, unknown>];

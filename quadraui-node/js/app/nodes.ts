@@ -27,9 +27,11 @@ import type {
   DataRowDescriptor,
   Icon,
   LayoutScrollPayload,
+  ListItemDescriptor,
   PaddingValue,
   SelectionMode,
   StatusBarSegment,
+  StyledText,
   TabBarSegmentDescriptor,
   TextDisplayLineDescriptor,
   ToolbarButtonDescriptor,
@@ -439,6 +441,57 @@ function Table(columns: ColumnDescriptor[], rows: DataRowDescriptor[], options: 
   return { kind: "data_table", id, callbacks, children: {}, build };
 }
 exports.Table = Table;
+
+export interface ListOptions {
+  id?: string;
+  /**
+   * The row index to render as selected -- defaults to `0`, the same as
+   * the underlying `ListView` field it fills. While this stays unset, the
+   * host owns and advances the cursor on its own (clicks, `j`/`k`, arrow
+   * keys) -- the same uncontrolled-unless-pinned shape {@link TreeOptions}'
+   * own `selectedPath` follows; pass a value on every render only to pin
+   * the cursor from app state, and once sent it latches as controlled for
+   * this widget id and does not go back.
+   */
+  selected?: number;
+  title?: StyledText;
+  hasFocus?: boolean;
+  bordered?: boolean;
+  onSelect?: (idx: number) => void;
+  onActivate?: (idx: number) => void;
+}
+
+/**
+ * A `ListViewDescriptor`. `onSelect` fires on `SelectionChanged` (a plain
+ * click, or `j`/`k` moving the keyboard selection); `onActivate` fires on
+ * either `ItemDoubleClicked` (a mouse double-click) or `ItemActivated`
+ * (Enter while a row holds the selection) -- the same "open this row"
+ * pairing {@link Table}'s own `onActivate` documents. `KeyPressed`/
+ * `SelectionSet` on a `List` are not routed to either callback and fall
+ * through to `onEvent` instead.
+ */
+function List(items: ListItemDescriptor[], options: ListOptions = {}): Node {
+  const { id = null, selected, title, hasFocus = false, bordered, onSelect, onActivate } = options;
+
+  function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
+    const payload: Record<string, unknown> = {
+      id: nodeId,
+      items,
+      selected_idx: selected ?? 0,
+      has_focus: hasFocus,
+    };
+    if (title !== undefined) payload.title = title;
+    if (bordered !== undefined) payload.bordered = bordered;
+    return { id: nodeId, list: payload };
+  }
+
+  const callbacks = callbacksFrom({
+    on_select: onSelect as AnyCallback | undefined,
+    on_activate: onActivate as AnyCallback | undefined,
+  });
+  return { kind: "list", id, callbacks, children: {}, build };
+}
+exports.List = List;
 
 export interface StatusBarOptions {
   id?: string;
