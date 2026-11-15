@@ -32,6 +32,7 @@ use crate::event::Rect;
 use crate::primitives::form::Form;
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
+use crate::style::Style;
 use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -603,6 +604,12 @@ impl Dialog {
     /// Does not measure [`Self::table`] or [`Self::buttons`]' rendered pixel
     /// width beyond the char-cell approximation above; callers with real
     /// text measurement available should prefer [`Self::measure_generic_measured`].
+    ///
+    /// Sizes [`DialogMeasure::button_row_height`] off the raw `line_height`
+    /// on every backend, pixel or TUI — callers with a [`Style`] available
+    /// should prefer [`Self::measure_generic_with_style`], which sizes the
+    /// button row at [`Style::control_height`] on a pixel backend instead,
+    /// matching [`crate::compose::MessageDialogController`]'s own button row.
     pub fn measure_generic(
         &self,
         char_width: f32,
@@ -610,7 +617,41 @@ impl Dialog {
         viewport: Rect,
         border_chrome_inset: f32,
     ) -> DialogMeasure {
-        self.measure_generic_inner(char_width, line_height, viewport, border_chrome_inset, None)
+        self.measure_generic_inner(
+            char_width,
+            line_height,
+            viewport,
+            border_chrome_inset,
+            None,
+            None,
+        )
+    }
+
+    /// Like [`Self::measure_generic`], but sizes [`DialogMeasure::button_row_height`]
+    /// from [`Style::control_height`] on a pixel backend (`line_height > 1.0`)
+    /// instead of the raw chrome line height — the same fixed-pixel button
+    /// row [`crate::compose::MessageDialogController::layout`] sizes its
+    /// OK/Cancel row at. On TUI (`line_height == 1.0`, the char-cell
+    /// approximation), the button row stays one row tall — unchanged from
+    /// [`Self::measure_generic`]. [`DialogButton::resolved_button_spec`]'s
+    /// own corner radius ([`Style::button_radius`]) is applied separately,
+    /// at paint time, by `native_surface_paint::paint`.
+    pub fn measure_generic_with_style(
+        &self,
+        char_width: f32,
+        line_height: f32,
+        viewport: Rect,
+        border_chrome_inset: f32,
+        style: &Style,
+    ) -> DialogMeasure {
+        self.measure_generic_inner(
+            char_width,
+            line_height,
+            viewport,
+            border_chrome_inset,
+            None,
+            Some(style),
+        )
     }
 
     /// Like [`Self::measure_generic`], but sizes [`DialogMeasure::button_width`]
@@ -639,6 +680,31 @@ impl Dialog {
             viewport,
             border_chrome_inset,
             Some(measure),
+            None,
+        )
+    }
+
+    /// Combines [`Self::measure_generic_measured`]'s real label-width
+    /// button sizing with [`Self::measure_generic_with_style`]'s
+    /// `Style::control_height` button row height — the full pixel-backend
+    /// measurement a caller with both a real [`TextMeasure`] and a
+    /// [`Style`] on hand should prefer over either single-purpose variant.
+    pub fn measure_generic_measured_with_style(
+        &self,
+        char_width: f32,
+        line_height: f32,
+        viewport: Rect,
+        border_chrome_inset: f32,
+        measure: &dyn TextMeasure,
+        style: &Style,
+    ) -> DialogMeasure {
+        self.measure_generic_inner(
+            char_width,
+            line_height,
+            viewport,
+            border_chrome_inset,
+            Some(measure),
+            Some(style),
         )
     }
 
@@ -649,6 +715,7 @@ impl Dialog {
         viewport: Rect,
         border_chrome_inset: f32,
         measure: Option<&dyn TextMeasure>,
+        style: Option<&Style>,
     ) -> DialogMeasure {
         let table = self.table.as_ref();
         let table_total_h = table
@@ -702,13 +769,24 @@ impl Dialog {
             })
             .fold(estimated_button_w, f32::max);
 
+        // On a pixel backend (`line_height > 1.0`), a `style` sizes the
+        // button row at `Style::control_height` — the same fixed-pixel row
+        // `MessageDialogController::layout`'s own `is_pixel` split renders
+        // at, instead of the raw chrome line height. TUI's char-grid
+        // geometry (`line_height == 1.0`) is unaffected either way.
+        let is_pixel = line_height > 1.0;
+        let button_row_height = match style {
+            Some(s) if is_pixel => s.control_height,
+            _ => line_height,
+        };
+
         DialogMeasure {
             width: dialog_w,
             title_height: title_h,
             body_height: body_h,
             table_height: table_total_h,
             input_height: input_h,
-            button_row_height: line_height,
+            button_row_height,
             button_width,
             button_gap: char_width * 2.0,
             padding: line_height,
@@ -2188,6 +2266,49 @@ mod tests {
         );
     }
 
+    // ── Dialog::measure_generic_with_style ─────────────────────────────────
+
+    /// On a pixel backend (`line_height > 1.0`), `measure_generic_with_style`
+    /// sizes the button row at `Style::control_height` — matching
+    /// `MessageDialogController::layout`'s own pixel-path button row — not
+    /// the raw chrome line height `measure_generic` uses.
+    #[test]
+    fn measure_generic_with_style_sizes_button_row_at_control_height() {
+        let d = base_dialog(None);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let style = Style::default().with_control_height(26.0);
+        let line_height = 16.0; // a pixel backend's real chrome row height
+
+        let unstyled = d.measure_generic(8.0, line_height, viewport, 0.0);
+        let styled = d.measure_generic_with_style(8.0, line_height, viewport, 0.0, &style);
+
+        assert_eq!(
+            unstyled.button_row_height, line_height,
+            "measure_generic is unaffected by this test's own Style"
+        );
+        assert_eq!(
+            styled.button_row_height, 26.0,
+            "measure_generic_with_style sizes the button row at \
+             Style::control_height on a pixel backend"
+        );
+    }
+
+    /// On TUI (`line_height == 1.0`, the char-cell approximation), a
+    /// `Style` must not inflate the button row past one cell — the
+    /// row stays one char cell tall, same as `measure_generic`.
+    #[test]
+    fn measure_generic_with_style_leaves_tui_char_grid_unchanged() {
+        let d = base_dialog(None);
+        let viewport = Rect::new(0.0, 0.0, 80.0, 30.0);
+        let style = Style::default().with_control_height(26.0);
+
+        let styled = d.measure_generic_with_style(1.0, 1.0, viewport, 0.0, &style);
+        assert_eq!(
+            styled.button_row_height, 1.0,
+            "TUI's one-row-per-button char-grid geometry is unchanged by Style"
+        );
+    }
+
     // ── Dialog::measure_generic_measured ──────────────────────────────────
 
     /// Fixed-width stand-in for a real font: `6.0` px per char. Mirrors
@@ -2267,6 +2388,39 @@ mod tests {
         assert_eq!(measured.button_row_height, estimated.button_row_height);
         assert_eq!(measured.button_gap, estimated.button_gap);
         assert_eq!(measured.padding, estimated.padding);
+    }
+
+    /// `measure_generic_measured_with_style` combines both seams: the real
+    /// label width drives `button_width` (same as `measure_generic_measured`)
+    /// and `Style::control_height` drives `button_row_height` on a pixel
+    /// backend (same as `measure_generic_with_style`).
+    #[test]
+    fn measure_generic_measured_with_style_combines_both_seams() {
+        let mut d = base_dialog(None);
+        d.buttons = vec![btn("a-very-long-button-label")];
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let style = Style::default().with_control_height(26.0);
+        let line_height = 16.0;
+
+        let combined = d.measure_generic_measured_with_style(
+            8.0,
+            line_height,
+            viewport,
+            0.0,
+            &FakeMeasure,
+            &style,
+        );
+        let measured_only =
+            d.measure_generic_measured(8.0, line_height, viewport, 0.0, &FakeMeasure);
+
+        assert_eq!(
+            combined.button_row_height, 26.0,
+            "button row height comes from Style::control_height"
+        );
+        assert_eq!(
+            combined.button_width, measured_only.button_width,
+            "button width still tracks the real label width, unaffected by style"
+        );
     }
 
     // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
