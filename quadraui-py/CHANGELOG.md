@@ -20,6 +20,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `quadraui.app.Form(fields=, id=, ...)` plus six typed field builders --
+  `ToggleField`, `TextInputField`, `SliderField`, `PasswordField`,
+  `TextAreaField`, `SelectField` -- each with its own `on_change` (and
+  `on_submit` on `TextInputField`/`PasswordField`), routed by the field's
+  own id rather than the wrapping `Form`'s. Plus `Checkbox`, `Slider`,
+  `Select`, `Password`, `TextArea`: the same five controls as standalone,
+  `Form`-less leaves. No raw wire dict or `"Form"` branch in `on_event`
+  needed to build a settings-page-style field stack.
 - `quadraui.app.List(items, selected=, title=, has_focus=, bordered=,
   on_select=, on_activate=, id=)`: a typed node for a `ListViewDescriptor`
   leaf, routing `SelectionChanged` to `on_select` and either

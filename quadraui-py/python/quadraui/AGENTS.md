@@ -123,6 +123,17 @@ Rules that follow from the model:
 `SidebarPanel(toolbar=...)`, and its buttons do **not** raise events yet.
 Use `Button` for anything clickable.
 
+`Form(fields=[...])` builds a settings-page-style field stack with no raw
+dict. Each field is one of this layer's own builders, passed straight
+into `fields=`: `ToggleField`, `TextInputField`, `SliderField`,
+`PasswordField`, `TextAreaField`, `SelectField` (a `Dropdown` row). Every
+one takes `on_change`, and `TextInputField`/`PasswordField` also take
+`on_submit` (fires once on Enter) -- see each builder's own docstring for
+exactly which `FormEvent` it answers. `Checkbox`, `Slider`, `Select`,
+`Password`, `TextArea` are the same five controls as bare, `Form`-less
+leaves -- use one of those instead of a one-field `Form` for a single
+standalone control.
+
 Anything else in the toolkit (progress, spinner, image, overlays,
 ...) has no typed node yet. A `view()` may return a **raw wire dict**
 anywhere a node goes, mixed freely with nodes. Get the shape from
@@ -250,6 +261,12 @@ black-box test under
   with `hot_reload/notes_view.py`: hot reload with state carried over.
 - [`file_manager.py`](https://github.com/JDonaghy/quadraui/blob/main/quadraui-py/examples/file_manager.py):
   the same app on raw `QuiApp`, for comparison with the layer below.
+- [`list_demo.py`](https://github.com/JDonaghy/quadraui/blob/main/quadraui-py/examples/list_demo.py):
+  a selectable file list via `List`. Its test is `test_list_demo.py`.
+- [`settings_form_demo.py`](https://github.com/JDonaghy/quadraui/blob/main/quadraui-py/examples/settings_form_demo.py):
+  a settings page via `Form` and every field builder (`ToggleField`,
+  `TextInputField`, `SliderField`, `SelectField`, `PasswordField`,
+  `TextAreaField`). Its test is `test_settings_form_demo.py`.
 - `appshell_demo.py` (VS Code-style shell via `run_shell`),
   `native_window_demo.py`, `waker_demo.py` (background threads),
   `asyncio_demo.py` (the asyncio runner, as an alternative to a thread +

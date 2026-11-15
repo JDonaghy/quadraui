@@ -34,9 +34,14 @@ if TYPE_CHECKING:
     from quadraui.wire import (
         Color,
         ColumnDescriptor,
+        ControlWidth,
         DataRowDescriptor,
+        FormSpacing,
         Icon,
+        LabelAlign,
+        LabelPosition,
         ListItemDescriptor,
+        RowAlign,
         StatusBarSegment,
         StyledText,
         TabBarSegmentDescriptor,
@@ -45,6 +50,7 @@ if TYPE_CHECKING:
         ToolbarDescriptor,
         TreeRowDescriptor,
         TreeStyle,
+        ValidationState,
     )
 
 __all__ = [
@@ -63,6 +69,18 @@ __all__ = [
     "TextDisplay",
     "Button",
     "Toolbar",
+    "Form",
+    "ToggleField",
+    "TextInputField",
+    "SliderField",
+    "PasswordField",
+    "TextAreaField",
+    "SelectField",
+    "Checkbox",
+    "Slider",
+    "Select",
+    "Password",
+    "TextArea",
 ]
 
 # A renderable value: a `Node`, a `Component` (duck-typed -- `quadraui.app`
@@ -105,6 +123,19 @@ class Node:
 
 def _callbacks(**named: Optional[Callable[..., None]]) -> Dict[str, Callable[..., None]]:
     return {name: fn for name, fn in named.items() if fn is not None}
+
+
+def _as_styled_text(value: Any) -> Any:
+    """`Form`/field `label=`/`hint=` take either a plain string (wrapped
+    here into one unstyled span) or an already-built `StyledText`
+    `TypedDict`, so the two text fields every form field has don't force
+    a raw dict just to set a caption -- unlike `rows`/`options`/other
+    structured fields elsewhere in this module, which stay raw per this
+    module's own doc on deliberately not re-validating a `TypedDict`
+    shape your type checker already knows."""
+    if isinstance(value, str):
+        return {"spans": [{"text": value, "fg": None, "bg": None}]}
+    return value
 
 
 # --- composition: split / column / row / sidebar_panel / scroll / tabs -----
@@ -307,6 +338,398 @@ def Tabs(
     callbacks = _callbacks(on_close=on_close, on_activate=on_activate)
     children = {"tabs": [spec.content for spec in tabs]}
     return Node("tabs", id, callbacks, children, build)
+
+
+def Form(
+    fields: Sequence[Renderable],
+    *,
+    id: Optional[str] = None,
+    focused_field: Optional[str] = None,
+    scroll_offset: Optional[int] = None,
+    has_focus: bool = False,
+    label_position: Optional["LabelPosition"] = None,
+    label_align: Optional["LabelAlign"] = None,
+    label_width: Optional[float] = None,
+    control_width: Optional["ControlWidth"] = None,
+    min_control_width: Optional[float] = None,
+    spacing: Optional["FormSpacing"] = None,
+) -> Node:
+    """A `FormDescriptor`: a vertical stack of labeled field rows. `fields`
+    is a list of this module's own field-builder `Node`s --
+    `ToggleField`/`TextInputField`/`SliderField`/`PasswordField`/
+    `TextAreaField`/`SelectField` -- each already carrying its own
+    `on_change`/`on_submit`. Every field goes through the same `_walk`
+    pass as any other child, so each resolves its own stable id (explicit
+    or auto, from its position under `"fields"`) and registers its own
+    callbacks under *that* id -- not `Form`'s own id -- exactly matching
+    where `FormEvent`'s own `id` points (see
+    `quadraui::primitives::form::FormEvent`'s doc: the event's `id` is the
+    field's, the wrapping `UiEvent::Form`'s own id is the `Form`'s).
+
+    `focused_field`/`has_focus` follow the controlled/uncontrolled split
+    `Form::focused_field`'s own doc describes: leave `focused_field`
+    unset (the default) to let the engine own Tab/Shift-Tab/click focus
+    movement between fields itself; pass a field's id on every render
+    only to pin it from app state. Keyboard editing, stepping and
+    dropdown navigation inside any field are entirely engine-owned (via
+    `FormController`) -- nothing here needs to decode a raw key itself,
+    the same "just works" contract every field builder's own doc repeats.
+
+    For a single boolean/slider/select/password/text-area control with no
+    surrounding `Form` chrome, use the standalone leaf instead:
+    `Checkbox`/`Slider`/`Select`/`Password`/`TextArea`."""
+
+    def build(node_id: str, children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "fields": children["fields"]}
+        if focused_field is not None:
+            payload["focused_field"] = focused_field
+        if scroll_offset is not None:
+            payload["scroll_offset"] = scroll_offset
+        if has_focus:
+            payload["has_focus"] = has_focus
+        if label_position is not None:
+            payload["label_position"] = label_position
+        if label_align is not None:
+            payload["label_align"] = label_align
+        if label_width is not None:
+            payload["label_width"] = label_width
+        if control_width is not None:
+            payload["control_width"] = control_width
+        if min_control_width is not None:
+            payload["min_control_width"] = min_control_width
+        if spacing is not None:
+            payload["spacing"] = spacing
+        return {"id": node_id, "form": payload}
+
+    return Node("form", id, {}, {"fields": list(fields)}, build)
+
+
+def _form_field(
+    kind: Any,
+    node_id: str,
+    label: Any,
+    hint: Any,
+    disabled: Optional[bool],
+    validation: Any,
+    label_position: Any,
+    label_align: Any,
+    label_width: Optional[float],
+    tab_index: Optional[int],
+    control_width: Any,
+    min_control_width: Optional[float],
+    row_align: Any,
+) -> Dict[str, Any]:
+    """Shared `FormFieldDescriptor` assembly for every field builder below
+    -- the knobs every `FieldKind` row has regardless of its own `kind`
+    payload (already built by the caller)."""
+    payload: Dict[str, Any] = {"id": node_id, "label": _as_styled_text(label), "kind": kind}
+    if hint is not None:
+        payload["hint"] = _as_styled_text(hint)
+    for key, value in (
+        ("disabled", disabled),
+        ("validation", validation),
+        ("label_position", label_position),
+        ("label_align", label_align),
+        ("label_width", label_width),
+        ("tab_index", tab_index),
+        ("control_width", control_width),
+        ("min_control_width", min_control_width),
+        ("row_align", row_align),
+    ):
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def ToggleField(
+    value: bool,
+    *,
+    id: Optional[str] = None,
+    label: Any = "",
+    hint: Any = None,
+    disabled: Optional[bool] = None,
+    validation: Optional["ValidationState"] = None,
+    label_position: Optional["LabelPosition"] = None,
+    label_align: Optional["LabelAlign"] = None,
+    label_width: Optional[float] = None,
+    tab_index: Optional[int] = None,
+    control_width: Optional["ControlWidth"] = None,
+    min_control_width: Optional[float] = None,
+    row_align: Optional["RowAlign"] = None,
+    on_change: Optional[Callable[[bool], None]] = None,
+) -> Node:
+    """A `Form`-embedded `FieldKind::Toggle` row. Space/Enter while
+    focused, or a click, flips `value` (engine-owned, via
+    `FormController`); `on_change(new_value)` fires on the resulting
+    `FormEvent::ToggleChanged`. `FieldKind::Toggle` has no bare
+    standalone-leaf counterpart of its own -- use `Checkbox` outside a
+    `Form` for the same boolean shape."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        return _form_field(
+            {"Toggle": {"value": value}},
+            node_id,
+            label,
+            hint,
+            disabled,
+            validation,
+            label_position,
+            label_align,
+            label_width,
+            tab_index,
+            control_width,
+            min_control_width,
+            row_align,
+        )
+
+    callbacks = _callbacks(on_change=on_change)
+    return Node("form_field_toggle", id, callbacks, {}, build)
+
+
+def TextInputField(
+    value: str,
+    *,
+    id: Optional[str] = None,
+    label: Any = "",
+    placeholder: str = "",
+    hint: Any = None,
+    disabled: Optional[bool] = None,
+    validation: Optional["ValidationState"] = None,
+    label_position: Optional["LabelPosition"] = None,
+    label_align: Optional["LabelAlign"] = None,
+    label_width: Optional[float] = None,
+    tab_index: Optional[int] = None,
+    control_width: Optional["ControlWidth"] = None,
+    min_control_width: Optional[float] = None,
+    row_align: Optional["RowAlign"] = None,
+    on_change: Optional[Callable[[str], None]] = None,
+    on_submit: Optional[Callable[[str], None]] = None,
+) -> Node:
+    """A `Form`-embedded `FieldKind::TextInput` row: a single-line text
+    field, same controlled-`value` contract as every other field here.
+    Typing (engine-owned) fires `on_change(new_value)` on every keystroke
+    (`FormEvent::TextInputChanged`); `on_submit(value)` fires once, on
+    Enter (`FormEvent::TextInputCommitted`). Cursor/selection are entirely
+    `FormController`-owned -- nothing here needs to track or echo one."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        return _form_field(
+            {"TextInput": {"value": value, "placeholder": placeholder}},
+            node_id,
+            label,
+            hint,
+            disabled,
+            validation,
+            label_position,
+            label_align,
+            label_width,
+            tab_index,
+            control_width,
+            min_control_width,
+            row_align,
+        )
+
+    callbacks = _callbacks(on_change=on_change, on_submit=on_submit)
+    return Node("form_field_text_input", id, callbacks, {}, build)
+
+
+def SliderField(
+    value: float,
+    min: float,
+    max: float,
+    *,
+    id: Optional[str] = None,
+    label: Any = "",
+    step: Optional[float] = None,
+    hint: Any = None,
+    disabled: Optional[bool] = None,
+    validation: Optional["ValidationState"] = None,
+    label_position: Optional["LabelPosition"] = None,
+    label_align: Optional["LabelAlign"] = None,
+    label_width: Optional[float] = None,
+    tab_index: Optional[int] = None,
+    control_width: Optional["ControlWidth"] = None,
+    min_control_width: Optional[float] = None,
+    row_align: Optional["RowAlign"] = None,
+    on_change: Optional[Callable[[float], None]] = None,
+) -> Node:
+    """A `Form`-embedded `FieldKind::Slider` row, bounded by `min..=max`
+    with increment `step`. Click-and-drag on the track, arrow keys, or
+    Home/End move `value` (engine-owned); `on_change(new_value)` fires on
+    every adjustment (`FormEvent::SliderChanged`)."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        kind: Dict[str, Any] = {"value": value, "min": min, "max": max}
+        if step is not None:
+            kind["step"] = step
+        return _form_field(
+            {"Slider": kind},
+            node_id,
+            label,
+            hint,
+            disabled,
+            validation,
+            label_position,
+            label_align,
+            label_width,
+            tab_index,
+            control_width,
+            min_control_width,
+            row_align,
+        )
+
+    callbacks = _callbacks(on_change=on_change)
+    return Node("form_field_slider", id, callbacks, {}, build)
+
+
+def PasswordField(
+    value: str,
+    *,
+    id: Optional[str] = None,
+    label: Any = "",
+    placeholder: str = "",
+    mask_char: Optional[str] = None,
+    hint: Any = None,
+    disabled: Optional[bool] = None,
+    validation: Optional["ValidationState"] = None,
+    label_position: Optional["LabelPosition"] = None,
+    label_align: Optional["LabelAlign"] = None,
+    label_width: Optional[float] = None,
+    tab_index: Optional[int] = None,
+    control_width: Optional["ControlWidth"] = None,
+    min_control_width: Optional[float] = None,
+    row_align: Optional["RowAlign"] = None,
+    on_change: Optional[Callable[[str], None]] = None,
+    on_submit: Optional[Callable[[str], None]] = None,
+) -> Node:
+    """A `Form`-embedded `FieldKind::PasswordInput` row: masked on screen
+    (`mask_char`, default `'•'` server-side), plaintext in `value`
+    and in every callback -- only rendering is masked. Same `on_change`/
+    `on_submit` contract as `TextInputField`."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        kind: Dict[str, Any] = {"value": value, "placeholder": placeholder}
+        if mask_char is not None:
+            kind["mask_char"] = mask_char
+        return _form_field(
+            {"PasswordInput": kind},
+            node_id,
+            label,
+            hint,
+            disabled,
+            validation,
+            label_position,
+            label_align,
+            label_width,
+            tab_index,
+            control_width,
+            min_control_width,
+            row_align,
+        )
+
+    callbacks = _callbacks(on_change=on_change, on_submit=on_submit)
+    return Node("form_field_password", id, callbacks, {}, build)
+
+
+def TextAreaField(
+    value: str,
+    *,
+    id: Optional[str] = None,
+    label: Any = "",
+    placeholder: str = "",
+    visible_rows: Optional[int] = None,
+    hint: Any = None,
+    disabled: Optional[bool] = None,
+    validation: Optional["ValidationState"] = None,
+    label_position: Optional["LabelPosition"] = None,
+    label_align: Optional["LabelAlign"] = None,
+    label_width: Optional[float] = None,
+    tab_index: Optional[int] = None,
+    control_width: Optional["ControlWidth"] = None,
+    min_control_width: Optional[float] = None,
+    row_align: Optional["RowAlign"] = None,
+    on_change: Optional[Callable[[str], None]] = None,
+) -> Node:
+    """A `Form`-embedded `FieldKind::TextArea` row: multi-line, `value`
+    may embed `'\\n'`. `on_change(new_value)` fires on every keystroke
+    that modifies it (`FormEvent::TextInputChanged`, the same variant
+    `TextInputField` uses). Enter inserts a newline here rather than
+    committing -- there is no `on_submit`; a caller wanting an explicit
+    "done editing" action pairs this with its own `Button`/key binding."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        kind: Dict[str, Any] = {"value": value, "placeholder": placeholder}
+        if visible_rows is not None:
+            kind["visible_rows"] = visible_rows
+        return _form_field(
+            {"TextArea": kind},
+            node_id,
+            label,
+            hint,
+            disabled,
+            validation,
+            label_position,
+            label_align,
+            label_width,
+            tab_index,
+            control_width,
+            min_control_width,
+            row_align,
+        )
+
+    callbacks = _callbacks(on_change=on_change)
+    return Node("form_field_text_area", id, callbacks, {}, build)
+
+
+def SelectField(
+    options: Sequence[Any],
+    selected_idx: int = 0,
+    *,
+    id: Optional[str] = None,
+    label: Any = "",
+    hint: Any = None,
+    disabled: Optional[bool] = None,
+    validation: Optional["ValidationState"] = None,
+    label_position: Optional["LabelPosition"] = None,
+    label_align: Optional["LabelAlign"] = None,
+    label_width: Optional[float] = None,
+    tab_index: Optional[int] = None,
+    control_width: Optional["ControlWidth"] = None,
+    min_control_width: Optional[float] = None,
+    row_align: Optional["RowAlign"] = None,
+    on_change: Optional[Callable[[int], None]] = None,
+) -> Node:
+    """A `Form`-embedded `FieldKind::Dropdown` row (a single choice from a
+    fixed `options` list -- each a plain string or an already-built
+    `StyledText`). While focused, backends show the full option list open
+    below the row; Up/Down move the selection and commit it immediately
+    (engine-owned) -- there's no separate open/confirm step.
+    `on_change(new_selected_idx)` fires on every move
+    (`FormEvent::DropdownChanged`)."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        kind = {
+            "options": [_as_styled_text(option) for option in options],
+            "selected_idx": selected_idx,
+        }
+        return _form_field(
+            {"Dropdown": kind},
+            node_id,
+            label,
+            hint,
+            disabled,
+            validation,
+            label_position,
+            label_align,
+            label_width,
+            tab_index,
+            control_width,
+            min_control_width,
+            row_align,
+        )
+
+    callbacks = _callbacks(on_change=on_change)
+    return Node("form_field_select", id, callbacks, {}, build)
 
 
 # --- leaves -------------------------------------------------------------
@@ -513,3 +936,169 @@ def Toolbar(buttons: list["ToolbarButtonDescriptor"], *, id: Optional[str] = Non
     explicit `id=` if constructing a fresh one inside `view()` itself."""
     resolved_id = id if id is not None else f"auto:toolbar:{next(_toolbar_auto_ids)}"
     return {"id": resolved_id, "buttons": buttons}
+
+
+# --- standalone leaves that double as single-`Form`-field widgets --------
+#
+# Each of these is the layout-tree lift of the matching `Field*` builder
+# above, reached through its own `"checkbox"`/`"slider"`/`"select"`/
+# `"password"`/`"textarea"` extra kind instead of a `Form`'s `"form"` kind
+# -- no label column, no surrounding `Form` chrome, just the control
+# itself. Every one reuses the same `FormEvent` shape its `Form`-embedded
+# counterpart emits (`quadraui_binding_core::extra_paint`'s own doc), with
+# both halves of the wrapping `UiEvent::Form(id, FormEvent)` equal to this
+# leaf's own id -- `App._dispatch_form_field_event` doesn't need to know
+# which of the two shapes it's looking at.
+
+
+def Checkbox(
+    value: bool,
+    *,
+    id: Optional[str] = None,
+    disabled: Optional[bool] = None,
+    focused: Optional[bool] = None,
+    on_change: Optional[Callable[[bool], None]] = None,
+) -> Node:
+    """A standalone `CheckboxDescriptor` leaf -- the `"checkbox"` extra
+    kind, `FieldKind::Toggle`'s bare-leaf sibling with no `Form` chrome.
+    Space/Enter while focused, or a click, flips `value` (engine-owned);
+    `on_change(new_value)` fires on the resulting `FormEvent::
+    ToggleChanged`. For a labeled row inside a `Form`, use `ToggleField`
+    instead."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "value": value}
+        if disabled is not None:
+            payload["disabled"] = disabled
+        if focused is not None:
+            payload["focused"] = focused
+        return {"id": node_id, "checkbox": payload}
+
+    callbacks = _callbacks(on_change=on_change)
+    return Node("checkbox", id, callbacks, {}, build)
+
+
+def Slider(
+    value: float,
+    min: float,
+    max: float,
+    *,
+    id: Optional[str] = None,
+    step: Optional[float] = None,
+    disabled: Optional[bool] = None,
+    focused: Optional[bool] = None,
+    on_change: Optional[Callable[[float], None]] = None,
+) -> Node:
+    """A standalone `SliderDescriptor` leaf, bounded by `min..=max` with
+    increment `step` -- `FieldKind::Slider`'s bare-leaf sibling with no
+    `Form` chrome. Click-and-drag on the track, arrow keys, or Home/End
+    move `value` (engine-owned); `on_change(new_value)` fires on every
+    adjustment (`FormEvent::SliderChanged`). For a labeled row inside a
+    `Form`, use `SliderField` instead."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "value": value, "min": min, "max": max}
+        if step is not None:
+            payload["step"] = step
+        if disabled is not None:
+            payload["disabled"] = disabled
+        if focused is not None:
+            payload["focused"] = focused
+        return {"id": node_id, "slider": payload}
+
+    callbacks = _callbacks(on_change=on_change)
+    return Node("slider", id, callbacks, {}, build)
+
+
+def Select(
+    options: list[str],
+    *,
+    id: Optional[str] = None,
+    selected_idx: Optional[int] = None,
+    disabled: Optional[bool] = None,
+    focused: Optional[bool] = None,
+    on_change: Optional[Callable[[int], None]] = None,
+) -> Node:
+    """A standalone `SelectDescriptor` leaf -- `FieldKind::Dropdown`'s
+    bare-leaf sibling with no `Form` chrome; unlike `SelectField`,
+    `options` is a plain string list (no `StyledText` wrapping, matching
+    `SelectDescriptor.options`'s own wire shape). Up/Down move the
+    selection and commit it immediately (engine-owned);
+    `on_change(new_selected_idx)` fires on every move (`FormEvent::
+    DropdownChanged`). For a labeled row inside a `Form`, use
+    `SelectField` instead."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "options": list(options)}
+        if selected_idx is not None:
+            payload["selected_idx"] = selected_idx
+        if disabled is not None:
+            payload["disabled"] = disabled
+        if focused is not None:
+            payload["focused"] = focused
+        return {"id": node_id, "select": payload}
+
+    callbacks = _callbacks(on_change=on_change)
+    return Node("select", id, callbacks, {}, build)
+
+
+def Password(
+    value: str,
+    *,
+    id: Optional[str] = None,
+    cursor: Optional[int] = None,
+    has_focus: Optional[bool] = None,
+    mask_char: Optional[str] = None,
+    on_change: Optional[Callable[[str], None]] = None,
+    on_submit: Optional[Callable[[str], None]] = None,
+) -> Node:
+    """A standalone `PasswordDescriptor` leaf -- `FieldKind::
+    PasswordInput`'s bare-leaf sibling with no `Form` chrome, masked on
+    screen only; `value` and every callback stay plaintext. `on_change`
+    fires per keystroke (`FormEvent::TextInputChanged`), `on_submit` once
+    on Enter (`FormEvent::TextInputCommitted`). For a labeled row inside a
+    `Form`, use `PasswordField` instead."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "value": value}
+        if cursor is not None:
+            payload["cursor"] = cursor
+        if has_focus is not None:
+            payload["has_focus"] = has_focus
+        if mask_char is not None:
+            payload["mask_char"] = mask_char
+        return {"id": node_id, "password": payload}
+
+    callbacks = _callbacks(on_change=on_change, on_submit=on_submit)
+    return Node("password", id, callbacks, {}, build)
+
+
+def TextArea(
+    value: str,
+    *,
+    id: Optional[str] = None,
+    placeholder: Optional[str] = None,
+    has_focus: Optional[bool] = None,
+    visible_rows: Optional[int] = None,
+    on_change: Optional[Callable[[str], None]] = None,
+) -> Node:
+    """A standalone `TextAreaDescriptor` leaf -- `FieldKind::TextArea`'s
+    bare-leaf sibling with no `Form` chrome; `value` may embed `'\\n'`.
+    `on_change(new_value)` fires on every keystroke that modifies it
+    (`FormEvent::TextInputChanged`). Enter inserts a newline here rather
+    than committing -- there is no `on_submit`, the same contract
+    `TextAreaField` documents. For a labeled row inside a `Form`, use
+    `TextAreaField` instead."""
+
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "value": value}
+        if placeholder is not None:
+            payload["placeholder"] = placeholder
+        if has_focus is not None:
+            payload["has_focus"] = has_focus
+        if visible_rows is not None:
+            payload["visible_rows"] = visible_rows
+        return {"id": node_id, "textarea": payload}
+
+    callbacks = _callbacks(on_change=on_change)
+    return Node("textarea", id, callbacks, {}, build)
