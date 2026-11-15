@@ -20,6 +20,25 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   (`VersionMismatchError`) now applies to a typed-layer tree exactly the
   way it already did to a hand-built wire dict passed to `QuiApp.
   set_render` directly.
+- `quadraui.app.App.run_async(fallback_interval=None)`: the app-layer
+  `App` (`quadraui.app.App`) now has its own `run_async`, delegating to
+  the wrapped `QuiApp.run_async`/`quadraui.aio.run` the same way
+  `run_tui`/`run_native` already delegate — `await app.run_async()` on an
+  app-layer `App`, as `quadraui/AGENTS.md`'s "Running it" section
+  documents, previously raised `AttributeError`.
+- Every `InvalidDescriptorError` subclass (`MissingFieldError`,
+  `UnknownVariantError`, `TypeMismatchError`, `UnknownKeyError`,
+  `VersionMismatchError`, `DecodeFailedError`) now carries a `path`
+  instance attribute mirroring `DecodeError::path` verbatim (e.g.
+  `"render › split#body › panel#chrome"`), alongside the existing `code`
+  class attribute, so a caller can locate the offending node
+  programmatically instead of parsing it back out of the exception
+  message.
+
+## [0.11.0] - 2026-11-14
+
+### Added
+
 - `QuiApp(..., strict=False, on_unknown_key=None)`: a render callback's
   returned descriptor carrying an unrecognised *optional* key (a misspelt
   `"cursr"`, `"focussed"`, ...) now reports it through
@@ -34,12 +53,131 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `run_shell` itself, an `on_unknown_key` callback that raises surfaces as
   `run_shell`'s own raised exception rather than through a later `step`/
   `run` call.
-- `quadraui.app.App.run_async(fallback_interval=None)`: the app-layer
-  `App` (`quadraui.app.App`) now has its own `run_async`, delegating to
-  the wrapped `QuiApp.run_async`/`quadraui.aio.run` the same way
-  `run_tui`/`run_native` already delegate — `await app.run_async()` on an
-  app-layer `App`, as `quadraui/AGENTS.md`'s "Running it" section
-  documents, previously raised `AttributeError`.
+- `ReentrantCallError`: raised instead of PyO3's raw `RuntimeError: Already
+  borrowed` when a `QuiApp` method restricted to top-level script code
+  (`show_message_dialog`, `set_title`, `apply_on_quit`, ... — every one
+  with a matching `QuiAppActions` method) is called re-entrantly, from
+  inside that same app's own registered event/tick/render callback. The
+  message names the method and points at `actions()`.
+- An asyncio-native runner: `quadraui.asyncio.run(app)` (equivalently,
+  `await app.run_async()`) drives `QuiApp.step()`/render from a running
+  asyncio event loop instead of a plain `while`/`for` loop, mirroring
+  `quadraui-node`'s own `run()`. `QuiApp.arm_wake_notify(callback)`/
+  `disarm_wake_notify()` are the new low-level hook it is built on: a
+  no-argument callback fired every time any `QuiAppWaker` handle delivers
+  a `post`/`wake`/`post_after`/`wake_after`, from whatever thread that
+  happened on, so a background delivery wakes the asyncio loop the
+  instant it fires rather than waiting on a fixed poll interval.
+  `quadraui.asyncio.async_handler(app, handler)` adapts a `handler` that
+  may be a plain callable or an `async def` into the synchronous shape
+  `set_handler`/`set_render_content`/... themselves expect — an `async
+  def` handler runs as its own `asyncio.Task` and must not block
+  rendering, so a later event dispatches and renders while it is still
+  awaiting. See `quadraui-py/examples/asyncio_demo.py`.
+- A descriptor-decode failure now raises one of six new
+  `InvalidDescriptorError` subclasses instead of the bare base class:
+  `MissingFieldError`, `UnknownVariantError`, `TypeMismatchError`,
+  `UnknownKeyError`, `VersionMismatchError`, `DecodeFailedError` — chosen
+  by matching `quadraui_binding_core::DecodeError`'s own variant directly,
+  never by parsing the exception's message. Each has a `code` class attribute
+  (e.g. `"missing_field"`) mirroring `DecodeError::code`, and the
+  exception's message now names the full path into the layout tree the
+  problem was found at (e.g. `render: at split#body › panel#chrome:
+  missing field "ratio"`), not just a bare field name — `DecodeError` no
+  longer loses an ancestor node's id when a decode error happens several
+  levels into a nested tree. Existing `except InvalidDescriptorError`/
+  `pytest.raises(InvalidDescriptorError, ...)` call sites keep matching
+  unchanged.
+- `QuiApp.show_overlay(kind, descriptor, anchor)` / `QuiApp.dismiss_overlay(id)`:
+  a generic entry point over the same seven in-canvas overlay kinds the
+  existing `show_context_menu`/`show_message_dialog`/`show_toast`/
+  `show_tooltip`/`show_completions`/`show_float`/`show_rich_text_popup`
+  methods each open, naming the kind by string (`"context_menu"`,
+  `"message_dialog"`, `"toast"`, `"tooltip"`, `"completions"`, `"float"`,
+  `"rich_text_popup"`) rather than needing a dedicated method per kind.
+  `show_overlay` returns an id `dismiss_overlay` can later close by — the
+  descriptor's own `"id"` field for the five kinds that carry one, or a
+  fixed `kind`-named sentinel for the two that don't (`"context_menu"`,
+  `"message_dialog"`) — and `dismiss_overlay` can now also close a
+  context menu, a capability none of the original 13 methods had (there
+  was no `dismiss_context_menu`). All 13 existing methods are unchanged
+  one-line forwards onto this pair, so no existing call site needs to
+  change.
+- `QuiApp.define_style(name, overrides)` registers a named style set — a
+  reusable bundle of the same tokens a node's inline `"style"` dict
+  accepts — and any layout-tree node may then name one or more of them
+  through a new optional `"class"` key: a single name, a
+  whitespace-separated string of names, or a list, the CSS `class=`
+  analogue of `"style"`. Classes merge left to right (a later name wins a
+  token an earlier one also named) and the node's own inline `"style"`
+  beats all of them. A class name no set was defined under is ignored
+  rather than raising — unlike an unknown key *inside* `"style"`, which
+  is still an `InvalidDescriptorError`. Four theme-derived sets exist
+  before any `define_style` call — `"primary"`, `"secondary"`,
+  `"danger"`, `"subtle"`, each mapping onto the matching `Button` variant's
+  own resting fill, and each following a later `set_theme` call; defining
+  one of those names replaces it. Redefining a set repaints from the next
+  frame on. `QuiApp.style_set_names()` lists what is registered.
+  `QuiApp.actions().define_style(name, overrides)` is the counterpart a
+  registered event handler calls instead of `QuiApp.define_style` directly
+  — the same "already borrowed" restriction every other `actions()` method
+  exists for — and is the path that makes a redefinition repaint a running
+  `run_tui` loop immediately. See `docs/bindings-wire-format.md` and
+  `quadraui-py/examples/style_classes_demo.py`.
+- Any layout-tree node a render callback returns (`"row"`/`"column"`/
+  `"split"`/`"tabs"`/`"panel"`/`"sidebar_panel"`/`"split_tree"`/`"scroll"`,
+  or a leaf) may carry an optional `"style"` dict: `"bg"`/`"fg"`/
+  `"border"`/`"accent"`/`"surface_bg"`/`"accent_bg"` (a `Color` or a
+  `"#rrggbb"`/`"#rrggbbaa"` hex string) override `Theme` colour tokens,
+  `"padding"`/`"corner_radius"`/`"border_width"` override `Style` metric
+  tokens — applied as a derived theme/style scoped to that node's own
+  subtree, so siblings are unaffected and a nested `"style"` only
+  overrides the tokens it names. `"surface_bg"`/`"accent_bg"` are
+  semantic aliases for the fill a `Button`/`List`/`Dialog`/... actually
+  paints — a plain `"bg"` only ever reaches `Theme.background`, which a
+  `Button`'s own fill never reads on any variant but `Icon`. See
+  `docs/bindings-wire-format.md` for the full per-leaf token mapping.
+  Only reachable today from a raw dict/object render tree — not yet
+  wired into `quadraui.app.nodes`' own keyword/prop-list node builders.
+- A render callback's returned `dict` may carry an optional top-level
+  `"wire_version"` integer key. A tree with no `"wire_version"` key still
+  decodes exactly as before (treated as version 1); a version the native
+  extension doesn't understand yet raises `InvalidDescriptorError` naming
+  both versions instead of silently misinterpreting it. No app needs to
+  set this key today — it exists for a future wire-shape change to check
+  against.
+- A `"row"`/`"column"` child dict may now carry its own `"size"` key
+  (`"EqualShare"`/`"Content"`, or `{"Fixed": n}`/`{"Percent": p}`/
+  `{"Weight": w}` — the same vocabulary `MultiSectionView`'s own
+  per-section `"size"` key already uses) plus optional `"min"`/`"max"`
+  clamps, and the `"row"`/`"column"` node itself may carry a `"justify"`
+  (`"start"`/`"center"`/`"end"`/`"space_between"`) and/or `"align"`
+  (`"start"`/`"center"`/`"end"`/`"stretch"`) key. None of the five keys
+  is required; a tree with none of them lays out exactly as before
+  (every child an equal share, `Justify::Start`, `Align::Stretch`).
+- **Backfill, `py-v0.8.0` through this file's creation:** this file starts
+  now (see the note at the top), so none of the work below ever got its own
+  entry; rather than leave a silent gap, it is summarized here as one
+  block instead of the dozens of individual PRs it spans. `quadraui-py`'s
+  interaction engine was extracted into the language-neutral
+  `quadraui-binding-core` crate every binding now shares (hit testing,
+  focus, semantic event synthesis, text-input/drag controllers). Every
+  additive primitive went from paint-only to hit-testable and
+  keyboard-focusable: `tree`/`data_table` gained scrollbar drag, wheel
+  scroll, column resize, and focus-scoped arrow-key navigation;
+  `split`/`panel`/`sidebar_panel` gained real divider drag and chrome
+  hits; `toolbar`/`status_bar`/`activity_bar` gained click routing and
+  `text_display` gained scroll; `form`/`combo_box`/`date_picker`/`switch`
+  gained key/char/paste routing through `FormController`; and a `tabs`
+  node gained inline tree-rename and its full field set. The menu bar and
+  context menus were wired to real activation, and
+  `QuiApp.show_message_dialog` added a modal overlay routed ahead of
+  both. Text regions became selectable/copyable with richer clipboard
+  access, `QuiApp.run_shell` added a `ShellApp`-backed app frame, and
+  cross-thread event injection landed alongside a `WindowClose` veto
+  default fix and a waker panic-safety hardening pass. See `git log
+  py-v0.8.0.. -- quadraui-py quadraui-binding-core` for the full,
+  PR-by-PR history.
 
 ### Changed
 
@@ -66,110 +204,31 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   CI's `wire-types-check` job fails if `_quadraui.pyi` drifts from `lib.rs`
   the same way it already fails for `wire.pyi`/`wire.d.ts` drifting from
   `wire_schema.rs`.
+- A `"split"` node's `"first_min"`/`"second_min"` are now read in the same
+  portable surface-native-pixel unit `"padding"`/`"margin"`/`"gap"` already
+  use, not backend-native rows/columns. `"first_min": 10` previously
+  reserved 10 TUI rows/columns outright; it now reserves `ceil(10 / 8)`
+  TUI columns on a `Horizontal` split, or `ceil(10 / 16)` TUI rows on a
+  `Vertical` one (the same `char_width`/`line_height` nominal-cell-px
+  conversion `"padding"`/`"margin"`/`"gap"` use). An app pinning a
+  `first_min`/`second_min` value sized for the old row/column reading
+  needs to multiply it up (by roughly 8 for a `Horizontal` split, 16 for a
+  `Vertical` one) to reserve the same TUI space as before.
+
+### Deprecated
+
+- `QuiApp.insert_button`/`insert_text_display`/`insert_list`/`insert_tree`/
+  `insert_data_table`/`insert_tab_bar`/`insert_progress`/`insert_spinner`/
+  `insert_image`/`insert_extra`/`clear_extra`/`slot_clear` -- every kind is
+  reachable as an inline layout leaf from a `render` callback now, so the
+  fixed-slot/additive-slot API is no longer the only way onto the screen.
+  Each deprecated method still works exactly as before, but raises a
+  `DeprecationWarning` naming the inline leaf kind that replaces it.
+  Removal is a later breaking release.
+
+## [0.10.1] - 2026-11-11
 
 ### Added
-
-- `ReentrantCallError`: raised instead of PyO3's raw `RuntimeError: Already
-  borrowed` when a `QuiApp` method restricted to top-level script code
-  (`show_message_dialog`, `set_title`, `apply_on_quit`, ... — every one
-  with a matching `QuiAppActions` method) is called re-entrantly, from
-  inside that same app's own registered event/tick/render callback. The
-  message names the method and points at `actions()`.
-- An asyncio-native runner: `quadraui.asyncio.run(app)` (equivalently,
-  `await app.run_async()`) drives `QuiApp.step()`/render from a running
-  asyncio event loop instead of a plain `while`/`for` loop, mirroring
-  `quadraui-node`'s own `run()`. `QuiApp.arm_wake_notify(callback)`/
-  `disarm_wake_notify()` are the new low-level hook it is built on: a
-  no-argument callback fired every time any `QuiAppWaker` handle delivers
-  a `post`/`wake`/`post_after`/`wake_after`, from whatever thread that
-  happened on, so a background delivery wakes the asyncio loop the
-  instant it fires rather than waiting on a fixed poll interval.
-  `quadraui.asyncio.async_handler(app, handler)` adapts a `handler` that
-  may be a plain callable or an `async def` into the synchronous shape
-  `set_handler`/`set_render_content`/... themselves expect — an `async
-  def` handler runs as its own `asyncio.Task` and must not block
-  rendering, so a later event dispatches and renders while it is still
-  awaiting. See `quadraui-py/examples/asyncio_demo.py`.
-
-- A descriptor-decode failure now raises one of six new
-  `InvalidDescriptorError` subclasses instead of the bare base class:
-  `MissingFieldError`, `UnknownVariantError`, `TypeMismatchError`,
-  `UnknownKeyError`, `VersionMismatchError`, `DecodeFailedError` — chosen
-  by matching `quadraui_binding_core::DecodeError`'s own variant directly,
-  never by parsing the exception's message. Each has a `code` class attribute
-  (e.g. `"missing_field"`) mirroring `DecodeError::code`, and a `path`
-  instance attribute mirroring `DecodeError::path` verbatim (e.g.
-  `"render › split#body › panel#chrome"`), so a caller can locate the
-  offending node programmatically instead of parsing it back out of the
-  message. The exception's message now names the full path into the
-  layout tree the problem was found at (e.g. `render: at split#body ›
-  panel#chrome: missing field "ratio"`), not just a bare field name --
-  `DecodeError` no longer loses an ancestor node's id when a decode error
-  happens several levels into a nested tree. Existing `except
-  InvalidDescriptorError`/`pytest.raises(InvalidDescriptorError, ...)`
-  call sites keep matching unchanged.
-
-- `QuiApp.show_overlay(kind, descriptor, anchor)` / `QuiApp.dismiss_overlay(id)`:
-  a generic entry point over the same seven in-canvas overlay kinds the
-  existing `show_context_menu`/`show_message_dialog`/`show_toast`/
-  `show_tooltip`/`show_completions`/`show_float`/`show_rich_text_popup`
-  methods each open, naming the kind by string (`"context_menu"`,
-  `"message_dialog"`, `"toast"`, `"tooltip"`, `"completions"`, `"float"`,
-  `"rich_text_popup"`) rather than needing a dedicated method per kind.
-  `show_overlay` returns an id `dismiss_overlay` can later close by — the
-  descriptor's own `"id"` field for the five kinds that carry one, or a
-  fixed `kind`-named sentinel for the two that don't (`"context_menu"`,
-  `"message_dialog"`) — and `dismiss_overlay` can now also close a
-  context menu, a capability none of the original 13 methods had (there
-  was no `dismiss_context_menu`). All 13 existing methods are unchanged
-  one-line forwards onto this pair, so no existing call site needs to
-  change.
-
-- `QuiApp.define_style(name, overrides)` registers a named style set — a
-  reusable bundle of the same tokens a node's inline `"style"` dict
-  accepts — and any layout-tree node may then name one or more of them
-  through a new optional `"class"` key: a single name, a
-  whitespace-separated string of names, or a list, the CSS `class=`
-  analogue of `"style"`. Classes merge left to right (a later name wins a
-  token an earlier one also named) and the node's own inline `"style"`
-  beats all of them. A class name no set was defined under is ignored
-  rather than raising — unlike an unknown key *inside* `"style"`, which
-  is still an `InvalidDescriptorError`. Four theme-derived sets exist
-  before any `define_style` call — `"primary"`, `"secondary"`,
-  `"danger"`, `"subtle"`, each mapping onto the matching `Button` variant's
-  own resting fill, and each following a later `set_theme` call; defining
-  one of those names replaces it. Redefining a set repaints from the next
-  frame on. `QuiApp.style_set_names()` lists what is registered.
-  `QuiApp.actions().define_style(name, overrides)` is the counterpart a
-  registered event handler calls instead of `QuiApp.define_style` directly
-  — the same "already borrowed" restriction every other `actions()` method
-  exists for — and is the path that makes a redefinition repaint a running
-  `run_tui` loop immediately. See `docs/bindings-wire-format.md` and
-  `quadraui-py/examples/style_classes_demo.py`.
-
-- Any layout-tree node a render callback returns (`"row"`/`"column"`/
-  `"split"`/`"tabs"`/`"panel"`/`"sidebar_panel"`/`"split_tree"`/`"scroll"`,
-  or a leaf) may carry an optional `"style"` dict: `"bg"`/`"fg"`/
-  `"border"`/`"accent"`/`"surface_bg"`/`"accent_bg"` (a `Color` or a
-  `"#rrggbb"`/`"#rrggbbaa"` hex string) override `Theme` colour tokens,
-  `"padding"`/`"corner_radius"`/`"border_width"` override `Style` metric
-  tokens — applied as a derived theme/style scoped to that node's own
-  subtree, so siblings are unaffected and a nested `"style"` only
-  overrides the tokens it names. `"surface_bg"`/`"accent_bg"` are
-  semantic aliases for the fill a `Button`/`List`/`Dialog`/... actually
-  paints — a plain `"bg"` only ever reaches `Theme.background`, which a
-  `Button`'s own fill never reads on any variant but `Icon`. See
-  `docs/bindings-wire-format.md` for the full per-leaf token mapping.
-  Only reachable today from a raw dict/object render tree — not yet
-  wired into `quadraui.app.nodes`' own keyword/prop-list node builders.
-
-- A render callback's returned `dict` may carry an optional top-level
-  `"wire_version"` integer key. A tree with no `"wire_version"` key still
-  decodes exactly as before (treated as version 1); a version the native
-  extension doesn't understand yet raises `InvalidDescriptorError` naming
-  both versions instead of silently misinterpreting it. No app needs to
-  set this key today — it exists for a future wire-shape change to check
-  against.
 
 - `quadraui.testing` — the app-author test harness: a public API over the
   headless runner that queries by widget id/role/text (`harness(app)`,
@@ -185,14 +244,12 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   no coordinates. Wraps a `quadraui.app.App` directly, or a plain `QuiApp`
   given the same `render` callable it was built with.
   `tests/test_file_manager_app.py` is written entirely against it.
-
 - A `pytest` plugin (`quadraui.testing.pytest_plugin`, registered by this
   distribution's own `pytest11` entry point) providing a
   `quadraui_harness` factory fixture: `quadraui_harness(app)` builds a
   `Harness` and `Harness.close()`s it when the test ends, so a test that
   enabled hot reload cannot leak its watcher thread into the rest of the
   session. No `conftest.py` needed in a consumer's own repo.
-
 - Hot reload for `quadraui.app.App`: `enable_hot_reload(*modules,
   interval=0.5, on_reload=None)` watches the given modules' source files and
   re-imports them on change (a daemon thread wakes the event loop through
@@ -208,7 +265,6 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `reload_error`. Component state slots are now keyed by the class's
   qualified name rather than the class object. `examples/hot_reload_demo.py`
   demonstrates it.
-
 - `QuiApp.widget_state(id)` — a read of a widget's current state in the
   engine's widget-state store: `selected_path`/`selected_idx`, `scroll_offset`,
   `ratio`, `active_tab` and `expanded`, whichever apply to the id's widget
@@ -403,51 +459,6 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   scroll/selection bookkeeping (both stay framework-owned widget state).
   `examples/file_manager_app.py` ports `examples/file_manager.py` onto it.
 
-- A `"row"`/`"column"` child dict may now carry its own `"size"` key
-  (`"EqualShare"`/`"Content"`, or `{"Fixed": n}`/`{"Percent": p}`/
-  `{"Weight": w}` — the same vocabulary `MultiSectionView`'s own
-  per-section `"size"` key already uses) plus optional `"min"`/`"max"`
-  clamps, and the `"row"`/`"column"` node itself may carry a `"justify"`
-  (`"start"`/`"center"`/`"end"`/`"space_between"`) and/or `"align"`
-  (`"start"`/`"center"`/`"end"`/`"stretch"`) key. None of the five keys
-  is required; a tree with none of them lays out exactly as before
-  (every child an equal share, `Justify::Start`, `Align::Stretch`).
-
-- **Backfill, `py-v0.8.0` through this file's creation:** this file starts
-  now (see the note at the top), so none of the work below ever got its own
-  entry; rather than leave a silent gap, it is summarized here as one
-  block instead of the dozens of individual PRs it spans. `quadraui-py`'s
-  interaction engine was extracted into the language-neutral
-  `quadraui-binding-core` crate every binding now shares (hit testing,
-  focus, semantic event synthesis, text-input/drag controllers). Every
-  additive primitive went from paint-only to hit-testable and
-  keyboard-focusable: `tree`/`data_table` gained scrollbar drag, wheel
-  scroll, column resize, and focus-scoped arrow-key navigation;
-  `split`/`panel`/`sidebar_panel` gained real divider drag and chrome
-  hits; `toolbar`/`status_bar`/`activity_bar` gained click routing and
-  `text_display` gained scroll; `form`/`combo_box`/`date_picker`/`switch`
-  gained key/char/paste routing through `FormController`; and a `tabs`
-  node gained inline tree-rename and its full field set. The menu bar and
-  context menus were wired to real activation, and
-  `QuiApp.show_message_dialog` added a modal overlay routed ahead of
-  both. Text regions became selectable/copyable with richer clipboard
-  access, `QuiApp.run_shell` added a `ShellApp`-backed app frame, and
-  cross-thread event injection landed alongside a `WindowClose` veto
-  default fix and a waker panic-safety hardening pass. See `git log
-  py-v0.8.0.. -- quadraui-py quadraui-binding-core` for the full,
-  PR-by-PR history.
-
-### Deprecated
-
-- `QuiApp.insert_button`/`insert_text_display`/`insert_list`/`insert_tree`/
-  `insert_data_table`/`insert_tab_bar`/`insert_progress`/`insert_spinner`/
-  `insert_image`/`insert_extra`/`clear_extra`/`slot_clear` -- every kind is
-  reachable as an inline layout leaf from a `render` callback now, so the
-  fixed-slot/additive-slot API is no longer the only way onto the screen.
-  Each deprecated method still works exactly as before, but raises a
-  `DeprecationWarning` naming the inline leaf kind that replaces it.
-  Removal is a later breaking release.
-
 ### Fixed
 
 - `QuiApp.widget_state(id)`'s `expanded` field is now actually reachable: a
@@ -473,16 +484,6 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
-- A `"split"` node's `"first_min"`/`"second_min"` are now read in the same
-  portable surface-native-pixel unit `"padding"`/`"margin"`/`"gap"` already
-  use, not backend-native rows/columns. `"first_min": 10` previously
-  reserved 10 TUI rows/columns outright; it now reserves `ceil(10 / 8)`
-  TUI columns on a `Horizontal` split, or `ceil(10 / 16)` TUI rows on a
-  `Vertical` one (the same `char_width`/`line_height` nominal-cell-px
-  conversion `"padding"`/`"margin"`/`"gap"` use). An app pinning a
-  `first_min`/`second_min` value sized for the old row/column reading
-  needs to multiply it up (by roughly 8 for a `Horizontal` split, 16 for a
-  `Vertical` one) to reserve the same TUI space as before.
 - A `list` event dict can now carry an `"ItemDoubleClicked"` key (double
   click, distinct from a plain click's `"SelectionChanged"`) alongside the
   existing `"SelectionChanged"`/`"ItemActivated"`/`"KeyPressed"`/
