@@ -63,18 +63,25 @@ declare function require(id: string): unknown;
 
 import type {
   ButtonOptions,
+  CheckboxOptions,
   ColumnOptions,
   ComponentLike,
+  FormFieldSpec,
+  FormOptions,
   ListOptions,
   Node as QuiNode,
+  PasswordOptions,
   Renderable,
   RowOptions,
   ScrollOptions,
+  SelectOptions,
   SidebarPanelOptions,
+  SliderOptions,
   SplitOptions,
   StatusBarOptions,
   TableOptions,
   TabsOptions,
+  TextAreaOptions,
   TextDisplayOptions,
   TreeOptions,
 } from "./app/nodes";
@@ -110,6 +117,12 @@ const nodeConstructors = require("./app/nodes.ts") as {
   StatusBar(leftSegments: StatusBarSegment[], rightSegments: StatusBarSegment[], options?: StatusBarOptions): QuiNode;
   TextDisplay(lines: TextDisplayLineDescriptor[], options?: TextDisplayOptions): QuiNode;
   Button(label: string, options?: ButtonOptions): QuiNode;
+  Form(fields: FormFieldSpec[], options?: FormOptions): QuiNode;
+  Checkbox(value: boolean, options?: CheckboxOptions): QuiNode;
+  Slider(value: number, min: number, max: number, options?: SliderOptions): QuiNode;
+  Select(choices: string[], options?: SelectOptions): QuiNode;
+  Password(value: string, options?: PasswordOptions): QuiNode;
+  TextArea(value: string, options?: TextAreaOptions): QuiNode;
 };
 
 // --- intrinsic element props (the `tsc`-checked half) ----------------------
@@ -176,6 +189,33 @@ export interface ButtonProps extends ButtonOptions {
   label: string;
 }
 
+export interface FormProps extends FormOptions {
+  /** `FormFieldSpec` entries from `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/`PasswordField`/`TextAreaField` -- see `./app/nodes.ts`'s own doc for why these are a prop, not JSX children (same reason `Tab`/`Toolbar` are plain function calls there). */
+  fields: FormFieldSpec[];
+}
+
+export interface CheckboxProps extends CheckboxOptions {
+  value: boolean;
+}
+
+export interface SliderProps extends SliderOptions {
+  value: number;
+  min: number;
+  max: number;
+}
+
+export interface SelectProps extends SelectOptions {
+  choices: string[];
+}
+
+export interface PasswordProps extends PasswordOptions {
+  value: string;
+}
+
+export interface TextAreaProps extends TextAreaOptions {
+  value: string;
+}
+
 /**
  * A local, exported `JSX` namespace -- not `declare global`. TS's automatic
  * JSX transform looks for a `JSX` export on the `jsxImportSource` module
@@ -199,6 +239,12 @@ export namespace JSX {
     statusBar: StatusBarProps;
     textDisplay: TextDisplayProps;
     button: ButtonProps;
+    form: FormProps;
+    checkbox: CheckboxProps;
+    slider: SliderProps;
+    select: SelectProps;
+    password: PasswordProps;
+    textarea: TextAreaProps;
   }
   /** What any JSX expression (`<Foo/>`) evaluates to -- `createElement`'s own return type. */
   export type Element = Renderable;
@@ -312,6 +358,30 @@ const INTRINSICS: Record<IntrinsicTag, IntrinsicBuilder> = {
   button: (props) => {
     const { label, ...options } = props as unknown as ButtonProps;
     return nodeConstructors.Button(label, options);
+  },
+  form: (props) => {
+    const { fields, ...options } = props as unknown as FormProps;
+    return nodeConstructors.Form(fields, options);
+  },
+  checkbox: (props) => {
+    const { value, ...options } = props as unknown as CheckboxProps;
+    return nodeConstructors.Checkbox(value, options);
+  },
+  slider: (props) => {
+    const { value, min, max, ...options } = props as unknown as SliderProps;
+    return nodeConstructors.Slider(value, min, max, options);
+  },
+  select: (props) => {
+    const { choices, ...options } = props as unknown as SelectProps;
+    return nodeConstructors.Select(choices, options);
+  },
+  password: (props) => {
+    const { value, ...options } = props as unknown as PasswordProps;
+    return nodeConstructors.Password(value, options);
+  },
+  textarea: (props) => {
+    const { value, ...options } = props as unknown as TextAreaProps;
+    return nodeConstructors.TextArea(value, options);
   },
 };
 

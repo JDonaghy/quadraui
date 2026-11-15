@@ -82,6 +82,12 @@ function stubNodeConstructors(): Record<string, (...args: unknown[]) => unknown>
     StatusBar: stub("StatusBar"),
     TextDisplay: stub("TextDisplay"),
     Button: stub("Button"),
+    Form: stub("Form"),
+    Checkbox: stub("Checkbox"),
+    Slider: stub("Slider"),
+    Select: stub("Select"),
+    Password: stub("Password"),
+    TextArea: stub("TextArea"),
   };
 }
 
@@ -167,6 +173,56 @@ test("<list> forwards its own leaf props with no children slot to unpack", () =>
   const result = jsx("list", { items, id: "fm:list", hasFocus: true });
   assert.equal(result.__call, "List");
   assert.deepEqual(result.args, [items, { id: "fm:list", hasFocus: true }]);
+});
+
+test("<form> splits its required fields out of the options bag", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const fields = [{ id: "f:name", callbacks: {}, build: () => ({}) }];
+  const result = jsx("form", { fields, id: "fm:form", hasFocus: true });
+  assert.equal(result.__call, "Form");
+  assert.deepEqual(result.args, [fields, { id: "fm:form", hasFocus: true }]);
+});
+
+test("<checkbox> splits its required value out of the options bag", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const result = jsx("checkbox", { value: true, id: "fm:cb" });
+  assert.equal(result.__call, "Checkbox");
+  assert.deepEqual(result.args, [true, { id: "fm:cb" }]);
+});
+
+test("<slider> splits its required value/min/max out of the options bag", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const result = jsx("slider", { value: 3, min: 0, max: 10, id: "fm:sl" });
+  assert.equal(result.__call, "Slider");
+  assert.deepEqual(result.args, [3, 0, 10, { id: "fm:sl" }]);
+});
+
+test("<select> splits its required choices out of the options bag", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const choices = ["One", "Two"];
+  const result = jsx("select", { choices, id: "fm:se" });
+  assert.equal(result.__call, "Select");
+  assert.deepEqual(result.args, [choices, { id: "fm:se" }]);
+});
+
+test("<password> splits its required value out of the options bag", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const result = jsx("password", { value: "hi", id: "fm:pw" });
+  assert.equal(result.__call, "Password");
+  assert.deepEqual(result.args, ["hi", { id: "fm:pw" }]);
+});
+
+test("<textarea> splits its required value out of the options bag", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const result = jsx("textarea", { value: "hi", id: "fm:ta" });
+  assert.equal(result.__call, "TextArea");
+  assert.deepEqual(result.args, ["hi", { id: "fm:ta" }]);
 });
 
 test("<button> splits its required label out of the options bag", () => {

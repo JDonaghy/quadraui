@@ -11,16 +11,28 @@ const assert = require("node:assert/strict");
 const {
   App,
   Button,
+  Checkbox,
   Column,
   Component,
+  DropdownField,
+  Form,
   List,
+  Password,
+  PasswordField,
+  Select,
   SidebarPanel,
+  Slider,
+  SliderField,
   Split,
   StatusBar,
   Table,
   Tabs,
   Tab,
+  TextArea,
+  TextAreaField,
   TextDisplay,
+  TextInputField,
+  ToggleField,
   Toolbar,
   Tree,
 } = require("../js/app/index.ts");
@@ -247,6 +259,192 @@ test("list SelectionChanged with no onSelect falls through to onEvent", () => {
   const [widgetId, activation] = (fallenThrough[0] as Record<string, unknown>).List as [string, unknown];
   assert.equal(widgetId, "t:list");
   assert.deepEqual(activation, { SelectionChanged: { idx: 0 } });
+});
+
+// --- form / form fields -----------------------------------------------
+
+test("TextInputField dispatches onChange per keystroke and onSubmit on commit", () => {
+  const changes: string[] = [];
+  const submits: string[] = [];
+
+  const app = new App(40, 5, {
+    view: () =>
+      Form([
+        TextInputField("Name", "Alice", {
+          id: "f:name",
+          onChange: (value: string) => changes.push(value),
+          onSubmit: (value: string) => submits.push(value),
+        }),
+      ]),
+  });
+
+  app.pushEvent({ Form: ["f:name", { TextInputChanged: { id: "f:name", value: "Alicia" } }] });
+  app.step();
+  app.pushEvent({ Form: ["f:name", { TextInputCommitted: { id: "f:name", value: "Alicia" } }] });
+  app.step();
+  assert.deepEqual(changes, ["Alicia"]);
+  assert.deepEqual(submits, ["Alicia"]);
+});
+
+test("ToggleField dispatches onChange with the new value", () => {
+  const changes: boolean[] = [];
+
+  const app = new App(40, 5, {
+    view: () => Form([ToggleField("Enabled", false, { id: "f:enabled", onChange: (value: boolean) => changes.push(value) })]),
+  });
+
+  app.pushEvent({ Form: ["f:enabled", { ToggleChanged: { id: "f:enabled", value: true } }] });
+  app.step();
+  assert.deepEqual(changes, [true]);
+});
+
+test("DropdownField dispatches onChange with the selected index", () => {
+  const changes: number[] = [];
+  const choices = [{ spans: [{ text: "A", fg: null, bg: null }] }, { spans: [{ text: "B", fg: null, bg: null }] }];
+
+  const app = new App(40, 5, {
+    view: () => Form([DropdownField("Role", choices, 0, { id: "f:role", onChange: (idx: number) => changes.push(idx) })]),
+  });
+
+  app.pushEvent({ Form: ["f:role", { DropdownChanged: { id: "f:role", selected_idx: 1 } }] });
+  app.step();
+  assert.deepEqual(changes, [1]);
+});
+
+test("SliderField dispatches onChange with the new value", () => {
+  const changes: number[] = [];
+
+  const app = new App(40, 5, {
+    view: () => Form([SliderField("Volume", 5, 0, 10, { id: "f:vol", onChange: (value: number) => changes.push(value) })]),
+  });
+
+  app.pushEvent({ Form: ["f:vol", { SliderChanged: { id: "f:vol", value: 7 } }] });
+  app.step();
+  assert.deepEqual(changes, [7]);
+});
+
+test("PasswordField dispatches onChange per keystroke and onSubmit on commit", () => {
+  const changes: string[] = [];
+  const submits: string[] = [];
+
+  const app = new App(40, 5, {
+    view: () =>
+      Form([
+        PasswordField("Secret", "", {
+          id: "f:pwd",
+          onChange: (value: string) => changes.push(value),
+          onSubmit: (value: string) => submits.push(value),
+        }),
+      ]),
+  });
+
+  app.pushEvent({ Form: ["f:pwd", { TextInputChanged: { id: "f:pwd", value: "s3cr3t" } }] });
+  app.step();
+  app.pushEvent({ Form: ["f:pwd", { TextInputCommitted: { id: "f:pwd", value: "s3cr3t" } }] });
+  app.step();
+  assert.deepEqual(changes, ["s3cr3t"]);
+  assert.deepEqual(submits, ["s3cr3t"]);
+});
+
+test("TextAreaField dispatches onChange but never onSubmit (Enter inserts a newline, not a commit)", () => {
+  const changes: string[] = [];
+
+  const app = new App(40, 5, {
+    view: () => Form([TextAreaField("Notes", "hi", { id: "f:notes", onChange: (value: string) => changes.push(value) })]),
+  });
+
+  app.pushEvent({ Form: ["f:notes", { TextInputChanged: { id: "f:notes", value: "hi\nthere" } }] });
+  app.step();
+  assert.deepEqual(changes, ["hi\nthere"]);
+  // No `FORM_FIELD_EVENT_MAP` entry claims `TextInputCommitted` under
+  // `on_submit` for this field -- `TextAreaField` never registers one --
+  // so sending it anyway must fall through rather than throw.
+  app.pushEvent({ Form: ["f:notes", { TextInputCommitted: { id: "f:notes", value: "hi\nthere" } }] });
+  app.step();
+  assert.deepEqual(changes, ["hi\nthere"]);
+});
+
+test("Form resolves an unlabeled field's own id from its position, like Tabs' own tabs", () => {
+  const changes: boolean[] = [];
+
+  const app = new App(40, 5, {
+    view: () =>
+      Form(
+        [
+          TextInputField("Name", "Alice"),
+          ToggleField("Enabled", false, { onChange: (value: boolean) => changes.push(value) }),
+        ],
+        { id: "t:form" },
+      ),
+  });
+
+  const wire = app._render() as Record<string, Record<string, unknown>>;
+  const fields = wire.form.fields as Array<Record<string, unknown>>;
+  assert.equal(fields[0].id, "t:form:field:0");
+  assert.equal(fields[1].id, "t:form:field:1");
+
+  app.pushEvent({ Form: ["t:form:field:1", { ToggleChanged: { id: "t:form:field:1", value: true } }] });
+  app.step();
+  assert.deepEqual(changes, [true]);
+});
+
+test("a Form field with no onChange falls through to onEvent", () => {
+  const fallenThrough: unknown[] = [];
+
+  const app = new App(40, 5, {
+    view: () => Form([ToggleField("Enabled", false, { id: "f:enabled" })]),
+    onEvent: (event: unknown) => fallenThrough.push(event),
+  });
+
+  app.pushEvent({ Form: ["f:enabled", { ToggleChanged: { id: "f:enabled", value: true } }] });
+  app.step();
+  assert.equal(fallenThrough.length, 1);
+});
+
+test("standalone Checkbox/Slider/Select/Password/TextArea leaves dispatch onChange the same way a Form field does", () => {
+  const changes: Record<string, unknown[]> = { checkbox: [], slider: [], select: [], password: [], textarea: [] };
+
+  const app = new App(40, 5, {
+    view: () =>
+      Column([
+        Checkbox(false, { id: "l:checkbox", onChange: (v: boolean) => changes.checkbox.push(v) }),
+        Slider(0, 0, 10, { id: "l:slider", onChange: (v: number) => changes.slider.push(v) }),
+        Select(["One", "Two"], { id: "l:select", onChange: (v: number) => changes.select.push(v) }),
+        Password("", { id: "l:password", onChange: (v: string) => changes.password.push(v) }),
+        TextArea("", { id: "l:textarea", onChange: (v: string) => changes.textarea.push(v) }),
+      ]),
+  });
+
+  app.pushEvent({ Form: ["l:checkbox", { ToggleChanged: { id: "l:checkbox", value: true } }] });
+  app.step();
+  app.pushEvent({ Form: ["l:slider", { SliderChanged: { id: "l:slider", value: 3 } }] });
+  app.step();
+  app.pushEvent({ Form: ["l:select", { DropdownChanged: { id: "l:select", selected_idx: 1 } }] });
+  app.step();
+  app.pushEvent({ Form: ["l:password", { TextInputChanged: { id: "l:password", value: "hi" } }] });
+  app.step();
+  app.pushEvent({ Form: ["l:textarea", { TextInputChanged: { id: "l:textarea", value: "hi" } }] });
+  app.step();
+
+  assert.deepEqual(changes, {
+    checkbox: [true],
+    slider: [3],
+    select: [1],
+    password: ["hi"],
+    textarea: ["hi"],
+  });
+});
+
+test("standalone Password dispatches onSubmit on TextInputCommitted", () => {
+  const submits: string[] = [];
+
+  const app = new App(40, 5, {
+    view: () => Password("", { id: "l:password", onSubmit: (v: string) => submits.push(v) }),
+  });
+
+  app.pushEvent({ Form: ["l:password", { TextInputCommitted: { id: "l:password", value: "hi" } }] });
+  app.step();
+  assert.deepEqual(submits, ["hi"]);
 });
 
 test("tabs closed dispatches onClose with the index", () => {
