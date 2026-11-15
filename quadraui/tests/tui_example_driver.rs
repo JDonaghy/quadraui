@@ -9839,6 +9839,125 @@ fn float_demo_clicking_the_hint_dismisses_it() {
 }
 
 #[test]
+fn float_demo_transparent_overlay_shows_the_command_rows_it_covers() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    assert!(
+        driver.screen_contains("Duplicate"),
+        "the base list must start out visible:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('t');
+    assert!(
+        driver.screen_contains("overlay: transparent"),
+        "'t' should open the overlay banner in transparent mode:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Duplicate"),
+        "a transparent float paints no background fill, so the command \
+         row under the banner's interior must still be readable:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('t');
+    assert!(
+        driver.screen_contains("overlay: opaque"),
+        "a second 't' should switch the same banner to opaque:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Duplicate"),
+        "an opaque float fills its bounds, so the command row under the \
+         banner must be hidden — this is the half that proves the \
+         transparent assertion above is not vacuous:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('t');
+    assert!(
+        !driver.screen_contains("overlay:"),
+        "a third 't' should close the banner:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Duplicate"),
+        "closing the banner should restore the base list:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_transparent_overlay_keeps_its_border_and_never_steals_focus() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    driver.type_char('t');
+    let (label_x, label_y) = driver
+        .find("overlay: transparent")
+        .expect("the banner's label line must be painted");
+    // Transparent skips the fill, not the border: the box glyphs around
+    // the label are still there, one row above and one column left of
+    // the content the host painted into `content_bounds`.
+    assert!(
+        driver.screen_contains("┌") && driver.screen_contains("┘"),
+        "a transparent bordered float must still paint its border \
+         glyphs:\n{}",
+        driver.screen()
+    );
+    assert!(
+        label_y > 0.0 && label_x > 0.0,
+        "the label should sit inside the border inset, not at the \
+         float's own origin (label at {label_x},{label_y}):\n{}",
+        driver.screen()
+    );
+
+    // The banner is non-focusable — arrows still drive the base list.
+    driver.press_named(NamedKey::Down);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("last: Save"),
+        "the overlay banner must not steal the keyboard from the base \
+         list:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_clicking_the_transparent_overlay_cycles_it_to_opaque() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    driver.type_char('t');
+    let (x, y) = driver
+        .find("overlay: transparent")
+        .expect("the banner's label line must be painted");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("overlay: opaque"),
+        "clicking the banner should cycle it to opaque:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_escape_closes_the_overlay_before_exiting() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    driver.type_char('t');
+    driver.press_named(NamedKey::Escape);
+    assert!(
+        !driver.screen_contains("overlay:"),
+        "Escape should close the overlay banner:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.exited(),
+        "the overlay was open — Escape should have closed it, not exited"
+    );
+    driver.press_named(NamedKey::Escape);
+    assert!(
+        driver.exited(),
+        "with nothing open, Escape should exit the float demo"
+    );
+}
+
+#[test]
 fn float_demo_q_exits() {
     let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
     driver.type_char('q');

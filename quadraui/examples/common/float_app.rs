@@ -1,8 +1,8 @@
 //! Backend-agnostic app code for the `Float` primitive demo
 //! ([`tui_float`] / [`gtk_float`]).
 //!
-//! Two floats, exercising placement, edge clamping, z-order and focus
-//! vs. non-focus key routing:
+//! Three floats, exercising placement, edge clamping, z-order, focus
+//! vs. non-focus key routing and opaque vs. transparent chrome:
 //!
 //! - **Placement + edge clamping**: the actions menu anchors to the
 //!   currently selected command row and prefers to open below it
@@ -20,6 +20,13 @@
 //!   arrow keys and Enter must reach it while it's open. `handle` below
 //!   never hand-rolls an "is a float open" bool chain to decide which:
 //!   it asks `backend.modal_stack_handle().borrow().top_focusable()`.
+//! - **Opaque vs. transparent**: the overlay banner is pinned over the
+//!   middle of the command list and `t` cycles it through transparent
+//!   → opaque → closed. Transparent (`Float::transparent`) paints the
+//!   border and the banner's own label line but no background fill, so
+//!   the command rows it covers stay readable underneath it; opaque
+//!   paints the fill and hides them. Same float, same anchor, same
+//!   `Backend::draw_float` call — one `bool` apart.
 //!
 //! Controls:
 //! - Up / Down: move the command list cursor, or (when the menu is
@@ -28,7 +35,10 @@
 //!   selected menu item
 //! - m: toggle the actions menu for the selected command
 //! - ?: toggle the which-key hint (never steals focus)
-//! - Esc: close the menu if open, else the hint if open, else quit
+//! - t: cycle the overlay banner: transparent → opaque → closed
+//!   (never steals focus either; clicking it cycles it too)
+//! - Esc: close the menu if open, else the hint, else the overlay
+//!   banner, else quit
 //! - q: quit
 
 use quadraui::{
@@ -38,15 +48,54 @@ use quadraui::{
 
 const HINT_ID: &str = "float:hint";
 const MENU_ID: &str = "float:menu";
+const OVERLAY_ID: &str = "float:overlay";
 
 const COMMANDS: &[&str] = &["Open File", "Save", "Rename", "Duplicate", "Close", "Quit"];
 const MENU_ITEMS: &[&str] = &["Run now", "Run later", "Cancel"];
+
+/// Overlay banner size, in character cells / line heights — wide
+/// enough for its longest label and tall enough to cover several
+/// command rows, so "shows through" vs. "hidden" is visible at a
+/// glance on either backend.
+const OVERLAY_COLS: f32 = 26.0;
+const OVERLAY_ROWS: f32 = 5.0;
+
+/// The overlay banner's chrome state, cycled by `t`. `Transparent` and
+/// `Opaque` differ only in the banner float's `transparent` flag — see
+/// this module's doc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayMode {
+    Closed,
+    Transparent,
+    Opaque,
+}
+
+impl OverlayMode {
+    fn next(self) -> Self {
+        match self {
+            Self::Closed => Self::Transparent,
+            Self::Transparent => Self::Opaque,
+            Self::Opaque => Self::Closed,
+        }
+    }
+
+    /// Label painted into the banner's `content_bounds`, naming the
+    /// mode on screen so the demo is readable without the doc.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Closed => "",
+            Self::Transparent => "overlay: transparent",
+            Self::Opaque => "overlay: opaque",
+        }
+    }
+}
 
 pub struct FloatApp {
     selected: usize,
     hint_open: bool,
     menu_open: bool,
     menu_selected: usize,
+    overlay: OverlayMode,
     last_action: String,
 }
 
@@ -57,6 +106,7 @@ impl FloatApp {
             hint_open: false,
             menu_open: false,
             menu_selected: 0,
+            overlay: OverlayMode::Closed,
             last_action: String::new(),
         }
     }
@@ -135,6 +185,103 @@ impl FloatApp {
             ),
             measure,
         )
+    }
+
+    /// The overlay banner is a fixed band pinned over the middle of the
+    /// command list: [`Side::AtPoint`] opens the box at the anchor
+    /// rect's own origin (clamped to the viewport) instead of beside
+    /// it, which is what a banner wants — it is not attached to a row.
+    fn overlay_anchor(&self, backend: &dyn Backend) -> Anchor {
+        let cw = backend.char_width();
+        let lh = backend.line_height();
+        Anchor::new(
+            Rect::new(0.0, lh, cw * OVERLAY_COLS, lh * OVERLAY_ROWS),
+            Side::AtPoint,
+        )
+    }
+
+    /// The banner float, or `None` when it is closed. `transparent` is
+    /// the only difference between the two open modes: with it set,
+    /// `Backend::draw_float` skips the background fill and the command
+    /// rows beneath the banner stay readable through it.
+    fn overlay_float(&self, backend: &dyn Backend) -> Option<Float> {
+        if self.overlay == OverlayMode::Closed {
+            return None;
+        }
+        let mut f = Float::new(WidgetId::new(OVERLAY_ID), self.overlay_anchor(backend));
+        // A banner is informational: it must never take the keyboard
+        // away from the list it sits on top of.
+        f.focusable = false;
+        f.transparent = self.overlay == OverlayMode::Transparent;
+        Some(f)
+    }
+
+    fn overlay_layout(&self, backend: &dyn Backend) -> FloatLayout {
+        let cw = backend.char_width();
+        let lh = backend.line_height();
+        let anchor = self.overlay_anchor(backend);
+        let mut float = Float::new(WidgetId::new(OVERLAY_ID), anchor);
+        float.focusable = false;
+        let measure = FloatMeasure::new(cw * OVERLAY_COLS, lh * OVERLAY_ROWS);
+        float.layout(
+            Rect::new(
+                0.0,
+                0.0,
+                backend.viewport().width,
+                backend.viewport().height,
+            ),
+            measure,
+        )
+    }
+
+    /// The banner's single label line, painted into the first row of
+    /// `layout.content_bounds`. The remaining content rows are left
+    /// deliberately unpainted: when the banner is transparent that is
+    /// where the command rows underneath show through, and when it is
+    /// opaque that is where the background fill covers them.
+    fn paint_overlay_content(&self, backend: &mut dyn Backend, layout: &FloatLayout) {
+        let lh = backend.line_height();
+        let cb = layout.content_bounds;
+        self.line_at(
+            backend,
+            Rect::new(cb.x, cb.y, cb.width, lh),
+            "overlay-label",
+            format!(" {} ", self.overlay.label()),
+            false,
+        );
+    }
+
+    /// Advance the banner one step through transparent → opaque →
+    /// closed.
+    fn cycle_overlay(&mut self, backend: &mut dyn Backend) {
+        self.overlay = self.overlay.next();
+        self.sync_overlay(backend);
+    }
+
+    fn close_overlay(&mut self, backend: &mut dyn Backend) {
+        self.overlay = OverlayMode::Closed;
+        self.sync_overlay(backend);
+    }
+
+    /// Bring [`crate::ModalStack`] in line with the current mode:
+    /// `push_float` re-registers the same id with the current bounds,
+    /// so the two open modes share one entry and closing pops it.
+    fn sync_overlay(&mut self, backend: &mut dyn Backend) {
+        match self.overlay_float(backend) {
+            Some(float) => {
+                let bounds = self.overlay_layout(backend).bounds;
+                backend
+                    .modal_stack_handle()
+                    .borrow_mut()
+                    .push_float(&float, bounds);
+            }
+            None => {
+                backend
+                    .modal_stack_handle()
+                    .borrow_mut()
+                    .pop(&WidgetId::new(OVERLAY_ID));
+            }
+        }
     }
 
     fn status_bar(&self) -> StatusBar {
@@ -316,6 +463,16 @@ impl AppLogic for FloatApp {
         // the hint visually sits on top — exercising z-order without
         // the hint ever being able to steal the menu's keyboard focus
         // (see `handle` below).
+        //
+        // The overlay banner paints first of the three, i.e. directly on
+        // top of the command rows it is meant to show through: a
+        // transparent float only reveals what was already painted
+        // beneath it this frame.
+        if let Some(float) = self.overlay_float(backend) {
+            let layout = self.overlay_layout(backend);
+            backend.draw_float(&float, &layout);
+            self.paint_overlay_content(backend, &layout);
+        }
         if self.menu_open {
             let layout = self.menu_layout(backend);
             let float = self.menu_float(backend);
@@ -346,6 +503,9 @@ impl AppLogic for FloatApp {
                 } else if self.hint_open {
                     self.toggle_hint(backend);
                     Reaction::Redraw
+                } else if self.overlay != OverlayMode::Closed {
+                    self.close_overlay(backend);
+                    Reaction::Redraw
                 } else {
                     Reaction::Exit
                 }
@@ -355,6 +515,13 @@ impl AppLogic for FloatApp {
                 ..
             } => {
                 self.toggle_hint(backend);
+                Reaction::Redraw
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('t'),
+                ..
+            } => {
+                self.cycle_overlay(backend);
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -460,6 +627,16 @@ impl AppLogic for FloatApp {
                 self.toggle_hint(backend);
                 Reaction::Redraw
             }
+            UiEvent::MouseDown {
+                widget: Some(ref id),
+                ..
+            } if id.as_str() == OVERLAY_ID => {
+                // Registered on the modal stack like the other two, so
+                // a click lands on the banner rather than the row it
+                // covers — cycling it is the way out.
+                self.cycle_overlay(backend);
+                Reaction::Redraw
+            }
 
             UiEvent::MouseDown {
                 widget: None,
@@ -495,6 +672,7 @@ impl AppLogic for FloatApp {
                         .borrow_mut()
                         .push_float(&float, bounds);
                 }
+                self.sync_overlay(backend);
                 Reaction::Redraw
             }
             _ => Reaction::Continue,
