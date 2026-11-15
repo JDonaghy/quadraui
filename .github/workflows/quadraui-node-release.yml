@@ -3,11 +3,10 @@ name: quadraui-node release
 # Publishes `@quadraui/node` to npm. Triggered by a `node-v<version>` tag --
 # deliberately distinct from the `v<version>` tags `release.yml` pushes for
 # the `quadraui` Rust crate's own crates.io releases and from the `py-v*`
-# tags `quadraui-py-release.yml` uses for PyPI (#1368's reasoning, extended
-# to a third binding): each binding leaf versions independently of the
-# crate (see `BINDING_VERSION_POLICY.md`), so a crate release, a PyPI
-# release and an npm release are three separate events that must not
-# collide on one tag namespace.
+# tags `quadraui-py-release.yml` uses for PyPI: each binding leaf versions
+# independently of the crate (see `BINDING_VERSION_POLICY.md`), so a crate
+# release, a PyPI release and an npm release are three separate events that
+# must not collide on one tag namespace.
 #
 # Four npm packages publish out of this one workflow run: the root
 # `@quadraui/node` facade (no native code of its own -- just
@@ -162,6 +161,10 @@ jobs:
     # `release` environment does for crates.io.
     environment: npm
     permissions:
+      # Needed for `actions/checkout` below -- declaring `permissions:` at
+      # all sets every unlisted scope to `none`, and unlike
+      # `quadraui-py-release.yml`'s publish job this one checks out the repo.
+      contents: read
       # Lets npm's CLI request the OIDC token npm's trusted publisher
       # exchanges for an upload credential, for both the per-platform
       # packages `napi pre-publish` publishes and the root package `npm
@@ -201,7 +204,7 @@ jobs:
       - name: Discard this job's own (unshipped) debug binary
         run: rm -f *.node
       - name: Collect binaries into their per-platform packages
-        run: npx napi artifacts -d artifacts
+        run: npm run artifacts
       # `napi artifacts` also drops a copy of every platform's `.node` file
       # at the crate root (its usual `napi build` output location), which
       # the root package's own `files` list (`*.node`, for a plain local
@@ -220,8 +223,12 @@ jobs:
       # back; it only needs to be on disk for the `npm publish` step below,
       # the same "prepare in the ephemeral checkout, never push it back"
       # shape `quadraui-py-wheels.yml` uses for its own build-time file
-      # changes.
+      # changes. `--no-gh-release` is explicit: `--tag-style npm`'s derived
+      # tag is `v<version>`, the crate's own tag namespace this file's
+      # header says must not collide with, and this job has no
+      # `contents: write`/`GITHUB_TOKEN` to create a GitHub release with
+      # anyway.
       - name: Publish per-platform optional-dependency packages
-        run: npx napi pre-publish -t npm
+        run: npx napi pre-publish -t npm --no-gh-release
       - name: Publish @quadraui/node
         run: npm publish
