@@ -18,6 +18,7 @@ from quadraui.app import (
     Button,
     Column,
     Component,
+    List,
     SidebarPanel,
     Split,
     StatusBar,
@@ -89,10 +90,11 @@ def test_id_bearing_node_constructors_all_accept_an_omitted_id():
     def view():
         tree = Tree([], on_activate=lambda path: None)
         table = Table([], [])
+        lst = List([], on_select=lambda idx: None)
         status = StatusBar([], [])
         text = TextDisplay([])
         tabs = Tabs([Tab(text, title="one")])
-        panel = SidebarPanel(Column(tree, table, status, tabs))
+        panel = SidebarPanel(Column(tree, table, lst, status, tabs))
         return Split(panel, text)
 
     app = App(20, 5, view=view)
@@ -178,6 +180,57 @@ def test_table_row_double_clicked_dispatches_on_activate_not_on_select():
     app.push_event({"DataTable": ["t:grid", {"RowDoubleClicked": {"idx": 0}}]})
     app.step()
     assert activated == [0]
+
+
+def test_list_selection_changed_dispatches_on_select_not_on_activate():
+    selected = []
+    activated = []
+
+    def view():
+        return List(
+            items=[{"text": {"spans": [{"text": "a", "fg": None, "bg": None}]}}],
+            id="t:list",
+            on_select=lambda idx: selected.append(idx),
+            on_activate=lambda idx: activated.append(idx),
+        )
+
+    app = App(20, 5, view=view)
+    app.push_event({"List": ["t:list", {"SelectionChanged": {"idx": 0}}]})
+    app.step()
+    assert selected == [0]
+    assert activated == []
+
+
+def test_list_item_double_clicked_and_item_activated_both_dispatch_on_activate():
+    """`on_activate` fires on either the mouse `ItemDoubleClicked` or the
+    keyboard `ItemActivated` -- the same "open this row" pairing `Table`'s
+    own `on_activate` documents."""
+    activated = []
+
+    def view():
+        return List(
+            items=[{"text": {"spans": [{"text": "a", "fg": None, "bg": None}]}}],
+            id="t:list",
+            on_activate=lambda idx: activated.append(idx),
+        )
+
+    app = App(20, 5, view=view)
+    app.push_event({"List": ["t:list", {"ItemDoubleClicked": {"idx": 0}}]})
+    app.step()
+    assert activated == [0]
+
+    app.push_event({"List": ["t:list", {"ItemActivated": {"idx": 0}}]})
+    app.step()
+    assert activated == [0, 0]
+
+
+def test_list_without_selected_defaults_selected_idx_to_zero():
+    def view():
+        return List(items=[], id="t:list")
+
+    app = App(20, 5, view=view)
+    wire = app._render()
+    assert wire["list"]["selected_idx"] == 0
 
 
 def test_tabs_closed_dispatches_on_close_with_the_index():
