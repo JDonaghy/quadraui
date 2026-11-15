@@ -770,13 +770,16 @@ impl Dialog {
             .fold(estimated_button_w, f32::max);
 
         // On a pixel backend (`line_height > 1.0`), a `style` sizes the
-        // button row at `Style::control_height` — the same fixed-pixel row
-        // `MessageDialogController::layout`'s own `is_pixel` split renders
-        // at, instead of the raw chrome line height. TUI's char-grid
-        // geometry (`line_height == 1.0`) is unaffected either way.
+        // button row at `ButtonMetrics::resolve`'s `height` — the same
+        // single source of truth for button geometry
+        // `native_surface_paint::paint` resolves its own `corner_radius`
+        // through just below, and the same fixed-pixel row
+        // `MessageDialogController::layout`'s own `is_pixel` split
+        // renders at. TUI's char-grid geometry (`line_height == 1.0`)
+        // is unaffected either way.
         let is_pixel = line_height > 1.0;
         let button_row_height = match style {
-            Some(s) if is_pixel => s.control_height,
+            Some(s) if is_pixel => crate::primitives::button::ButtonMetrics::resolve(s).height,
             _ => line_height,
         };
 
