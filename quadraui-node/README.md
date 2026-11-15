@@ -14,6 +14,54 @@ npm install @quadraui/node
 const { QuiApp } = require("@quadraui/node");
 ```
 
+## Install
+
+```bash
+npm install @quadraui/node
+```
+
+`npm install` pulls in a prebuilt native addon for the installing machine's
+platform as an optional dependency — see *Prebuilt binaries* below for which
+platforms have one, and what happens on a platform that doesn't.
+
+### From source
+
+A platform with no prebuilt binary (Linux arm64, musl, …), or a local change
+to the Rust side of this package, needs a build from source instead of
+`npm install @quadraui/node`:
+
+```bash
+git clone https://github.com/JDonaghy/quadraui.git
+cd quadraui/quadraui-node
+npm install   # pulls this package's own devDependencies, not @quadraui/node itself
+npm run build # napi build --platform --release — compiles the Rust addon for this machine
+```
+
+`npm run build` needs a Rust toolchain (`rustup`) on `PATH`; everything else
+it needs (`@napi-rs/cli`, `typescript`, …) comes from `npm install`. Use
+`npm run build:debug` instead for a faster, unoptimized build while
+iterating locally.
+
+## Run
+
+Every file under `examples/` runs directly, with no separate compile step,
+once the native addon is built (either way — `npm install` or from source):
+
+```bash
+node examples/appshell_demo.ts
+node examples/file_manager_app.ts
+```
+
+This relies on Node's own native TypeScript support (type stripping — no
+`ts-node`/`tsx`/`esbuild-register` needed); see
+*CommonJS vs. ESM — the `.ts`/`require` constraint* below for the one thing
+that support doesn't do, and why every file here works around it the same
+way.
+
+`npm test` runs this package's own `node --test` suite
+(`tests/*.test.ts`), and `npm run typecheck:examples` type-checks every
+example with `tsc --strict` without running any of them.
+
 ## Version compatibility
 
 This package's minor version always equals the `quadraui` Rust crate's own
@@ -46,9 +94,44 @@ source with no native-window feature enabled. A different platform (Linux
 arm64, musl, etc.) has no prebuilt binary; `npm install` still succeeds
 there (optional dependencies that don't match the install platform are
 silently skipped) but the generated loader then fails at runtime with
-"Failed to load native binding" — that platform needs a Rust toolchain to
-build from source instead: clone the repo, `cd quadraui-node`, `npm install`,
-`npm run build`.
+"Failed to load native binding" — see *Install > From source* above.
+
+## CommonJS vs. ESM — the `.ts`/`require` constraint
+
+This package's `package.json` sets `"type": "commonjs"`, and every example
+and in-repo consumer (`js/app/runtime.ts`, every test) loads this package's
+own TypeScript sources with `require("../js/index.ts")`, `.ts` extension
+and all, instead of `import`. Both of those are load-bearing, not stylistic:
+
+- **Node resolves a standalone `.ts` file's module format the same way it
+  resolves a `.js` file's** — by the nearest `package.json`'s `"type"`
+  field. With `"type": "commonjs"` (this package's own setting, and the
+  default when a `package.json` omits `"type"` entirely), a top-level
+  `import`/runtime `export` statement in a `.ts` file run directly is a
+  **hard parse error**, not something Node silently transpiles into
+  `require`/`module.exports` for you. `export type`/`import type` are
+  exempt — they're erasable (type-only, no runtime value), so they
+  disappear during type-stripping rather than needing ESM semantics — but
+  a value-level `import`/`export` is not.
+- That's why `js/index.ts`, every file under `examples/`, and this
+  package's own tests all use `require`/`exports.X = ...` for runtime
+  values, reserving `import type`/`export type` for types only: it's the
+  one shape that runs unchanged under Node's native TypeScript support
+  (type stripping — see
+  [Node's TypeScript documentation](https://nodejs.org/api/typescript.html))
+  with **no compile step**, which is what lets `node examples/appshell_demo.ts`
+  just work. This repo's CI runs that support on Node 24; consult Node's own
+  docs for the minimum version your Node needs it unflagged.
+
+A consumer writing plain `.js`/pre-compiled TypeScript against the
+*published* package is unaffected either way: `require("@quadraui/node")`
+and `import { QuiApp } from "@quadraui/node"` both work, because the
+published `main`/`exports` entry point (`dist/index.js`, compiled by this
+package's own `prepack` hook) is a plain compiled CommonJS file Node's
+ESM loader already knows how to import named exports from. The constraint
+above only bites a file in *this repo* that `require()`s a sibling `.ts`
+file directly, or a consumer who copies that same pattern into their own
+`"type": "commonjs"` project to run TypeScript with no build step at all.
 
 ## Building and testing an app
 
