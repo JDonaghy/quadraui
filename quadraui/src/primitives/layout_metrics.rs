@@ -699,6 +699,17 @@ fn form_field_measure_inner(
                 items,
             )
         }
+        // A real button needs real button chrome: `row_h` at the
+        // default 14px line height is 22 (`form_row_height`), which
+        // paints an 18px box (`row_h - 4.0`) — short of
+        // `Style::control_height`'s 26px standard every other
+        // single-line control sizes against (see `ButtonMetrics::resolve`).
+        // Only this field's own row grows; every other `FieldKind`
+        // still measures exactly `row_h` via the `_` arm below.
+        FieldKind::Button => {
+            let button_box_h = crate::style::Style::default().control_height;
+            FormFieldMeasure::new(row_h.max(button_box_h + 4.0))
+        }
         _ => FormFieldMeasure::new(row_h),
     }
 }
@@ -1310,12 +1321,31 @@ mod tests {
 
     #[test]
     fn form_field_measure_default_kind_has_no_items() {
-        let field = field_with("name", "Name", FieldKind::Button);
+        let field = field_with("name", "Name", FieldKind::Label);
         let m = form_field_measure(&field, 20.0, &FakeMeasure);
         assert_eq!(m.height, 20.0);
         assert!(m.item_measures.is_empty());
         assert_eq!(m.items_start_x, 0.0);
         assert_eq!(m.item_gap, 0.0);
+    }
+
+    /// `FieldKind::Button`'s row floors at `Style::default().control_height
+    /// + 4.0` (`30.0`) instead of `row_h`, so the painted box
+    /// (`row_h - 4.0`, see `form.rs`'s `FieldKind::Button` paint arm)
+    /// reaches the full `26px` `control_height` even at a `row_h` a
+    /// small line-height computes (macOS's default 14px line height
+    /// gives `row_h = 22`, which this floor overrides). A `row_h`
+    /// already at or above the floor (a host with a larger line
+    /// height) is left untouched.
+    #[test]
+    fn form_field_measure_button_row_floors_at_control_height_plus_four() {
+        let field = field_with("save", "Save", FieldKind::Button);
+
+        let small = form_field_measure(&field, 22.0, &FakeMeasure);
+        assert_eq!(small.height, 30.0);
+
+        let large = form_field_measure(&field, 40.0, &FakeMeasure);
+        assert_eq!(large.height, 40.0);
     }
 
     /// A field with a non-empty validation message measures one extra
@@ -1328,7 +1358,7 @@ mod tests {
         use crate::primitives::form::ValidationState;
 
         const ROW_H: f32 = 20.0;
-        let mut field = field_with("name", "Name", FieldKind::Button);
+        let mut field = field_with("name", "Name", FieldKind::Label);
         let base = form_field_measure(&field, ROW_H, &FakeMeasure);
         assert_eq!(base.height, ROW_H);
 
@@ -1354,6 +1384,10 @@ mod tests {
     /// rely on: `FormFieldMeasure::height` is always exactly one `row_h`,
     /// for *every* `FieldKind`, regardless of any field-specific content
     /// (multiple toggles, a long `TextArea` value, a large `visible_rows`).
+    ///
+    /// `FieldKind::Button` and `FieldKind::RadioGroup` are deliberate
+    /// exceptions (own dedicated tests below / `form_field_measure_inner`'s
+    /// own arm) and are not in `kinds`.
     #[test]
     fn form_field_measure_height_is_one_row_for_every_field_kind() {
         use crate::primitives::form::{ButtonRowItem, ToggleGroupItem};
@@ -1374,7 +1408,6 @@ mod tests {
                     selection_anchor: None,
                 },
             ),
-            ("button", FieldKind::Button),
             (
                 "read-only",
                 FieldKind::ReadOnly {

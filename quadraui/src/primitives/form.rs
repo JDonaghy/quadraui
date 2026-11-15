@@ -2786,6 +2786,11 @@ mod native_surface_paint {
             /// `surface_stroke_rect` call, so tests can assert the drawn
             /// checkbox / text-input-box borders.
             strokes: Vec<(Rect, Color, f32)>,
+            /// `(rect, radius, color, stroke_width)` for every
+            /// `surface_stroke_rounded_rect` call — a real `Button`'s
+            /// border and focus ring, unlike the square `strokes` list
+            /// above.
+            rounded_strokes: Vec<(Rect, f32, Color, f32)>,
             /// Every rect passed to `surface_push_clip`, in push order —
             /// so a regression test can assert `paint` clips to the
             /// form's own bounds exactly once.
@@ -2834,11 +2839,13 @@ mod native_surface_paint {
             }
             fn surface_stroke_rounded_rect(
                 &mut self,
-                _rect: Rect,
-                _radius: f32,
-                _color: Color,
-                _stroke_width: f32,
+                rect: Rect,
+                radius: f32,
+                color: Color,
+                stroke_width: f32,
             ) {
+                self.rounded_strokes
+                    .push((rect, radius, color, stroke_width));
             }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
@@ -2954,18 +2961,58 @@ mod native_surface_paint {
         /// A standalone `FieldKind::Button` paints through the shared
         /// `button::native_surface_paint::paint` chrome — a filled box
         /// carrying its caption — instead of `<label>` bracket glyphs.
+        /// The fill/border must also actually reach `Style::control_height`
+        /// (`26px`) and `button_radius` (`2.0`), not just exist — the
+        /// row this paints at (`form_row_height(14.0) == 22`) is shorter
+        /// than that on its own, so `form_field_measure_inner`'s
+        /// `FieldKind::Button` arm must floor the row to make room.
         #[test]
         fn button_field_paints_through_shared_button_chrome_not_bracket_glyphs() {
             let mut form = one_field_form("save", FieldKind::Button);
             form.fields[0].label = StyledText::plain("Save");
             let theme = Theme::default();
+            let style = crate::style::Style::default();
             let (surface, _) = paint_recorded(&form);
 
+            let fill = surface
+                .fills
+                .iter()
+                .find(|(_, c)| *c == theme.surface_bg)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "a plain (Secondary-variant) Button must fill through \
+                         the shared button chrome; fills were {:?}",
+                        surface.fills,
+                    )
+                });
             assert!(
-                surface.fills.iter().any(|(_, c)| *c == theme.surface_bg),
-                "a plain (Secondary-variant) Button must fill through \
-                 the shared button chrome; fills were {:?}",
-                surface.fills,
+                fill.0.height >= style.control_height,
+                "the button box must be at least `Style::control_height` \
+                 ({}) tall, got {}",
+                style.control_height,
+                fill.0.height,
+            );
+            let border = surface
+                .rounded_strokes
+                .iter()
+                .find(|(_, _, c, _)| *c == theme.border_fg)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "an unfocused, enabled Button must stroke a border; \
+                         rounded strokes were {:?}",
+                        surface.rounded_strokes,
+                    )
+                });
+            assert_eq!(
+                border.1, style.button_radius,
+                "the button border must be stroked at `Style::button_radius`",
+            );
+            assert!(
+                border.0.height >= style.control_height,
+                "the button border's own box must also be at least \
+                 `Style::control_height` ({}) tall, got {}",
+                style.control_height,
+                border.0.height,
             );
             assert!(
                 surface.text_runs.iter().any(|(_, t, _)| t == "Save"),
