@@ -370,10 +370,12 @@ def Form(
     `Form::focused_field`'s own doc describes: leave `focused_field`
     unset (the default) to let the engine own Tab/Shift-Tab/click focus
     movement between fields itself; pass a field's id on every render
-    only to pin it from app state. Keyboard editing, stepping and
-    dropdown navigation inside any field are entirely engine-owned (via
+    only to pin it from app state. Keyboard editing and dropdown
+    navigation inside a field are entirely engine-owned (via
     `FormController`) -- nothing here needs to decode a raw key itself,
     the same "just works" contract every field builder's own doc repeats.
+    The one exception is the embedded slider row: see `SliderField`'s own
+    doc for its current paint/a11y-only limitation.
 
     For a single boolean/slider/select/password/text-area control with no
     surrounding `Form` chrome, use the standalone leaf instead:
@@ -554,9 +556,12 @@ def SliderField(
     on_change: Optional[Callable[[float], None]] = None,
 ) -> Node:
     """A `Form`-embedded `FieldKind::Slider` row, bounded by `min..=max`
-    with increment `step`. Click-and-drag on the track, arrow keys, or
-    Home/End move `value` (engine-owned); `on_change(new_value)` fires on
-    every adjustment (`FormEvent::SliderChanged`)."""
+    with increment `step`. Paint and a11y Increment/Decrement only for now:
+    `FormController` has no click/drag/arrow-key arm for `FieldKind::Slider`,
+    so `on_change` fires only from an a11y Increment/Decrement action, never
+    from a real mouse drag or keypress. For an interactive slider, use the
+    standalone `Slider` leaf instead, which does fire `on_change` on every
+    adjustment via `FormEvent::SliderChanged`."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         kind: Dict[str, Any] = {"value": value, "min": min, "max": max}

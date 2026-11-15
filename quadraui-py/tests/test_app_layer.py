@@ -479,6 +479,9 @@ def test_text_input_field_on_change_and_on_submit_fire_separately():
 
 
 def test_slider_field_on_change_fires_with_the_new_value():
+    # Hand-feeds the `SliderChanged` payload to pin the dispatch wiring; it
+    # does not prove the engine emits one for a real drag/arrow key on a
+    # `Form`-embedded slider -- see `SliderField`'s own doc for that gap.
     seen = []
 
     def view():

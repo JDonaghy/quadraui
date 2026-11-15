@@ -1,9 +1,9 @@
 """Runnable demo of `Form` and its typed field builders: a settings page
 with a boolean, a text field, a slider, a dropdown, a password field and
 a notes text area, wired up with per-field `on_change`/`on_submit`, with
-no raw wire dict and no `"Form"` branch in `on_event` -- the typed-field
-shape issue #2463 adds, in place of the raw `{"form": {"fields": [...]}}`
-leaf a lower-level app would have to hand-write.
+no raw wire dict and no `"Form"` branch in `on_event`, in place of the raw
+`{"form": {"fields": [...]}}` leaf a lower-level app would have to
+hand-write.
 
 Run headless (drives one change per field kind through `App.push_event`,
 then prints what each callback recorded):
@@ -12,8 +12,11 @@ then prints what each callback recorded):
     python quadraui-py/examples/settings_form_demo.py
 
 Run in a real terminal (Tab/Shift-Tab move between fields, Space toggles
-the checkbox, arrow keys adjust the slider/dropdown, typing edits the
-text fields, `q`/Escape quits):
+the checkbox, arrow keys adjust the dropdown, typing edits the text
+fields, `q`/Escape quits -- the `Form`-embedded slider has no
+`FormController` arm yet, so its value only moves via a11y
+Increment/Decrement, not a real drag or arrow key; use the standalone
+`Slider` leaf for an interactive one):
 
     python quadraui-py/examples/settings_form_demo.py --tui
 """
