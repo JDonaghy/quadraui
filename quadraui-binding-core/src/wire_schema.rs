@@ -2588,6 +2588,11 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("focusable", bool_()),
             field_opt("border", bool_()),
             field_opt("bg", nullable(re("Color"))),
+            with_doc(
+                field_opt("transparent", bool_()),
+                "Skip the background fill, leaving a border-only overlay that the \
+                 content behind it shows through. Defaults to false.",
+            ),
         ],
         "A floating surface's own chrome: anchor, border and background.",
     ));
@@ -5384,7 +5389,7 @@ mod coverage {
                 WidgetId::new("test"),
                 quadraui::Anchor::new(Rect::new(0.0, 0.0, 1.0, 1.0), quadraui::Side::Bottom),
             ),
-            ["id", "anchor", "focusable", "border", "bg"]
+            ["id", "anchor", "focusable", "border", "bg", "transparent"]
         );
 
         value_shape_test!(

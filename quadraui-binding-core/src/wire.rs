@@ -2777,6 +2777,39 @@ mod tests {
             panic!("expected the content to decode as a column node");
         };
         assert_eq!(column.children.len(), 2);
+        // The chrome's `transparent` key is optional; omitting it leaves
+        // the float opaque, the same default `Float::new` picks.
+        assert!(!decoded.chrome.transparent);
+    }
+
+    /// A binding can ask for a transparent (fill-free) popover by setting
+    /// the `"transparent"` key on the `"float"` chrome.
+    #[test]
+    fn popover_chrome_carries_the_transparent_flag() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let value = json!({
+            "float": {
+                "id": "popover:banner",
+                "anchor": {
+                    "rect": {"x": 1.0, "y": 2.0, "width": 3.0, "height": 1.0},
+                    "preferred": "Top",
+                    "margin": 0.0,
+                },
+                "border": false,
+                "transparent": true,
+            },
+            "content": {"id": "a", "button": {"id": "a", "label": "A"}},
+        });
+        let decoded = decode_popover(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &DecodeDiagnostics::warn(),
+        )
+        .expect("valid popover");
+        assert!(decoded.chrome.transparent);
+        assert!(!decoded.chrome.border);
     }
 
     /// A layout-dialog descriptor round-trips its `"dialog"` chrome

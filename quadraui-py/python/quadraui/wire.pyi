@@ -1577,6 +1577,7 @@ class FloatDescriptor(TypedDict):
     focusable: NotRequired[bool]
     border: NotRequired[bool]
     bg: NotRequired[Optional[Color]]
+    transparent: NotRequired[bool]  # Skip the background fill, leaving a border-only overlay that the content behind it shows through. Defaults to false.
 
 class DialogButtonDescriptor(TypedDict):
     """One button in a dialog's button row."""
