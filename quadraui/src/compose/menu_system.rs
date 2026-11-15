@@ -701,11 +701,18 @@ impl MenuSystem {
                     id: m.id,
                     label: m.label.clone(),
                     disabled: m.disabled,
-                    // MenuSystem manages dropdowns out-of-band via
-                    // build_dropdown(), not through the declarative submenu
-                    // field. Leaving this `None` keeps the existing render
-                    // path unchanged on TUI/GTK.
-                    submenu: None,
+                    // TUI/GTK's painted strip never reads this field — the
+                    // dropdown there is `Self::build_dropdown`'s own
+                    // out-of-band overlay, keyed by `open_item`/
+                    // `submenu_path`, not `MenuBarItem::submenu`. A native
+                    // backend's `Backend::install_menu_bar` has no such
+                    // overlay: it bakes `submenu` directly into the real
+                    // `NSMenu`/`HMENU` tree, and `A11yPrimitive for
+                    // MenuBar` walks it to build each item's accessible
+                    // children — so this must carry the real dropdown
+                    // content every call, not just whichever `MenuDef` was
+                    // last mutated in place.
+                    submenu: Some(m.items.clone()),
                 })
                 .collect(),
             open_item: self.open_item,
@@ -1877,6 +1884,34 @@ mod tests {
         assert_eq!(bar.open_item, Some(1));
         assert_eq!(bar.focused_item, Some(1));
         assert!(bar.items[2].disabled);
+    }
+
+    /// `build_menu_bar`'s `MenuBarItem::submenu` must carry this
+    /// `MenuDef`'s real dropdown items, not the stale `None` a native
+    /// backend's `Backend::install_menu_bar` would silently bake into an
+    /// empty `NSMenu`/`HMENU` submenu — `MenuSystem::render` calls
+    /// `Backend::draw_menu_bar_with_state` with this `MenuBar` every
+    /// frame, after the frame's own plain paint already installed one
+    /// with the correct submenus, so this is the value a native install
+    /// actually ends up showing.
+    #[test]
+    fn build_menu_bar_carries_each_menus_own_dropdown_items_as_submenu() {
+        let ms = MenuSystem::new(sample_menus());
+        let bar = ms.build_menu_bar();
+        assert_eq!(
+            bar.items[0].submenu.as_deref(),
+            Some(sample_menus()[0].items.as_slice()),
+        );
+        assert_eq!(
+            bar.items[1].submenu.as_deref(),
+            Some(sample_menus()[1].items.as_slice()),
+        );
+        // "help" has no dropdown items, but the field is still `Some`
+        // (an empty submenu), never `None` — `None` would mean "no
+        // dropdown at all" to `A11yPrimitive for MenuBar` and to a
+        // native backend's install, which is wrong for a disabled menu
+        // that still has a (empty) `MenuDef::items` list.
+        assert_eq!(bar.items[2].submenu.as_deref(), Some([].as_slice()));
     }
 
     #[test]
