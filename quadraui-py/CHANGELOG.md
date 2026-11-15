@@ -34,6 +34,12 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `run_shell` itself, an `on_unknown_key` callback that raises surfaces as
   `run_shell`'s own raised exception rather than through a later `step`/
   `run` call.
+- `quadraui.app.App.run_async(fallback_interval=None)`: the app-layer
+  `App` (`quadraui.app.App`) now has its own `run_async`, delegating to
+  the wrapped `QuiApp.run_async`/`quadraui.aio.run` the same way
+  `run_tui`/`run_native` already delegate — `await app.run_async()` on an
+  app-layer `App`, as `quadraui/AGENTS.md`'s "Running it" section
+  documents, previously raised `AttributeError`.
 
 ### Changed
 
