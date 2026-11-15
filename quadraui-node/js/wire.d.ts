@@ -1685,6 +1685,7 @@ export interface FloatDescriptor {
   focusable?: boolean;
   border?: boolean;
   bg?: Color | null;
+  transparent?: boolean; // Skip the background fill, leaving a border-only overlay that the content behind it shows through. Defaults to false.
 }
 
 /** One button in a dialog's button row. */

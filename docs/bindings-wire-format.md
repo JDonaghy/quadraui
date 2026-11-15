@@ -3235,6 +3235,7 @@ A floating surface's own chrome: anchor, border and background.
 | `focusable` | `boolean` | no |  |
 | `border` | `boolean` | no |  |
 | `bg` | `Color \| null` | no |  |
+| `transparent` | `boolean` | no | Skip the background fill, leaving a border-only overlay that the content behind it shows through. Defaults to false. |
 
 <a id="wire-dialogbuttondescriptor"></a>
 #### `DialogButtonDescriptor`
