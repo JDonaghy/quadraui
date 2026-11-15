@@ -476,3 +476,16 @@ class App:
 
     def run_native(self, **kwargs: Any) -> None:
         self.qui.run_native(**kwargs)
+
+    async def run_async(self, *, fallback_interval: Optional[float] = None) -> None:
+        """Drives this app's own `step()`/render from the currently running
+        asyncio loop, same contract as `quadraui.aio.run`/
+        `QuiApp.run_async` -- a pure delegation to `self.qui.run_async(...)`,
+        the same shape as `run_tui`/`run_native` above. `fallback_interval`
+        left as `None` (the default) picks up whatever default
+        `QuiApp.run_async` itself uses, so this never needs to track that
+        value by hand. See `quadraui.aio`'s own module doc for the full
+        contract, including the wake-notify hook this arms and the
+        `asyncio.CancelledError` propagation on cancellation."""
+        kwargs = {} if fallback_interval is None else {"fallback_interval": fallback_interval}
+        await self.qui.run_async(**kwargs)

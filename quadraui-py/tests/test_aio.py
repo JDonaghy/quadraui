@@ -15,6 +15,7 @@ import pytest
 
 from quadraui import QuiApp
 from quadraui.aio import async_handler, run
+from quadraui.app import App
 
 
 def _render_from(state):
@@ -116,6 +117,26 @@ async def test_run_async_method_is_equivalent_to_run():
     app.set_handler(lambda event: received.append(event))
 
     app.waker().wake()
+    task = asyncio.create_task(app.run_async(fallback_interval=0.05))
+    try:
+        await asyncio.sleep(0.05)
+        assert received == [{"User": None}]
+    finally:
+        await _cancel_and_await(task)
+
+
+@pytest.mark.asyncio
+async def test_app_layer_run_async_drives_step_and_cancels_cleanly():
+    # The app-layer `App` (quadraui.app.App) wraps a `QuiApp` rather than
+    # being one, so `App.run_async` is its own delegating method, not the
+    # `QuiApp.run_async` this module patches on directly -- this is the
+    # regression this test guards against: `await app.run_async()` on the
+    # app-layer `App`, as `quadraui/AGENTS.md`'s "Running it" section
+    # documents, without reaching for `app.qui.run_async(...)` by hand.
+    received = []
+    app = App(10, 10, view=lambda: {"text_display": {"id": "aio-demo:status", "lines": []}}, on_event=received.append)
+
+    app.qui.waker().wake()
     task = asyncio.create_task(app.run_async(fallback_interval=0.05))
     try:
         await asyncio.sleep(0.05)
