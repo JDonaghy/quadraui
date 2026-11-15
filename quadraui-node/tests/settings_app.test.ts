@@ -1,14 +1,16 @@
 // Black-box acceptance test for `examples/settings_app.ts`: a list/detail
-// form app with a category `ListView` on the left and a two-field
-// `text_input`/`switch` form on the right. Written against `../js/testing.ts`
-// -- the app-author test harness -- for the category list itself (a
-// `List` node with the usual row verbs), and against `h.dispatch(...)` for
-// the raw `text_input`/`switch` leaves, the same `Form` event shape
-// `examples/settings_app.ts`'s own `runHeadless` pushes by hand: those two
-// leaves have no dedicated `Node` constructor (this file's own header doc
-// explains why), so there is no row/tab verb for them to ride on, same as
-// `Harness.dispatch`'s own doc describes it as the escape hatch for a
-// shape the harness has no verb for.
+// app with a category `ListView` on the left and a two-field `Form`
+// (`TextInputField`/`ToggleField`) on the right. Written against
+// `../js/testing.ts` -- the app-author test harness -- for the category
+// list itself (a `List` node with the usual row verbs), and against
+// `h.dispatch(...)` for the form fields, the same `Form` event shape
+// `examples/settings_app.ts`'s own `runHeadless` pushes by hand: `../js/
+// testing.ts`'s `Harness` has no row/tab-style verb for one `Form` field
+// yet (it indexes a `form` node as one leaf widget, not per field), so a
+// field's own id is read back through `formField` below -- `Form`'s own
+// `FormDescriptor.fields` array, found with the same `Widget.get` escape
+// hatch `Harness.dispatch`'s own doc describes for a shape the harness has
+// no dedicated verb for -- rather than `h.find({id: <field id>})`.
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
@@ -31,6 +33,17 @@ function setTextInput(h: any, id: string, value: string): void {
 
 function toggleSwitch(h: any, id: string, value: boolean): void {
   h.dispatch({ Form: [id, { ToggleChanged: { id, value } }] });
+}
+
+/** The `FormFieldDescriptor` for category `name`'s `label`/`enabled` field, read off the detail `Form`'s own `fields` array -- see this file's own header doc for why, not `h.find({id: fieldId})`. */
+function detailField(h: any, name: string, field: "label" | "enabled"): any {
+  const fields = h.find({ id: `settings:${name}:form` }).get("fields") as Array<{ id: string }>;
+  const fieldId = field === "label" ? `settings:${name}:label` : `settings:${name}:enabled`;
+  const found = fields.find((f) => f.id === fieldId);
+  if (found === undefined) {
+    throw new Error(`no field ${JSON.stringify(fieldId)} in settings:${name}:form`);
+  }
+  return found;
 }
 
 // --- the category list --------------------------------------------------
@@ -87,16 +100,16 @@ test("activating a row (double click) opens it the same way Enter does", () => {
   h.assertText("Opened Privacy");
 });
 
-// --- the detail form: text_input + switch (raw wire leaves) -------------
+// --- the detail form: TextInputField + ToggleField -----------------------
 
 test("the detail pane shows the selected category's current label, note and enabled switch", () => {
   const { h } = ui();
 
-  const input = h.find({ id: "settings:General:label" });
-  assert.deepEqual(input.get("lines"), [settingsExample.DEFAULTS.General.label]);
+  const input = detailField(h, "General", "label");
+  assert.deepEqual(input.kind, { TextInput: { value: settingsExample.DEFAULTS.General.label } });
 
-  const toggle = h.find({ id: "settings:General:enabled" });
-  assert.equal(toggle.get("value"), settingsExample.DEFAULTS.General.enabled);
+  const toggle = detailField(h, "General", "enabled");
+  assert.deepEqual(toggle.kind, { Toggle: { value: settingsExample.DEFAULTS.General.enabled } });
 
   h.assertText(settingsExample.DEFAULTS.General.note);
 });
@@ -109,8 +122,8 @@ test("committing a new label updates the app's own settings and the rendered fie
   assert.equal(settings.settings.General.label, "Renamed Workspace");
   // The rendered field itself, not just the app's own state -- the text
   // field is narrow enough to truncate the display on screen, so this
-  // reads the descriptor's full `lines` rather than a screen substring.
-  assert.deepEqual(h.find({ id: "settings:General:label" }).get("lines"), ["Renamed Workspace"]);
+  // reads the field descriptor's own `value` rather than a screen substring.
+  assert.deepEqual(detailField(h, "General", "label").kind, { TextInput: { value: "Renamed Workspace" } });
 });
 
 test("an in-progress (uncommitted) edit also applies -- TextInputChanged, not just Committed", () => {
@@ -128,7 +141,7 @@ test("toggling the switch flips the app's own settings and the rendered value", 
   toggleSwitch(h, "settings:General:enabled", false);
 
   assert.equal(settings.settings.General.enabled, false);
-  assert.equal(h.find({ id: "settings:General:enabled" }).get("value"), false);
+  assert.deepEqual(detailField(h, "General", "enabled").kind, { Toggle: { value: false } });
 });
 
 test("editing one category's fields never touches another category's settings", () => {

@@ -111,6 +111,18 @@ exports.StatusBar = nodes.StatusBar;
 exports.TextDisplay = nodes.TextDisplay;
 exports.Button = nodes.Button;
 exports.Toolbar = nodes.Toolbar;
+exports.Form = nodes.Form;
+exports.TextInputField = nodes.TextInputField;
+exports.DropdownField = nodes.DropdownField;
+exports.ToggleField = nodes.ToggleField;
+exports.SliderField = nodes.SliderField;
+exports.PasswordField = nodes.PasswordField;
+exports.TextAreaField = nodes.TextAreaField;
+exports.Checkbox = nodes.Checkbox;
+exports.Slider = nodes.Slider;
+exports.Select = nodes.Select;
+exports.Password = nodes.Password;
+exports.TextArea = nodes.TextArea;
 
 export type { Node, Renderable, ComponentLike } from "./nodes";
 export type {
@@ -128,6 +140,20 @@ export type {
   TextDisplayOptions,
   ButtonOptions,
   ToolbarOptions,
+  FormFieldSpec,
+  FormFieldCommonOptions,
+  FormOptions,
+  TextInputFieldOptions,
+  DropdownFieldOptions,
+  ToggleFieldOptions,
+  SliderFieldOptions,
+  PasswordFieldOptions,
+  TextAreaFieldOptions,
+  CheckboxOptions,
+  SliderOptions,
+  SelectOptions,
+  PasswordOptions,
+  TextAreaOptions,
 } from "./nodes";
 export type { ComponentState } from "./component";
 export type { AppOptions, HotReloadOptions } from "./runtime";

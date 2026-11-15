@@ -23,6 +23,16 @@ fragment step for this package (that mechanism, and
   either `ItemDoubleClicked` or `ItemActivated` to `onActivate` -- no raw
   wire object or `"List"` branch in `onEvent` needed to build a selectable
   list.
+- `Form(fields, options)` (and the `<form>` JSX intrinsic) plus
+  `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/
+  `PasswordField`/`TextAreaField`: typed `FormFieldDescriptor` builders,
+  each with its own `onChange` (and `onSubmit` where the field supports a
+  commit) registered under that field's own resolved id, so a detail form
+  needs no raw wire object and no `"Form"` branch in `onEvent`.
+- `Checkbox`/`Slider`/`Select`/`Password`/`TextArea` (and their matching
+  `<checkbox>`/`<slider>`/`<select>`/`<password>`/`<textarea>` JSX
+  intrinsics): standalone leaf siblings of the `Form` field kinds above,
+  for the same wire kinds used outside a `Form`.
 - `README.md` now documents install (npm vs. from source), build and run
   steps, the CommonJS-vs-ESM `.ts`/`require` constraint the examples and
   tests rely on, and this `CHANGELOG.md` itself.

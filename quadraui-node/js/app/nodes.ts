@@ -24,11 +24,16 @@ import type {
   ButtonVariant,
   Color,
   ColumnDescriptor,
+  ControlWidth,
   DataRowDescriptor,
+  FormSpacing,
   Icon,
+  LabelAlign,
+  LabelPosition,
   LayoutScrollPayload,
   ListItemDescriptor,
   PaddingValue,
+  RowAlign,
   SelectionMode,
   StatusBarSegment,
   StyledText,
@@ -39,6 +44,7 @@ import type {
   TreePath,
   TreeRowDescriptor,
   TreeStyle,
+  ValidationState,
   WidgetId,
 } from "../wire";
 
@@ -96,6 +102,17 @@ export interface Node {
   callbacks: Readonly<Record<string, (...args: unknown[]) => void>>;
   children: Readonly<Record<string, Renderable>>;
   build(resolvedId: string, resolvedChildren: Record<string, unknown>): Record<string, unknown>;
+  /**
+   * Extra id -> callbacks registrations this node owns besides its own
+   * `id`/`callbacks` -- {@link Form}'s own per-field `on_change`/`on_submit`,
+   * keyed by each field's own wire id rather than the `Form`'s. Takes the
+   * resolved node id (the same value `build`'s own first parameter gets) so
+   * a field with no explicit id can derive its auto-id from it. `./runtime.ts`'s
+   * `walk` merges every entry this returns into the same registry
+   * `callbacks` populates, so a later dispatch looks a field id up exactly
+   * the way it looks up any other widget id.
+   */
+  extraCallbacks?(resolvedId: string): Readonly<Record<string, Readonly<Record<string, AnyCallback>>>>;
 }
 
 type AnyCallback = (...args: unknown[]) => void;
@@ -492,6 +509,451 @@ function List(items: ListItemDescriptor[], options: ListOptions = {}): Node {
   return { kind: "list", id, callbacks, children: {}, build };
 }
 exports.List = List;
+
+// --- forms / form fields -----------------------------------------------
+
+/** `{text, fg: null, bg: null}` -- the plain-text `StyledText` shape every `label`/`hint` field option below accepts as a bare string, so a caller never has to spell out a `StyledText` literal just to label a field. */
+function plainText(text: string): StyledText {
+  return { spans: [{ text, fg: null, bg: null }] };
+}
+
+function fieldLabel(label: string | StyledText): StyledText {
+  return typeof label === "string" ? plainText(label) : label;
+}
+
+/**
+ * Options every field kind below shares -- the `FormFieldDescriptor` keys
+ * that sit alongside `kind`, not inside it. `id` is the field's own wire
+ * id; omitted, {@link Form} derives `${formId}:field:${index}` for it, the
+ * same positional auto-id shape {@link Tabs}' own tabs use.
+ */
+export interface FormFieldCommonOptions {
+  id?: string;
+  hint?: string | StyledText;
+  disabled?: boolean;
+  validation?: ValidationState | null;
+  labelPosition?: LabelPosition | null;
+  labelAlign?: LabelAlign | null;
+  labelWidth?: number | null;
+  tabIndex?: number | null;
+  controlWidth?: ControlWidth | null;
+  minControlWidth?: number | null;
+  rowAlign?: RowAlign | null;
+}
+
+/**
+ * One {@link Form} field, awaiting its own wire id -- built by one of
+ * `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/
+ * `PasswordField`/`TextAreaField` below. Not a {@link Node}: a
+ * `FormFieldDescriptor` is a flat entry in `FormDescriptor.fields`, not a
+ * child in the layout tree, so it has no `children` slot of its own and
+ * resolves its id from {@link Form}'s own `build` directly rather than
+ * through `./runtime.ts`'s `walk`.
+ */
+export interface FormFieldSpec {
+  id: string | null;
+  callbacks: Readonly<Record<string, AnyCallback>>;
+  build(fieldId: string): Record<string, unknown>;
+}
+
+function fieldPayload(
+  fieldId: string,
+  label: string | StyledText,
+  kind: Record<string, unknown> | string,
+  common: FormFieldCommonOptions,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { id: fieldId, label: fieldLabel(label), kind };
+  if (common.hint !== undefined) payload.hint = fieldLabel(common.hint);
+  if (common.disabled !== undefined) payload.disabled = common.disabled;
+  if (common.validation !== undefined) payload.validation = common.validation;
+  if (common.labelPosition !== undefined) payload.label_position = common.labelPosition;
+  if (common.labelAlign !== undefined) payload.label_align = common.labelAlign;
+  if (common.labelWidth !== undefined) payload.label_width = common.labelWidth;
+  if (common.tabIndex !== undefined) payload.tab_index = common.tabIndex;
+  if (common.controlWidth !== undefined) payload.control_width = common.controlWidth;
+  if (common.minControlWidth !== undefined) payload.min_control_width = common.minControlWidth;
+  if (common.rowAlign !== undefined) payload.row_align = common.rowAlign;
+  return payload;
+}
+
+export interface TextInputFieldOptions extends FormFieldCommonOptions {
+  placeholder?: string;
+  cursor?: number | null;
+  selectionAnchor?: number | null;
+  /** Fires on `FormEvent::TextInputChanged` -- every keystroke. */
+  onChange?: (value: string) => void;
+  /** Fires on `FormEvent::TextInputCommitted` -- Enter while this field is focused. */
+  onSubmit?: (value: string) => void;
+}
+
+/** A `FieldKind::TextInput` field: a single-line editable value with its own label. */
+function TextInputField(label: string | StyledText, value: string, options: TextInputFieldOptions = {}): FormFieldSpec {
+  const { id = null, placeholder, cursor, selectionAnchor, onChange, onSubmit, ...common } = options;
+
+  function build(fieldId: string): Record<string, unknown> {
+    const kind: Record<string, unknown> = { value };
+    if (placeholder !== undefined) kind.placeholder = placeholder;
+    if (cursor !== undefined) kind.cursor = cursor;
+    if (selectionAnchor !== undefined) kind.selection_anchor = selectionAnchor;
+    return fieldPayload(fieldId, label, { TextInput: kind }, common);
+  }
+
+  const callbacks = callbacksFrom({
+    on_change: onChange as AnyCallback | undefined,
+    on_submit: onSubmit as AnyCallback | undefined,
+  });
+  return { id, callbacks, build };
+}
+exports.TextInputField = TextInputField;
+
+export interface PasswordFieldOptions extends FormFieldCommonOptions {
+  placeholder?: string;
+  cursor?: number | null;
+  maskChar?: string;
+  /** Fires on `FormEvent::TextInputChanged` -- every keystroke. */
+  onChange?: (value: string) => void;
+  /** Fires on `FormEvent::TextInputCommitted` -- Enter while this field is focused. */
+  onSubmit?: (value: string) => void;
+}
+
+/** A `FieldKind::PasswordInput` field -- {@link TextInputField}'s masked sibling. */
+function PasswordField(label: string | StyledText, value: string, options: PasswordFieldOptions = {}): FormFieldSpec {
+  const { id = null, placeholder, cursor, maskChar, onChange, onSubmit, ...common } = options;
+
+  function build(fieldId: string): Record<string, unknown> {
+    const kind: Record<string, unknown> = { value };
+    if (placeholder !== undefined) kind.placeholder = placeholder;
+    if (cursor !== undefined) kind.cursor = cursor;
+    if (maskChar !== undefined) kind.mask_char = maskChar;
+    return fieldPayload(fieldId, label, { PasswordInput: kind }, common);
+  }
+
+  const callbacks = callbacksFrom({
+    on_change: onChange as AnyCallback | undefined,
+    on_submit: onSubmit as AnyCallback | undefined,
+  });
+  return { id, callbacks, build };
+}
+exports.PasswordField = PasswordField;
+
+export interface TextAreaFieldOptions extends FormFieldCommonOptions {
+  placeholder?: string;
+  cursor?: number | null;
+  visibleRows?: number;
+  /** Fires on `FormEvent::TextInputChanged` -- every keystroke. */
+  onChange?: (value: string) => void;
+}
+
+/**
+ * A `FieldKind::TextArea` field. No `onSubmit` -- unlike
+ * {@link TextInputField}/{@link PasswordField}, Enter inserts a newline on a
+ * focused `TextArea` instead of committing, so it never emits
+ * `FormEvent::TextInputCommitted`.
+ */
+function TextAreaField(label: string | StyledText, value: string, options: TextAreaFieldOptions = {}): FormFieldSpec {
+  const { id = null, placeholder, cursor, visibleRows, onChange, ...common } = options;
+
+  function build(fieldId: string): Record<string, unknown> {
+    const kind: Record<string, unknown> = { value };
+    if (placeholder !== undefined) kind.placeholder = placeholder;
+    if (cursor !== undefined) kind.cursor = cursor;
+    if (visibleRows !== undefined) kind.visible_rows = visibleRows;
+    return fieldPayload(fieldId, label, { TextArea: kind }, common);
+  }
+
+  const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
+  return { id, callbacks, build };
+}
+exports.TextAreaField = TextAreaField;
+
+export interface ToggleFieldOptions extends FormFieldCommonOptions {
+  /** Fires on `FormEvent::ToggleChanged`. */
+  onChange?: (value: boolean) => void;
+}
+
+/** A `FieldKind::Toggle` field -- an on/off field, the Form-embedded sibling of the standalone {@link Checkbox} leaf. */
+function ToggleField(label: string | StyledText, value: boolean, options: ToggleFieldOptions = {}): FormFieldSpec {
+  const { id = null, onChange, ...common } = options;
+
+  function build(fieldId: string): Record<string, unknown> {
+    return fieldPayload(fieldId, label, { Toggle: { value } }, common);
+  }
+
+  const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
+  return { id, callbacks, build };
+}
+exports.ToggleField = ToggleField;
+
+export interface SliderFieldOptions extends FormFieldCommonOptions {
+  step?: number;
+  /** Fires on `FormEvent::SliderChanged`. */
+  onChange?: (value: number) => void;
+}
+
+/** A `FieldKind::Slider` field. */
+function SliderField(
+  label: string | StyledText,
+  value: number,
+  min: number,
+  max: number,
+  options: SliderFieldOptions = {},
+): FormFieldSpec {
+  const { id = null, step, onChange, ...common } = options;
+
+  function build(fieldId: string): Record<string, unknown> {
+    const kind: Record<string, unknown> = { value, min, max };
+    if (step !== undefined) kind.step = step;
+    return fieldPayload(fieldId, label, { Slider: kind }, common);
+  }
+
+  const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
+  return { id, callbacks, build };
+}
+exports.SliderField = SliderField;
+
+export interface DropdownFieldOptions extends FormFieldCommonOptions {
+  /** Fires on `FormEvent::DropdownChanged`. */
+  onChange?: (selectedIdx: number) => void;
+}
+
+/** A `FieldKind::Dropdown` field -- a closed-options "select" field. */
+function DropdownField(
+  label: string | StyledText,
+  choices: StyledText[],
+  selectedIdx: number,
+  options: DropdownFieldOptions = {},
+): FormFieldSpec {
+  const { id = null, onChange, ...common } = options;
+
+  function build(fieldId: string): Record<string, unknown> {
+    return fieldPayload(fieldId, label, { Dropdown: { options: choices, selected_idx: selectedIdx } }, common);
+  }
+
+  const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
+  return { id, callbacks, build };
+}
+exports.DropdownField = DropdownField;
+
+/** Resolves field `i`'s own wire id: its own explicit id, or `${formId}:field:${i}` -- {@link Tabs}' own `${nodeId}:tab:${i}` auto-id, restated for a field. */
+function formFieldId(formId: string, spec: FormFieldSpec, index: number): string {
+  return spec.id ?? `${formId}:field:${index}`;
+}
+
+export interface FormOptions {
+  id?: string;
+  focusedField?: WidgetId | null;
+  scrollOffset?: number;
+  hasFocus?: boolean;
+  labelPosition?: LabelPosition;
+  labelAlign?: LabelAlign;
+  labelWidth?: number | null;
+  controlWidth?: ControlWidth;
+  minControlWidth?: number | null;
+  spacing?: FormSpacing;
+}
+
+/**
+ * A `FormDescriptor`: a vertical list of labeled fields built from
+ * `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/
+ * `PasswordField`/`TextAreaField` above. Each field's own `onChange`/
+ * `onSubmit` is registered under that field's own resolved id (see
+ * `Node.extraCallbacks`'s own doc) -- `Form` itself takes no callbacks,
+ * since nothing on the wire targets the form as a whole the way a field
+ * change does.
+ */
+function Form(fields: FormFieldSpec[], options: FormOptions = {}): Node {
+  const {
+    id = null,
+    focusedField,
+    scrollOffset,
+    hasFocus,
+    labelPosition,
+    labelAlign,
+    labelWidth,
+    controlWidth,
+    minControlWidth,
+    spacing,
+  } = options;
+
+  function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
+    const wiredFields = fields.map((spec, i) => spec.build(formFieldId(nodeId, spec, i)));
+    const payload: Record<string, unknown> = { id: nodeId, fields: wiredFields };
+    if (focusedField !== undefined) payload.focused_field = focusedField;
+    if (scrollOffset !== undefined) payload.scroll_offset = scrollOffset;
+    if (hasFocus !== undefined) payload.has_focus = hasFocus;
+    if (labelPosition !== undefined) payload.label_position = labelPosition;
+    if (labelAlign !== undefined) payload.label_align = labelAlign;
+    if (labelWidth !== undefined) payload.label_width = labelWidth;
+    if (controlWidth !== undefined) payload.control_width = controlWidth;
+    if (minControlWidth !== undefined) payload.min_control_width = minControlWidth;
+    if (spacing !== undefined) payload.spacing = spacing;
+    return { id: nodeId, form: payload };
+  }
+
+  function extraCallbacks(nodeId: string): Record<string, Record<string, AnyCallback>> {
+    const result: Record<string, Record<string, AnyCallback>> = {};
+    fields.forEach((spec, i) => {
+      if (Object.keys(spec.callbacks).length > 0) {
+        result[formFieldId(nodeId, spec, i)] = spec.callbacks;
+      }
+    });
+    return result;
+  }
+
+  return { kind: "form", id, callbacks: {}, children: {}, build, extraCallbacks };
+}
+exports.Form = Form;
+
+// --- standalone leaves matching a Form field kind -----------------------
+//
+// Each of these mirrors a `Form` field kind above but stands on its own in
+// the layout tree as a `LayoutLeafNode` -- not a `FormFieldDescriptor` --
+// with no `label`/`hint`/validation chrome of its own. Despite that, each
+// still emits its change through the same `FormEvent` shapes (see
+// `./runtime.ts`'s `FORM_FIELD_EVENT_MAP`), wrapped in the same `"Form"`
+// `UiEvent` key a real `Form` field uses -- the backend reuses one field
+// controller for both, keyed by this leaf's own id.
+//
+// `TextInput`/`Toggle` have no standalone-leaf constructor here: the
+// standalone `text_input`/`switch` wire kinds are their own, differently
+// shaped descriptors (`TextInputDescriptor.lines: string[]`, a
+// multi-line editor; `SwitchDescriptor`), not a `FieldKind::TextInput`/
+// `FieldKind::Toggle` payload -- out of scope for this additive pass.
+
+export interface CheckboxOptions {
+  id?: string;
+  disabled?: boolean;
+  focused?: boolean;
+  /** Fires on `FormEvent::ToggleChanged`. */
+  onChange?: (value: boolean) => void;
+}
+
+/** A `CheckboxDescriptor` leaf. */
+function Checkbox(value: boolean, options: CheckboxOptions = {}): Node {
+  const { id = null, disabled, focused, onChange } = options;
+
+  function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
+    const payload: Record<string, unknown> = { id: nodeId, value };
+    if (disabled !== undefined) payload.disabled = disabled;
+    if (focused !== undefined) payload.focused = focused;
+    return { id: nodeId, checkbox: payload };
+  }
+
+  const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
+  return { kind: "checkbox", id, callbacks, children: {}, build };
+}
+exports.Checkbox = Checkbox;
+
+export interface SliderOptions {
+  id?: string;
+  step?: number;
+  disabled?: boolean;
+  focused?: boolean;
+  /** Fires on `FormEvent::SliderChanged`. */
+  onChange?: (value: number) => void;
+}
+
+/** A `SliderDescriptor` leaf. */
+function Slider(value: number, min: number, max: number, options: SliderOptions = {}): Node {
+  const { id = null, step, disabled, focused, onChange } = options;
+
+  function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
+    const payload: Record<string, unknown> = { id: nodeId, value, min, max };
+    if (step !== undefined) payload.step = step;
+    if (disabled !== undefined) payload.disabled = disabled;
+    if (focused !== undefined) payload.focused = focused;
+    return { id: nodeId, slider: payload };
+  }
+
+  const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
+  return { kind: "slider", id, callbacks, children: {}, build };
+}
+exports.Slider = Slider;
+
+export interface SelectOptions {
+  id?: string;
+  selectedIdx?: number;
+  disabled?: boolean;
+  focused?: boolean;
+  /** Fires on `FormEvent::DropdownChanged`. */
+  onChange?: (selectedIdx: number) => void;
+}
+
+/** A `SelectDescriptor` leaf -- the standalone sibling of {@link DropdownField}. */
+function Select(choices: string[], options: SelectOptions = {}): Node {
+  const { id = null, selectedIdx, disabled, focused, onChange } = options;
+
+  function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
+    const payload: Record<string, unknown> = { id: nodeId, options: choices };
+    if (selectedIdx !== undefined) payload.selected_idx = selectedIdx;
+    if (disabled !== undefined) payload.disabled = disabled;
+    if (focused !== undefined) payload.focused = focused;
+    return { id: nodeId, select: payload };
+  }
+
+  const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
+  return { kind: "select", id, callbacks, children: {}, build };
+}
+exports.Select = Select;
+
+export interface PasswordOptions {
+  id?: string;
+  cursor?: number | null;
+  hasFocus?: boolean;
+  maskChar?: string;
+  /** Fires on `FormEvent::TextInputChanged` -- every keystroke. */
+  onChange?: (value: string) => void;
+  /** Fires on `FormEvent::TextInputCommitted` -- Enter while this leaf is focused. */
+  onSubmit?: (value: string) => void;
+}
+
+/** A `PasswordDescriptor` leaf -- the standalone sibling of {@link PasswordField}. */
+function Password(value: string, options: PasswordOptions = {}): Node {
+  const { id = null, cursor, hasFocus, maskChar, onChange, onSubmit } = options;
+
+  function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
+    const payload: Record<string, unknown> = { id: nodeId, value };
+    if (cursor !== undefined) payload.cursor = cursor;
+    if (hasFocus !== undefined) payload.has_focus = hasFocus;
+    if (maskChar !== undefined) payload.mask_char = maskChar;
+    return { id: nodeId, password: payload };
+  }
+
+  const callbacks = callbacksFrom({
+    on_change: onChange as AnyCallback | undefined,
+    on_submit: onSubmit as AnyCallback | undefined,
+  });
+  return { kind: "password", id, callbacks, children: {}, build };
+}
+exports.Password = Password;
+
+export interface TextAreaOptions {
+  id?: string;
+  placeholder?: string | null;
+  cursor?: number | null;
+  hasFocus?: boolean;
+  visibleRows?: number;
+  /** Fires on `FormEvent::TextInputChanged` -- every keystroke. */
+  onChange?: (value: string) => void;
+}
+
+/** A `TextAreaDescriptor` leaf -- the standalone sibling of {@link TextAreaField}; see that field's own doc for why there is no `onSubmit`. */
+function TextArea(value: string, options: TextAreaOptions = {}): Node {
+  const { id = null, placeholder, cursor, hasFocus, visibleRows, onChange } = options;
+
+  function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
+    const payload: Record<string, unknown> = { id: nodeId, value };
+    if (placeholder !== undefined) payload.placeholder = placeholder;
+    if (cursor !== undefined) payload.cursor = cursor;
+    if (hasFocus !== undefined) payload.has_focus = hasFocus;
+    if (visibleRows !== undefined) payload.visible_rows = visibleRows;
+    return { id: nodeId, textarea: payload };
+  }
+
+  const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
+  return { kind: "textarea", id, callbacks, children: {}, build };
+}
+exports.TextArea = TextArea;
 
 export interface StatusBarOptions {
   id?: string;

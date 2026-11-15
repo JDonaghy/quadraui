@@ -1,17 +1,10 @@
 // A small list/detail form app on `js/app/index.ts`: a typed `List` node
-// of setting categories on the left, a two-field form (a `text_input` and
-// a `switch`) for whichever category is selected on the right. `text_input`
-// and `switch` have no dedicated `Node` constructor in `./nodes.ts` (only
-// the fixed-slot primitives and a handful of additive ones do) -- this
-// example reaches for the documented escape hatch instead: a raw wire
-// object (`{id, text_input: {...}}`/`{id, switch: {...}}`) passed straight
-// into `Column`'s `items`, same shape `App._render`'s own `walk` already
-// passes through unchanged for anything that isn't a `Node`/`Component`.
-// Their events (`Form`'s `TextInputChanged`/`TextInputCommitted`/
-// `ToggleChanged`) have no `CONTAINER_EVENT_MAP` entry either, so this
-// example reads them off the `onEvent` escape hatch rather than a node
-// callback -- see `./nodes.ts`'s own `Renderable` doc and `./runtime.ts`'s
-// `App` doc for both seams.
+// of setting categories on the left, a two-field `Form` (a `TextInputField`
+// and a `ToggleField`) for whichever category is selected on the right --
+// no raw wire object and no `"Form"` branch in `onEvent`: each field's own
+// `onChange`/`onSubmit` option is registered under that field's own id the
+// same way `List`'s `onSelect`/`onActivate` already are (see `./nodes.ts`'s
+// own `Form` doc for how a field's id is resolved and registered).
 //
 // Run headless (default), `--tui`, or `--native`:
 //
@@ -24,10 +17,23 @@
 // "Reset" button to restore that category's defaults. `q`/Escape quits a
 // live session.
 
-const { App, Button, Column, List, Row, SidebarPanel, StatusBar, TextDisplay, keyName } = require("../js/app/index.ts");
+const {
+  App,
+  Button,
+  Column,
+  Form,
+  List,
+  Row,
+  SidebarPanel,
+  StatusBar,
+  TextDisplay,
+  TextInputField,
+  ToggleField,
+  keyName,
+} = require("../js/app/index.ts");
 
 import type { Renderable } from "../js/app/index";
-import type { Color, LayoutLeafNode, ListItemDescriptor, StatusBarSegment, StyledText } from "../js/wire";
+import type { Color, ListItemDescriptor, StatusBarSegment, StyledText } from "../js/wire";
 
 interface Setting {
   label: string;
@@ -103,26 +109,6 @@ class SettingsApp {
     return `settings:${name}:enabled`;
   }
 
-  /** Applies a `TextInputChanged`/`TextInputCommitted` payload if `id` names a known category's label field. */
-  private _applyLabel(id: string, value: string): void {
-    for (const name of CATEGORIES) {
-      if (this._labelFieldId(name) === id) {
-        this.settings[name].label = value;
-        return;
-      }
-    }
-  }
-
-  /** Applies a `ToggleChanged` payload if `id` names a known category's enabled field. */
-  private _applyEnabled(id: string, value: boolean): void {
-    for (const name of CATEGORIES) {
-      if (this._enabledFieldId(name) === id) {
-        this.settings[name].enabled = value;
-        return;
-      }
-    }
-  }
-
   private _reset(name: string): void {
     this.settings[name] = { label: DEFAULTS[name].label, enabled: DEFAULTS[name].enabled };
     this.message = `${name} reset to defaults`;
@@ -150,20 +136,26 @@ class SettingsApp {
     return Column([
       TextDisplay([{ spans: [{ text: name, fg: null, bg: null }] }], { id: "detail:title" }),
       TextDisplay([{ spans: [{ text: DEFAULTS[name].note, fg: null, bg: null }] }], { id: "detail:note" }),
-      Row([
-        TextDisplay([{ spans: [{ text: "Display name", fg: null, bg: null }] }], { id: "detail:label-caption" }),
-        {
-          id: this._labelFieldId(name),
-          text_input: { id: this._labelFieldId(name), lines: [setting.label] },
-        } satisfies LayoutLeafNode,
-      ]),
-      Row([
-        TextDisplay([{ spans: [{ text: "Enabled", fg: null, bg: null }] }], { id: "detail:enabled-caption" }),
-        {
-          id: this._enabledFieldId(name),
-          switch: { id: this._enabledFieldId(name), value: setting.enabled },
-        } satisfies LayoutLeafNode,
-      ]),
+      Form(
+        [
+          TextInputField("Display name", setting.label, {
+            id: this._labelFieldId(name),
+            onChange: (value: string) => {
+              setting.label = value;
+            },
+            onSubmit: (value: string) => {
+              setting.label = value;
+            },
+          }),
+          ToggleField("Enabled", setting.enabled, {
+            id: this._enabledFieldId(name),
+            onChange: (value: boolean) => {
+              setting.enabled = value;
+            },
+          }),
+        ],
+        { id: `settings:${name}:form`, hasFocus: true },
+      ),
       Button("Reset", { id: "settings:reset", onClick: () => this._reset(name) }),
     ]);
   }
@@ -182,25 +174,15 @@ class SettingsApp {
 
   // --- events --------------------------------------------------------------
 
-  /** Only truly global input, plus `Form` events (the `text_input`/`switch` leaves have no `CONTAINER_EVENT_MAP`/node-callback path) land here -- the category `List`'s own `SelectionChanged`/`ItemActivated` go through its `onSelect`/`onActivate` node callbacks instead. */
+  /**
+   * Only truly global input lands here now -- the category `List`'s own
+   * `SelectionChanged`/`ItemActivated` and the detail `Form`'s own fields'
+   * `onChange`/`onSubmit` are node callbacks (`List`'s `onSelect`/
+   * `onActivate`, `Form`'s per-field options in `_detailPane`), not a
+   * branch here.
+   */
   onEvent(event: unknown): void {
     if (typeof event !== "object" || event === null) return;
-    const obj = event as Record<string, unknown>;
-
-    if ("Form" in obj) {
-      const [, formEvent] = obj.Form as [string, Record<string, unknown>];
-      if ("ToggleChanged" in formEvent) {
-        const payload = formEvent.ToggleChanged as { id: string; value: boolean };
-        this._applyEnabled(payload.id, payload.value);
-      } else if ("TextInputChanged" in formEvent) {
-        const payload = formEvent.TextInputChanged as { id: string; value: string };
-        this._applyLabel(payload.id, payload.value);
-      } else if ("TextInputCommitted" in formEvent) {
-        const payload = formEvent.TextInputCommitted as { id: string; value: string };
-        this._applyLabel(payload.id, payload.value);
-      }
-      return;
-    }
 
     // Everything else that reaches `onEvent` (`_dispatch` returned `false`)
     // is a keystroke this app has no node callback for, or a mouse/focus

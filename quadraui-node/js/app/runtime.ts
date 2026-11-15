@@ -147,6 +147,13 @@ function walk(
     if (Object.keys(value.callbacks).length > 0) {
       registry[nodeId] = value.callbacks;
     }
+    if (value.extraCallbacks !== undefined) {
+      for (const [extraId, callbacks] of Object.entries(value.extraCallbacks(nodeId))) {
+        if (Object.keys(callbacks).length > 0) {
+          registry[extraId] = callbacks;
+        }
+      }
+    }
     return value.build(nodeId, childrenWire);
   }
   if (typeof value === "object") {
@@ -250,6 +257,26 @@ const CONTAINER_EVENT_MAP: Record<
   StatusBar: {
     SegmentClicked: ["on_segment_click", (p) => [p.id]],
   },
+};
+
+/**
+ * Maps a `FormEvent` field-change variant to `{callbackName: extractArgs}`
+ * -- the per-field `onChange`/`onSubmit` option `./nodes.ts`'s
+ * `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/
+ * `PasswordField`/`TextAreaField` (and the standalone `Checkbox`/`Slider`/
+ * `Select`/`Password`/`TextArea` leaves) all document. Looked up by
+ * `_dispatchFormField` against whichever widget id the `{"Form": [id,
+ * ...]}` event's own tuple carries -- a `Form` field's own id (see
+ * `Node.extraCallbacks`'s own doc), or a standalone leaf's own id, never
+ * the enclosing `Form`'s. `ButtonClicked` is not here -- `_dispatchButtonClicked`
+ * claims it first, with its own click-vs-activation split.
+ */
+const FORM_FIELD_EVENT_MAP: Record<string, [string, (payload: Record<string, unknown>) => unknown[]]> = {
+  ToggleChanged: ["on_change", (p) => [p.value]],
+  TextInputChanged: ["on_change", (p) => [p.value]],
+  TextInputCommitted: ["on_submit", (p) => [p.value]],
+  SliderChanged: ["on_change", (p) => [p.value]],
+  DropdownChanged: ["on_change", (p) => [p.selected_idx]],
 };
 
 export interface AppOptions {
@@ -580,6 +607,36 @@ class App {
   }
 
   /**
+   * The field-change half of a `{"Form": [id, FormEvent]}` event: looks
+   * `widgetId` (the field/leaf's own id, not the enclosing `Form`'s) up in
+   * `_registry` for whichever callback {@link FORM_FIELD_EVENT_MAP} maps
+   * the event's own variant to, and calls it. Tried only after
+   * `_dispatchButtonClicked` has already ruled out `ButtonClicked`.
+   */
+  private _dispatchFormField(obj: Record<string, unknown>): boolean {
+    const inner = obj.Form;
+    if (!Array.isArray(inner) || inner.length !== 2) {
+      return false;
+    }
+    const [widgetId, activation] = inner as [string, unknown];
+    if (typeof activation !== "object" || activation === null) {
+      return false;
+    }
+    const activationObj = activation as Record<string, unknown>;
+    for (const [variantName, [callbackName, extractArgs]] of Object.entries(FORM_FIELD_EVENT_MAP)) {
+      if (variantName in activationObj) {
+        const callback = this._registry[widgetId]?.[callbackName];
+        if (callback !== undefined) {
+          callback(...extractArgs(activationObj[variantName] as Record<string, unknown>));
+          return true;
+        }
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Tries every node-callback dispatch path in turn; `true` means the event
    * was claimed -- a callback ran, or (see `_dispatchButtonClicked`) it is
    * the semantic twin of one that does -- so `_handle` must not also call
@@ -618,7 +675,10 @@ class App {
     }
 
     if ("Form" in obj) {
-      return this._dispatchButtonClicked(obj);
+      if (this._dispatchButtonClicked(obj)) {
+        return true;
+      }
+      return this._dispatchFormField(obj);
     }
 
     for (const [container, variants] of Object.entries(CONTAINER_EVENT_MAP)) {
