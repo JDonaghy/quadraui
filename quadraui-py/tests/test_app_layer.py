@@ -1,8 +1,9 @@
 """Unit tests for `quadraui.app`: id auto-assignment stability across
-re-render, callback dispatch (`Tree`, `Table`, `Tabs`, `Button`), component
-state survival, and redraw-on-mutation -- the four properties the app
-layer's own module doc promises and `examples/file_manager_app.py` relies
-on wholesale.
+re-render, callback dispatch (`Tree`, `Table`, `Tabs`, `Button`, `Form`
+and its field builders, and the standalone leaves that reuse `Form`'s
+own event shape), component state survival, and redraw-on-mutation --
+the four properties the app layer's own module doc promises and
+`examples/file_manager_app.py` relies on wholesale.
 
 Run against a built wheel/extension, e.g.:
 
@@ -16,16 +17,28 @@ from quadraui import UnknownKeyError, VersionMismatchError
 from quadraui.app import (
     App,
     Button,
+    Checkbox,
     Column,
     Component,
+    Form,
     List,
+    Password,
+    PasswordField,
+    Select,
+    SelectField,
     SidebarPanel,
+    Slider,
+    SliderField,
     Split,
     StatusBar,
     Table,
     Tabs,
     Tab,
+    TextArea,
+    TextAreaField,
     TextDisplay,
+    TextInputField,
+    ToggleField,
     Toolbar,
     Tree,
     key_name,
@@ -382,6 +395,270 @@ def test_unmatched_event_falls_through_to_on_event():
     app.step()
     assert len(seen) == 1
     assert key_name(seen[0]) == "Down"
+
+
+# --- Form / typed field builders -------------------------------------------
+
+
+def _form_event(field_id, variant, payload):
+    """A `{"Form": [widget_id, {variant: payload}]}` event -- the same
+    shape a real `Form`-embedded field or a standalone leaf reusing it
+    produces (see `_FORM_FIELD_EVENT_MAP`'s own doc on why dispatch keys
+    off `payload["id"]`, not the wrapper's `widget_id`); the wrapper id
+    below is deliberately *not* `field_id`, to prove dispatch really does
+    key off the payload."""
+    return {"Form": ["t:wrapper", {variant: {"id": field_id, **payload}}]}
+
+
+def test_toggle_field_on_change_fires_with_the_new_value():
+    seen = []
+
+    def view():
+        return Form([ToggleField(True, id="f:wrap", on_change=lambda v: seen.append(v))], id="t:form")
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("f:wrap", "ToggleChanged", {"value": False}))
+    app.step()
+    assert seen == [False]
+
+
+def test_checkbox_on_change_fires_with_the_new_value():
+    seen = []
+
+    def view():
+        return Checkbox(True, id="t:cb", on_change=lambda v: seen.append(v))
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("t:cb", "ToggleChanged", {"value": False}))
+    app.step()
+    assert seen == [False]
+
+
+def test_checkbox_on_change_fires_on_a_real_hit_tested_click():
+    """End-to-end, through the real engine's own hit-test and semantic
+    dispatch -- not a hand-built `Form` event -- the same way
+    `test_button_on_click_fires_on_a_hit_tested_mouse_down` proves
+    `Button`'s own wiring."""
+    seen = []
+
+    def view():
+        return Checkbox(True, id="t:cb", on_change=lambda v: seen.append(v))
+
+    app = App(20, 5, view=view)
+    _click_at(app)
+    assert seen == [False]
+
+
+def test_text_input_field_on_change_and_on_submit_fire_separately():
+    changed = []
+    submitted = []
+
+    def view():
+        return Form(
+            [
+                TextInputField(
+                    "hi",
+                    id="f:name",
+                    on_change=lambda v: changed.append(v),
+                    on_submit=lambda v: submitted.append(v),
+                )
+            ],
+            id="t:form",
+        )
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("f:name", "TextInputChanged", {"value": "hi!"}))
+    app.step()
+    assert changed == ["hi!"]
+    assert submitted == []
+
+    app.push_event(_form_event("f:name", "TextInputCommitted", {"value": "hi!"}))
+    app.step()
+    assert submitted == ["hi!"]
+    assert changed == ["hi!"], "a commit must not also re-fire on_change"
+
+
+def test_slider_field_on_change_fires_with_the_new_value():
+    seen = []
+
+    def view():
+        return Form([SliderField(5.0, 0.0, 10.0, id="f:vol", on_change=lambda v: seen.append(v))], id="t:form")
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("f:vol", "SliderChanged", {"value": 7.5}))
+    app.step()
+    assert seen == [7.5]
+
+
+def test_slider_leaf_on_change_fires_with_the_new_value():
+    seen = []
+
+    def view():
+        return Slider(5.0, 0.0, 10.0, id="t:vol", on_change=lambda v: seen.append(v))
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("t:vol", "SliderChanged", {"value": 2.5}))
+    app.step()
+    assert seen == [2.5]
+
+
+def test_select_field_on_change_fires_with_the_new_index():
+    seen = []
+
+    def view():
+        return Form(
+            [SelectField(["a", "b", "c"], 0, id="f:theme", on_change=lambda idx: seen.append(idx))], id="t:form"
+        )
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("f:theme", "DropdownChanged", {"selected_idx": 2}))
+    app.step()
+    assert seen == [2]
+
+
+def test_select_leaf_on_change_fires_with_the_new_index():
+    seen = []
+
+    def view():
+        return Select(["a", "b", "c"], id="t:theme", on_change=lambda idx: seen.append(idx))
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("t:theme", "DropdownChanged", {"selected_idx": 1}))
+    app.step()
+    assert seen == [1]
+
+
+def test_password_field_on_change_and_on_submit_fire_separately():
+    changed = []
+    submitted = []
+
+    def view():
+        return Form(
+            [
+                PasswordField(
+                    "secret",
+                    id="f:pw",
+                    on_change=lambda v: changed.append(v),
+                    on_submit=lambda v: submitted.append(v),
+                )
+            ],
+            id="t:form",
+        )
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("f:pw", "TextInputChanged", {"value": "secret!"}))
+    app.step()
+    assert changed == ["secret!"]
+
+    app.push_event(_form_event("f:pw", "TextInputCommitted", {"value": "secret!"}))
+    app.step()
+    assert submitted == ["secret!"]
+
+
+def test_password_leaf_on_change_fires_with_the_new_value():
+    seen = []
+
+    def view():
+        return Password("secret", id="t:pw", on_change=lambda v: seen.append(v))
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("t:pw", "TextInputChanged", {"value": "secret!"}))
+    app.step()
+    assert seen == ["secret!"]
+
+
+def test_text_area_field_on_change_fires_with_the_new_value():
+    seen = []
+
+    def view():
+        return Form([TextAreaField("line1", id="f:notes", on_change=lambda v: seen.append(v))], id="t:form")
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("f:notes", "TextInputChanged", {"value": "line1\nline2"}))
+    app.step()
+    assert seen == ["line1\nline2"]
+
+
+def test_text_area_leaf_on_change_fires_with_the_new_value():
+    seen = []
+
+    def view():
+        return TextArea("line1", id="t:notes", on_change=lambda v: seen.append(v))
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("t:notes", "TextInputChanged", {"value": "line1\nline2"}))
+    app.step()
+    assert seen == ["line1\nline2"]
+
+
+def test_form_field_callbacks_are_registered_under_the_fields_own_id_not_forms():
+    """`FormEvent`'s own `id` is the field's, never the wrapping `Form`'s
+    (see `quadraui::primitives::form::FormEvent`'s own doc) -- so a field's
+    `on_change` must be looked up by its own id, and a payload naming the
+    `Form`'s id instead must not accidentally match it."""
+    seen = []
+
+    def view():
+        return Form([ToggleField(True, id="f:toggle", on_change=lambda v: seen.append(v))], id="t:form")
+
+    app = App(20, 5, view=view)
+    app.push_event(_form_event("t:form", "ToggleChanged", {"value": False}))
+    app.step()
+    assert seen == [], "the Form's own id must not be mistaken for the field's"
+
+
+def test_form_fields_resolve_auto_ids_from_their_position_under_fields():
+    def view():
+        return Form(
+            [ToggleField(True, on_change=lambda v: None), ToggleField(False, on_change=lambda v: None)],
+            id="t:form",
+        )
+
+    app = App(20, 5, view=view)
+    rendered_ids = [field["id"] for field in app._render()["form"]["fields"]]
+    assert len(rendered_ids) == 2
+    assert rendered_ids[0] != rendered_ids[1]
+    assert set(rendered_ids) <= set(app._registry.keys())
+
+
+def test_form_builds_a_well_formed_form_descriptor_with_every_field_kind():
+    form_node = Form(
+        [
+            ToggleField(True, id="f:toggle", label="Word wrap"),
+            TextInputField("hi", id="f:text", label="Name", placeholder="type a name"),
+            SliderField(5.0, 0.0, 10.0, id="f:slider", step=0.5, label="Vol"),
+            SelectField(["a", "b"], 1, id="f:select", label="Theme"),
+            PasswordField("pw", id="f:pw", label="Password", mask_char="*"),
+            TextAreaField("line1", id="f:area", label="Notes", visible_rows=4),
+        ],
+        id="t:form",
+        has_focus=True,
+    )
+    app = App(80, 20, view=lambda: form_node)
+    descriptor = app._render()["form"]
+    assert descriptor["id"] == "t:form"
+    assert descriptor["has_focus"] is True
+    fields_by_id = {field["id"]: field for field in descriptor["fields"]}
+    assert fields_by_id["f:toggle"]["kind"] == {"Toggle": {"value": True}}
+    assert fields_by_id["f:text"]["kind"] == {"TextInput": {"value": "hi", "placeholder": "type a name"}}
+    assert fields_by_id["f:slider"]["kind"] == {"Slider": {"value": 5.0, "min": 0.0, "max": 10.0, "step": 0.5}}
+    assert fields_by_id["f:select"]["kind"]["Dropdown"]["selected_idx"] == 1
+    assert fields_by_id["f:pw"]["kind"] == {"PasswordInput": {"value": "pw", "placeholder": "", "mask_char": "*"}}
+    assert fields_by_id["f:area"]["kind"] == {"TextArea": {"value": "line1", "placeholder": "", "visible_rows": 4}}
+    assert fields_by_id["f:toggle"]["label"] == {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]}
+
+
+def test_form_field_event_with_no_matching_callback_falls_through_to_on_event():
+    fallback = []
+
+    def view():
+        return Form([ToggleField(True, id="f:toggle")], id="t:form")
+
+    app = App(20, 5, view=view, on_event=lambda event: fallback.append(event))
+    app.push_event(_form_event("f:toggle", "ToggleChanged", {"value": False}))
+    app.step()
+    assert len(fallback) == 1
+    assert "Form" in fallback[0]
 
 
 # --- components -----------------------------------------------------------

@@ -14,8 +14,11 @@ id -> {event_name: callable} registry. `App._handle` looks a dispatched
 event's own widget id up in that registry (rebuilt by the render this
 event's own `step()` just triggered) and calls whichever callback matches
 the event's shape -- see `_CONTAINER_EVENT_MAP` for the event-shape ->
-callback-name table, and `Button`'s own doc for why its `on_click` needs
-its own two-path dispatch instead of a table entry. `App._render` swaps
+callback-name table, `_FORM_FIELD_EVENT_MAP` for the `Form`-field/
+standalone-leaf equivalent (looked up by the *payload's* own id rather
+than the event's outer one -- see its own doc for why), and `Button`'s
+own doc for why its `on_click` needs its own two-path dispatch instead of
+a table entry. `App._render` swaps
 in only the component-state keys seen during that same pass, so a
 component that stops being rendered (a closed tab, a removed list row)
 drops its state slot instead of leaving it behind for a future, unrelated
@@ -178,6 +181,30 @@ _CONTAINER_EVENT_MAP: Dict[str, Dict[str, Tuple[str, Callable[[Dict[str, Any]], 
     "StatusBar": {
         "SegmentClicked": ("on_segment_click", lambda p: (p["id"],)),
     },
+}
+
+
+# Maps a `FormEvent` variant name (the `{"Form": [widget_id, {<variant>:
+# <payload>}]}` activation's own key) to (callback_name, args_from_payload)
+# -- the shape every typed field builder's own `on_change`/`on_submit`
+# keyword documents, and the one every standalone leaf that reuses this
+# event shape (`Checkbox`, `Slider`, `Select`, `Password`, `TextArea` --
+# see `quadraui_binding_core::extra_paint`'s own doc) shares with it.
+#
+# Unlike `_CONTAINER_EVENT_MAP`, which is keyed by the event's own wrapper
+# id (one widget per event), this is looked up by the *payload's* own
+# `id` -- a `Form`-embedded field's own id, never the wrapping `Form`'s
+# (see `quadraui::primitives::form::FormEvent`'s own doc: the event's
+# `id` is the field's; `UiEvent::Form`'s own outer id is the `Form`'s). A
+# standalone leaf's payload id and its event's outer id are the same
+# value, so this lookup is correct for both shapes without needing to
+# know which one it's looking at.
+_FORM_FIELD_EVENT_MAP: Dict[str, Tuple[str, Callable[[Dict[str, Any]], Tuple[Any, ...]]]] = {
+    "ToggleChanged": ("on_change", lambda p: (p["value"],)),
+    "TextInputChanged": ("on_change", lambda p: (p["value"],)),
+    "TextInputCommitted": ("on_submit", lambda p: (p["value"],)),
+    "SliderChanged": ("on_change", lambda p: (p["value"],)),
+    "DropdownChanged": ("on_change", lambda p: (p["selected_idx"],)),
 }
 
 
@@ -405,6 +432,32 @@ class App:
             callback()
         return True
 
+    def _dispatch_form_field_event(self, event: Dict[str, Any]) -> bool:
+        """The non-`ButtonClicked` half of a `{"Form": [id, activation]}`
+        event: a field (or standalone-leaf) value change, routed to
+        whichever `on_change`/`on_submit` that field's own id was
+        registered under -- see `_FORM_FIELD_EVENT_MAP`'s own doc for why
+        the lookup key is the *payload's* id, not this event's outer one.
+        An id this layer registered no matching callback for falls
+        through untouched, same as `_dispatch_button_clicked`."""
+        inner = event["Form"]
+        if not (isinstance(inner, (list, tuple)) and len(inner) == 2):
+            return False
+        _widget_id, activation = inner
+        if not isinstance(activation, dict):
+            return False
+        for variant_name, (callback_name, extract_args) in _FORM_FIELD_EVENT_MAP.items():
+            payload = activation.get(variant_name)
+            if payload is None:
+                continue
+            field_id = payload.get("id")
+            callback = self._registry.get(field_id, {}).get(callback_name) if field_id is not None else None
+            if callback is None:
+                return False
+            callback(*extract_args(payload))
+            return True
+        return False
+
     def _dispatch(self, event: Any) -> bool:
         """Tries every node-callback dispatch path in turn; `True` means the
         event was claimed -- a callback ran, or (see
@@ -434,7 +487,9 @@ class App:
             return False
 
         if "Form" in event:
-            return self._dispatch_button_clicked(event)
+            if self._dispatch_button_clicked(event):
+                return True
+            return self._dispatch_form_field_event(event)
 
         for container, variants in _CONTAINER_EVENT_MAP.items():
             if container not in event:
