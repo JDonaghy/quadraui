@@ -140,21 +140,29 @@ class SettingsApp {
         [
           TextInputField("Display name", setting.label, {
             id: this._labelFieldId(name),
+            // Writes through `this.settings[name]` rather than the
+            // closed-over `setting` object: `_reset(name)` replaces that
+            // entry with a fresh object, and a change landing between a
+            // Reset click and the next render must not write a discarded
+            // record.
             onChange: (value: string) => {
-              setting.label = value;
+              this.settings[name].label = value;
             },
             onSubmit: (value: string) => {
-              setting.label = value;
+              this.settings[name].label = value;
             },
           }),
           ToggleField("Enabled", setting.enabled, {
             id: this._enabledFieldId(name),
             onChange: (value: boolean) => {
-              setting.enabled = value;
+              this.settings[name].enabled = value;
             },
           }),
         ],
-        { id: `settings:${name}:form`, hasFocus: true },
+        // No `hasFocus` here: `_listLeaf()`'s category `List` already
+        // claims it, and two widgets simultaneously holding focus in the
+        // same frame would leave the focus ring in a confusing state.
+        { id: `settings:${name}:form` },
       ),
       Button("Reset", { id: "settings:reset", onClick: () => this._reset(name) }),
     ]);
@@ -220,17 +228,20 @@ function installQuitKey(settings: SettingsApp): void {
 /** Selects "Appearance", edits its display name and enabled switch, then activates "Reset" via a focused Enter -- then prints the final screen. */
 function runHeadless(settings: SettingsApp): void {
   const appearanceIdx = CATEGORIES.indexOf("Appearance");
+  const formId = "settings:Appearance:form";
   const labelId = "settings:Appearance:label";
   const enabledId = "settings:Appearance:enabled";
 
   settings.app.pushEvent({ List: ["settings:list", { SelectionChanged: { idx: appearanceIdx } }] });
   settings.app.step();
+  // The outer tuple id is the `Form`'s own id, never the field's --
+  // `FormEvent`'s own `id` (here `labelId`/`enabledId`) carries the field.
   settings.app.pushEvent({
-    Form: [labelId, { TextInputCommitted: { id: labelId, value: "Nightfall" } }],
+    Form: [formId, { TextInputCommitted: { id: labelId, value: "Nightfall" } }],
   });
   settings.app.step();
   settings.app.pushEvent({
-    Form: [enabledId, { ToggleChanged: { id: enabledId, value: true } }],
+    Form: [formId, { ToggleChanged: { id: enabledId, value: true } }],
   });
   settings.app.step();
   console.log(settings.app.screen());

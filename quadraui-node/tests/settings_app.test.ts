@@ -27,12 +27,15 @@ function list(h: any): any {
   return h.find({ role: "list" });
 }
 
-function setTextInput(h: any, id: string, value: string): void {
-  h.dispatch({ Form: [id, { TextInputCommitted: { id, value } }] });
+// The outer tuple id is the `Form`'s own id, never the field's --
+// `FormEvent`'s own `id` carries the field (see `examples/settings_app.ts`'s
+// `runHeadless`, which pushes this exact shape by hand).
+function setTextInput(h: any, formId: string, fieldId: string, value: string): void {
+  h.dispatch({ Form: [formId, { TextInputCommitted: { id: fieldId, value } }] });
 }
 
-function toggleSwitch(h: any, id: string, value: boolean): void {
-  h.dispatch({ Form: [id, { ToggleChanged: { id, value } }] });
+function toggleSwitch(h: any, formId: string, fieldId: string, value: boolean): void {
+  h.dispatch({ Form: [formId, { ToggleChanged: { id: fieldId, value } }] });
 }
 
 /** The `FormFieldDescriptor` for category `name`'s `label`/`enabled` field, read off the detail `Form`'s own `fields` array -- see this file's own header doc for why, not `h.find({id: fieldId})`. */
@@ -117,7 +120,7 @@ test("the detail pane shows the selected category's current label, note and enab
 test("committing a new label updates the app's own settings and the rendered field", () => {
   const { settings, h } = ui();
 
-  setTextInput(h, "settings:General:label", "Renamed Workspace");
+  setTextInput(h, "settings:General:form", "settings:General:label", "Renamed Workspace");
 
   assert.equal(settings.settings.General.label, "Renamed Workspace");
   // The rendered field itself, not just the app's own state -- the text
@@ -129,7 +132,7 @@ test("committing a new label updates the app's own settings and the rendered fie
 test("an in-progress (uncommitted) edit also applies -- TextInputChanged, not just Committed", () => {
   const { settings, h } = ui();
 
-  h.dispatch({ Form: ["settings:General:label", { TextInputChanged: { id: "settings:General:label", value: "Wor" } }] });
+  h.dispatch({ Form: ["settings:General:form", { TextInputChanged: { id: "settings:General:label", value: "Wor" } }] });
 
   assert.equal(settings.settings.General.label, "Wor");
 });
@@ -138,7 +141,7 @@ test("toggling the switch flips the app's own settings and the rendered value", 
   const { settings, h } = ui();
 
   assert.equal(settings.settings.General.enabled, true);
-  toggleSwitch(h, "settings:General:enabled", false);
+  toggleSwitch(h, "settings:General:form", "settings:General:enabled", false);
 
   assert.equal(settings.settings.General.enabled, false);
   assert.deepEqual(detailField(h, "General", "enabled").kind, { Toggle: { value: false } });
@@ -148,8 +151,8 @@ test("editing one category's fields never touches another category's settings", 
   const { settings, h } = ui();
 
   list(h).row("Appearance").click();
-  setTextInput(h, "settings:Appearance:label", "Nightfall");
-  toggleSwitch(h, "settings:Appearance:enabled", true);
+  setTextInput(h, "settings:Appearance:form", "settings:Appearance:label", "Nightfall");
+  toggleSwitch(h, "settings:Appearance:form", "settings:Appearance:enabled", true);
 
   assert.deepEqual(settings.settings.General, {
     label: settingsExample.DEFAULTS.General.label,
@@ -163,8 +166,8 @@ test("editing one category's fields never touches another category's settings", 
 test("clicking Reset restores the selected category's defaults", () => {
   const { settings, h } = ui();
 
-  setTextInput(h, "settings:General:label", "Scratch");
-  toggleSwitch(h, "settings:General:enabled", false);
+  setTextInput(h, "settings:General:form", "settings:General:label", "Scratch");
+  toggleSwitch(h, "settings:General:form", "settings:General:enabled", false);
 
   h.find({ role: "button", id: "settings:reset" }).click();
 
@@ -178,7 +181,7 @@ test("clicking Reset restores the selected category's defaults", () => {
 test("focusing Reset and pressing Enter resets it too, without the onEvent fallback stomping the message", () => {
   const { settings, h } = ui();
 
-  setTextInput(h, "settings:General:label", "Scratch");
+  setTextInput(h, "settings:General:form", "settings:General:label", "Scratch");
   h.focus("settings:reset");
   h.press("Enter");
 

@@ -14,8 +14,11 @@
 // event's own widget id up in that registry (rebuilt by the render this
 // event's own `step()` just triggered) and calls whichever callback matches
 // the event's shape -- see `CONTAINER_EVENT_MAP` for the event-shape ->
-// callback-name table, and `Button`'s own doc (`./nodes.ts`) for why its
-// `onClick` needs its own two-path dispatch instead of a table entry.
+// callback-name table, `FORM_FIELD_EVENT_MAP` for the `Form`-field/
+// standalone-leaf equivalent (looked up by the *payload's* own id rather
+// than the event's outer one -- see its own doc for why), and `Button`'s
+// own doc (`./nodes.ts`) for why its `onClick` needs its own two-path
+// dispatch instead of a table entry.
 // `App.render` swaps in only the component-state keys seen during that
 // same pass, so a component that stops being rendered (a closed tab, a
 // removed list row) drops its state slot instead of leaving it behind for
@@ -260,15 +263,22 @@ const CONTAINER_EVENT_MAP: Record<
 };
 
 /**
- * Maps a `FormEvent` field-change variant to `{callbackName: extractArgs}`
- * -- the per-field `onChange`/`onSubmit` option `./nodes.ts`'s
- * `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/
- * `PasswordField`/`TextAreaField` (and the standalone `Checkbox`/`Slider`/
- * `Select`/`Password`/`TextArea` leaves) all document. Looked up by
- * `_dispatchFormField` against whichever widget id the `{"Form": [id,
- * ...]}` event's own tuple carries -- a `Form` field's own id (see
- * `Node.extraCallbacks`'s own doc), or a standalone leaf's own id, never
- * the enclosing `Form`'s. `ButtonClicked` is not here -- `_dispatchButtonClicked`
+ * Maps a `FormEvent` field-change variant (the `{"Form": [widgetId,
+ * {<variant>: <payload>}]}` activation's own key) to `[callbackName,
+ * extractArgs]` -- the shape every typed field builder's own
+ * `onChange`/`onSubmit` keyword documents, and the one every standalone
+ * leaf that reuses this event shape (`Checkbox`, `Slider`, `Select`,
+ * `Password`, `TextArea` -- see `quadraui_binding_core::extra_paint`'s own
+ * doc) shares with it.
+ *
+ * Unlike {@link CONTAINER_EVENT_MAP}, which is keyed by the event's own
+ * wrapper id (one widget per event), `_dispatchFormField` looks this up
+ * by the *payload's* own `id` -- a `Form`-embedded field's own id, never
+ * the wrapping `Form`'s (the engine's `UiEvent::Form`'s outer id is the
+ * `Form`'s; `FormEvent`'s own `id` is the field's). A standalone leaf's
+ * payload id and its event's outer id are the same value, so this lookup
+ * is correct for both shapes without needing to know which one it's
+ * looking at. `ButtonClicked` is not here -- `_dispatchButtonClicked`
  * claims it first, with its own click-vs-activation split.
  */
 const FORM_FIELD_EVENT_MAP: Record<string, [string, (payload: Record<string, unknown>) => unknown[]]> = {
@@ -607,10 +617,11 @@ class App {
   }
 
   /**
-   * The field-change half of a `{"Form": [id, FormEvent]}` event: looks
-   * `widgetId` (the field/leaf's own id, not the enclosing `Form`'s) up in
-   * `_registry` for whichever callback {@link FORM_FIELD_EVENT_MAP} maps
-   * the event's own variant to, and calls it. Tried only after
+   * The non-`ButtonClicked` half of a `{"Form": [id, activation]}` event:
+   * a field (or standalone-leaf) value change, routed to whichever
+   * `onChange`/`onSubmit` that field's own id was registered under -- see
+   * {@link FORM_FIELD_EVENT_MAP}'s own doc for why the lookup key is the
+   * *payload's* `id`, not this event's outer one. Tried only after
    * `_dispatchButtonClicked` has already ruled out `ButtonClicked`.
    */
   private _dispatchFormField(obj: Record<string, unknown>): boolean {
@@ -618,20 +629,23 @@ class App {
     if (!Array.isArray(inner) || inner.length !== 2) {
       return false;
     }
-    const [widgetId, activation] = inner as [string, unknown];
+    const [, activation] = inner as [string, unknown];
     if (typeof activation !== "object" || activation === null) {
       return false;
     }
     const activationObj = activation as Record<string, unknown>;
     for (const [variantName, [callbackName, extractArgs]] of Object.entries(FORM_FIELD_EVENT_MAP)) {
-      if (variantName in activationObj) {
-        const callback = this._registry[widgetId]?.[callbackName];
-        if (callback !== undefined) {
-          callback(...extractArgs(activationObj[variantName] as Record<string, unknown>));
-          return true;
-        }
+      const payload = activationObj[variantName] as Record<string, unknown> | undefined;
+      if (payload === undefined) {
+        continue;
+      }
+      const fieldId = payload.id as string | undefined;
+      const callback = fieldId !== undefined ? this._registry[fieldId]?.[callbackName] : undefined;
+      if (callback === undefined) {
         return false;
       }
+      callback(...extractArgs(payload));
+      return true;
     }
     return false;
   }

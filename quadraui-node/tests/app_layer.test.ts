@@ -269,18 +269,23 @@ test("TextInputField dispatches onChange per keystroke and onSubmit on commit", 
 
   const app = new App(40, 5, {
     view: () =>
-      Form([
-        TextInputField("Name", "Alice", {
-          id: "f:name",
-          onChange: (value: string) => changes.push(value),
-          onSubmit: (value: string) => submits.push(value),
-        }),
-      ]),
+      Form(
+        [
+          TextInputField("Name", "Alice", {
+            id: "f:name",
+            onChange: (value: string) => changes.push(value),
+            onSubmit: (value: string) => submits.push(value),
+          }),
+        ],
+        { id: "t:settings" },
+      ),
   });
 
-  app.pushEvent({ Form: ["f:name", { TextInputChanged: { id: "f:name", value: "Alicia" } }] });
+  // The outer tuple id is the `Form`'s own id (`t:settings`), never the
+  // field's -- `FormEvent`'s own `id` (here `f:name`) carries the field.
+  app.pushEvent({ Form: ["t:settings", { TextInputChanged: { id: "f:name", value: "Alicia" } }] });
   app.step();
-  app.pushEvent({ Form: ["f:name", { TextInputCommitted: { id: "f:name", value: "Alicia" } }] });
+  app.pushEvent({ Form: ["t:settings", { TextInputCommitted: { id: "f:name", value: "Alicia" } }] });
   app.step();
   assert.deepEqual(changes, ["Alicia"]);
   assert.deepEqual(submits, ["Alicia"]);
@@ -290,10 +295,13 @@ test("ToggleField dispatches onChange with the new value", () => {
   const changes: boolean[] = [];
 
   const app = new App(40, 5, {
-    view: () => Form([ToggleField("Enabled", false, { id: "f:enabled", onChange: (value: boolean) => changes.push(value) })]),
+    view: () =>
+      Form([ToggleField("Enabled", false, { id: "f:enabled", onChange: (value: boolean) => changes.push(value) })], {
+        id: "t:settings",
+      }),
   });
 
-  app.pushEvent({ Form: ["f:enabled", { ToggleChanged: { id: "f:enabled", value: true } }] });
+  app.pushEvent({ Form: ["t:settings", { ToggleChanged: { id: "f:enabled", value: true } }] });
   app.step();
   assert.deepEqual(changes, [true]);
 });
@@ -303,10 +311,13 @@ test("DropdownField dispatches onChange with the selected index", () => {
   const choices = [{ spans: [{ text: "A", fg: null, bg: null }] }, { spans: [{ text: "B", fg: null, bg: null }] }];
 
   const app = new App(40, 5, {
-    view: () => Form([DropdownField("Role", choices, 0, { id: "f:role", onChange: (idx: number) => changes.push(idx) })]),
+    view: () =>
+      Form([DropdownField("Role", choices, 0, { id: "f:role", onChange: (idx: number) => changes.push(idx) })], {
+        id: "t:settings",
+      }),
   });
 
-  app.pushEvent({ Form: ["f:role", { DropdownChanged: { id: "f:role", selected_idx: 1 } }] });
+  app.pushEvent({ Form: ["t:settings", { DropdownChanged: { id: "f:role", selected_idx: 1 } }] });
   app.step();
   assert.deepEqual(changes, [1]);
 });
@@ -315,10 +326,13 @@ test("SliderField dispatches onChange with the new value", () => {
   const changes: number[] = [];
 
   const app = new App(40, 5, {
-    view: () => Form([SliderField("Volume", 5, 0, 10, { id: "f:vol", onChange: (value: number) => changes.push(value) })]),
+    view: () =>
+      Form([SliderField("Volume", 5, 0, 10, { id: "f:vol", onChange: (value: number) => changes.push(value) })], {
+        id: "t:settings",
+      }),
   });
 
-  app.pushEvent({ Form: ["f:vol", { SliderChanged: { id: "f:vol", value: 7 } }] });
+  app.pushEvent({ Form: ["t:settings", { SliderChanged: { id: "f:vol", value: 7 } }] });
   app.step();
   assert.deepEqual(changes, [7]);
 });
@@ -329,18 +343,21 @@ test("PasswordField dispatches onChange per keystroke and onSubmit on commit", (
 
   const app = new App(40, 5, {
     view: () =>
-      Form([
-        PasswordField("Secret", "", {
-          id: "f:pwd",
-          onChange: (value: string) => changes.push(value),
-          onSubmit: (value: string) => submits.push(value),
-        }),
-      ]),
+      Form(
+        [
+          PasswordField("Secret", "", {
+            id: "f:pwd",
+            onChange: (value: string) => changes.push(value),
+            onSubmit: (value: string) => submits.push(value),
+          }),
+        ],
+        { id: "t:settings" },
+      ),
   });
 
-  app.pushEvent({ Form: ["f:pwd", { TextInputChanged: { id: "f:pwd", value: "s3cr3t" } }] });
+  app.pushEvent({ Form: ["t:settings", { TextInputChanged: { id: "f:pwd", value: "s3cr3t" } }] });
   app.step();
-  app.pushEvent({ Form: ["f:pwd", { TextInputCommitted: { id: "f:pwd", value: "s3cr3t" } }] });
+  app.pushEvent({ Form: ["t:settings", { TextInputCommitted: { id: "f:pwd", value: "s3cr3t" } }] });
   app.step();
   assert.deepEqual(changes, ["s3cr3t"]);
   assert.deepEqual(submits, ["s3cr3t"]);
@@ -350,16 +367,19 @@ test("TextAreaField dispatches onChange but never onSubmit (Enter inserts a newl
   const changes: string[] = [];
 
   const app = new App(40, 5, {
-    view: () => Form([TextAreaField("Notes", "hi", { id: "f:notes", onChange: (value: string) => changes.push(value) })]),
+    view: () =>
+      Form([TextAreaField("Notes", "hi", { id: "f:notes", onChange: (value: string) => changes.push(value) })], {
+        id: "t:settings",
+      }),
   });
 
-  app.pushEvent({ Form: ["f:notes", { TextInputChanged: { id: "f:notes", value: "hi\nthere" } }] });
+  app.pushEvent({ Form: ["t:settings", { TextInputChanged: { id: "f:notes", value: "hi\nthere" } }] });
   app.step();
   assert.deepEqual(changes, ["hi\nthere"]);
   // No `FORM_FIELD_EVENT_MAP` entry claims `TextInputCommitted` under
   // `on_submit` for this field -- `TextAreaField` never registers one --
   // so sending it anyway must fall through rather than throw.
-  app.pushEvent({ Form: ["f:notes", { TextInputCommitted: { id: "f:notes", value: "hi\nthere" } }] });
+  app.pushEvent({ Form: ["t:settings", { TextInputCommitted: { id: "f:notes", value: "hi\nthere" } }] });
   app.step();
   assert.deepEqual(changes, ["hi\nthere"]);
 });
@@ -383,7 +403,7 @@ test("Form resolves an unlabeled field's own id from its position, like Tabs' ow
   assert.equal(fields[0].id, "t:form:field:0");
   assert.equal(fields[1].id, "t:form:field:1");
 
-  app.pushEvent({ Form: ["t:form:field:1", { ToggleChanged: { id: "t:form:field:1", value: true } }] });
+  app.pushEvent({ Form: ["t:form", { ToggleChanged: { id: "t:form:field:1", value: true } }] });
   app.step();
   assert.deepEqual(changes, [true]);
 });
@@ -392,11 +412,11 @@ test("a Form field with no onChange falls through to onEvent", () => {
   const fallenThrough: unknown[] = [];
 
   const app = new App(40, 5, {
-    view: () => Form([ToggleField("Enabled", false, { id: "f:enabled" })]),
+    view: () => Form([ToggleField("Enabled", false, { id: "f:enabled" })], { id: "t:settings" }),
     onEvent: (event: unknown) => fallenThrough.push(event),
   });
 
-  app.pushEvent({ Form: ["f:enabled", { ToggleChanged: { id: "f:enabled", value: true } }] });
+  app.pushEvent({ Form: ["t:settings", { ToggleChanged: { id: "f:enabled", value: true } }] });
   app.step();
   assert.equal(fallenThrough.length, 1);
 });
@@ -445,6 +465,41 @@ test("standalone Password dispatches onSubmit on TextInputCommitted", () => {
   app.pushEvent({ Form: ["l:password", { TextInputCommitted: { id: "l:password", value: "hi" } }] });
   app.step();
   assert.deepEqual(submits, ["hi"]);
+});
+
+test("a Form field's on_change is keyed off the field's own id, not the wrapping Form's", () => {
+  // `FormEvent`'s own `id` is the field's, never the wrapping `Form`'s
+  // (see `quadraui::primitives::form::FormEvent`'s own doc) -- so a
+  // field's `onChange` must be looked up by its own id, and a payload
+  // naming the `Form`'s id instead must not accidentally match it.
+  const seen: boolean[] = [];
+
+  const app = new App(20, 5, {
+    view: () => Form([ToggleField("Enabled", true, { id: "f:toggle", onChange: (v: boolean) => seen.push(v) })], { id: "t:form" }),
+  });
+
+  app.pushEvent({ Form: ["t:form", { ToggleChanged: { id: "t:form", value: false } }] });
+  app.step();
+  assert.deepEqual(seen, [], "the Form's own id must not be mistaken for the field's");
+
+  app.pushEvent({ Form: ["t:form", { ToggleChanged: { id: "f:toggle", value: false } }] });
+  app.step();
+  assert.deepEqual(seen, [false]);
+});
+
+test("Checkbox onChange fires on a real hit-tested click, through the engine's own dispatch", () => {
+  // End-to-end, through the real engine's own hit-test and semantic
+  // dispatch -- not a hand-built `Form` event -- the same way "button
+  // onClick fires on a hit-tested MouseDown" proves `Button`'s own
+  // wiring.
+  const seen: boolean[] = [];
+
+  const app = new App(20, 5, {
+    view: () => Checkbox(true, { id: "t:cb", onChange: (v: boolean) => seen.push(v) }),
+  });
+
+  clickAt(app);
+  assert.deepEqual(seen, [false]);
 });
 
 test("tabs closed dispatches onClose with the index", () => {

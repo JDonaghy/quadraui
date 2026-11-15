@@ -548,7 +548,12 @@ export interface FormFieldCommonOptions {
  * `FormFieldDescriptor` is a flat entry in `FormDescriptor.fields`, not a
  * child in the layout tree, so it has no `children` slot of its own and
  * resolves its id from {@link Form}'s own `build` directly rather than
- * through `./runtime.ts`'s `walk`.
+ * through `./runtime.ts`'s `walk`. Passing one of these directly into a
+ * container (`Column([ToggleField(...)])`) instead of `Form`'s own
+ * `fields` array is a mistake `./runtime.ts`'s `isNode`/`walk` cannot
+ * catch -- it has no `children`, so it fails neither the `isNode` check
+ * nor the `TypeError` path, and is passed through as a raw object
+ * containing a function.
  */
 export interface FormFieldSpec {
   id: string | null;
