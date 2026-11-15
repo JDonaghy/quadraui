@@ -118,10 +118,11 @@ Rules that follow from the model:
 ### Available nodes
 
 `Split`, `Column`, `Row`, `SidebarPanel`, `Scroll`, `Tabs`/`Tab`, `Tree`,
-`Table`, `List`, `StatusBar`, `TextDisplay`, `Button`, plus `Toolbar`.
-`Toolbar` is not a node: it returns a raw descriptor for
-`SidebarPanel(toolbar=...)`, and its buttons do **not** raise events yet.
-Use `Button` for anything clickable.
+`Table`, `List`, `StatusBar`, `TextDisplay`, `Button`, `Form` (plus its
+field builders), `Checkbox`/`Slider`/`Select`/`Password`/`TextArea` (the
+standalone leaves), plus `Toolbar`. `Toolbar` is not a node: it returns a
+raw descriptor for `SidebarPanel(toolbar=...)`, and its buttons do
+**not** raise events yet. Use `Button` for anything clickable.
 
 `Form(fields=[...])` builds a settings-page-style field stack with no raw
 dict. Each field is one of this layer's own builders, passed straight
@@ -129,10 +130,13 @@ into `fields=`: `ToggleField`, `TextInputField`, `SliderField`,
 `PasswordField`, `TextAreaField`, `SelectField` (a `Dropdown` row). Every
 one takes `on_change`, and `TextInputField`/`PasswordField` also take
 `on_submit` (fires once on Enter) -- see each builder's own docstring for
-exactly which `FormEvent` it answers. `Checkbox`, `Slider`, `Select`,
-`Password`, `TextArea` are the same five controls as bare, `Form`-less
-leaves -- use one of those instead of a one-field `Form` for a single
-standalone control.
+exactly which `FormEvent` it answers. `SliderField` is the one exception:
+paint/a11y only for now, since `FormController` has no click/drag/arrow-key
+arm for `FieldKind::Slider` -- use the standalone `Slider` leaf for a
+real interactive slider. `Checkbox`, `Slider`, `Select`, `Password`,
+`TextArea` are the same five controls as bare, `Form`-less leaves -- use
+one of those instead of a one-field `Form` for a single standalone
+control.
 
 Anything else in the toolkit (progress, spinner, image, overlays,
 ...) has no typed node yet. A `view()` may return a **raw wire dict**
