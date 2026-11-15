@@ -10,7 +10,7 @@
 //! - Generic layout using `backend.measure()` so the dialog
 //!   renders at the right scale on both TUI (1.0 = one cell) and GTK (real
 //!   pixel line height / char width, not an approximation of either).
-//! - [`Dialog::measure_generic`] for deriving the
+//! - [`Dialog::measure_generic_with_style`] for deriving the
 //!   `DialogMeasure` — this dogfoods the library helper.
 //! - The `draw_dialog` table rendering path (column separators + header row)
 
@@ -60,32 +60,41 @@ impl DialogTableDemo {
     }
 
     /// Compute a [`DialogMeasure`] from `backend.measure()` via
-    /// [`Dialog::measure_generic`], then overrides
+    /// [`Dialog::measure_generic_with_style`], then overrides
     /// `button_width` with a real per-label measurement via
     /// [`crate::Backend::measure_text`].
     ///
     /// `line_height` is 1.0 on TUI (one character cell) and the pixel line
     /// height on GTK/macOS. `char_width` is likewise the real glyph width
     /// on pixel backends — [`crate::Backend::measure`]'s [`crate::Metrics`]
-    /// is the one source of truth. `measure_generic` itself still sizes
-    /// `button_width` as a flat `char_width * 8.0` guess (its own doc: "does
-    /// not measure … buttons' rendered pixel width beyond the char-cell
-    /// approximation … callers with real text measurement available should
-    /// prefer measuring directly") — right for this dialog's one `"Close"`
-    /// button on TUI's fixed grid, but a proportional chrome font on
-    /// GTK/macOS/Win has no single `char_width` to multiply by 8. This method
-    /// is that "measure directly" caller: the real button-label width in the
-    /// chrome font, plus the same two-char-width padding `measure_generic`
-    /// already budgets. `border_chrome_inset` is `0.0`: both this repo's TUI
-    /// and GTK `draw_dialog` paint the border *inside* `DialogLayout::bounds`,
-    /// so no extra inset is needed.
+    /// is the one source of truth. `measure_generic_with_style` sizes the
+    /// button row's height at `backend.style().control_height` on those
+    /// pixel backends, matching `MessageDialogController`'s own OK/Cancel
+    /// row; TUI's one-cell row is unaffected. `measure_generic_with_style`
+    /// itself still sizes `button_width` as a flat `char_width * 8.0` guess
+    /// (its own doc: "does not measure … buttons' rendered pixel width
+    /// beyond the char-cell approximation … callers with real text
+    /// measurement available should prefer measuring directly") — right for
+    /// this dialog's one `"Close"` button on TUI's fixed grid, but a
+    /// proportional chrome font on GTK/macOS/Win has no single `char_width`
+    /// to multiply by 8. This method is that "measure directly" caller: the
+    /// real button-label width in the chrome font, plus the same
+    /// two-char-width padding `measure_generic_with_style` already budgets.
+    /// `border_chrome_inset` is `0.0`: both this repo's TUI and GTK
+    /// `draw_dialog` paint the border *inside* `DialogLayout::bounds`, so no
+    /// extra inset is needed.
     fn measure(&self, backend: &dyn Backend) -> DialogMeasure {
         let m = backend.measure();
         let viewport = backend.viewport();
         let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        let mut measure =
-            self.dialog
-                .measure_generic(m.char_width, m.line_height, viewport_rect, 0.0);
+        let style = backend.style();
+        let mut measure = self.dialog.measure_generic_with_style(
+            m.char_width,
+            m.line_height,
+            viewport_rect,
+            0.0,
+            &style,
+        );
         if let Some(max_label_w) = self
             .dialog
             .buttons
@@ -202,6 +211,34 @@ mod measure_tests {
             "measure() should use the backend's real char_width via \
              measure_text, not the line_height * 0.6 guess"
         );
+    }
+
+    /// On a pixel backend, `measure()` sizes the button row at
+    /// `backend.style().control_height`, matching
+    /// `MessageDialogController`'s own OK/Cancel row — not the raw
+    /// `line_height` the TUI char-grid path uses.
+    #[test]
+    fn measure_sizes_button_row_at_control_height_on_pixel_metrics() {
+        let backend = pixel_shaped();
+        let demo = DialogTableDemo::new();
+        let m = demo.measure(&backend);
+        assert_ne!(
+            backend.style().control_height,
+            backend.line_height,
+            "test setup should pick metrics where control_height and \
+             line_height diverge"
+        );
+        assert_eq!(m.button_row_height, backend.style().control_height);
+    }
+
+    /// On TUI metrics (`line_height == 1.0`), the button row stays one
+    /// char cell tall — `Style::control_height` must not inflate it.
+    #[test]
+    fn measure_leaves_tui_button_row_at_one_cell() {
+        let backend = tui_shaped();
+        let demo = DialogTableDemo::new();
+        let m = demo.measure(&backend);
+        assert_eq!(m.button_row_height, 1.0);
     }
 
     /// `button_width` must track each button's *own* label length through
