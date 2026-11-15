@@ -15,3 +15,9 @@ fragment step for this package (that mechanism, and
 `quadraui/src/**`).
 
 ## [Unreleased]
+
+### Added
+
+- `README.md` now documents install (npm vs. from source), build and run
+  steps, the CommonJS-vs-ESM `.ts`/`require` constraint the examples and
+  tests rely on, and this `CHANGELOG.md` itself.

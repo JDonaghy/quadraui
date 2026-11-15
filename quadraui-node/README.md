@@ -6,13 +6,11 @@ toolkit. This package lets a Node/TypeScript program build `quadraui`
 descriptors and drive them headlessly, or take over a real terminal/native
 window with them.
 
-```bash
-npm install @quadraui/node
-```
-
 ```ts
 const { QuiApp } = require("@quadraui/node");
 ```
+
+See *Install* below for how to get `@quadraui/node` itself.
 
 ## Install
 
@@ -26,9 +24,9 @@ platforms have one, and what happens on a platform that doesn't.
 
 ### From source
 
-A platform with no prebuilt binary (Linux arm64, musl, …), or a local change
-to the Rust side of this package, needs a build from source instead of
-`npm install @quadraui/node`:
+A platform with no prebuilt binary (Linux arm64, musl, macOS x86_64, Windows
+arm64, …), or a local change to the Rust side of this package, needs a
+build from source instead of `npm install @quadraui/node`:
 
 ```bash
 git clone https://github.com/JDonaghy/quadraui.git
@@ -37,30 +35,41 @@ npm install   # pulls this package's own devDependencies, not @quadraui/node its
 npm run build # napi build --platform --release — compiles the Rust addon for this machine
 ```
 
-`npm run build` needs a Rust toolchain (`rustup`) on `PATH`; everything else
-it needs (`@napi-rs/cli`, `typescript`, …) comes from `npm install`. Use
-`npm run build:debug` instead for a faster, unoptimized build while
-iterating locally.
+`npm run build` needs a Rust toolchain (`cargo`/`rustc`, usually installed
+via `rustup`) on `PATH`; everything else it needs (`@napi-rs/cli`,
+`typescript`, …) comes from `npm install`. Use `npm run build:debug`
+instead for a faster, unoptimized build while iterating locally.
 
 ## Run
 
-Every file under `examples/` runs directly, with no separate compile step,
-once the native addon is built (either way — `npm install` or from source):
+The examples live in this repo's `examples/` directory, which is not part of
+the published npm package — running them means a clone of the repo, built
+from source as above (`### From source`), not a plain `npm install
+@quadraui/node` into your own project.
+
+Every `.ts` file directly under `examples/` runs on its own, with no
+separate compile step, once `npm run build` has built the native addon:
 
 ```bash
 node examples/appshell_demo.ts
 node examples/file_manager_app.ts
 ```
 
-This relies on Node's own native TypeScript support (type stripping — no
-`ts-node`/`tsx`/`esbuild-register` needed); see
+(`examples/file_manager_app_jsx.tsx` is the one exception — Node doesn't
+type-strip `.tsx`, so it needs a transform first; see *JSX* below.
+`examples/hot_reload/notes_view.ts` is a module another example requires,
+not a runnable demo on its own.)
+
+Running directly relies on Node's own native TypeScript support (type
+stripping — no `ts-node`/`tsx`/`esbuild-register` needed); see
 *CommonJS vs. ESM — the `.ts`/`require` constraint* below for the one thing
 that support doesn't do, and why every file here works around it the same
 way.
 
 `npm test` runs this package's own `node --test` suite
 (`tests/*.test.ts`), and `npm run typecheck:examples` type-checks every
-example with `tsc --strict` without running any of them.
+`.ts` example with `tsc --strict` without running any of them (the `.tsx`
+example is covered separately by `npm run typecheck:jsx`; see *JSX* below).
 
 ## Version compatibility
 
@@ -91,7 +100,8 @@ an optional dependency, matching the installing machine's platform:
 All three are headless/TUI builds — `startNative` raises `NoNativeBackendError`
 rather than opening a real window on any of them, the same as building from
 source with no native-window feature enabled. A different platform (Linux
-arm64, musl, etc.) has no prebuilt binary; `npm install` still succeeds
+arm64, musl, macOS x86_64, Windows arm64, etc.) has no prebuilt binary;
+`npm install` still succeeds
 there (optional dependencies that don't match the install platform are
 silently skipped) but the generated loader then fails at runtime with
 "Failed to load native binding" — see *Install > From source* above.
