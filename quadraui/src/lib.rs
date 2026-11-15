@@ -152,11 +152,12 @@
 // The handful of genuinely CLI-shaped call sites this deny would otherwise
 // break (the GTK headless-smoke harness in `gtk/run.rs`, the macOS
 // visual-confirmation dev tool in `macos/headless.rs`, a test-skip notice
-// in `gtk/services.rs`) carry their own justified
-// `#[allow(clippy::print_stderr)]` — they print to a human running a tool
-// directly, not into a host's live UI. `examples/*` and any `bin/` are
-// compiled as separate crates and are unaffected by this inner attribute;
-// they're expected to print freely.
+// in `gtk/services.rs`, the stale-GUI-session activation hint both macOS
+// backends print via `macos_session_hint::activation_hint`) carry their own
+// justified `#[allow(clippy::print_stderr)]` — they print to a human
+// running a tool directly, not into a host's live UI. `examples/*` and any
+// `bin/` are compiled as separate crates and are unaffected by this inner
+// attribute; they're expected to print freely.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 // `doc(cfg(..))` is a nightly-only rustdoc attribute; docs.rs builds with
 // `--cfg docsrs` so feature-gated items can be annotated. A plain build on
@@ -305,6 +306,20 @@ pub mod flex;
 // see `tui::image`'s module doc.
 #[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
 pub(crate) mod image_cache;
+
+// Shared "macOS never activated this window" stderr diagnostic —
+// `macos::run::QuadraAppDelegate`'s `applicationDidFinishLaunching:` and
+// `gtk::run`'s post-`present()` macOS check both call
+// `macos_session_hint::activation_hint`. Both call sites live inside a
+// `cfg(target_os = "macos")` block of their own (`macos::run` is
+// target-gated in full; `gtk::run`'s is the inner block alongside
+// `activate_macos_process`), so this module is gated the same way —
+// `feature = "gtk"` alone (any other target) or `feature = "macos"` alone
+// (never true off `target_os = "macos"`, see `mod macos`'s own gate below)
+// would leave it compiled with no caller and fail `-D warnings` as dead
+// code.
+#[cfg(all(any(feature = "gtk", feature = "macos"), target_os = "macos"))]
+pub(crate) mod macos_session_hint;
 
 // Bundled codicon icon font: the PUA codepoints + font bytes every GUI
 // backend self-registers so built-in chrome glyphs (tree chevrons, tab

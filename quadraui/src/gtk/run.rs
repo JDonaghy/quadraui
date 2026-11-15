@@ -861,6 +861,73 @@ fn activate_macos_process() {
 #[cfg(not(target_os = "macos"))]
 fn activate_macos_process() {}
 
+/// Schedules a one-shot check, [`MACOS_SESSION_HINT_DELAY`] after the first
+/// window is presented, for whether [`activate_macos_process`] actually
+/// landed: the window opens behind other windows, there is no Dock icon,
+/// and keystrokes keep landing in the launching terminal, with nothing
+/// printed anywhere. See [`crate::macos_session_hint`]'s module doc for
+/// the diagnosis and the one confirmed trigger.
+///
+/// A fixed delay, not a poll loop: like `macos::run`'s own
+/// `QuadraAppDelegate::schedule_session_hint_check` (same delay,
+/// same reasoning), this is diagnosing a condition that's either true
+/// moments after launch or stays true for the process's whole life, so
+/// one sample is enough.
+///
+/// A `glib::source::timeout_add_local_once` for the delay — mirrors this
+/// file's other one-shot deferrals (`GtkRunner::pump`'s bounded wait,
+/// `setup_resize_controller`'s settle timer) rather than a bespoke
+/// `std::thread::sleep`, which would block the only GTK main-loop thread.
+///
+/// No-op when [`crate::macos_session_hint::session_hint_disabled`] —
+/// set by a headless build/test lane so it stays quiet about a condition
+/// that's expected there, not a regression.
+#[cfg(target_os = "macos")]
+fn schedule_macos_session_hint_check() {
+    if crate::macos_session_hint::session_hint_disabled() {
+        return;
+    }
+    glib::source::timeout_add_local_once(MACOS_SESSION_HINT_DELAY, run_macos_session_hint_check);
+}
+
+/// Backing logic for [`schedule_macos_session_hint_check`]'s timer: reads
+/// `NSApp.isActive()`/`keyWindow()`, consults
+/// [`crate::macos_session_hint::activation_hint`], and `eprintln!`s the
+/// result.
+///
+/// `print_stderr` is denied crate-wide (see `lib.rs`'s module doc) so a
+/// stray print from library code never corrupts a host's live TUI screen
+/// — but here `eprintln!` reaches the terminal that launched this
+/// binary, straight to the person sitting at it: the exact "human
+/// running a tool directly" case that deny's doc carves out.
+#[cfg(target_os = "macos")]
+#[allow(clippy::print_stderr)]
+fn run_macos_session_hint_check() {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        // Mirrors `activate_macos_process`'s own guard — this timer only
+        // ever fires on GTK's main thread in practice.
+        return;
+    };
+    let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    let is_active = ns_app.isActive();
+    let has_key_window = ns_app.keyWindow().is_some();
+    let tmux = std::env::var("TMUX").ok();
+    if let Some(hint) =
+        crate::macos_session_hint::activation_hint(is_active, has_key_window, tmux.as_deref())
+    {
+        eprintln!("{hint}");
+    }
+}
+
+/// Non-macOS targets: no AppKit to check against. See the
+/// `#[cfg(target_os = "macos")]` sibling above for the real implementation.
+#[cfg(not(target_os = "macos"))]
+fn schedule_macos_session_hint_check() {}
+
+/// See [`schedule_macos_session_hint_check`]'s doc.
+#[cfg(target_os = "macos")]
+const MACOS_SESSION_HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
 fn activate<A: AppLogic + 'static>(
     gapp: &Application,
     app: Rc<RefCell<A>>,
@@ -995,6 +1062,9 @@ fn activate<A: AppLogic + 'static>(
     // `activate_macos_process`'s doc for why `present()` alone isn't
     // enough and what the two AppKit calls do.
     activate_macos_process();
+    // ...and schedule the delayed check for whether that actually
+    // worked — see `schedule_macos_session_hint_check`'s doc.
+    schedule_macos_session_hint_check();
     // Grab focus only after `present()` realizes/maps the window —
     // calling this any earlier is a well-documented GTK4 foot-gun (the
     // widget isn't part of a mapped surface yet, so the focus request can
