@@ -64,6 +64,7 @@ use serde::{Deserialize, Serialize};
 use crate::accelerator::KeyBinding;
 use crate::backend::PointerShape;
 use crate::event::{Key, NamedKey, Point, Rect};
+use crate::style::Style;
 use crate::types::{Modifiers, WidgetId};
 use crate::undo::UndoStack;
 
@@ -929,6 +930,38 @@ impl TextInputMeasure {
     /// intent.
     pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
         Self::new(m.line_height, m.char_width)
+    }
+}
+
+/// Fully-resolved, backend-neutral box height for a **single-line**
+/// `TextInput` (one line, no wrap — the shape every standalone text
+/// field and every `Form` `TextInput`/`PasswordInput` row uses): the
+/// same "standard single-line control" metric
+/// [`crate::primitives::button::ButtonMetrics`] resolves a `Button`'s
+/// own height from, read straight from [`Style::control_height`]
+/// instead of derived from [`TextInputMeasure::row_height`] (a backend's
+/// line-height measurement, which under-sizes a single-line box relative
+/// to every other control sized against `control_height`). A consumer
+/// sizing a standalone single-line input's rect reads [`Self::resolve`]
+/// instead of `backend.line_height()`.
+///
+/// **TUI story: no-op**, same as `ButtonMetrics` — a terminal row is
+/// always exactly one cell tall and has no sub-cell height to refine, so
+/// `crate::tui::text_input` has no use for this struct.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct TextInputMetrics {
+    /// Resolved single-line input box height, in surface-native pixels
+    /// — read straight from [`Style::control_height`].
+    pub height: f32,
+}
+
+impl TextInputMetrics {
+    /// Resolve a single-line `TextInput`'s box height from `style`.
+    pub fn resolve(style: &Style) -> Self {
+        Self {
+            height: style.control_height,
+        }
     }
 }
 
@@ -2195,5 +2228,25 @@ mod tests {
                 has_focus: true,
             }
         );
+    }
+
+    // ── `TextInputMetrics` ──────────────────────────────────────────────
+
+    #[test]
+    fn text_input_metrics_resolves_height_straight_from_style() {
+        let style = Style::default().with_control_height(32.0);
+        let metrics = TextInputMetrics::resolve(&style);
+        assert_eq!(metrics.height, 32.0);
+    }
+
+    /// Default `Style::control_height` is `26.0` — the acceptance number
+    /// a single-line `TextInput`/`PasswordInput` box must reach, in
+    /// contrast to a backend's own (smaller) line-height measurement.
+    #[test]
+    fn text_input_metrics_matches_style_default() {
+        let style = Style::default();
+        let metrics = TextInputMetrics::resolve(&style);
+        assert_eq!(metrics.height, 26.0);
+        assert_eq!(metrics.height, style.control_height);
     }
 }

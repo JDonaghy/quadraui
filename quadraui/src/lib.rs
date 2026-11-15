@@ -684,7 +684,7 @@ pub use primitives::text_display::{
 };
 pub use primitives::text_input::{
     EditOp, TextEditor, TextInput, TextInputHit, TextInputLayout, TextInputMeasure,
-    VisibleTextInputLine,
+    TextInputMetrics, VisibleTextInputLine,
 };
 pub use primitives::toast::{
     Toast, ToastButton, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastMeasure,

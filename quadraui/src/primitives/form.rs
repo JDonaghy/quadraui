@@ -3651,6 +3651,48 @@ mod native_surface_paint {
             );
         }
 
+        /// A single-line `TextInput`/`PasswordInput`'s stroked box must
+        /// actually reach `Style::control_height` (`26px`), not just
+        /// exist — the row this paints at (`form_row_height(14.0) == 20`)
+        /// is shorter than that on its own, so
+        /// `layout_metrics::form_field_measure_inner`'s `FieldKind::
+        /// TextInput`/`PasswordInput` arm must floor the row to make room,
+        /// the same pattern `FieldKind::Button`'s own floor arm uses.
+        #[test]
+        fn text_input_and_password_input_box_reach_control_height() {
+            let style = crate::style::Style::default();
+
+            for kind in [
+                FieldKind::TextInput {
+                    value: "hello".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                FieldKind::PasswordInput {
+                    value: "hunter2".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    mask_char: '•',
+                },
+            ] {
+                let form = one_field_form("name", kind);
+                let (surface, _) = paint_recorded(&form);
+
+                let (box_rect, _, _) = surface
+                    .strokes
+                    .first()
+                    .expect("the input paints exactly one stroked box");
+                assert!(
+                    box_rect.height >= style.control_height,
+                    "the input box must be at least `Style::control_height` \
+                     ({}) tall, got {}",
+                    style.control_height,
+                    box_rect.height,
+                );
+            }
+        }
+
         /// A field's validation message must not overlap its label —
         /// regression for the bug where both were painted vertically
         /// centred in the same row.
@@ -4170,7 +4212,21 @@ mod native_surface_paint {
             // line and a usable field body, so `Top` must fall back to
             // `Left`'s side-by-side layout rather than collapsing the
             // field body to a zero/negative-height strip.
-            let form = labeled_text_field_form(Some(LabelPosition::Top), None, None);
+            //
+            // `ReadOnly`, not `labeled_text_field_form`'s `TextInput` —
+            // `FieldKind::TextInput`/`PasswordInput` rows now floor at
+            // `Style::control_height + 4.0` (`30px`), which already has
+            // room for both bands at this row height, so they can no
+            // longer exercise this fallback; `ReadOnly` has no such
+            // floor and still shares the same `Top` label geometry.
+            let mut form = one_field_form(
+                "name",
+                FieldKind::ReadOnly {
+                    value: StyledText::plain("val"),
+                },
+            );
+            form.fields[0].label = StyledText::plain("Name");
+            form.fields[0].label_position = Some(LabelPosition::Top);
             let (surface, _) = paint_recorded(&form);
 
             let (label_rect, _, _) = surface
