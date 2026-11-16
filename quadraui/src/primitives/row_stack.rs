@@ -183,14 +183,22 @@ pub struct RowPaintState {
     pub scroll_px: Option<f32>,
     /// Tint every other row with [`crate::theme::Theme::row_alt_bg`]
     /// ("zebra striping"). `false` (the default) paints with no stripe
-    /// at all. A header row and the row carrying the current
-    /// selection/hover/press highlight are never striped — see
-    /// [`crate::primitives::list::native_surface_paint`]'s row loop.
+    /// at all.
     ///
-    /// Only [`crate::primitives::list::ListPaintState`] currently reads
-    /// this — [`crate::primitives::tree::TreePaintState`] shares the
-    /// same underlying type but no `TreeView` rasteriser paints a stripe,
-    /// so the field is simply always `false` there.
+    /// How a stripe interacts with the selection/hover highlight is a
+    /// per-consumer painting choice, not shared by this type: `ListView`
+    /// (see [`crate::primitives::list::native_surface_paint`]'s row loop)
+    /// and `DataTable`'s TUI rasteriser both *replace* the stripe on the
+    /// selected/hovered row — the row carrying either highlight is never
+    /// striped. `DataTable`'s GUI painter instead fills the stripe first
+    /// and alpha-blends the selection/hover tint on top of it, so a
+    /// striped row keeps showing through a hover tint underneath it.
+    ///
+    /// [`crate::primitives::list::ListPaintState`] and
+    /// [`crate::primitives::data_table::DataTablePaintState`] both read
+    /// this field — [`crate::primitives::tree::TreePaintState`] shares
+    /// the same underlying type but no `TreeView` rasteriser paints a
+    /// stripe, so the field is simply always `false` there.
     pub striped: bool,
 }
 
