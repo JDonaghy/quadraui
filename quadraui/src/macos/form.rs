@@ -1120,15 +1120,13 @@ mod tests {
     /// `ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar`
     /// items align their `item_bounds`/painted control to the same
     /// shared `Left`-label column every other field's control starts
-    /// at (`primitives::form::left_control_column_start` — see
-    /// `mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop`
-    /// for that helper's own contract), instead of each reserving only
+    /// at — see `primitives::form::left_control_column_start`'s own
+    /// doc for that helper's contract — instead of each reserving only
     /// its own (much narrower) label's width. A form mixing a
     /// wide-labelled plain field ("Accent colour") with these four
-    /// short-labelled kinds reproduces the gap: before this fix, every
-    /// one of the four started well short of the shared column —
-    /// crowding into the span other rows reserve for their own wider
-    /// labels — instead of lining up with it.
+    /// short-labelled kinds pins that every one of the four lines up
+    /// with the shared column instead of crowding into the span other
+    /// rows reserve for their own wider labels.
     #[test]
     fn item_bearing_kinds_align_to_the_shared_left_label_column() {
         use crate::primitives::form::{

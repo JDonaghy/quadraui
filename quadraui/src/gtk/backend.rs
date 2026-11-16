@@ -3082,12 +3082,14 @@ impl Backend for GtkBackend {
             let no_label = label_text.is_empty();
             layout.set_text(&label_text);
             let (label_w, _) = layout.pixel_size();
-            let toolbar_x = if no_label {
-                row_x + 6.0
-            } else {
-                row_x + 6.0 + label_w as f64 + 12.0
-            };
-            let toolbar_w = row_x + row_w - toolbar_x;
+            // Shared with every other embedded-`Toolbar` rasteriser
+            // (`MacBackend::draw_form`, both `MultiSectionView` form
+            // bodies) via `FormLayout::toolbar_field_rect` — see its
+            // doc — so this toolbar starts at the form's aligned
+            // control column instead of right past only this field's
+            // own (possibly much narrower) label.
+            let (toolbar_x, toolbar_w) =
+                flayout.toolbar_field_rect(row_x, row_w, label_w as f64, no_label);
             if toolbar_w > 0.0 {
                 crate::gtk::toolbar::draw_toolbar(
                     cr, layout, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,

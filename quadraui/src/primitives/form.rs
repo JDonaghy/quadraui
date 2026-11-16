@@ -1007,6 +1007,38 @@ pub struct FormLayout {
 }
 
 impl FormLayout {
+    /// Absolute `(x, width)` for an embedded `FieldKind::Toolbar`'s
+    /// painted strip, given the row's own absolute left edge `row_x`
+    /// and width `row_w`.
+    ///
+    /// Every pixel backend's `draw_form` (and `MultiSectionView`'s
+    /// embedded form body) rasterises `FieldKind::Toolbar` itself,
+    /// outside [`crate::primitives::form::paint`], so it needs the
+    /// same start `x` [`Self::left_label_width`]'s doc describes
+    /// [`Form::layout`] already widening `VisibleFormField::item_bounds`
+    /// to — this is that formula, in one place, so a host reads it
+    /// instead of re-deriving `6.0 + label_w + 12.0` from only the
+    /// field's own (possibly much narrower) label.
+    ///
+    /// `label_w` is the field's own measured label width; `no_label`
+    /// mirrors [`Form::layout`]'s empty-label special case (skip the
+    /// `+ label_w + 12` entirely, start at the 6px row inset).
+    pub fn toolbar_field_rect(
+        &self,
+        row_x: f64,
+        row_w: f64,
+        label_w: f64,
+        no_label: bool,
+    ) -> (f64, f64) {
+        let x = if no_label {
+            row_x + 6.0
+        } else {
+            row_x + 6.0 + (self.left_label_width as f64).max(label_w) + 12.0
+        };
+        let w = row_x + row_w - x;
+        (x, w)
+    }
+
     pub fn hit_test(&self, x: f32, y: f32) -> FormHit {
         for (rect, hit) in &self.hit_regions {
             if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
@@ -1113,6 +1145,14 @@ impl Form {
         // `measure_field` is pure (no painting, no state), so calling it
         // here ahead of the selection pass below, which calls it again
         // per visible field, costs nothing but a second measurement.
+        //
+        // A field's own `resolved_label_width` override, when set, counts
+        // toward this max instead of its raw measured label — the same
+        // `unwrap_or_else` fallback `left_label_column_width` uses — so a
+        // form pinning its label column via `Form::label_width`/
+        // `FormField::label_width` gets the override honoured here too,
+        // not just by the non-item field kinds `left_label_geometry` lays
+        // out.
         let left_label_width = (0..self.fields.len())
             .filter(|&i| {
                 let f = &self.fields[i];
@@ -1120,7 +1160,10 @@ impl Form {
                     && self.resolved_label_position(f) == LabelPosition::Left
                     && f.label.spans.iter().any(|s| !s.text.is_empty())
             })
-            .map(|i| measure_field(i).label_w)
+            .map(|i| {
+                self.resolved_label_width(&self.fields[i])
+                    .unwrap_or_else(|| measure_field(i).label_w)
+            })
             .fold(0.0_f32, f32::max);
 
         // First pass: walk fields in order deciding which ones are
@@ -1581,10 +1624,12 @@ mod native_surface_paint {
     ///
     /// `ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar` paint
     /// their items at `VisibleFormField::item_bounds`, whose start
-    /// column (`layout_metrics::items_start_x`) always reserves
-    /// `label_w + 12` regardless of the resolved `label_position` — so
-    /// those four kinds keep a label gutter even under `Hidden`, and
-    /// don't yet get a `Top` row split. Fixing that needs
+    /// column (`layout_metrics::items_start_x`) reserves `label_w + 12`
+    /// regardless of the resolved `label_position` — `Form::layout`'s
+    /// own widening to the shared `FormLayout::left_label_width` column
+    /// (see that field's doc) only fires when `label_position` resolves
+    /// to `Left`, so those four kinds keep a label gutter even under
+    /// `Hidden`, and don't yet get a `Top` row split. Fixing that needs
     /// `layout_metrics.rs` (`items_start_x`'s signature would need a
     /// `label_position` input), which is out of this painter's scope.
     pub(crate) fn paint(
@@ -3467,6 +3512,177 @@ mod native_surface_paint {
                 "a short-labelled field must start its control at the same \
                  shared column as the long-labelled one, not right after its \
                  own label",
+            );
+        }
+
+        /// [`FormLayout::toolbar_field_rect`] is the formula every
+        /// embedded-`Toolbar` rasteriser (`GtkBackend::draw_form`,
+        /// `MacBackend::draw_form`, both `MultiSectionView` form bodies)
+        /// calls to find where to paint its toolbar strip. It has to
+        /// report the exact `x` [`Form::layout`] already widened this
+        /// same field's own `VisibleFormField::item_bounds` to — a drift
+        /// between the two is paint↔hit-test divergence: a click lands on
+        /// an `item_bounds` rect the painter never drew a button under.
+        ///
+        /// Runs on every feature config this module compiles for
+        /// (`gtk`, `win`, `macos`), unlike the pixel-backend-specific
+        /// `draw_form` tests each of those backends carries, so a Linux
+        /// `--features gtk,tui` CI job exercises this without a real
+        /// macOS host.
+        ///
+        /// A short-labelled `Toolbar` field sharing a form with a much
+        /// longer-labelled `TextInput` pins both: the `Toolbar`'s own
+        /// `items_start_x` (and so its `item_bounds`) widens to the
+        /// shared column, not just its own short label, and
+        /// `toolbar_field_rect` reports that exact same `x`.
+        #[test]
+        fn toolbar_field_rect_matches_the_shared_item_bounds_start() {
+            use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+            let toolbar_field = FormField {
+                id: WidgetId::new("toolbar"),
+                label: StyledText::plain("Go"),
+                kind: FieldKind::Toolbar(Toolbar {
+                    id: WidgetId::new("tb"),
+                    buttons: vec![ToolbarButton::Separator],
+                    bg: None,
+                    focused_index: None,
+                }),
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            };
+            let long_labelled_field = FormField {
+                id: WidgetId::new("name"),
+                label: StyledText::plain("A much longer label"),
+                kind: FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            };
+            let form = Form {
+                id: WidgetId::new("toolbar-rect"),
+                fields: vec![toolbar_field, long_labelled_field],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
+                spacing: Default::default(),
+            };
+
+            let (_, flayout) = paint_recorded(&form);
+            let toolbar_vf = &flayout.visible_fields[0];
+            let (item_id, item_rect) = toolbar_vf
+                .item_bounds
+                .first()
+                .expect("Toolbar has one item (a Separator still measures a width)");
+            assert_eq!(*item_id, WidgetId::new("toolbar"));
+
+            // Same inputs a `draw_form`/`draw_form_body` call site has in
+            // hand: the row's own absolute bounds (origin at (0, 0) here,
+            // matching `paint_recorded`'s own origin) and the field's own
+            // measured label width (`FixedMeasure`'s 6.0/char * 2 chars).
+            let row_x = toolbar_vf.bounds.x as f64;
+            let row_w = toolbar_vf.bounds.width as f64;
+            let (toolbar_x, toolbar_w) = flayout.toolbar_field_rect(row_x, row_w, 12.0, false);
+
+            assert_eq!(
+                toolbar_x, item_rect.x as f64,
+                "toolbar_field_rect's x must match the item_bounds x \
+                 Form::layout already widened this field's own control to, \
+                 or a backend painting from toolbar_field_rect draws at a \
+                 different x than hit-testing uses",
+            );
+            assert!(toolbar_w > 0.0, "toolbar strip must have positive width");
+        }
+
+        /// [`FormLayout::left_label_width`] honours a `Form::label_width`
+        /// override the same way [`left_label_column_width`] does at
+        /// paint time — [`Form::resolved_label_width`] counts toward the
+        /// max instead of each field's raw measured label — so an
+        /// item-bearing field's widened `items_start_x` lines up with an
+        /// explicitly pinned label column too, not just the widest
+        /// measured label among the form's fields.
+        #[test]
+        fn left_label_width_honours_a_label_width_override() {
+            use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+            let toolbar_field = FormField {
+                id: WidgetId::new("toolbar"),
+                label: StyledText::plain("Go"), // 2 chars * 6.0 = 12.0 measured
+                kind: FieldKind::Toolbar(Toolbar {
+                    id: WidgetId::new("tb"),
+                    buttons: vec![ToolbarButton::Separator],
+                    bg: None,
+                    focused_index: None,
+                }),
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            };
+            let form = Form {
+                id: WidgetId::new("toolbar-override"),
+                fields: vec![toolbar_field],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                // Wider than the field's own measured 12.0 label — every
+                // `Left`-resolved field (item-bearing or not) must widen
+                // to this pinned column, not stop at its own label.
+                label_width: Some(200.0),
+                control_width: Default::default(),
+                min_control_width: None,
+                spacing: Default::default(),
+            };
+
+            let (_, flayout) = paint_recorded(&form);
+            assert_eq!(
+                flayout.left_label_width, 200.0,
+                "the shared column must report the pinned override, not the \
+                 field's own narrower measured label",
+            );
+            let item_rect = flayout.visible_fields[0]
+                .item_bounds
+                .first()
+                .expect("Toolbar has one item")
+                .1;
+            assert_eq!(
+                item_rect.x,
+                6.0 + 200.0 + 12.0,
+                "the toolbar's own items_start_x must widen to the pinned \
+                 override column, not its own 12.0-wide measured label",
             );
         }
 
