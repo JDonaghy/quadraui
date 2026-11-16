@@ -11,11 +11,199 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color as RatatuiColor;
 
+use self::tree_cell::paint_tree_cell;
 use super::{draw_styled_text, qc, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::theme::Theme;
 use crate::types::Decoration;
+
+// Tree cell: indent + chevron + icon, the column-0 content of a
+// `TreeView` row on a cell grid — shared so a future `tree_table`
+// column 0 reuses it instead of re-deriving the column arithmetic.
+#[allow(dead_code)]
+pub(crate) mod tree_cell {
+    use super::{ratatui_color, set_cell, RatatuiColor};
+    use crate::types::Icon;
+    use ratatui::buffer::Buffer;
+
+    /// Chevron column range (`start..end`, `None` for a leaf or hidden
+    /// chevron) plus the column the caller's own label starts at.
+    pub(crate) struct TreeCellCols {
+        pub chevron_cols: Option<(usize, usize)>,
+        pub label_col: usize,
+    }
+
+    /// Paint indent + chevron (`chevron_expanded`/`chevron_collapsed`,
+    /// read verbatim — TUI never substitutes a codicon glyph) + icon
+    /// into `buf` at `(row_x, y)`, `row_w` cells wide. Never paints
+    /// `StyledText` or a badge — those stay the caller's responsibility
+    /// past `label_col`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_tree_cell(
+        buf: &mut Buffer,
+        row_x: u16,
+        y: u16,
+        row_w: u16,
+        indent: u16,
+        indent_cells: usize,
+        is_expanded: Option<bool>,
+        show_chevrons: bool,
+        chevron_expanded: &str,
+        chevron_collapsed: &str,
+        icon: Option<&Icon>,
+        nerd_fonts_enabled: bool,
+        fg: RatatuiColor,
+        bg: RatatuiColor,
+    ) -> TreeCellCols {
+        let row_w = row_w as usize;
+        let mut col: usize = (indent as usize) * indent_cells;
+        let mut chevron_cols = None;
+
+        if let Some(expanded) = is_expanded {
+            if show_chevrons {
+                let chevron = if expanded {
+                    chevron_expanded
+                } else {
+                    chevron_collapsed
+                };
+                let start = col;
+                for ch in chevron.chars() {
+                    if col >= row_w {
+                        break;
+                    }
+                    set_cell(buf, row_x + col as u16, y, ch, fg, bg);
+                    col += 1;
+                }
+                chevron_cols = Some((start, col));
+                if col < row_w {
+                    set_cell(buf, row_x + col as u16, y, ' ', fg, bg);
+                    col += 1;
+                }
+            }
+        } else {
+            // Leaves: small leading gap for readability.
+            col += 2.min(row_w - col.min(row_w));
+        }
+
+        if let Some(icon) = icon {
+            let glyph = if nerd_fonts_enabled {
+                icon.glyph.as_str()
+            } else {
+                icon.fallback.as_str()
+            };
+            let icon_fg = icon.color.map(ratatui_color).unwrap_or(fg);
+            for ch in glyph.chars() {
+                if col >= row_w {
+                    break;
+                }
+                set_cell(buf, row_x + col as u16, y, ch, icon_fg, bg);
+                col += 1;
+            }
+            if col < row_w {
+                set_cell(buf, row_x + col as u16, y, ' ', fg, bg);
+                col += 1;
+            }
+        }
+
+        TreeCellCols {
+            chevron_cols,
+            label_col: col,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::tui::ratatui_color as rc;
+        use crate::types::Color;
+        use ratatui::layout::Rect as RRect;
+
+        fn buf() -> Buffer {
+            Buffer::empty(RRect::new(0, 0, 30, 1))
+        }
+
+        #[test]
+        fn branch_at_indent_2_gets_chevron_cols() {
+            let mut b = buf();
+            let fg = rc(Color::rgb(255, 255, 255));
+            let bg = rc(Color::rgb(0, 0, 0));
+            let cell = paint_tree_cell(
+                &mut b,
+                0,
+                0,
+                30,
+                2,
+                2,
+                Some(true),
+                true,
+                "▾",
+                "▸",
+                None,
+                false,
+                fg,
+                bg,
+            );
+            // indent(2) * indent_cells(2) = 4.
+            assert_eq!(
+                cell.chevron_cols,
+                Some((4, 5)),
+                "chevron must start right after indent"
+            );
+            assert!(
+                cell.label_col > 5,
+                "label must start right of the chevron + gap"
+            );
+        }
+
+        #[test]
+        fn leaf_gets_no_chevron_cols() {
+            let mut b = buf();
+            let fg = rc(Color::rgb(255, 255, 255));
+            let bg = rc(Color::rgb(0, 0, 0));
+            let cell = paint_tree_cell(
+                &mut b, 0, 0, 30, 0, 2, None, true, "▾", "▸", None, false, fg, bg,
+            );
+            assert!(
+                cell.chevron_cols.is_none(),
+                "leaf row must not get chevron columns"
+            );
+        }
+
+        #[test]
+        fn label_never_shrinks_below_one_char_on_a_narrow_row() {
+            let mut b = buf();
+            let fg = rc(Color::rgb(255, 255, 255));
+            let bg = rc(Color::rgb(0, 0, 0));
+            // 10 cells: indent(0) + chevron(1) + gap(1) + icon(1) + gap(1) = 4,
+            // leaving 6 columns — comfortably more than one.
+            let row_w = 10u16;
+            let cell = paint_tree_cell(
+                &mut b,
+                0,
+                0,
+                row_w,
+                0,
+                2,
+                Some(true),
+                true,
+                "▾",
+                "▸",
+                Some(&Icon::new("f", "f")),
+                false,
+                fg,
+                bg,
+            );
+            assert!(
+                (row_w as usize).saturating_sub(cell.label_col) >= 1,
+                "label_col {} must leave at least one column on a {}-wide row",
+                cell.label_col,
+                row_w
+            );
+        }
+    }
+}
 
 /// Draw a [`TreeView`] into `area` on `buf`.
 ///
@@ -132,53 +320,23 @@ pub fn draw_tree_with_scroll_px(
             set_cell(buf, x, y, ' ', default_fg, bg);
         }
 
-        let mut col: usize = 0;
-        let indent_spaces = (row.indent as usize) * indent_cells;
-        col += indent_spaces;
-
-        if let Some(expanded) = row.is_expanded {
-            if tree.style.show_chevrons {
-                let chevron = if expanded {
-                    &tree.style.chevron_expanded
-                } else {
-                    &tree.style.chevron_collapsed
-                };
-                for ch in chevron.chars() {
-                    if col >= row_w as usize {
-                        break;
-                    }
-                    set_cell(buf, row_x + col as u16, y, ch, default_fg, bg);
-                    col += 1;
-                }
-                if col < row_w as usize {
-                    set_cell(buf, row_x + col as u16, y, ' ', default_fg, bg);
-                    col += 1;
-                }
-            }
-        } else {
-            // Leaves: small leading gap for readability.
-            col += 2.min(row_w as usize - col.min(row_w as usize));
-        }
-
-        if let Some(ref icon) = row.icon {
-            let glyph = if nerd_fonts_enabled {
-                &icon.glyph
-            } else {
-                &icon.fallback
-            };
-            let icon_fg = icon.color.map(ratatui_color).unwrap_or(default_fg);
-            for ch in glyph.chars() {
-                if col >= row_w as usize {
-                    break;
-                }
-                set_cell(buf, row_x + col as u16, y, ch, icon_fg, bg);
-                col += 1;
-            }
-            if col < row_w as usize {
-                set_cell(buf, row_x + col as u16, y, ' ', default_fg, bg);
-                col += 1;
-            }
-        }
+        let cell = paint_tree_cell(
+            buf,
+            row_x,
+            y,
+            row_w,
+            row.indent,
+            indent_cells,
+            row.is_expanded,
+            tree.style.show_chevrons,
+            &tree.style.chevron_expanded,
+            &tree.style.chevron_collapsed,
+            row.icon.as_ref(),
+            nerd_fonts_enabled,
+            default_fg,
+            bg,
+        );
+        let col = cell.label_col;
 
         let row_area = Rect {
             x: row_x,
