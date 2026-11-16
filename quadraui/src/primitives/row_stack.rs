@@ -181,6 +181,17 @@ pub struct RowPaintState {
     pub hovered_idx: Option<usize>,
     pub pressed_idx: Option<usize>,
     pub scroll_px: Option<f32>,
+    /// Tint every other row with [`crate::theme::Theme::row_alt_bg`]
+    /// ("zebra striping"). `false` (the default) paints exactly as
+    /// before this field existed. A header row and the row carrying the
+    /// current selection/hover/press highlight are never striped — see
+    /// [`crate::primitives::list::native_surface_paint`]'s row loop.
+    ///
+    /// Only [`crate::primitives::list::ListPaintState`] currently reads
+    /// this — [`crate::primitives::tree::TreePaintState`] shares the
+    /// same underlying type but no `TreeView` rasteriser paints a stripe
+    /// yet, so the field is simply always `false` there.
+    pub striped: bool,
 }
 
 impl RowPaintState {
@@ -196,6 +207,11 @@ impl RowPaintState {
 
     pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
         self.scroll_px = px;
+        self
+    }
+
+    pub fn with_striped(mut self, striped: bool) -> Self {
+        self.striped = striped;
         self
     }
 }

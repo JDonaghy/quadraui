@@ -93,6 +93,7 @@ pub fn draw_data_table_with_glyphs(
         nerd_fonts_enabled,
         1.0,
         None,
+        false,
     )
 }
 
@@ -129,6 +130,7 @@ pub(crate) fn draw_data_table_with_opacity(
     nerd_fonts_enabled: bool,
     scrollbar_opacity: f32,
     scroll_px: Option<f32>,
+    striped: bool,
 ) -> DataTableLayout {
     pango_layout.set_attributes(None);
     let measure = super::toolbar::PangoMeasure {
@@ -324,6 +326,19 @@ pub(crate) fn draw_data_table_with_opacity(
         let row_y = body_y + row_idx as f64 * line_height;
         let is_selected = table.selected_idx == Some(abs_idx);
         let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
+
+        // Zebra stripe: painted first, as a solid fill, so the
+        // selection/hover tints below (both alpha blends) composite on
+        // top of it rather than being replaced by it. Striped on the
+        // absolute row index, not the visible on-screen position, so a
+        // given row keeps the same stripe as the table scrolls — the
+        // same convention Finder/Explorer use.
+        if striped && abs_idx % 2 == 1 {
+            let (ar, ag, ab) = cairo_rgb(theme.row_alt_bg(theme.background));
+            cr.set_source_rgb(ar, ag, ab);
+            cr.rectangle(x, row_y, width, line_height);
+            cr.fill().ok();
+        }
 
         if is_selected {
             let (sr, sg, sb) = cairo_rgb(theme.selection_bg);
@@ -692,6 +707,7 @@ pub fn draw_data_table_with_state(
         nerd_fonts_enabled,
         1.0,
         state.scroll_px,
+        state.striped,
     )
 }
 
@@ -883,6 +899,7 @@ mod tests {
                 false,
                 opacity,
                 None,
+                false,
             );
         }
         surface.flush();
@@ -1251,6 +1268,51 @@ mod tests {
             selected_rgb,
             "the same probe pixel on a scroll_px: None paint must still show \
              row 0's selected background"
+        );
+    }
+
+    /// `DataTablePaintState::striped: true` tints every other
+    /// non-selected row with `theme.row_alt_bg`; `striped: false` (the
+    /// default) paints every row with the plain background.
+    #[test]
+    fn striped_tints_alternate_rows() {
+        let table = overflowing_table(); // selected_idx: None
+        let theme = Theme::default();
+
+        let (plain_bytes, stride, layout) =
+            paint_with_state(&table, &theme, &DataTablePaintState::default());
+        let (striped_bytes, _, _) = paint_with_state(
+            &table,
+            &theme,
+            &DataTablePaintState::default().with_striped(true),
+        );
+
+        let probe_x = (W / 2).min(W - 1);
+        // Row 0 (even): unaffected by striping.
+        let row0_y = (layout.header_height as f64 + LINE_H / 2.0) as i32;
+        assert_eq!(
+            pixel(&plain_bytes, stride as usize, probe_x, row0_y),
+            pixel(&striped_bytes, stride as usize, probe_x, row0_y),
+            "row 0 (even) must paint the same background whether striped or not"
+        );
+        assert_eq!(
+            pixel(&plain_bytes, stride as usize, probe_x, row0_y),
+            rgb(theme.background),
+            "row 0's unstriped background must be theme.background, or this \
+             test's probe location is wrong, not confirming anything"
+        );
+
+        // Row 1 (odd): plain background without striping, tinted with it.
+        let row1_y = (layout.header_height as f64 + LINE_H * 1.5) as i32;
+        assert_eq!(
+            pixel(&plain_bytes, stride as usize, probe_x, row1_y),
+            rgb(theme.background),
+            "row 1 must be plain background when not striped"
+        );
+        assert_eq!(
+            pixel(&striped_bytes, stride as usize, probe_x, row1_y),
+            rgb(theme.row_alt_bg(theme.background)),
+            "row 1 must be tinted with theme.row_alt_bg when striped"
         );
     }
 }

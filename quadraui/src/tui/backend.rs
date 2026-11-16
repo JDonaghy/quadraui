@@ -2771,14 +2771,7 @@ impl Backend for TuiBackend {
             );
             return;
         };
-        crate::tui::draw_list_with_scroll_px(
-            frame.buffer_mut(),
-            area,
-            list,
-            &theme,
-            nerd_fonts,
-            state.scroll_px,
-        );
+        crate::tui::draw_list_with_state(frame.buffer_mut(), area, list, &theme, nerd_fonts, state);
     }
 
     fn draw_data_table(

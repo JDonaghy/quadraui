@@ -91,6 +91,7 @@ pub fn draw_data_table_with_glyphs(
         glyphs,
         nerd_fonts_enabled,
         None,
+        false,
     )
 }
 
@@ -120,6 +121,7 @@ pub fn draw_data_table_with_state(
         None,
         false,
         state.scroll_px,
+        state.striped,
     )
 }
 
@@ -133,6 +135,7 @@ fn draw_data_table_inner(
     glyphs: Option<&DataTableGlyphs>,
     nerd_fonts_enabled: bool,
     scroll_px: Option<f32>,
+    striped: bool,
 ) -> DataTableLayout {
     let layout = data_table_layout(area, table);
 
@@ -250,10 +253,21 @@ fn draw_data_table_inner(
         let is_selected = table.selected_idx == Some(abs_idx);
         let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
 
+        // Zebra stripe on the absolute row index (not the visible
+        // on-screen position), so a given row's shading survives
+        // scrolling, the same convention Finder/Explorer use. Selection
+        // and hover both take priority over the stripe — it only shows
+        // through on an otherwise-plain row. A terminal quantised to
+        // `ColorDepth::Ansi16` rounds `theme.row_alt_bg` back to
+        // `body_bg`'s own nearest ANSI colour (see `tui::color::quantize`),
+        // which is how a low-colour terminal drops the stripe for free.
+        let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
         let (row_fg, row_bg) = if is_selected {
             (body_fg, sel_bg)
         } else if is_hovered {
             (body_fg, ratatui_color(theme.tab_bar_bg))
+        } else if striped && abs_idx % 2 == 1 {
+            (body_fg, alt_bg)
         } else {
             (body_fg, body_bg)
         };
@@ -1113,6 +1127,50 @@ mod tests {
                 "footer should stay pinned at scroll_offset={scroll_offset}, got: {last_row}"
             );
         }
+    }
+
+    /// `state.striped: true` tints every other non-selected body row
+    /// with `theme.row_alt_bg(theme.background)`; the selected row keeps
+    /// `theme.selection_bg` regardless of its parity, and `striped:
+    /// false` (the default) paints every row with the plain background.
+    #[test]
+    fn striped_tints_alternate_rows_selection_wins_over_stripe() {
+        let mut table = make_scrolling_table(6);
+        table.selected_idx = Some(1); // odd row — would be striped if not selected
+        let area = Rect::new(0, 0, 40, 10);
+        let theme = Theme::default();
+
+        let mut unstriped = Buffer::empty(area);
+        draw_data_table(&mut unstriped, area, &table, &theme, None);
+
+        let mut striped_buf = Buffer::empty(area);
+        let state = DataTablePaintState::default().with_striped(true);
+        draw_data_table_with_state(&mut striped_buf, area, &table, &theme, &state);
+
+        let body_bg = ratatui_color(theme.background);
+        let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
+        let sel_bg = ratatui_color(theme.selection_bg);
+        assert_ne!(
+            alt_bg, body_bg,
+            "fixture theme must make the stripe visible"
+        );
+
+        // Row 0 (even, not selected): plain background without striping,
+        // tinted with it.
+        assert_eq!(unstriped[(0, 1)].bg, body_bg);
+        assert_eq!(striped_buf[(0, 1)].bg, body_bg);
+
+        // Row 1 (odd, selected): selection colour either way — the
+        // stripe never overrides the selected row.
+        assert_eq!(unstriped[(0, 2)].bg, sel_bg);
+        assert_eq!(striped_buf[(0, 2)].bg, sel_bg);
+
+        // Row 2 (even, not selected): unaffected by striping.
+        assert_eq!(striped_buf[(0, 3)].bg, body_bg);
+
+        // Row 3 (odd, not selected): only tinted when striped.
+        assert_eq!(unstriped[(0, 4)].bg, body_bg);
+        assert_eq!(striped_buf[(0, 4)].bg, alt_bg);
     }
 
     /// `scroll_px` wins over `scroll_offset`, but on

@@ -166,7 +166,8 @@ pub use form::{draw_settings_chrome, tui_form_layout};
 pub use image::draw_image;
 #[doc(hidden)]
 pub use list::{
-    draw_list, draw_list_with_scroll_px, tui_list_layout, tui_list_layout_with_scroll_px,
+    draw_list, draw_list_with_scroll_px, draw_list_with_state, tui_list_layout,
+    tui_list_layout_with_scroll_px,
 };
 #[doc(hidden)]
 pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
