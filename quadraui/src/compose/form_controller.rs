@@ -186,12 +186,17 @@
 //! - The track rect ideally comes from the clicked field's own
 //!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry,
 //!   the same lookup `NumberInput`'s stepper uses — but no backend
-//!   populates one for `Slider` today, so [`slider_click_event`] falls
-//!   back to the field's whole row (`vf.bounds`) instead. That means a
-//!   click anywhere on the row (including over its label column, on a
-//!   `Left`-positioned label) maps proportionally across the *whole*
-//!   row today, not just the painted track — a known approximation
-//!   until a backend grows a real `item_bounds` entry for it.
+//!   populates one for `Slider` today. When it is missing,
+//!   [`slider_click_event`] falls back to the field's whole row
+//!   (`vf.bounds`) only if the field has no label column to its left
+//!   (an empty label, or a resolved [`LabelPosition::Hidden`]); for
+//!   every other resolved label position (`Left`'s default among them)
+//!   it returns `None` instead of mapping a click on the label text to
+//!   a value, so that click falls through to `form_click_event`'s
+//!   `FocusChanged` the same way a click on any other field's label
+//!   already does. A labeled `Slider`'s track itself therefore isn't
+//!   click/drag-operable yet — only its keys are — until a backend
+//!   grows a real `item_bounds` entry for it.
 //! - A disabled focused `Slider` does not intercept its keys at all, the
 //!   same as a disabled `NumberInput`/`RadioGroup`, and a click on a
 //!   disabled `Slider` falls through to `form_click_event`'s generic
@@ -301,7 +306,7 @@ use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
     focusable_items, FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
-    FormLayout,
+    FormLayout, LabelPosition,
 };
 use crate::primitives::number_input::NumberInputEvent;
 use crate::primitives::radio_group::RadioGroupEvent;
@@ -1763,6 +1768,17 @@ impl FormController {
         lh: f32,
         backend: Option<&mut dyn Backend>,
     ) -> FormControllerEvent {
+        // Every fresh `MouseDown` starts at most one gesture, so clear
+        // whatever `self.slider_drag` a previous press left behind up
+        // front — not just when this press lands on a field (see the
+        // `FormHit::Field` arm below, which re-arms it) — so a dropped
+        // `MouseUp` (the pointer leaving the window with the button
+        // still held, common on GTK) can't leave a stale slider drag
+        // that later hijacks an unrelated scrollbar-thumb drag. See this
+        // module's "Slider fields" doc section and `handle_inner`'s
+        // `MouseMoved` arm, which checks `slider_drag` before falling
+        // back to the scrollbar's own `drag_to`.
+        self.slider_drag = None;
         if !rect.contains(Point::new(x, y)) {
             return FormControllerEvent::Ignored;
         }
@@ -1890,7 +1906,7 @@ impl FormController {
 
     /// Continues an in-flight `Slider` drag (armed by [`Self::click_inner`]
     /// — see this module's "Slider fields" doc section) as the pointer
-    /// moves to `x`/`y` within `rect` — the `MouseMoved` counterpart of
+    /// moves to `x` within `rect` — the `MouseMoved` counterpart of
     /// [`Self::drag_to`]'s scrollbar-thumb drag. Unlike `drag_to`, which
     /// reuses geometry `ThumbDrag::begin` cached at press time, this
     /// rebuilds the form/layout fresh (same as [`Self::click_inner`]
@@ -2068,13 +2084,21 @@ fn slider_clamp(raw: f32, min: f32, max: f32) -> f32 {
 /// [`crate::primitives::form::VisibleFormField::item_bounds`] entry for
 /// the track rect, the same lookup [`number_input_click_event`] uses for
 /// its stepper — but no backend populates one for `Slider` today (see
-/// this module's "Slider fields" doc section), so this falls back to the
-/// field's whole row (`vf.bounds`) instead of returning `None` outright.
+/// this module's "Slider fields" doc section). When it is missing, this
+/// falls back to the field's whole row (`vf.bounds`) only when that row
+/// and the painted track actually coincide — an empty label, or a
+/// resolved [`LabelPosition::Hidden`] — since only then does the row's
+/// left edge match the track's. For every other resolved label position
+/// (`Left`'s default among them) the row also spans the label column, so
+/// this returns `None` instead of resolving a click on the label text to
+/// a bogus value.
+///
 /// Returns `None` for every other `FieldKind`, a disabled slider, a
-/// field with no visible rect at all, or an `x` that doesn't actually
-/// move the clamped value — [`FormController::click_inner`] falls
-/// through to [`form_click_event`] in the first three cases, which still
-/// resolves a plain click there to `FormEvent::FocusChanged`.
+/// field with no visible rect at all, a labeled field with no
+/// `item_bounds` entry (above), or an `x` that doesn't actually move the
+/// clamped value — [`FormController::click_inner`] falls through to
+/// [`form_click_event`] in all of those cases, which still resolves a
+/// plain click there to `FormEvent::FocusChanged`.
 fn slider_click_event(
     form: &Form,
     layout: &FormLayout,
@@ -2095,11 +2119,17 @@ fn slider_click_event(
         .visible_fields
         .iter()
         .find(|vf| &vf.id == clicked_id)?;
-    let track = vf
-        .item_bounds
-        .first()
-        .map(|(_, rect)| *rect)
-        .unwrap_or(vf.bounds);
+    let track = match vf.item_bounds.first() {
+        Some((_, rect)) => *rect,
+        None => {
+            let has_label_column = field.label.visible_width() > 0
+                && form.resolved_label_position(field) != LabelPosition::Hidden;
+            if has_label_column {
+                return None;
+            }
+            vf.bounds
+        }
+    };
     if track.width <= 0.0 {
         return None;
     }
@@ -5268,9 +5298,11 @@ mod tests {
 
     /// `lh=10.0` → `row_h=14.0`; `FieldKind::Slider` has no `item_bounds`
     /// entry (see this module's "Slider fields" doc section), so
-    /// `slider_click_event` falls back to the field's whole row —
-    /// `content_width = rect.width = 200.0` here, so a click at `x=100`
-    /// lands at fraction `0.5` of `[min, max] = [0, 10]`.
+    /// `slider_click_event` falls back to the field's whole row — which
+    /// only holds here because `slider_field`'s label is empty, so the
+    /// row and the painted track coincide. `content_width = rect.width =
+    /// 200.0`, so a click at `x=100` lands at fraction `0.5` of `[min,
+    /// max] = [0, 10]`.
     #[test]
     fn click_on_a_sliders_track_maps_the_click_position_to_a_value() {
         let mut fc = controller_with(vec![slider_field("s", 0.0, 0.0, 10.0, 1.0, false)], None);
@@ -5290,6 +5322,39 @@ mod tests {
                 id: WidgetId::new("s"),
                 value: 5.0,
             })
+        );
+    }
+
+    /// A labeled `Slider` has no `item_bounds` entry either, but unlike
+    /// the empty-label case above its row also spans the label column
+    /// (`LabelPosition::Left` is the form-wide default — see
+    /// `Form::label_position`'s doc) — so `slider_click_event` must not
+    /// fall back to the whole row here: a click square on the label text
+    /// (`x=10`, well inside "Volume"'s column, far from the track) must
+    /// not resolve to `fraction == 0.0` → `min`. It falls through to
+    /// `form_click_event`'s generic `FocusChanged` instead, the same
+    /// outcome a click on any other labeled field's label already gets.
+    #[test]
+    fn click_on_a_labeled_sliders_label_column_only_focuses_it() {
+        let mut field = slider_field("s", 5.0, 0.0, 10.0, 1.0, false);
+        field.label = StyledText::plain("Volume");
+        let mut fc = controller_with(vec![field], None);
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 10.0, y: 7.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("s"),
+            }),
+            "a click on a labeled slider's label column must only focus it, never move its value"
         );
     }
 
@@ -5367,11 +5432,8 @@ mod tests {
 
     #[test]
     fn a_disabled_sliders_click_and_keys_produce_focus_changed_or_ignored_only() {
-        let mut fc = controller_with(vec![slider_field("s", 5.0, 0.0, 10.0, 1.0, false)], None);
+        let mut fc = controller_with(vec![slider_field("s", 5.0, 0.0, 10.0, 1.0, true)], None);
         fc.set_backend_info(10.0);
-        if let Some(form) = &mut fc.form {
-            form.fields[0].disabled = true;
-        }
         let click = fc.handle_cached(
             &UiEvent::MouseDown {
                 widget: None,
@@ -5532,7 +5594,6 @@ mod tests {
     #[test]
     #[cfg(feature = "tui")]
     fn click_on_a_top_labelled_radio_groups_painted_row_selects_the_right_option() {
-        use crate::primitives::form::LabelPosition;
         use crate::tui::TuiBackend;
 
         let mut field = radio_group_field("g", radio_group(Some(0)), false);
