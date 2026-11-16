@@ -643,30 +643,57 @@ impl ToolbarIcons {
     /// `nerd_fonts_enabled`) or `fallback` (otherwise) — the override wins
     /// outright, replacing whatever the button's own `icon` held, exactly
     /// like [`crate::compose::app_shell::AppShell`] does for
-    /// `PanelDefinition::icon`. Every other case borrows `btn` untouched.
+    /// `PanelDefinition::icon`. A [`ToolbarButton::Group`] resolves each of
+    /// its `items` the same way, recursively, so a registered pair reaches
+    /// a group's children too; the group itself only clones when at least
+    /// one child actually changed. Every other case borrows `btn` untouched.
     pub fn resolve_button<'a>(
         &self,
         btn: &'a ToolbarButton,
         nerd_fonts_enabled: bool,
     ) -> Cow<'a, ToolbarButton> {
-        if let ToolbarButton::Action { id, .. } = btn {
-            if let Some(icon) = self.get(id) {
-                let resolved = if nerd_fonts_enabled {
-                    icon.glyph.clone()
+        match btn {
+            ToolbarButton::Action { id, .. } => {
+                if let Some(icon) = self.get(id) {
+                    let resolved = if nerd_fonts_enabled {
+                        icon.glyph.clone()
+                    } else {
+                        icon.fallback.clone()
+                    };
+                    let mut cloned = btn.clone();
+                    if let ToolbarButton::Action {
+                        icon: icon_field, ..
+                    } = &mut cloned
+                    {
+                        *icon_field = Some(resolved);
+                    }
+                    Cow::Owned(cloned)
                 } else {
-                    icon.fallback.clone()
-                };
+                    Cow::Borrowed(btn)
+                }
+            }
+            ToolbarButton::Group { items, .. } => {
+                let resolved_items: Vec<Cow<'a, ToolbarButton>> = items
+                    .iter()
+                    .map(|child| self.resolve_button(child, nerd_fonts_enabled))
+                    .collect();
+                if resolved_items
+                    .iter()
+                    .all(|child| matches!(child, Cow::Borrowed(_)))
+                {
+                    return Cow::Borrowed(btn);
+                }
                 let mut cloned = btn.clone();
-                if let ToolbarButton::Action {
-                    icon: icon_field, ..
+                if let ToolbarButton::Group {
+                    items: items_field, ..
                 } = &mut cloned
                 {
-                    *icon_field = Some(resolved);
+                    *items_field = resolved_items.into_iter().map(Cow::into_owned).collect();
                 }
-                return Cow::Owned(cloned);
+                Cow::Owned(cloned)
             }
+            _ => Cow::Borrowed(btn),
         }
-        Cow::Borrowed(btn)
     }
 
     /// Bake every registered pair into a copy of `bar`, ready to hand to
@@ -2882,6 +2909,39 @@ mod tests {
             bg: None,
             focused_index: None,
         }
+    }
+
+    /// A registered pair reaches a `Group`'s children, not just top-level
+    /// `Action`s — the override replaces a child's own icon exactly like
+    /// it would for a standalone button, and a child with no registered
+    /// id keeps its own icon untouched.
+    #[test]
+    fn icon_overrides_apply_recursively_to_group_children() {
+        let bar = bar_with(vec![ToolbarButton::Group {
+            id: WidgetId::new("view"),
+            exclusive: true,
+            label: None,
+            items: vec![
+                mk_icon_action("icons", "Icons", Some("~")),
+                mk_icon_action("list", "List", Some("-")),
+            ],
+        }]);
+        let icons = ToolbarIcons::new().with(WidgetId::new("icons"), Icon::new("\u{f021}", "R"));
+
+        let resolved = icons.apply(&bar, true);
+        let ToolbarButton::Group { items, .. } = &resolved.buttons[0] else {
+            panic!("expected the Group to survive `apply`");
+        };
+        assert_eq!(
+            icon_of(&items[0]),
+            Some("\u{f021}"),
+            "a registered child's icon resolves the same as a top-level one"
+        );
+        assert_eq!(
+            icon_of(&items[1]),
+            Some("-"),
+            "an unregistered child keeps its own icon"
+        );
     }
 
     #[test]
