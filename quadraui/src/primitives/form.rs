@@ -1604,14 +1604,30 @@ mod native_surface_paint {
                         // `form_field_measure` reserves extra height
                         // only for a validation message, never for a
                         // `Top`-resolved label's own line (see its
-                        // doc). At a typical default row height that
-                        // leaves no room for both the label's line and
-                        // a usable field body, so below this threshold
-                        // fall back to `Left`'s layout (label beside
-                        // the field, sharing the row's full height)
-                        // instead of stacking the label into a
-                        // collapsed or negative-height content strip.
-                        if content_h < label_h {
+                        // doc). A `TextInput`/`PasswordInput` body needs
+                        // its content band to host a full
+                        // `TextInputMetrics::resolve` box (painted at
+                        // `content_h - 4.0`, matching
+                        // `paint_text_input_box`'s own math below), so
+                        // that kind uses that height as its minimum
+                        // instead of just the label's own line; every
+                        // other `FieldKind` keeps the label-line
+                        // minimum. Below the threshold, fall back to
+                        // `Left`'s layout (label beside the field,
+                        // sharing the row's full height) instead of
+                        // stacking the label into a content strip too
+                        // short for a usable field body.
+                        let min_content_h = match &field.kind {
+                            FieldKind::TextInput { .. } | FieldKind::PasswordInput { .. } => {
+                                crate::primitives::text_input::TextInputMetrics::resolve(
+                                    &crate::style::Style::default(),
+                                )
+                                .height
+                                    + 4.0
+                            }
+                            _ => label_h,
+                        };
+                        if content_h < min_content_h {
                             let (label_x, label_y, label_right) = left_label_geometry(
                                 form,
                                 field,
@@ -3654,10 +3670,10 @@ mod native_surface_paint {
         /// A single-line `TextInput`/`PasswordInput`'s stroked box must
         /// actually reach `Style::control_height` (`26px`), not just
         /// exist — the row this paints at (`form_row_height(14.0) == 20`)
-        /// is shorter than that on its own, so
-        /// `layout_metrics::form_field_measure_inner`'s `FieldKind::
-        /// TextInput`/`PasswordInput` arm must floor the row to make room,
-        /// the same pattern `FieldKind::Button`'s own floor arm uses.
+        /// is shorter than that on its own, so `layout_metrics::
+        /// form_field_measure_inner`'s `TextInput`/`PasswordInput` arm
+        /// must floor the row to make room, the same pattern
+        /// `FieldKind::Button`'s own floor arm uses.
         #[test]
         fn text_input_and_password_input_box_reach_control_height() {
             let style = crate::style::Style::default();
@@ -3679,10 +3695,14 @@ mod native_surface_paint {
                 let form = one_field_form("name", kind);
                 let (surface, _) = paint_recorded(&form);
 
-                let (box_rect, _, _) = surface
-                    .strokes
-                    .first()
-                    .expect("the input paints exactly one stroked box");
+                assert_eq!(
+                    surface.strokes.len(),
+                    1,
+                    "exactly one stroked box should bound the input; \
+                     strokes were {:?}",
+                    surface.strokes,
+                );
+                let (box_rect, _, _) = surface.strokes[0];
                 assert!(
                     box_rect.height >= style.control_height,
                     "the input box must be at least `Style::control_height` \
@@ -4027,9 +4047,13 @@ mod native_surface_paint {
             // `Top` stacks the label above the value within the row
             // height it's given — `Form::layout` doesn't grow rows for it
             // (out of this painter's scope), so the test supplies a row
-            // tall enough for both lines, the way a real backend's
-            // two-line `measure_field` for a `Top`-labelled field would.
-            let row_h = form_row_height(14.0) * 2.0;
+            // tall enough for both the label's line and a full
+            // `control_height` box, the way a real backend's two-line
+            // `measure_field` for a `Top`-labelled field would. Below
+            // that, `TextInput`/`PasswordInput` falls back to `Left`
+            // instead (see `text_input_top_label_fallback_box_reaches_
+            // control_height`).
+            let row_h = 64.0;
             let measure = form_field_measure(&form.fields[0], row_h, &FixedMeasure);
             let flayout = form.layout(320.0, 160.0, |_| measure.clone());
             let mut surface = RecordingSurface::default();
@@ -4204,21 +4228,19 @@ mod native_surface_paint {
 
         #[test]
         fn label_position_top_falls_back_to_left_when_the_row_cannot_fit_both_bands() {
-            // At a real backend's default row height (`form_row_height`,
-            // undoubled — unlike
-            // `label_position_top_places_label_above_the_field_row`
-            // above, which hands the row double the height precisely to
-            // dodge this case) there isn't room for both the label's own
-            // line and a usable field body, so `Top` must fall back to
-            // `Left`'s side-by-side layout rather than collapsing the
-            // field body to a zero/negative-height strip.
-            //
-            // `ReadOnly`, not `labeled_text_field_form`'s `TextInput` —
-            // `FieldKind::TextInput`/`PasswordInput` rows now floor at
-            // `Style::control_height + 4.0` (`30px`), which already has
-            // room for both bands at this row height, so they can no
-            // longer exercise this fallback; `ReadOnly` has no such
-            // floor and still shares the same `Top` label geometry.
+            // At a real backend's default row height (`form_row_height`)
+            // — unlike `label_position_top_places_label_above_the_field_
+            // row` above, which hands the row a tall enough height to
+            // dodge this case — there isn't room for both the label's
+            // own line and a usable field body, so `Top` must fall back
+            // to `Left`'s side-by-side layout rather than collapsing the
+            // field body to a zero/negative-height strip. This exercises
+            // a `ReadOnly` field, which has no `control_height` floor of
+            // its own and so falls back purely on the label-line
+            // threshold; `text_input_top_label_fallback_box_reaches_
+            // control_height` below covers the `TextInput`/
+            // `PasswordInput` case, whose floor keeps the row taller but
+            // still not tall enough to stack both bands.
             let mut form = one_field_form(
                 "name",
                 FieldKind::ReadOnly {
@@ -4251,6 +4273,35 @@ mod native_surface_paint {
                 value_rect.height > 0.0,
                 "fallback must give the field body positive height; \
                  value run was {value_rect:?}",
+            );
+        }
+
+        /// A `Top`-labelled `TextInput`/`PasswordInput` row must still
+        /// paint a box reaching `Style::control_height`: the row's own
+        /// floor (`form_field_measure_inner`'s `TextInput`/
+        /// `PasswordInput` arm) keeps the row taller than
+        /// `form_row_height`, but not tall enough to stack both the
+        /// label's line and a full-height box, so `native_surface_
+        /// paint::paint`'s `Top` arm must fall back to `Left`'s
+        /// side-by-side layout instead of shrinking the stroked box
+        /// below `control_height`.
+        #[test]
+        fn text_input_top_label_fallback_box_reaches_control_height() {
+            let style = crate::style::Style::default();
+            let form = labeled_text_field_form(Some(LabelPosition::Top), None, None);
+            let (surface, _) = paint_recorded(&form);
+
+            let (box_rect, _, _) = surface
+                .strokes
+                .first()
+                .expect("the input paints a stroked box");
+            assert!(
+                box_rect.height >= style.control_height,
+                "a Top-labelled TextInput's box must still reach \
+                 `Style::control_height` ({}) via the Left fallback, \
+                 got {}",
+                style.control_height,
+                box_rect.height,
             );
         }
 
