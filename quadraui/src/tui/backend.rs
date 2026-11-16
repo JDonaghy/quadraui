@@ -86,6 +86,7 @@ const MIN_GAP_CELLS: f32 = 2.0;
 /// attempt — nothing in this crate emits a real Kitty graphics escape
 /// sequence yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct KittyGraphics {
     /// The pixel `(width, height)` of one terminal cell — needed to
     /// convert a primitive's cell-based placement into the pixel offsets
@@ -299,9 +300,10 @@ pub struct TuiBackend {
     /// graphics placement, independent of the `kitty_graphics_supported`
     /// flag above — `None` until [`super::run::run`] resolves a real
     /// reading (`TIOCGWINSZ`, falling back to a live `CSI 16 t` query)
-    /// via [`Self::set_kitty_graphics_cell_px`], and again on every
-    /// settled `Event::Resize` (a font-size change invalidates it the
-    /// same way it invalidates [`Self::cell_pixel_size`]).
+    /// via [`Self::set_kitty_graphics_cell_px`], and again on every raw
+    /// `WindowResized` event, before debouncing (a font-size change
+    /// invalidates it the same way it invalidates
+    /// [`Self::cell_pixel_size`]).
     /// [`Self::kitty_graphics`] treats a `None` here as "unsupported"
     /// regardless of the flag above — there is no correct way to place a
     /// graphic without knowing the cell's pixel size.
@@ -656,9 +658,10 @@ impl TuiBackend {
 
     /// Override the measured Kitty-graphics cell pixel size — see
     /// [`Self::kitty_graphics`]. [`super::run::run`] calls this once at
-    /// startup and again on every settled `Event::Resize`, mirroring
-    /// [`Self::set_cell_pixel_size`]'s own resize handling. Also the hook
-    /// a test uses to exercise the capability without a real terminal.
+    /// startup and again on every raw `WindowResized` event, before
+    /// debouncing, mirroring [`Self::set_cell_pixel_size`]'s own resize
+    /// handling. Also the hook a test uses to exercise the capability
+    /// without a real terminal.
     pub fn set_kitty_graphics_cell_px(&mut self, cell_px: Option<(u16, u16)>) {
         self.kitty_graphics_cell_px = cell_px;
     }
