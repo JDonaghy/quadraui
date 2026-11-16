@@ -14,13 +14,28 @@ use quadraui::compose::sidebar_panel_body::{SidebarPanelBody, SidebarPanelChrome
 use quadraui::{
     Backend, BackendCaps, BackendWidget, Decoration, InteractionState, NavigationMode, Reaction,
     Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit, SidebarSectionDef, SidebarSystem,
-    StatusBar, StatusBarSegment, StyledText, Toolbar, ToolbarButton, ToolbarHoverTracker, TreeRow,
-    TreeStyle, TreeView, UiEvent, WidgetId,
+    StatusBar, StatusBarSegment, Style, StyledText, Toolbar, ToolbarButton, ToolbarHoverTracker,
+    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("sidebar.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 const REVEAL_ROW_COUNT: usize = 30;
@@ -262,7 +277,7 @@ impl Demo for SidebarDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let lh = backend.line_height();
+        let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let theme = backend.theme();
         match variant {
             0 => {
@@ -442,7 +457,7 @@ impl Demo for SidebarDemo {
         backend: &mut dyn Backend,
         area: Rect,
     ) -> Reaction {
-        let lh = backend.line_height();
+        let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         match variant {
             0 => {
                 self.reveal_sidebar

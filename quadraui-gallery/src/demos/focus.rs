@@ -13,12 +13,27 @@ use std::cell::{Cell, RefCell};
 
 use quadraui::{
     Backend, BackendCaps, Color, FocusRing, Key, ListItem, ListView, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("focus.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 const LEFT_ID: &str = "gallery:focus:left";
@@ -137,8 +152,7 @@ impl Demo for FocusDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         self.sync(variant);
-        let lh = backend.line_height();
-        let status_h = (lh * 1.5).round();
+        let status_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let body_h = (area.height - status_h).max(0.0);
         let half_w = (area.width / 2.0).round();
 

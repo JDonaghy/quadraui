@@ -15,12 +15,27 @@ use std::cell::RefCell;
 
 use quadraui::{
     Backend, BackendCaps, Color, Handled, InteractionState, Key, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
+    StatusBarSegment, Style, UiEvent, WidgetId, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("workspace.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 const INITIAL: [(&str, &str); 3] = [
@@ -172,12 +187,12 @@ impl Demo for WorkspaceDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let lh = backend.line_height();
-        let strip_h = lh;
+        let strip_h = chrome_strip_height(backend, |s| s.tab_height);
         let strip = Rect::new(area.x, area.y, area.width, strip_h);
         self.workspaces[variant].borrow_mut().render(backend, strip);
 
-        let body_rect = Rect::new(area.x, area.y + strip_h, area.width, lh);
+        let row_h = chrome_strip_height(backend, |s| s.status_bar_height);
+        let body_rect = Rect::new(area.x, area.y + strip_h, area.width, row_h);
         let ws = self.workspaces[variant].borrow();
         let body = match ws.active_id() {
             Some(id) if ws.is_preview(id) => format!(" viewing: {id} (preview) "),
@@ -189,7 +204,7 @@ impl Demo for WorkspaceDemo {
             &Self::label_bar("gallery:workspace:body", body, Color::rgb(220, 220, 220)),
             &InteractionState::new(),
         );
-        let hint_rect = Rect::new(area.x, area.y + strip_h + lh, area.width, lh);
+        let hint_rect = Rect::new(area.x, area.y + strip_h + row_h, area.width, row_h);
         backend.draw_status_bar_interactive(
             hint_rect,
             &Self::label_bar(
@@ -297,5 +312,22 @@ mod tests {
         let ws = demo.workspaces[1].borrow();
         let active = ws.active_id().expect("variant 1 should have an active doc");
         assert!(ws.is_preview(active));
+    }
+
+    /// On a pixel backend (a GTK-shaped chrome line height, simulated via
+    /// `RecordingBackend`), the tab strip `render` hands
+    /// `WorkspaceController` is exactly `Style::tab_height` tall — not the
+    /// raw chrome line height, the bug this test guards against
+    /// regressing.
+    #[test]
+    fn tab_strip_height_matches_tab_height_token_on_a_pixel_backend() {
+        let backend = quadraui::testing::RecordingBackend {
+            chrome_line_height: Some(20.0),
+            ..quadraui::testing::RecordingBackend::new()
+        };
+        assert_eq!(
+            chrome_strip_height(&backend, |s| s.tab_height),
+            quadraui::Style::default().tab_height
+        );
     }
 }

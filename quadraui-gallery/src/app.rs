@@ -24,12 +24,27 @@
 use quadraui::{
     AppShellEvent, AppShellLayout, Backend, Decoration, Icon, InteractionState, Key, ListItem,
     ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect, ShellApp,
-    ShellConfig, ShellContext, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar,
+    ShellConfig, ShellContext, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, TabBar,
     TabBarHit, TabItem, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 
 use crate::registry::registry;
 use crate::Demo;
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 /// The five activity-bar groups. A demo declares its group as a plain `&'static str`
 /// (`Demo::group`); anything that doesn't match one of these is simply
@@ -373,12 +388,16 @@ impl GalleryApp {
     /// `render_content`, `dispatch_to_shell_and_demo` and `handle` so all
     /// three agree on where the main pane's body starts.
     fn main_tab_strip_height(backend: &dyn Backend) -> f32 {
-        let lh = backend.chrome_line_height();
-        if lh <= 1.0 {
-            backend.snap_height(lh)
-        } else {
-            backend.snap_height(lh.max(backend.style().tab_height))
-        }
+        chrome_strip_height(backend, |s| s.tab_height)
+    }
+
+    /// Height of one chrome row above the demo's own content (the
+    /// variant picker, the caps note) — `Style::status_bar_height` on a
+    /// pixel backend, the plain chrome line height on TUI. Shared by
+    /// `demo_content_rect` and `render_content` so the row(s)
+    /// `demo_header_rows` counts are exactly as tall as the ones painted.
+    fn demo_header_row_height(backend: &dyn Backend) -> f32 {
+        chrome_strip_height(backend, |s| s.status_bar_height)
     }
 
     /// The Demo tab's content rect, after reserving
@@ -386,7 +405,7 @@ impl GalleryApp {
     /// `render_content` and `handle` so the two never disagree about
     /// where the demo's own content starts.
     fn demo_content_rect(&self, idx: usize, backend: &dyn Backend, body: Rect) -> Rect {
-        let lh = backend.line_height();
+        let lh = Self::demo_header_row_height(backend);
         let top = body.y + self.demo_header_rows(idx, backend) as f32 * lh;
         Rect::new(
             body.x,
@@ -414,7 +433,7 @@ impl ShellApp for GalleryApp {
     }
 
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
-        let lh = backend.line_height();
+        let lh = Self::demo_header_row_height(backend);
 
         // ── Sidebar: demos in the active group ──────────────────────
         //
@@ -740,7 +759,7 @@ impl GalleryApp {
             }
 
             // Main-pane tab strip click (Demo / Code / Data).
-            let lh = backend.line_height();
+            let lh = Self::demo_header_row_height(backend);
             let tab_h = Self::main_tab_strip_height(backend);
             let main = ctx.main_bounds();
             let tab_rect = Rect::new(main.x, main.y, main.width, tab_h);
@@ -887,7 +906,7 @@ fn describe_event(event: &UiEvent) -> (&'static str, Option<WidgetId>) {
 /// calls painting in the same frame (the Code/Data body and the event
 /// log both go through this) never mint the same id twice.
 fn draw_text_block(backend: &mut dyn Backend, rect: Rect, prefix: &str, text: &str) {
-    let lh = backend.line_height();
+    let lh = chrome_strip_height(backend, |s| s.status_bar_height);
     if rect.height <= 0.0 || rect.width <= 0.0 {
         return;
     }
