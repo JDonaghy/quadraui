@@ -138,6 +138,31 @@ real interactive slider. `Checkbox`, `Slider`, `Select`, `Password`,
 one of those instead of a one-field `Form` for a single standalone
 control.
 
+### Confirm / alert dialogs
+
+Don't build a `show_message_dialog` call plus a hand-written
+`MessageDialogResolved` branch in `on_event`. `App.confirm`/`.alert` wrap
+both into one call that reports the clicked button's id back directly:
+
+```python
+DELETE_BUTTONS = [
+    {"id": "delete", "label": "Delete", "is_default": True},
+    {"id": "cancel", "label": "Cancel", "is_cancel": True},
+]
+
+def on_delete_clicked():
+    app.confirm("Delete this file?", "This can't be undone.", DELETE_BUTTONS,
+                on_resolve=lambda btn: btn == "delete" and do_delete())
+```
+
+`on_resolve` may be `async def` instead -- it is then scheduled as a task
+on the running asyncio loop rather than called directly. Omit `on_resolve`
+entirely from an `async def` handler to `await app.confirm(...)` and get
+the button id back as the return value instead (needs a running loop, as
+under `quadraui.asyncio.run`/`app.run_async()`). `App.alert(title, body,
+id="ok", label="OK", on_resolve=...)` is `confirm` with one button, both
+`is_default` and `is_cancel`, for a plain acknowledgement dialog.
+
 Anything else in the toolkit (progress, spinner, image, overlays,
 ...) has no typed node yet. A `view()` may return a **raw wire dict**
 anywhere a node goes, mixed freely with nodes. Get the shape from

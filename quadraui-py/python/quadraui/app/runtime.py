@@ -33,7 +33,8 @@ mutation a callback makes is already visible by the time that same
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Tuple, cast
+import asyncio
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 
 from . import hot_reload as _hr
 from .component import Component
@@ -224,6 +225,12 @@ class App:
     `QuiApp.set_strict`/`QuiApp.set_on_unknown_key` for the full contract.
     Both can also be changed later, after construction, by calling
     `app.qui.set_strict(...)`/`app.qui.set_on_unknown_key(...)` directly.
+
+    `confirm`/`alert` wrap `show_message_dialog` + `MessageDialogResolved`
+    into a single call that reports the clicked button's id back to the
+    caller, either through an `on_resolve` callback (sync or `async def`)
+    or, when `on_resolve` is omitted, an awaitable future -- see `confirm`'s
+    own doc for the full contract.
     """
 
     def __init__(
@@ -243,6 +250,7 @@ class App:
         self._registry: Dict[str, Dict[str, Callable[..., None]]] = {}
         self._component_states: Dict[Any, Dict[str, Any]] = {}
         self._focused_id: Optional[str] = None
+        self._pending_dialog_resolve: Optional[Callable[[str], None]] = None
         self._watcher: Optional[_hr.ModuleWatcher] = None
         self._poller: Optional[_hr._PollThread] = None
         self._on_reload: Optional[Callable[["App"], None]] = None
@@ -266,6 +274,88 @@ class App:
         escape-hatch handler after the fact, instead of assigning the
         private `_on_event` attribute directly."""
         self._on_event = on_event
+
+    # --- confirm / alert -------------------------------------------------------
+
+    def confirm(
+        self,
+        title: str,
+        body: str,
+        buttons: Sequence[Mapping[str, Any]],
+        severity: Optional[str] = None,
+        *,
+        on_resolve: Optional[Callable[[str], Any]] = None,
+    ) -> "Optional[asyncio.Future[str]]":
+        """Opens an in-canvas confirm dialog (`show_message_dialog` under
+        the hood) and reports whichever button's `id` the user picked -- a
+        click, or Enter/Escape activating the button marked
+        `is_default`/`is_cancel` respectively.
+
+        With `on_resolve` given, it is called with the clicked button's id
+        once resolved and this returns `None` -- the shape a synchronous
+        `on_click`/`on_event` callback uses. `on_resolve` may itself be an
+        `async def`: it is then scheduled as a fire-and-forget task on the
+        currently running asyncio loop instead of called directly -- see
+        `quadraui.aio.schedule_callback`'s own doc for that shape, the same
+        one `quadraui.aio.async_handler` gives a registered event handler.
+
+        With `on_resolve` omitted, this returns an `asyncio.Future`
+        instead -- needs a running asyncio loop (e.g. under
+        `quadraui.aio.run`/`app.run_async()`) -- so `await app.confirm(...)`
+        from an `async def` handler resolves to the clicked button's id
+        directly.
+
+        Queues through `self.actions` rather than calling
+        `self.qui.show_message_dialog` directly, so this is safe to call
+        from inside a node callback (a `Button`'s `on_click`, say) as well
+        as from top-level script code -- see `QuiAppActions`'s own doc for
+        why.
+
+        Calling `confirm`/`alert` again while an earlier call's dialog is
+        still open replaces it silently, the same "replaces any dialog
+        already open" behaviour `show_message_dialog` itself documents:
+        the earlier call's `on_resolve`/future is then abandoned, never
+        called or resolved. Only one `confirm`/`alert` call should be
+        outstanding at a time.
+        """
+        if on_resolve is not None:
+            waker = self.qui.waker()
+
+            def _resolve(button_id: str) -> None:
+                from quadraui import aio as _aio  # local import: avoids a cycle
+
+                _aio.schedule_callback(waker, on_resolve, button_id)
+
+            self._pending_dialog_resolve = _resolve
+            self.actions.show_message_dialog(title, body, list(buttons), severity)
+            return None
+
+        future: "asyncio.Future[str]" = asyncio.get_running_loop().create_future()
+        self._pending_dialog_resolve = future.set_result
+        self.actions.show_message_dialog(title, body, list(buttons), severity)
+        return future
+
+    def alert(
+        self,
+        title: str,
+        body: str,
+        *,
+        id: str = "ok",
+        label: str = "OK",
+        severity: Optional[str] = None,
+        on_resolve: Optional[Callable[[str], Any]] = None,
+    ) -> "Optional[asyncio.Future[str]]":
+        """`confirm` with a single button (`id`, `"ok"` by default), both
+        `is_default` and `is_cancel` -- Enter, Escape, and a click on it
+        all resolve the same returned future/`on_resolve` call. `label`
+        overrides its text (`"OK"` by default)."""
+        return self.confirm(
+            title,
+            body,
+            [{"id": id, "label": label, "is_default": True, "is_cancel": True}],
+            severity,
+            on_resolve=on_resolve,
+        )
 
     # --- hot reload -----------------------------------------------------------
 
@@ -458,6 +548,21 @@ class App:
             return True
         return False
 
+    def _dispatch_message_dialog_resolved(self, event: Dict[str, Any]) -> bool:
+        """Resolves a pending `confirm`/`alert` call with the clicked
+        button's id. `False` (so the event falls through to `on_event`
+        like any other unclaimed one, per `_pending_dialog_resolve`'s own
+        assignment sites) when no `confirm`/`alert` call is waiting on
+        this dialog -- a dialog opened some other way (a raw
+        `actions.show_message_dialog`/`qui.show_message_dialog` call
+        `confirm`/`alert` never wrapped) resolves nothing here."""
+        resolve = self._pending_dialog_resolve
+        if resolve is None:
+            return False
+        self._pending_dialog_resolve = None
+        resolve(event["MessageDialogResolved"])
+        return True
+
     def _dispatch(self, event: Any) -> bool:
         """Tries every node-callback dispatch path in turn; `True` means the
         event was claimed -- a callback ran, or (see
@@ -490,6 +595,9 @@ class App:
             if self._dispatch_button_clicked(event):
                 return True
             return self._dispatch_form_field_event(event)
+
+        if "MessageDialogResolved" in event:
+            return self._dispatch_message_dialog_resolved(event)
 
         for container, variants in _CONTAINER_EVENT_MAP.items():
             if container not in event:
