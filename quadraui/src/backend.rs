@@ -4348,18 +4348,20 @@ pub trait Backend: sealed::Sealed {
     /// picks one of these two honest outcomes.
     ///
     /// **TUI has no pixel grid**, so it cannot decode raster pixels
-    /// itself — `Image` deliberately does not attempt an ASCII-art
-    /// decoder either (see `primitives::image` module docs' scope
-    /// guard) — but on a terminal that has confirmed Kitty-protocol
-    /// graphics support (`tui-images` Cargo feature,
-    /// `crate::tui::backend::TuiBackend::kitty_graphics` returning
+    /// itself — but behind the `tui-images` Cargo feature it has two
+    /// fallback tiers short of plain text. On a terminal that has
+    /// confirmed Kitty-protocol graphics support
+    /// (`crate::tui::backend::TuiBackend::kitty_graphics` returning
     /// `Some`, truecolor) it paints real pixels a different way: decode
     /// through [`crate::tui::image_decode`], fill the placed cells with
     /// [`crate::tui::kitty_graphics`]'s Unicode placeholder content, and
     /// report [`ImagePaintResult::Painted`] — the terminal emulator
-    /// itself composites the actual bitmap behind those cells. Short of
-    /// that (a bare `tui` build, an unconfirmed or non-truecolor
-    /// terminal, or a real decode failure), TUI paints
+    /// itself composites the actual bitmap behind those cells. On any
+    /// other truecolor terminal, [`crate::tui::image::draw_image_halfblock`]
+    /// paints a lower-fidelity `▀`-glyph half-block mosaic instead,
+    /// still reporting `Painted` — there is no further ASCII-art decoder
+    /// under *that* tier. Short of both (a bare `tui` build, a
+    /// 256/16-colour terminal, or a real decode failure), TUI paints
     /// [`Image::fallback_text`] instead, centered in `rect`, and reports
     /// [`ImagePaintResult::Unsupported`] rather than a silent no-op. A
     /// GTK decode failure (bad path, corrupt bytes) also reports

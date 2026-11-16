@@ -339,6 +339,13 @@ pub struct TuiBackend {
     /// cache anything from).
     #[cfg(feature = "tui-images")]
     kitty_image_state: crate::tui::image::KittyImageState,
+    /// Decode cache [`Self::draw_image`] drives for the half-block
+    /// mosaic fallback on a truecolor terminal that hasn't confirmed
+    /// Kitty graphics — see
+    /// [`crate::tui::image::HalfBlockImageState`]'s doc. Absent on a
+    /// bare `tui` build, same reason as `kitty_image_state` above.
+    #[cfg(feature = "tui-images")]
+    halfblock_image_state: crate::tui::image::HalfBlockImageState,
     /// Single owner of keyboard focus — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
@@ -481,6 +488,8 @@ impl TuiBackend {
             kitty_graphics_cell_px: None,
             #[cfg(feature = "tui-images")]
             kitty_image_state: crate::tui::image::KittyImageState::new(),
+            #[cfg(feature = "tui-images")]
+            halfblock_image_state: crate::tui::image::HalfBlockImageState::new(),
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
@@ -5022,6 +5031,16 @@ impl Backend for TuiBackend {
                 kg.cell_px,
                 &mut self.kitty_image_state,
             ),
+            // No confirmed Kitty graphics, but the terminal is truecolor:
+            // a half-block mosaic beats plain fallback text — see
+            // `crate::tui::image::draw_image_halfblock`'s doc.
+            _ if truecolor => crate::tui::image::draw_image_halfblock(
+                unsafe { &mut *buf_ptr },
+                area,
+                image,
+                &theme,
+                &mut self.halfblock_image_state,
+            ),
             _ => crate::tui::draw_image(unsafe { &mut *buf_ptr }, area, image, &theme),
         };
         #[cfg(not(feature = "tui-images"))]
@@ -9006,6 +9025,123 @@ mod tests {
             backend.is_opaque_cell(buf, 0, 0),
             "a real Kitty-graphics paint must register the rect as opaque, \
              not a plain zone"
+        );
+    }
+
+    /// `draw_image`, on a truecolor backend that has NOT confirmed Kitty
+    /// graphics, falls through to the half-block mosaic (reporting
+    /// `Painted`, registered opaque) rather than plain fallback text —
+    /// the degrade tier between the Kitty path above and
+    /// `draw_image_falls_back_to_text_on_256_color_terminal` below.
+    #[test]
+    #[cfg(feature = "tui-images")]
+    fn draw_image_on_truecolor_terminal_without_kitty_paints_halfblock_mosaic_and_registers_opaque()
+    {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        fn tiny_png_bytes() -> Vec<u8> {
+            let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 255, 255]));
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .expect("encode tiny test PNG");
+            out
+        }
+
+        let mut backend = TuiBackend::new();
+        backend.set_color_depth(crate::backend::ColorDepth::TrueColor);
+        backend.set_kitty_graphics_supported(false);
+        backend.begin_frame(Viewport::new(20.0, 5.0, 1.0));
+
+        let image = crate::primitives::image::Image {
+            id: WidgetId::new("photo"),
+            source: crate::primitives::image::ImageSource::Bytes(tiny_png_bytes()),
+            intrinsic_size: Some((4, 4)),
+            fit: crate::primitives::image::ImageFit::Fill,
+            fallback_text: "[PHOTO]".to_string(),
+        };
+        let rect = QRect::new(0.0, 0.0, 4.0, 4.0);
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).expect("test terminal");
+        let mut result = crate::backend::ImagePaintResult::Unsupported;
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    result = b.draw_image(rect, &image);
+                });
+            })
+            .expect("draw into TestBackend is infallible");
+
+        assert_eq!(result, crate::backend::ImagePaintResult::Painted);
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            "▀",
+            "half-block mosaic cells carry the upper-half-block glyph, not fallback text"
+        );
+        assert!(
+            backend.is_opaque_cell(buf, 0, 0),
+            "a half-block mosaic paint must register the rect as opaque, \
+             not a plain zone"
+        );
+    }
+
+    /// Same source and rect as the two tests above, but on a 256-colour
+    /// backend: neither the Kitty path nor the half-block path applies,
+    /// so `draw_image` falls all the way back to `Image::fallback_text`
+    /// and reports `Unsupported`.
+    #[test]
+    #[cfg(feature = "tui-images")]
+    fn draw_image_falls_back_to_text_on_256_color_terminal() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        fn tiny_png_bytes() -> Vec<u8> {
+            let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 255, 255]));
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .expect("encode tiny test PNG");
+            out
+        }
+
+        let mut backend = TuiBackend::new();
+        backend.set_color_depth(crate::backend::ColorDepth::Indexed256);
+        backend.set_kitty_graphics_supported(false);
+        backend.begin_frame(Viewport::new(20.0, 5.0, 1.0));
+
+        let image = crate::primitives::image::Image {
+            id: WidgetId::new("photo"),
+            source: crate::primitives::image::ImageSource::Bytes(tiny_png_bytes()),
+            intrinsic_size: Some((4, 4)),
+            fit: crate::primitives::image::ImageFit::Fill,
+            fallback_text: "[PHOTO]".to_string(),
+        };
+        // Wide enough for the 7-char fallback text to paint in full,
+        // rather than clip against a narrow `rect` — unlike the two
+        // tests above, this one cares about the text itself.
+        let rect = QRect::new(0.0, 0.0, 20.0, 3.0);
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).expect("test terminal");
+        let mut result = crate::backend::ImagePaintResult::Unsupported;
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    result = b.draw_image(rect, &image);
+                });
+            })
+            .expect("draw into TestBackend is infallible");
+
+        assert_eq!(result, crate::backend::ImagePaintResult::Unsupported);
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for x in 0..20 {
+            text.push_str(buf[(x, 1)].symbol());
+        }
+        assert!(
+            text.contains("[PHOTO]"),
+            "256-colour terminal must still get the plain fallback text:\n{text}"
         );
     }
 
