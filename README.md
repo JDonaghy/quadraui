@@ -212,7 +212,7 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**50 primitive modules**, one each under `quadraui/src/primitives/`: a
+**51 primitive modules**, one each under `quadraui/src/primitives/`: a
 declarative description and a shared layout, each with a rasteriser per
 backend — except `DatePicker`, which currently ships layout/hit-test
 logic only and has no backend rasteriser yet (it is a seam, exercised
