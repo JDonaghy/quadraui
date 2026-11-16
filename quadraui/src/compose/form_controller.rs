@@ -157,6 +157,46 @@
 //!   item's click already does — no extra geometry lookup needed, unlike
 //!   `NumberInput`'s stepper buttons above.
 //!
+//! ## Slider fields
+//!
+//! `FieldKind::Slider` needs no shadow state either: `value`/`min`/
+//! `max`/`step` are already the live state the app feeds back each
+//! frame. Unlike `NumberInput`/`RadioGroup`, there's no embedded
+//! primitive with its own `handle_key`/`click` to delegate to — the
+//! field's doc contract ("click-and-drag on the track updates value;
+//! arrow keys step by `step`; Home/End jump to bounds") is implemented
+//! directly against the raw fields, mirroring
+//! `quadraui-binding-core::semantic`'s `slider_click_event`/
+//! `slider_key_event`, which give the standalone leaf the same contract.
+//!
+//! - `handle_slider_key` steps `value` by `step` on Left/Down (down) and
+//!   Right/Up (up), and jumps straight to `min`/`max` on Home/End —
+//!   every other key returns `None` and falls through to the generic
+//!   dispatch exactly like an unclaimed number-input/radio-group key.
+//! - A click or drag on the track is resolved by [`slider_click_event`],
+//!   which maps the pointer's x position to a fraction of the track's
+//!   width rather than a fixed step — [`FormController::click_inner`]
+//!   calls it the same way it calls [`number_input_click_event`] for a
+//!   fresh `MouseDown`, and arms `self.slider_drag` with the clicked
+//!   field's id whenever the click landed on a non-disabled `Slider`,
+//!   regardless of whether the value actually moved. Every subsequent
+//!   `MouseMoved` with the left button held re-resolves the same way
+//!   through [`FormController::slider_drag_to`], until `MouseUp` clears
+//!   `slider_drag`.
+//! - The track rect ideally comes from the clicked field's own
+//!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry,
+//!   the same lookup `NumberInput`'s stepper uses — but no backend
+//!   populates one for `Slider` today, so [`slider_click_event`] falls
+//!   back to the field's whole row (`vf.bounds`) instead. That means a
+//!   click anywhere on the row (including over its label column, on a
+//!   `Left`-positioned label) maps proportionally across the *whole*
+//!   row today, not just the painted track — a known approximation
+//!   until a backend grows a real `item_bounds` entry for it.
+//! - A disabled focused `Slider` does not intercept its keys at all, the
+//!   same as a disabled `NumberInput`/`RadioGroup`, and a click on a
+//!   disabled `Slider` falls through to `form_click_event`'s generic
+//!   `FocusChanged` rather than arming a drag.
+//!
 //! ## Toggle fields
 //!
 //! A plain `FieldKind::Toggle` (unlike the three item-bearing kinds the
@@ -363,6 +403,15 @@ pub struct FormController {
     scroll_offset: usize,
     has_focus: bool,
     scroll_drag: Option<ThumbDrag>,
+    /// The `FieldKind::Slider` field currently being dragged — set by a
+    /// `MouseDown` that lands on one (see this module's "Slider fields"
+    /// doc section), read by the next `MouseMoved` to keep mapping the
+    /// pointer's x position to a value, and cleared on `MouseUp`.
+    /// Mirrors `scroll_drag`'s own press/drag/release lifecycle, but
+    /// needs only the field's id — unlike `ThumbDrag`, which caches
+    /// geometry from the press, [`slider_click_event`] recomputes the
+    /// track's rect fresh on every move the same way a plain click does.
+    slider_drag: Option<WidgetId>,
     cached_lh: Option<f32>,
     text_edit: Option<TextEditState>,
     date_edit: Option<DateEditState>,
@@ -386,6 +435,7 @@ impl FormController {
             scroll_offset: 0,
             has_focus: false,
             scroll_drag: None,
+            slider_drag: None,
             cached_lh: None,
             text_edit: None,
             date_edit: None,
@@ -663,6 +713,12 @@ impl FormController {
                 ..
             } => self.click_inner(rect, position.x, position.y, lh, backend),
 
+            // A `Slider` drag takes priority over scrollbar-thumb drag:
+            // the two states are mutually exclusive (only one gesture can
+            // be in flight from a single `MouseDown`), but checking
+            // `slider_drag` first keeps this arm's intent readable as
+            // "whichever press started, keep tracking it" rather than
+            // depending on `drag_to`'s own no-op-when-`None` fallthrough.
             UiEvent::MouseMoved {
                 position,
                 buttons:
@@ -671,13 +727,20 @@ impl FormController {
                         middle: _,
                         right: _,
                     },
-            } => self.drag_to(position.y),
+            } => {
+                if self.slider_drag.is_some() {
+                    self.slider_drag_to(rect, position.x, lh, backend)
+                } else {
+                    self.drag_to(position.y)
+                }
+            }
 
             UiEvent::MouseUp {
                 button: MouseButton::Left,
                 ..
             } => {
                 self.scroll_drag = None;
+                self.slider_drag = None;
                 FormControllerEvent::Ignored
             }
 
@@ -861,6 +924,16 @@ impl FormController {
             }
             if self.focused_field_is_enabled_radio_group() {
                 if let Some(result) = self.handle_radio_group_key(key, modifiers) {
+                    return result;
+                }
+            }
+            // `Slider` — see this module's "Slider fields" doc section.
+            // `handle_slider_key` returns `None` for every key it
+            // doesn't claim (Tab/BackTab among them), which falls through
+            // to the generic dispatch below exactly like an unclaimed
+            // number-input/radio-group key does.
+            if self.focused_field_is_enabled_slider() {
+                if let Some(result) = self.handle_slider_key(key) {
                     return result;
                 }
             }
@@ -1190,6 +1263,71 @@ impl FormController {
         Some(FormControllerEvent::FormAction(FormEvent::RadioChanged {
             id: focused_id,
             selected: index,
+        }))
+    }
+
+    /// Whether the currently-focused field is a non-disabled `Slider` —
+    /// gates `handle_key`'s slider-key interception. Mirrors
+    /// [`Self::focused_field_is_enabled_number_input`].
+    fn focused_field_is_enabled_slider(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::Slider { .. }))
+    }
+
+    /// Left/Down steps the focused `Slider` field's value down by
+    /// `step`, Right/Up steps it up, Home/End jump straight to
+    /// `min`/`max` — the same keyboard contract `slider_key_event`
+    /// (`quadraui-binding-core`'s `semantic` module) gives the
+    /// standalone leaf, and `FieldKind::Slider`'s own doc promises
+    /// ("arrow keys step by `step`; Home/End jump to bounds").
+    /// `FieldKind::Slider`'s fields are already the live state (no
+    /// shadow-state struct needed, the same as `NumberInput`/`RadioGroup`
+    /// above), so there's no clone-and-force-focused step here. `None`
+    /// for every other key or a step/jump that doesn't move the clamped
+    /// value, which falls through to `handle_key`'s generic dispatch
+    /// exactly like an unclaimed number-input/radio-group key does.
+    fn handle_slider_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::Slider {
+            value,
+            min,
+            max,
+            step,
+        } = &field.kind
+        else {
+            return None;
+        };
+        let (value, min, max, step) = (*value, *min, *max, *step);
+        let new_value = match key {
+            Key::Named(NamedKey::Left) | Key::Named(NamedKey::Down) => {
+                slider_clamp(value - step, min, max)
+            }
+            Key::Named(NamedKey::Right) | Key::Named(NamedKey::Up) => {
+                slider_clamp(value + step, min, max)
+            }
+            Key::Named(NamedKey::Home) => min,
+            Key::Named(NamedKey::End) => max,
+            _ => return None,
+        };
+        if new_value == value {
+            return None;
+        }
+        Some(FormControllerEvent::FormAction(FormEvent::SliderChanged {
+            id: focused_id,
+            value: new_value,
         }))
     }
 
@@ -1655,6 +1793,19 @@ impl FormController {
             let local_y = y - form_rect.y;
             match layout.hit_test(local_x, local_y) {
                 FormHit::Field(id) => {
+                    // Arms `slider_drag` whenever the click landed on a
+                    // non-disabled `Slider` field, regardless of whether
+                    // `slider_click_event` below actually moves the
+                    // value — a press that lands exactly on the current
+                    // value (or just focuses it) still starts a drag the
+                    // next `MouseMoved` should keep tracking. See this
+                    // module's "Slider fields" doc section.
+                    self.slider_drag = form
+                        .fields
+                        .iter()
+                        .find(|f| f.id == id)
+                        .filter(|f| !f.disabled && matches!(f.kind, FieldKind::Slider { .. }))
+                        .map(|_| id);
                     // `NumberInput`'s stepper buttons are sub-regions of
                     // its single `item_bounds` entry, not separate
                     // `WidgetId`s the way a `RadioGroup` option or a
@@ -1663,10 +1814,12 @@ impl FormController {
                     // needs the clicked field's exact on-screen rect (see
                     // this module's "Number input fields" doc section).
                     // `None` (not a `NumberInput`, or the click landed
-                    // outside the stepper) falls through to the generic
-                    // path, which still resolves a plain field click to
+                    // outside the stepper) falls through to the next
+                    // candidate, and ultimately to the generic path,
+                    // which still resolves a plain field click to
                     // `FocusChanged`.
                     let event = number_input_click_event(&form, &layout, &id, local_x, local_y)
+                        .or_else(|| slider_click_event(&form, &layout, &id, local_x))
                         .unwrap_or_else(|| form_click_event(&form, &id));
                     FormControllerEvent::FormAction(event)
                 }
@@ -1733,6 +1886,44 @@ impl FormController {
         }
         self.scroll_offset = new;
         FormControllerEvent::Consumed
+    }
+
+    /// Continues an in-flight `Slider` drag (armed by [`Self::click_inner`]
+    /// — see this module's "Slider fields" doc section) as the pointer
+    /// moves to `x`/`y` within `rect` — the `MouseMoved` counterpart of
+    /// [`Self::drag_to`]'s scrollbar-thumb drag. Unlike `drag_to`, which
+    /// reuses geometry `ThumbDrag::begin` cached at press time, this
+    /// rebuilds the form/layout fresh (same as [`Self::click_inner`]
+    /// itself) rather than caching the track's rect, since a resize
+    /// between the press and this move would otherwise drag against a
+    /// stale rect. `FormControllerEvent::Ignored` if nothing is being
+    /// dragged, or the new position doesn't move the clamped value.
+    fn slider_drag_to(
+        &mut self,
+        rect: Rect,
+        x: f32,
+        lh: f32,
+        backend: Option<&mut dyn Backend>,
+    ) -> FormControllerEvent {
+        let Some(dragging_id) = self.slider_drag else {
+            return FormControllerEvent::Ignored;
+        };
+        let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);
+        let form = self.build_form(form_rect, None);
+        let layout = if let Some(be) = backend {
+            be.form_layout(form_rect, &form)
+        } else {
+            let row_h = row_height(lh);
+            let char_w = lh * 0.6;
+            form.layout(form_rect.width, form_rect.height, |i| {
+                form_field_measure(&form.fields[i], row_h, char_w)
+            })
+        };
+        let local_x = x - form_rect.x;
+        match slider_click_event(&form, &layout, &dragging_id, local_x) {
+            Some(event) => FormControllerEvent::FormAction(event),
+            None => FormControllerEvent::Ignored,
+        }
     }
 }
 
@@ -1848,6 +2039,78 @@ fn number_input_click_event(
     Some(FormEvent::NumberChanged {
         id: *clicked_id,
         value,
+    })
+}
+
+/// Clamps `raw` to `[min, max]` without [`f32::clamp`]'s panic on an
+/// inverted `min > max` — `FieldKind::Slider`'s `min`/`max` come from a
+/// wire payload, so a host typo inverting them degrades to a
+/// well-defined (if useless) clamp instead of a panic that would take
+/// the whole render down. Mirrors `quadraui-binding-core`'s
+/// `Slider::clamp`, which the standalone leaf already uses this same way.
+fn slider_clamp(raw: f32, min: f32, max: f32) -> f32 {
+    raw.max(min).min(max)
+}
+
+/// Maps a click/drag `x` position (local to the form, same space as
+/// `number_input_click_event`'s `x`/`y`) within a `FieldKind::Slider`
+/// field's track to a value — mirrors `quadraui-binding-core`'s own
+/// `slider_click_event`, which gives the standalone leaf the same
+/// "click lands at that fraction of the track" contract
+/// `FieldKind::Slider`'s doc promises, rather than a fixed one-`step`
+/// nudge regardless of position. Used by both
+/// [`FormController::click_inner`] (a fresh `MouseDown`) and
+/// [`FormController::slider_drag_to`] (every subsequent `MouseMoved`
+/// while dragging), so a click and the drag that follows it agree on
+/// exactly the same mapping.
+///
+/// Prefers the clicked field's own
+/// [`crate::primitives::form::VisibleFormField::item_bounds`] entry for
+/// the track rect, the same lookup [`number_input_click_event`] uses for
+/// its stepper — but no backend populates one for `Slider` today (see
+/// this module's "Slider fields" doc section), so this falls back to the
+/// field's whole row (`vf.bounds`) instead of returning `None` outright.
+/// Returns `None` for every other `FieldKind`, a disabled slider, a
+/// field with no visible rect at all, or an `x` that doesn't actually
+/// move the clamped value — [`FormController::click_inner`] falls
+/// through to [`form_click_event`] in the first three cases, which still
+/// resolves a plain click there to `FormEvent::FocusChanged`.
+fn slider_click_event(
+    form: &Form,
+    layout: &FormLayout,
+    clicked_id: &WidgetId,
+    x: f32,
+) -> Option<FormEvent> {
+    let field = form.fields.iter().find(|f| &f.id == clicked_id)?;
+    if field.disabled {
+        return None;
+    }
+    let FieldKind::Slider {
+        value, min, max, ..
+    } = &field.kind
+    else {
+        return None;
+    };
+    let vf = layout
+        .visible_fields
+        .iter()
+        .find(|vf| &vf.id == clicked_id)?;
+    let track = vf
+        .item_bounds
+        .first()
+        .map(|(_, rect)| *rect)
+        .unwrap_or(vf.bounds);
+    if track.width <= 0.0 {
+        return None;
+    }
+    let fraction = ((x - track.x) / track.width).clamp(0.0, 1.0);
+    let new_value = slider_clamp(min + fraction * (max - min), *min, *max);
+    if new_value == *value {
+        return None;
+    }
+    Some(FormEvent::SliderChanged {
+        id: *clicked_id,
+        value: new_value,
     })
 }
 
@@ -3501,6 +3764,36 @@ mod tests {
         }
     }
 
+    fn slider_field(
+        id: &str,
+        value: f32,
+        min: f32,
+        max: f32,
+        step: f32,
+        disabled: bool,
+    ) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::Slider {
+                value,
+                min,
+                max,
+                step,
+            },
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
     fn radio_group_field(id: &str, group: RadioGroup, disabled: bool) -> FormField {
         FormField {
             id: WidgetId::new(id),
@@ -4840,6 +5133,274 @@ mod tests {
                 id: WidgetId::new("n"),
             }),
             "a disabled NumberInput's stepper click must not step the value"
+        );
+    }
+
+    // ── Slider routing ────────────────────────────────────────────
+
+    #[test]
+    fn left_arrow_steps_a_focused_sliders_value_down() {
+        let mut fc = controller_with(
+            vec![slider_field("s", 5.0, 0.0, 10.0, 1.0, false)],
+            Some("s"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Left), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 4.0,
+            })
+        );
+    }
+
+    #[test]
+    fn right_arrow_steps_a_focused_sliders_value_up() {
+        let mut fc = controller_with(
+            vec![slider_field("s", 5.0, 0.0, 10.0, 1.0, false)],
+            Some("s"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 6.0,
+            })
+        );
+    }
+
+    #[test]
+    fn up_and_down_arrows_mirror_right_and_left_for_a_focused_slider() {
+        let mut fc = controller_with(
+            vec![slider_field("s", 5.0, 0.0, 10.0, 2.0, false)],
+            Some("s"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 7.0,
+            })
+        );
+
+        let mut fc = controller_with(
+            vec![slider_field("s", 5.0, 0.0, 10.0, 2.0, false)],
+            Some("s"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 3.0,
+            })
+        );
+    }
+
+    #[test]
+    fn right_arrow_past_max_clamps_instead_of_overshooting() {
+        let mut fc = controller_with(
+            vec![slider_field("s", 9.0, 0.0, 10.0, 5.0, false)],
+            Some("s"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 10.0,
+            }),
+            "a step past `max` must clamp to `max`, not overshoot to 14.0"
+        );
+    }
+
+    #[test]
+    fn home_and_end_jump_a_focused_slider_to_its_bounds() {
+        let mut fc = controller_with(
+            vec![slider_field("s", 5.0, 0.0, 10.0, 1.0, false)],
+            Some("s"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Home), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 0.0,
+            })
+        );
+
+        let mut fc = controller_with(
+            vec![slider_field("s", 5.0, 0.0, 10.0, 1.0, false)],
+            Some("s"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::End), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 10.0,
+            })
+        );
+    }
+
+    /// `lh=10.0` → `row_h=14.0`; `FieldKind::Slider` has no `item_bounds`
+    /// entry (see this module's "Slider fields" doc section), so
+    /// `slider_click_event` falls back to the field's whole row —
+    /// `content_width = rect.width = 200.0` here, so a click at `x=100`
+    /// lands at fraction `0.5` of `[min, max] = [0, 10]`.
+    #[test]
+    fn click_on_a_sliders_track_maps_the_click_position_to_a_value() {
+        let mut fc = controller_with(vec![slider_field("s", 0.0, 0.0, 10.0, 1.0, false)], None);
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 100.0, y: 7.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 5.0,
+            })
+        );
+    }
+
+    /// A `MouseMoved` with the left button still held, after a `MouseDown`
+    /// armed `slider_drag` on the same field, keeps mapping the pointer's
+    /// x position to a value the same way the initial click did.
+    #[test]
+    fn drag_after_a_sliders_click_continues_mapping_the_pointer_to_a_value() {
+        let mut fc = controller_with(vec![slider_field("s", 0.0, 0.0, 10.0, 1.0, false)], None);
+        fc.set_backend_info(10.0);
+        let rect = Rect::new(0.0, 0.0, 200.0, 14.0);
+        let down = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 100.0, y: 7.0 },
+                modifiers: Default::default(),
+            },
+            rect,
+        );
+        assert_eq!(
+            down,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 5.0,
+            })
+        );
+
+        let moved = fc.handle_cached(
+            &UiEvent::MouseMoved {
+                position: crate::Point { x: 150.0, y: 7.0 },
+                buttons: ButtonMask {
+                    left: true,
+                    middle: false,
+                    right: false,
+                },
+            },
+            rect,
+        );
+        assert_eq!(
+            moved,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 7.5,
+            }),
+            "a drag after the click should keep mapping the pointer's x to a value"
+        );
+
+        let up = fc.handle_cached(
+            &UiEvent::MouseUp {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 150.0, y: 7.0 },
+            },
+            rect,
+        );
+        assert_eq!(up, FormControllerEvent::Ignored);
+
+        // `MouseUp` cleared `slider_drag` — a further move with the left
+        // button held (as if a fresh, unrelated drag started elsewhere)
+        // must not still be attributed to this slider.
+        let moved_after_release = fc.handle_cached(
+            &UiEvent::MouseMoved {
+                position: crate::Point { x: 20.0, y: 7.0 },
+                buttons: ButtonMask {
+                    left: true,
+                    middle: false,
+                    right: false,
+                },
+            },
+            rect,
+        );
+        assert_eq!(moved_after_release, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn a_disabled_sliders_click_and_keys_produce_focus_changed_or_ignored_only() {
+        let mut fc = controller_with(vec![slider_field("s", 5.0, 0.0, 10.0, 1.0, false)], None);
+        fc.set_backend_info(10.0);
+        if let Some(form) = &mut fc.form {
+            form.fields[0].disabled = true;
+        }
+        let click = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 100.0, y: 7.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            click,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("s"),
+            }),
+            "a disabled Slider's click must only focus it, never move its value"
+        );
+
+        fc.set_has_focus(true);
+        if let Some(form) = &mut fc.form {
+            form.focused_field = Some(WidgetId::new("s"));
+        }
+        let key = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            key,
+            FormControllerEvent::Ignored,
+            "a disabled Slider's keys must not intercept at all"
         );
     }
 
