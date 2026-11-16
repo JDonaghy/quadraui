@@ -281,7 +281,7 @@ mod tests {
             .find(|v| v.item_idx == 0)
             .expect("item 0 visible")
             .bounds;
-        // Scan a narrow band right after the "  "/"▶ " prefix — the
+        // Scan a narrow band right after the row's left padding — the
         // fallback icon glyph "F" paints in surface_fg there when
         // nerd_fonts_enabled is false (`draw_palette`'s default). Any
         // non-background ink in that band is the icon (item 0's label
@@ -378,25 +378,26 @@ mod tests {
     /// Regression: item list must never show a partial last row. The unified
     /// layout formula floors the row count and feeds a reduced `viewport_height`
     /// to avoid clipped rows when available height isn't an exact multiple of
-    /// `line_height`. `H` (240) and `line_height` (16) are chosen so the
-    /// available item area (203px after title/query/bottom-inset) is
-    /// not an exact multiple of 16 — the condition that would produce
-    /// a partial last row.
+    /// the resolved row height. `H` (240) and `line_height` (16) are chosen so
+    /// the available item area (203px after title/query/bottom-inset) is
+    /// not an exact multiple of the row pitch — the condition that would
+    /// produce a partial last row.
     #[test]
     fn item_list_never_shows_a_partial_last_row() {
         let mut p = sample_palette();
         p.items = many_items(40);
         p.selected_idx = 0;
         let line_height = 16.0_f32;
+        let row_height = native_surface_paint::item_row_height(line_height);
         let layout = mac_palette_layout(&p, 0.0, 0.0, W as f64, H as f64, line_height as f64);
         let last = layout
             .visible_items
             .last()
             .expect("some items should be visible");
         assert_eq!(
-            last.bounds.height, line_height,
+            last.bounds.height, row_height,
             "last visible row must be full height — a partial row means the \
-             pre-#1076 unfloored-viewport drift regressed",
+             unfloored-viewport drift regressed",
         );
 
         // Driver-tier: paint through the real backend and confirm no ink

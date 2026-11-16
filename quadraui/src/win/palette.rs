@@ -296,12 +296,12 @@ mod tests {
     }
 
     /// The item list flooring: when available item-list height is not an
-    /// exact multiple of `line_height`, the row count is floored and a
-    /// reduced `viewport_height` is used to prevent partial-height last
-    /// rows. The rect height (200) and `line_height` (18) are chosen so
-    /// the available item area (159px after title/query/bottom-inset) is
-    /// not an exact multiple of 18 — the condition that produces a partial
-    /// last row without flooring.
+    /// exact multiple of the resolved row height, the row count is floored
+    /// and a reduced `viewport_height` is used to prevent partial-height
+    /// last rows. The rect height (200) and `line_height` (18) are chosen
+    /// so the available item area (159px after title/query/bottom-inset)
+    /// is not an exact multiple of the row pitch — the condition that
+    /// produces a partial last row without flooring.
     #[test]
     fn item_list_never_shows_a_partial_last_row() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
@@ -312,6 +312,7 @@ mod tests {
             .collect();
         let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
         let line_height = 18.0_f32;
+        let row_height = native_surface_paint::item_row_height(line_height);
 
         surface
             .paint(|target| {
@@ -325,9 +326,9 @@ mod tests {
             .last()
             .expect("some items should be visible");
         assert_eq!(
-            last.bounds.height, line_height,
+            last.bounds.height, row_height,
             "last visible row must be full height — a partial row means the \
-             pre-#1076 unfloored-viewport drift regressed",
+             unfloored-viewport drift regressed",
         );
 
         // Driver-tier: paint through the real Direct2D backend and
