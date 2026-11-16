@@ -658,7 +658,11 @@ pub(crate) mod native_surface_paint {
     /// floored at the font's own line height so a chrome font taller than
     /// the token isn't clipped (same rationale as
     /// `GtkBackend::resolved_row_height`/`MacBackend::resolved_row_height`).
-    fn item_row_height(line_height: f32) -> f32 {
+    ///
+    /// `pub(crate)` so each backend's own tests can assert the painted row
+    /// pitch against this token rather than against the raw chrome
+    /// `line_height`.
+    pub(crate) fn item_row_height(line_height: f32) -> f32 {
         line_height.max(ITEM_ROW_HEIGHT)
     }
 
@@ -1510,15 +1514,13 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        /// The issue's first acceptance bullet: a row's text starts
-        /// `row_padding_x` in from its rect. There is no selection-prefix
-        /// run anymore (selection is conveyed by `theme.selected_bg`
-        /// alone) — the row's own label text is the first run `paint`
-        /// draws at a row's leading edge, so its `x` is the inset to
-        /// assert on. Painted with a non-default [`Style::row_padding_x`]
-        /// (15.0, not the 8.0 default) so reverting the token back to
-        /// the old hardcoded `8.0` literal in `paint` would fail this
-        /// test.
+        /// A row's text starts `row_padding_x` in from its rect. Selection
+        /// is conveyed by `theme.selected_bg` alone, so the row's own label
+        /// text is the first run `paint` draws at a row's leading edge,
+        /// and its `x` is the inset to assert on. Painted with a
+        /// non-default [`Style::row_padding_x`] (15.0, not the 8.0
+        /// default) so a hardcoded `8.0` literal in `paint` would fail
+        /// this test.
         #[test]
         fn row_text_starts_row_padding_x_in_from_the_row_rect() {
             let p = sample();
