@@ -13138,18 +13138,19 @@ mod tests {
 
         let cw = backend.char_width().max(1.0);
         let lh = backend.line_height().max(1.0);
-        let popup_w = panel.panel_width as f32 * cw;
-        let popup_h = 3.0 * lh; // show_replace == false: 1 content row + 2 border rows
-        let popup_x = (panel.group_bounds.x + panel.group_bounds.width - popup_w - 10.0)
-            .max(panel.group_bounds.x);
-        let popup_y = panel.group_bounds.y + 2.0;
+        // Same geometry `GtkBackend::draw_find_replace` -> `native_surface_paint::paint`
+        // resolves at paint time, via the shared `FindReplaceMetrics` seam.
+        let style = crate::style::Style::default();
+        let metrics =
+            crate::primitives::find_replace::FindReplaceMetrics::resolve(&panel, &style, cw, lh);
+        let popup = metrics.popup_rect;
 
         surface.flush();
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
         let px = (
-            (popup_x + popup_w - 4.0) as usize,
-            (popup_y + popup_h - 4.0) as usize,
+            (popup.x + popup.width - 4.0) as usize,
+            (popup.y + popup.height - 4.0) as usize,
         );
         let offset = px.1 * stride + px.0 * 4;
         // Cairo `ARgb32` is premultiplied BGRA in native byte order.
