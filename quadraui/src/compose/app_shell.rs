@@ -1243,11 +1243,17 @@ impl AppShell {
         }
 
         if let Some(divider_bounds) = layout.divider_bounds {
-            // One fill over the whole rect, not N stacked one-row
-            // `StatusBar`s. A plain solid fill is simpler and cheaper than
-            // N status-bar layouts per frame — there is no text, no segments,
-            // and no interaction beyond the drag zone already registered above.
-            backend.draw_solid_fill(divider_bounds, theme.separator);
+            // `divider_bounds` is the wider hit-testable drag band; the
+            // painted line is thinned to `shell_layout::DIVIDER_PAINT_WIDTH`
+            // and centred inside it (VS Code's single-pixel resize
+            // affordance), via `shell_layout::divider_paint_bounds`. Still
+            // one fill, not N stacked one-row `StatusBar`s — there is no
+            // text, no segments, and no interaction beyond the drag zone
+            // already registered above.
+            backend.draw_solid_fill(
+                shell_layout::divider_paint_bounds(divider_bounds),
+                theme.separator,
+            );
         }
 
         layout
@@ -2484,7 +2490,8 @@ mod tests {
     // ── Render ───────────────────────────────────────────────────────
 
     /// The divider must be painted with exactly one `draw_solid_fill` call
-    /// over the whole `divider_bounds`, not a loop of individual row calls.
+    /// (a single thin line centred in `divider_bounds`), not a loop of
+    /// individual row calls.
     #[test]
     fn render_paints_the_divider_with_one_solid_fill_call() {
         let s = shell();

@@ -268,6 +268,11 @@ pub(crate) fn compute_layout(
             snap(style.activity_bar_width)
         }
     });
+    // This is the *hit-testable* drag band — wider than one pixel so the
+    // resize cursor has room to grab. `AppShell::render` paints only a
+    // [`DIVIDER_PAINT_WIDTH`]-wide line centred inside it (see
+    // [`divider_paint_bounds`]), the same hit-band-vs-paint-line split
+    // `primitives::split`'s sash already uses.
     let divider_w = snap(lh * 0.25).clamp(1.0, 4.0);
 
     if !cfg.sidebar_visible || cfg.panels_empty {
@@ -425,4 +430,66 @@ fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
         x += s;
     }
     xs
+}
+
+/// Visual width of the painted sidebar divider line, in the same units
+/// as `divider_bounds` — VS Code's single-pixel resize affordance.
+/// `divider_bounds` stays the full hit-testable band (see its
+/// computation above); only the painted line is thinned to this and
+/// centred within that band. Mirrors
+/// [`crate::primitives::split::native_surface_paint::SASH_PAINT_WIDTH`]
+/// so the sidebar divider reads as the same visual weight as a `Split`
+/// sash.
+pub(crate) const DIVIDER_PAINT_WIDTH: f32 = 1.0;
+
+/// Centre a [`DIVIDER_PAINT_WIDTH`]-thick line inside `divider_bounds`,
+/// which is always thin-on-x/full-height for the sidebar divider (the
+/// horizontal carve only ever produces a vertical divider). [`AppShell`]'s
+/// render path paints this instead of filling the whole hit-testable
+/// band, while hit-testing (drag start) keeps using `divider_bounds` in
+/// full — so a drag target stays wider than one pixel.
+pub(crate) fn divider_paint_bounds(divider_bounds: Rect) -> Rect {
+    let width = DIVIDER_PAINT_WIDTH.min(divider_bounds.width.max(0.0));
+    let center = divider_bounds.x + divider_bounds.width / 2.0;
+    let x = (center - width / 2.0).round().clamp(
+        divider_bounds.x,
+        (divider_bounds.x + divider_bounds.width - width).max(divider_bounds.x),
+    );
+    Rect::new(x, divider_bounds.y, width, divider_bounds.height)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pixel backend's wide hit band (e.g. 4px, as `lh * 0.25` resolves
+    /// to on a typical chrome line height) paints only a 1px line,
+    /// horizontally centred inside it.
+    #[test]
+    fn divider_paint_bounds_thins_a_wide_band_to_one_pixel_centred() {
+        let band = Rect::new(10.0, 20.0, 4.0, 300.0);
+        let line = divider_paint_bounds(band);
+        assert_eq!(line.width, DIVIDER_PAINT_WIDTH);
+        assert_eq!(line.y, band.y);
+        assert_eq!(line.height, band.height);
+        assert!(
+            line.x >= band.x && line.x + line.width <= band.x + band.width,
+            "painted line {line:?} must stay inside the hit band {band:?}"
+        );
+        let band_center = band.x + band.width / 2.0;
+        let line_center = line.x + line.width / 2.0;
+        assert!(
+            (line_center - band_center).abs() <= 1.0,
+            "painted line {line:?} should be centred in band {band:?}"
+        );
+    }
+
+    /// A band already at or below the paint width (TUI's single-cell
+    /// divider) is left untouched rather than shrunk to zero.
+    #[test]
+    fn divider_paint_bounds_leaves_a_single_pixel_band_unchanged() {
+        let band = Rect::new(5.0, 0.0, 1.0, 10.0);
+        let line = divider_paint_bounds(band);
+        assert_eq!(line, band);
+    }
 }
