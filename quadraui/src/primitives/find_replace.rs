@@ -445,6 +445,7 @@ impl FindReplacePanel {
 mod native_surface_paint {
     use super::{FindReplaceClickTarget, FindReplacePanel};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Color;
     use crate::Rect;
@@ -453,7 +454,21 @@ mod native_surface_paint {
     /// [`paint`] call.
     struct Metrics {
         cw: f32,
+        /// Backend text line height, in surface-native pixels — used only
+        /// for sizing/centering a text run, never for a row's own pitch
+        /// (see [`Self::row_h`]).
         lh: f32,
+        /// Row pitch/height every input and toggle/nav/action box is
+        /// painted at, in surface-native pixels — [`Style::control_height`]
+        /// (26px by default), the same "standard single-line control"
+        /// metric [`crate::primitives::button::ButtonMetrics`] and
+        /// [`crate::primitives::text_input::TextInputMetrics`] resolve a
+        /// `Button`/`TextInput`'s own box height from, floored at `lh` so a
+        /// backend reporting an unusually tall font never clips its own
+        /// text. Replaces this module's previous row pitch of `lh` itself,
+        /// which under-sized every box on a backend whose chrome font is
+        /// shorter than VS Code's own 26px input/button height.
+        row_h: f32,
         content_x: f32,
         content_y: f32,
     }
@@ -462,14 +477,27 @@ mod native_surface_paint {
     /// `row` are char-cell offsets from the panel's content corner,
     /// `width` is in char cells. Width is floored to 1 device unit so a
     /// theoretically-zero-width region never produces a degenerate
-    /// fill/stroke rect.
+    /// fill/stroke rect. Row pitch and box height both use [`Metrics::row_h`]
+    /// (not [`Metrics::lh`]) so every input/toggle/nav/action box reaches
+    /// the full 26px [`Style::control_height`] instead of just the raw
+    /// chrome text line height.
     fn region_rect(m: &Metrics, col: u16, row: u16, width: u16) -> Rect {
         Rect::new(
             m.content_x + col as f32 * m.cw,
-            m.content_y + row as f32 * m.lh,
+            m.content_y + row as f32 * m.row_h,
             (width as f32 * m.cw).max(1.0),
-            m.lh,
+            m.row_h,
         )
+    }
+
+    /// Vertical offset, in surface-native pixels, that centers an `lh`-tall
+    /// text run inside an `m.row_h`-tall box — shared by every text-run
+    /// draw call below so a box taller than its own text (every box, once
+    /// [`Metrics::row_h`] reads a 26px [`Style::control_height`] against a
+    /// shorter chrome font) still centers its label instead of pinning it
+    /// to the box's top edge.
+    fn center_text_y(m: &Metrics, box_y: f32) -> f32 {
+        box_y + ((m.row_h - m.lh) / 2.0).max(0.0)
     }
 
     /// Paint a plain text label at a cell position — no background, no
@@ -484,7 +512,8 @@ mod native_surface_paint {
     ) {
         let (tw, _) = surface.surface_measure_text(text);
         let px = m.content_x + col as f32 * m.cw;
-        let py = m.content_y + row as f32 * m.lh;
+        let box_y = m.content_y + row as f32 * m.row_h;
+        let py = center_text_y(m, box_y);
         surface.surface_draw_text_run(Rect::new(px, py, tw, m.lh), text, fg);
     }
 
@@ -514,7 +543,8 @@ mod native_surface_paint {
         };
         let (tw, _) = surface.surface_measure_text(label);
         let tx = rect.x + ((rect.width - tw) / 2.0).max(0.0);
-        surface.surface_draw_text_run(Rect::new(tx, rect.y, tw, m.lh), label, fg);
+        let ty = center_text_y(m, rect.y);
+        surface.surface_draw_text_run(Rect::new(tx, ty, tw, m.lh), label, fg);
     }
 
     /// Paint a nav/dismiss/replace glyph (`↑` `↓` `≡` `×` and the
@@ -542,7 +572,8 @@ mod native_surface_paint {
         };
         let (tw, _) = surface.surface_measure_text(label);
         let tx = rect.x + ((rect.width - tw) / 2.0).max(0.0);
-        surface.surface_draw_text_run(Rect::new(tx, rect.y, tw, m.lh), label, fg);
+        let ty = center_text_y(m, rect.y);
+        surface.surface_draw_text_run(Rect::new(tx, ty, tw, m.lh), label, fg);
     }
 
     /// Paint a find/replace input field: background + border, the
@@ -572,13 +603,14 @@ mod native_surface_paint {
         surface.surface_stroke_rect(rect, theme.separator, 0.5);
 
         let text_x = rect.x + 4.0;
+        let text_y = center_text_y(m, rect.y);
 
         let has_sel = is_focused && sel_anchor.is_some_and(|a| a != cursor) && !text.is_empty();
 
         if !has_sel {
             let (tw, _) = surface.surface_measure_text(text);
             surface.surface_draw_text_run(
-                Rect::new(text_x, rect.y, tw, m.lh),
+                Rect::new(text_x, text_y, tw, m.lh),
                 text,
                 theme.foreground,
             );
@@ -594,22 +626,26 @@ mod native_surface_paint {
             let (sw, _) = surface.surface_measure_text(selected);
             let (suw, _) = surface.surface_measure_text(suffix);
 
+            // The selection fill spans the full input box height
+            // (`rect.height`, `Metrics::row_h`), not just the text line
+            // height — the same "highlight the whole control row" shape a
+            // native text editor's selection uses.
             surface.surface_fill_rect(
-                Rect::new(text_x + pw, rect.y, sw.max(1.0), m.lh),
+                Rect::new(text_x + pw, rect.y, sw.max(1.0), rect.height),
                 theme.selection_bg,
             );
             surface.surface_draw_text_run(
-                Rect::new(text_x, rect.y, pw, m.lh),
+                Rect::new(text_x, text_y, pw, m.lh),
                 prefix,
                 theme.foreground,
             );
             surface.surface_draw_text_run(
-                Rect::new(text_x + pw, rect.y, sw, m.lh),
+                Rect::new(text_x + pw, text_y, sw, m.lh),
                 selected,
                 theme.foreground,
             );
             surface.surface_draw_text_run(
-                Rect::new(text_x + pw + sw, rect.y, suw, m.lh),
+                Rect::new(text_x + pw + sw, text_y, suw, m.lh),
                 suffix,
                 theme.foreground,
             );
@@ -620,11 +656,16 @@ mod native_surface_paint {
         }
 
         // Cursor: a 2-device-unit-wide bar at the char offset, inset 2
-        // top/bottom — same shape all three deleted copies drew.
+        // top/bottom within the full input box height.
         let cursor_b = crate::text_util::char_to_byte_idx(text, cursor);
         let (cursor_px, _) = surface.surface_measure_text(&text[..cursor_b]);
         surface.surface_fill_rect(
-            Rect::new(text_x + cursor_px, rect.y + 2.0, 2.0, (m.lh - 4.0).max(1.0)),
+            Rect::new(
+                text_x + cursor_px,
+                rect.y + 2.0,
+                2.0,
+                (rect.height - 4.0).max(1.0),
+            ),
             theme.foreground,
         );
     }
@@ -642,9 +683,22 @@ mod native_surface_paint {
         let cw = surface.surface_char_width().max(1.0);
         let lh = surface.surface_line_height().max(1.0);
 
+        // Row pitch/box height from `Style::control_height` (26px by
+        // default) — the same metric `ButtonMetrics::resolve` and
+        // `TextInputMetrics::resolve` read a `Button`/`TextInput`'s own
+        // box height from — floored at `lh` so an unusually tall chrome
+        // font is never clipped. `pad` (`Style::padding`, 8px by default)
+        // is the inner spacing between the popup's own border and its
+        // content, the same token `Toast`/`Tooltip`/`ContextMenu`/
+        // `Palette`/`Dialog` already reserve, replacing this module's
+        // previous one-`cw`/one-`lh` ad hoc inset.
+        let style = Style::default();
+        let row_h = style.control_height.max(lh);
+        let pad = style.padding;
+
         let popup_w = panel.panel_width as f32 * cw;
         let row_count = if panel.show_replace { 2.0 } else { 1.0 };
-        let popup_h = (row_count + 2.0) * lh;
+        let popup_h = row_count * row_h + 2.0 * pad;
 
         let gb = &panel.group_bounds;
         let popup_x = ((gb.x + gb.width) - popup_w - 10.0).max(gb.x);
@@ -657,8 +711,9 @@ mod native_surface_paint {
         let m = Metrics {
             cw,
             lh,
-            content_x: popup_x + cw,
-            content_y: popup_y + lh,
+            row_h,
+            content_x: popup_x + pad,
+            content_y: popup_y + pad,
         };
 
         // Positions derived from neighbouring hit regions, not a hit
@@ -964,6 +1019,68 @@ mod native_surface_paint {
                     .any(|(_, c, w)| *c == theme.separator && *w == 1.0),
                 "expected a 1.0-wide separator stroke for the popup border, strokes were {:?}",
                 surface.strokes,
+            );
+        }
+
+        /// The find input's own box (the `theme.background` fill
+        /// `paint_input` draws before its border stroke) is exactly
+        /// [`Style::control_height`] (26px) tall, not the backend's raw
+        /// `surface_line_height()` (16.0 on this `RecordingSurface`) —
+        /// the same "standard single-line control" height `Button` and
+        /// `TextInput` size their own boxes from.
+        #[test]
+        fn find_input_box_is_control_height_tall() {
+            let panel = sample_panel("needle", 6, None);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &mut surface, &theme);
+
+            let expected_h = Style::default().control_height;
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *c == theme.background && (r.height - expected_h).abs() < 0.01),
+                "expected the find input's background fill to be {expected_h}px tall \
+                 (Style::control_height), fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// Toggle buttons are laid out one `Style::control_height`-tall
+        /// row apart from the find input (row 0) to the replace row
+        /// (row 1), not one raw `surface_line_height()` apart — so the
+        /// replace row's own boxes line up with the taller find-row
+        /// boxes instead of overlapping them.
+        #[test]
+        fn replace_row_is_offset_by_control_height_not_line_height() {
+            let mut panel = sample_panel("needle", 6, None);
+            panel.show_replace = true;
+            let (hit_regions, _input_width) = compute_hit_regions(50, true, "1 of 3", 2, 2);
+            panel.hit_regions = hit_regions;
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &mut surface, &theme);
+
+            let control_height = Style::default().control_height;
+            let find_row_y = surface
+                .fills
+                .iter()
+                .find(|(_, c)| *c == theme.background)
+                .map(|(r, _)| r.y)
+                .expect("find input background fill recorded");
+            let replace_row_y = surface
+                .fills
+                .iter()
+                .filter(|(_, c)| *c == theme.background)
+                .map(|(r, _)| r.y)
+                .find(|y| (*y - find_row_y).abs() > 0.01)
+                .expect("replace input background fill recorded at a distinct row");
+
+            assert!(
+                ((replace_row_y - find_row_y) - control_height).abs() < 0.01,
+                "expected the replace row to sit {control_height}px below the find row, \
+                 found find_row_y={find_row_y}, replace_row_y={replace_row_y}",
             );
         }
 
