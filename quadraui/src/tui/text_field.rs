@@ -44,7 +44,7 @@ pub fn draw_text_field(
     }
 
     let y = rect.y;
-    let row_bg = qc(theme.tab_bar_bg);
+    let row_bg = qc(theme.input_bg);
     let field_fg = qc(theme.foreground);
     let dim_fg = qc(theme.muted_fg);
     let bracket_fg = if tf.has_focus {
@@ -185,7 +185,15 @@ pub(crate) fn draw_text_row_cells(
                 char_idx += 1;
             }
             if char_idx >= skip_chars {
-                let rel = char_idx - skip_chars;
+                // Bound `rel` by the same text-column budget the visible
+                // text loop above uses (`max_cols`). `Form`'s row (which
+                // always passes `skip_chars = 0`) truncates rather than
+                // scrolls, so a cursor sitting past the truncated window
+                // would otherwise paint the caret outside the field's
+                // brackets; `TextField`'s own scrolling layout already
+                // guarantees `rel <= max_cols` here, so the clamp is a
+                // no-op for it.
+                let rel = (char_idx - skip_chars).min(max_cols);
                 let cursor_col = text_col + rel as u16;
                 if cursor_col < right_bound {
                     let ch = shown.chars().nth(char_idx).unwrap_or(' ');

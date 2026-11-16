@@ -33,8 +33,8 @@
 //! Every primitive that has a `Backend::draw_*` method has a matching
 //! [`Surface`] variant (`Board`, `CommandCenter`, `DiffView`,
 //! `DropOverlay`, `Image`, `MessageList`, `Minimap`, `PipelineView`,
-//! `Progress`, `SidebarPanel`, `Spinner`, `SplitTree`, `TextInput`,
-//! `Toolbar` included). `Backend::draw_<name>` stays reachable directly
+//! `Progress`, `SidebarPanel`, `Spinner`, `SplitTree`, `TextField`,
+//! `TextInput`, `Toolbar` included). `Backend::draw_<name>` stays reachable directly
 //! for the reasons above; there is no primitive that is categorically
 //! unreachable through the declarative path.
 //!
@@ -207,6 +207,7 @@ use crate::primitives::status_bar::StatusBar;
 use crate::primitives::tab_bar::TabBar;
 use crate::primitives::terminal::Terminal;
 use crate::primitives::text_display::TextDisplay;
+use crate::primitives::text_field::TextField;
 use crate::primitives::text_input::TextInput;
 use crate::primitives::toast::ToastOverlay;
 use crate::primitives::toolbar::Toolbar;
@@ -419,6 +420,10 @@ pub enum Surface {
         rect: Rect,
         ti: TextInput,
     },
+    TextField {
+        rect: Rect,
+        tf: TextField,
+    },
     /// See [`Surface::SidebarPanel`]'s doc for why `hovered`/`pressed`
     /// are a pair of optional ids rather than an `InteractionState`.
     Toolbar {
@@ -496,6 +501,7 @@ pub enum FrameZone {
     Spinner { idx: usize },
     SplitTree { idx: usize },
     TextInput { idx: usize },
+    TextField { idx: usize },
     Toolbar { idx: usize },
     Empty,
 }
@@ -862,6 +868,9 @@ impl ScreenLayout {
                 Surface::TextInput { rect, ti } => {
                     backend.draw_text_input(*rect, ti);
                 }
+                Surface::TextField { rect, tf } => {
+                    backend.draw_text_field(*rect, tf);
+                }
                 Surface::Toolbar {
                     rect,
                     bar,
@@ -963,6 +972,7 @@ impl ScreenLayout {
                 Surface::Progress { rect, bar } if bar.cancellable => Some((bar.id, *rect)),
                 Surface::SidebarPanel { rect, panel, .. } => Some((panel.id, *rect)),
                 Surface::TextInput { rect, ti } => Some((ti.id, *rect)),
+                Surface::TextField { rect, tf } => Some((tf.id, *rect)),
                 Surface::Toolbar { rect, bar, .. } => Some((bar.id, *rect)),
                 Surface::Image { .. }
                 | Surface::Spinner { .. }
@@ -1037,6 +1047,7 @@ impl ScreenLayout {
             Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
             Surface::SplitTree { rect, .. } => (*rect, FrameZone::SplitTree { idx }),
             Surface::TextInput { rect, .. } => (*rect, FrameZone::TextInput { idx }),
+            Surface::TextField { rect, .. } => (*rect, FrameZone::TextField { idx }),
             Surface::Toolbar { rect, .. } => (*rect, FrameZone::Toolbar { idx }),
         }
     }
@@ -1104,6 +1115,7 @@ pub enum OwnedContent {
     Spinner(Spinner),
     SplitTree(SplitTree),
     TextInput(TextInput),
+    TextField(TextField),
     Toolbar(Toolbar),
     /// No content captured — the source [`Surface`] was [`Surface::DropOverlay`].
     DropOverlay,
@@ -1209,6 +1221,9 @@ impl OwnedContent {
             OwnedContent::TextInput(ti) => {
                 backend.draw_text_input(rect, ti);
             }
+            OwnedContent::TextField(tf) => {
+                backend.draw_text_field(rect, tf);
+            }
             OwnedContent::Toolbar(bar) => {
                 let interaction = crate::interaction::InteractionState::from_parts(None, None);
                 backend.draw_toolbar_interactive(rect, bar, &interaction);
@@ -1269,6 +1284,7 @@ impl OwnedContent {
             OwnedContent::Spinner(_) => FrameZone::Spinner { idx },
             OwnedContent::SplitTree(_) => FrameZone::SplitTree { idx },
             OwnedContent::TextInput(_) => FrameZone::TextInput { idx },
+            OwnedContent::TextField(_) => FrameZone::TextField { idx },
             OwnedContent::Toolbar(_) => FrameZone::Toolbar { idx },
             OwnedContent::DropOverlay => FrameZone::DropOverlay { idx },
             OwnedContent::FindReplace => FrameZone::FindReplace { idx },
@@ -1514,6 +1530,9 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::SplitTree { rect, tree } => (*rect, None, OwnedContent::SplitTree(tree.clone())),
         Surface::TextInput { rect, ti } => {
             (*rect, Some(ti.id), OwnedContent::TextInput(ti.clone()))
+        }
+        Surface::TextField { rect, tf } => {
+            (*rect, Some(tf.id), OwnedContent::TextField(tf.clone()))
         }
         Surface::Toolbar { rect, bar, .. } => {
             (*rect, Some(bar.id), OwnedContent::Toolbar(bar.clone()))
@@ -2335,6 +2354,34 @@ mod tests {
              own focus story via ModalStack::top_focusable"
         );
         assert_eq!(stops[0].0.as_str(), "ed");
+    }
+
+    /// `Surface::TextField` dispatches to `Backend::draw_text_field`,
+    /// produces a `FrameZone::TextField` hit region at the field's own
+    /// rect, and is a Tab stop — the same `Surface`/`FrameZone`/
+    /// `zone_for`/`tab_stops` wiring every other focusable primitive
+    /// gets, so a `TextField` dropped into a `ScreenLayout` (a Finder-
+    /// style search box above a list, say) is reachable the same way.
+    #[test]
+    fn surface_text_field_dispatches_to_draw_text_field_and_is_a_tab_stop() {
+        use crate::testing::RecordingBackend;
+        use crate::TextField;
+
+        let rect = Rect::new(0.0, 0.0, 10.0, 1.0);
+        let field = TextField::new(WidgetId::new("search")).with_value("hi");
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::TextField { rect, tf: field });
+
+        let mut backend = RecordingBackend::new();
+        let hit_map = layout.draw(&mut backend);
+        assert!(backend.calls.contains(&"draw_text_field"));
+        assert_eq!(hit_map.zones()[0].0, rect);
+        assert_eq!(hit_map.zones()[0].1, FrameZone::TextField { idx: 0 });
+
+        let stops = layout.tab_stops();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].0.as_str(), "search");
     }
 
     /// `FrameHitMap` is serializable: round-trips through JSON

@@ -4264,6 +4264,49 @@ impl Backend for WinBackend {
         )
     }
 
+    /// Stroked-box framed field, same shared painter as `GtkBackend`/
+    /// `MacBackend` — see
+    /// [`crate::primitives::text_field::paint_text_field_gui`]'s doc.
+    /// Mirrors [`Self::draw_text_input`]'s "no surface yet" fallback
+    /// posture.
+    fn draw_text_field(
+        &mut self,
+        rect: Rect,
+        tf: &crate::primitives::text_field::TextField,
+    ) -> crate::primitives::text_field::TextFieldLayout {
+        #[cfg(target_os = "windows")]
+        {
+            let measure = crate::primitives::text_field::TextFieldMeasure::new(
+                self.current_char_width,
+                self.current_line_height,
+            );
+            let layout = tf.layout(rect, measure);
+            if self.surface.is_some() && (self.chrome_dwrite.is_some() || self.dwrite.is_some()) {
+                let theme = self.current_theme;
+                let nerd_fonts_enabled = self.nerd_fonts_enabled();
+                crate::primitives::text_field::paint_text_field_gui(
+                    self,
+                    rect,
+                    &layout,
+                    tf,
+                    &theme,
+                    nerd_fonts_enabled,
+                );
+            }
+            layout
+        }
+        // Pure geometry, same "non-Windows type-check" posture as
+        // `draw_text_input`'s own `#[cfg(not(target_os = "windows"))]` arm.
+        #[cfg(not(target_os = "windows"))]
+        tf.layout(
+            rect,
+            crate::primitives::text_field::TextFieldMeasure::new(
+                self.current_char_width,
+                self.current_line_height,
+            ),
+        )
+    }
+
     /// Real Direct2D/DirectWrite rasteriser via `win::tooltip` once a
     /// surface is attached. Renders `TooltipChrome::default()` — see
     /// [`Self::draw_tooltip_with_chrome`] for the full-chrome entry point.

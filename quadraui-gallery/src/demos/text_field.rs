@@ -5,9 +5,7 @@
 //! hand-rolled insert/backspace/cursor logic — the same discipline
 //! `TextInputDemo` follows for the multi-line primitive.
 
-use quadraui::{
-    Backend, BackendCaps, EditOp, Icon, Reaction, Rect, TextField, TextFieldHit, UiEvent, WidgetId,
-};
+use quadraui::{Backend, EditOp, Icon, Reaction, Rect, TextField, TextFieldHit, UiEvent, WidgetId};
 
 use crate::demo::{extract_region, Demo};
 
@@ -131,10 +129,6 @@ impl Demo for TextFieldDemo {
 
     fn data(&self, variant: usize) -> serde_json::Value {
         serde_json::to_value(self.field(variant)).unwrap_or(serde_json::Value::Null)
-    }
-
-    fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
-        None
     }
 }
 // gallery:end

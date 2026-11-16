@@ -651,28 +651,26 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // `text_field_layout` is `TextField::layout` applied to
     // `char_width()`/`line_height()` — a pure fn of those two accessors
     // plus `TextField`'s own state, same shape as `terminal_layout`/
-    // `editor_layout` above. `TuiBackend` overrides `draw_text_field`
-    // itself (the real one-row `[ icon value × ]` painter) but shares
-    // this default `_layout` body; GTK/macOS/Win take the same default
-    // for both methods until quadraui#2609 gives each its own dedicated
-    // single-row painter (quadraui#2590).
+    // `editor_layout` above. Every backend overrides `draw_text_field`
+    // itself (TUI's one-row `[ icon value × ]` painter; GTK/macOS/Win's
+    // shared stroked-box painter, `primitives::text_field::
+    // paint_text_field_gui`). GTK and Win paint with the same
+    // `current_char_width()`/`current_line_height()` this default already
+    // resolves, so neither needs its own `text_field_layout` override;
+    // `MacBackend` does override it (see that method's doc) because its
+    // `draw_text_field` paints with the separate `chrome_*` metrics
+    // instead.
     (
         "gtk",
         "text_field_layout",
-        "pure fn of char_width()/line_height() + TextField's own state — see quadraui#2590's \
-         Backend::draw_text_field doc",
-    ),
-    (
-        "macos",
-        "text_field_layout",
-        "pure fn of char_width()/line_height() + TextField's own state — see quadraui#2590's \
-         Backend::draw_text_field doc",
+        "pure fn of char_width()/line_height() + TextField's own state — paints with the same \
+         metrics, so the default already agrees with draw_text_field's own layout",
     ),
     (
         "win",
         "text_field_layout",
-        "pure fn of char_width()/line_height() + TextField's own state — see quadraui#2590's \
-         Backend::draw_text_field doc",
+        "pure fn of char_width()/line_height() + TextField's own state — paints with the same \
+         metrics, so the default already agrees with draw_text_field's own layout",
     ),
     // `canvas_layout` is `CanvasLayout { bounds: rect }` — a pure function of `rect`
     // alone, with no backend-specific metric. All four backends take the default.

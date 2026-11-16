@@ -1365,6 +1365,11 @@ impl crate::Backend for RecordingBackend {
     fn text_input_layout(&self, r: Rect, ti: &crate::TextInput) -> crate::TextInputLayout {
         ti.layout(r, crate::TextInputMeasure::from_metrics(&self.measure()))
     }
+    /// Real layout, no paint — same shape as `draw_text_input` above.
+    fn draw_text_field(&mut self, r: Rect, tf: &crate::TextField) -> crate::TextFieldLayout {
+        self.record("draw_text_field");
+        tf.layout(r, crate::TextFieldMeasure::from_metrics(&self.measure()))
+    }
     fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {
         self.record("draw_number_input");
     }

@@ -3741,6 +3741,52 @@ impl Backend for MacBackend {
             self.chrome_char_width as f32,
         )
     }
+    /// Stroked-box framed field: the leading icon, value/placeholder/
+    /// selection/caret run and clear button paint through
+    /// [`crate::primitives::text_field::paint_text_field_gui`] — see
+    /// that fn's doc. `TextField` is chrome, same reasoning as
+    /// `draw_text_input` above, so this resolves the chrome metrics
+    /// too.
+    fn draw_text_field(
+        &mut self,
+        rect: Rect,
+        tf: &crate::primitives::text_field::TextField,
+    ) -> crate::primitives::text_field::TextFieldLayout {
+        debug_assert!(
+            !self.current_cg().is_null(),
+            "MacBackend::draw_text_field called outside enter_frame_scope",
+        );
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled();
+        let layout = self.text_field_layout(rect, tf);
+        crate::primitives::text_field::paint_text_field_gui(
+            self,
+            rect,
+            &layout,
+            tf,
+            &theme,
+            nerd_fonts_enabled,
+        );
+        layout
+    }
+    /// No-paint twin of `draw_text_field` above — must agree with what
+    /// that method painted, so it resolves the same chrome metrics
+    /// rather than the trait's default `self.measure()` (`current_*`,
+    /// not `chrome_*`). Same reasoning as `text_input_layout`'s own
+    /// override.
+    fn text_field_layout(
+        &self,
+        rect: Rect,
+        tf: &crate::primitives::text_field::TextField,
+    ) -> crate::primitives::text_field::TextFieldLayout {
+        tf.layout(
+            rect,
+            crate::primitives::text_field::TextFieldMeasure::new(
+                self.chrome_char_width as f32,
+                self.chrome_line_height as f32,
+            ),
+        )
+    }
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
         self.draw_tooltip_with_chrome(tooltip, layout, &crate::TooltipChrome::default());
     }

@@ -768,6 +768,13 @@ fn draw_field_text_input(
         if bracket_col < area.width as usize {
             set_cell(buf, area.x + bracket_col as u16, y, '[', dim_fg, row_bg);
         }
+        // Draw the closing bracket *before* the text/caret cells below:
+        // a cursor sitting at the truncation edge paints its caret in
+        // the same cell as this bracket, and the caret must win so it
+        // stays visible.
+        let closing_col =
+            (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
+        set_cell(buf, area.x + closing_col as u16, y, ']', dim_fg, row_bg);
         let max_cols = control_width.saturating_sub(2);
         crate::tui::text_field::draw_text_row_cells(
             buf,
@@ -784,9 +791,6 @@ fn draw_field_text_input(
             dim_fg,
             row_bg,
         );
-        let closing_col =
-            (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
-        set_cell(buf, area.x + closing_col as u16, y, ']', dim_fg, row_bg);
     }
 }
 
@@ -1735,7 +1739,7 @@ pub fn draw_settings_chrome(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::form::{FieldKind, Form, FormField};
+    use crate::primitives::form::{ControlWidth, FieldKind, Form, FormField};
     use crate::types::{StyledSpan, StyledText, WidgetId};
 
     fn label(text: &str) -> StyledText {
@@ -2097,6 +2101,61 @@ mod tests {
             "expected full-width '[test...' but got: {row:?}"
         );
         assert_eq!(cell_char(&buf, 29, 0), ']', "expected ']' at right edge");
+    }
+
+    /// A cursor past the row's truncated text window lands exactly on
+    /// the closing-bracket column; the caret must win that cell rather
+    /// than being overwritten by the plain `]` glyph.
+    #[test]
+    fn text_input_caret_at_truncation_edge_stays_inside_brackets() {
+        let f = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("q"),
+                label: label("Q"),
+                kind: FieldKind::TextInput {
+                    value: "01234567890123456789".into(),
+                    placeholder: "".into(),
+                    cursor: Some(20),
+                    selection_anchor: None,
+                },
+                disabled: false,
+                validation: None,
+                hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: Some(ControlWidth::Fixed(10.0)),
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: Some(WidgetId::new("q")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let theme = Theme::default();
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+
+        // label "Q" (width 1) -> control_start = 3; control_width = 10
+        // -> closing_col = control_start + control_width - 1 = 12. The
+        // cursor sits at the end of a 20-char value truncated to the
+        // field's 8-char text window, so it clamps to that same column.
+        let cell = &buf[(12u16, 0u16)];
+        assert_ne!(
+            cell.symbol(),
+            "]",
+            "caret must not be overwritten by the closing bracket"
+        );
+        assert_eq!(cell.bg, ratatui_color(theme.header_fg));
+        assert_eq!(cell.fg, ratatui_color(theme.selected_bg));
     }
 
     // ── ToggleGroup paint↔click round-trip ──────────────────────────────

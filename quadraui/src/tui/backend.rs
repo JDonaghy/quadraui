@@ -5479,6 +5479,16 @@ mod tests {
                 crate::primitives::text_input::TextInputMeasure::new(1.0, 1.0),
             )
         }
+        fn draw_text_field(
+            &mut self,
+            r: QRect,
+            tf: &crate::primitives::text_field::TextField,
+        ) -> crate::primitives::text_field::TextFieldLayout {
+            tf.layout(
+                r,
+                crate::primitives::text_field::TextFieldMeasure::new(1.0, 1.0),
+            )
+        }
         fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {}
         fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
         fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}

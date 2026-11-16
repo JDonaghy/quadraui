@@ -306,6 +306,12 @@ test("insertExtra form with control_width and min_control_width renders without 
   assert.ok(app.screenContains("exactwidth"));
 });
 
+test("insertExtra text_field renders its value inside the bracket row", () => {
+  const app = new QuiApp(40, 20);
+  app.insertExtra("text_field", { id: "tf:1", value: "hello" });
+  assert.ok(app.screenContains("[hello"));
+});
+
 test("insertExtra with an unknown kind raises UnknownVariantError", () => {
   const app = new QuiApp(40, 20);
   assert.throws(
