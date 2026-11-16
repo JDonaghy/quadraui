@@ -9270,19 +9270,19 @@ mod tests {
         // never painted on any host whose font measures differently.
         let cw = backend.char_width().max(1.0);
         let lh = backend.line_height().max(1.0);
-        let popup_w = panel.panel_width as f32 * cw;
-        // `show_replace` is false, so one input row + 2 rows of chrome.
-        let popup_h = 3.0 * lh;
-        let popup_x = (panel.group_bounds.x + panel.group_bounds.width - popup_w - 10.0)
-            .max(panel.group_bounds.x);
-        let popup_y = panel.group_bounds.y + 2.0;
+        // Same geometry `native_surface_paint::paint` resolves at paint
+        // time, via the shared `FindReplaceMetrics` seam.
+        let style = crate::style::Style::default();
+        let metrics =
+            crate::primitives::find_replace::FindReplaceMetrics::resolve(&panel, &style, cw, lh);
+        let popup = metrics.popup_rect;
         assert!(
-            popup_w > 8.0
-                && popup_h > 8.0
-                && popup_x + popup_w <= W as f32
-                && popup_y + popup_h <= H as f32,
-            "test fixture bug: popup {popup_w}x{popup_h} at ({popup_x}, {popup_y}) (cell \
-             {cw}x{lh}) does not fit the {W}x{H} probe surface",
+            popup.width > 8.0
+                && popup.height > 8.0
+                && popup.x + popup.width <= W as f32
+                && popup.y + popup.height <= H as f32,
+            "test fixture bug: popup {popup:?} (cell {cw}x{lh}) does not fit the \
+             {W}x{H} probe surface",
         );
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
@@ -9290,12 +9290,12 @@ mod tests {
         backend.end_frame();
 
         // 4 DIPs inside the popup's bottom-right corner: past the border
-        // stroke, and below the single (`show_replace == false`) row of
-        // hit regions, which all sit at `row == 0` — so nothing but the
-        // background fill can have painted here.
+        // stroke and inside the bottom padding below the single
+        // (`show_replace == false`) row of hit regions, so nothing but
+        // the background fill can have painted here.
         let px = surface.pixel_at(
-            (popup_x + popup_w - 4.0) as u32,
-            (popup_y + popup_h - 4.0) as u32,
+            (popup.x + popup.width - 4.0) as u32,
+            (popup.y + popup.height - 4.0) as u32,
         );
         assert_eq!(
             (px.r, px.g, px.b),
