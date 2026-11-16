@@ -1237,7 +1237,7 @@ pub(crate) mod native_surface_paint {
 
     /// Header row: title + sort glyph per column, then separators.
     #[allow(clippy::too_many_arguments)]
-    fn paint_header(
+    pub(crate) fn paint_header(
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         table: &DataTable,
@@ -1331,7 +1331,7 @@ pub(crate) mod native_surface_paint {
 
     /// Default body-cell text painter — ellipsis-truncated, muted or
     /// per-span coloured — [`paint_row`]'s `cell_hook` stands in for.
-    fn paint_cell(
+    pub(crate) fn paint_cell(
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         cell: Option<&StyledText>,
@@ -1418,12 +1418,12 @@ pub(crate) mod native_surface_paint {
     /// decline (`false`) to fall through to [`paint_cell`]. `TreeTable`
     /// uses this to paint column 0 while every other column renders as
     /// [`paint_cell`] always has.
-    type CellPaintHook<'a> = dyn FnMut(&mut dyn PaintSurface, usize, Rect) -> bool + 'a;
+    pub(crate) type CellPaintHook<'a> = dyn FnMut(&mut dyn PaintSurface, usize, Rect) -> bool + 'a;
 
     /// Body row: zebra stripe, selection/hover tint, every column's cell
     /// (via `cell_hook` when present, else [`paint_cell`]), separators.
     #[allow(clippy::too_many_arguments)]
-    fn paint_row(
+    pub(crate) fn paint_row(
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         table: &DataTable,
@@ -1551,18 +1551,13 @@ pub(crate) mod native_surface_paint {
 
         // ── Body ─────────────────────────────────────────────────────────
         // `scroll_px` wins over `scroll_offset` when set (see
-        // `DataTable::effective_scroll_offset`); `scroll_sub_row_px`
-        // pairs with it to shift the body up by the sub-row remainder,
-        // revealing one more partially clipped row at the bottom —
-        // `scroll_px: None` always resolves `sub_px` to `0.0`, so
-        // `body_y`/`visible` collapse back to the pre-existing values.
-        // Deliberately not `row_stack::layout_row_stack`: its
-        // `scroll_px: None` branch clamps via `clamp_scroll_offset`,
-        // while `effective_scroll_offset`'s `None` branch reads
-        // `table.scroll_offset` raw so a stale out-of-range offset
-        // paints an empty window instead of snapping to the last row
-        // (see that method's doc). Routing this loop through
-        // `layout_row_stack` would silently change which rows render.
+        // `DataTable::effective_scroll_offset`); `scroll_px: None` always
+        // resolves `sub_px` to `0.0`, collapsing `body_y`/`visible` back
+        // to the pre-existing values. Not `row_stack::layout_row_stack`:
+        // its `scroll_px: None` branch clamps via `clamp_scroll_offset`,
+        // while `effective_scroll_offset` reads a stale offset raw
+        // (see its doc) — routing through `layout_row_stack` would
+        // change which rows render.
         let scroll_offset = table.effective_scroll_offset(line_height, scroll_px);
         let sub_px = table.scroll_sub_row_px(line_height, scroll_px);
         let body_y = rect.y + header_height - sub_px;

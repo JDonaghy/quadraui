@@ -15,7 +15,7 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 use super::{ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::data_table::{
     ColumnAlign, ColumnMeasure, DataRow, DataTable, DataTableGlyphs, DataTableLayout,
-    DataTablePaintState, SortDirection,
+    DataTablePaintState, ResolvedColumn, SortDirection,
 };
 use crate::theme::Theme;
 
@@ -125,25 +125,58 @@ pub fn draw_data_table_with_state(
     )
 }
 
-/// Header row: background fill, title + sort glyph per column,
-/// separators.
-#[allow(clippy::too_many_arguments)]
-fn draw_header(
-    buf: &mut Buffer,
-    area: Rect,
-    ox: u16,
-    header_y: u16,
-    table: &DataTable,
-    layout: &DataTableLayout,
+/// Column screen x + cell-rounded width after `h_off` scroll, or
+/// `None` when clipped fully outside `[inner_x0, inner_x1)` or zero-width.
+fn column_screen_bounds(
+    rc: &ResolvedColumn,
     inner_x0: i32,
     inner_x1: i32,
     h_off: i16,
-    header_fg: RatatuiColor,
-    header_bg: RatatuiColor,
-    sep_fg: RatatuiColor,
+) -> Option<(i32, u16)> {
+    let x = inner_x0 + rc.x.round() as i32 - h_off as i32;
+    let w = rc.width.round() as u16;
+    if x + w as i32 <= inner_x0 || x >= inner_x1 || w == 0 {
+        return None;
+    }
+    Some((x, w))
+}
+
+/// Shared paint context for [`draw_header`] and [`draw_row`]: the table,
+/// its resolved layout and theme, the inset this frame paints at, and
+/// the x-bounds + rounded `h_scroll` every column position clips to.
+#[derive(Clone, Copy)]
+pub(crate) struct RowPaintCtx<'a> {
+    pub table: &'a DataTable,
+    pub layout: &'a DataTableLayout,
+    pub theme: &'a Theme,
+    pub ox: u16,
+    pub inner_x0: i32,
+    pub inner_x1: i32,
+    pub h_off: i16,
+}
+
+/// Header row: background fill, title + sort glyph per column,
+/// separators.
+pub(crate) fn draw_header(
+    buf: &mut Buffer,
+    area: Rect,
+    header_y: u16,
+    ctx: &RowPaintCtx<'_>,
     glyphs: Option<&DataTableGlyphs>,
     nerd_fonts_enabled: bool,
 ) {
+    let RowPaintCtx {
+        table,
+        layout,
+        theme,
+        ox,
+        inner_x0,
+        inner_x1,
+        h_off,
+    } = *ctx;
+    let header_fg = ratatui_color(theme.foreground);
+    let header_bg = ratatui_color(theme.tab_bar_bg);
+    let sep_fg = ratatui_color(theme.separator);
     for x in ox..area.width.saturating_sub(ox) {
         set_cell(buf, area.x + x, header_y, ' ', header_fg, header_bg);
     }
@@ -153,15 +186,9 @@ fn draw_header(
             break;
         }
         let col = &table.columns[col_idx];
-        let col_x_raw = inner_x0 + rc.x.round() as i32 - h_off as i32;
-        let col_x_end = col_x_raw + rc.width.round() as i32;
-        if col_x_end <= inner_x0 || col_x_raw >= inner_x1 {
+        let Some((col_x_raw, col_w)) = column_screen_bounds(rc, inner_x0, inner_x1, h_off) else {
             continue;
-        }
-        let col_w = rc.width.round() as u16;
-        if col_w == 0 {
-            continue;
-        }
+        };
 
         // Column separator on the right edge (skip last column).
         if col_idx + 1 < table.columns.len() {
@@ -217,13 +244,13 @@ fn draw_header(
 /// return `true`, or decline (`false`) to fall through to [`draw_cell`].
 /// `TreeTable` uses this to paint column 0 while every other column
 /// renders as [`draw_cell`] always has.
-type CellPaintHook<'a> = dyn FnMut(&mut Buffer, usize, Rect) -> bool + 'a;
+pub(crate) type CellPaintHook<'a> = dyn FnMut(&mut Buffer, usize, Rect) -> bool + 'a;
 
 /// Default body-cell text painter — ellipsis-truncated by display
 /// width, muted or per-span coloured — [`draw_row`]'s `cell_hook`
 /// stands in for.
 #[allow(clippy::too_many_arguments)]
-fn draw_cell(
+pub(crate) fn draw_cell(
     buf: &mut Buffer,
     table: &DataTable,
     row: &DataRow,
@@ -333,31 +360,31 @@ fn draw_cell(
 /// column's cell (via `cell_hook` when present, else [`draw_cell`]),
 /// then the column-divider separators.
 #[allow(clippy::too_many_arguments)]
-fn draw_row(
+pub(crate) fn draw_row(
     buf: &mut Buffer,
     area: Rect,
-    ox: u16,
     y: u16,
-    table: &DataTable,
-    layout: &DataTableLayout,
-    inner_x0: i32,
-    inner_x1: i32,
-    h_off: i16,
+    ctx: &RowPaintCtx<'_>,
     abs_idx: usize,
     hovered_idx: Option<usize>,
     striped: bool,
-    body_fg: RatatuiColor,
-    body_bg: RatatuiColor,
-    sel_bg: RatatuiColor,
-    tab_bar_bg: RatatuiColor,
-    alt_bg: RatatuiColor,
-    sep_fg: RatatuiColor,
-    muted_fg: RatatuiColor,
     mut cell_hook: Option<&mut CellPaintHook<'_>>,
 ) {
+    let RowPaintCtx {
+        table,
+        layout,
+        theme,
+        ox,
+        inner_x0,
+        inner_x1,
+        h_off,
+    } = *ctx;
     let row = &table.rows[abs_idx];
     let is_selected = table.selected_idx == Some(abs_idx);
     let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
+    let body_fg = ratatui_color(theme.foreground);
+    let sep_fg = ratatui_color(theme.separator);
+    let muted_fg = ratatui_color(theme.muted_fg);
 
     // Zebra stripe on the absolute row index (not the visible on-screen
     // position), so a given row's shading survives scrolling, the same
@@ -368,13 +395,13 @@ fn draw_row(
     // `tui::color::quantize`), which is how a low-colour terminal drops
     // the stripe for free.
     let (row_fg, row_bg) = if is_selected {
-        (body_fg, sel_bg)
+        (body_fg, ratatui_color(theme.selection_bg))
     } else if is_hovered {
-        (body_fg, tab_bar_bg)
+        (body_fg, ratatui_color(theme.tab_bar_bg))
     } else if striped && abs_idx % 2 == 1 {
-        (body_fg, alt_bg)
+        (body_fg, ratatui_color(theme.row_alt_bg(theme.background)))
     } else {
-        (body_fg, body_bg)
+        (body_fg, ratatui_color(theme.background))
     };
 
     // Fill row background
@@ -383,15 +410,9 @@ fn draw_row(
     }
 
     for (col_idx, rc) in layout.columns.iter().enumerate() {
-        let col_x_raw = inner_x0 + rc.x.round() as i32 - h_off as i32;
-        let col_x_end = col_x_raw + rc.width.round() as i32;
-        if col_x_end <= inner_x0 || col_x_raw >= inner_x1 {
+        let Some((col_x_raw, col_w)) = column_screen_bounds(rc, inner_x0, inner_x1, h_off) else {
             continue;
-        }
-        let col_w = rc.width.round() as u16;
-        if col_w == 0 {
-            continue;
-        }
+        };
 
         // Column separator on the right edge (skip last column) — drawn
         // regardless of whether this cell has text, mirroring the
@@ -405,7 +426,7 @@ fn draw_row(
 
         if let Some(hook) = cell_hook.as_mut() {
             let visible_x0 = col_x_raw.max(inner_x0);
-            let visible_x1 = col_x_end.min(inner_x1);
+            let visible_x1 = (col_x_raw + col_w as i32).min(inner_x1);
             let cell_rect = Rect::new(
                 visible_x0 as u16,
                 y,
@@ -443,16 +464,18 @@ fn draw_data_table_inner(
     }
 
     let header_bg = ratatui_color(theme.tab_bar_bg);
-    let header_fg = ratatui_color(theme.foreground);
-    let body_bg = ratatui_color(theme.background);
-    let body_fg = ratatui_color(theme.foreground);
-    let sel_bg = ratatui_color(theme.selection_bg);
-    let muted_fg = ratatui_color(theme.muted_fg);
+    let sep_fg = ratatui_color(theme.separator);
 
     // 1-cell inset on every edge when bordered (matches `layout.inset_*`).
     let (ox, oy): (u16, u16) = if table.bordered { (1, 1) } else { (0, 0) };
     if table.bordered {
-        draw_data_table_border(buf, area, ratatui_color(theme.border_fg), body_fg, body_bg);
+        draw_data_table_border(
+            buf,
+            area,
+            ratatui_color(theme.border_fg),
+            ratatui_color(theme.foreground),
+            ratatui_color(theme.background),
+        );
     }
     // Interior x bounds (right exclusive) all content clips to.
     let inner_x0 = area.x as i32 + ox as i32;
@@ -460,75 +483,39 @@ fn draw_data_table_inner(
 
     // ── Header row ────────────────────────────────────────────────────
     let header_y = area.y + oy;
-    let sep_fg = ratatui_color(theme.separator);
     // Same rounded value now carried on `layout.h_scroll` — kept as a
     // local `i16` here since every paint-position computation below
     // works in signed cell-offset arithmetic.
     let h_off = layout.h_scroll as i16;
-
-    draw_header(
-        buf,
-        area,
-        ox,
-        header_y,
+    let ctx = RowPaintCtx {
         table,
-        &layout,
+        layout: &layout,
+        theme,
+        ox,
         inner_x0,
         inner_x1,
         h_off,
-        header_fg,
-        header_bg,
-        sep_fg,
-        glyphs,
-        nerd_fonts_enabled,
-    );
+    };
+
+    draw_header(buf, area, header_y, &ctx, glyphs, nerd_fonts_enabled);
 
     // ── Body rows ─────────────────────────────────────────────────────
     // `scroll_px` wins over `scroll_offset` when set, quantised to a
-    // whole row here — TUI is cell-granular, so the sub-row remainder
-    // `scroll_sub_row_px` pairs with `effective_scroll_offset` for a
-    // pixel-precise painter is simply never read on this backend.
-    //
-    // Deliberately not `row_stack::layout_row_stack`: its `scroll_px:
-    // None` branch clamps via `clamp_scroll_offset`, while
-    // `effective_scroll_offset`'s `None` branch reads `table.scroll_offset`
-    // raw so a stale out-of-range offset paints an empty window instead
-    // of snapping to the last row (see that method's doc). Routing this
-    // loop through `layout_row_stack` would silently change which rows
-    // render.
+    // whole row — TUI never reads the sub-row remainder. Not
+    // `row_stack::layout_row_stack`: its `scroll_px: None` branch clamps
+    // via `clamp_scroll_offset` while `effective_scroll_offset` reads a
+    // stale offset raw (see its doc), so routing through it would
+    // change which rows render.
     let scroll_offset = table.effective_scroll_offset(layout.row_height, scroll_px);
     let body_y = area.y + oy + 1;
     let visible = layout
         .visible_rows
         .min(table.rows.len().saturating_sub(scroll_offset));
 
-    let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
-    let tab_bar_bg = ratatui_color(theme.tab_bar_bg);
     for row_idx in 0..visible {
         let abs_idx = scroll_offset + row_idx;
         let y = body_y + row_idx as u16;
-        draw_row(
-            buf,
-            area,
-            ox,
-            y,
-            table,
-            &layout,
-            inner_x0,
-            inner_x1,
-            h_off,
-            abs_idx,
-            hovered_idx,
-            striped,
-            body_fg,
-            body_bg,
-            sel_bg,
-            tab_bar_bg,
-            alt_bg,
-            sep_fg,
-            muted_fg,
-            None,
-        );
+        draw_row(buf, area, y, &ctx, abs_idx, hovered_idx, striped, None);
     }
 
     // ── Scrollbar ──────────────────────────────────────────────────────
@@ -604,15 +591,13 @@ fn draw_data_table_inner(
                     _ => continue,
                 };
                 let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-                let col_x_raw = inner_x0 + rc.x.round() as i32 - h_off as i32;
-                let col_x_end = col_x_raw + rc.width.round() as i32;
-                if col_x_end <= inner_x0 || col_x_raw >= inner_x1 {
+                if full_text.is_empty() {
                     continue;
                 }
-                let col_w = rc.width.round() as u16;
-                if col_w == 0 || full_text.is_empty() {
+                let Some((col_x_raw, col_w)) = column_screen_bounds(rc, inner_x0, inner_x1, h_off)
+                else {
                     continue;
-                }
+                };
 
                 let align = table
                     .columns
@@ -1841,26 +1826,24 @@ mod tests {
                 false
             }
         };
+        let theme = Theme::default();
+        let ctx = RowPaintCtx {
+            table: &table,
+            layout: &layout,
+            theme: &theme,
+            ox: 0,
+            inner_x0: area.x as i32,
+            inner_x1: area.x as i32 + area.width as i32,
+            h_off: 0,
+        };
         draw_row(
             &mut buf,
             area,
-            0,
             area.y + 1,
-            &table,
-            &layout,
-            area.x as i32,
-            area.x as i32 + area.width as i32,
-            0,
+            &ctx,
             0,
             None,
             false,
-            RatatuiColor::Reset,
-            RatatuiColor::Reset,
-            RatatuiColor::Reset,
-            RatatuiColor::Reset,
-            RatatuiColor::Reset,
-            RatatuiColor::Reset,
-            RatatuiColor::Reset,
             Some(&mut hook),
         );
 
