@@ -87,15 +87,18 @@ impl KittyImageState {
 }
 
 /// Paint `image` for real through the Kitty graphics protocol: resolve
-/// [`Image::layout`] against `area` (clipped to whole cells), decode +
-/// downscale to that placement's pixel size (`cols * cell_px.0` ×
-/// `rows * cell_px.1`), fill the placed cells with Unicode placeholder
-/// content colored to carry this image's id, and queue transmit +
-/// placement bytes on `state.pending_writes` for an id not already live
-/// this session. Falls back to [`draw_image`] (and its
-/// [`ImagePaintResult::Unsupported`]) when there is nothing to place —
-/// a zero-size `area`/`cell_px`, a zero-size clipped placement, or a
-/// decode failure.
+/// [`Image::layout`] against `area` scaled into pixel space by
+/// `cell_px` (terminal cells aren't square, and `Image::intrinsic_size`
+/// is in pixels, so the fit math has to run in the same units), scale
+/// the result back down into cell units and clip to whole cells,
+/// decode and downscale to that placement's pixel size
+/// (`cols * cell_px.0` × `rows * cell_px.1`), fill the placed cells
+/// with Unicode placeholder content colored to carry this image's id,
+/// and queue transmit + placement bytes on `state.pending_writes` for
+/// an id not already live this session. Falls back to [`draw_image`]
+/// (and its [`ImagePaintResult::Unsupported`]) when there is nothing to
+/// place — a zero-size `area`/`cell_px`, a zero-size clipped placement,
+/// or a decode failure.
 #[cfg(feature = "tui-images")]
 pub(crate) fn draw_image_kitty(
     buf: &mut Buffer,
@@ -120,13 +123,25 @@ pub(crate) fn draw_image_kitty(
     let clip_y1 =
         (area.y as i32 + area.height as i32).min(buf_area.y as i32 + buf_area.height as i32);
 
-    let bounds = crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
+    // Resolve `Image::layout` in pixel space, not cell space:
+    // `Image::intrinsic_size` (and therefore the aspect-ratio math
+    // behind `ImageFit::Contain`/`Cover`/`None`) is in pixels, and
+    // terminal cells are not square — scaling `area` up by `cell_px`
+    // keeps the fit math correct, then the result is scaled back down
+    // into cell units before any cell-grid indexing happens.
+    let bounds_px = crate::event::Rect::new(
+        area.x as f32 * cell_px.0 as f32,
+        area.y as f32 * cell_px.1 as f32,
+        area.width as f32 * cell_px.0 as f32,
+        area.height as f32 * cell_px.1 as f32,
     );
-    let placed = image.layout(bounds).bounds;
+    let placed_px = image.layout(bounds_px).bounds;
+    let placed = crate::event::Rect::new(
+        placed_px.x / cell_px.0 as f32,
+        placed_px.y / cell_px.1 as f32,
+        placed_px.width / cell_px.0 as f32,
+        placed_px.height / cell_px.1 as f32,
+    );
     let x0 = (placed.x.round() as i32).max(clip_x0);
     let y0 = (placed.y.round() as i32).max(clip_y0);
     let x1 = ((placed.x + placed.width).round() as i32).min(clip_x1);
@@ -364,5 +379,89 @@ mod kitty_tests {
         let result = draw_image_kitty(&mut buf, area, &img, &theme, CELL_PX, &mut state);
 
         assert_eq!(result, ImagePaintResult::Unsupported);
+    }
+
+    #[test]
+    fn contain_resolves_in_pixel_space_against_non_square_cells() {
+        // 200x100 (2:1) source into a 20x10-cell rect on 8x16 cells: the
+        // bounds in pixels is 160x160 (square), so `Contain`'s
+        // aspect-preserving fit picks the width-limited scale
+        // (160/200 = 0.8) and letterboxes to 20 cols x 5 rows, not the
+        // whole 20x10 area a cell-unit (unconverted) layout would give.
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let mut state = KittyImageState::new();
+        let img = Image {
+            id: WidgetId::new("logo"),
+            source: ImageSource::Bytes(tiny_png_bytes()),
+            intrinsic_size: Some((200, 100)),
+            fit: ImageFit::Contain,
+            fallback_text: "[LOGO]".into(),
+        };
+
+        let result = draw_image_kitty(&mut buf, area, &img, &theme, CELL_PX, &mut state);
+
+        assert_eq!(result, ImagePaintResult::Painted);
+        let mut painted_rows = std::collections::BTreeSet::new();
+        let mut painted_cols = std::collections::BTreeSet::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if buf[(x, y)].symbol().starts_with('\u{10EEEE}') {
+                    painted_rows.insert(y);
+                    painted_cols.insert(x);
+                }
+            }
+        }
+        assert_eq!(
+            painted_rows.len(),
+            5,
+            "letterboxed placement should be 5 cell rows tall, got rows {painted_rows:?}"
+        );
+        assert_eq!(
+            painted_cols.len(),
+            20,
+            "placement should span the full 20-cell width, got cols {painted_cols:?}"
+        );
+    }
+
+    #[test]
+    fn none_resolves_intrinsic_pixel_size_into_cells_not_whole_area() {
+        // Intrinsic 16x32 px on 8x16 cells is exactly 2 cols x 2 rows —
+        // `ImageFit::None` must place that small footprint anchored at
+        // the top-left, not the literal pixel count's worth of cells
+        // clipped down to the whole area, which is what resolving the
+        // layout against cell units (instead of pixels) would give.
+        let area = Rect::new(0, 0, 10, 10);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let mut state = KittyImageState::new();
+        let img = Image {
+            id: WidgetId::new("logo"),
+            source: ImageSource::Bytes(tiny_png_bytes()),
+            intrinsic_size: Some((16, 32)),
+            fit: ImageFit::None,
+            fallback_text: "[LOGO]".into(),
+        };
+
+        let result = draw_image_kitty(&mut buf, area, &img, &theme, CELL_PX, &mut state);
+
+        assert_eq!(result, ImagePaintResult::Painted);
+        let mut painted = 0;
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if buf[(x, y)].symbol().starts_with('\u{10EEEE}') {
+                    painted += 1;
+                    assert!(
+                        x < 2 && y < 2,
+                        "None should anchor within a 2x2-cell footprint, painted ({x},{y})"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            painted, 4,
+            "None should place exactly intrinsic_size/cell_px = 2x2 cells, got {painted}"
+        );
     }
 }
