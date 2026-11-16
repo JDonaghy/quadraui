@@ -170,7 +170,22 @@ fn every_manifest_row_matches_a_registered_demo_variant() {
     .expect("run_capture");
 
     let demos = registry();
-    let expected_rows: usize = demos.iter().map(|d| d.variants().len()).sum::<usize>()
+    // One row per (demo, variant), plus one more for every (demo,
+    // variant) whose `Demo::hover_action` returns `Some` — the
+    // `"<variant> (hover)"` row `capture_tui_over` and its GTK/macOS/
+    // Windows siblings (and `push_status`'s unsupported-backend twin)
+    // write alongside the base row.
+    let rows_per_backend: usize = demos
+        .iter()
+        .map(|d| {
+            let variants = d.variants();
+            variants.len()
+                + (0..variants.len())
+                    .filter(|&i| d.hover_action(i).is_some())
+                    .count()
+        })
+        .sum();
+    let expected_rows: usize = rows_per_backend
         * manifest
             .iter()
             .map(|e| e.backend.clone())
@@ -179,7 +194,8 @@ fn every_manifest_row_matches_a_registered_demo_variant() {
     assert_eq!(
         manifest.len(),
         expected_rows,
-        "expected one manifest row per (demo, variant, backend) combination"
+        "expected one manifest row per (demo, variant, backend) combination, \
+         plus one more per (demo, variant) with a hover_action"
     );
 
     for entry in &manifest {
@@ -192,8 +208,15 @@ fn every_manifest_row_matches_a_registered_demo_variant() {
             entry.group,
             "manifest row's group must match the demo's own"
         );
+        // Either one of the demo's own variant names, or that same
+        // name's `"(hover)"`-suffixed sibling (see `rows_per_backend`
+        // above).
+        let base_variant = entry
+            .variant
+            .strip_suffix(" (hover)")
+            .unwrap_or(&entry.variant);
         assert!(
-            demo.variants().contains(&entry.variant.as_str()),
+            demo.variants().contains(&base_variant),
             "manifest row names variant {:?} not in {:?}'s variants {:?}",
             entry.variant,
             entry.demo,
@@ -366,6 +389,60 @@ fn capture_opens_the_context_menu_demo_instead_of_leaving_it_idle() {
             svg.contains("Select All"),
             "capturing Context Menu/{variant} should show the opened \
              painted menu's own item labels, not the idle status bar hint:\n{svg}"
+        );
+    }
+}
+
+/// `Demo::hover_action`'s `"<variant> (hover)"` manifest row paints a
+/// different screen than its base `capture_action` row, for every demo
+/// that defines one — proving the hover/selection affordance actually
+/// repaints something (a `ContextMenuController`/`MenuSystem` hover
+/// tint, a submenu cascade, a different `DualModePaletteController` row
+/// highlighted), not just that the same screenshot got a second name.
+#[test]
+fn hover_captures_differ_from_their_base_capture() {
+    let dir = tempfile::tempdir().expect("create temp capture dir");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture");
+
+    let cases = [
+        ("Context Menu", "Custom"),
+        ("Command Palette", "Compact"),
+        ("Menu Bar", "Dropdown"),
+        ("Menu Bar", "Submenu cascade"),
+    ];
+
+    for (demo, variant) in cases {
+        let base = manifest
+            .iter()
+            .find(|e| e.backend == "tui" && e.demo == demo && e.variant == variant)
+            .unwrap_or_else(|| panic!("manifest should list a tui {demo}/{variant} entry"));
+        let hover_variant = format!("{variant} (hover)");
+        let hover = manifest
+            .iter()
+            .find(|e| e.backend == "tui" && e.demo == demo && e.variant == hover_variant)
+            .unwrap_or_else(|| panic!("manifest should list a tui {demo}/{hover_variant} entry"));
+
+        assert!(
+            base.status.is_none(),
+            "{demo}/{variant} should have captured cleanly: {base:#?}"
+        );
+        assert!(
+            hover.status.is_none(),
+            "{demo}/{hover_variant} should have captured cleanly: {hover:#?}"
+        );
+
+        let base_svg = fs::read_to_string(dir.path().join(base.path.as_deref().unwrap()))
+            .expect("read base SVG");
+        let hover_svg = fs::read_to_string(dir.path().join(hover.path.as_deref().unwrap()))
+            .expect("read hover SVG");
+        assert_ne!(
+            base_svg, hover_svg,
+            "{demo}/{variant}'s hover capture should paint something \
+             different from its base capture"
         );
     }
 }

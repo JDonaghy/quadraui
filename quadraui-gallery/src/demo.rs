@@ -31,6 +31,12 @@ pub enum CaptureAction {
     /// Right-click the center of the first painted run containing this
     /// text — e.g. a context-menu demo's own "right-click anywhere" hint.
     RightClickText(&'static str),
+    /// Move the mouse to the center of the first painted run containing
+    /// this text, with no button held — a real `MouseMoved`, for a
+    /// widget whose hover state (`InteractionState::hovered`) paints
+    /// differently from the item a keyboard/click left selected. See
+    /// [`Demo::hover_action`].
+    HoverText(&'static str),
     /// Press this character key (no modifiers).
     PressChar(char),
     /// Press this named (non-printable) key (no modifiers).
@@ -129,6 +135,24 @@ pub trait Demo {
     fn capture_action(&self, variant: usize) -> CaptureAction {
         let _ = variant;
         CaptureAction::None
+    }
+
+    /// A second input, replayed against `variant` right after
+    /// [`Self::capture_action`] and right before a *second*,
+    /// `"__hover"`-suffixed screenshot — proving a widget's hover/
+    /// selection affordance actually changes what gets painted, not
+    /// just that the widget opened. `None` (the default) means this
+    /// demo/variant has no capture-worth-showing hover state, so
+    /// capture takes only the one base screenshot `capture_action`
+    /// already produces.
+    ///
+    /// Most demos never need this: it exists for widgets a right-click/
+    /// click already opened (context menu, menu bar dropdown, command
+    /// palette) where a *different* row highlighted than the one
+    /// `capture_action` left selected is the whole point of the capture.
+    fn hover_action(&self, variant: usize) -> Option<CaptureAction> {
+        let _ = variant;
+        None
     }
 }
 

@@ -103,7 +103,15 @@ impl MenuBarDemo {
             ],
             last_action: [
                 "click a menu or press Alt+F/E".into(),
-                "click View, then hover Export".into(),
+                // Deliberately never says "View" or "Export" — headless
+                // capture finds/clicks/hovers those by searching painted
+                // text, and on a pixel backend `find`'s match resolves to
+                // the *whole* painted run's bounds (this hint is one
+                // `StatusBarSegment`), not the matched substring's own
+                // position. A hint containing either word would resolve
+                // `find("View")`/`find("Export")` to this strip instead
+                // of the menu bar label / dropdown row actually meant.
+                "open its menu, then hover a submenu row".into(),
             ],
         }
     }
@@ -209,6 +217,20 @@ impl Demo for MenuBarDemo {
             CaptureAction::ClickText("File")
         } else {
             CaptureAction::ClickText("View")
+        }
+    }
+
+    fn hover_action(&self, variant: usize) -> Option<CaptureAction> {
+        if variant == 0 {
+            // "New File" is the dropdown's default `selected_idx == 0`
+            // (painted with `selected_bg` regardless of hover); "Open
+            // File" shows the hover-only tint a real `MouseMoved` feeds.
+            Some(CaptureAction::HoverText("Open File"))
+        } else {
+            // "Export" has its own submenu — `MenuSystem` opens a
+            // hovered item's submenu the same way a click does, so this
+            // capture shows the full View → Export → {PNG, SVG} cascade.
+            Some(CaptureAction::HoverText("Export"))
         }
     }
 }

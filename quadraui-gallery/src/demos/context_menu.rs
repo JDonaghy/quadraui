@@ -268,6 +268,24 @@ impl Demo for ContextMenuDemo {
         // never has yet.
         CaptureAction::RightClickText("Right-click anywhere")
     }
+
+    fn hover_action(&self, variant: usize) -> Option<CaptureAction> {
+        // Only `Custom` (variant 2) forces the painted
+        // `ContextMenuController` path on every backend — `Auto`/`Native`
+        // resolve to the OS's own native menu wherever
+        // `BackendCaps::native_menu` is true (e.g. macOS), which paints
+        // nothing into this capture's pixel surface for `HoverText` to
+        // find.
+        if Self::requested_style(variant) != MenuStyle::Custom {
+            return None;
+        }
+        // "Cut" is `build_context_menu`'s `selected_idx == 0`, so it
+        // already paints `theme.selected_bg` regardless of hover —
+        // hovering it would show nothing new. "Copy" shows
+        // `ContextMenuController`'s real `menu_item_hover_bg` tint, fed
+        // from the `MouseMoved` this dispatches.
+        Some(CaptureAction::HoverText("Copy"))
+    }
 }
 // gallery:end
 

@@ -28,6 +28,14 @@
 //! otherwise leave closed — so the capture shows the same opened state a
 //! person clicking through the gallery would see, not just the idle tab.
 //!
+//! Whenever that demo/variant's [`crate::Demo::hover_action`] also
+//! returns `Some`, every backend takes a *second* screenshot: the same
+//! `capture_action`-opened state, plus that hover input replayed on top,
+//! written to a `"__hover"`-suffixed file and manifested under a
+//! `"<variant> (hover)"` row. This proves a widget's hover/selection
+//! affordance actually repaints something — not just that the overlay
+//! opened.
+//!
 //! ## Per-backend story
 //!
 //! - **TUI**: drives the real [`GalleryApp`] through
@@ -276,7 +284,7 @@ fn push_status(
 ) {
     for demo in registry() {
         let group = demo.group().to_string();
-        for variant in demo.variants() {
+        for (variant_idx, variant) in demo.variants().iter().enumerate() {
             manifest.push(ManifestEntry {
                 demo: demo.name().to_string(),
                 group: group.clone(),
@@ -287,6 +295,25 @@ fn push_status(
                 status: Some(status.to_string()),
                 note: Some(why.to_string()),
             });
+            // Keep the manifest's row shape the same across backends:
+            // a backend that *can* capture this demo/variant writes a
+            // second "(hover)" row (see `capture_tui_over` and its GTK/
+            // macOS/Windows siblings) whenever `Demo::hover_action`
+            // returns `Some`, so a backend that can't capture at all
+            // gets the matching `unsupported` placeholder for that same
+            // row instead of silently omitting it.
+            if demo.hover_action(variant_idx).is_some() {
+                manifest.push(ManifestEntry {
+                    demo: demo.name().to_string(),
+                    group: group.clone(),
+                    variant: format!("{variant} (hover)"),
+                    backend: backend.to_string(),
+                    theme: theme.label().to_string(),
+                    path: None,
+                    status: Some(status.to_string()),
+                    note: Some(why.to_string()),
+                });
+            }
         }
     }
 }
@@ -345,6 +372,25 @@ fn group_index_of(demo: &dyn crate::Demo) -> usize {
         })
 }
 
+/// Which registry row `capture_*_actions` (one per backend) should
+/// select before replaying its `actions`: the activity-bar group,
+/// sidebar demo, and (if there's more than one) variant-picker row —
+/// everything [`click_group_zone`]/[`click_demo_zone`]/`click_text_at`
+/// need, bundled into one value so those functions stay under
+/// clippy's argument-count limit.
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk",
+    all(feature = "win", target_os = "windows")
+))]
+struct DemoSelection<'a> {
+    group_idx: usize,
+    demo_idx: usize,
+    variant: &'a str,
+    variants_len: usize,
+}
+
 // ── TUI capture ──────────────────────────────────────────────────────
 
 #[cfg(feature = "tui")]
@@ -373,9 +419,6 @@ fn capture_tui_over(
     theme: CaptureTheme,
     manifest: &mut Vec<ManifestEntry>,
 ) -> io::Result<()> {
-    use quadraui::testing::{Anchor, ConformanceDriver};
-    use quadraui::tui::testing::driver_with_shell;
-
     for (demo_idx, demo) in demos_fn().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
@@ -389,31 +432,15 @@ fn capture_tui_over(
             );
             let dest = dir.join(&filename);
             let capture_action = demo.capture_action(variant_idx);
+            let selection = DemoSelection {
+                group_idx,
+                demo_idx,
+                variant,
+                variants_len: variants.len(),
+            };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut driver = driver_with_shell(
-                    GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
-                    GalleryApp::config(),
-                    TUI_CAPTURE_WIDTH,
-                    TUI_CAPTURE_HEIGHT,
-                );
-                // Group 0 is already active on a freshly built `GalleryApp`
-                // (`GalleryApp::from_demos` defaults `active_group` to 0),
-                // so clicking its own activity-bar icon here would toggle
-                // it hidden instead of selecting it.
-                if group_idx != 0 {
-                    click_group_zone(&mut driver, group_idx);
-                }
-                // By zone, not by `demo.name()`'s painted text — two demos
-                // in the same group can have names where one is a literal
-                // substring of the other (see `click_demo_zone`'s doc).
-                click_demo_zone(&mut driver, demo_idx);
-                if variants.len() > 1 {
-                    driver.click_text_at(variant, Anchor::Center);
-                }
-                apply_capture_action_tui(&mut driver, capture_action);
-                write_tui_svg(&driver, TUI_CAPTURE_WIDTH, TUI_CAPTURE_HEIGHT, &dest)
+                capture_tui_actions(demos_fn, theme, &selection, &[capture_action], &dest)
             }));
-
             manifest.push(capture_outcome_entry(
                 demo.name(),
                 &group,
@@ -423,9 +450,83 @@ fn capture_tui_over(
                 filename,
                 outcome,
             ));
+
+            if let Some(hover_action) = demo.hover_action(variant_idx) {
+                let hover_variant = format!("{variant} (hover)");
+                let hover_filename = format!(
+                    "tui__{}__{}__{}__hover.svg",
+                    slug(&group),
+                    slug(demo.name()),
+                    slug(variant)
+                );
+                let hover_dest = dir.join(&hover_filename);
+                let hover_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    capture_tui_actions(
+                        demos_fn,
+                        theme,
+                        &selection,
+                        &[capture_action, hover_action],
+                        &hover_dest,
+                    )
+                }));
+                manifest.push(capture_outcome_entry(
+                    demo.name(),
+                    &group,
+                    &hover_variant,
+                    "tui",
+                    theme,
+                    hover_filename,
+                    hover_outcome,
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// Build a fresh driver, select `demo_idx`'s `variant` (by zone, see
+/// [`click_demo_zone`]'s doc), replay every [`crate::CaptureAction`] in
+/// `actions` in order, and write the resulting screen to `dest`. The one
+/// body [`capture_tui_over`]'s base capture (one action) and its sibling
+/// hover capture (that same action, then [`crate::Demo::hover_action`]'s)
+/// share, so hovering is always applied on top of the exact state the
+/// base capture already reached — never a freshly reopened menu that
+/// might land hover state differently.
+#[cfg(feature = "tui")]
+fn capture_tui_actions(
+    demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
+    theme: CaptureTheme,
+    selection: &DemoSelection,
+    actions: &[crate::CaptureAction],
+    dest: &Path,
+) -> io::Result<()> {
+    use quadraui::testing::{Anchor, ConformanceDriver};
+    use quadraui::tui::testing::driver_with_shell;
+
+    let mut driver = driver_with_shell(
+        GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
+        GalleryApp::config(),
+        TUI_CAPTURE_WIDTH,
+        TUI_CAPTURE_HEIGHT,
+    );
+    // Group 0 is already active on a freshly built `GalleryApp`
+    // (`GalleryApp::from_demos` defaults `active_group` to 0), so
+    // clicking its own activity-bar icon here would toggle it hidden
+    // instead of selecting it.
+    if selection.group_idx != 0 {
+        click_group_zone(&mut driver, selection.group_idx);
+    }
+    // By zone, not by `demo.name()`'s painted text — two demos in the
+    // same group can have names where one is a literal substring of the
+    // other (see `click_demo_zone`'s doc).
+    click_demo_zone(&mut driver, selection.demo_idx);
+    if selection.variants_len > 1 {
+        driver.click_text_at(selection.variant, Anchor::Center);
+    }
+    for &action in actions {
+        apply_capture_action_tui(&mut driver, action);
+    }
+    write_tui_svg(&driver, TUI_CAPTURE_WIDTH, TUI_CAPTURE_HEIGHT, dest)
 }
 
 /// Replay `action` (see [`crate::CaptureAction`]) against `driver`,
@@ -482,6 +583,12 @@ fn apply_capture_action_tui<A: quadraui::AppLogic>(
                 y,
                 quadraui::Modifiers::default(),
             ));
+        }
+        CaptureAction::HoverText(text) => {
+            let (x, y) = driver
+                .find(text)
+                .unwrap_or_else(|| panic!("TuiDriver: {text:?} not painted"));
+            driver.dispatch(quadraui::mouse_moved(x, y, quadraui::ButtonMask::default()));
         }
     }
 }
@@ -814,9 +921,6 @@ fn capture_macos(
     theme: CaptureTheme,
     manifest: &mut Vec<ManifestEntry>,
 ) -> io::Result<()> {
-    use quadraui::macos::testing::driver_with_shell;
-    use quadraui::testing::{Anchor, ConformanceDriver};
-
     for (demo_idx, demo) in registry().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
@@ -830,35 +934,15 @@ fn capture_macos(
             );
             let dest = dir.join(&filename);
             let capture_action = demo.capture_action(variant_idx);
+            let selection = DemoSelection {
+                group_idx,
+                demo_idx,
+                variant,
+                variants_len: variants.len(),
+            };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut driver = driver_with_shell(
-                    GalleryApp::new().with_theme(theme.theme()),
-                    GalleryApp::config(),
-                    MAC_CAPTURE_WIDTH,
-                    MAC_CAPTURE_HEIGHT,
-                );
-                // `GalleryApp::new()` defaults `active_group` to 0, so
-                // clicking group 0's own activity-bar icon here would
-                // toggle it hidden instead of selecting it.
-                if group_idx != 0 {
-                    click_group_zone(&mut driver, group_idx);
-                }
-                // By zone, not by `demo.name()`'s painted text — two demos
-                // in the same group can have names where one is a literal
-                // substring of the other (see `click_demo_zone`'s doc).
-                click_demo_zone(&mut driver, demo_idx);
-                if variants.len() > 1 {
-                    driver.click_text_at(variant, Anchor::Center);
-                }
-                apply_capture_action_macos(&mut driver, capture_action);
-                write_mac_png(
-                    driver.surface(),
-                    MAC_CAPTURE_WIDTH,
-                    MAC_CAPTURE_HEIGHT,
-                    &dest,
-                )
+                capture_macos_actions(theme, &selection, &[capture_action], &dest)
             }));
-
             manifest.push(capture_outcome_entry(
                 demo.name(),
                 &group,
@@ -868,9 +952,82 @@ fn capture_macos(
                 filename,
                 outcome,
             ));
+
+            if let Some(hover_action) = demo.hover_action(variant_idx) {
+                let hover_variant = format!("{variant} (hover)");
+                let hover_filename = format!(
+                    "macos__{}__{}__{}__hover.png",
+                    slug(&group),
+                    slug(demo.name()),
+                    slug(variant)
+                );
+                let hover_dest = dir.join(&hover_filename);
+                let hover_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    capture_macos_actions(
+                        theme,
+                        &selection,
+                        &[capture_action, hover_action],
+                        &hover_dest,
+                    )
+                }));
+                manifest.push(capture_outcome_entry(
+                    demo.name(),
+                    &group,
+                    &hover_variant,
+                    "macos",
+                    theme,
+                    hover_filename,
+                    hover_outcome,
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// Build a fresh driver, select `demo_idx`'s `variant` (by zone, see
+/// [`click_demo_zone`]'s doc), replay every [`crate::CaptureAction`] in
+/// `actions` in order, and write the resulting screen to `dest` — the
+/// macOS leg of the shared base/hover capture body [`capture_tui_actions`]'s
+/// own doc describes.
+#[cfg(all(feature = "macos", target_os = "macos"))]
+fn capture_macos_actions(
+    theme: CaptureTheme,
+    selection: &DemoSelection,
+    actions: &[crate::CaptureAction],
+    dest: &Path,
+) -> io::Result<()> {
+    use quadraui::macos::testing::driver_with_shell;
+    use quadraui::testing::{Anchor, ConformanceDriver};
+
+    let mut driver = driver_with_shell(
+        GalleryApp::new().with_theme(theme.theme()),
+        GalleryApp::config(),
+        MAC_CAPTURE_WIDTH,
+        MAC_CAPTURE_HEIGHT,
+    );
+    // `GalleryApp::new()` defaults `active_group` to 0, so clicking
+    // group 0's own activity-bar icon here would toggle it hidden
+    // instead of selecting it.
+    if selection.group_idx != 0 {
+        click_group_zone(&mut driver, selection.group_idx);
+    }
+    // By zone, not by `demo.name()`'s painted text — two demos in the
+    // same group can have names where one is a literal substring of the
+    // other (see `click_demo_zone`'s doc).
+    click_demo_zone(&mut driver, selection.demo_idx);
+    if selection.variants_len > 1 {
+        driver.click_text_at(selection.variant, Anchor::Center);
+    }
+    for &action in actions {
+        apply_capture_action_macos(&mut driver, action);
+    }
+    write_mac_png(
+        driver.surface(),
+        MAC_CAPTURE_WIDTH,
+        MAC_CAPTURE_HEIGHT,
+        dest,
+    )
 }
 
 /// Replay `action` against `driver` — the macOS leg of the hook
@@ -904,6 +1061,12 @@ fn apply_capture_action_macos<A: quadraui::AppLogic>(
                 y,
                 quadraui::Modifiers::default(),
             ));
+        }
+        CaptureAction::HoverText(text) => {
+            let (x, y) = driver
+                .find(text)
+                .unwrap_or_else(|| panic!("MacDriver: {text:?} not painted"));
+            driver.dispatch(quadraui::mouse_moved(x, y, quadraui::ButtonMask::default()));
         }
     }
 }
@@ -977,9 +1140,6 @@ fn capture_gtk_over(
     theme: CaptureTheme,
     manifest: &mut Vec<ManifestEntry>,
 ) -> io::Result<()> {
-    use quadraui::gtk::testing::driver_with_shell;
-    use quadraui::testing::{Anchor, ConformanceDriver};
-
     for (demo_idx, demo) in demos_fn().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
@@ -993,31 +1153,15 @@ fn capture_gtk_over(
             );
             let dest = dir.join(&filename);
             let capture_action = demo.capture_action(variant_idx);
+            let selection = DemoSelection {
+                group_idx,
+                demo_idx,
+                variant,
+                variants_len: variants.len(),
+            };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut driver = driver_with_shell(
-                    GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
-                    GalleryApp::config(),
-                    GTK_CAPTURE_WIDTH,
-                    GTK_CAPTURE_HEIGHT,
-                );
-                // Group 0 is already active on a freshly built `GalleryApp`
-                // (`GalleryApp::from_demos` defaults `active_group` to 0),
-                // so clicking its own activity-bar icon here would toggle
-                // it hidden instead of selecting it.
-                if group_idx != 0 {
-                    click_group_zone(&mut driver, group_idx);
-                }
-                // By zone, not by `demo.name()`'s painted text — two demos
-                // in the same group can have names where one is a literal
-                // substring of the other (see `click_demo_zone`'s doc).
-                click_demo_zone(&mut driver, demo_idx);
-                if variants.len() > 1 {
-                    driver.click_text_at(variant, Anchor::Center);
-                }
-                apply_capture_action_gtk(&mut driver, capture_action);
-                write_gtk_png(&mut driver, GTK_CAPTURE_WIDTH, GTK_CAPTURE_HEIGHT, &dest)
+                capture_gtk_actions(demos_fn, theme, &selection, &[capture_action], &dest)
             }));
-
             manifest.push(capture_outcome_entry(
                 demo.name(),
                 &group,
@@ -1027,9 +1171,80 @@ fn capture_gtk_over(
                 filename,
                 outcome,
             ));
+
+            if let Some(hover_action) = demo.hover_action(variant_idx) {
+                let hover_variant = format!("{variant} (hover)");
+                let hover_filename = format!(
+                    "gtk__{}__{}__{}__hover.png",
+                    slug(&group),
+                    slug(demo.name()),
+                    slug(variant)
+                );
+                let hover_dest = dir.join(&hover_filename);
+                let hover_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    capture_gtk_actions(
+                        demos_fn,
+                        theme,
+                        &selection,
+                        &[capture_action, hover_action],
+                        &hover_dest,
+                    )
+                }));
+                manifest.push(capture_outcome_entry(
+                    demo.name(),
+                    &group,
+                    &hover_variant,
+                    "gtk",
+                    theme,
+                    hover_filename,
+                    hover_outcome,
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// Build a fresh driver, select `demo_idx`'s `variant` (by zone, see
+/// [`click_demo_zone`]'s doc), replay every [`crate::CaptureAction`] in
+/// `actions` in order, and write the resulting screen to `dest` — the
+/// GTK leg of the shared base/hover capture body [`capture_tui_actions`]'s
+/// own doc describes.
+#[cfg(feature = "gtk")]
+fn capture_gtk_actions(
+    demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
+    theme: CaptureTheme,
+    selection: &DemoSelection,
+    actions: &[crate::CaptureAction],
+    dest: &Path,
+) -> io::Result<()> {
+    use quadraui::gtk::testing::driver_with_shell;
+    use quadraui::testing::{Anchor, ConformanceDriver};
+
+    let mut driver = driver_with_shell(
+        GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
+        GalleryApp::config(),
+        GTK_CAPTURE_WIDTH,
+        GTK_CAPTURE_HEIGHT,
+    );
+    // Group 0 is already active on a freshly built `GalleryApp`
+    // (`GalleryApp::from_demos` defaults `active_group` to 0), so
+    // clicking its own activity-bar icon here would toggle it hidden
+    // instead of selecting it.
+    if selection.group_idx != 0 {
+        click_group_zone(&mut driver, selection.group_idx);
+    }
+    // By zone, not by `demo.name()`'s painted text — two demos in the
+    // same group can have names where one is a literal substring of the
+    // other (see `click_demo_zone`'s doc).
+    click_demo_zone(&mut driver, selection.demo_idx);
+    if selection.variants_len > 1 {
+        driver.click_text_at(selection.variant, Anchor::Center);
+    }
+    for &action in actions {
+        apply_capture_action_gtk(&mut driver, action);
+    }
+    write_gtk_png(&mut driver, GTK_CAPTURE_WIDTH, GTK_CAPTURE_HEIGHT, dest)
 }
 
 /// Replay `action` against `driver` — the GTK leg of the hook
@@ -1063,6 +1278,12 @@ fn apply_capture_action_gtk<A: quadraui::AppLogic>(
                 y,
                 quadraui::Modifiers::default(),
             ));
+        }
+        CaptureAction::HoverText(text) => {
+            let (x, y) = driver
+                .find(text)
+                .unwrap_or_else(|| panic!("GtkDriver: {text:?} not painted"));
+            driver.dispatch(quadraui::mouse_moved(x, y, quadraui::ButtonMask::default()));
         }
     }
 }
@@ -1184,9 +1405,6 @@ fn capture_win_over(
     theme: CaptureTheme,
     manifest: &mut Vec<ManifestEntry>,
 ) -> io::Result<()> {
-    use quadraui::testing::{Anchor, ConformanceDriver};
-    use quadraui::win::testing::driver_with_shell;
-
     for (demo_idx, demo) in demos_fn().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
@@ -1200,28 +1418,15 @@ fn capture_win_over(
             );
             let dest = dir.join(&filename);
             let capture_action = demo.capture_action(variant_idx);
+            let selection = DemoSelection {
+                group_idx,
+                demo_idx,
+                variant,
+                variants_len: variants.len(),
+            };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut driver = driver_with_shell(
-                    GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
-                    GalleryApp::config(),
-                    WIN_CAPTURE_WIDTH,
-                    WIN_CAPTURE_HEIGHT,
-                );
-                // Group 0 is already active on a freshly built `GalleryApp`
-                // (`GalleryApp::from_demos` defaults `active_group` to 0),
-                // so clicking its own activity-bar icon here would toggle
-                // it hidden instead of selecting it.
-                if group_idx != 0 {
-                    click_group_zone(&mut driver, group_idx);
-                }
-                click_demo_zone(&mut driver, demo_idx);
-                if variants.len() > 1 {
-                    driver.click_text_at(variant, Anchor::Center);
-                }
-                apply_capture_action_win(&mut driver, capture_action);
-                write_win_png(&mut driver, WIN_CAPTURE_WIDTH, WIN_CAPTURE_HEIGHT, &dest)
+                capture_win_actions(demos_fn, theme, &selection, &[capture_action], &dest)
             }));
-
             manifest.push(capture_outcome_entry(
                 demo.name(),
                 &group,
@@ -1231,9 +1436,77 @@ fn capture_win_over(
                 filename,
                 outcome,
             ));
+
+            if let Some(hover_action) = demo.hover_action(variant_idx) {
+                let hover_variant = format!("{variant} (hover)");
+                let hover_filename = format!(
+                    "win__{}__{}__{}__hover.png",
+                    slug(&group),
+                    slug(demo.name()),
+                    slug(variant)
+                );
+                let hover_dest = dir.join(&hover_filename);
+                let hover_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    capture_win_actions(
+                        demos_fn,
+                        theme,
+                        &selection,
+                        &[capture_action, hover_action],
+                        &hover_dest,
+                    )
+                }));
+                manifest.push(capture_outcome_entry(
+                    demo.name(),
+                    &group,
+                    &hover_variant,
+                    "win",
+                    theme,
+                    hover_filename,
+                    hover_outcome,
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// Build a fresh driver, select `demo_idx`'s `variant` (by zone, see
+/// [`click_demo_zone`]'s doc), replay every [`crate::CaptureAction`] in
+/// `actions` in order, and write the resulting screen to `dest` — the
+/// Windows leg of the shared base/hover capture body
+/// [`capture_tui_actions`]'s own doc describes.
+#[cfg(all(feature = "win", target_os = "windows"))]
+fn capture_win_actions(
+    demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
+    theme: CaptureTheme,
+    selection: &DemoSelection,
+    actions: &[crate::CaptureAction],
+    dest: &Path,
+) -> io::Result<()> {
+    use quadraui::testing::{Anchor, ConformanceDriver};
+    use quadraui::win::testing::driver_with_shell;
+
+    let mut driver = driver_with_shell(
+        GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
+        GalleryApp::config(),
+        WIN_CAPTURE_WIDTH,
+        WIN_CAPTURE_HEIGHT,
+    );
+    // Group 0 is already active on a freshly built `GalleryApp`
+    // (`GalleryApp::from_demos` defaults `active_group` to 0), so
+    // clicking its own activity-bar icon here would toggle it hidden
+    // instead of selecting it.
+    if selection.group_idx != 0 {
+        click_group_zone(&mut driver, selection.group_idx);
+    }
+    click_demo_zone(&mut driver, selection.demo_idx);
+    if selection.variants_len > 1 {
+        driver.click_text_at(selection.variant, Anchor::Center);
+    }
+    for &action in actions {
+        apply_capture_action_win(&mut driver, action);
+    }
+    write_win_png(&mut driver, WIN_CAPTURE_WIDTH, WIN_CAPTURE_HEIGHT, dest)
 }
 
 /// Replay `action` against `driver` — the Windows leg of the hook
@@ -1267,6 +1540,12 @@ fn apply_capture_action_win<A: quadraui::AppLogic>(
                 y,
                 quadraui::Modifiers::default(),
             ));
+        }
+        CaptureAction::HoverText(text) => {
+            let (x, y) = driver
+                .find(text)
+                .unwrap_or_else(|| panic!("WinDriver: {text:?} not painted"));
+            driver.dispatch(quadraui::mouse_moved(x, y, quadraui::ButtonMask::default()));
         }
     }
 }

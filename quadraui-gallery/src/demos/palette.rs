@@ -12,7 +12,7 @@ use quadraui::{
     UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 
-use crate::demo::{extract_region, Demo};
+use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("palette.rs");
 
@@ -231,6 +231,17 @@ impl Demo for PaletteDemo {
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
         None
+    }
+
+    fn hover_action(&self, _variant: usize) -> Option<CaptureAction> {
+        // `DualModePaletteController::handle_mouse_event` only matches
+        // `MouseDown` (see that method's own doc) — this primitive has
+        // no mouse-hover state distinct from `selected`, so a real
+        // `MouseMoved` would be a no-op capture. Clicking "develop" (not
+        // the default `selected == 0` "main" row) is this primitive's
+        // only way to move the highlighted row, so it stands in for
+        // "an item is highlighted" here.
+        Some(CaptureAction::ClickText("develop"))
     }
 }
 
