@@ -974,47 +974,61 @@ fn appshell_chrome_bands_carve_left_to_right() {
 fn form_fields_stack_and_group_items_pack() {
     let driver = MacDriver::new(FormGroupsApp::new(), 700, 400);
     let line_height = driver.backend().line_height();
-    // `Form` rows are `(line_height * 1.4).round()` tall
-    // (`layout_metrics::form_row_height`), not `line_height` itself —
-    // every `FormField` (including `ToggleGroup`/`ButtonRow`) measures
-    // exactly one row of this height
-    // (`form_field_measure_height_is_one_row_for_every_field_kind`).
-    let row_h = quadraui::primitives::layout_metrics::form_row_height(line_height as f64);
+    // Most `Form` rows are `(line_height * 1.4).round()` tall
+    // (`layout_metrics::form_row_height`), not `line_height` itself.
+    let row_h = quadraui::primitives::layout_metrics::form_row_height(line_height as f64) as f32;
+    // A single-line `TextInput`/`PasswordInput` row is the exception: it
+    // floors at `Style::control_height + 4.0`, so the stroked input box
+    // the macOS rasteriser paints (the row inset by 2px top and bottom)
+    // reaches the full `control_height` every other control is sized
+    // against — the same floor `FieldKind::Button` rows carry.
+    let input_row_h = (quadraui::Style::default().control_height + 4.0).max(row_h);
 
     // Each field's top edge is the running sum of the row heights above
-    // it. The fixture's five fields are: "search" (label "Find"),
-    // "toggles" (`ToggleGroup`, no label), "replace" (label "Replace"),
-    // "buttons" (`ButtonRow`, no label — one of its buttons is itself
-    // labelled "Replace"), "scope" (label "Scope"). So the row carrying
-    // the "Replace" label sits two rows below "Find" (skipping
-    // "toggles"), and "Scope" sits two rows below that (skipping
-    // "buttons").
+    // it. The fixture's five fields are: "search" (label "Find",
+    // `TextInput`), "toggles" (`ToggleGroup`, no label), "replace"
+    // (label "Replace", `TextInput`), "buttons" (`ButtonRow`, no label —
+    // one of its buttons is itself labelled "Replace"), "scope" (label
+    // "Scope", `Toolbar`). Top-down, that stacks rows of `input_row_h`,
+    // `row_h`, `input_row_h`, `row_h`, `row_h`.
+    //
+    // A row paints its label and control text vertically centred in its
+    // own height, so the row's top edge is recoverable from the painted
+    // text as `text.y - (row_height - text.height) / 2` — independent of
+    // the font's actual text height, which cancels. Compared with a
+    // tolerance rather than `assert_eq!`: centring halves a fractional
+    // row height, so adding that offset and subtracting it again costs a
+    // few ULPs of `f32`. The geometric claim is the exact row stack, at
+    // point precision.
     //
     // The "replace" field's `TextInput` is empty, so it paints its
     // placeholder `"Replace…"` (with the ellipsis glyph) in the same row
     // as the "Replace" label — unlike the bare label text, this needle
     // can't collide with the "Replace"/"Replace All" buttons painted
     // later in the "buttons" row, which don't share that glyph.
-    let [(_, find_y, _), (_, replace_y, _), (_, scope_y, _)] =
-        mac_bounds_of(&driver, &["Find", "Replace…", "Scope"])[..]
-    else {
-        unreachable!("mac_bounds_of returns one entry per needle")
+    let row_top = |needle: &str, row_height: f32| {
+        let b = driver
+            .find_bounds(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not painted: {:?}", driver.painted_texts()));
+        b.y - (row_height - b.height) / 2.0
     };
-    // Compared with a tolerance rather than `assert_eq!`: every row
-    // centres its text vertically by a fractional offset
-    // `(row_h - text_h) / 2`, and adding that offset to a two-row
-    // baseline before subtracting it again costs a few ULPs of `f32`.
-    // The geometric claim is "exactly two rows", at point precision.
-    let two_rows = 2.0 * row_h as f32;
+    let find_top = row_top("Find", input_row_h);
+    let replace_top = row_top("Replace…", input_row_h);
+    let scope_top = row_top("Scope", row_h);
     assert!(
-        (replace_y - find_y - two_rows).abs() < 0.01,
-        "Replace field stacks two rows below Find, skipping the toggles row \
-         (find_y={find_y}, replace_y={replace_y}, row_h={row_h})"
+        find_top.abs() < 0.01,
+        "the first field starts at the top of the form area (find_top={find_top})"
     );
     assert!(
-        (scope_y - replace_y - two_rows).abs() < 0.01,
-        "Scope field stacks two rows below Replace, skipping the buttons row \
-         (replace_y={replace_y}, scope_y={scope_y}, row_h={row_h})"
+        (replace_top - (input_row_h + row_h)).abs() < 0.01,
+        "Replace field stacks below Find plus the toggles row \
+         (replace_top={replace_top}, input_row_h={input_row_h}, row_h={row_h})"
+    );
+    assert!(
+        (scope_top - (2.0 * input_row_h + 2.0 * row_h)).abs() < 0.01,
+        "Scope field stacks below both input rows plus the toggles and \
+         buttons rows (scope_top={scope_top}, input_row_h={input_row_h}, \
+         row_h={row_h})"
     );
 
     // The other half of `Form`'s packing: items *inside* one field pack
