@@ -59,3 +59,61 @@ fn capture_writes_macos_png_and_lists_it_in_the_manifest() {
         "captured file must be a real PNG"
     );
 }
+
+/// `Demo::hover_action`'s `"<variant> (hover)"` manifest row decodes to
+/// different pixels than its base `capture_action` row, on a real macOS
+/// host, for context menu, command palette and menu bar — the acceptance
+/// bar this feature was built against: a hover/selection affordance that
+/// doesn't actually repaint anything would still pass a dimensions-only
+/// check, so this decodes both PNGs and compares raw pixels.
+#[test]
+fn hover_captures_differ_from_their_base_capture_on_macos() {
+    let dir = tempfile::tempdir().expect("create temp capture dir");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture");
+
+    let cases = [
+        ("Context Menu", "Custom"),
+        ("Command Palette", "Compact"),
+        ("Menu Bar", "Dropdown"),
+        ("Menu Bar", "Submenu cascade"),
+    ];
+
+    for (demo, variant) in cases {
+        let base = manifest
+            .iter()
+            .find(|e| e.backend == "macos" && e.demo == demo && e.variant == variant)
+            .unwrap_or_else(|| panic!("manifest should list a macos {demo}/{variant} entry"));
+        let hover_variant = format!("{variant} (hover)");
+        let hover = manifest
+            .iter()
+            .find(|e| e.backend == "macos" && e.demo == demo && e.variant == hover_variant)
+            .unwrap_or_else(|| panic!("manifest should list a macos {demo}/{hover_variant} entry"));
+
+        assert!(
+            base.status.is_none(),
+            "{demo}/{variant} should have captured cleanly: {base:#?}"
+        );
+        assert!(
+            hover.status.is_none(),
+            "{demo}/{hover_variant} should have captured cleanly: {hover:#?}"
+        );
+
+        let base_png = image::open(dir.path().join(base.path.as_deref().unwrap()))
+            .expect("open base PNG")
+            .to_rgba8()
+            .into_raw();
+        let hover_png = image::open(dir.path().join(hover.path.as_deref().unwrap()))
+            .expect("open hover PNG")
+            .to_rgba8()
+            .into_raw();
+        assert_ne!(
+            base_png, hover_png,
+            "{demo}/{variant}'s hover capture should paint different pixels \
+             than its base capture"
+        );
+    }
+}
