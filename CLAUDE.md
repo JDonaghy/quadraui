@@ -9,6 +9,26 @@ quadraui is **self-contained at design time** (no primitive encodes a consumer's
 domain model) but **not at delivery time**: published consumers build against it.
 Read *Downstream consumers* before changing any `pub` item.
 
+## North star: extend, don't fork
+
+Before adding a primitive, painter, controller or layout helper, find the closest
+existing one and **build from its parts**. A widget that combines existing ones
+(a table with a tree column, a list with checkboxes) composes them: it holds the
+existing descriptor, calls its layout, and paints through its helpers. It does not
+get its own copy of them.
+
+- **If the part you need isn't callable, extracting it is in scope.** That applies
+  when it is private, inside a monolithic `paint`/`draw_*_inner` function, or tied
+  to one row type. Do it even when the file is outside your issue's `## Files`, and
+  name the extraction in your final message.
+- **Copying more than ~20 lines from another primitive or backend is a review
+  reject.** That includes "modelled on X" rewrites that reproduce X's logic.
+- **A combination widget must not grow `src/{tui,gtk,macos,win}`** beyond one-line
+  `Backend` forwards to a shared painter. If it needs more, the shared painter is
+  missing a hook, so add the hook.
+- **If your briefing tells you to write a parallel copy**, say so in your final
+  message. Don't follow it.
+
 ## Codebase navigation — query the graph first
 
 `graphify-out/` holds a knowledge graph of this repo. For "where is this handled /
