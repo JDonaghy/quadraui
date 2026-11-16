@@ -156,6 +156,19 @@ pub struct TuiBackend {
     /// [`crate::tui::testing::TuiDriver::inventory`] to populate
     /// [`crate::testing::FrameInventory::zones`].
     zones: Vec<ZoneRec>,
+    /// Cell rects a rasteriser filled with non-text content this frame —
+    /// e.g. a Kitty graphics placeholder cell whose foreground colour
+    /// encodes an image id rather than a real glyph colour. Registered via
+    /// [`Self::register_opaque_rect`]; cleared at the start of each frame
+    /// by [`Self::begin_frame`], same lifecycle as `zones`/`text_regions`.
+    /// [`Self::apply_selection_highlight`] skips these cells instead of
+    /// inverting their fg/bg, and instead of copying their raw symbols
+    /// into the selection text substitutes each rect's `fallback_text`
+    /// (if any) once per contiguous run.
+    /// [`crate::tui::testing::TuiDriver::row_cells`] reports them as blank
+    /// so `find`/`inventory`'s text-run scan treats them as a gap rather
+    /// than matching on placeholder codepoints.
+    opaque_rects: Vec<OpaqueRect>,
     /// Text extracted from the last rendered buffer for the active
     /// selection. Populated by `apply_selection_highlight` (which has
     /// access to the live buffer inside `terminal.draw`). After the
@@ -394,6 +407,26 @@ pub struct TuiBackend {
     clip_stack: Vec<super::canvas::TuiClipFrame>,
 }
 
+/// One cell rect registered via [`TuiBackend::register_opaque_rect`] —
+/// see that method's doc and the `opaque_rects` field's doc on
+/// [`TuiBackend`] for the post-paint passes that consult it.
+#[derive(Debug, Clone)]
+struct OpaqueRect {
+    /// Copied into the selection-text cache once per contiguous run over
+    /// this rect when a selection spans it. `None` contributes nothing —
+    /// the rect is simply absent from copied text, same as a gap.
+    fallback_text: Option<String>,
+    /// Each covered cell's `symbol()` at registration time, keyed by
+    /// `(col, row)`. A later paint (a menu, toast, or dialog opened on top
+    /// of this rect in the same frame) overwrites some of these cells in
+    /// the live buffer before any post-paint pass runs; comparing the live
+    /// buffer back against this stamp — not just testing cell membership
+    /// against a static rect — is what lets that overlay's cells behave
+    /// as ordinary text without this rect ever being re-asserted or
+    /// shrunk. See [`TuiBackend::opaque_rect_index_at`].
+    cell_stamps: HashMap<(u16, u16), String>,
+}
+
 impl TuiBackend {
     /// Construct the backend with default viewport (80×24) and
     /// default quadraui theme. The caller calls [`Backend::begin_frame`]
@@ -415,6 +448,7 @@ impl TuiBackend {
             double_click: super::events::DoubleClickDetector::new(),
             double_click_folding: true,
             zones: Vec::new(),
+            opaque_rects: Vec::new(),
             cached_selection_text: String::new(),
             focused_activity_bar: None,
             last_cursor_position: None,
@@ -784,6 +818,88 @@ impl TuiBackend {
         &self.zones
     }
 
+    /// Register `bounds` as painted with non-text content this frame —
+    /// e.g. a Kitty graphics placeholder cell whose foreground colour
+    /// encodes an image id rather than a real glyph colour, so a rasteriser
+    /// that paints such a cell calls this instead of (or in addition to)
+    /// [`Self::register_zone`]. `buf` is the same buffer the rasteriser
+    /// just painted `bounds` into — this snapshots each covered cell's
+    /// `symbol()` so a later paint over part of this rect, in the same
+    /// frame, can be told apart from the still-unpainted-over rest (see
+    /// [`Self::opaque_rect_index_at`]).
+    ///
+    /// Also registers `id`/`bounds` as a zone (same as a direct
+    /// [`Self::register_zone`] call) so
+    /// [`crate::tui::testing::TuiDriver::inventory`] reports the rect as a
+    /// [`ZoneRec`] rather than as a [`crate::testing::TextRun`] — a caller
+    /// never needs both calls.
+    ///
+    /// `fallback_text`, when given, is copied into the selection-text
+    /// cache once per contiguous run over this rect when an active
+    /// selection spans it (see [`Self::apply_selection_highlight`]); `None`
+    /// means the rect contributes nothing to copied text, same as a gap.
+    ///
+    /// Cleared at the start of every frame by [`Self::begin_frame`], same
+    /// lifecycle as `zones`/`text_regions`.
+    ///
+    /// Only exercised by the tests below today — the seam a terminal-
+    /// graphics rasteriser's `draw_*` call wires into once one exists.
+    #[allow(dead_code)]
+    pub(crate) fn register_opaque_rect(
+        &mut self,
+        id: WidgetId,
+        bounds: QRect,
+        buf: &ratatui::buffer::Buffer,
+        fallback_text: Option<String>,
+    ) {
+        self.register_zone(id, bounds);
+        let area = buf.area;
+        let x0 = (bounds.x.max(0.0) as u16).max(area.x);
+        let y0 = (bounds.y.max(0.0) as u16).max(area.y);
+        let x1 = ((bounds.x + bounds.width).max(0.0) as u16).min(area.x + area.width);
+        let y1 = ((bounds.y + bounds.height).max(0.0) as u16).min(area.y + area.height);
+        let mut cell_stamps = HashMap::new();
+        for row in y0..y1 {
+            for col in x0..x1 {
+                cell_stamps.insert((col, row), buf[(col, row)].symbol().to_string());
+            }
+        }
+        self.opaque_rects.push(OpaqueRect {
+            fallback_text,
+            cell_stamps,
+        });
+    }
+
+    /// Index into `self.opaque_rects` of the rect (if any) still covering
+    /// cell `(col, row)` in the live buffer `buf`. A cell only counts as
+    /// still-opaque when `buf`'s current `symbol()` there matches the
+    /// stamp [`Self::register_opaque_rect`] captured — the moment a later
+    /// paint (a menu, toast, or dialog opened on top in the same frame)
+    /// overwrites that cell, the stamp no longer matches and this cell
+    /// reads back as ordinary text, with no need for the overlay to
+    /// re-register or shrink this rect itself.
+    fn opaque_rect_index_at(
+        &self,
+        buf: &ratatui::buffer::Buffer,
+        col: u16,
+        row: u16,
+    ) -> Option<usize> {
+        self.opaque_rects.iter().position(|r| {
+            r.cell_stamps
+                .get(&(col, row))
+                .is_some_and(|stamp| buf[(col, row)].symbol() == stamp.as_str())
+        })
+    }
+
+    /// True if cell `(col, row)` is still covered by an opaque rect in the
+    /// live buffer `buf` — see [`Self::opaque_rect_index_at`]. Read by
+    /// [`crate::tui::testing::TuiDriver::row_cells`] so the headless
+    /// driver's text-run/needle scan treats these cells as a blank gap
+    /// instead of matching on whatever filler content was painted there.
+    pub(crate) fn is_opaque_cell(&self, buf: &ratatui::buffer::Buffer, col: u16, row: u16) -> bool {
+        self.opaque_rect_index_at(buf, col, row).is_some()
+    }
+
     /// The `(bar rect, resolved layout)` cached from the most recent
     /// `draw_tab_bar` call for tab bar `id` this frame, or `None` if that
     /// bar didn't paint this frame. See [`Self::tab_bar_layouts`]'s docs
@@ -921,15 +1037,37 @@ impl TuiBackend {
         // `text_selection_line_range` reports cell-space columns as f32;
         // TUI cells are always whole units, so round-trip
         // through `u16` for buffer indexing.
+        //
+        // A cell inside a registered `opaque_rects` entry (see that
+        // field's doc) never contributes its raw `symbol()` — that would
+        // copy a Kitty placeholder codepoint plus its image-id-encoding
+        // diacritics into the clipboard. `last_opaque` tracks the most
+        // recently emitted rect within this row so a contiguous run over
+        // one rect contributes its `fallback_text` once, not once per
+        // cell.
         let mut lines: Vec<String> = Vec::with_capacity(ranges.len());
         for &(row, col_start, col_end) in &ranges {
             if row >= area.y + area.height {
                 continue;
             }
             let mut line = String::new();
+            let mut last_opaque: Option<usize> = None;
             for col in (col_start as u16)..(col_end as u16) {
                 if col < area.x + area.width {
-                    line.push_str(buf[(col, row)].symbol());
+                    match self.opaque_rect_index_at(buf, col, row) {
+                        Some(idx) => {
+                            if last_opaque != Some(idx) {
+                                if let Some(text) = &self.opaque_rects[idx].fallback_text {
+                                    line.push_str(text);
+                                }
+                                last_opaque = Some(idx);
+                            }
+                        }
+                        None => {
+                            last_opaque = None;
+                            line.push_str(buf[(col, row)].symbol());
+                        }
+                    }
                 }
             }
             let trimmed = line.trim_end_matches(|c: char| c.is_whitespace() || c == '\0');
@@ -937,10 +1075,15 @@ impl TuiBackend {
         }
         self.cached_selection_text = lines.join("\n");
 
-        // Now invert cells for the highlight.
+        // Now invert cells for the highlight — skipping opaque cells so a
+        // Kitty placeholder's foreground (which encodes an image id, not a
+        // real colour) is never swapped into the background and back.
         for (row, col_start, col_end) in ranges {
             for col in (col_start as u16)..(col_end as u16) {
-                if col < area.x + area.width && row < area.y + area.height {
+                if col < area.x + area.width
+                    && row < area.y + area.height
+                    && !self.is_opaque_cell(buf, col, row)
+                {
                     let cell = &mut buf[(col, row)];
                     let fg = cell.fg;
                     let bg = cell.bg;
@@ -2004,6 +2147,10 @@ impl Backend for TuiBackend {
         // Clear per-frame widget zones for the same reason. Same
         // lifecycle as text_regions.
         self.zones.clear();
+        // Clear per-frame opaque-cell rects for the same reason — a rect
+        // that stops painting (e.g. its image scrolled off) must stop
+        // shielding its old cells from selection/copy.
+        self.opaque_rects.clear();
         // Clear the focused activity bar — re-set by draw_activity_bar
         // during the render pass if still focused.
         self.focused_activity_bar = None;
@@ -6540,6 +6687,181 @@ mod tests {
         // 0..1, so col=1 should be un-inverted).
         assert_eq!(buf[(1u16, 2u16)].fg, RC::White);
         assert_eq!(buf[(1u16, 2u16)].bg, RC::Black);
+    }
+
+    /// An opaque rect registered via `register_opaque_rect` keeps its
+    /// fg/bg under an active selection that covers it, and contributes its
+    /// `fallback_text` once (not once per cell) to the copied selection
+    /// text — the issue's "selection, copy and inventory off non-text
+    /// cells" acceptance scenario.
+    #[test]
+    fn opaque_rect_is_skipped_by_selection_highlight_and_copy() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+        use ratatui::style::Color as RC;
+
+        // 10 wide x 1 tall buffer: "ab" + 3 placeholder cells + "fg".
+        let area = RRect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(area);
+        for (col, ch) in "ab".chars().enumerate() {
+            buf[(col as u16, 0)]
+                .set_char(ch)
+                .set_fg(RC::White)
+                .set_bg(RC::Black);
+        }
+        for col in 2u16..5u16 {
+            // A placeholder codepoint standing in for a Kitty graphics
+            // cell — its "colour" would really encode an image id, not a
+            // real fg colour.
+            buf[(col, 0)]
+                .set_char('\u{10EEEE}')
+                .set_fg(RC::Red)
+                .set_bg(RC::Black);
+        }
+        for (i, ch) in "fg".chars().enumerate() {
+            buf[(5 + i as u16, 0)]
+                .set_char(ch)
+                .set_fg(RC::White)
+                .set_bg(RC::Black);
+        }
+
+        let mut backend = TuiBackend::new();
+        backend.register_opaque_rect(
+            WidgetId::new("img:logo"),
+            crate::event::Rect::new(2.0, 0.0, 3.0, 1.0),
+            &buf,
+            Some("[image]".to_string()),
+        );
+        backend.register_text_region(crate::dispatch::TextRegion {
+            id: WidgetId::new("log:body"),
+            bounds: crate::event::Rect::new(0.0, 0.0, 10.0, 1.0),
+            lines: vec![],
+        });
+        // Select the whole row, spanning the opaque rect on both sides.
+        backend.set_active_text_selection(
+            WidgetId::new("log:body"),
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+        );
+        backend.apply_selection_highlight(&mut buf);
+
+        // Surrounding text inverted normally.
+        assert_eq!(buf[(0u16, 0u16)].fg, RC::Black);
+        assert_eq!(buf[(0u16, 0u16)].bg, RC::White);
+        assert_eq!(buf[(5u16, 0u16)].fg, RC::Black);
+        assert_eq!(buf[(5u16, 0u16)].bg, RC::White);
+        // Opaque cells untouched — still their original fg/bg, not
+        // inverted.
+        for col in 2u16..5u16 {
+            assert_eq!(
+                buf[(col, 0u16)].fg,
+                RC::Red,
+                "opaque cell {col} fg must not be swapped"
+            );
+            assert_eq!(
+                buf[(col, 0u16)].bg,
+                RC::Black,
+                "opaque cell {col} bg must not be swapped"
+            );
+        }
+        // Copied text has the surrounding letters plus "[image]" once,
+        // never the raw placeholder codepoint.
+        assert_eq!(backend.cached_selection_text(), "ab[image]fg");
+    }
+
+    /// `begin_frame` clears opaque rects, same lifecycle as `zones` —
+    /// a rect that stops painting (its image scrolled away) must stop
+    /// shielding its old cells.
+    #[test]
+    fn opaque_rects_cleared_on_begin_frame() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        let area = RRect::new(0, 0, 5, 1);
+        let buf = Buffer::empty(area);
+        let mut backend = TuiBackend::new();
+        backend.register_opaque_rect(
+            WidgetId::new("img:logo"),
+            crate::event::Rect::new(0.0, 0.0, 5.0, 1.0),
+            &buf,
+            None,
+        );
+        assert!(backend.is_opaque_cell(&buf, 0, 0));
+        backend.begin_frame(Viewport::default());
+        assert!(!backend.is_opaque_cell(&buf, 0, 0));
+    }
+
+    /// A later overlay (a dialog, menu or toast painted on top of an
+    /// opaque rect's cells, within the same frame) wins those cells: once
+    /// its real content overwrites the registered placeholder, the
+    /// overwritten cells behave as ordinary text again — selectable and
+    /// copyable — without the opaque rect ever being re-asserted or
+    /// shrunk.
+    #[test]
+    fn overlay_painted_over_half_an_opaque_rect_is_selectable_normally() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+        use ratatui::style::Color as RC;
+
+        let area = RRect::new(0, 0, 6, 1);
+        let mut buf = Buffer::empty(area);
+        for col in 0u16..6u16 {
+            buf[(col, 0)]
+                .set_char('\u{10EEEE}')
+                .set_fg(RC::Red)
+                .set_bg(RC::Black);
+        }
+
+        let mut backend = TuiBackend::new();
+        backend.register_opaque_rect(
+            WidgetId::new("img:logo"),
+            crate::event::Rect::new(0.0, 0.0, 6.0, 1.0),
+            &buf,
+            Some("[image]".to_string()),
+        );
+
+        // An overlay repaints the left half (cols 0..3) with real text,
+        // after the rect was registered — exactly like a later paint call
+        // in the same `app.render` pass would.
+        for (col, ch) in "hi!".chars().enumerate() {
+            buf[(col as u16, 0)]
+                .set_char(ch)
+                .set_fg(RC::White)
+                .set_bg(RC::Black);
+        }
+
+        backend.register_text_region(crate::dispatch::TextRegion {
+            id: WidgetId::new("log:body"),
+            bounds: crate::event::Rect::new(0.0, 0.0, 6.0, 1.0),
+            lines: vec![],
+        });
+        backend.set_active_text_selection(
+            WidgetId::new("log:body"),
+            Point::new(0.0, 0.0),
+            Point::new(6.0, 0.0),
+        );
+        backend.apply_selection_highlight(&mut buf);
+
+        // The overlaid half inverted normally, like any other text.
+        for col in 0u16..3u16 {
+            assert_eq!(
+                buf[(col, 0u16)].fg,
+                RC::Black,
+                "overlaid cell {col} should invert normally"
+            );
+            assert_eq!(buf[(col, 0u16)].bg, RC::White);
+        }
+        // The still-untouched right half stays shielded.
+        for col in 3u16..6u16 {
+            assert_eq!(
+                buf[(col, 0u16)].fg,
+                RC::Red,
+                "still-opaque cell {col} must not be swapped"
+            );
+        }
+        // Copied text is the overlay's real text plus one "[image]" for
+        // the remaining opaque run — never three.
+        assert_eq!(backend.cached_selection_text(), "hi![image]");
     }
 
     #[test]
