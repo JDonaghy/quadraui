@@ -96,10 +96,10 @@ impl MenuBarItemMeasure {
     }
 }
 
-/// Fixed height (px) of the in-canvas menu-bar strip on a pixel backend
-/// (GTK/macOS/Win) — a VS-Code-style custom title bar row, not a multiple
-/// of the backend's own chrome line height. [`resolve_bar_height`] is the
-/// single place that turns a candidate line height into this metric.
+/// Minimum height (px) of the in-canvas menu-bar strip on a pixel backend
+/// (GTK/macOS/Win) — a VS-Code-style custom title bar row, floored above
+/// (not replacing) the backend's own chrome line height. [`resolve_bar_height`]
+/// is the single place that turns a candidate line height into this metric.
 pub const BAR_HEIGHT: f32 = 30.0;
 
 /// Resolve the menu-bar strip height a caller should use for
@@ -107,14 +107,17 @@ pub const BAR_HEIGHT: f32 = 30.0;
 /// `bounds.height`, given a candidate line height.
 ///
 /// On a pixel backend (`candidate_line_height > 1.0`) this returns
-/// [`BAR_HEIGHT`] unconditionally — the in-canvas bar is sized from the
-/// fixed metric, independent of the chrome font's measured line height.
-/// On TUI (`candidate_line_height <= 1.0`, the cell-grid convention where
-/// one row is `1.0` "unit" tall) the candidate passes through unchanged:
-/// a terminal cell has no sub-cell height to refine.
+/// `candidate_line_height.max(`[`BAR_HEIGHT`]`)` — the in-canvas bar is
+/// floored at the fixed metric, same as every other resolver of this
+/// shape in the crate (`GtkBackend::resolved_row_height`,
+/// `resolved_toolbar_height`, `palette::item_row_height`), so a chrome
+/// font taller than the token still gets the room it measured instead of
+/// being clipped. On TUI (`candidate_line_height <= 1.0`, the cell-grid
+/// convention where one row is `1.0` "unit" tall) the candidate passes
+/// through unchanged: a terminal cell has no sub-cell height to refine.
 pub fn resolve_bar_height(candidate_line_height: f32) -> f32 {
     if candidate_line_height > 1.0 {
-        BAR_HEIGHT
+        candidate_line_height.max(BAR_HEIGHT)
     } else {
         candidate_line_height
     }
@@ -1064,13 +1067,22 @@ mod tests {
     // ── resolve_bar_height ────────────────────────────────────────────
 
     #[test]
-    fn resolve_bar_height_pins_pixel_backends_at_30px() {
-        // GTK/macOS/Win chrome line heights vary (16-22px typical); every
-        // one of them resolves to the same fixed 30px row.
+    fn resolve_bar_height_floors_pixel_backends_at_30px() {
+        // GTK/macOS/Win chrome line heights vary (16-22px typical) and all
+        // sit below the 30px token, so every one of them is floored up to
+        // the same fixed row.
         assert_eq!(resolve_bar_height(16.0), BAR_HEIGHT);
         assert_eq!(resolve_bar_height(18.0), BAR_HEIGHT);
         assert_eq!(resolve_bar_height(22.0), BAR_HEIGHT);
         assert_eq!(BAR_HEIGHT, 30.0);
+    }
+
+    #[test]
+    fn resolve_bar_height_keeps_a_taller_chrome_font_uncapped() {
+        // A chrome font/high-DPI setup taller than the 30px token must not
+        // get clipped: the floor only raises a short candidate, it never
+        // lowers a tall one.
+        assert_eq!(resolve_bar_height(34.0), 34.0);
     }
 
     #[test]

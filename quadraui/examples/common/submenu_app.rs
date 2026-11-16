@@ -18,10 +18,10 @@
 //! - q / Esc (no menu open) → quit
 
 use quadraui::{
-    AppLogic, Backend, Color, ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure,
-    ContextMenuLayout, ContextMenuPlacement, InteractionState, Key, MenuDef, MenuEvent, MenuSystem,
-    MouseButton, NamedKey, Point, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    resolve_bar_height, AppLogic, Backend, Color, ContextMenu, ContextMenuHit, ContextMenuItem,
+    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, InteractionState, Key,
+    MenuDef, MenuEvent, MenuSystem, MouseButton, NamedKey, Point, Reaction, Rect, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 // ── Context-menu state ────────────────────────────────────────────────────────
@@ -637,7 +637,12 @@ impl AppLogic for SubmenuApp {
         let lh = backend.line_height();
 
         // Menu bar across the top row.
-        let bar_rect = Rect::new(0.0, 0.0, viewport.width, lh);
+        let bar_rect = Rect::new(
+            0.0,
+            0.0,
+            viewport.width,
+            resolve_bar_height(backend.chrome_line_height()),
+        );
         self.menu_system.render(backend, bar_rect);
 
         // In-window context menu (if open).
@@ -677,8 +682,12 @@ impl AppLogic for SubmenuApp {
 
         // Menu bar / dropdown handling.
         let viewport = backend.viewport();
-        let lh = backend.line_height();
-        let bar_rect = Rect::new(0.0, 0.0, viewport.width, lh);
+        let bar_rect = Rect::new(
+            0.0,
+            0.0,
+            viewport.width,
+            resolve_bar_height(backend.chrome_line_height()),
+        );
         match self.menu_system.handle(&event, backend, bar_rect) {
             MenuEvent::Activated(id) => {
                 if id.as_str() == "quit" {
