@@ -53,6 +53,20 @@ mod float;
 mod focus_ring;
 mod form;
 mod image;
+// Decode + downscale for the Kitty graphics protocol (issue #2574).
+// Gated separately from `kitty_graphics` below: this module alone needs
+// `dep:image`, so only it sits behind `tui-images` rather than the bare
+// `tui` feature — see that feature's own comment in `Cargo.toml`.
+#[cfg(feature = "tui-images")]
+mod image_decode;
+// Kitty graphics protocol byte encoding (issue #2574): pure
+// control-data/payload formatting, no image-format decoder of its own,
+// so it stays on the bare `tui` feature `kitty_graphics` and `services`'
+// (OSC 52) escape-sequence helpers share — `kitty_graphics::base64_encode`
+// and `kitty_graphics::tmux_passthrough_wrap` are generic terminal
+// escape-sequence plumbing, not graphics-specific, so `services::
+// emit_osc52_with` reuses them instead of carrying its own copy.
+mod kitty_graphics;
 mod list;
 mod menu_bar;
 mod message_list;

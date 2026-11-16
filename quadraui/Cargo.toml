@@ -309,6 +309,16 @@ tui = [
     "dep:directories",
 ]
 
+# Image decode + downscale for the Kitty terminal graphics protocol
+# (issue #2574): `quadraui::tui::image_decode`. Kept off the bare `tui`
+# feature above so a plain terminal-chrome TUI build never pays for a
+# raster image decoder it never calls — only an app that opts into
+# `tui-images` pulls in `dep:image`. `quadraui::tui::kitty_graphics` (the
+# protocol-byte encoder consuming `image_decode`'s output) needs no
+# image-format decoder of its own and so stays on the bare `tui` feature
+# instead of this one.
+tui-images = ["tui", "dep:image"]
+
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
 # `arboard/image-data` (issue #954): `GtkClipboard::read_image`/
 # `write_image` need arboard's `get_image`/`set_image`, which are
@@ -576,6 +586,25 @@ taffy = { version = "0.14.0", default-features = false, features = ["taffy_tree"
 # `Toggled`/`Live` enums, so plain `optional = true` with no feature list
 # pulls in exactly that.
 accesskit = { version = "0.25", optional = true }
+# Optional — pulled in by the `tui-images` feature (issue #2574):
+# `quadraui::tui::image_decode`'s PNG/JPEG/GIF(first frame)/WebP decode +
+# downscale, feeding the Kitty graphics protocol transmit step in
+# `quadraui::tui::kitty_graphics`. Already present in this crate's
+# dependency graph transitively (`arboard/image-data`, for
+# `Clipboard::read_image`/`write_image`'s own decode), but that pull-in
+# is unconditional-feature-list-free (whatever `arboard` itself
+# resolves) and gated on `gtk`/`macos`, not `tui`; this is `tui-images`'s
+# own direct, explicit dependency so a `tui-images`-only build (no
+# `gtk`/`macos`) still gets it, with a `features` list limited to
+# exactly the four source formats the issue asks for rather than
+# `image`'s whole default format matrix (bmp/ico/tiff/tga/dds/hdr/
+# farbfeld/openexr/qoi).
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+], optional = true }
 
 # Unconditional (not feature-gated), same reasoning as `serde_json` above:
 # `quadraui::expr::Expr::Matches` needs a real regex engine for every

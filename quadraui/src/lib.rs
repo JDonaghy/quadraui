@@ -303,8 +303,16 @@ pub mod flex;
 // Linux (`win::image` itself is `target_os = "windows"`-gated, so that
 // check never reaches a call site) and fail that leg's `-D warnings`.
 // `tui` needs it not at all — it paints `Image::fallback_text` instead,
-// see `tui::image`'s module doc.
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+// see `tui::image`'s module doc. `tui-images` wires it in for a
+// different reason: `tui::image_decode`'s decode-cache keyed on
+// `(ImageSource, target size, scale)`, same shape as every other
+// backend's decode cache, just with `tui::image_decode::DecodedImage` as
+// the cached value type `T` instead of a backend-native bitmap.
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    feature = "tui-images"
+))]
 pub(crate) mod image_cache;
 
 // Shared "macOS never activated this window" stderr diagnostic —
