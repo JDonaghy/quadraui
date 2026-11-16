@@ -122,6 +122,51 @@ pub(crate) fn draw_dialog_with_style(
                             let _ = dwrite.draw_text(target, label, vis.bounds, label_fg);
                         }
                     }
+                    // Segmented cluster: a border around the whole slot,
+                    // a divider between adjacent children, the active
+                    // child filled, and each child's own label — same
+                    // shape as the shared
+                    // `crate::primitives::toolbar::native_surface_paint::paint_group`,
+                    // just drawn with this module's own D2D primitives
+                    // since this block predates `PaintSurface`.
+                    ToolbarItemKind::Group => {
+                        let _ = stroke_rect(target, vis.bounds, border, 1.0);
+                        if let Some(crate::primitives::toolbar::ToolbarButton::Group {
+                            items,
+                            ..
+                        }) = toolbar.buttons.get(vis.item_idx)
+                        {
+                            for child in &vis.group_children {
+                                let r = child.bounds;
+                                if r.width <= 0.0 || r.height <= 0.0 {
+                                    continue;
+                                }
+                                if child.item_idx > 0 {
+                                    let _ = super::text::draw_line(
+                                        target,
+                                        r.x,
+                                        vis.bounds.y,
+                                        r.x,
+                                        vis.bounds.y + vis.bounds.height,
+                                        border,
+                                        1.0,
+                                    );
+                                }
+                                if child.is_active {
+                                    let _ = fill_rect(target, r, sel);
+                                }
+                                if let Some(crate::primitives::toolbar::ToolbarButton::Action {
+                                    label,
+                                    enabled,
+                                    ..
+                                }) = items.get(child.item_idx)
+                                {
+                                    let label_fg = if *enabled { fg } else { theme.muted_fg };
+                                    let _ = dwrite.draw_text(target, label, r, label_fg);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
