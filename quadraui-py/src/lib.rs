@@ -9458,6 +9458,148 @@ def handle(event):
         });
     }
 
+    /// A toolbar `Group` with `exclusive: True` (a view-mode segmented
+    /// control): a click on its third child must be replaced by the
+    /// semantic `UiEvent::Toolbar(.., ToolbarEvent::GroupSelected)` it
+    /// stands for, carrying the group's own id and the clicked child's
+    /// id — not a plain `ButtonClicked`, since the group is exclusive.
+    #[test]
+    fn mouse_down_over_an_exclusive_toolbar_group_child_emits_group_selected() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'id': 'toolbar:main', 'toolbar': {
+        'id': 'toolbar:main',
+        'buttons': [
+            {'Group': {
+                'id': 'view_switch',
+                'exclusive': True,
+                'items': [
+                    {'Action': {
+                        'id': 'icons', 'label': 'Icons', 'icon': None,
+                        'key_hint': None, 'enabled': True, 'is_active': True,
+                        'tooltip': '',
+                    }},
+                    {'Action': {
+                        'id': 'list', 'label': 'List', 'icon': None,
+                        'key_hint': None, 'enabled': True, 'is_active': False,
+                        'tooltip': '',
+                    }},
+                    {'Action': {
+                        'id': 'columns', 'label': 'Columns', 'icon': None,
+                        'key_hint': None, 'enabled': True, 'is_active': False,
+                        'tooltip': '',
+                    }},
+                ],
+            }},
+        ],
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(60, 5, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
+            assert!(
+                app.screen_contains("Columns")
+                    .expect("render must not raise"),
+                "the third segment's label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Columns")
+                .expect("the third segment's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "a group segment click carries no leading FocusChanged"
+            );
+            let event_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let toolbar_payload = event_dict
+                .get_item("Toolbar")
+                .expect("dict lookup")
+                .expect("a group click must dispatch a Toolbar key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("Toolbar must pythonize to a (id, event) tuple");
+            let inner = toolbar_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ToolbarEvent must pythonize to a dict");
+            let selected = inner
+                .get_item("GroupSelected")
+                .expect("dict lookup")
+                .expect(
+                    "an exclusive group's child click must carry a GroupSelected key, \
+                         not ButtonClicked",
+                )
+                .cast_into::<PyDict>()
+                .expect("GroupSelected payload must be a dict");
+            let group_id: String = selected
+                .get_item("group")
+                .expect("dict lookup")
+                .expect("group key must be present")
+                .extract()
+                .expect("group must be a string");
+            assert_eq!(
+                group_id, "view_switch",
+                "the owning group's own id must be reported"
+            );
+            let child_id: String = selected
+                .get_item("id")
+                .expect("dict lookup")
+                .expect("id key must be present")
+                .extract()
+                .expect("id must be a string");
+            assert_eq!(
+                child_id, "columns",
+                "the clicked child's own id must be reported"
+            );
+        });
+    }
+
     /// Two `tree` leaves side by side in a `Row`: `Tab` cycles focus between
     /// them (via core's shared `preprocess_event`/`FocusManager` pipeline,
     /// driven by `PyAppLogic::tab_stops`), and a plain key then routes to

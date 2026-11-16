@@ -315,8 +315,17 @@ class _ToolbarButtonLabel(TypedDict):
 class _ToolbarButtonLabelWrapper(TypedDict):
     Label: _ToolbarButtonLabel
 
-# One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, or `{"Label": {...}}`.
-ToolbarButtonDescriptor = Union[Literal['Separator', 'Spacer'], _ToolbarButtonActionWrapper, _ToolbarButtonLabelWrapper]
+class _ToolbarButtonGroup(TypedDict):
+    id: WidgetId
+    items: List[ToolbarButtonDescriptor]
+    exclusive: NotRequired[bool]
+    label: NotRequired[Optional[str]]
+
+class _ToolbarButtonGroupWrapper(TypedDict):
+    Group: _ToolbarButtonGroup
+
+# One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, or `{"Group": {...}}`.
+ToolbarButtonDescriptor = Union[Literal['Separator', 'Spacer'], _ToolbarButtonActionWrapper, _ToolbarButtonLabelWrapper, _ToolbarButtonGroupWrapper]
 
 class ToolbarDescriptor(TypedDict):
     id: WidgetId
@@ -1785,8 +1794,13 @@ class _ToolbarButtonClickedPayload(TypedDict):
     id: WidgetId
     is_active: bool
 
+class _ToolbarGroupSelectedPayload(TypedDict):
+    group: WidgetId
+    id: WidgetId
+
 class ToolbarEvent(TypedDict):
     ButtonClicked: NotRequired[_ToolbarButtonClickedPayload]
+    GroupSelected: NotRequired[_ToolbarGroupSelectedPayload]
 
 class CalendarDate(TypedDict):
     year: int

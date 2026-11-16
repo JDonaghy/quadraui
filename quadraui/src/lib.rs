@@ -700,9 +700,9 @@ pub use primitives::toast::{
     ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast,
 };
 pub use primitives::toolbar::{
-    Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarIcons, ToolbarItemKind,
-    ToolbarItemMeasure, ToolbarItemRole, ToolbarLayout, ToolbarLayoutOptions, ToolbarOrientation,
-    ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign, VisibleToolbarItem,
+    GroupChildBounds, Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarIcons,
+    ToolbarItemKind, ToolbarItemMeasure, ToolbarItemRole, ToolbarLayout, ToolbarLayoutOptions,
+    ToolbarOrientation, ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign, VisibleToolbarItem,
 };
 pub use primitives::tooltip::{
     ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipHit, TooltipLayout,

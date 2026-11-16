@@ -823,14 +823,33 @@ pub fn schema() -> Vec<DefJson> {
         "_ToolbarButtonLabelWrapper",
         vec![field("Label", toolbar_button_label)],
     ));
+    let toolbar_button_group = b.define(obj(
+        "_ToolbarButtonGroup",
+        vec![
+            field("id", re("WidgetId")),
+            // Recursive by name (`re("ToolbarButtonDescriptor")`, not the
+            // `toolbar_button_descriptor` binding below) -- `Builder::define`
+            // returns a named reference regardless of definition order, so
+            // this forward reference to the union this variant itself
+            // joins resolves once `ToolbarButtonDescriptor` is defined.
+            field("items", list(re("ToolbarButtonDescriptor"))),
+            field_opt("exclusive", bool_()),
+            field_opt("label", nullable(str_())),
+        ],
+    ));
+    let toolbar_button_group_wrapper = b.define(obj(
+        "_ToolbarButtonGroupWrapper",
+        vec![field("Group", toolbar_button_group)],
+    ));
     let toolbar_button_descriptor = b.define(union_of_doc(
         "ToolbarButtonDescriptor",
         vec![
             lit(&["Separator", "Spacer"]),
             toolbar_button_action_wrapper,
             toolbar_button_label_wrapper,
+            toolbar_button_group_wrapper,
         ],
-        "One `Toolbar::buttons` entry: `\"Separator\"`/`\"Spacer\"` (bare strings), `{\"Action\": {...}}`, or `{\"Label\": {...}}`.",
+        "One `Toolbar::buttons` entry: `\"Separator\"`/`\"Spacer\"` (bare strings), `{\"Action\": {...}}`, `{\"Label\": {...}}`, or `{\"Group\": {...}}`.",
     ));
     let toolbar_descriptor = b.define(obj(
         "ToolbarDescriptor",
@@ -2875,9 +2894,16 @@ pub fn schema() -> Vec<DefJson> {
         "_ToolbarButtonClickedPayload",
         vec![field("id", re("WidgetId")), field("is_active", bool_())],
     ));
+    let toolbar_group_selected_payload = b.define(obj(
+        "_ToolbarGroupSelectedPayload",
+        vec![field("group", re("WidgetId")), field("id", re("WidgetId"))],
+    ));
     b.define(flat(
         "ToolbarEvent",
-        &[("ButtonClicked", toolbar_button_clicked_payload)],
+        &[
+            ("ButtonClicked", toolbar_button_clicked_payload),
+            ("GroupSelected", toolbar_group_selected_payload),
+        ],
         vec![],
     ));
 
@@ -3635,6 +3661,10 @@ mod coverage {
                 id: _,
                 is_active: _,
             } => {}
+            ToolbarEvent::GroupSelected { group: _, id: _ } => {}
+            // `ToolbarEvent` is `#[non_exhaustive]` -- see
+            // `assert_tab_bar_event`'s matching comment.
+            _ => {}
         }
     }
 
@@ -5281,6 +5311,12 @@ mod coverage {
             ToolbarButton::Separator => {}
             ToolbarButton::Label { text: _, fg: _ } => {}
             ToolbarButton::Spacer => {}
+            ToolbarButton::Group {
+                id: _,
+                items: _,
+                exclusive: _,
+                label: _,
+            } => {}
             // `ToolbarButton` is `#[non_exhaustive]` -- see
             // `assert_tab_bar_event`'s matching comment.
             _ => {}
@@ -5581,7 +5617,7 @@ mod coverage {
     mod variant_shape {
         use std::collections::BTreeSet;
 
-        use quadraui::{ChartKind, DrawOp, TabBarEvent, ToolbarButton};
+        use quadraui::{ChartKind, DrawOp, TabBarEvent, ToolbarButton, ToolbarEvent};
 
         /// Deserializes a deliberately-unknown tag into `T` and parses the
         /// resulting serde error's "expected one of `A`, `B`, ..." variant
@@ -5593,7 +5629,13 @@ mod coverage {
             let err = serde_json::from_str::<T>(r#"{"__quadraui_schema_probe__":null}"#)
                 .expect_err("the probe tag must not be a real variant");
             let message = err.to_string();
-            let marker = "expected one of ";
+            // Serde phrases this differently by variant count -- "expected
+            // one of `A`, `B`, `C`" for 3+, "expected `A` or `B`" for
+            // exactly 2 -- but every phrasing starts with "expected " and
+            // then backtick-delimits each name, so splitting there (rather
+            // than on the longer "one of " marker, which a 2-variant enum's
+            // message never contains) handles every variant count alike.
+            let marker = "expected ";
             let list = message
                 .split_once(marker)
                 .map(|(_, rest)| rest)
@@ -5650,7 +5692,15 @@ mod coverage {
             ToolbarButton,
             "ToolbarButton",
             "ToolbarButtonDescriptor",
-            ["Action", "Separator", "Label", "Spacer"]
+            ["Action", "Separator", "Label", "Spacer", "Group"]
+        );
+
+        variant_shape_test!(
+            toolbar_event_variants_match_the_schema_tag_list,
+            ToolbarEvent,
+            "ToolbarEvent",
+            "ToolbarEvent",
+            ["ButtonClicked", "GroupSelected"]
         );
 
         variant_shape_test!(

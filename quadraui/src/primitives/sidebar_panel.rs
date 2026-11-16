@@ -460,6 +460,12 @@ pub(crate) mod native_surface_paint {
                 // Invisible by definition — see `ToolbarButton::Spacer`'s
                 // own doc.
                 ToolbarButton::Spacer => {}
+                // Not yet painted by this header-scoped port of
+                // `toolbar::draw_toolbar` (see this fn's own doc for the
+                // four divergences it already names) — a sidebar panel
+                // header with a segmented `Group` paints only its shared
+                // border/divider-less background for now.
+                ToolbarButton::Group { .. } => {}
             }
         }
 

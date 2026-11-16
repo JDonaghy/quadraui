@@ -33,7 +33,11 @@ pub(crate) fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(
     match btn {
         ToolbarButton::Action { id, label, .. } => Some((*id, label.clone())),
         ToolbarButton::Label { text, .. } => Some((*field_id, text.clone())),
-        ToolbarButton::Separator | ToolbarButton::Spacer => None,
+        // No single (id, text) pair represents a whole `Group` — unifying
+        // this plain-text path with `win::toolbar`'s full chrome is the
+        // same follow-up this module's own doc already names for
+        // `Separator`/`Spacer`.
+        ToolbarButton::Separator | ToolbarButton::Spacer | ToolbarButton::Group { .. } => None,
     }
 }
 

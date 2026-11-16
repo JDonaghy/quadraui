@@ -1170,7 +1170,9 @@ impl ExtraPaint for Toolbar {
     /// spans. Disabled actions and non-action items (separators, labels)
     /// have no `action_id` or aren't `clickable`, so they never become a
     /// hit region, matching [`quadraui::ToolbarLayout::hit_test`]'s own
-    /// skip rule.
+    /// skip rule. A [`quadraui::ToolbarButton::Group`] item is itself
+    /// never clickable — its `group_children` are walked instead, same
+    /// split [`quadraui::ToolbarLayout::hit_test`] makes.
     fn paint_chrome(
         &self,
         backend: &mut dyn Backend,
@@ -1181,8 +1183,22 @@ impl ExtraPaint for Toolbar {
             .draw_toolbar_interactive(area, self, interaction)
             .visible_items
             .into_iter()
-            .filter(|item| item.clickable)
-            .filter_map(|item| item.action_id.map(|id| (item.bounds, id)))
+            .flat_map(|item| -> Vec<(Rect, WidgetId)> {
+                if item.kind == quadraui::ToolbarItemKind::Group {
+                    item.group_children
+                        .into_iter()
+                        .filter(|child| child.clickable)
+                        .filter_map(|child| child.action_id.map(|id| (child.bounds, id)))
+                        .collect()
+                } else if item.clickable {
+                    item.action_id
+                        .map(|id| (item.bounds, id))
+                        .into_iter()
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            })
             .collect()
     }
 

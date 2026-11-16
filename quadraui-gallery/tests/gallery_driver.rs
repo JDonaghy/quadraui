@@ -557,7 +557,7 @@ fn select_chrome_demo<A: AppLogic>(driver: &mut TuiDriver<A>, name: &str) {
 /// line reflects the new state.
 #[test]
 fn toolbar_filter_click_updates_the_hint_line() {
-    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 160, 32);
     select_chrome_demo(&mut driver, "Toolbar");
     assert!(driver.screen_contains("Tab to focus"));
 
@@ -576,6 +576,64 @@ fn toolbar_filter_click_updates_the_hint_line() {
         driver.screen_contains("Filter on"),
         "clicking Filter should flip it on and update the hint line:\n{}",
         driver.screen()
+    );
+}
+
+/// Clicking the third segment ("Columns") of the Toolbar demo's exclusive
+/// view-mode group reports `ToolbarEvent::GroupSelected` through
+/// `ToolbarDemo::dispatch` (visible as the hint line switching to
+/// "View: Columns") and the next frame paints that segment with the
+/// active fill (`theme.selected_bg`) — the same fill "Icons" (the
+/// default-active segment) starts with, now moved off it.
+#[test]
+fn toolbar_group_third_segment_click_emits_group_selected_and_paints_it_active() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 160, 32);
+    select_chrome_demo(&mut driver, "Toolbar");
+    assert!(driver.screen_contains("Tab to focus"));
+
+    let active_bg = quadraui::tui::ratatui_color(driver.backend().theme().selected_bg);
+    let icons_bounds = driver
+        .find_bounds("Icons")
+        .unwrap_or_else(|| panic!("Icons segment should paint:\n{}", driver.screen()));
+    assert_eq!(
+        driver
+            .style_at(icons_bounds.x as u16, icons_bounds.y as u16)
+            .map(|s| s.bg),
+        Some(active_bg),
+        "the default-active \"Icons\" segment should start filled with the active bg"
+    );
+
+    let (x, y) = driver
+        .find("Columns")
+        .unwrap_or_else(|| panic!("Columns segment should paint:\n{}", driver.screen()));
+    driver.mouse_down(x, y);
+    driver.mouse_up(x, y);
+
+    assert!(
+        driver.screen_contains("View: Columns"),
+        "clicking the third segment should report GroupSelected and update the hint line:\n{}",
+        driver.screen()
+    );
+
+    let columns_bounds = driver
+        .find_bounds("Columns")
+        .unwrap_or_else(|| panic!("Columns segment should still paint:\n{}", driver.screen()));
+    assert_eq!(
+        driver
+            .style_at(columns_bounds.x as u16, columns_bounds.y as u16)
+            .map(|s| s.bg),
+        Some(active_bg),
+        "the now-active \"Columns\" segment should paint with the active bg"
+    );
+    let icons_bounds_after = driver
+        .find_bounds("Icons")
+        .unwrap_or_else(|| panic!("Icons segment should still paint:\n{}", driver.screen()));
+    assert_ne!(
+        driver
+            .style_at(icons_bounds_after.x as u16, icons_bounds_after.y as u16)
+            .map(|s| s.bg),
+        Some(active_bg),
+        "\"Icons\" should lose the active fill once \"Columns\" becomes active"
     );
 }
 
