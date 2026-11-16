@@ -159,6 +159,21 @@ pub mod pixel {
     /// terminal affordance on a pixel canvas.
     pub const FORM_BUTTON_ITEM_PADDING: f32 = 16.0;
 
+    /// Natural width (in pixels) of a [`crate::Form`]
+    /// [`crate::primitives::form::FieldKind::Slider`] field's painted
+    /// track — the fill/groove strip a pointer maps a fraction across,
+    /// excluding the [`FORM_SLIDER_VALUE_GAP`] and the value text laid
+    /// out after it. `form_field_measure` reports exactly this as the
+    /// field's single item width, `native_surface_paint::paint` fills
+    /// exactly that item's rect, and `FormController`'s click routing
+    /// maps a pointer x across exactly the same rect — so the value
+    /// under the cursor is the value a click produces.
+    pub const FORM_SLIDER_TRACK_WIDTH: f32 = 80.0;
+
+    /// Gap (in pixels) between a `FieldKind::Slider` field's painted
+    /// track and the value text that follows it.
+    pub const FORM_SLIDER_VALUE_GAP: f32 = 8.0;
+
     /// [`crate::primitives::minimap::Minimap`] buffer lines painted per
     /// minimap row. Every pixel backend shows one buffer line per row (no
     /// cross-line colour reduction — see [`crate::MinimapGrid`]'s doc for
@@ -679,6 +694,22 @@ fn form_field_measure_inner(
             let items = vec![FormItemMeasure {
                 id: field.id,
                 width,
+            }];
+            FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
+        // A single item carrying the field's own id whose width is the
+        // *track* alone ([`pixel::FORM_SLIDER_TRACK_WIDTH`]), not the
+        // whole control column: the value text is laid out after the
+        // track, so a pointer x mapped across the column would never
+        // reach `max`. `native_surface_paint::paint`'s
+        // `FieldKind::Slider` arm fills this exact rect and
+        // `FormController`'s click routing reads it, so paint and click
+        // always agree on where the track is.
+        FieldKind::Slider { .. } => {
+            let start_x = items_start_x(&label_text(field), measure, false);
+            let items = vec![FormItemMeasure {
+                id: field.id,
+                width: pixel::FORM_SLIDER_TRACK_WIDTH,
             }];
             FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
         }

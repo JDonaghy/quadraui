@@ -1302,6 +1302,7 @@ mod native_surface_paint {
     // Windows painted `hover_bg` at full row height).
     use crate::paint_geometry::selected_item_fill;
     use crate::primitives::button;
+    use crate::primitives::layout_metrics;
     use crate::primitives::number_input;
     use crate::primitives::radio_group;
     use crate::style::Style;
@@ -1957,19 +1958,40 @@ mod native_surface_paint {
                         let frac = ((value - min) / range).clamp(0.0, 1.0);
                         let value_str = format!("{value:.2}");
                         let (value_w, value_h) = surface.surface_measure_text(&value_str);
-                        // `natural_content_width` for `Content` is the
-                        // same `80 (track) + 8 (gap) + value_w` budget
-                        // the track reclaims after resolving — `Fill`/
-                        // `Fixed` grow or shrink the track instead of
-                        // the value text, mirroring the TUI painter.
-                        let control_w = resolved_control_width.resolve(
-                            80.0 + 8.0 + value_w,
-                            available,
-                            min_control_width,
-                        );
-                        let track_w = (control_w - 8.0 - value_w).max(16.0);
-                        let ix = control_start;
-                        if available > 0.0 {
+                        // `vf.item_bounds`'s single entry (populated by
+                        // `layout_metrics::form_field_measure`'s
+                        // `FieldKind::Slider` arm) *is* the track rect —
+                        // fill it rather than re-deriving the track's x
+                        // and width here, so paint and click
+                        // (`FormController`'s click routing maps a
+                        // pointer x across the same `item_bounds` entry)
+                        // always agree on where the track is. The
+                        // fallback keeps a measure closure that reports
+                        // no items painting a track at the shared
+                        // control column, sized by the field's resolved
+                        // `ControlWidth` against the same
+                        // `track + gap + value_w` budget.
+                        let (ix, track_w) = match vf.item_bounds.first() {
+                            Some((_, item_rect)) => {
+                                let r = translate(item_rect, origin);
+                                (r.x, r.width)
+                            }
+                            None => {
+                                let control_w = resolved_control_width.resolve(
+                                    layout_metrics::pixel::FORM_SLIDER_TRACK_WIDTH
+                                        + layout_metrics::pixel::FORM_SLIDER_VALUE_GAP
+                                        + value_w,
+                                    available,
+                                    min_control_width,
+                                );
+                                let track_w = (control_w
+                                    - layout_metrics::pixel::FORM_SLIDER_VALUE_GAP
+                                    - value_w)
+                                    .max(16.0);
+                                (control_start, track_w)
+                            }
+                        };
+                        if available > 0.0 && track_w > 0.0 {
                             let track_y = row_rect.y + row_h / 2.0 - 2.0;
                             surface.surface_fill_rect(
                                 Rect::new(ix, track_y, track_w, 4.0),
@@ -1981,7 +2003,12 @@ mod native_surface_paint {
                             );
                             let vy = row_rect.y + (row_h - value_h) / 2.0;
                             surface.surface_draw_text_run(
-                                Rect::new(ix + track_w + 8.0, vy, value_w, value_h),
+                                Rect::new(
+                                    ix + track_w + layout_metrics::pixel::FORM_SLIDER_VALUE_GAP,
+                                    vy,
+                                    value_w,
+                                    value_h,
+                                ),
                                 &value_str,
                                 field_fg,
                             );
@@ -2932,6 +2959,68 @@ mod native_surface_paint {
                 min_control_width: None,
                 spacing: Default::default(),
             }
+        }
+
+        /// The groove a `FieldKind::Slider` field paints must be exactly
+        /// its single `item_bounds` entry — that rect is what
+        /// `FormController`'s click routing maps a pointer x across, so
+        /// a drift between the two would hand a user a value that
+        /// doesn't match the fill under their cursor. Asserted for a
+        /// *labeled* field, the form-wide `LabelPosition::Left` default:
+        /// mapping across the whole row instead would put `min` under
+        /// the label text.
+        #[test]
+        fn slider_track_fill_matches_the_item_bounds_click_routing_reads() {
+            let mut field_with_label = one_field_form(
+                "font-size",
+                FieldKind::Slider {
+                    value: 20.0,
+                    min: 8.0,
+                    max: 32.0,
+                    step: 1.0,
+                },
+            );
+            field_with_label.fields[0].label = StyledText::plain("Font size");
+
+            let (surface, flayout) = paint_recorded(&field_with_label);
+            let vf = &flayout.visible_fields[0];
+            let (item_id, track) = vf.item_bounds.first().expect("Slider has one item");
+            assert_eq!(
+                *item_id,
+                WidgetId::new("font-size"),
+                "the item carries the field's own id, so a click on it resolves to the field"
+            );
+            assert!(
+                track.x > vf.bounds.x,
+                "a labeled slider's track must start past its label column"
+            );
+
+            let groove = surface
+                .fills
+                .iter()
+                .find(|(r, c)| *c == Theme::default().muted_fg && r.height == 4.0)
+                .map(|(r, _)| *r)
+                .expect("the slider paints a 4px groove");
+            assert_eq!(groove.x, track.x, "groove x must be the item rect's x");
+            assert_eq!(
+                groove.width, track.width,
+                "groove width must be the item rect's width"
+            );
+
+            // The accent fill is the same fraction of that rect a click
+            // at the pointer resolves to: value 20 of [8, 32] is exactly
+            // half way.
+            let fill = surface
+                .fills
+                .iter()
+                .find(|(r, c)| *c == Theme::default().accent_fg && r.height == 4.0)
+                .map(|(r, _)| *r)
+                .expect("the slider paints an accent fill");
+            assert_eq!(
+                fill.width,
+                track.width / 2.0,
+                "a half-way value must fill half the track rect"
+            );
         }
 
         /// A `Danger` spec on a `ButtonRowItem` paints through

@@ -173,30 +173,36 @@
 //!   Right/Up (up), and jumps straight to `min`/`max` on Home/End —
 //!   every other key returns `None` and falls through to the generic
 //!   dispatch exactly like an unclaimed number-input/radio-group key.
-//! - A click or drag on the track is resolved by [`slider_click_event`],
+//! - A click or drag on the track is resolved by [`slider_value_at`],
 //!   which maps the pointer's x position to a fraction of the track's
 //!   width rather than a fixed step — [`FormController::click_inner`]
 //!   calls it the same way it calls [`number_input_click_event`] for a
 //!   fresh `MouseDown`, and arms `self.slider_drag` with the clicked
-//!   field's id whenever the click landed on a non-disabled `Slider`,
-//!   regardless of whether the value actually moved. Every subsequent
-//!   `MouseMoved` with the left button held re-resolves the same way
-//!   through [`FormController::slider_drag_to`], until `MouseUp` clears
-//!   `slider_drag`.
-//! - The track rect ideally comes from the clicked field's own
+//!   field's id whenever the press landed on a non-disabled `Slider`'s
+//!   track, regardless of whether the value actually moved. Every
+//!   subsequent `MouseMoved` with the left button held re-resolves the
+//!   same way through [`FormController::slider_drag_to`], until
+//!   `MouseUp` clears `slider_drag`. A press that lands on the row but
+//!   off the track ([`TrackOverrun::Reject`]) only focuses the field;
+//!   a drag already captured by the track pins to its ends instead
+//!   ([`TrackOverrun::Clamp`]).
+//! - The track rect comes from the clicked field's own
 //!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry,
-//!   the same lookup `NumberInput`'s stepper uses — but no backend
-//!   populates one for `Slider` today. When it is missing,
-//!   [`slider_click_event`] falls back to the field's whole row
-//!   (`vf.bounds`) only if the field has no label column to its left
-//!   (an empty label, or a resolved [`LabelPosition::Hidden`]); for
-//!   every other resolved label position (`Left`'s default among them)
-//!   it returns `None` instead of mapping a click on the label text to
-//!   a value, so that click falls through to `form_click_event`'s
-//!   `FocusChanged` the same way a click on any other field's label
-//!   already does. A labeled `Slider`'s track itself therefore isn't
-//!   click/drag-operable yet — only its keys are — until a backend
-//!   grows a real `item_bounds` entry for it.
+//!   the same lookup `NumberInput`'s stepper uses. Every layout path
+//!   populates it: the pixel backends'
+//!   `layout_metrics::form_field_measure`, `tui::form`'s cell-unit
+//!   measure, and this module's own backend-free
+//!   [`form_field_measure`] fallback each report the exact track rect
+//!   their painter fills, so a labeled field's track is as
+//!   click/drag-operable as an unlabeled one's and a click on the label
+//!   column lands outside the track rather than at `min`.
+//! - A layout from a measure closure that reports no items at all falls
+//!   back to the field's whole row (`vf.bounds`), but only if the field
+//!   has no label column to its left (an empty label, or a resolved
+//!   [`LabelPosition::Hidden`]); for every other resolved label position
+//!   [`slider_track_rect`] reports no track at all, so the click falls
+//!   through to `form_click_event`'s `FocusChanged` the same way a click
+//!   on any other field's label already does.
 //! - A disabled focused `Slider` does not intercept its keys at all, the
 //!   same as a disabled `NumberInput`/`RadioGroup`, and a click on a
 //!   disabled `Slider` falls through to `form_click_event`'s generic
@@ -409,13 +415,14 @@ pub struct FormController {
     has_focus: bool,
     scroll_drag: Option<ThumbDrag>,
     /// The `FieldKind::Slider` field currently being dragged — set by a
-    /// `MouseDown` that lands on one (see this module's "Slider fields"
-    /// doc section), read by the next `MouseMoved` to keep mapping the
-    /// pointer's x position to a value, and cleared on `MouseUp`.
-    /// Mirrors `scroll_drag`'s own press/drag/release lifecycle, but
-    /// needs only the field's id — unlike `ThumbDrag`, which caches
-    /// geometry from the press, [`slider_click_event`] recomputes the
-    /// track's rect fresh on every move the same way a plain click does.
+    /// `MouseDown` that lands on one's track (see this module's "Slider
+    /// fields" doc section), read by the next `MouseMoved` to keep
+    /// mapping the pointer's x position to a value, and cleared on
+    /// `MouseUp`. Mirrors `scroll_drag`'s own press/drag/release
+    /// lifecycle, but needs only the field's id — unlike `ThumbDrag`,
+    /// which caches geometry from the press, [`slider_track_rect`]
+    /// recomputes the track's rect fresh on every move the same way a
+    /// plain click does.
     slider_drag: Option<WidgetId>,
     cached_lh: Option<f32>,
     text_edit: Option<TextEditState>,
@@ -1809,19 +1816,18 @@ impl FormController {
             let local_y = y - form_rect.y;
             match layout.hit_test(local_x, local_y) {
                 FormHit::Field(id) => {
-                    // Arms `slider_drag` whenever the click landed on a
-                    // non-disabled `Slider` field, regardless of whether
-                    // `slider_click_event` below actually moves the
-                    // value — a press that lands exactly on the current
-                    // value (or just focuses it) still starts a drag the
-                    // next `MouseMoved` should keep tracking. See this
-                    // module's "Slider fields" doc section.
-                    self.slider_drag = form
-                        .fields
-                        .iter()
-                        .find(|f| f.id == id)
-                        .filter(|f| !f.disabled && matches!(f.kind, FieldKind::Slider { .. }))
-                        .map(|_| id);
+                    // Arms `slider_drag` whenever the press landed on a
+                    // non-disabled `Slider` field's painted track,
+                    // regardless of whether `slider_value_at` below
+                    // actually moves the value — a press that lands
+                    // exactly on the current value still starts a drag
+                    // the next `MouseMoved` should keep tracking. A press
+                    // elsewhere in the row (the label column, the value
+                    // text) only focuses the field, so it must not
+                    // capture the pointer. See this module's "Slider
+                    // fields" doc section.
+                    self.slider_drag =
+                        slider_press_is_on_track(&form, &layout, &id, local_x).then_some(id);
                     // `NumberInput`'s stepper buttons are sub-regions of
                     // its single `item_bounds` entry, not separate
                     // `WidgetId`s the way a `RadioGroup` option or a
@@ -1835,7 +1841,9 @@ impl FormController {
                     // which still resolves a plain field click to
                     // `FocusChanged`.
                     let event = number_input_click_event(&form, &layout, &id, local_x, local_y)
-                        .or_else(|| slider_click_event(&form, &layout, &id, local_x))
+                        .or_else(|| {
+                            slider_value_at(&form, &layout, &id, local_x, TrackOverrun::Reject)
+                        })
                         .unwrap_or_else(|| form_click_event(&form, &id));
                     FormControllerEvent::FormAction(event)
                 }
@@ -1936,7 +1944,7 @@ impl FormController {
             })
         };
         let local_x = x - form_rect.x;
-        match slider_click_event(&form, &layout, &dragging_id, local_x) {
+        match slider_value_at(&form, &layout, &dragging_id, local_x, TrackOverrun::Clamp) {
             Some(event) => FormControllerEvent::FormAction(event),
             None => FormControllerEvent::Ignored,
         }
@@ -2068,57 +2076,44 @@ fn slider_clamp(raw: f32, min: f32, max: f32) -> f32 {
     raw.max(min).min(max)
 }
 
-/// Maps a click/drag `x` position (local to the form, same space as
-/// `number_input_click_event`'s `x`/`y`) within a `FieldKind::Slider`
-/// field's track to a value — mirrors `quadraui-binding-core`'s own
-/// `slider_click_event`, which gives the standalone leaf the same
-/// "click lands at that fraction of the track" contract
-/// `FieldKind::Slider`'s doc promises, rather than a fixed one-`step`
-/// nudge regardless of position. Used by both
-/// [`FormController::click_inner`] (a fresh `MouseDown`) and
-/// [`FormController::slider_drag_to`] (every subsequent `MouseMoved`
-/// while dragging), so a click and the drag that follows it agree on
-/// exactly the same mapping.
+/// Cells of track [`form_field_measure`]'s backend-free fallback gives a
+/// [`FieldKind::Slider`] field — `tui::form`'s own natural track width,
+/// which is what `ControlWidth::Content` resolves to there. This
+/// fallback has no row width to resolve `ControlWidth::Fill` against, so
+/// it reports the natural track for every mode; a host with a live
+/// [`Backend`] gets that backend's own resolved track instead.
+const SLIDER_TRACK_CELLS: f32 = 12.0;
+
+/// The on-screen rect of a non-disabled `FieldKind::Slider` field's
+/// painted track, in the same form-local space as
+/// `number_input_click_event`'s `x`/`y`.
 ///
-/// Prefers the clicked field's own
-/// [`crate::primitives::form::VisibleFormField::item_bounds`] entry for
-/// the track rect, the same lookup [`number_input_click_event`] uses for
-/// its stepper — but no backend populates one for `Slider` today (see
-/// this module's "Slider fields" doc section). When it is missing, this
-/// falls back to the field's whole row (`vf.bounds`) only when that row
+/// It is the field's own
+/// [`crate::primitives::form::VisibleFormField::item_bounds`] entry, the
+/// same lookup [`number_input_click_event`] uses for its stepper. Every
+/// layout path populates it for a `FieldKind::Slider` field — the pixel
+/// backends' `layout_metrics::form_field_measure`, `tui::form`'s
+/// cell-unit measure, and [`form_field_measure`]'s backend-free fallback
+/// — and each one reports the exact rect its own painter fills the track
+/// into, so the value under the cursor is the value a click produces
+/// regardless of label position or `ControlWidth`.
+///
+/// A layout from a measure closure that reports no items at all falls
+/// back to the field's whole row (`vf.bounds`), but only when that row
 /// and the painted track actually coincide — an empty label, or a
 /// resolved [`LabelPosition::Hidden`] — since only then does the row's
 /// left edge match the track's. For every other resolved label position
-/// (`Left`'s default among them) the row also spans the label column, so
-/// this returns `None` instead of resolving a click on the label text to
-/// a bogus value.
+/// the row also spans the label column, so this reports no track rather
+/// than one whose left edge is really the label's.
 ///
-/// Returns `None` for every other `FieldKind`, a disabled slider, a
-/// field with no visible rect at all, a labeled field with no
-/// `item_bounds` entry (above), or an `x` that doesn't actually move the
-/// clamped value — [`FormController::click_inner`] falls through to
-/// [`form_click_event`] in all of those cases, which still resolves a
-/// plain click there to `FormEvent::FocusChanged`.
-fn slider_click_event(
-    form: &Form,
-    layout: &FormLayout,
-    clicked_id: &WidgetId,
-    x: f32,
-) -> Option<FormEvent> {
-    let field = form.fields.iter().find(|f| &f.id == clicked_id)?;
-    if field.disabled {
+/// `None` for every other `FieldKind`, a disabled slider, a field with
+/// no visible rect at all, and a zero-width track.
+fn slider_track_rect(form: &Form, layout: &FormLayout, id: &WidgetId) -> Option<Rect> {
+    let field = form.fields.iter().find(|f| &f.id == id)?;
+    if field.disabled || !matches!(field.kind, FieldKind::Slider { .. }) {
         return None;
     }
-    let FieldKind::Slider {
-        value, min, max, ..
-    } = &field.kind
-    else {
-        return None;
-    };
-    let vf = layout
-        .visible_fields
-        .iter()
-        .find(|vf| &vf.id == clicked_id)?;
+    let vf = layout.visible_fields.iter().find(|vf| &vf.id == id)?;
     let track = match vf.item_bounds.first() {
         Some((_, rect)) => *rect,
         None => {
@@ -2130,10 +2125,57 @@ fn slider_click_event(
             vf.bounds
         }
     };
-    if track.width <= 0.0 {
+    (track.width > 0.0).then_some(track)
+}
+
+/// Whether a press at form-local `x` landed on the field's painted
+/// track — what [`FormController::click_inner`] arms `slider_drag` on,
+/// so a press on a labeled slider's label column focuses the row without
+/// capturing the pointer for a drag that would then move the value.
+fn slider_press_is_on_track(form: &Form, layout: &FormLayout, id: &WidgetId, x: f32) -> bool {
+    slider_track_rect(form, layout, id).is_some_and(|t| x >= t.x && x < t.x + t.width)
+}
+
+/// Maps a pointer `x` (local to the form) across a `FieldKind::Slider`
+/// field's painted track to a value — mirrors `quadraui-binding-core`'s
+/// own `slider_click_event`, which gives the standalone leaf the same
+/// "the pointer lands at that fraction of the track" contract
+/// `FieldKind::Slider`'s doc promises, rather than a fixed one-`step`
+/// nudge regardless of position.
+///
+/// `overrun` decides what an `x` outside the track's own span means, so a
+/// press and the drag it starts can share one mapping without sharing
+/// that judgement: [`FormController::click_inner`] passes
+/// [`TrackOverrun::Reject`] (a fresh press has to land on the track to
+/// move the value — on the label column or the value text it falls
+/// through to [`form_click_event`]'s `FocusChanged`), while
+/// [`FormController::slider_drag_to`] passes [`TrackOverrun::Clamp`]
+/// (the pointer is already captured, so dragging past an end pins to
+/// that end instead of dropping the drag).
+///
+/// `None` whenever [`slider_track_rect`] reports no track, for a
+/// rejected overrun, and for an `x` that doesn't actually move the
+/// clamped value.
+fn slider_value_at(
+    form: &Form,
+    layout: &FormLayout,
+    clicked_id: &WidgetId,
+    x: f32,
+    overrun: TrackOverrun,
+) -> Option<FormEvent> {
+    let field = form.fields.iter().find(|f| &f.id == clicked_id)?;
+    let FieldKind::Slider {
+        value, min, max, ..
+    } = &field.kind
+    else {
+        return None;
+    };
+    let track = slider_track_rect(form, layout, clicked_id)?;
+    let raw = (x - track.x) / track.width;
+    if overrun == TrackOverrun::Reject && !(0.0..1.0).contains(&raw) {
         return None;
     }
-    let fraction = ((x - track.x) / track.width).clamp(0.0, 1.0);
+    let fraction = raw.clamp(0.0, 1.0);
     let new_value = slider_clamp(min + fraction * (max - min), *min, *max);
     if new_value == *value {
         return None;
@@ -2142,6 +2184,18 @@ fn slider_click_event(
         id: *clicked_id,
         value: new_value,
     })
+}
+
+/// What a pointer x outside a slider's painted track means to
+/// [`slider_value_at`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrackOverrun {
+    /// A fresh press: an x off the track is not a track interaction at
+    /// all, so no value comes out of it.
+    Reject,
+    /// A drag the track already captured: an x off either end pins the
+    /// value to that end.
+    Clamp,
 }
 
 // ── Item-level keyboard focus helpers ─────────────────────────────────
@@ -2606,6 +2660,26 @@ fn form_field_measure(
                 width,
             }];
             FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
+        // A single item (the field's own id) whose rect is the slider's
+        // *track* alone, so this fallback's `item_bounds` lookup finds
+        // the same track rect a live backend's `form_layout` would — see
+        // `slider_click_event`'s doc. The track's natural
+        // `SLIDER_TRACK_CELLS` sits one cell past the control column's
+        // start, leaving that first cell for the `[` bracket the TUI
+        // painter draws there.
+        FieldKind::Slider { .. } => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items = vec![FormItemMeasure {
+                id: field.id,
+                width: SLIDER_TRACK_CELLS * char_w,
+            }];
+            FormFieldMeasure::with_items(row_h, start_x + char_w, 0.0, items)
         }
         // One item per `RadioOption`, stacked vertically — see
         // `FormFieldMeasure::vertical`'s doc; the field's row is `row_h`
@@ -5296,26 +5370,79 @@ mod tests {
         );
     }
 
-    /// `lh=10.0` → `row_h=14.0`; `FieldKind::Slider` has no `item_bounds`
-    /// entry (see this module's "Slider fields" doc section), so
-    /// `slider_click_event` falls back to the field's whole row — which
-    /// only holds here because `slider_field`'s label is empty, so the
-    /// row and the painted track coincide. `content_width = rect.width =
-    /// 200.0`, so a click at `x=100` lands at fraction `0.5` of `[min,
-    /// max] = [0, 10]`.
+    /// Rect every slider click/drag test below aims inside of. Wide
+    /// enough that one field needs no scrollbar, so `split_rect_lh`
+    /// leaves it whole.
+    const SLIDER_RECT: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 14.0,
+    };
+
+    /// The painted track rect `FormController`'s own backend-free
+    /// fallback layout (`lh = 10.0`, the `set_backend_info` these tests
+    /// use) reports for slider field `id`.
+    ///
+    /// Asked for rather than hardcoded, so a test aims at a fraction of
+    /// the track the painter actually draws — the whole point of the
+    /// `item_bounds` contract — instead of pinning arithmetic that would
+    /// still "pass" if click and paint drifted apart.
+    fn fallback_track_rect(fc: &FormController, id: &str) -> Rect {
+        let lh = 10.0;
+        let (form_rect, _sb) = split_rect_lh(fc.field_count(), lh, SLIDER_RECT);
+        let form = fc.build_form(form_rect, None);
+        let row_h = row_height(lh);
+        let char_w = lh * 0.6;
+        let layout = form.layout(form_rect.width, form_rect.height, |i| {
+            form_field_measure(&form.fields[i], row_h, char_w)
+        });
+        slider_track_rect(&form, &layout, &WidgetId::new(id))
+            .expect("an enabled Slider field has a painted track rect")
+    }
+
+    fn mouse_down_at(fc: &mut FormController, x: f32) -> FormControllerEvent {
+        fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x, y: 7.0 },
+                modifiers: Default::default(),
+            },
+            SLIDER_RECT,
+        )
+    }
+
+    fn left_drag_to(fc: &mut FormController, x: f32) -> FormControllerEvent {
+        fc.handle_cached(
+            &UiEvent::MouseMoved {
+                position: crate::Point { x, y: 7.0 },
+                buttons: ButtonMask {
+                    left: true,
+                    middle: false,
+                    right: false,
+                },
+            },
+            SLIDER_RECT,
+        )
+    }
+
+    fn labeled_slider_controller(value: f32) -> FormController {
+        let mut field = slider_field("s", value, 0.0, 10.0, 1.0, false);
+        field.label = StyledText::plain("Volume");
+        let mut fc = controller_with(vec![field], None);
+        fc.set_backend_info(10.0);
+        fc
+    }
+
+    /// An unlabeled `Slider`: a press at the midpoint of the track the
+    /// layout reports lands at fraction `0.5` of `[min, max] = [0, 10]`.
     #[test]
     fn click_on_a_sliders_track_maps_the_click_position_to_a_value() {
         let mut fc = controller_with(vec![slider_field("s", 0.0, 0.0, 10.0, 1.0, false)], None);
         fc.set_backend_info(10.0);
-        let ev = fc.handle_cached(
-            &UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: crate::Point { x: 100.0, y: 7.0 },
-                modifiers: Default::default(),
-            },
-            Rect::new(0.0, 0.0, 200.0, 14.0),
-        );
+        let track = fallback_track_rect(&fc, "s");
+        let ev = mouse_down_at(&mut fc, track.x + track.width / 2.0);
         assert_eq!(
             ev,
             FormControllerEvent::FormAction(FormEvent::SliderChanged {
@@ -5325,30 +5452,45 @@ mod tests {
         );
     }
 
-    /// A labeled `Slider` has no `item_bounds` entry either, but unlike
-    /// the empty-label case above its row also spans the label column
-    /// (`LabelPosition::Left` is the form-wide default — see
-    /// `Form::label_position`'s doc) — so `slider_click_event` must not
-    /// fall back to the whole row here: a click square on the label text
-    /// (`x=10`, well inside "Volume"'s column, far from the track) must
-    /// not resolve to `fraction == 0.0` → `min`. It falls through to
-    /// `form_click_event`'s generic `FocusChanged` instead, the same
-    /// outcome a click on any other labeled field's label already gets.
+    /// The same press on a *labeled* `Slider` — `LabelPosition::Left` is
+    /// the form-wide default (see `Form::label_position`'s doc), so this
+    /// is the layout any ordinary labeled slider field gets. The track
+    /// sits past the label column, and a press at each of its quarter
+    /// positions resolves to that fraction of `[min, max]`, not to a
+    /// fraction of the whole row.
+    #[test]
+    fn click_on_a_labeled_sliders_track_maps_the_click_position_to_a_value() {
+        // Binary-exact fractions, so the expected value needs no float
+        // tolerance — the mapping under test is a plain multiply.
+        for (fraction, expected) in [(0.0, 0.0), (0.25, 2.5), (0.5, 5.0), (0.75, 7.5)] {
+            let mut fc = labeled_slider_controller(10.0);
+            let track = fallback_track_rect(&fc, "s");
+            assert!(
+                track.x > 0.0,
+                "a labeled slider's track must start past its label column"
+            );
+            let ev = mouse_down_at(&mut fc, track.x + track.width * fraction);
+            assert_eq!(
+                ev,
+                FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                    id: WidgetId::new("s"),
+                    value: expected,
+                }),
+                "a press at fraction {fraction} of a labeled slider's track"
+            );
+        }
+    }
+
+    /// A press square on a labeled slider's label text is not a track
+    /// interaction, so it must not resolve to `fraction == 0.0` → `min`.
+    /// It falls through to `form_click_event`'s generic `FocusChanged`
+    /// instead, the same outcome a click on any other labeled field's
+    /// label already gets.
     #[test]
     fn click_on_a_labeled_sliders_label_column_only_focuses_it() {
-        let mut field = slider_field("s", 5.0, 0.0, 10.0, 1.0, false);
-        field.label = StyledText::plain("Volume");
-        let mut fc = controller_with(vec![field], None);
-        fc.set_backend_info(10.0);
-        let ev = fc.handle_cached(
-            &UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: crate::Point { x: 10.0, y: 7.0 },
-                modifiers: Default::default(),
-            },
-            Rect::new(0.0, 0.0, 200.0, 14.0),
-        );
+        let mut fc = labeled_slider_controller(5.0);
+        let track = fallback_track_rect(&fc, "s");
+        let ev = mouse_down_at(&mut fc, track.x / 2.0);
         assert_eq!(
             ev,
             FormControllerEvent::FormAction(FormEvent::FocusChanged {
@@ -5358,23 +5500,38 @@ mod tests {
         );
     }
 
+    /// Nor is a press on the value text painted after the track: the row
+    /// extends well past the track's right edge, and mapping an `x`
+    /// there would snap the value to `max`.
+    #[test]
+    fn click_right_of_a_sliders_track_only_focuses_it() {
+        let mut fc = labeled_slider_controller(5.0);
+        let track = fallback_track_rect(&fc, "s");
+        let past_end = track.x + track.width + 1.0;
+        assert!(
+            past_end < SLIDER_RECT.width,
+            "the probe must still land inside the field's own row"
+        );
+        let ev = mouse_down_at(&mut fc, past_end);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("s"),
+            }),
+            "a click past a slider's track must only focus it, never snap its value to max"
+        );
+    }
+
     /// A `MouseMoved` with the left button still held, after a `MouseDown`
     /// armed `slider_drag` on the same field, keeps mapping the pointer's
-    /// x position to a value the same way the initial click did.
+    /// x position to a value the same way the initial click did — and a
+    /// drag the track already captured pins to `max` past its right edge
+    /// rather than dropping out, unlike a fresh press there.
     #[test]
     fn drag_after_a_sliders_click_continues_mapping_the_pointer_to_a_value() {
-        let mut fc = controller_with(vec![slider_field("s", 0.0, 0.0, 10.0, 1.0, false)], None);
-        fc.set_backend_info(10.0);
-        let rect = Rect::new(0.0, 0.0, 200.0, 14.0);
-        let down = fc.handle_cached(
-            &UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: crate::Point { x: 100.0, y: 7.0 },
-                modifiers: Default::default(),
-            },
-            rect,
-        );
+        let mut fc = labeled_slider_controller(0.0);
+        let track = fallback_track_rect(&fc, "s");
+        let down = mouse_down_at(&mut fc, track.x + track.width / 2.0);
         assert_eq!(
             down,
             FormControllerEvent::FormAction(FormEvent::SliderChanged {
@@ -5383,17 +5540,7 @@ mod tests {
             })
         );
 
-        let moved = fc.handle_cached(
-            &UiEvent::MouseMoved {
-                position: crate::Point { x: 150.0, y: 7.0 },
-                buttons: ButtonMask {
-                    left: true,
-                    middle: false,
-                    right: false,
-                },
-            },
-            rect,
-        );
+        let moved = left_drag_to(&mut fc, track.x + track.width * 0.75);
         assert_eq!(
             moved,
             FormControllerEvent::FormAction(FormEvent::SliderChanged {
@@ -5403,46 +5550,55 @@ mod tests {
             "a drag after the click should keep mapping the pointer's x to a value"
         );
 
+        let past_end = left_drag_to(&mut fc, track.x + track.width + 50.0);
+        assert_eq!(
+            past_end,
+            FormControllerEvent::FormAction(FormEvent::SliderChanged {
+                id: WidgetId::new("s"),
+                value: 10.0,
+            }),
+            "dragging past the track's right edge pins the value to max"
+        );
+
         let up = fc.handle_cached(
             &UiEvent::MouseUp {
                 widget: None,
                 button: MouseButton::Left,
                 position: crate::Point { x: 150.0, y: 7.0 },
             },
-            rect,
+            SLIDER_RECT,
         );
         assert_eq!(up, FormControllerEvent::Ignored);
 
         // `MouseUp` cleared `slider_drag` — a further move with the left
         // button held (as if a fresh, unrelated drag started elsewhere)
         // must not still be attributed to this slider.
-        let moved_after_release = fc.handle_cached(
-            &UiEvent::MouseMoved {
-                position: crate::Point { x: 20.0, y: 7.0 },
-                buttons: ButtonMask {
-                    left: true,
-                    middle: false,
-                    right: false,
-                },
-            },
-            rect,
-        );
+        let moved_after_release = left_drag_to(&mut fc, track.x + 1.0);
         assert_eq!(moved_after_release, FormControllerEvent::Ignored);
+    }
+
+    /// A press on a labeled slider's label column focuses the row
+    /// without capturing the pointer, so the drag that follows it is not
+    /// attributed to the slider either — otherwise a press meant to
+    /// focus the field would start rewriting its value the moment the
+    /// pointer moved.
+    #[test]
+    fn a_label_column_press_does_not_arm_a_sliders_drag() {
+        let mut fc = labeled_slider_controller(5.0);
+        let track = fallback_track_rect(&fc, "s");
+        mouse_down_at(&mut fc, track.x / 2.0);
+        assert_eq!(
+            left_drag_to(&mut fc, track.x + track.width),
+            FormControllerEvent::Ignored,
+            "a drag from a label-column press must not move the slider's value"
+        );
     }
 
     #[test]
     fn a_disabled_sliders_click_and_keys_produce_focus_changed_or_ignored_only() {
         let mut fc = controller_with(vec![slider_field("s", 5.0, 0.0, 10.0, 1.0, true)], None);
         fc.set_backend_info(10.0);
-        let click = fc.handle_cached(
-            &UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: crate::Point { x: 100.0, y: 7.0 },
-                modifiers: Default::default(),
-            },
-            Rect::new(0.0, 0.0, 200.0, 14.0),
-        );
+        let click = mouse_down_at(&mut fc, 100.0);
         assert_eq!(
             click,
             FormControllerEvent::FormAction(FormEvent::FocusChanged {
