@@ -600,7 +600,8 @@ pub use primitives::list::{
     ListViewLayout, VisibleListItem,
 };
 pub use primitives::menu_bar::{
-    MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout, VisibleMenuBarItem,
+    resolve_bar_height, MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout,
+    VisibleMenuBarItem, BAR_HEIGHT,
 };
 pub use primitives::message_list::{
     MessageList, MessageListHit, MessageListLayout, MessageListMeasure, MessageRow,
