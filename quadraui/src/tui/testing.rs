@@ -561,17 +561,29 @@ impl<A: AppLogic> TuiDriver<A> {
     /// `row_cells`/`find_bounds`/`inventory` already saw, and with what
     /// [`crate::tui::vt_testing::TuiVtDriver::screen`]'s vt100-observed
     /// twin reports for the identical content.
+    ///
+    /// A cell inside a rect registered via
+    /// [`crate::tui::backend::TuiBackend::register_opaque_rect`] (a Kitty
+    /// graphics placeholder, once that rasteriser exists) contributes a
+    /// single blank space instead of its real `symbol()` — screen dumps
+    /// stay readable instead of showing raw placeholder codepoints, and a
+    /// `needle` search never matches one by accident.
     pub fn screen(&self) -> String {
         let terminal = self.terminal.borrow();
         let buf = terminal.backend().buffer();
         let area = buf.area;
+        let backend = self.core.backend();
         let mut out = String::new();
         for y in area.top()..area.bottom() {
             let mut x = area.left();
             while x < area.right() {
                 let symbol = buf[(x, y)].symbol();
                 let ch = symbol.chars().next().unwrap_or(' ');
-                out.push_str(symbol);
+                if backend.is_opaque_cell(buf, x, y) {
+                    out.push(' ');
+                } else {
+                    out.push_str(symbol);
+                }
                 x += char_cell_width(ch).max(1);
             }
             out.push('\n');
@@ -714,17 +726,31 @@ impl<A: AppLogic> TuiDriver<A> {
     /// characters (e.g. CJK) get a spurious blank cell wedged between them
     /// in the reconstructed row, and a needle spanning them would never
     /// match.
+    ///
+    /// Also substitutes `' '` for any cell still covered by a rect
+    /// registered via
+    /// [`crate::tui::backend::TuiBackend::register_opaque_rect`] — a Kitty
+    /// graphics placeholder reads as a gap here, so
+    /// [`Self::find_bounds`]/[`ConformanceDriver::inventory`]'s text-run
+    /// scan never matches on it or stitches a run across it, the same
+    /// way a real space breaks a run.
     fn row_cells(&self, y: u16) -> Vec<(char, u16, u16)> {
         let terminal = self.terminal.borrow();
         let buf = terminal.backend().buffer();
         let area = buf.area;
+        let backend = self.core.backend();
         let mut cells = Vec::new();
         let mut x = area.left();
         while x < area.right() {
             let symbol = buf[(x, y)].symbol();
             let ch = symbol.chars().next().unwrap_or(' ');
             let w = char_cell_width(ch).max(1);
-            cells.push((ch, x, w));
+            let reported_ch = if backend.is_opaque_cell(buf, x, y) {
+                ' '
+            } else {
+                ch
+            };
+            cells.push((reported_ch, x, w));
             x += w;
         }
         cells
@@ -1249,6 +1275,65 @@ mod tests {
         // find-then-dispatch plumbing works.
         let mut driver = driver;
         driver.scroll_at("world", 1);
+    }
+
+    /// A rect registered via `TuiBackend::register_opaque_rect` reports as
+    /// a [`crate::testing::ZoneRec`] in `inventory()`, never as a
+    /// [`crate::testing::TextRun`], and its placeholder codepoint never
+    /// leaks into `screen()`/`screen_contains` — the headless-driver half
+    /// of the issue's "selection, copy and inventory off non-text cells"
+    /// acceptance.
+    #[test]
+    fn opaque_rect_reports_as_a_zone_not_text() {
+        use ratatui::backend::Backend as RatatuiBackend;
+        use ratatui::buffer::Cell;
+
+        let mut driver = TuiDriver::new(FullRepaintRequester, 10, 1);
+        driver.render();
+
+        // Paint a placeholder run into cols 2..5 of row 0, directly on the
+        // physical backend underneath `Terminal`'s diff — standing in for
+        // a terminal-graphics rasteriser's own paint call.
+        let mut placeholder = Cell::default();
+        placeholder.set_symbol("\u{10EEEE}");
+        RatatuiBackend::draw(
+            driver.terminal.borrow_mut().backend_mut(),
+            (2u16..5u16).map(|x| (x, 0u16, &placeholder)),
+        )
+        .expect("TestBackend draw is infallible");
+
+        {
+            let terminal = driver.terminal.borrow();
+            let buf = terminal.backend().buffer();
+            driver.core.backend_mut().register_opaque_rect(
+                WidgetId::new("img:logo"),
+                crate::event::Rect::new(2.0, 0.0, 3.0, 1.0),
+                buf,
+                Some("[image]".to_string()),
+            );
+        }
+
+        assert!(
+            !driver.screen_contains("\u{10EEEE}"),
+            "screen() must not surface the placeholder codepoint:\n{}",
+            driver.screen()
+        );
+
+        let inv = driver.inventory();
+        assert!(
+            !inv.text_runs()
+                .iter()
+                .any(|r| r.text.contains('\u{10EEEE}')),
+            "no text run should contain the placeholder codepoint: {:?}",
+            inv.text_runs()
+        );
+        assert!(
+            inv.zones()
+                .iter()
+                .any(|z| z.id == WidgetId::new("img:logo")),
+            "the opaque rect should report as a zone: {:?}",
+            inv.zones()
+        );
     }
 
     /// Records every `UiEvent` the app's `handle()` receives, verbatim —
