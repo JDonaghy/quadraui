@@ -155,6 +155,7 @@ pub fn draw_list(
         None,
         false,
         None,
+        false,
     )
 }
 
@@ -186,6 +187,7 @@ pub fn draw_list_with_state(
     pressed_idx: Option<usize>,
     focus_ring_visible: bool,
     scroll_px: Option<f32>,
+    striped: bool,
 ) {
     draw_list_impl(
         cr,
@@ -203,6 +205,7 @@ pub fn draw_list_with_state(
         pressed_idx,
         focus_ring_visible,
         scroll_px,
+        striped,
     )
 }
 
@@ -223,6 +226,7 @@ fn draw_list_impl(
     pressed_idx: Option<usize>,
     focus_ring_visible: bool,
     scroll_px: Option<f32>,
+    striped: bool,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -253,7 +257,7 @@ fn draw_list_impl(
         layout: Some(layout),
         translucent_fill: true,
     };
-    crate::primitives::list::native_surface_paint::paint_with_scroll_px(
+    crate::primitives::list::native_surface_paint::paint_with_state(
         list,
         area,
         &list_layout,
@@ -268,6 +272,7 @@ fn draw_list_impl(
         pressed_idx,
         focus_ring_visible,
         scroll_px,
+        striped,
     );
 
     if list.bordered {
@@ -332,6 +337,10 @@ mod tests {
     fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
         let off = y as usize * stride + x as usize * 4;
         (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn rgb(c: Color) -> (u8, u8, u8) {
+        (c.r, c.g, c.b)
     }
 
     #[test]
@@ -439,6 +448,14 @@ mod tests {
     }
 
     fn paint_bytes(list: &ListView, scroll_px: Option<f32>) -> (Vec<u8>, usize) {
+        paint_bytes_striped(list, scroll_px, false)
+    }
+
+    fn paint_bytes_striped(
+        list: &ListView,
+        scroll_px: Option<f32>,
+        striped: bool,
+    ) -> (Vec<u8>, usize) {
         let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
         {
             let cr = Context::new(&surface).expect("Context::new");
@@ -462,6 +479,7 @@ mod tests {
                 None,
                 false,
                 scroll_px,
+                striped,
             );
         }
         surface.flush();
@@ -507,6 +525,38 @@ mod tests {
         assert_eq!(
             plain_bytes, state_bytes,
             "scroll_px: None must paint the same pixels as draw_list"
+        );
+    }
+
+    /// `striped: true` tints every other non-selected row with
+    /// `theme.row_alt_bg`; `striped: false` (the default) paints every
+    /// row with the plain background.
+    #[test]
+    fn striped_tints_alternate_rows() {
+        let list = vlist(5); // selected_idx: 0 (even) — row 1 is the first odd, unselected row
+
+        let (plain_bytes, stride) = paint_bytes_striped(&list, None, false);
+        let (striped_bytes, _) = paint_bytes_striped(&list, None, true);
+
+        let probe_x = (W / 2).min(W - 1);
+        let row0_y = (LINE_HEIGHT / 2.0) as i32;
+        let row1_y = (LINE_HEIGHT * 1.5) as i32;
+
+        let theme = test_theme();
+        assert_eq!(
+            pixel(&plain_bytes, stride, probe_x, row0_y),
+            pixel(&striped_bytes, stride, probe_x, row0_y),
+            "row 0 is selected either way, so striping must not change it"
+        );
+        assert_eq!(
+            pixel(&plain_bytes, stride, probe_x, row1_y),
+            rgb(theme.background),
+            "row 1 must be plain background when not striped"
+        );
+        assert_eq!(
+            pixel(&striped_bytes, stride, probe_x, row1_y),
+            rgb(theme.row_alt_bg(theme.background)),
+            "row 1 must be tinted with theme.row_alt_bg when striped"
         );
     }
 

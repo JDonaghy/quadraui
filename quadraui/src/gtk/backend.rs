@@ -2851,6 +2851,7 @@ impl Backend for GtkBackend {
             state.pressed_idx,
             focus_ring_visible,
             state.scroll_px,
+            state.striped,
         );
         layout.set_font_description(saved_font.as_ref());
     }
