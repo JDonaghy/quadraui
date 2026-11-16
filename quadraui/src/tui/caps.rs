@@ -1,5 +1,6 @@
 //! Terminal capability detection: colour depth, kitty keyboard protocol,
-//! SGR-Pixels mouse mode, and underline-colour support.
+//! SGR-Pixels mouse mode, underline-colour support, and the Kitty graphics
+//! protocol.
 //!
 //! This module reads environment signals (`COLORTERM`, `TERM`, `KITTY_WINDOW_ID`,
 //! `TERM_PROGRAM`, `WT_SESSION`) and performs live terminal queries to detect
@@ -128,7 +129,7 @@
 //! is where the flag is actually acted on — see that method's doc for why
 //! a single per-frame sweep, not a parameter threaded through every
 //! rasteriser, is the chosen choke point.
-
+//!
 //! ### Kitty graphics protocol (with Unicode placeholders)
 //!
 //! [`crate::tui::backend::TuiBackend::kitty_graphics`] reports whether this
@@ -344,18 +345,24 @@ pub(crate) fn detect_sgr_pixel_mouse_from(getenv: impl Fn(&str) -> Option<String
 }
 
 /// Whether the environment identifies a multiplexer session known not to
-/// forward SGR-Pixels mouse reports at all: `$TMUX` set, or `TERM` starting
-/// with `screen`/`tmux`. Extracted out of [`detect_sgr_pixel_mouse_from`] so
-/// [`super::run::run_with`] can skip [`probe_sgr_pixel_mouse`]'s live
-/// DECRQM round trip entirely in this case — a
-/// multiplexer that doesn't forward the mode will never answer the query
-/// usefully, so the up-to-2s wait for a reply that never comes only stacks
-/// startup latency on top of the kitty-keyboard probe's own up-to-2s wait,
-/// and (per the module doc's `query_sgr_pixel_decrqm` note) leaves that same
-/// window open for a real keystroke to be read and discarded as a candidate
-/// probe reply. This check alone is *not* a positive detector — see
-/// [`detect_sgr_pixel_mouse_from`] for the terminals it still runs the live
-/// probe against.
+/// forward escape-sequence-based terminal features at all: `$TMUX` set, or
+/// `TERM` starting with `screen`/`tmux`. Extracted out of
+/// [`detect_sgr_pixel_mouse_from`] so [`super::run::run_with`] can skip
+/// [`probe_sgr_pixel_mouse`]'s live DECRQM round trip entirely in this case
+/// — a multiplexer that doesn't forward the mode will never answer the
+/// query usefully, so the up-to-2s wait for a reply that never comes only
+/// stacks startup latency on top of the kitty-keyboard probe's own up-to-2s
+/// wait, and (per the module doc's `query_sgr_pixel_decrqm` note) leaves
+/// that same window open for a real keystroke to be read and discarded as
+/// a candidate probe reply. This check alone is *not* a positive detector
+/// — see [`detect_sgr_pixel_mouse_from`] for the terminals it still runs
+/// the live probe against.
+///
+/// Reused (not duplicated) by [`detect_kitty_graphics_from`] for the
+/// identical reason: tmux does not forward Kitty graphics escapes either,
+/// so the same session-identity signals that would wrongly answer `true`
+/// for SGR-Pixels mouse mode behind tmux would wrongly answer `true` for
+/// Kitty graphics behind tmux too.
 pub(crate) fn sgr_pixel_mouse_blocked_by_multiplexer_from(
     getenv: impl Fn(&str) -> Option<String>,
 ) -> bool {
@@ -544,7 +551,19 @@ pub fn detect_kitty_graphics() -> bool {
 /// The pure decision behind [`detect_kitty_graphics`], parameterised over
 /// an environment lookup for the same reason as [`detect_color_depth_from`].
 ///
-/// Only the two terminal families this crate can name with high
+/// The multiplexer check ([`sgr_pixel_mouse_blocked_by_multiplexer_from`],
+/// reused rather than duplicated — see that function's doc) runs *first*
+/// and short-circuits to `false` regardless of any other signal below,
+/// mirroring [`detect_sgr_pixel_mouse_from`]'s identical ordering and for
+/// the identical reason: tmux inherits its server environment from the
+/// client that started it, so a tmux session launched from kitty or
+/// Ghostty still has `KITTY_WINDOW_ID`/`GHOSTTY_RESOURCES_DIR` set in every
+/// pane even though `TERM` has been rewritten to `screen*`/`tmux*` and tmux
+/// does not forward Kitty graphics escapes at all. Without this ordering,
+/// signal 2 or 3 below would be wrongly inferred *through* a multiplexer
+/// that cannot act on it.
+///
+/// Otherwise, only the two terminal families this crate can name with high
 /// confidence:
 ///
 /// 1. `TERM` containing `kitty` (kitty's own terminfo name, `xterm-kitty`)
@@ -559,6 +578,9 @@ pub fn detect_kitty_graphics() -> bool {
 ///    [`probe_kitty_graphics`]'s live round trip exists to answer for
 ///    instead.
 pub(crate) fn detect_kitty_graphics_from(getenv: impl Fn(&str) -> Option<String>) -> bool {
+    if sgr_pixel_mouse_blocked_by_multiplexer_from(&getenv) {
+        return false;
+    }
     if let Some(term) = getenv("TERM") {
         if term.to_ascii_lowercase().contains("kitty") {
             return true;
@@ -1258,6 +1280,32 @@ mod tests {
     #[test]
     fn nothing_set_is_not_detected_for_graphics() {
         assert!(!detect_kitty_graphics_from(env(&[])));
+    }
+
+    /// A tmux session started from a kitty/Ghostty client still has
+    /// `KITTY_WINDOW_ID` set in every pane (tmux inherits its server
+    /// environment from the client that launched it) even though `TERM`
+    /// has been rewritten to `screen*`/`tmux*` — but tmux does not forward
+    /// Kitty graphics escapes, so this must answer `false` regardless of
+    /// the inherited identity signal. This is the exact regression the
+    /// multiplexer gate guards against.
+    #[test]
+    fn kitty_window_id_inside_tmux_is_not_detected_for_graphics() {
+        assert!(!detect_kitty_graphics_from(env(&[
+            ("TMUX", "/tmp/tmux-1000/default,1234,0"),
+            ("TERM", "screen-256color"),
+            ("KITTY_WINDOW_ID", "1"),
+        ])));
+    }
+
+    /// Same scenario via Ghostty's identity signal instead of kitty's.
+    #[test]
+    fn ghostty_resources_dir_inside_tmux_is_not_detected_for_graphics() {
+        assert!(!detect_kitty_graphics_from(env(&[
+            ("TMUX", "/tmp/tmux-1000/default,1234,0"),
+            ("TERM", "tmux-256color"),
+            ("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty"),
+        ])));
     }
 
     // ── Kitty graphics override ──────────────────────────────────────────
