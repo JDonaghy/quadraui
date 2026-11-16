@@ -100,6 +100,7 @@ pub mod text;
 // ...]` in Cargo.toml), so this is gated on both features, same as
 // `tests/tui_pty_smoke.rs`.
 mod text_display;
+mod text_field;
 mod text_input;
 mod toast;
 mod toolbar;
@@ -227,6 +228,8 @@ pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};
 #[doc(hidden)]
 pub use text_display::{draw_text_display, tui_text_display_layout};
+#[doc(hidden)]
+pub use text_field::{draw_text_field, tui_text_field_layout};
 #[doc(hidden)]
 pub use text_input::{draw_text_input, tui_text_input_layout};
 #[doc(hidden)]

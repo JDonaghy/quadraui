@@ -1095,6 +1095,89 @@ impl TextInput {
     }
 }
 
+// ── Flat-value `EditOp` bridge ──────────────────────────────────────────
+//
+// `TextEditor` works in `(line, char_column)` coordinates, but every flat
+// `value: String` + byte-offset `cursor`/`selection_anchor` field
+// (`FieldKind::TextInput`/`TextArea`/`PasswordInput`, and
+// `crate::primitives::text_field::TextField`) needs the same intent
+// applied against that shape instead. [`apply_flat_edit_op`] is the one
+// bridge every such caller shares, so none of them re-derive
+// `TextEditor`'s cursor math or keep a second editor.
+
+/// Byte offset `byte_offset` into `value` (which may contain `'\n'`,
+/// e.g. a `TextArea`) → `(line, char_column)`, the coordinate space
+/// [`TextEditor`]/[`EditOp`] operate in.
+fn byte_offset_to_line_col(value: &str, byte_offset: usize) -> (usize, usize) {
+    let byte_offset = byte_offset.min(value.len());
+    let prefix = &value[..byte_offset];
+    let line = prefix.matches('\n').count();
+    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let col = prefix[line_start..].chars().count();
+    (line, col)
+}
+
+/// Inverse of [`byte_offset_to_line_col`]: `(line, char_column)` →
+/// byte offset into `value`.
+fn line_col_to_byte_offset(value: &str, line: usize, col: usize) -> usize {
+    let mut offset = 0usize;
+    for (i, l) in value.split('\n').enumerate() {
+        if i == line {
+            let take: usize = l.chars().take(col).map(char::len_utf8).sum();
+            return offset + take.min(l.len());
+        }
+        offset += l.len() + 1; // +1 for the '\n' separator consumed between lines
+    }
+    value.len()
+}
+
+/// Route one [`EditOp`] through [`TextEditor::apply`] against a flat
+/// `value` + byte-offset `cursor`/`selection_anchor` and hand back the
+/// resulting `(value, cursor, selection_anchor)`.
+///
+/// `TextEditor` itself works in `(line, char_column)` coordinates, so
+/// this wraps `value` in a throwaway single-use [`TextInput`] for the
+/// one `apply` call and converts back via
+/// [`byte_offset_to_line_col`]/[`line_col_to_byte_offset`] — the
+/// conversion this function owns so every caller keeps working in the
+/// byte-offset space its own field already documents.
+pub(crate) fn apply_flat_edit_op(
+    value: &str,
+    cursor: usize,
+    selection_anchor: Option<usize>,
+    op: EditOp,
+) -> (String, usize, Option<usize>) {
+    let lines: Vec<String> = if value.is_empty() {
+        vec![String::new()]
+    } else {
+        value.split('\n').map(str::to_string).collect()
+    };
+    let (line, col) = byte_offset_to_line_col(value, cursor);
+    let input = TextInput::new(WidgetId::new("flat-text-edit"))
+        .with_lines(lines)
+        .with_cursor_line(line)
+        .with_cursor_col(col);
+    let mut editor = TextEditor::new(input);
+    if let Some(anchor_byte) = selection_anchor {
+        // `selection_anchor` is app-owned public data and isn't
+        // guaranteed to land on a char boundary — snap and clamp it the
+        // same way `cursor` already is above, so a bogus byte offset
+        // (e.g. an app computing it in char counts) clamps the
+        // selection instead of panicking on a mid-char slice.
+        let anchor_byte =
+            crate::text_util::snap_to_char_boundary(value, anchor_byte.min(value.len()));
+        editor.set_selection_anchor(Some(byte_offset_to_line_col(value, anchor_byte)));
+    }
+    editor.apply(op);
+
+    let new_value = editor.lines.join("\n");
+    let new_cursor = line_col_to_byte_offset(&new_value, editor.cursor_line, editor.cursor_col);
+    let new_anchor = editor
+        .selection_anchor()
+        .map(|(l, c)| line_col_to_byte_offset(&new_value, l, c));
+    (new_value, new_cursor, new_anchor)
+}
+
 // ── PaintSurface paint ─────────────────────────────────────────────────
 //
 // This module provides the portable paint implementation `MacBackend`,
@@ -2248,5 +2331,52 @@ mod tests {
         let metrics = TextInputMetrics::resolve(&style);
         assert_eq!(metrics.height, 26.0);
         assert_eq!(metrics.height, style.control_height);
+    }
+
+    // ── `apply_flat_edit_op` — the flat-value `EditOp` bridge ───────────
+
+    #[test]
+    fn apply_flat_edit_op_inserts_at_the_cursor() {
+        let (value, cursor, anchor) = apply_flat_edit_op("hi", 1, None, EditOp::InsertChar('!'));
+        assert_eq!(value, "h!i");
+        assert_eq!(cursor, 2);
+        assert_eq!(anchor, None);
+    }
+
+    #[test]
+    fn apply_flat_edit_op_delete_backward_removes_the_prior_char() {
+        let (value, cursor, _) = apply_flat_edit_op("hi", 2, None, EditOp::DeleteBackward);
+        assert_eq!(value, "h");
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn apply_flat_edit_op_replaces_an_active_selection() {
+        let (value, cursor, anchor) =
+            apply_flat_edit_op("hello", 5, Some(1), EditOp::InsertChar('!'));
+        assert_eq!(value, "h!");
+        assert_eq!(cursor, 2);
+        assert_eq!(anchor, None);
+    }
+
+    #[test]
+    fn apply_flat_edit_op_round_trips_a_newline_through_line_col_conversion() {
+        // Exercises `byte_offset_to_line_col`/`line_col_to_byte_offset`
+        // against a multi-line flat value (what `FieldKind::TextArea`
+        // hands this bridge), not just the single-line path.
+        let (value, cursor, _) = apply_flat_edit_op("ab\ncd", 3, None, EditOp::InsertChar('X'));
+        assert_eq!(value, "ab\nXcd");
+        assert_eq!(cursor, 4);
+    }
+
+    #[test]
+    fn apply_flat_edit_op_snaps_a_mid_char_selection_anchor_instead_of_panicking() {
+        // `selection_anchor` is app-owned public data and isn't
+        // guaranteed to land on a char boundary — byte 2 is mid-`é` in
+        // "h\u{e9}llo".
+        let value = "h\u{e9}llo";
+        let (new_value, _, _) =
+            apply_flat_edit_op(value, value.len(), Some(2), EditOp::DeleteSelection);
+        assert_eq!(new_value, "h");
     }
 }

@@ -93,6 +93,7 @@ use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::switch::{Switch, SwitchLayout};
 use crate::primitives::tab_bar::{TabBarGlyphs, TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
+use crate::primitives::text_field::{TextField, TextFieldLayout, TextFieldMeasure};
 use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
@@ -3336,6 +3337,57 @@ pub trait Backend: sealed::Sealed {
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`;
     /// callers compare directly against raw click coordinates.
     fn text_input_layout(&self, rect: Rect, ti: &TextInput) -> TextInputLayout;
+
+    /// Draw a [`TextField`] (standalone single-line framed field — the
+    /// Finder-style search-box shape: `[` + optional leading icon +
+    /// text + optional clear button + `]`) and return the resolved
+    /// layout for hit-testing.
+    ///
+    /// Coordinate frame: **ABSOLUTE**, matching [`Self::draw_text_input`].
+    ///
+    /// Default body: builds a scratch single-line [`TextInput`] from
+    /// `tf`'s `value`/`placeholder`/`cursor`/`has_focus` and paints it
+    /// via [`Self::draw_text_input`] — a faithful, observable fallback
+    /// (no leading icon, no clear button) used by every backend except
+    /// `TuiBackend` until a tracked follow-up (quadraui#2609) gives
+    /// each GUI backend its own dedicated single-row painter — the
+    /// same executor split `tui::text_field` takes from `tui::form`.
+    /// `TuiBackend` overrides this with the real one-row
+    /// `[ icon value × ]` painter. quadraui#2611's `Primitive` trait
+    /// will let every backend share one generic default instead of
+    /// this one-sided fallback; until then, this default is this
+    /// primitive's deliberate, documented exception to this file's
+    /// "no default — every backend implements it explicitly"
+    /// convention.
+    fn draw_text_field(&mut self, rect: Rect, tf: &TextField) -> TextFieldLayout {
+        let char_idx = tf.cursor.map(|c| {
+            let byte = crate::text_util::snap_to_char_boundary(&tf.value, c.min(tf.value.len()));
+            tf.value[..byte].chars().count()
+        });
+        let mut scratch = TextInput::new(tf.id)
+            .with_lines(vec![tf.value.clone()])
+            .with_cursor_col(char_idx.unwrap_or(0))
+            .with_has_focus(tf.has_focus);
+        if !tf.placeholder.is_empty() {
+            scratch = scratch.with_placeholder(tf.placeholder.clone());
+        }
+        self.draw_text_input(rect, &scratch);
+        self.text_field_layout(rect, tf)
+    }
+
+    /// Compute the layout [`Self::draw_text_field`] would produce.
+    ///
+    /// Default body: [`TextField::layout`] is a pure function of
+    /// [`Self::char_width`]/[`Self::line_height`] and `tf`'s own state —
+    /// the "provably uniform" shape this file's `_layout`-default rule
+    /// allows (`PRIMITIVE_RULES.md` rule 7) — so every backend shares
+    /// this one default; only [`Self::draw_text_field`] itself needs a
+    /// per-backend override.
+    ///
+    /// Coordinate frame: **ABSOLUTE**, matching [`Self::draw_text_field`].
+    fn text_field_layout(&self, rect: Rect, tf: &TextField) -> TextFieldLayout {
+        tf.layout(rect, TextFieldMeasure::from_metrics(&self.measure()))
+    }
 
     /// Draw a [`NumberInput`] at its caller-resolved `layout`: the text
     /// area plus the increment/decrement stepper buttons. The caller

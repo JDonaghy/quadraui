@@ -53,7 +53,8 @@
 //!   `value` string from `TextInputChanged`/`TextInputCommitted`. This is
 //!   what makes "no app-side key plumbing" true: the app's model needs a
 //!   `String` per text field, nothing else. Each keystroke builds a
-//!   throwaway [`crate::TextEditor`] (see `apply_text_edit_op`), so
+//!   throwaway [`crate::TextEditor`] (see
+//!   `text_input::apply_flat_edit_op`), so
 //!   `EditOp::Undo`/`Redo` never have history to act on for a form
 //!   field — out of scope here, since nothing in `Form`'s per-frame data
 //!   carries edit history across keystrokes.
@@ -317,7 +318,7 @@ use crate::primitives::form::{
 use crate::primitives::number_input::NumberInputEvent;
 use crate::primitives::radio_group::RadioGroupEvent;
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
-use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
+use crate::primitives::text_input::EditOp;
 use crate::text_util::snap_to_char_boundary;
 use crate::types::StyledSpan;
 use crate::validation::{validate, FormRules, Validator};
@@ -1738,7 +1739,8 @@ impl FormController {
         let cursor = snap_to_char_boundary(value, cursor.min(value.len()));
 
         let value_before = value.to_string();
-        let (new_value, new_cursor, new_anchor) = apply_text_edit_op(value, cursor, anchor, op);
+        let (new_value, new_cursor, new_anchor) =
+            crate::primitives::text_input::apply_flat_edit_op(value, cursor, anchor, op);
         let text_changed = new_value != value_before;
         // `TextEditor::move_cursor_to` leaves a degenerate `anchor ==
         // cursor` selection in place for a no-op extend (e.g. Shift+Left
@@ -2383,81 +2385,6 @@ fn date_picker_key_name(key: &Key) -> Option<std::borrow::Cow<'static, str>> {
         ) => Some(named.name()),
         _ => None,
     }
-}
-
-/// Byte offset `byte_offset` into `value` (which may contain `'\n'`,
-/// e.g. a `TextArea`) → `(line, char_column)`, the coordinate space
-/// [`TextEditor`]/[`EditOp`] operate in.
-fn byte_offset_to_line_col(value: &str, byte_offset: usize) -> (usize, usize) {
-    let byte_offset = byte_offset.min(value.len());
-    let prefix = &value[..byte_offset];
-    let line = prefix.matches('\n').count();
-    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let col = prefix[line_start..].chars().count();
-    (line, col)
-}
-
-/// Inverse of [`byte_offset_to_line_col`]: `(line, char_column)` →
-/// byte offset into `value`.
-fn line_col_to_byte_offset(value: &str, line: usize, col: usize) -> usize {
-    let mut offset = 0usize;
-    for (i, l) in value.split('\n').enumerate() {
-        if i == line {
-            let take: usize = l.chars().take(col).map(char::len_utf8).sum();
-            return offset + take.min(l.len());
-        }
-        offset += l.len() + 1; // +1 for the '\n' separator consumed between lines
-    }
-    value.len()
-}
-
-/// Route one [`EditOp`] through [`TextEditor::apply`] against a flat
-/// `value` + byte-offset `cursor`/`selection_anchor` — the shape every
-/// `FieldKind::TextInput`/`TextArea`/`PasswordInput` field uses — and
-/// hand back the resulting `(value, cursor, selection_anchor)`.
-///
-/// `TextEditor` itself works in `(line, char_column)` coordinates (see
-/// `text_input.rs`'s module doc), so this wraps `value` in a throwaway
-/// single-use [`TextInput`] for the one `apply` call and converts back
-/// via [`byte_offset_to_line_col`]/[`line_col_to_byte_offset`] — the
-/// conversion this controller owns so every other call site keeps
-/// working in the byte-offset space `Form`'s `FieldKind` already
-/// documents.
-fn apply_text_edit_op(
-    value: &str,
-    cursor: usize,
-    selection_anchor: Option<usize>,
-    op: EditOp,
-) -> (String, usize, Option<usize>) {
-    let lines: Vec<String> = if value.is_empty() {
-        vec![String::new()]
-    } else {
-        value.split('\n').map(str::to_string).collect()
-    };
-    let (line, col) = byte_offset_to_line_col(value, cursor);
-    let input = TextInput::new(WidgetId::new("form-field-edit"))
-        .with_lines(lines)
-        .with_cursor_line(line)
-        .with_cursor_col(col);
-    let mut editor = TextEditor::new(input);
-    if let Some(anchor_byte) = selection_anchor {
-        // `selection_anchor` is app-owned public data (see
-        // `primitives/form.rs`'s doc on `FieldKind::TextInput`) and isn't
-        // guaranteed to land on a char boundary — snap and clamp it the
-        // same way `cursor` already is above, so a bogus byte offset
-        // (e.g. an app computing it in char counts) clamps the
-        // selection instead of panicking on a mid-char slice.
-        let anchor_byte = snap_to_char_boundary(value, anchor_byte.min(value.len()));
-        editor.set_selection_anchor(Some(byte_offset_to_line_col(value, anchor_byte)));
-    }
-    editor.apply(op);
-
-    let new_value = editor.lines.join("\n");
-    let new_cursor = line_col_to_byte_offset(&new_value, editor.cursor_line, editor.cursor_col);
-    let new_anchor = editor
-        .selection_anchor()
-        .map(|(l, c)| line_col_to_byte_offset(&new_value, l, c));
-    (new_value, new_cursor, new_anchor)
 }
 
 // ── Pure helpers (line_height → derived values) ─────────────────────

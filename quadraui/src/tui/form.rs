@@ -753,19 +753,6 @@ fn draw_field_text_input(
         ..
     } = *ctx;
 
-    let shown = if value.is_empty() { placeholder } else { value };
-    let input_fg = if value.is_empty() { dim_fg } else { field_fg };
-    let desired = control_width.saturating_sub(2).min(shown.chars().count());
-
-    let (sel_lo, sel_hi) = if value.is_empty() {
-        (0, 0)
-    } else {
-        match (cursor, selection_anchor) {
-            (Some(c), Some(a)) if c != a => (c.min(a), c.max(a)),
-            _ => (0, 0),
-        }
-    };
-
     // A no-label field's content starts exactly at `control_start` —
     // the bracket sits one cell to its *left* instead of taking
     // `control_start`'s own cell, so the value's text lines up with a
@@ -781,42 +768,25 @@ fn draw_field_text_input(
         if bracket_col < area.width as usize {
             set_cell(buf, area.x + bracket_col as u16, y, '[', dim_fg, row_bg);
         }
-        let mut byte = 0usize;
-        for (col, ch) in (text_col..).zip(shown.chars().take(desired)) {
-            if col >= area.width as usize {
-                break;
-            }
-            let in_selection = sel_hi > sel_lo && byte >= sel_lo && byte < sel_hi;
-            let (ch_fg, ch_bg) = if in_selection {
-                (row_bg, input_fg)
-            } else {
-                (input_fg, row_bg)
-            };
-            set_cell(buf, area.x + col as u16, y, ch, ch_fg, ch_bg);
-            byte += ch.len_utf8();
-        }
+        let max_cols = control_width.saturating_sub(2);
+        crate::tui::text_field::draw_text_row_cells(
+            buf,
+            y,
+            area.x + text_col as u16,
+            area.x + area.width,
+            max_cols,
+            0,
+            value,
+            placeholder,
+            cursor,
+            selection_anchor,
+            field_fg,
+            dim_fg,
+            row_bg,
+        );
         let closing_col =
             (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
         set_cell(buf, area.x + closing_col as u16, y, ']', dim_fg, row_bg);
-
-        if let Some(cur) = cursor {
-            if !value.is_empty() {
-                let mut byte = 0usize;
-                let mut char_idx = 0usize;
-                for ch in shown.chars().take(desired) {
-                    if byte >= cur {
-                        break;
-                    }
-                    byte += ch.len_utf8();
-                    char_idx += 1;
-                }
-                let cursor_col = text_col + char_idx;
-                if cursor_col < area.width as usize {
-                    let ch = shown.chars().nth(char_idx).unwrap_or(' ');
-                    set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
-                }
-            }
-        }
     }
 }
 
