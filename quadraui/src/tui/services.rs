@@ -332,6 +332,7 @@ use crate::compose::{
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
 use crate::tui::backend::TuiBackend;
+use crate::tui::kitty_graphics::{base64_encode, tmux_passthrough_wrap};
 use crate::update::{StagedUpdate, UpdateInfo, UpdateService};
 use crate::{Key, Modifiers, NamedKey};
 
@@ -381,56 +382,17 @@ enum NestedDialogStep<T> {
 }
 
 // ── OSC 52 support ────────────────────────────────────────────────────────────
-
-/// Base64-encode `data` using the standard alphabet (no line wrapping).
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    let mut i = 0;
-    while i < data.len() {
-        let b0 = data[i] as u32;
-        let b1 = if i + 1 < data.len() {
-            data[i + 1] as u32
-        } else {
-            0
-        };
-        let b2 = if i + 2 < data.len() {
-            data[i + 2] as u32
-        } else {
-            0
-        };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(CHARS[((n >> 18) & 0x3f) as usize] as char);
-        out.push(CHARS[((n >> 12) & 0x3f) as usize] as char);
-        if i + 1 < data.len() {
-            out.push(CHARS[((n >> 6) & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if i + 2 < data.len() {
-            out.push(CHARS[(n & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        i += 3;
-    }
-    out
-}
+//
+// `base64_encode`/`tmux_passthrough_wrap` live in `tui::kitty_graphics`
+// (imported above) — generic terminal escape-sequence plumbing shared
+// with that module's Kitty graphics protocol encoding, not duplicated
+// here.
 
 /// Build the raw OSC 52 clipboard-write sequence for `text`:
 /// `ESC ] 52 ; c ; <base64(text)> BEL` (ESC ] = OSC introducer; BEL
 /// terminates).
 fn osc52_sequence(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", base64_encode(text.as_bytes()))
-}
-
-/// Wrap a terminal escape sequence in tmux's DCS passthrough so tmux
-/// forwards it verbatim to the outer terminal: `ESC P tmux ; <seq> ESC \`,
-/// with every inner `ESC` doubled (tmux's escaping rule). Requires
-/// `allow-passthrough on` in the tmux config.
-fn tmux_passthrough_wrap(seq: &str) -> String {
-    let escaped = seq.replace('\x1b', "\x1b\x1b");
-    format!("\x1bPtmux;{}\x1b\\", escaped)
 }
 
 /// Emit an OSC 52 clipboard-write sequence for `text` to `writer`,
@@ -889,33 +851,9 @@ impl Clipboard for TuiClipboard {
 mod tests {
     use super::*;
 
-    #[test]
-    fn base64_empty() {
-        assert_eq!(base64_encode(b""), "");
-    }
-
-    #[test]
-    fn base64_three_bytes_no_padding() {
-        // "Man" → "TWFu"
-        assert_eq!(base64_encode(b"Man"), "TWFu");
-    }
-
-    #[test]
-    fn base64_two_bytes_one_pad() {
-        // "Ma" → "TWE="
-        assert_eq!(base64_encode(b"Ma"), "TWE=");
-    }
-
-    #[test]
-    fn base64_one_byte_two_pads() {
-        // "M" → "TQ=="
-        assert_eq!(base64_encode(b"M"), "TQ==");
-    }
-
-    #[test]
-    fn base64_hello() {
-        assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
-    }
+    // `base64_encode`/`tmux_passthrough_wrap` themselves are tested in
+    // `tui::kitty_graphics`, where they now live; the tests below only
+    // cover this module's own OSC 52 sequence-building on top of them.
 
     #[test]
     fn osc52_sequence_correct() {
@@ -942,13 +880,6 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "\x1b]52;c;aGVsbG8=\x07\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\"
         );
-    }
-
-    #[test]
-    fn tmux_passthrough_doubles_every_esc() {
-        // A two-ESC payload must come back with four ESCs, wrapped.
-        let wrapped = tmux_passthrough_wrap("\x1bA\x1bB");
-        assert_eq!(wrapped, "\x1bPtmux;\x1b\x1bA\x1b\x1bB\x1b\\");
     }
 
     #[test]
