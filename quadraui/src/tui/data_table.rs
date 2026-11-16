@@ -1173,6 +1173,31 @@ mod tests {
         assert_eq!(striped_buf[(0, 4)].bg, alt_bg);
     }
 
+    /// `theme.row_alt_bg`'s tint is faint enough that a terminal
+    /// quantised to [`crate::backend::ColorDepth::Ansi16`] rounds it
+    /// back to the same ANSI colour as the plain background, so the
+    /// stripe disappears on a low-colour terminal instead of being
+    /// substituted with something misleading.
+    #[test]
+    fn striped_row_colour_drops_on_ansi16_terminals() {
+        use crate::backend::ColorDepth;
+        use crate::tui::color::quantize;
+
+        let theme = Theme::default();
+        let body_bg = ratatui_color(theme.background);
+        let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
+        assert_ne!(
+            alt_bg, body_bg,
+            "fixture theme must make the stripe visible at full colour depth"
+        );
+        assert_eq!(
+            quantize(alt_bg, ColorDepth::Ansi16),
+            quantize(body_bg, ColorDepth::Ansi16),
+            "an Ansi16 terminal must quantise the stripe back to the row's \
+             own background, dropping it rather than showing a wrong colour"
+        );
+    }
+
     /// `scroll_px` wins over `scroll_offset`, but on
     /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
     /// whole row a GUI backend's sub-row remainder would float between

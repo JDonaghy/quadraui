@@ -1747,15 +1747,25 @@ mod tests {
         let theme = Theme::default();
         let base = theme.background;
         let striped = theme.row_alt_bg(base);
+        let hovered = theme.list_hover_bg(base);
         assert_ne!(
             striped, base,
             "a zebra-striped row should visibly tint its resting background"
         );
         assert_ne!(
-            striped,
-            theme.list_hover_bg(base),
+            striped, hovered,
             "the stripe is a fainter, independent tint from the hover highlight \
              that paints on top of it"
+        );
+        let channel_delta = |c: Color| -> u32 {
+            (c.r as i32 - base.r as i32).unsigned_abs()
+                + (c.g as i32 - base.g as i32).unsigned_abs()
+                + (c.b as i32 - base.b as i32).unsigned_abs()
+        };
+        assert!(
+            channel_delta(striped) < channel_delta(hovered),
+            "the stripe's tint away from the resting background must be weaker \
+             than the hover tint's, not just a different colour"
         );
     }
 
