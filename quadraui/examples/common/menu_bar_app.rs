@@ -20,9 +20,9 @@
 //! - q                        quit (when no dropdown open)
 
 use quadraui::{
-    AppLogic, Backend, Color, ContextMenuItem, InteractionState, Key, MenuDef, MenuEvent,
-    MenuSystem, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    resolve_bar_height, AppLogic, Backend, Color, ContextMenuItem, InteractionState, Key, MenuDef,
+    MenuEvent, MenuSystem, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    UiEvent, WidgetId,
 };
 
 pub struct MenuBarApp {
@@ -127,7 +127,8 @@ impl AppLogic for MenuBarApp {
         let viewport = backend.viewport();
         let lh = backend.line_height();
 
-        let bar_rect = Rect::new(0.0, 0.0, viewport.width, lh);
+        let bar_h = resolve_bar_height(backend.chrome_line_height());
+        let bar_rect = Rect::new(0.0, 0.0, viewport.width, bar_h);
         self.menu_system.render(backend, bar_rect);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
@@ -140,8 +141,8 @@ impl AppLogic for MenuBarApp {
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let viewport = backend.viewport();
-        let lh = backend.line_height();
-        let bar_rect = Rect::new(0.0, 0.0, viewport.width, lh);
+        let bar_h = resolve_bar_height(backend.chrome_line_height());
+        let bar_rect = Rect::new(0.0, 0.0, viewport.width, bar_h);
 
         match self.menu_system.handle(&event, backend, bar_rect) {
             MenuEvent::Activated(id) => match id.as_str() {
