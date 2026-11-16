@@ -1179,6 +1179,20 @@ jobs:
         run: 'cargo test -p quadraui --features a11y --lib a11y::'
       - name: Clippy (a11y feature)
         run: cargo clippy -p quadraui --features a11y -- -D warnings
+      # Optional raster image decode for the Kitty graphics transport
+      # (`quadraui::tui::image_decode`, `dep:image`). It sits behind
+      # `tui-images` rather than the bare `tui` feature so a plain
+      # terminal-chrome build pays for no image decoder, which means the
+      # plain `--features tui` steps above never compile it and its
+      # `#[cfg(test)]` unit tests would otherwise never run under CI. Same
+      # "own feature, own steps, same job" shape as `layout`/`a11y` above;
+      # the `--lib tui::image_decode` filter keeps it to the tests this
+      # step exists for instead of re-running the whole `--lib` corpus the
+      # plain `tui` step already covers.
+      - name: Test (tui-images feature)
+        run: 'cargo test -p quadraui --features tui-images --lib tui::image_decode'
+      - name: Clippy (tui-images feature)
+        run: cargo clippy -p quadraui --features tui-images -- -D warnings
       # Conformance matrix (quadraui#491, epic #480). The suite runs as part
       # of `cargo test --features tui` above; this step re-runs just that
       # target with --nocapture so the scenario x backend table lands in the
