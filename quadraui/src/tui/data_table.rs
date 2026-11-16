@@ -10,12 +10,12 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use super::{ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::data_table::{
-    ColumnAlign, ColumnMeasure, DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
-    SortDirection,
+    ColumnAlign, ColumnMeasure, DataRow, DataTable, DataTableGlyphs, DataTableLayout,
+    DataTablePaintState, SortDirection,
 };
 use crate::theme::Theme;
 
@@ -125,51 +125,28 @@ pub fn draw_data_table_with_state(
     )
 }
 
+/// Header row: background fill, title + sort glyph per column,
+/// separators.
 #[allow(clippy::too_many_arguments)]
-fn draw_data_table_inner(
+fn draw_header(
     buf: &mut Buffer,
     area: Rect,
+    ox: u16,
+    header_y: u16,
     table: &DataTable,
-    theme: &Theme,
-    hovered_idx: Option<usize>,
+    layout: &DataTableLayout,
+    inner_x0: i32,
+    inner_x1: i32,
+    h_off: i16,
+    header_fg: RatatuiColor,
+    header_bg: RatatuiColor,
+    sep_fg: RatatuiColor,
     glyphs: Option<&DataTableGlyphs>,
     nerd_fonts_enabled: bool,
-    scroll_px: Option<f32>,
-    striped: bool,
-) -> DataTableLayout {
-    let layout = data_table_layout(area, table);
-
-    if area.width == 0 || area.height == 0 {
-        return layout;
-    }
-
-    let header_bg = ratatui_color(theme.tab_bar_bg);
-    let header_fg = ratatui_color(theme.foreground);
-    let body_bg = ratatui_color(theme.background);
-    let body_fg = ratatui_color(theme.foreground);
-    let sel_bg = ratatui_color(theme.selection_bg);
-    let muted_fg = ratatui_color(theme.muted_fg);
-
-    // 1-cell inset on every edge when bordered (matches `layout.inset_*`).
-    let (ox, oy): (u16, u16) = if table.bordered { (1, 1) } else { (0, 0) };
-    if table.bordered {
-        draw_data_table_border(buf, area, ratatui_color(theme.border_fg), body_fg, body_bg);
-    }
-    // Interior x bounds (right exclusive) all content clips to.
-    let inner_x0 = area.x as i32 + ox as i32;
-    let inner_x1 = area.x as i32 + area.width as i32 - ox as i32;
-
-    // ── Header row ────────────────────────────────────────────────────
-    let header_y = area.y + oy;
+) {
     for x in ox..area.width.saturating_sub(ox) {
         set_cell(buf, area.x + x, header_y, ' ', header_fg, header_bg);
     }
-
-    let sep_fg = ratatui_color(theme.separator);
-    // Same rounded value now carried on `layout.h_scroll` — kept as a
-    // local `i16` here since every paint-position computation below
-    // works in signed cell-offset arithmetic.
-    let h_off = layout.h_scroll as i16;
 
     for (col_idx, rc) in layout.columns.iter().enumerate() {
         if col_idx >= table.columns.len() {
@@ -234,6 +211,277 @@ fn draw_data_table_inner(
             }
         }
     }
+}
+
+/// Given a column index + visible (clipped) cell rect, paint it and
+/// return `true`, or decline (`false`) to fall through to [`draw_cell`].
+/// `TreeTable` uses this to paint column 0 while every other column
+/// renders as [`draw_cell`] always has.
+type CellPaintHook<'a> = dyn FnMut(&mut Buffer, usize, Rect) -> bool + 'a;
+
+/// Default body-cell text painter — ellipsis-truncated by display
+/// width, muted or per-span coloured — [`draw_row`]'s `cell_hook`
+/// stands in for.
+#[allow(clippy::too_many_arguments)]
+fn draw_cell(
+    buf: &mut Buffer,
+    table: &DataTable,
+    row: &DataRow,
+    col_idx: usize,
+    col_x_raw: i32,
+    col_w: u16,
+    inner_x0: i32,
+    inner_x1: i32,
+    y: u16,
+    row_fg: RatatuiColor,
+    row_bg: RatatuiColor,
+    muted_fg: RatatuiColor,
+) {
+    let styled = match row.cells.get(col_idx) {
+        Some(c) if !c.spans.is_empty() => c,
+        _ => return,
+    };
+    let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
+    if full_text.is_empty() {
+        return;
+    }
+
+    let align = table
+        .columns
+        .get(col_idx)
+        .map(|c| c.align)
+        .unwrap_or(ColumnAlign::Left);
+
+    // Reserve one cell for the separator (except on the last column) —
+    // the same `usable_w` term the header already uses — so an
+    // over-long body cell is clipped at its own column boundary instead
+    // of painting across its neighbours.
+    let usable_w: u16 = if col_idx + 1 < table.columns.len() {
+        col_w.saturating_sub(1)
+    } else {
+        col_w
+    };
+
+    // Measure and clip by terminal display width, not char count: a
+    // char-count budget lets a CJK/emoji run overflow its column (each
+    // wide glyph claims two cells, not one) and never adds an ellipsis
+    // within budget. `visible_chars` is how many of `full_text`'s
+    // *characters* to paint; `displayed_len` is their actual cell width
+    // (plus the ellipsis's one cell, if needed) — the two diverge
+    // whenever a wide glyph is in play, which is why `displayed_len`
+    // (not `visible_chars`) feeds `align_offset`.
+    let text_width = crate::text_util::display_width(&full_text) as u16;
+    let (visible_chars, needs_ellipsis, displayed_len): (u16, bool, u16) = if text_width <= usable_w
+    {
+        (full_text.chars().count() as u16, false, text_width)
+    } else if usable_w == 0 {
+        (0, false, 0)
+    } else {
+        let (fitted, fitted_w) =
+            crate::text_util::truncate_with_ellipsis(&full_text, usable_w as f32, |s| {
+                crate::text_util::display_width(s) as f32
+            });
+        if fitted.is_empty() {
+            (0, false, 0)
+        } else {
+            // `fitted` is always `<content>…` here — strip the trailing
+            // ellipsis char to get the content count.
+            let content_chars = fitted.chars().count() as u16 - 1;
+            (content_chars, true, fitted_w.round() as u16)
+        }
+    };
+    let start = align_offset(align, displayed_len, usable_w) as i32;
+
+    let is_muted = row.decoration == crate::types::Decoration::Muted;
+    let mut chars_emitted = 0u16;
+    let mut width_used = 0u16;
+    'cell: for span in &styled.spans {
+        let span_fg = if is_muted {
+            muted_fg
+        } else {
+            span.fg.map(ratatui_color).unwrap_or(row_fg)
+        };
+        for ch in span.text.chars() {
+            if chars_emitted == visible_chars {
+                if needs_ellipsis {
+                    let cx = col_x_raw + start + width_used as i32;
+                    if cx >= inner_x0 && cx < inner_x1 {
+                        set_cell(buf, cx as u16, y, '…', span_fg, row_bg);
+                    }
+                }
+                break 'cell;
+            }
+            let cx = col_x_raw + start + width_used as i32;
+            if cx >= inner_x1 {
+                break 'cell;
+            }
+            let w = crate::text_util::char_cell_width(ch);
+            if cx >= inner_x0 {
+                if w == 2 && cx + 1 < inner_x1 {
+                    set_cell_wide(buf, cx as u16, y, ch, span_fg, row_bg);
+                } else {
+                    set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
+                }
+            }
+            width_used += w;
+            chars_emitted += 1;
+        }
+    }
+}
+
+/// Paint one body row: selection/hover/zebra-stripe background, every
+/// column's cell (via `cell_hook` when present, else [`draw_cell`]),
+/// then the column-divider separators.
+#[allow(clippy::too_many_arguments)]
+fn draw_row(
+    buf: &mut Buffer,
+    area: Rect,
+    ox: u16,
+    y: u16,
+    table: &DataTable,
+    layout: &DataTableLayout,
+    inner_x0: i32,
+    inner_x1: i32,
+    h_off: i16,
+    abs_idx: usize,
+    hovered_idx: Option<usize>,
+    striped: bool,
+    body_fg: RatatuiColor,
+    body_bg: RatatuiColor,
+    sel_bg: RatatuiColor,
+    tab_bar_bg: RatatuiColor,
+    alt_bg: RatatuiColor,
+    sep_fg: RatatuiColor,
+    muted_fg: RatatuiColor,
+    mut cell_hook: Option<&mut CellPaintHook<'_>>,
+) {
+    let row = &table.rows[abs_idx];
+    let is_selected = table.selected_idx == Some(abs_idx);
+    let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
+
+    // Zebra stripe on the absolute row index (not the visible on-screen
+    // position), so a given row's shading survives scrolling, the same
+    // convention Finder/Explorer use. Selection and hover both take
+    // priority over the stripe — it only shows through on an otherwise
+    // plain row. A terminal quantised to `ColorDepth::Ansi16` rounds
+    // `theme.row_alt_bg` back to `body_bg`'s own nearest ANSI colour (see
+    // `tui::color::quantize`), which is how a low-colour terminal drops
+    // the stripe for free.
+    let (row_fg, row_bg) = if is_selected {
+        (body_fg, sel_bg)
+    } else if is_hovered {
+        (body_fg, tab_bar_bg)
+    } else if striped && abs_idx % 2 == 1 {
+        (body_fg, alt_bg)
+    } else {
+        (body_fg, body_bg)
+    };
+
+    // Fill row background
+    for x in ox..area.width.saturating_sub(ox) {
+        set_cell(buf, area.x + x, y, ' ', row_fg, row_bg);
+    }
+
+    for (col_idx, rc) in layout.columns.iter().enumerate() {
+        let col_x_raw = inner_x0 + rc.x.round() as i32 - h_off as i32;
+        let col_x_end = col_x_raw + rc.width.round() as i32;
+        if col_x_end <= inner_x0 || col_x_raw >= inner_x1 {
+            continue;
+        }
+        let col_w = rc.width.round() as u16;
+        if col_w == 0 {
+            continue;
+        }
+
+        // Column separator on the right edge (skip last column) — drawn
+        // regardless of whether this cell has text, mirroring the
+        // header separator.
+        if col_idx + 1 < table.columns.len() {
+            let sep_cx = col_x_raw + col_w as i32 - 1;
+            if sep_cx >= inner_x0 && sep_cx < inner_x1 {
+                set_cell(buf, sep_cx as u16, y, '│', sep_fg, row_bg);
+            }
+        }
+
+        if let Some(hook) = cell_hook.as_mut() {
+            let visible_x0 = col_x_raw.max(inner_x0);
+            let visible_x1 = col_x_end.min(inner_x1);
+            let cell_rect = Rect::new(
+                visible_x0 as u16,
+                y,
+                (visible_x1 - visible_x0).max(0) as u16,
+                1,
+            );
+            if hook(buf, col_idx, cell_rect) {
+                continue;
+            }
+        }
+
+        draw_cell(
+            buf, table, row, col_idx, col_x_raw, col_w, inner_x0, inner_x1, y, row_fg, row_bg,
+            muted_fg,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_data_table_inner(
+    buf: &mut Buffer,
+    area: Rect,
+    table: &DataTable,
+    theme: &Theme,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+    scroll_px: Option<f32>,
+    striped: bool,
+) -> DataTableLayout {
+    let layout = data_table_layout(area, table);
+
+    if area.width == 0 || area.height == 0 {
+        return layout;
+    }
+
+    let header_bg = ratatui_color(theme.tab_bar_bg);
+    let header_fg = ratatui_color(theme.foreground);
+    let body_bg = ratatui_color(theme.background);
+    let body_fg = ratatui_color(theme.foreground);
+    let sel_bg = ratatui_color(theme.selection_bg);
+    let muted_fg = ratatui_color(theme.muted_fg);
+
+    // 1-cell inset on every edge when bordered (matches `layout.inset_*`).
+    let (ox, oy): (u16, u16) = if table.bordered { (1, 1) } else { (0, 0) };
+    if table.bordered {
+        draw_data_table_border(buf, area, ratatui_color(theme.border_fg), body_fg, body_bg);
+    }
+    // Interior x bounds (right exclusive) all content clips to.
+    let inner_x0 = area.x as i32 + ox as i32;
+    let inner_x1 = area.x as i32 + area.width as i32 - ox as i32;
+
+    // ── Header row ────────────────────────────────────────────────────
+    let header_y = area.y + oy;
+    let sep_fg = ratatui_color(theme.separator);
+    // Same rounded value now carried on `layout.h_scroll` — kept as a
+    // local `i16` here since every paint-position computation below
+    // works in signed cell-offset arithmetic.
+    let h_off = layout.h_scroll as i16;
+
+    draw_header(
+        buf,
+        area,
+        ox,
+        header_y,
+        table,
+        &layout,
+        inner_x0,
+        inner_x1,
+        h_off,
+        header_fg,
+        header_bg,
+        sep_fg,
+        glyphs,
+        nerd_fonts_enabled,
+    );
 
     // ── Body rows ─────────────────────────────────────────────────────
     // `scroll_px` wins over `scroll_offset` when set, quantised to a
@@ -246,150 +494,33 @@ fn draw_data_table_inner(
         .visible_rows
         .min(table.rows.len().saturating_sub(scroll_offset));
 
+    let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
+    let tab_bar_bg = ratatui_color(theme.tab_bar_bg);
     for row_idx in 0..visible {
         let abs_idx = scroll_offset + row_idx;
-        let row = &table.rows[abs_idx];
         let y = body_y + row_idx as u16;
-        let is_selected = table.selected_idx == Some(abs_idx);
-        let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
-
-        // Zebra stripe on the absolute row index (not the visible
-        // on-screen position), so a given row's shading survives
-        // scrolling, the same convention Finder/Explorer use. Selection
-        // and hover both take priority over the stripe — it only shows
-        // through on an otherwise-plain row. A terminal quantised to
-        // `ColorDepth::Ansi16` rounds `theme.row_alt_bg` back to
-        // `body_bg`'s own nearest ANSI colour (see `tui::color::quantize`),
-        // which is how a low-colour terminal drops the stripe for free.
-        let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
-        let (row_fg, row_bg) = if is_selected {
-            (body_fg, sel_bg)
-        } else if is_hovered {
-            (body_fg, ratatui_color(theme.tab_bar_bg))
-        } else if striped && abs_idx % 2 == 1 {
-            (body_fg, alt_bg)
-        } else {
-            (body_fg, body_bg)
-        };
-
-        // Fill row background
-        for x in ox..area.width.saturating_sub(ox) {
-            set_cell(buf, area.x + x, y, ' ', row_fg, row_bg);
-        }
-
-        for (col_idx, rc) in layout.columns.iter().enumerate() {
-            let col_x_raw = inner_x0 + rc.x.round() as i32 - h_off as i32;
-            let col_x_end = col_x_raw + rc.width.round() as i32;
-            if col_x_end <= inner_x0 || col_x_raw >= inner_x1 {
-                continue;
-            }
-            let col_w = rc.width.round() as u16;
-            if col_w == 0 {
-                continue;
-            }
-
-            // Column separator on the right edge (skip last column) —
-            // drawn regardless of whether this cell has text, mirroring
-            // the header separator.
-            if col_idx + 1 < table.columns.len() {
-                let sep_cx = col_x_raw + col_w as i32 - 1;
-                if sep_cx >= inner_x0 && sep_cx < inner_x1 {
-                    set_cell(buf, sep_cx as u16, y, '│', sep_fg, row_bg);
-                }
-            }
-
-            let styled = match row.cells.get(col_idx) {
-                Some(c) if !c.spans.is_empty() => c,
-                _ => continue,
-            };
-            let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-            if full_text.is_empty() {
-                continue;
-            }
-
-            let align = table
-                .columns
-                .get(col_idx)
-                .map(|c| c.align)
-                .unwrap_or(ColumnAlign::Left);
-
-            // Reserve one cell for the separator (except on the last
-            // column) — the same `usable_w` term the header already
-            // uses — so an over-long body cell is clipped at its own
-            // column boundary instead of painting across its neighbours.
-            let usable_w: u16 = if col_idx + 1 < table.columns.len() {
-                col_w.saturating_sub(1)
-            } else {
-                col_w
-            };
-
-            // Measure and clip by terminal display width, not char count:
-            // a char-count budget lets a CJK/emoji run overflow its column
-            // (each wide glyph claims two cells, not one) and never adds an
-            // ellipsis within budget. `visible_chars` is how many of
-            // `full_text`'s *characters* to paint; `displayed_len` is their
-            // actual cell width (plus the ellipsis's one cell, if needed) —
-            // the two diverge whenever a wide glyph is in play, which is why
-            // `displayed_len` (not `visible_chars`) feeds `align_offset`.
-            let text_width = crate::text_util::display_width(&full_text) as u16;
-            let (visible_chars, needs_ellipsis, displayed_len): (u16, bool, u16) = if text_width
-                <= usable_w
-            {
-                (full_text.chars().count() as u16, false, text_width)
-            } else if usable_w == 0 {
-                (0, false, 0)
-            } else {
-                let (fitted, fitted_w) =
-                    crate::text_util::truncate_with_ellipsis(&full_text, usable_w as f32, |s| {
-                        crate::text_util::display_width(s) as f32
-                    });
-                if fitted.is_empty() {
-                    (0, false, 0)
-                } else {
-                    // `fitted` is always `<content>…` here — strip the
-                    // trailing ellipsis char to get the content count.
-                    let content_chars = fitted.chars().count() as u16 - 1;
-                    (content_chars, true, fitted_w.round() as u16)
-                }
-            };
-            let start = align_offset(align, displayed_len, usable_w) as i32;
-
-            let is_muted = row.decoration == crate::types::Decoration::Muted;
-            let mut chars_emitted = 0u16;
-            let mut width_used = 0u16;
-            'cell: for span in &styled.spans {
-                let span_fg = if is_muted {
-                    muted_fg
-                } else {
-                    span.fg.map(ratatui_color).unwrap_or(row_fg)
-                };
-                for ch in span.text.chars() {
-                    if chars_emitted == visible_chars {
-                        if needs_ellipsis {
-                            let cx = col_x_raw + start + width_used as i32;
-                            if cx >= inner_x0 && cx < inner_x1 {
-                                set_cell(buf, cx as u16, y, '…', span_fg, row_bg);
-                            }
-                        }
-                        break 'cell;
-                    }
-                    let cx = col_x_raw + start + width_used as i32;
-                    if cx >= inner_x1 {
-                        break 'cell;
-                    }
-                    let w = crate::text_util::char_cell_width(ch);
-                    if cx >= inner_x0 {
-                        if w == 2 && cx + 1 < inner_x1 {
-                            set_cell_wide(buf, cx as u16, y, ch, span_fg, row_bg);
-                        } else {
-                            set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
-                        }
-                    }
-                    width_used += w;
-                    chars_emitted += 1;
-                }
-            }
-        }
+        draw_row(
+            buf,
+            area,
+            ox,
+            y,
+            table,
+            &layout,
+            inner_x0,
+            inner_x1,
+            h_off,
+            abs_idx,
+            hovered_idx,
+            striped,
+            body_fg,
+            body_bg,
+            sel_bg,
+            tab_bar_bg,
+            alt_bg,
+            sep_fg,
+            muted_fg,
+            None,
+        );
     }
 
     // ── Scrollbar ──────────────────────────────────────────────────────
@@ -401,13 +532,20 @@ fn draw_data_table_inner(
         let sb_x = (area.x + area.width).saturating_sub(ox + layout.scrollbar_width.round() as u16);
         let sb_h = area.height.saturating_sub(2 * oy + 1 + footer_h) as f32;
         let sb_track = crate::event::Rect::new(sb_x as f32, (area.y + oy + 1) as f32, 1.0, sb_h);
-        let sb = crate::primitives::scrollbar::Scrollbar::vertical(
+        // `scroll_px: None` here, not the `scroll_px` parameter this
+        // function took — `scroll_offset` above is already the quantised
+        // whole-row index [`DataTable::effective_scroll_offset`] resolved
+        // (TUI never reads the sub-row remainder), so the thumb must not
+        // let `vscrollbar_thumb` reopen that resolution with a fractional
+        // contribution.
+        let sb = crate::primitives::row_stack::vscrollbar_thumb(
             table.id,
             sb_track,
-            scroll_offset as f32,
-            table.rows.len() as f32,
-            layout.visible_rows as f32,
+            scroll_offset,
+            None,
+            table.rows.len(),
             1.0,
+            layout.visible_rows as f32,
         );
         super::draw_scrollbar(buf, &sb, theme, theme.background);
     }
@@ -1662,6 +1800,78 @@ mod tests {
                 "footer row {y} should not be painted over by the scrollbar track"
             );
         }
+    }
+
+    /// [`draw_row`]'s `cell_hook` is tried for every column before the
+    /// default [`draw_cell`] text painter: declining (`false`) for a
+    /// column falls through to the default, so a consumer (e.g.
+    /// `TreeTable`) can override only column 0 while every other column
+    /// still renders exactly as [`draw_cell`] always has.
+    #[test]
+    fn draw_row_hook_paints_column_0_default_paints_the_rest() {
+        let table = make_table();
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = data_table_layout(area, &table);
+
+        let mut hook_calls: Vec<usize> = Vec::new();
+        let mut hook = |buf: &mut Buffer, col_idx: usize, cell_rect: Rect| -> bool {
+            hook_calls.push(col_idx);
+            if col_idx == 0 {
+                for x in cell_rect.x..cell_rect.x + cell_rect.width {
+                    set_cell(
+                        buf,
+                        x,
+                        cell_rect.y,
+                        '#',
+                        RatatuiColor::Reset,
+                        RatatuiColor::Reset,
+                    );
+                }
+                true
+            } else {
+                false
+            }
+        };
+        draw_row(
+            &mut buf,
+            area,
+            0,
+            area.y + 1,
+            &table,
+            &layout,
+            area.x as i32,
+            area.x as i32 + area.width as i32,
+            0,
+            0,
+            None,
+            false,
+            RatatuiColor::Reset,
+            RatatuiColor::Reset,
+            RatatuiColor::Reset,
+            RatatuiColor::Reset,
+            RatatuiColor::Reset,
+            RatatuiColor::Reset,
+            RatatuiColor::Reset,
+            Some(&mut hook),
+        );
+
+        assert_eq!(hook_calls, vec![0, 1, 2]);
+        let row_y = area.y + 1;
+        // Column 0 ("pod-abc") was painted by the hook's own '#' fill,
+        // not the default text painter.
+        let row: String = (0..40)
+            .map(|x| buf[(x, row_y)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            row.starts_with('#'),
+            "column 0 should be hook-painted, got: {row}"
+        );
+        assert!(find_char_pos(&row, "pod-abc").is_none());
+        // Columns 1 ("Running") and 2 ("3d") declined by the hook, so
+        // they fell through to the default `draw_cell` text painter.
+        assert!(find_char_pos(&row, "Running").is_some());
+        assert!(find_char_pos(&row, "3d").is_some());
     }
 }
 

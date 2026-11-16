@@ -883,45 +883,16 @@ impl DataTable {
 /// plus a pixel-precise scroll position, neither of which lives on the
 /// declarative [`DataTable`] descriptor itself (see
 /// [`crate::primitives::list::ListPaintState`]'s doc for why — the same
-/// rule applies here).
-///
-/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
-/// `with_*` builders, so a future field here is additive.
-///
-/// `scroll_px: None` paints exactly as reading
-/// [`DataTable::scroll_offset`] directly already does; `Some(px)` wins
-/// and is resolved via [`DataTable::effective_scroll_offset`] /
-/// [`DataTable::scroll_sub_row_px`] into a row index plus a sub-row
+/// rule applies here). Field-identical to
+/// [`crate::primitives::list::ListPaintState`] and
+/// [`crate::primitives::tree::TreePaintState`] (`DataTable` just never
+/// reads `pressed_idx`), so all three are aliases of the shared
+/// [`crate::primitives::row_stack::RowPaintState`] — see that type's doc
+/// for the full rationale and the `scroll_px` resolution rule, and
+/// [`DataTable::effective_scroll_offset`] / [`DataTable::scroll_sub_row_px`]
+/// for how `scroll_px: Some(_)` resolves into a row index plus a sub-row
 /// remainder.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct DataTablePaintState {
-    pub hovered_idx: Option<usize>,
-    pub scroll_px: Option<f32>,
-    /// Tint every other body row with [`crate::theme::Theme::row_alt_bg`]
-    /// ("zebra striping"). `false` (the default) paints with no stripe at
-    /// all. The header and footer are never striped; selection and hover
-    /// highlights paint on top of the stripe rather than being replaced
-    /// by it.
-    pub striped: bool,
-}
-
-impl DataTablePaintState {
-    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
-        self.hovered_idx = idx;
-        self
-    }
-
-    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
-        self.scroll_px = px;
-        self
-    }
-
-    pub fn with_striped(mut self, striped: bool) -> Self {
-        self.striped = striped;
-        self
-    }
-}
+pub type DataTablePaintState = crate::primitives::row_stack::RowPaintState;
 
 /// Resolve column widths from definitions + viewport width.
 /// Shared logic that TreeTable will also use.
@@ -1143,7 +1114,7 @@ pub(crate) mod native_surface_paint {
     use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
     use crate::primitives::scrollbar::Scrollbar;
     use crate::theme::Theme;
-    use crate::types::Decoration;
+    use crate::types::{Decoration, StyledText};
 
     /// Hover tint alpha for a non-selected hovered row — matches
     /// `gtk::data_table`'s hardcoded `0.5`.
@@ -1264,35 +1235,19 @@ pub(crate) mod native_surface_paint {
         )
     }
 
+    /// Header row: title + sort glyph per column, then separators.
     #[allow(clippy::too_many_arguments)]
-    fn paint_inner(
-        table: &DataTable,
+    fn paint_header(
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        table: &DataTable,
+        layout: &DataTableLayout,
         rect: Rect,
-        line_height: f32,
-        hovered_idx: Option<usize>,
+        h_off: f32,
         glyphs: Option<&DataTableGlyphs>,
         nerd_fonts_enabled: bool,
-        scroll_px: Option<f32>,
-        striped: bool,
-    ) -> DataTableLayout {
-        let layout = {
-            let measure = SurfaceTextMeasure(&*surface);
-            pixel_data_table_layout(table, rect.width, rect.height, line_height, &measure)
-        };
-
-        if rect.width <= 0.0 || rect.height <= 0.0 {
-            return layout;
-        }
-
-        let h_off = table.h_scroll;
+    ) {
         let header_height = layout.header_height;
-        let footer_h = layout.footer_height;
-
-        surface.surface_push_clip(rect);
-
-        // ── Header ───────────────────────────────────────────────────────
         surface.surface_fill_rect(
             Rect::new(rect.x, rect.y, rect.width, header_height),
             theme.tab_bar_bg,
@@ -1372,6 +1327,227 @@ pub(crate) mod native_surface_paint {
                 theme.separator,
             );
         }
+    }
+
+    /// Default body-cell text painter — ellipsis-truncated, muted or
+    /// per-span coloured — [`paint_row`]'s `cell_hook` stands in for.
+    fn paint_cell(
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        cell: Option<&StyledText>,
+        cell_rect: Rect,
+        align: ColumnAlign,
+        is_muted: bool,
+    ) {
+        let Some(styled) = cell.filter(|c| !c.spans.is_empty()) else {
+            return;
+        };
+        if cell_rect.width <= 0.0 {
+            return;
+        }
+        let col_x = cell_rect.x;
+        let col_w = cell_rect.width;
+        let row_y = cell_rect.y;
+        let line_height = cell_rect.height;
+        surface.surface_push_clip(cell_rect);
+
+        let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
+        let (raw_tw, th) = surface.surface_measure_text(&full_text);
+        // An over-long cell is ellipsis-truncated to its own column width
+        // via the shared `fit_text_prefix` rather than clipped mid-glyph.
+        // Truncation always renders left-aligned from `col_x` — an
+        // overflowing cell has no good right/centre anchor for its
+        // ellipsis, so it uses the same left edge every other overflowing
+        // primitive ellipsizes from.
+        let needs_ellipsis = raw_tw > col_w;
+        let text_x = if needs_ellipsis {
+            col_x
+        } else {
+            align_text_x(col_x, col_w, raw_tw, align)
+        };
+        let text_y = row_y + (line_height - th) / 2.0;
+        let budget = if needs_ellipsis { col_w } else { raw_tw };
+
+        if is_muted {
+            let (paint_text, paint_w) = if needs_ellipsis {
+                crate::paint_surface::fit_text_prefix(surface, &full_text, false, col_w)
+            } else {
+                (full_text, raw_tw)
+            };
+            surface.surface_draw_text_run(
+                Rect::new(text_x, text_y, paint_w.max(1.0), th.max(1.0)),
+                &paint_text,
+                theme.muted_fg,
+            );
+        } else {
+            let mut run_x = text_x;
+            let mut remaining = budget;
+            for span in &styled.spans {
+                if remaining <= 0.0 {
+                    break;
+                }
+                let (sw, sh) = surface.surface_measure_text(&span.text);
+                let span_fg = span.fg.unwrap_or(theme.foreground);
+                let (paint_text, paint_w, truncated) = if sw <= remaining {
+                    (span.text.clone(), sw, false)
+                } else {
+                    let (t, w) = crate::paint_surface::fit_text_prefix(
+                        surface, &span.text, false, remaining,
+                    );
+                    (t, w, true)
+                };
+                if paint_w <= 0.0 {
+                    break;
+                }
+                surface.surface_draw_text_run(
+                    Rect::new(run_x, text_y, paint_w.max(1.0), sh.max(1.0)),
+                    &paint_text,
+                    span_fg,
+                );
+                run_x += paint_w;
+                remaining -= paint_w;
+                if truncated {
+                    break;
+                }
+            }
+        }
+        surface.surface_pop_clip();
+    }
+
+    /// Given a column index + cell rect, paint it and return `true`, or
+    /// decline (`false`) to fall through to [`paint_cell`]. `TreeTable`
+    /// uses this to paint column 0 while every other column renders as
+    /// [`paint_cell`] always has.
+    type CellPaintHook<'a> = dyn FnMut(&mut dyn PaintSurface, usize, Rect) -> bool + 'a;
+
+    /// Body row: zebra stripe, selection/hover tint, every column's cell
+    /// (via `cell_hook` when present, else [`paint_cell`]), separators.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_row(
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        table: &DataTable,
+        layout: &DataTableLayout,
+        rect: Rect,
+        row_y: f32,
+        line_height: f32,
+        abs_idx: usize,
+        h_off: f32,
+        hovered_idx: Option<usize>,
+        striped: bool,
+        mut cell_hook: Option<&mut CellPaintHook<'_>>,
+    ) {
+        let row = &table.rows[abs_idx];
+        let is_selected = table.selected_idx == Some(abs_idx);
+        let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
+
+        // Zebra stripe: painted first, as a solid fill, so the
+        // selection/hover tints below (both alpha blends) composite on
+        // top of it rather than being replaced by it. Striped on the
+        // absolute row index, not the visible on-screen position, so a
+        // given row keeps the same stripe as the table scrolls — the
+        // same convention Finder/Explorer use.
+        if striped && abs_idx % 2 == 1 {
+            surface.surface_fill_rect(
+                Rect::new(rect.x, row_y, rect.width, line_height),
+                theme.row_alt_bg(theme.background),
+            );
+        }
+
+        if is_selected {
+            surface.surface_fill_rect_alpha(
+                Rect::new(rect.x, row_y, rect.width, line_height),
+                theme.selection_bg,
+                theme.selection_alpha,
+            );
+        } else if is_hovered {
+            surface.surface_fill_rect_alpha(
+                Rect::new(rect.x, row_y, rect.width, line_height),
+                theme.tab_bar_bg,
+                HOVER_ALPHA,
+            );
+        }
+
+        let is_muted = row.decoration == Decoration::Muted;
+
+        for (col_idx, rc) in layout.columns.iter().enumerate() {
+            if rc.width <= 0.0 {
+                continue;
+            }
+            let col_x = rect.x + rc.x - h_off;
+            let col_w = rc.width;
+            let cell_rect = Rect::new(col_x, row_y, col_w, line_height);
+            if let Some(hook) = cell_hook.as_mut() {
+                if hook(surface, col_idx, cell_rect) {
+                    continue;
+                }
+            }
+            let align = table
+                .columns
+                .get(col_idx)
+                .map(|c| c.align)
+                .unwrap_or(ColumnAlign::Left);
+            paint_cell(
+                surface,
+                theme,
+                row.cells.get(col_idx),
+                cell_rect,
+                align,
+                is_muted,
+            );
+        }
+
+        for (col_idx, rc) in layout.columns.iter().enumerate() {
+            if col_idx + 1 >= layout.columns.len() || rc.width <= 0.0 {
+                continue;
+            }
+            let sep_x = rect.x + rc.x + rc.width - h_off;
+            surface.surface_fill_rect(
+                Rect::new(sep_x - 0.5, row_y, 1.0, line_height),
+                theme.separator,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_inner(
+        table: &DataTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&DataTableGlyphs>,
+        nerd_fonts_enabled: bool,
+        scroll_px: Option<f32>,
+        striped: bool,
+    ) -> DataTableLayout {
+        let layout = {
+            let measure = SurfaceTextMeasure(&*surface);
+            pixel_data_table_layout(table, rect.width, rect.height, line_height, &measure)
+        };
+
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+
+        let h_off = table.h_scroll;
+        let header_height = layout.header_height;
+        let footer_h = layout.footer_height;
+
+        surface.surface_push_clip(rect);
+
+        // ── Header ───────────────────────────────────────────────────────
+        paint_header(
+            surface,
+            theme,
+            table,
+            &layout,
+            rect,
+            h_off,
+            glyphs,
+            nerd_fonts_enabled,
+        );
 
         // ── Body ─────────────────────────────────────────────────────────
         // `scroll_px` wins over `scroll_offset` when set (see
@@ -1409,130 +1585,21 @@ pub(crate) mod native_surface_paint {
 
         for row_idx in 0..visible {
             let abs_idx = scroll_offset + row_idx;
-            let row = &table.rows[abs_idx];
             let row_y = body_y + row_idx as f32 * line_height;
-            let is_selected = table.selected_idx == Some(abs_idx);
-            let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
-
-            // Zebra stripe: painted first, as a solid fill, so the
-            // selection/hover tints below (both alpha blends) composite
-            // on top of it rather than being replaced by it. Striped on
-            // the absolute row index, not the visible on-screen position,
-            // so a given row keeps the same stripe as the table scrolls —
-            // the same convention Finder/Explorer use.
-            if striped && abs_idx % 2 == 1 {
-                surface.surface_fill_rect(
-                    Rect::new(rect.x, row_y, rect.width, line_height),
-                    theme.row_alt_bg(theme.background),
-                );
-            }
-
-            if is_selected {
-                surface.surface_fill_rect_alpha(
-                    Rect::new(rect.x, row_y, rect.width, line_height),
-                    theme.selection_bg,
-                    theme.selection_alpha,
-                );
-            } else if is_hovered {
-                surface.surface_fill_rect_alpha(
-                    Rect::new(rect.x, row_y, rect.width, line_height),
-                    theme.tab_bar_bg,
-                    HOVER_ALPHA,
-                );
-            }
-
-            let is_muted = row.decoration == Decoration::Muted;
-
-            for (col_idx, rc) in layout.columns.iter().enumerate() {
-                let Some(styled) = row.cells.get(col_idx).filter(|c| !c.spans.is_empty()) else {
-                    continue;
-                };
-                if rc.width <= 0.0 {
-                    continue;
-                }
-                let col_x = rect.x + rc.x - h_off;
-                let col_w = rc.width;
-                surface.surface_push_clip(Rect::new(col_x, row_y, col_w, line_height));
-
-                let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-                let (raw_tw, th) = surface.surface_measure_text(&full_text);
-                let align = table
-                    .columns
-                    .get(col_idx)
-                    .map(|c| c.align)
-                    .unwrap_or(ColumnAlign::Left);
-                // An over-long cell is ellipsis-truncated to its own
-                // column width via the shared `fit_text_prefix` rather
-                // than clipped mid-glyph. Truncation always renders
-                // left-aligned from `col_x` — an overflowing cell has no
-                // good right/centre anchor for its ellipsis, so it uses
-                // the same left edge every other overflowing primitive
-                // ellipsizes from.
-                let needs_ellipsis = raw_tw > col_w;
-                let text_x = if needs_ellipsis {
-                    col_x
-                } else {
-                    align_text_x(col_x, col_w, raw_tw, align)
-                };
-                let text_y = row_y + (line_height - th) / 2.0;
-                let budget = if needs_ellipsis { col_w } else { raw_tw };
-
-                if is_muted {
-                    let (paint_text, paint_w) = if needs_ellipsis {
-                        crate::paint_surface::fit_text_prefix(surface, &full_text, false, col_w)
-                    } else {
-                        (full_text, raw_tw)
-                    };
-                    surface.surface_draw_text_run(
-                        Rect::new(text_x, text_y, paint_w.max(1.0), th.max(1.0)),
-                        &paint_text,
-                        theme.muted_fg,
-                    );
-                } else {
-                    let mut run_x = text_x;
-                    let mut remaining = budget;
-                    for span in &styled.spans {
-                        if remaining <= 0.0 {
-                            break;
-                        }
-                        let (sw, sh) = surface.surface_measure_text(&span.text);
-                        let span_fg = span.fg.unwrap_or(theme.foreground);
-                        let (paint_text, paint_w, truncated) = if sw <= remaining {
-                            (span.text.clone(), sw, false)
-                        } else {
-                            let (t, w) = crate::paint_surface::fit_text_prefix(
-                                surface, &span.text, false, remaining,
-                            );
-                            (t, w, true)
-                        };
-                        if paint_w <= 0.0 {
-                            break;
-                        }
-                        surface.surface_draw_text_run(
-                            Rect::new(run_x, text_y, paint_w.max(1.0), sh.max(1.0)),
-                            &paint_text,
-                            span_fg,
-                        );
-                        run_x += paint_w;
-                        remaining -= paint_w;
-                        if truncated {
-                            break;
-                        }
-                    }
-                }
-                surface.surface_pop_clip();
-            }
-
-            for (col_idx, rc) in layout.columns.iter().enumerate() {
-                if col_idx + 1 >= layout.columns.len() || rc.width <= 0.0 {
-                    continue;
-                }
-                let sep_x = rect.x + rc.x + rc.width - h_off;
-                surface.surface_fill_rect(
-                    Rect::new(sep_x - 0.5, row_y, 1.0, line_height),
-                    theme.separator,
-                );
-            }
+            paint_row(
+                surface,
+                theme,
+                table,
+                &layout,
+                rect,
+                row_y,
+                line_height,
+                abs_idx,
+                h_off,
+                hovered_idx,
+                striped,
+                None,
+            );
         }
 
         if body_clip_active {
@@ -1551,29 +1618,19 @@ pub(crate) mod native_surface_paint {
                 layout.scrollbar_width,
                 (rect.height - header_height - footer_h).max(0.0),
             );
-            // `scroll_offset` + the sub-row fraction (`sub_px` as a
-            // fraction of `line_height`) — the thumb tracks the same
-            // pixel-precise position the body rows above were painted
-            // at, matching `TreeView`/`ListView`'s
-            // `vscrollbar_with_scroll_px` convention.
-            //
-            // Guarded against `line_height <= 0.0`: `sub_px` is always
-            // `0.0` on the `scroll_px: None` path, but `0.0 / 0.0` is
-            // still `NaN`, which would corrupt `Scrollbar::vertical`'s
-            // thumb math even though that path must stay provably
-            // unchanged from the pre-existing `scroll_offset as f32`.
-            let scroll_rows = if line_height > 0.0 {
-                scroll_offset as f32 + sub_px / line_height
-            } else {
-                scroll_offset as f32
-            };
-            let sb = Scrollbar::vertical(
+            // `vscrollbar_thumb` re-resolves `scroll_offset`/`scroll_px`
+            // itself, matching `TreeView`/`ListView`'s convention —
+            // `Scrollbar`'s own ratio clamp keeps the thumb identical to
+            // using `scroll_offset`/`sub_px` directly, even when
+            // `table.scroll_offset` is stale (out of range).
+            let sb = crate::primitives::row_stack::vscrollbar_thumb(
                 table.id,
                 track,
-                scroll_rows,
-                table.rows.len() as f32,
-                layout.visible_rows as f32,
+                table.scroll_offset,
+                scroll_px,
+                table.rows.len(),
                 line_height,
+                layout.visible_rows as f32,
             );
             crate::primitives::scrollbar::native_surface_paint::paint(&sb, surface, theme);
         }
@@ -2063,6 +2120,105 @@ pub(crate) mod native_surface_paint {
                 .collect();
             // One in the header band, one per visible body row (2 rows).
             assert_eq!(sep_fills.len(), 3);
+        }
+
+        /// Header, footer, sort, selection, hover, and `h_scroll` all in
+        /// one paint — `paint_inner`'s loop over `paint_header`/`paint_row`
+        /// composes every optional feature exactly like a plainer table
+        /// does one at a time in the tests above.
+        #[test]
+        fn header_footer_sort_selection_hover_and_h_scroll_all_paint_together() {
+            let mut table = two_col_table();
+            table.sort = Some((0, SortDirection::Ascending));
+            table.selected_idx = Some(0);
+            table.h_scroll = 5.0;
+            table.footer = Some(DataRow {
+                cells: vec![StyledText::plain("Total"), StyledText::plain("3")],
+                decoration: Decoration::Normal,
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+            // Row 1 hovered while row 0 is selected — exercises both
+            // tints in the same paint.
+            let layout = paint(&table, &mut surface, &theme, rect, 16.0, Some(1));
+
+            let expected_sort = format!("Name {}", crate::codicon::SORT_ASCENDING);
+            assert!(surface.styled_runs.iter().any(|r| r.1 == expected_sort));
+
+            assert_eq!(surface.fills_alpha.len(), 2);
+            assert!(surface
+                .fills_alpha
+                .iter()
+                .any(|(_, c, _)| *c == theme.selection_bg));
+            assert!(surface
+                .fills_alpha
+                .iter()
+                .any(|(_, c, _)| *c == theme.tab_bar_bg));
+
+            assert!(surface.styled_runs.iter().any(|r| r.1 == "Total"));
+
+            let expected_sep_x =
+                layout.columns[0].x + layout.columns[0].width - layout.h_scroll - 0.5;
+            assert!(surface
+                .fills
+                .iter()
+                .any(|(r, c)| *c == theme.separator && (r.x - expected_sep_x).abs() < 0.01));
+            assert_eq!(layout.h_scroll, 5.0);
+        }
+
+        /// [`paint_row`]'s `cell_hook` is tried for every column before the
+        /// default [`paint_cell`] text painter: declining (`false`) for a
+        /// column falls through to the default, so a consumer (e.g.
+        /// `TreeTable`) can override only column 0 while every other
+        /// column still renders exactly as [`paint_cell`] always has.
+        #[test]
+        fn paint_row_hook_paints_column_0_default_paints_the_rest() {
+            let table = two_col_table();
+            let theme = Theme::default();
+            let surface_for_measure = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let layout = {
+                let measure = SurfaceTextMeasure(&surface_for_measure);
+                pixel_data_table_layout(&table, rect.width, rect.height, 16.0, &measure)
+            };
+
+            let mut surface = RecordingSurface::default();
+            let mut hook_calls: Vec<usize> = Vec::new();
+            let hook_color = Color::rgb(9, 9, 9);
+            let mut hook =
+                |surface: &mut dyn PaintSurface, col_idx: usize, cell_rect: Rect| -> bool {
+                    hook_calls.push(col_idx);
+                    if col_idx == 0 {
+                        surface.surface_fill_rect(cell_rect, hook_color);
+                        true
+                    } else {
+                        false
+                    }
+                };
+            paint_row(
+                &mut surface,
+                &theme,
+                &table,
+                &layout,
+                rect,
+                rect.y + layout.header_height,
+                16.0,
+                0,
+                0.0,
+                None,
+                false,
+                Some(&mut hook),
+            );
+
+            assert_eq!(hook_calls, vec![0, 1]);
+            // Column 0 ("alpha") was painted by the hook's own fill, not
+            // the default text painter.
+            assert!(surface.fills.iter().any(|(_, c)| *c == hook_color));
+            assert!(!surface.text_runs.iter().any(|r| r.1 == "alpha"));
+            // Column 1 ("1") declined by the hook, so it fell through to
+            // the default `paint_cell` text painter.
+            assert!(surface.text_runs.iter().any(|r| r.1 == "1"));
         }
     }
 }
