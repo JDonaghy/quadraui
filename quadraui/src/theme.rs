@@ -730,6 +730,30 @@ impl Theme {
         base.blend(self.foreground, 0.16)
     }
 
+    /// Background tint for an alternate ("zebra-striped") row in a
+    /// [`crate::DataTable`] or [`crate::ListView`], blended from `base`
+    /// (the row's own resting background — the table/list's plain fill;
+    /// callers never stripe a header, footer, or already-coloured row)
+    /// toward [`Self::foreground`] at a low alpha.
+    ///
+    /// Deliberately a much smaller alpha than [`Self::list_hover_bg`]'s
+    /// `0.08` — a persistent stripe only needs to read as a faint tonal
+    /// shift, not a hover-strength highlight, and a stronger blend would
+    /// fight with [`Self::selection_bg`]/[`Self::selected_bg`] painted on
+    /// top of it. On a terminal quantised to [`crate::backend::ColorDepth::Ansi16`]
+    /// this blend rounds back to the same nearest ANSI colour as `base`
+    /// (see `crate::tui::color::quantize`), which is exactly how a
+    /// low-colour terminal "drops" the stripe without any caller having
+    /// to special-case it.
+    ///
+    /// **A method, not a field** — the same purely-additive reasoning as
+    /// [`Self::list_hover_bg`], and why a caller selects striping at all
+    /// via a paint-state flag (`DataTablePaintState`/`ListPaintState`)
+    /// rather than a new field on the declarative descriptor.
+    pub fn row_alt_bg(&self, base: Color) -> Color {
+        base.blend(self.foreground, 0.04)
+    }
+
     /// Background tint for a hovered [`crate::TreeView`] row. Same
     /// derivation as [`Self::list_hover_bg`] — `ListView` and `TreeView`
     /// are both flat, vertically-stacked row primitives, so they share
@@ -1716,6 +1740,23 @@ mod tests {
         let hovered = theme.list_hover_bg(base);
         let pressed = theme.list_pressed_bg(base);
         assert_ne!(pressed, hovered, "pressed must read differently from hover");
+    }
+
+    #[test]
+    fn row_alt_bg_tints_but_stays_weaker_than_hover() {
+        let theme = Theme::default();
+        let base = theme.background;
+        let striped = theme.row_alt_bg(base);
+        assert_ne!(
+            striped, base,
+            "a zebra-striped row should visibly tint its resting background"
+        );
+        assert_ne!(
+            striped,
+            theme.list_hover_bg(base),
+            "the stripe is a fainter, independent tint from the hover highlight \
+             that paints on top of it"
+        );
     }
 
     #[test]

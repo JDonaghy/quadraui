@@ -142,6 +142,41 @@ pub fn draw_list_with_scroll_px(
     nerd_fonts_enabled: bool,
     scroll_px: Option<f32>,
 ) {
+    draw_list_inner(buf, area, list, theme, nerd_fonts_enabled, scroll_px, false)
+}
+
+/// [`draw_list_with_scroll_px`], plus [`crate::primitives::list::ListPaintState::striped`]
+/// — tint every other non-selected row with [`Theme::row_alt_bg`]
+/// ("zebra striping"). `striped: false` (what [`draw_list_with_scroll_px`]
+/// passes) paints pixel-identically to it.
+pub fn draw_list_with_state(
+    buf: &mut Buffer,
+    area: Rect,
+    list: &ListView,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+    state: &crate::primitives::list::ListPaintState,
+) {
+    draw_list_inner(
+        buf,
+        area,
+        list,
+        theme,
+        nerd_fonts_enabled,
+        state.scroll_px,
+        state.striped,
+    )
+}
+
+fn draw_list_inner(
+    buf: &mut Buffer,
+    area: Rect,
+    list: &ListView,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+    scroll_px: Option<f32>,
+    striped: bool,
+) {
     // Floor to a whole cell up front — see `tui_list_layout_with_scroll_px`'s
     // doc for why — so the scrollbar thumb below and the row layout
     // agree on the same quantised position.
@@ -165,6 +200,16 @@ pub fn draw_list_with_scroll_px(
     let border_fg = ratatui_color(theme.border_fg);
     let title_fg = ratatui_color(theme.title_fg);
     let h_scroll = list.h_scroll;
+    // Zebra stripe fill, computed once — see the row loop below for how
+    // it's applied. A terminal quantised to `ColorDepth::Ansi16` rounds
+    // this back to `row_bg`'s own nearest ANSI colour (see
+    // `tui::color::quantize`), which is how a low-colour terminal drops
+    // the stripe for free.
+    let alt_bg = ratatui_color(theme.row_alt_bg(if list.bordered {
+        theme.surface_bg
+    } else {
+        theme.background
+    }));
 
     // Reserve the bottom row for a horizontal scrollbar and/or the
     // rightmost column for a vertical scrollbar when content overflows.
@@ -282,7 +327,21 @@ pub fn draw_list_with_scroll_px(
             height: 1,
         };
         let is_selected = visible_item.item_idx == list.selected_idx && list.has_focus;
-        let bg = if is_selected { sel_bg } else { row_bg };
+        // Striped on the absolute item index, not the visible on-screen
+        // position, so a given row's shading survives scrolling, the
+        // same convention Finder/Explorer use. Selection takes priority
+        // over the stripe; a header-decorated row is never striped.
+        let is_striped_row = striped
+            && !is_selected
+            && !matches!(item.decoration, Decoration::Header)
+            && visible_item.item_idx % 2 == 1;
+        let bg = if is_selected {
+            sel_bg
+        } else if is_striped_row {
+            alt_bg
+        } else {
+            row_bg
+        };
         let decoration_fg = match item.decoration {
             Decoration::Error => error_fg,
             Decoration::Warning => warn_fg,
@@ -616,6 +675,49 @@ mod tests {
         // First and third rows show ' ' selection placeholder.
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert_eq!(cell_char(&buf, 0, 2), ' ');
+    }
+
+    /// `ListPaintState::striped: true` tints every other non-selected
+    /// row with `theme.row_alt_bg`; the selected row keeps
+    /// `theme.selected_bg` regardless of its parity, and `striped: false`
+    /// (the default) paints every row with the plain background.
+    #[test]
+    fn striped_tints_alternate_rows_selection_wins_over_stripe() {
+        let mut list = make_list(1); // selected row 1 (odd) — would be striped if not selected
+        list.items.push(item("delta", Decoration::Normal));
+        let area = Rect::new(0, 0, 20, 5);
+        let theme = Theme::default();
+
+        let mut unstriped = Buffer::empty(area);
+        draw_list(&mut unstriped, area, &list, &theme, false);
+
+        let mut striped_buf = Buffer::empty(area);
+        let state = crate::primitives::list::ListPaintState::default().with_striped(true);
+        draw_list_with_state(&mut striped_buf, area, &list, &theme, false, &state);
+
+        let plain_bg = ratatui_color(theme.background);
+        let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
+        let sel_bg = ratatui_color(theme.selected_bg);
+        assert_ne!(
+            alt_bg, plain_bg,
+            "fixture theme must make the stripe visible"
+        );
+
+        // Row 0 (even, not selected): plain either way.
+        assert_eq!(unstriped[(0, 0)].bg, plain_bg);
+        assert_eq!(striped_buf[(0, 0)].bg, plain_bg);
+
+        // Row 1 (odd, selected): selection colour either way — the
+        // stripe never overrides the selected row.
+        assert_eq!(unstriped[(0, 1)].bg, sel_bg);
+        assert_eq!(striped_buf[(0, 1)].bg, sel_bg);
+
+        // Row 2 (even, not selected): unaffected by striping.
+        assert_eq!(striped_buf[(0, 2)].bg, plain_bg);
+
+        // Row 3 (odd, not selected): only tinted when striped.
+        assert_eq!(unstriped[(0, 3)].bg, plain_bg);
+        assert_eq!(striped_buf[(0, 3)].bg, alt_bg);
     }
 
     #[test]

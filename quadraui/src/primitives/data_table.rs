@@ -898,6 +898,12 @@ impl DataTable {
 pub struct DataTablePaintState {
     pub hovered_idx: Option<usize>,
     pub scroll_px: Option<f32>,
+    /// Tint every other body row with [`crate::theme::Theme::row_alt_bg`]
+    /// ("zebra striping"). `false` (the default) paints exactly as before
+    /// this field existed. The header and footer are never striped;
+    /// selection and hover highlights paint on top of the stripe rather
+    /// than being replaced by it.
+    pub striped: bool,
 }
 
 impl DataTablePaintState {
@@ -908,6 +914,11 @@ impl DataTablePaintState {
 
     pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
         self.scroll_px = px;
+        self
+    }
+
+    pub fn with_striped(mut self, striped: bool) -> Self {
+        self.striped = striped;
         self
     }
 }
@@ -1214,6 +1225,7 @@ pub(crate) mod native_surface_paint {
             glyphs,
             nerd_fonts_enabled,
             None,
+            false,
         )
     }
 
@@ -1248,6 +1260,7 @@ pub(crate) mod native_surface_paint {
             glyphs,
             nerd_fonts_enabled,
             state.scroll_px,
+            state.striped,
         )
     }
 
@@ -1262,6 +1275,7 @@ pub(crate) mod native_surface_paint {
         glyphs: Option<&DataTableGlyphs>,
         nerd_fonts_enabled: bool,
         scroll_px: Option<f32>,
+        striped: bool,
     ) -> DataTableLayout {
         let layout = {
             let measure = SurfaceTextMeasure(&*surface);
@@ -1399,6 +1413,19 @@ pub(crate) mod native_surface_paint {
             let row_y = body_y + row_idx as f32 * line_height;
             let is_selected = table.selected_idx == Some(abs_idx);
             let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
+
+            // Zebra stripe: painted first, as a solid fill, so the
+            // selection/hover tints below (both alpha blends) composite
+            // on top of it rather than being replaced by it. Striped on
+            // the absolute row index, not the visible on-screen position,
+            // so a given row keeps the same stripe as the table scrolls —
+            // the same convention Finder/Explorer use.
+            if striped && abs_idx % 2 == 1 {
+                surface.surface_fill_rect(
+                    Rect::new(rect.x, row_y, rect.width, line_height),
+                    theme.row_alt_bg(theme.background),
+                );
+            }
 
             if is_selected {
                 surface.surface_fill_rect_alpha(

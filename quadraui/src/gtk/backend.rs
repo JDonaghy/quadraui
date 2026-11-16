@@ -2911,6 +2911,7 @@ impl Backend for GtkBackend {
             nerd_fonts_enabled,
             opacity,
             None,
+            false,
         );
         layout.set_font_description(saved_font.as_ref());
         self.record_data_table_painted_text(rect, table, &table_layout, table.scroll_offset, 0.0);
@@ -2962,6 +2963,7 @@ impl Backend for GtkBackend {
             nerd_fonts_enabled,
             opacity,
             state.scroll_px,
+            state.striped,
         );
         layout.set_font_description(saved_font.as_ref());
 

@@ -1002,6 +1002,84 @@ pub(crate) mod native_surface_paint {
         focus_ring_visible: bool,
         scroll_px: Option<f32>,
     ) {
+        paint_inner(
+            list,
+            area,
+            list_layout,
+            line_height,
+            nerd_fonts_enabled,
+            supports_border,
+            supports_hscrollbar,
+            surface,
+            theme,
+            style,
+            hovered_idx,
+            pressed_idx,
+            focus_ring_visible,
+            scroll_px,
+            false,
+        )
+    }
+
+    /// [`paint_with_scroll_px`], plus `striped` — tint every other
+    /// non-selected, non-header row with [`Theme::row_alt_bg`] ("zebra
+    /// striping"). `striped: false` (what [`paint_with_scroll_px`]
+    /// passes) paints pixel-identically to it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_state(
+        list: &ListView,
+        area: Rect,
+        list_layout: &ListViewLayout,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        supports_border: bool,
+        supports_hscrollbar: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
+        scroll_px: Option<f32>,
+        striped: bool,
+    ) {
+        paint_inner(
+            list,
+            area,
+            list_layout,
+            line_height,
+            nerd_fonts_enabled,
+            supports_border,
+            supports_hscrollbar,
+            surface,
+            theme,
+            style,
+            hovered_idx,
+            pressed_idx,
+            focus_ring_visible,
+            scroll_px,
+            striped,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_inner(
+        list: &ListView,
+        area: Rect,
+        list_layout: &ListViewLayout,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        supports_border: bool,
+        supports_hscrollbar: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
+        scroll_px: Option<f32>,
+        striped: bool,
+    ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
         }
@@ -1118,10 +1196,21 @@ pub(crate) mod native_surface_paint {
                 Decoration::Header => theme.header_fg,
                 _ => theme.surface_fg,
             };
+            // Zebra stripe on the absolute item index (not the visible
+            // on-screen position), so a given row's shading survives
+            // scrolling, the same convention Finder/Explorer use — a
+            // header row is never striped, and selection takes priority
+            // over the stripe.
+            let is_striped_row = striped
+                && !is_selected
+                && !matches!(item.decoration, Decoration::Header)
+                && vis_item.item_idx % 2 == 1;
             let row_bg = if is_selected {
                 theme.selected_bg
             } else if matches!(item.decoration, Decoration::Header) {
                 theme.header_bg
+            } else if is_striped_row {
+                theme.row_alt_bg(base_bg)
             } else {
                 base_bg
             };

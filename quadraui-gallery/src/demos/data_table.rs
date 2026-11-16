@@ -8,6 +8,7 @@
 //! the same [`DataTable`] primitive at both ends of the interactivity
 //! spectrum.
 
+use quadraui::primitives::data_table::DataTablePaintState;
 use quadraui::{
     Backend, BackendCaps, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable,
     DataTableHit, InteractionState, Key, Reaction, Rect, SortDirection, StatusBar,
@@ -41,6 +42,7 @@ pub struct DataTableDemo {
     sort_asc: bool,
     show_footer: bool,
     hovered_idx: Option<usize>,
+    striped: bool,
 }
 
 impl DataTableDemo {
@@ -73,6 +75,7 @@ impl DataTableDemo {
             sort_asc: true,
             show_footer: true,
             hovered_idx: None,
+            striped: true,
         }
     }
 
@@ -233,7 +236,8 @@ impl DataTableDemo {
                 ),
                 None => "sort: none".into(),
             };
-            format!(" {sort_text} — click header to sort, f=footer ")
+            let stripe_text = if self.striped { "striped" } else { "flat" };
+            format!(" {sort_text} — click header to sort, f=footer, z={stripe_text} ")
         } else {
             " static reference table — no sort, no selection ".into()
         };
@@ -283,7 +287,10 @@ impl Demo for DataTableDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let table_rect = Self::table_rect(area, backend);
         let hovered = if variant == 0 { self.hovered_idx } else { None };
-        let _ = backend.draw_data_table(table_rect, &self.table(variant), hovered);
+        let state = DataTablePaintState::default()
+            .with_hovered_idx(hovered)
+            .with_striped(variant == 0 && self.striped);
+        let _ = backend.draw_data_table_with_state(table_rect, &self.table(variant), &state);
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_status_bar_interactive(
@@ -333,6 +340,10 @@ impl Demo for DataTableDemo {
                 }
                 Key::Char('f') => {
                     self.show_footer = !self.show_footer;
+                    Reaction::Redraw
+                }
+                Key::Char('z') => {
+                    self.striped = !self.striped;
                     Reaction::Redraw
                 }
                 _ => Reaction::Continue,
@@ -427,6 +438,22 @@ mod tests {
         let reaction = demo.handle(0, &event, &mut backend, area);
         assert!(matches!(reaction, Reaction::Redraw));
         assert!(!demo.show_footer);
+    }
+
+    #[test]
+    fn new_starts_striped_and_z_key_toggles_it() {
+        let mut demo = DataTableDemo::new();
+        assert!(demo.striped, "demo should default to the striped variant");
+        let mut backend = quadraui::testing::RecordingBackend::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 20.0);
+        let event = UiEvent::KeyPressed {
+            key: Key::Char('z'),
+            modifiers: Default::default(),
+            repeat: false,
+        };
+        let reaction = demo.handle(0, &event, &mut backend, area);
+        assert!(matches!(reaction, Reaction::Redraw));
+        assert!(!demo.striped);
     }
 }
 
