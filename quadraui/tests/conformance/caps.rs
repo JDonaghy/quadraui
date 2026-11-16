@@ -648,6 +648,32 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
     ),
+    // `text_field_layout` is `TextField::layout` applied to
+    // `char_width()`/`line_height()` — a pure fn of those two accessors
+    // plus `TextField`'s own state, same shape as `terminal_layout`/
+    // `editor_layout` above. `TuiBackend` overrides `draw_text_field`
+    // itself (the real one-row `[ icon value × ]` painter) but shares
+    // this default `_layout` body; GTK/macOS/Win take the same default
+    // for both methods until quadraui#2609 gives each its own dedicated
+    // single-row painter (quadraui#2590).
+    (
+        "gtk",
+        "text_field_layout",
+        "pure fn of char_width()/line_height() + TextField's own state — see quadraui#2590's \
+         Backend::draw_text_field doc",
+    ),
+    (
+        "macos",
+        "text_field_layout",
+        "pure fn of char_width()/line_height() + TextField's own state — see quadraui#2590's \
+         Backend::draw_text_field doc",
+    ),
+    (
+        "win",
+        "text_field_layout",
+        "pure fn of char_width()/line_height() + TextField's own state — see quadraui#2590's \
+         Backend::draw_text_field doc",
+    ),
     // `canvas_layout` is `CanvasLayout { bounds: rect }` — a pure function of `rect`
     // alone, with no backend-specific metric. All four backends take the default.
     (

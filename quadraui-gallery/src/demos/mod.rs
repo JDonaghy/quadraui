@@ -44,6 +44,7 @@ pub mod tab_bar;
 #[cfg(feature = "terminal")]
 pub mod terminal;
 pub mod text_display;
+pub mod text_field;
 pub mod text_input;
 pub mod text_selection;
 pub mod toast;

@@ -691,6 +691,7 @@ pub use primitives::text_display::{
     TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,
     TextDisplayLineMeasure, VisibleTextDisplayLine,
 };
+pub use primitives::text_field::{TextField, TextFieldHit, TextFieldLayout, TextFieldMeasure};
 pub use primitives::text_input::{
     EditOp, TextEditor, TextInput, TextInputHit, TextInputLayout, TextInputMeasure,
     TextInputMetrics, VisibleTextInputLine,

@@ -3900,6 +3900,33 @@ impl Backend for TuiBackend {
         crate::tui::tui_text_input_layout(ti, area)
     }
 
+    fn draw_text_field(
+        &mut self,
+        rect: QRect,
+        tf: &crate::primitives::text_field::TextField,
+    ) -> crate::primitives::text_field::TextFieldLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_text_field called outside enter_frame_scope"
+            );
+            return self.text_field_layout(rect, tf);
+        };
+        crate::tui::draw_text_field(frame.buffer_mut(), area, tf, &theme, nerd_fonts)
+    }
+
+    fn text_field_layout(
+        &self,
+        rect: QRect,
+        tf: &crate::primitives::text_field::TextField,
+    ) -> crate::primitives::text_field::TextFieldLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_text_field_layout(tf, area)
+    }
+
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout: &crate::TooltipLayout) {
         self.draw_tooltip_with_chrome(tooltip, layout, &crate::TooltipChrome::default());
     }

@@ -45,6 +45,7 @@ use crate::demos::tab_bar::TabBarDemo;
 #[cfg(feature = "terminal")]
 use crate::demos::terminal::TerminalDemo;
 use crate::demos::text_display::TextDisplayDemo;
+use crate::demos::text_field::TextFieldDemo;
 use crate::demos::text_input::TextInputDemo;
 use crate::demos::text_selection::TextSelectionDemo;
 use crate::demos::toast::ToastDemo;
@@ -88,6 +89,7 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         Box::new(WorkspaceDemo::new()),
         // Input & forms.
         Box::new(TextInputDemo::new()),
+        Box::new(TextFieldDemo::new()),
         Box::new(FormDemo::new()),
         Box::new(CaretShapeDemo::new()),
         Box::new(CommandLineDemo::new()),

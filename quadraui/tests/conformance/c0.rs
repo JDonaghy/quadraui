@@ -42,10 +42,10 @@ use quadraui::{
     Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side,
     SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
     StatusBarSegment, StyledSpan, StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon,
-    TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner,
-    ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions,
-    ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
-    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast,
+    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
+    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
+    TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 // `Panel` is `#[deprecated]`; imported separately so the allow stays
 // scoped to the one `draw_panel` back-compat case below.
@@ -1004,6 +1004,16 @@ pub const CASES: &[Case] = &[
             ti.lines = vec!["c0tin".to_string()];
             ti.has_focus = true;
             let _ = b.draw_text_input(area, &ti);
+        },
+    },
+    Case {
+        method: "draw_text_field",
+        needle: Some("c0tfld"),
+        paint: |b, area| {
+            let tf = TextField::new(id("text-field"))
+                .with_value("c0tfld")
+                .with_has_focus(true);
+            let _ = b.draw_text_field(area, &tf);
         },
     },
     Case {
