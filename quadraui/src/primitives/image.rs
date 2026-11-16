@@ -15,9 +15,11 @@
 //! [`Image`] only carries a source (bytes or a path) plus layout
 //! metadata; it never decodes pixels itself. Each backend's
 //! `Backend::draw_image` decodes through its native stack — GTK via
-//! `gdk_pixbuf`, macOS via `NSImage`/ImageIO, Win via WIC — so the
-//! primitive stays free of image-format dependencies. See that trait
-//! method's doc comment for the per-backend contract.
+//! `gdk_pixbuf`, macOS via `NSImage`/ImageIO, Win via WIC, and TUI
+//! (behind the `tui-images` Cargo feature, on a terminal with confirmed
+//! Kitty-protocol graphics support) via `crate::tui::image_decode` —
+//! so the primitive stays free of image-format dependencies. See that
+//! trait method's doc comment for the per-backend contract.
 //!
 //! Each backend also maintains a small fixed-capacity LRU decode cache
 //! (`crate::image_cache::ImageCache`) keyed on a hash of `image.source`
@@ -102,8 +104,10 @@ pub struct Image {
     /// without decoding.
     pub intrinsic_size: Option<(u32, u32)>,
     pub fit: ImageFit,
-    /// Required, not optional: TUI cannot paint raster pixels at all, so
-    /// this is what actually renders there (see
+    /// Required, not optional: TUI paints this in place of real pixels
+    /// whenever it can't rasterise them — a bare `tui` build (no
+    /// `tui-images` feature), a terminal that hasn't confirmed Kitty-
+    /// protocol graphics support, or a real decode failure (see
     /// `Backend::draw_image`'s doc comment) — and it's what GTK/macOS
     /// paint nothing in place of on a decode failure (bad path, corrupt
     /// bytes), so a host can still show *something* on every backend and

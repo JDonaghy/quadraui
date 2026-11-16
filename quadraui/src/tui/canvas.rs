@@ -614,6 +614,64 @@ pub fn draw_canvas(buf: &mut Buffer, area: RRect, canvas: &Canvas, theme: &Theme
     layout
 }
 
+/// Upgrade every [`DrawOp::Image`] in `canvas` to real Kitty-graphics
+/// pixels, overwriting whatever fallback-text cells [`draw_canvas`]
+/// already painted for it. Each op's `rect` (canvas-local, cell-
+/// fractional units — same frame [`paint_cell_quantised_text`] snaps
+/// `DrawOp::TextRun`/`DrawOp::Image` fallback text into) is quantised
+/// outward to whole cells, clipped by the same per-op
+/// [`CellClip`] stack [`draw_canvas`] replays, and handed to
+/// [`crate::tui::image::draw_image_kitty`] — the same decode-cache,
+/// id-registry, and transmit/placement-byte-queueing path
+/// [`crate::tui::backend::TuiBackend::draw_image`] drives for the
+/// standalone `Image` primitive, so an image reached through either
+/// path shares one id if its source and placed cell size match.
+///
+/// Called by `TuiBackend::draw_canvas` only when
+/// [`crate::tui::backend::TuiBackend::kitty_graphics`] is `Some` and
+/// the backend is truecolor — see that trait method's body. Behind the
+/// `tui-images` Cargo feature, same as [`crate::tui::image::draw_image_kitty`]
+/// itself.
+#[cfg(feature = "tui-images")]
+pub(crate) fn draw_canvas_kitty_images(
+    buf: &mut Buffer,
+    area: RRect,
+    canvas: &Canvas,
+    theme: &Theme,
+    cell_px: (u16, u16),
+    state: &mut crate::tui::image::KittyImageState,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let cols = area.width as i32;
+    let rows = area.height as i32;
+    let clips = clip_per_op(&canvas.ops, cols, rows);
+    for (op, clip) in canvas.ops.iter().zip(&clips) {
+        let DrawOp::Image { rect, image } = op else {
+            continue;
+        };
+        let cell_x = rect.x.round() as i32;
+        let cell_y = rect.y.round() as i32;
+        let cell_w = rect.width.round().max(0.0) as i32;
+        let cell_h = rect.height.round().max(0.0) as i32;
+        let x0 = cell_x.max(clip.x0).max(0);
+        let y0 = cell_y.max(clip.y0).max(0);
+        let x1 = (cell_x + cell_w).min(clip.x1).min(cols);
+        let y1 = (cell_y + cell_h).min(clip.y1).min(rows);
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        let op_area = RRect::new(
+            area.x + x0 as u16,
+            area.y + y0 as u16,
+            (x1 - x0) as u16,
+            (y1 - y0) as u16,
+        );
+        crate::tui::image::draw_image_kitty(buf, op_area, image, theme, cell_px, state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,6 +790,44 @@ mod tests {
         assert_eq!(cell_char(&buf, 0, 0), '[');
         assert_eq!(cell_char(&buf, 1, 0), 'X');
         assert_eq!(cell_char(&buf, 2, 0), ']');
+    }
+
+    #[cfg(feature = "tui-images")]
+    #[test]
+    fn draw_canvas_kitty_images_upgrades_an_image_op_past_its_fallback_text() {
+        fn tiny_png_bytes() -> Vec<u8> {
+            let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 200, 255]));
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .expect("encode tiny test PNG");
+            out
+        }
+
+        let area = RRect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::Image {
+            rect: Rect::new(0.0, 0.0, 4.0, 2.0),
+            image: Image {
+                id: WidgetId::new("img"),
+                source: ImageSource::Bytes(tiny_png_bytes()),
+                intrinsic_size: Some((4, 4)),
+                fit: ImageFit::Fill,
+                fallback_text: "[X]".into(),
+            },
+        }]);
+        draw_canvas(&mut buf, area, &c, &Theme::default());
+        assert_eq!(cell_char(&buf, 0, 0), '[', "fallback text paints first");
+
+        let mut state = crate::tui::image::KittyImageState::new();
+        draw_canvas_kitty_images(&mut buf, area, &c, &Theme::default(), (8, 16), &mut state);
+
+        assert_eq!(
+            cell_char(&buf, 0, 0),
+            '\u{10EEEE}',
+            "a successful real-pixel decode must overwrite the fallback text with placeholder cells"
+        );
+        assert!(!state.pending_writes.is_empty());
     }
 
     #[test]

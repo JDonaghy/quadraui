@@ -5,11 +5,11 @@
 //! feature) into the raw APC escape sequences the protocol defines:
 //! transmit (`a=t`), virtual placement (`a=p,U=1`), delete (`a=d`), and
 //! the Unicode-placeholder cell content a host paints those placements
-//! through. No terminal capability detection, no paint-path wiring, and
-//! no dependency on an image decoder lives here — see
-//! `quadraui::tui::caps` for the former and
-//! `TODO(#2576)` for the frame-loop child that wires this module into a
-//! real paint pass.
+//! through. No terminal capability detection and no dependency on an
+//! image decoder lives here — see `quadraui::tui::caps` for the former
+//! and [`crate::tui::image`]'s `draw_image_kitty` for the paint-path
+//! caller that turns a decoded [`crate::tui::image_decode::DecodedImage`]
+//! into calls against this module's encoders.
 //!
 //! Every reference below (`<ESC>_G...`, the `a`/`f`/`s`/`v`/`i`/`m`/`q`/
 //! `d`/`U`/`c`/`r` keys, the row/column diacritic table) is the Kitty
@@ -108,7 +108,6 @@ fn apc(control_data: &str, payload: Option<&str>) -> String {
 /// `m=1`/`m=0` on every chunk, and `q=2` added once, on the first chunk.
 /// `base64_encode`'s output is pure ASCII, so byte and `char` boundaries
 /// coincide — slicing by byte offset never splits a multi-byte char.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls transmit_rgba/transmit_png.
 fn chunk_transmit(control_data: &str, payload_b64: &str) -> Vec<String> {
     let total = payload_b64.len();
     if total == 0 {
@@ -136,7 +135,11 @@ fn chunk_transmit(control_data: &str, payload_b64: &str) -> Vec<String> {
 /// [`chunk_transmit`]. `rgba` must be exactly `width * height * 4` bytes
 /// — callers get that shape for free from
 /// [`crate::tui::image_decode::DecodedImage`].
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
+///
+/// Only called from `tui::image::draw_image_kitty`, which is itself
+/// behind the `tui-images` Cargo feature — unused (and `allow`ed) on a
+/// bare `tui` build with no image decoder to feed it.
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) fn transmit_rgba(id: u32, width: u32, height: u32, rgba: &[u8]) -> Vec<String> {
     let payload = base64_encode(rgba);
     chunk_transmit(&format!("a=t,f=32,i={id},s={width},v={height}"), &payload)
@@ -147,7 +150,14 @@ pub(crate) fn transmit_rgba(id: u32, width: u32, height: u32, rgba: &[u8]) -> Ve
 /// source that is already a small-enough PNG. Chunked per
 /// [`chunk_transmit`]; width/height are read from the PNG data itself by
 /// the terminal, so no `s`/`v` keys are needed.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
+///
+/// No paint-path caller yet — `tui::image::draw_image_kitty` always
+/// decodes through [`crate::tui::image_decode`]'s RGBA path (one shape
+/// to cache and transmit, matching every other primitive's decode-to-
+/// RGBA backends), so this PNG-passthrough fast path stays unused until
+/// a caller wants to skip that re-encode for a source already small
+/// enough to send as-is.
+#[allow(dead_code)]
 pub(crate) fn transmit_png(id: u32, png_bytes: &[u8]) -> Vec<String> {
     let payload = base64_encode(png_bytes);
     chunk_transmit(&format!("a=t,f=100,i={id}"), &payload)
@@ -156,28 +166,35 @@ pub(crate) fn transmit_png(id: u32, png_bytes: &[u8]) -> Vec<String> {
 /// Create a virtual placement for image `id`, shown through
 /// `cols`×`rows` Unicode placeholder cells (`a=p,U=1`) — see the module
 /// doc's spec link, "Unicode placeholders" section. No payload.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) fn place_virtual(id: u32, cols: u32, rows: u32) -> String {
     apc(&format!("a=p,U=1,i={id},c={cols},r={rows},q=2"), None)
 }
 
 /// Delete image `id` and free its stored data (`a=d,d=I` — the
 /// uppercase `I` variant frees data; see the spec's delete-value table).
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`] —
+/// `TuiBackend::end_frame`'s only caller is behind that feature; the
+/// session-teardown `delete_all` sibling below has no such gate.
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) fn delete_image(id: u32) -> String {
     apc(&format!("a=d,d=I,i={id},q=2"), None)
 }
 
 /// Delete every image and free all stored data (`a=d,d=A`) — teardown,
 /// e.g. on shutdown or a full-screen redraw that invalidates every id.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
 pub(crate) fn delete_all() -> String {
     apc("a=d,d=A,q=2", None)
 }
 
 /// Base Unicode placeholder character (`U+10EEEE`) every placeholder
 /// cell starts with, before its row/column diacritics.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop paints placeholders.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) const PLACEHOLDER_BASE: char = '\u{10EEEE}';
 
 /// Row/column diacritics table, in index order (index 0 encodes row/col
@@ -186,8 +203,12 @@ pub(crate) const PLACEHOLDER_BASE: char = '\u{10EEEE}';
 /// decomposition mapping, Unicode 6.0.0). 297 entries — a placeholder
 /// grid wider or taller than that has no diacritic and falls back to
 /// the "inherit from the cell to the left" rule the spec describes,
-/// which this module does not implement (no paint-path caller needs it
-/// yet; see the module doc's `TODO(#2576)`).
+/// which this module does not implement — `tui::image::draw_image_kitty`
+/// simply skips a cell past this range (see [`placeholder_cell_text`]'s
+/// `None` case).
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 #[rustfmt::skip]
 const ROWCOL_DIACRITICS: [char; 297] = [
     '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}', '\u{033D}', '\u{033E}', '\u{033F}',
@@ -232,7 +253,9 @@ const ROWCOL_DIACRITICS: [char; 297] = [
 
 /// Look up the diacritic for row/column index `n` — `None` past the
 /// table's 297-entry range (see [`ROWCOL_DIACRITICS`]'s doc).
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop paints placeholders.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) fn placeholder_diacritic(n: u32) -> Option<char> {
     ROWCOL_DIACRITICS.get(n as usize).copied()
 }
@@ -240,7 +263,9 @@ pub(crate) fn placeholder_diacritic(n: u32) -> Option<char> {
 /// Build one placeholder cell's text content: `U+10EEEE` followed by
 /// the row diacritic then the column diacritic — `None` if either index
 /// is out of the table's range.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop paints placeholders.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) fn placeholder_cell_text(row: u32, col: u32) -> Option<String> {
     let row_d = placeholder_diacritic(row)?;
     let col_d = placeholder_diacritic(col)?;
@@ -256,7 +281,9 @@ pub(crate) fn placeholder_cell_text(row: u32, col: u32) -> Option<String> {
 /// image `id` (low 24 bits — see the module doc's spec link for the
 /// most-significant-byte third diacritic this module doesn't need since
 /// [`crate::tui::image_decode`] never allocates an id above 24 bits).
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop paints placeholders.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) fn placeholder_fg_color(id: u32) -> Color {
     Color::rgb(
         ((id >> 16) & 0xff) as u8,
@@ -269,8 +296,10 @@ pub(crate) fn placeholder_fg_color(id: u32) -> Color {
 /// plus the terminal cell rect it occupies. A different cell size needs
 /// its own transmit (and thus its own kitty image id) — same
 /// granularity as `crate::image_cache`'s own cache key.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop constructs these.
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) struct ImageKey {
     source_hash: u64,
     cols: u32,
@@ -278,7 +307,7 @@ pub(crate) struct ImageKey {
 }
 
 impl ImageKey {
-    #[allow(dead_code)] // TODO(#2576): remove once the frame-loop constructs these.
+    #[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
     pub(crate) fn new(source: &ImageSource, cols: u32, rows: u32) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         source.hash(&mut hasher);
@@ -292,6 +321,9 @@ impl ImageKey {
 
 /// One entry [`IdRegistry`] tracks: the allocated kitty image id, and how
 /// many frames have passed since it was last touched.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 struct LiveEntry {
     id: u32,
     idle_frames: u32,
@@ -300,8 +332,10 @@ struct LiveEntry {
 /// Whether [`IdRegistry::touch`] allocated a fresh id (needs transmitting
 /// this frame) or found one already live (already transmitted, just
 /// needs placing).
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop matches on this.
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) enum IdLookup {
     New(u32),
     Live(u32),
@@ -309,16 +343,22 @@ pub(crate) enum IdLookup {
 
 /// Tracks which kitty image ids are currently live across frames, so a
 /// caller transmits each source/size combination exactly once and knows
-/// when to free an id that stopped appearing. See the module doc's
-/// `TODO(#2576)` — no paint-path caller drives this yet.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop owns one of these.
+/// when to free an id that stopped appearing. Owned per-session by
+/// `tui::image::KittyImageState`, driven once per frame from
+/// `TuiBackend::begin_frame`/`end_frame`.
+///
+/// Same `tui-images`-only reachability as [`transmit_rgba`].
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 pub(crate) struct IdRegistry {
     next_id: u32,
     entries: HashMap<ImageKey, LiveEntry>,
 }
 
+// Every method here shares `ImageKey`/`IdRegistry`'s own `tui-images`-
+// only reachability (see those types' docs) — one blanket allow for
+// the whole `impl` instead of repeating it per method.
+#[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
 impl IdRegistry {
-    #[allow(dead_code)] // TODO(#2576): remove once the frame-loop owns one of these.
     pub(crate) fn new() -> Self {
         Self {
             next_id: 1,
@@ -328,7 +368,6 @@ impl IdRegistry {
 
     /// Age every tracked entry by one frame — call once per frame,
     /// before [`Self::touch`]ing every image painted that frame.
-    #[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
     pub(crate) fn begin_frame(&mut self) {
         for entry in self.entries.values_mut() {
             entry.idle_frames += 1;
@@ -337,7 +376,6 @@ impl IdRegistry {
 
     /// Look up or allocate the id for `key`, resetting its idle counter —
     /// call once per frame for every image actually painted that frame.
-    #[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
     pub(crate) fn touch(&mut self, key: ImageKey) -> IdLookup {
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.idle_frames = 0;
@@ -352,7 +390,6 @@ impl IdRegistry {
     /// Remove and return the ids of every entry idle for at least
     /// `max_idle_frames` frames (not [`Self::touch`]ed since) — the
     /// caller emits [`delete_image`] for each.
-    #[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
     pub(crate) fn expire(&mut self, max_idle_frames: u32) -> Vec<u32> {
         let expired: Vec<ImageKey> = self
             .entries
