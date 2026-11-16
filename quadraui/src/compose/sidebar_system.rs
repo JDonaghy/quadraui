@@ -446,7 +446,7 @@ impl SidebarSystem {
     /// `render()` or `set_form()` so that [`Self::handle_cached`]
     /// uses pixel-accurate hit regions instead of the generic estimate.
     pub fn cache_form_layouts(&mut self, backend: &dyn Backend) {
-        let (view, map) = self.build_view();
+        let (view, map) = self.build_view(Self::DEFAULT_ACTIVE_MARKER);
         let lh = backend.chrome_line_height();
         let metrics = backend.msv_metrics();
         let layout = view.layout(Rect::new(0.0, 0.0, 0.0, 0.0), metrics, |i| {
@@ -466,7 +466,20 @@ impl SidebarSystem {
     // ── Render ────────────────────────────────────────────────────────
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let (view, _) = self.build_view();
+        // `has_font_family("codicon")` answers `Some(true)` only on a GUI
+        // backend (TUI takes the trait's `None` default), and every GUI
+        // backend's own `*Backend::new` self-registers "codicon"
+        // unconditionally — the same probe `compose::menu_system`'s
+        // `dropdown_width` uses to pick between a codicon and a plain
+        // glyph. The codicon value is hardcoded rather than referencing
+        // `crate::codicon` directly since that module isn't compiled in
+        // a TUI-only build this method also has to run under.
+        let active_marker = if backend.has_font_family("codicon") == Some(true) {
+            "\u{eab6}"
+        } else {
+            Self::DEFAULT_ACTIVE_MARKER
+        };
+        let (view, _) = self.build_view(active_marker);
         backend.draw_multi_section_view(rect, &view);
     }
 
@@ -625,7 +638,7 @@ impl SidebarSystem {
         metrics: &MsvLayoutMetrics,
         lh: f32,
     ) -> (MultiSectionViewLayout, Vec<usize>) {
-        let (view, map) = self.build_view();
+        let (view, map) = self.build_view(Self::DEFAULT_ACTIVE_MARKER);
         let layout = view.layout(rect, *metrics, |i| body_measure(&view.sections[i], lh));
         (layout, map)
     }
@@ -869,7 +882,7 @@ impl SidebarSystem {
         msv_section: usize,
         lh: f32,
     ) -> usize {
-        let (view, _) = self.build_view();
+        let (view, _) = self.build_view(Self::DEFAULT_ACTIVE_MARKER);
         let SectionBody::Tree(t) = &view.sections[msv_section].body else {
             return 0;
         };
@@ -879,7 +892,20 @@ impl SidebarSystem {
         inner.visible_rows.len()
     }
 
-    fn build_view(&self) -> (MultiSectionView, Vec<usize>) {
+    /// Plain-text active-section marker. Used by every `build_view` caller
+    /// that isn't painting on a GUI backend — see [`Self::render`].
+    const DEFAULT_ACTIVE_MARKER: &'static str = "▶";
+
+    /// Build the view used for layout, hit-testing and painting.
+    ///
+    /// `active_marker` is the glyph (plus its own trailing space, if any)
+    /// prefixed to the active section's title — see [`Self::render`] for
+    /// why it varies by call site instead of being a constant: GUI
+    /// backends substitute a codicon chevron so the active-section marker
+    /// never reaches a pixel surface as plain text, while every other
+    /// caller (layout/hit-testing, where the glyph choice is cosmetic and
+    /// a `Backend` isn't always in scope) and TUI keep [`DEFAULT_ACTIVE_MARKER`].
+    fn build_view(&self, active_marker: &str) -> (MultiSectionView, Vec<usize>) {
         let mut msv_to_sidebar: Vec<usize> = Vec::new();
         let mut sections: Vec<Section> = Vec::new();
         let active = self.focus.active();
@@ -889,7 +915,7 @@ impl SidebarSystem {
             }
             let is_active = active == Some(idx);
             let title = if is_active {
-                format!("▶ {}", def.title)
+                format!("{active_marker} {}", def.title)
             } else {
                 def.title.clone()
             };
@@ -984,7 +1010,7 @@ impl SidebarSystem {
         backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
-        let (view, _) = self.build_view();
+        let (view, _) = self.build_view(Self::DEFAULT_ACTIVE_MARKER);
         match layout.hit_test(x, y) {
             MultiSectionViewHit::Header {
                 section: msv_idx, ..
@@ -1164,7 +1190,7 @@ impl SidebarSystem {
         _backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
-        let (view, _) = self.build_view();
+        let (view, _) = self.build_view(Self::DEFAULT_ACTIVE_MARKER);
         match layout.hit_test(x, y) {
             MultiSectionViewHit::Body {
                 section: msv_idx, ..
@@ -1201,7 +1227,7 @@ impl SidebarSystem {
         metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
-        let (view, _) = self.build_view();
+        let (view, _) = self.build_view(Self::DEFAULT_ACTIVE_MARKER);
         match layout.hit_test(position.x, position.y) {
             MultiSectionViewHit::Body {
                 section: msv_idx, ..
@@ -1523,10 +1549,46 @@ mod tests {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 3));
         ss.focus.set_active(Some(0));
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         assert_eq!(view.sections.len(), 3);
         assert!(view.sections[0].header.title.spans[0].text.starts_with("▶"));
         assert_eq!(view.active_section, Some(0));
+    }
+
+    /// `render` must substitute the codicon chevron for the active
+    /// section's title marker on a GUI backend, never the plain `▶`
+    /// `build_view_produces_correct_sections` just asserted for TUI —
+    /// `compose/sidebar_system.rs` is backend-neutral, so without this
+    /// probe a plain-text glyph would paint verbatim on a pixel surface.
+    #[test]
+    fn render_substitutes_codicon_chevron_for_active_marker_on_gui_backend() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 3));
+        ss.set_active_section(Some(0));
+
+        let mut gui_backend = crate::testing::RecordingBackend::new().with_font_family("codicon");
+        ss.render(&mut gui_backend, Rect::new(0.0, 0.0, 40.0, 20.0));
+        let view = gui_backend
+            .multi_section_view_calls
+            .last()
+            .expect("render must call draw_multi_section_view");
+        let title = &view.sections[0].header.title.spans[0].text;
+        assert!(
+            title.starts_with('\u{eab6}'),
+            "expected the codicon chevron, got {title:?}"
+        );
+        assert!(
+            !title.contains('▶'),
+            "plain-text chevron leaked onto a GUI backend: {title:?}"
+        );
+
+        let mut tui_backend = crate::testing::RecordingBackend::new();
+        ss.render(&mut tui_backend, Rect::new(0.0, 0.0, 40.0, 20.0));
+        let view = tui_backend
+            .multi_section_view_calls
+            .last()
+            .expect("render must call draw_multi_section_view");
+        assert!(view.sections[0].header.title.spans[0].text.starts_with('▶'));
     }
 
     // ── Selection-mode tests ────────────────────────────────────────
@@ -1718,7 +1780,7 @@ mod tests {
         ss.set_rows(0, fake_rows("v", 5));
         ss.set_scroll_mode(ScrollMode::WholePanel);
         ss.set_panel_scroll(10.0);
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         assert_eq!(view.scroll_mode, ScrollMode::WholePanel);
         assert_eq!(view.panel_scroll, 10.0);
     }
@@ -1738,7 +1800,7 @@ mod tests {
         ss.set_rows(0, fake_rows("v", 3));
         ss.set_rows(1, fake_rows("w", 2));
         ss.set_section_visible(0, false);
-        let (view, map) = ss.build_view();
+        let (view, map) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         assert_eq!(view.sections.len(), 2);
         assert_eq!(view.sections[0].id, "watch");
         assert_eq!(view.sections[1].id, "breakpoints");
@@ -1770,7 +1832,7 @@ mod tests {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 3));
         ss.set_section_badge(0, Some(StyledText::plain("(3)")));
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         assert_eq!(
             view.sections[0].header.badge,
             Some(StyledText::plain("(3)"))
@@ -1882,7 +1944,7 @@ mod tests {
         let mut ss = SidebarSystem::new(mixed_defs());
         ss.set_form(0, sample_form());
         ss.set_rows(1, fake_rows("r", 3));
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         assert_eq!(view.sections.len(), 2);
         assert!(matches!(view.sections[0].body, SectionBody::Form(_)));
         assert!(matches!(view.sections[1].body, SectionBody::Tree(_)));
@@ -1893,7 +1955,7 @@ mod tests {
         let mut ss = SidebarSystem::new(mixed_defs());
         ss.set_form(0, sample_form());
         ss.focus.set_active(Some(0));
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         match &view.sections[0].body {
             SectionBody::Form(f) => assert!(f.has_focus),
             _ => panic!("expected Form body"),
@@ -1910,7 +1972,7 @@ mod tests {
         // Tree section is the active/nav section.
         ss.set_active_section(Some(1));
         // Without focus_form, the form is not render-focused.
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         match &view.sections[0].body {
             SectionBody::Form(f) => assert!(!f.has_focus),
             _ => panic!("expected Form body"),
@@ -1919,7 +1981,7 @@ mod tests {
         ss.focus_form(0, true);
         assert_eq!(ss.active_section(), Some(1));
         assert!(ss.form_has_focus(0));
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         match &view.sections[0].body {
             SectionBody::Form(f) => assert!(f.has_focus),
             _ => panic!("expected Form body"),
@@ -1934,7 +1996,7 @@ mod tests {
         ss.set_form(0, sample_form());
         ss.set_active_section(Some(1));
         ss.focus_form(0, true);
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         match &view.sections[0].body {
             SectionBody::Form(f) => assert!(f.has_focus),
             _ => panic!("expected Form body"),
@@ -1950,7 +2012,7 @@ mod tests {
         assert!(ss.form_has_focus(0));
         ss.focus_form(0, false);
         assert!(!ss.form_has_focus(0));
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         match &view.sections[0].body {
             SectionBody::Form(f) => assert!(!f.has_focus),
             _ => panic!("expected Form body"),
@@ -1980,7 +2042,7 @@ mod tests {
         ss.set_form(0, sample_form());
         ss.set_active_section(Some(0));
         assert!(!ss.form_has_focus(0)); // focus_form not called
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         match &view.sections[0].body {
             SectionBody::Form(f) => assert!(f.has_focus), // active ⇒ focused
             _ => panic!("expected Form body"),
@@ -1990,7 +2052,7 @@ mod tests {
     #[test]
     fn build_view_empty_form_section() {
         let ss = SidebarSystem::new(mixed_defs());
-        let (view, _) = ss.build_view();
+        let (view, _) = ss.build_view(SidebarSystem::DEFAULT_ACTIVE_MARKER);
         match &view.sections[0].body {
             SectionBody::Form(f) => assert!(f.fields.is_empty()),
             _ => panic!("expected Form body"),
