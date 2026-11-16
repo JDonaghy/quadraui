@@ -2839,14 +2839,7 @@ impl Backend for MacBackend {
             let row_y = (origin.y + vf.bounds.y) as f64;
             let row_w = vf.bounds.width as f64;
             let row_h = vf.bounds.height as f64;
-            // Shared with every other embedded-`Toolbar` rasteriser
-            // (`GtkBackend::draw_form`, both `MultiSectionView` form
-            // bodies) via `FormLayout::toolbar_field_rect` — see its
-            // doc — so this toolbar starts at the form's aligned
-            // control column instead of right past only this field's
-            // own (possibly much narrower) label, which left it
-            // starting under where a wider-labelled row's label
-            // column sits.
+            // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
             let (toolbar_x, toolbar_w) =
                 flayout.toolbar_field_rect(row_x, row_w, label_w, no_label);
             if toolbar_w > 0.0 {

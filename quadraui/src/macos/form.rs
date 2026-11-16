@@ -209,11 +209,11 @@ mod tests {
         make_font("Menlo", 14.0).expect("Menlo installed")
     }
 
-    fn label(id: &str, text: &str) -> FormField {
+    fn field(id: &str, label: &str, kind: FieldKind) -> FormField {
         FormField {
             id: WidgetId::new(id),
-            label: StyledText::plain(text),
-            kind: FieldKind::Label,
+            label: StyledText::plain(label),
+            kind,
             hint: StyledText::default(),
             disabled: false,
             validation: None,
@@ -227,58 +227,18 @@ mod tests {
         }
     }
 
-    fn text_input(id: &str, label_text: &str, value: &str) -> FormField {
-        FormField {
-            id: WidgetId::new(id),
-            label: StyledText::plain(label_text),
-            kind: FieldKind::TextInput {
-                value: value.into(),
-                placeholder: String::new(),
-                cursor: Some(value.len()),
-                selection_anchor: None,
-            },
-            hint: StyledText::default(),
-            disabled: false,
-            validation: None,
-            label_position: None,
-            label_align: None,
-            label_width: None,
-            tab_index: None,
-            control_width: None,
-            min_control_width: None,
-            row_align: None,
-        }
-    }
-
-    fn toggle(id: &str, label_text: &str, value: bool) -> FormField {
-        FormField {
-            id: WidgetId::new(id),
-            label: StyledText::plain(label_text),
-            kind: FieldKind::Toggle { value },
-            hint: StyledText::default(),
-            disabled: false,
-            validation: None,
-            label_position: None,
-            label_align: None,
-            label_width: None,
-            tab_index: None,
-            control_width: None,
-            min_control_width: None,
-            row_align: None,
-        }
-    }
-
-    fn sample_form() -> Form {
+    fn form_of(
+        id: &str,
+        fields: Vec<FormField>,
+        focused: Option<WidgetId>,
+        has_focus: bool,
+    ) -> Form {
         Form {
-            id: WidgetId::new("settings"),
-            fields: vec![
-                label("hdr", "General"),
-                text_input("name", "Name", "alice"),
-                toggle("enabled", "Enabled", true),
-            ],
-            focused_field: Some(WidgetId::new("name")),
+            id: WidgetId::new(id),
+            fields,
+            focused_field: focused,
             scroll_offset: 0,
-            has_focus: true,
+            has_focus,
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
@@ -286,6 +246,40 @@ mod tests {
             min_control_width: None,
             spacing: Default::default(),
         }
+    }
+
+    fn label(id: &str, text: &str) -> FormField {
+        field(id, text, FieldKind::Label)
+    }
+
+    fn text_input(id: &str, label_text: &str, value: &str) -> FormField {
+        field(
+            id,
+            label_text,
+            FieldKind::TextInput {
+                value: value.into(),
+                placeholder: String::new(),
+                cursor: Some(value.len()),
+                selection_anchor: None,
+            },
+        )
+    }
+
+    fn toggle(id: &str, label_text: &str, value: bool) -> FormField {
+        field(id, label_text, FieldKind::Toggle { value })
+    }
+
+    fn sample_form() -> Form {
+        form_of(
+            "settings",
+            vec![
+                label("hdr", "General"),
+                text_input("name", "Name", "alice"),
+                toggle("enabled", "Enabled", true),
+            ],
+            Some(WidgetId::new("name")),
+            true,
+        )
     }
 
     /// Paint `form` through the real `Backend::draw_form` and return the
@@ -415,29 +409,15 @@ mod tests {
     }
 
     fn toggle_group_field(id: &str, toggles: Vec<ToggleGroupItem>) -> FormField {
-        FormField {
-            id: WidgetId::new(id),
-            label: StyledText::plain(""),
-            kind: FieldKind::ToggleGroup { toggles },
-            hint: StyledText::default(),
-            disabled: false,
-            validation: None,
-            label_position: None,
-            label_align: None,
-            label_width: None,
-            tab_index: None,
-            control_width: None,
-            min_control_width: None,
-            row_align: None,
-        }
+        field(id, "", FieldKind::ToggleGroup { toggles })
     }
 
     fn search_flags_form() -> Form {
         // Mirrors the `macos_sidebar_search` shape — three toggles with
         // the middle one ON, no label so items start at the row's left.
-        Form {
-            id: WidgetId::new("search"),
-            fields: vec![toggle_group_field(
+        form_of(
+            "search",
+            vec![toggle_group_field(
                 "flags",
                 vec![
                     ToggleGroupItem {
@@ -457,16 +437,9 @@ mod tests {
                     },
                 ],
             )],
-            focused_field: None,
-            scroll_offset: 0,
-            has_focus: false,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        }
+            None,
+            false,
+        )
     }
 
     #[test]
@@ -608,36 +581,19 @@ mod tests {
         // pixel/glyph probe, not compositing arithmetic. See that
         // test's comment and `paint_geometry`'s module doc for the
         // layered, host-independent coverage of the decision itself.
-        let form = Form {
-            id: WidgetId::new("seg-form"),
-            fields: vec![FormField {
-                id: WidgetId::new("scope"),
-                label: StyledText::plain(""),
-                kind: FieldKind::SegmentedControl {
+        let form = form_of(
+            "seg-form",
+            vec![field(
+                "scope",
+                "",
+                FieldKind::SegmentedControl {
                     options: vec!["File".into(), "Folder".into(), "Project".into()],
                     selected_idx: 1,
                 },
-                hint: StyledText::default(),
-                disabled: false,
-                validation: None,
-                label_position: None,
-                label_align: None,
-                label_width: None,
-                tab_index: None,
-                control_width: None,
-                min_control_width: None,
-                row_align: None,
-            }],
-            focused_field: None,
-            scroll_offset: 0,
-            has_focus: false,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        };
+            )],
+            None,
+            false,
+        );
         let (surface, layout) = paint_via_backend(&form);
         let theme = Theme::default();
         let vis = &layout.visible_fields[0];
@@ -664,12 +620,12 @@ mod tests {
 
     #[test]
     fn button_row_layout_resolves_per_item_bounds() {
-        let form = Form {
-            id: WidgetId::new("actions-form"),
-            fields: vec![FormField {
-                id: WidgetId::new("actions"),
-                label: StyledText::plain(""),
-                kind: FieldKind::ButtonRow {
+        let form = form_of(
+            "actions-form",
+            vec![field(
+                "actions",
+                "",
+                FieldKind::ButtonRow {
                     buttons: vec![
                         ButtonRowItem {
                             spec: None,
@@ -687,27 +643,10 @@ mod tests {
                         },
                     ],
                 },
-                hint: StyledText::default(),
-                disabled: false,
-                validation: None,
-                label_position: None,
-                label_align: None,
-                label_width: None,
-                tab_index: None,
-                control_width: None,
-                min_control_width: None,
-                row_align: None,
-            }],
-            focused_field: None,
-            scroll_offset: 0,
-            has_focus: false,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        };
+            )],
+            None,
+            false,
+        );
         let (_surface, layout) = paint_via_backend(&form);
         let vis = &layout.visible_fields[0];
         assert_eq!(vis.item_bounds.len(), 2);
@@ -742,38 +681,21 @@ mod tests {
         // PasswordInput should render `mask_char` repeated `value.chars().count()`
         // times, NOT the plaintext. Verify by computing the expected
         // masked-text width and asserting paint geometry agrees.
-        let form = Form {
-            id: WidgetId::new("auth-form"),
-            fields: vec![FormField {
-                id: WidgetId::new("pw"),
-                label: StyledText::plain(""),
-                kind: FieldKind::PasswordInput {
+        let form = form_of(
+            "auth-form",
+            vec![field(
+                "pw",
+                "",
+                FieldKind::PasswordInput {
                     value: "hunter2".into(),
                     placeholder: String::new(),
                     cursor: Some(7),
                     mask_char: '•',
                 },
-                hint: StyledText::default(),
-                disabled: false,
-                validation: None,
-                label_position: None,
-                label_align: None,
-                label_width: None,
-                tab_index: None,
-                control_width: None,
-                min_control_width: None,
-                row_align: None,
-            }],
-            focused_field: Some(WidgetId::new("pw")),
-            scroll_offset: 0,
-            has_focus: true,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        };
+            )],
+            Some(WidgetId::new("pw")),
+            true,
+        );
         let (surface, layout) = paint_via_backend(&form);
         // Locate the field bounds.
         let vis = &layout.visible_fields[0];
@@ -813,38 +735,21 @@ mod tests {
         // "café🎉" — byte 4 sits inside the 2-byte 'é' (starts at byte 3).
         let value = "café🎉";
         assert!(!value.is_char_boundary(4));
-        let form = Form {
-            id: WidgetId::new("settings"),
-            fields: vec![FormField {
-                id: WidgetId::new("name"),
-                label: StyledText::plain("Name"),
-                kind: FieldKind::TextInput {
+        let form = form_of(
+            "settings",
+            vec![field(
+                "name",
+                "Name",
+                FieldKind::TextInput {
                     value: value.into(),
                     placeholder: String::new(),
                     cursor: Some(4),
                     selection_anchor: None,
                 },
-                hint: StyledText::default(),
-                disabled: false,
-                validation: None,
-                label_position: None,
-                label_align: None,
-                label_width: None,
-                tab_index: None,
-                control_width: None,
-                min_control_width: None,
-                row_align: None,
-            }],
-            focused_field: Some(WidgetId::new("name")),
-            scroll_offset: 0,
-            has_focus: true,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        };
+            )],
+            Some(WidgetId::new("name")),
+            true,
+        );
 
         // Must not panic.
         let _ = paint_via_backend(&form);
@@ -856,38 +761,21 @@ mod tests {
     fn password_input_with_multibyte_cursor_does_not_panic() {
         let value = "café🎉";
         assert!(!value.is_char_boundary(4));
-        let form = Form {
-            id: WidgetId::new("settings"),
-            fields: vec![FormField {
-                id: WidgetId::new("pw"),
-                label: StyledText::plain("Password"),
-                kind: FieldKind::PasswordInput {
+        let form = form_of(
+            "settings",
+            vec![field(
+                "pw",
+                "Password",
+                FieldKind::PasswordInput {
                     value: value.into(),
                     placeholder: String::new(),
                     cursor: Some(4),
                     mask_char: '*',
                 },
-                hint: StyledText::default(),
-                disabled: false,
-                validation: None,
-                label_position: None,
-                label_align: None,
-                label_width: None,
-                tab_index: None,
-                control_width: None,
-                min_control_width: None,
-                row_align: None,
-            }],
-            focused_field: Some(WidgetId::new("pw")),
-            scroll_offset: 0,
-            has_focus: true,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        };
+            )],
+            Some(WidgetId::new("pw")),
+            true,
+        );
 
         // Must not panic.
         let _ = paint_via_backend(&form);
@@ -1118,44 +1006,18 @@ mod tests {
     }
 
     /// `ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar`
-    /// items align their `item_bounds`/painted control to the same
-    /// shared `Left`-label column every other field's control starts
-    /// at — see `primitives::form::left_control_column_start`'s own
-    /// doc for that helper's contract — instead of each reserving only
-    /// its own (much narrower) label's width. A form mixing a
-    /// wide-labelled plain field ("Accent colour") with these four
-    /// short-labelled kinds pins that every one of the four lines up
-    /// with the shared column instead of crowding into the span other
-    /// rows reserve for their own wider labels.
+    /// controls start at the form's shared `Left`-label column (see
+    /// `primitives::form::left_control_column_start`), not right past
+    /// their own narrower label.
     #[test]
     fn item_bearing_kinds_align_to_the_shared_left_label_column() {
-        use crate::primitives::form::{
-            left_control_column_start, ButtonRowItem, FieldKind, FormField, ToggleGroupItem,
-        };
+        use crate::primitives::form::{left_control_column_start, ButtonRowItem, ToggleGroupItem};
         use crate::primitives::toolbar::{Toolbar, ToolbarButton};
 
-        fn f(id: &str, label: &str, kind: FieldKind) -> FormField {
-            FormField {
-                id: WidgetId::new(id),
-                label: StyledText::plain(label),
-                kind,
-                hint: StyledText::default(),
-                disabled: false,
-                validation: None,
-                label_position: None,
-                label_align: None,
-                label_width: None,
-                tab_index: None,
-                control_width: None,
-                min_control_width: None,
-                row_align: None,
-            }
-        }
-
-        let form = Form {
-            id: WidgetId::new("settings"),
-            fields: vec![
-                f(
+        let form = form_of(
+            "settings",
+            vec![
+                field(
                     "accent",
                     "Accent colour",
                     FieldKind::TextInput {
@@ -1165,7 +1027,7 @@ mod tests {
                         selection_anchor: None,
                     },
                 ),
-                f(
+                field(
                     "flags",
                     "Flags",
                     FieldKind::ToggleGroup {
@@ -1176,7 +1038,7 @@ mod tests {
                         }],
                     },
                 ),
-                f(
+                field(
                     "actions",
                     "Actions",
                     FieldKind::ButtonRow {
@@ -1189,7 +1051,7 @@ mod tests {
                         }],
                     },
                 ),
-                f(
+                field(
                     "scope",
                     "Scope",
                     FieldKind::SegmentedControl {
@@ -1197,7 +1059,7 @@ mod tests {
                         selected_idx: 0,
                     },
                 ),
-                f(
+                field(
                     "toolbar",
                     "Toolbar",
                     FieldKind::Toolbar(Toolbar::new(WidgetId::new("toolbar-field")).with_buttons(
@@ -1214,23 +1076,12 @@ mod tests {
                     )),
                 ),
             ],
-            focused_field: None,
-            scroll_offset: 0,
-            has_focus: false,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        };
+            None,
+            false,
+        );
 
         let (surface, layout) = paint_via_backend(&form);
-        // `left_control_column_start` needs a `PaintSurface` to measure
-        // label text against, not the raw pixel `BitmapSurface` —
-        // measured through a fresh `MacBackend::new()`, safe because
-        // this test (like `chrome_text_width`'s callers) never installs
-        // a non-default chrome font.
+        // Measures labels in the default chrome font, as `draw_form` does.
         let measurer = MacBackend::new();
 
         for vf in &layout.visible_fields {
@@ -1246,10 +1097,7 @@ mod tests {
             for (item_id, item_rect) in &vf.item_bounds {
                 assert!(
                     item_rect.x + 0.5 >= shared_start,
-                    "field {:?} item {:?} starts at x={} — short of the \
-                     shared label column (x={shared_start}), so it crowds \
-                     into the span a wider-labelled row reserves for its \
-                     own label",
+                    "field {:?} item {:?} at x={} starts left of the shared column x={shared_start}",
                     field.id,
                     item_id,
                     item_rect.x,
@@ -1257,16 +1105,8 @@ mod tests {
             }
         }
 
-        // `FieldKind::Toolbar`'s own embedded control is painted by
-        // `MacBackend::draw_form` itself (see that fn's doc), not
-        // through `item_bounds` — assert its bar background doesn't
-        // start left of the shared column, matching every other kind
-        // above. The row's own label legitimately paints in
-        // `[bounds.x, shared_start)` (same as any other field), so
-        // this checks specifically for the bar's own `header_bg` fill
-        // (`Toolbar::bg` is `None` here, so `theme.header_bg` — see
-        // `toolbar::native_surface_paint::paint`'s `bar_bg`), not just
-        // "not the row background".
+        // The embedded toolbar has no `item_bounds`; its `header_bg` bar
+        // fill must not appear left of the shared column either.
         let toolbar_vf = layout
             .visible_fields
             .iter()
@@ -1285,8 +1125,7 @@ mod tests {
                 assert_ne!(
                     (r, g, b),
                     bar_bg,
-                    "toolbar bar background must not paint left of the \
-                     shared label column (x={x} < shared_start={shared_start})",
+                    "toolbar bar painted left of the shared column (x={x} < {shared_start})",
                 );
             }
         }

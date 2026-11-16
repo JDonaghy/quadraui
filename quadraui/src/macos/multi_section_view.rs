@@ -350,13 +350,7 @@ unsafe fn draw_form_body(
         let row_y = y + vf.bounds.y as f64;
         let row_w = vf.bounds.width as f64;
         let row_h = vf.bounds.height as f64;
-        // Shared with every other embedded-`Toolbar` rasteriser
-        // (`GtkBackend::draw_form`, `MacBackend::draw_form`,
-        // `gtk::multi_section_view`'s own form body) via
-        // `FormLayout::toolbar_field_rect` — see its doc — so this
-        // toolbar starts at the form's aligned control column instead
-        // of right past only this field's own (possibly much
-        // narrower) label.
+        // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
         let (toolbar_x, toolbar_w) = flayout.toolbar_field_rect(row_x, row_w, label_w, no_label);
         if toolbar_w > 0.0 {
             super::toolbar::draw_toolbar(
