@@ -1116,4 +1116,181 @@ mod tests {
             "a 1-row-tall chrome rect must not paint a search row past its own height",
         );
     }
+
+    /// `ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar`
+    /// items align their `item_bounds`/painted control to the same
+    /// shared `Left`-label column every other field's control starts
+    /// at (`primitives::form::left_control_column_start` — see
+    /// `mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop`
+    /// for that helper's own contract), instead of each reserving only
+    /// its own (much narrower) label's width. A form mixing a
+    /// wide-labelled plain field ("Accent colour") with these four
+    /// short-labelled kinds reproduces the gap: before this fix, every
+    /// one of the four started well short of the shared column —
+    /// crowding into the span other rows reserve for their own wider
+    /// labels — instead of lining up with it.
+    #[test]
+    fn item_bearing_kinds_align_to_the_shared_left_label_column() {
+        use crate::primitives::form::{
+            left_control_column_start, ButtonRowItem, FieldKind, FormField, ToggleGroupItem,
+        };
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+        fn f(id: &str, label: &str, kind: FieldKind) -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: StyledText::plain(label),
+                kind,
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }
+        }
+
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![
+                f(
+                    "accent",
+                    "Accent colour",
+                    FieldKind::TextInput {
+                        value: "red".into(),
+                        placeholder: String::new(),
+                        cursor: None,
+                        selection_anchor: None,
+                    },
+                ),
+                f(
+                    "flags",
+                    "Flags",
+                    FieldKind::ToggleGroup {
+                        toggles: vec![ToggleGroupItem {
+                            id: WidgetId::new("case"),
+                            label: "Case sensitive".into(),
+                            value: true,
+                        }],
+                    },
+                ),
+                f(
+                    "actions",
+                    "Actions",
+                    FieldKind::ButtonRow {
+                        buttons: vec![ButtonRowItem {
+                            spec: None,
+                            id: WidgetId::new("run"),
+                            label: "Run action".into(),
+                            disabled: false,
+                            icon: None,
+                        }],
+                    },
+                ),
+                f(
+                    "scope",
+                    "Scope",
+                    FieldKind::SegmentedControl {
+                        options: vec!["File".into(), "Project".into()],
+                        selected_idx: 0,
+                    },
+                ),
+                f(
+                    "toolbar",
+                    "Toolbar",
+                    FieldKind::Toolbar(Toolbar::new(WidgetId::new("toolbar-field")).with_buttons(
+                        vec![ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new("build"),
+                            label: "Build".into(),
+                            icon: None,
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: "Build".into(),
+                        }],
+                    )),
+                ),
+            ],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+
+        let (surface, layout) = paint_via_backend(&form);
+        // `left_control_column_start` needs a `PaintSurface` to measure
+        // label text against, not the raw pixel `BitmapSurface` —
+        // measured through a fresh `MacBackend::new()`, safe because
+        // this test (like `chrome_text_width`'s callers) never installs
+        // a non-default chrome font.
+        let measurer = MacBackend::new();
+
+        for vf in &layout.visible_fields {
+            let field = &form.fields[vf.field_idx];
+            let shared_start = left_control_column_start(&form, field, vf.bounds, &measurer);
+            assert!(
+                vf.bounds.x + vf.bounds.width >= shared_start,
+                "field {:?} row doesn't even reach the shared label column \
+                 (shared_start={shared_start}, bounds={:?})",
+                field.id,
+                vf.bounds,
+            );
+            for (item_id, item_rect) in &vf.item_bounds {
+                assert!(
+                    item_rect.x + 0.5 >= shared_start,
+                    "field {:?} item {:?} starts at x={} — short of the \
+                     shared label column (x={shared_start}), so it crowds \
+                     into the span a wider-labelled row reserves for its \
+                     own label",
+                    field.id,
+                    item_id,
+                    item_rect.x,
+                );
+            }
+        }
+
+        // `FieldKind::Toolbar`'s own embedded control is painted by
+        // `MacBackend::draw_form` itself (see that fn's doc), not
+        // through `item_bounds` — assert its bar background doesn't
+        // start left of the shared column, matching every other kind
+        // above. The row's own label legitimately paints in
+        // `[bounds.x, shared_start)` (same as any other field), so
+        // this checks specifically for the bar's own `header_bg` fill
+        // (`Toolbar::bg` is `None` here, so `theme.header_bg` — see
+        // `toolbar::native_surface_paint::paint`'s `bar_bg`), not just
+        // "not the row background".
+        let toolbar_vf = layout
+            .visible_fields
+            .iter()
+            .find(|vf| vf.id == WidgetId::new("toolbar"))
+            .expect("toolbar field visible");
+        let toolbar_field = &form.fields[toolbar_vf.field_idx];
+        let shared_start =
+            left_control_column_start(&form, toolbar_field, toolbar_vf.bounds, &measurer);
+        let theme = Theme::default();
+        let bar_bg = (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b);
+        let y0 = toolbar_vf.bounds.y as u32;
+        let y1 = (toolbar_vf.bounds.y + toolbar_vf.bounds.height) as u32;
+        for x in (toolbar_vf.bounds.x as u32)..(shared_start.ceil() as u32) {
+            for y in y0..y1 {
+                let (r, g, b, _) = surface.pixel(x, y);
+                assert_ne!(
+                    (r, g, b),
+                    bar_bg,
+                    "toolbar bar background must not paint left of the \
+                     shared label column (x={x} < shared_start={shared_start})",
+                );
+            }
+        }
+    }
 }

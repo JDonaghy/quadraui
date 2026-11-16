@@ -607,12 +607,22 @@ fn validation_message(field: &FormField) -> Option<&str> {
 /// `Style::control_height + 4.0`) and `FieldKind::RadioGroup` (one
 /// `row_h` per option) — see `form_field_measure_height_is_one_row_
 /// for_every_field_kind`'s doc for the exact set this exercises.
+///
+/// [`FormFieldMeasure::label_w`] is always set to `field`'s own
+/// measured label width, regardless of `FieldKind` — `Form::layout`
+/// reads it across every field to compute the shared `Left`-label
+/// column width, the same column [`crate::primitives::form::paint`]'s
+/// `left_label_column_width` already aligns every non-item `FieldKind`'s
+/// control to, so `ToggleGroup`/`ButtonRow`/`SegmentedControl`/
+/// `Toolbar` can align their items to it too instead of each reserving
+/// only its own (possibly much narrower) label's width.
 pub fn form_field_measure(
     field: &FormField,
     row_h: f32,
     measure: &dyn TextMeasure,
 ) -> FormFieldMeasure {
     let mut m = form_field_measure_inner(field, row_h, measure);
+    m.label_w = measure.width_of(&label_text(field));
     if validation_message(field).is_some() {
         m.height += row_h / 1.4;
     }

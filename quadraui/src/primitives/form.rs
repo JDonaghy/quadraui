@@ -850,6 +850,23 @@ pub struct FormFieldMeasure {
     /// [`Self::new`]/[`Self::with_items`]) reproduces every existing
     /// item-bearing kind's horizontal packing unchanged.
     pub vertical: bool,
+    /// This field's own measured label width — `0.0` unless
+    /// [`layout_metrics::form_field_measure`] set it (every call sets
+    /// it, regardless of `FieldKind`; a hand-built `FormFieldMeasure`
+    /// via one of this type's own constructors defaults to `0.0`, same
+    /// as a field with an empty label).
+    ///
+    /// [`Form::layout`] takes the max of this value across every
+    /// [`LabelPosition::Left`]-resolved, non-`Label`, non-empty-label
+    /// field to get the shared label column width
+    /// [`crate::primitives::form::paint`]'s own `left_label_column_width`
+    /// already aligns every non-item `FieldKind`'s control to, then
+    /// widens an item-bearing field's own `items_start_x` to that same
+    /// column — see [`FormLayout::left_label_width`]'s doc for the
+    /// exact rule.
+    ///
+    /// [`layout_metrics::form_field_measure`]: crate::primitives::layout_metrics::form_field_measure
+    pub label_w: f32,
 }
 
 impl FormFieldMeasure {
@@ -861,6 +878,7 @@ impl FormFieldMeasure {
             items_start_y: 0.0,
             item_gap: 0.0,
             vertical: false,
+            label_w: 0.0,
         }
     }
 
@@ -877,6 +895,7 @@ impl FormFieldMeasure {
             items_start_y: 0.0,
             item_gap,
             vertical: false,
+            label_w: 0.0,
         }
     }
 
@@ -896,6 +915,7 @@ impl FormFieldMeasure {
             items_start_y: 0.0,
             item_gap: 0.0,
             vertical: true,
+            label_w: 0.0,
         }
     }
 
@@ -951,7 +971,14 @@ pub enum FormHit {
 }
 
 /// Fully-resolved form layout.
+///
+/// `#[non_exhaustive]` so a future field add here, like
+/// [`Self::left_label_width`] itself, stays additive for a consumer
+/// building a [`crate::Backend`] impl instead of becoming a breaking
+/// change — same rationale as [`FormFieldMeasure`]'s own
+/// `#[non_exhaustive]`.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct FormLayout {
     pub viewport_width: f32,
     pub viewport_height: f32,
@@ -959,6 +986,24 @@ pub struct FormLayout {
     pub hit_regions: Vec<(Rect, FormHit)>,
     /// Scroll offset actually used, clamped to `[0, fields.len())`.
     pub resolved_scroll_offset: usize,
+    /// The shared `LabelPosition::Left` label column width — the
+    /// widest measured label among every non-`Label`, `Left`-resolved,
+    /// non-empty-label field in the whole form (every field, not only
+    /// the ones that fit the viewport — the same scope
+    /// `left_label_column_width` uses at paint time).
+    ///
+    /// Every non-item `FieldKind` already aligns its control to this
+    /// column via `left_label_geometry` inside
+    /// [`crate::primitives::form::paint`]; `ToggleGroup` / `ButtonRow` /
+    /// `SegmentedControl` / `Toolbar` items align their
+    /// `VisibleFormField::item_bounds` to it the same way (see
+    /// [`Form::layout`]'s "Item alignment" section). A host that
+    /// paints a `Toolbar` field's embedded control itself, rather than
+    /// through the shared `paint`, reads this field instead of
+    /// re-measuring the field's own label to find the same start `x` —
+    /// see `MacBackend::draw_form`'s `FieldKind::Toolbar` arm for the
+    /// reference pattern.
+    pub left_label_width: f32,
 }
 
 impl FormLayout {
@@ -1058,6 +1103,26 @@ impl Form {
         let content_width = (viewport_width - pad * 2.0).max(0.0);
         let content_height = (viewport_height - pad * 2.0).max(0.0);
 
+        // # Item alignment
+        //
+        // The shared `Left`-label column width, over *every* field in
+        // the form (not just the ones that end up visible below) —
+        // the same scope `paint`'s `left_label_column_width` uses, so
+        // a field whose own label happens to be the widest one scrolled
+        // or clipped off doesn't leave every other row under-indented.
+        // `measure_field` is pure (no painting, no state), so calling it
+        // here ahead of the selection pass below, which calls it again
+        // per visible field, costs nothing but a second measurement.
+        let left_label_width = (0..self.fields.len())
+            .filter(|&i| {
+                let f = &self.fields[i];
+                !matches!(f.kind, FieldKind::Label)
+                    && self.resolved_label_position(f) == LabelPosition::Left
+                    && f.label.spans.iter().any(|s| !s.text.is_empty())
+            })
+            .map(|i| measure_field(i).label_w)
+            .fold(0.0_f32, f32::max);
+
         // First pass: walk fields in order deciding which ones are
         // visible and how tall each renders, using the original
         // sequential "stop once the viewport is exhausted" rule. This
@@ -1089,12 +1154,47 @@ impl Form {
                 break;
             }
             y += m.height;
+            let field = &self.fields[i];
+            // An item-bearing field (`ToggleGroup` / `ButtonRow` /
+            // `SegmentedControl` / `Toolbar`) whose own label
+            // qualified for `left_label_width` above widens its own
+            // `items_start_x` to that shared column — mirroring
+            // `left_label_geometry`'s `col_width = left_label_width.max(
+            // label_w)` for every non-item `FieldKind` — instead of
+            // reserving only its own (possibly much narrower) label's
+            // width, which left its control starting well short of
+            // where a wider-labelled row's control starts. A field
+            // excluded from that filter (empty label, `Label` kind, or
+            // a non-`Left` position) keeps `m.items_start_x` exactly as
+            // measured, unchanged.
+            // `m.label_w > 0.0` gates this on a `measure_field` that
+            // actually populates it — only
+            // `layout_metrics::form_field_measure` does (every pixel
+            // backend). A caller that measures in a different unit
+            // system instead (`compose::form_controller`'s and
+            // `compose::sidebar_system`'s own backend-free TUI-cell
+            // fallback `form_field_measure`s, both hand-rolled, neither
+            // setting this field) leaves it at `FormFieldMeasure::
+            // with_items`'s `0.0` default, so this never fires for
+            // them — their own `items_start_x` (already unit-correct
+            // for their own `char_w`-relative formula) is left exactly
+            // as measured.
+            let items_start_x = if !m.item_measures.is_empty()
+                && m.label_w > 0.0
+                && !matches!(field.kind, FieldKind::Label)
+                && self.resolved_label_position(field) == LabelPosition::Left
+                && field.label.spans.iter().any(|s| !s.text.is_empty())
+            {
+                6.0 + left_label_width.max(m.label_w) + 12.0
+            } else {
+                m.items_start_x
+            };
             rows.push(Row {
                 idx: i,
                 full_height: m.height,
                 clipped_height,
                 item_measures: m.item_measures,
-                items_start_x: m.items_start_x,
+                items_start_x,
                 items_start_y: m.items_start_y,
                 // `FormSpacing::item_gap`, when set, overrides every
                 // item-bearing field's own backend-supplied gap.
@@ -1200,6 +1300,7 @@ impl Form {
             visible_fields,
             hit_regions,
             resolved_scroll_offset,
+            left_label_width,
         }
     }
 }
