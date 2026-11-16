@@ -18,6 +18,11 @@
 //! - Event drain via [`crate::Backend::wait_events`], dispatched through
 //!   [`dispatch_event`].
 //! - [`Reaction`] dispatch (Continue / Redraw / Exit).
+//! - Best-effort Kitty-graphics-protocol detection (env heuristic or live
+//!   probe, plus a measured cell pixel size), exposed via
+//!   [`crate::tui::backend::TuiBackend::kitty_graphics`] — see
+//!   `crate::tui::caps`'s module doc ("Kitty graphics protocol" section)
+//!   for the full detection story. No rendering depends on this yet.
 //!
 //! The app implements [`crate::AppLogic`] and calls
 //! [`run`] with its instance. See `examples/tui_app.rs` for an
@@ -254,6 +259,37 @@ fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
         let _ = enable_sgr_pixel_mouse(&mut stdout);
     }
 
+    // ── Kitty graphics protocol detection ───────────────────────────────
+    // `QUADRAUI_TUI_GRAPHICS` forces the answer in either direction,
+    // bypassing both the env heuristic and the live probe entirely — see
+    // `caps`'s module doc, "Kitty graphics protocol" section.
+    let kitty_graphics_supported = match super::caps::kitty_graphics_override() {
+        Some(forced) => forced,
+        None => {
+            // A terminal this crate can already name with high confidence
+            // (kitty itself, Ghostty) skips the live round trip entirely —
+            // see `caps::detect_kitty_graphics_from`'s doc for the exact
+            // signals. Everything else gets the live protocol probe,
+            // unless it's sitting behind a multiplexer already known not
+            // to forward escape sequences it doesn't understand — the
+            // identical gap `sgr_pixel_mouse_blocked_by_multiplexer`
+            // exists for, reused here rather than duplicated.
+            super::caps::detect_kitty_graphics()
+                || (!super::caps::sgr_pixel_mouse_blocked_by_multiplexer()
+                    && super::caps::probe_kitty_graphics())
+        }
+    };
+    let kitty_graphics_cell_px = if kitty_graphics_supported {
+        query_kitty_graphics_cell_px()
+    } else {
+        None
+    };
+    // No usable pixel size means there is no correct way to place a
+    // graphic, so the capability collapses to unsupported regardless of
+    // the probe/heuristic/override answer above — see
+    // `TuiBackend::kitty_graphics`'s doc.
+    let kitty_graphics_supported = kitty_graphics_supported && kitty_graphics_cell_px.is_some();
+
     let mut backend = TuiBackend::new();
     // Overwrite `TuiBackend::new()`'s environment-only guess with the live
     // answer: whether the enhancement flags were actually pushed just now.
@@ -275,6 +311,10 @@ fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
     // no-op in that (overwhelmingly common) case.
     backend.set_sgr_pixel_mouse(sgr_pixel_mouse);
     backend.set_cell_pixel_size(cell_pixel_size);
+    // Record the Kitty-graphics negotiation outcome — see
+    // `TuiBackend::kitty_graphics`'s doc.
+    backend.set_kitty_graphics_supported(kitty_graphics_supported);
+    backend.set_kitty_graphics_cell_px(kitty_graphics_cell_px);
     let crossterm_backend = CrosstermBackend::new(stdout);
     // Quantise every frame's SGR to what this terminal actually supports
     // — `backend.color_depth()` was detected from
@@ -631,6 +671,15 @@ impl<A: AppLogic> TuiRunner<A> {
                     }
                 }
             }
+            // Same invalidation for the Kitty-graphics cell pixel size —
+            // only worth re-measuring when the capability is actually in
+            // use, since `query_kitty_graphics_cell_px` falls all the way
+            // through to a live `CSI 16 t` round trip when `TIOCGWINSZ`
+            // comes back empty.
+            if self.backend.kitty_graphics().is_some() {
+                self.backend
+                    .set_kitty_graphics_cell_px(query_kitty_graphics_cell_px());
+            }
             self.resize_debouncer.note(viewport);
             self.resize_deadline = Some(Instant::now() + RESIZE_SETTLE);
             self.needs_redraw = true;
@@ -902,6 +951,21 @@ fn query_cell_pixel_size() -> Option<crate::TerminalCellSize> {
         ws.width as f32 / ws.columns as f32,
         ws.height as f32 / ws.rows as f32,
     ))
+}
+
+/// Resolve the per-cell pixel size Kitty-graphics placement needs, as a
+/// whole-pixel `(width, height)` pair. Prefers the already-available
+/// `TIOCGWINSZ`-backed [`query_cell_pixel_size`] (rounded to the nearest
+/// whole pixel), falling back to a live `CSI 16 t` query —
+/// `caps::query_cell_pixel_size_csi16t`'s doc — when that's unavailable
+/// (always the case on Windows) or reports a non-positive dimension.
+fn query_kitty_graphics_cell_px() -> Option<(u16, u16)> {
+    if let Some(size) = query_cell_pixel_size() {
+        if size.width > 0.0 && size.height > 0.0 {
+            return Some((size.width.round() as u16, size.height.round() as u16));
+        }
+    }
+    super::caps::query_cell_pixel_size_csi16t()
 }
 
 /// Enable SGR-Pixels mouse mode (`CSI ? 1016 h`). Crossterm has no typed
