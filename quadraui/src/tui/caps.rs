@@ -129,6 +129,65 @@
 //! a single per-frame sweep, not a parameter threaded through every
 //! rasteriser, is the chosen choke point.
 
+//! ### Kitty graphics protocol (with Unicode placeholders)
+//!
+//! [`crate::tui::backend::TuiBackend::kitty_graphics`] reports whether this
+//! session's terminal can be sent Kitty-protocol graphics
+//! (<https://sw.kovidgoyal.net/kitty/graphics-protocol/>) placed with
+//! Unicode placeholders, plus the pixel size of one cell — both needed by
+//! any later rasteriser that wants to emit a real image instead of the
+//! text-only fallback every terminal already gets. Same env/live-probe
+//! split as kitty keyboard and SGR-Pixels mouse mode, with one addition —
+//! an explicit override — and one asymmetry borrowed from SGR-Pixels
+//! mouse mode: **an inconclusive probe must resolve to unsupported, not
+//! fall back to a heuristic guess.**
+//!
+//! 1. [`detect_kitty_graphics`] — a pure, instant, environment-only
+//!    heuristic (`TERM`, `KITTY_WINDOW_ID`, `TERM_PROGRAM`,
+//!    `GHOSTTY_RESOURCES_DIR`) for the two terminal families this crate
+//!    can name with high confidence: kitty itself and Ghostty. Unlike
+//!    [`detect_kitty_keyboard`] (a fallback for an *inconclusive* probe),
+//!    a positive answer here *skips* [`probe_kitty_graphics`]'s live round
+//!    trip entirely — these terminals are already known-good, so paying
+//!    the up-to-2s wait on top of the kitty-keyboard and SGR-Pixels
+//!    probes' own buys nothing.
+//! 2. [`kitty_graphics_override_from`] — the `QUADRAUI_TUI_GRAPHICS`
+//!    environment override (`off` / `kitty`), checked by
+//!    `super::run::setup_terminal` ahead of both the heuristic and the
+//!    probe and forcing the answer in either direction without touching
+//!    the terminal at all. Exists for a terminal this crate misdetects
+//!    either way, and for CI/test environments that want a deterministic
+//!    answer.
+//! 3. [`probe_kitty_graphics`] — the live, authoritative answer for every
+//!    terminal the heuristic doesn't already recognise: writes a Kitty
+//!    graphics query action (`a=q`, which the protocol defines to never
+//!    display or allocate anything) immediately followed by a DA1
+//!    sentinel (`CSI c`, which essentially every VT100-compatible
+//!    terminal answers), and reads whatever comes back directly off
+//!    stdin via the same raw `poll(2)` route [`query_sgr_pixel_decrqm`]
+//!    uses — bypassing crossterm's event reader so neither reply leaks
+//!    into the app as a stray `KeyPressed` event. A complete `OK` graphics
+//!    reply (`ESC _ G … ; OK ESC \`) appearing before the DA1 reply's own
+//!    terminator means supported; the DA1 reply alone (an error response,
+//!    a timeout, or any other inconclusive result) means not — see
+//!    [`parse_kitty_graphics_probe_reply`].
+//! 4. Multiplexers get the same treatment SGR-Pixels mouse mode already
+//!    has: `super::run::setup_terminal` skips the live probe entirely
+//!    under a multiplexer [`sgr_pixel_mouse_blocked_by_multiplexer`]
+//!    already identifies as not forwarding escape sequences it doesn't
+//!    understand, unless the `QUADRAUI_TUI_GRAPHICS=kitty` override forces
+//!    the answer regardless (tmux passthrough, when configured, is
+//!    handled by the transport child, not detected here).
+//!
+//! Even a confirmed-supported terminal is useless without knowing how big
+//! a cell is in pixels — `super::run::setup_terminal` resolves that
+//! from the same `TIOCGWINSZ`-backed `window_size()` query SGR-Pixels
+//! mouse mode already uses, falling back to a live `CSI 16 t` query
+//! ([`query_cell_pixel_size_csi16t`]) when that fails or reports a zero
+//! dimension. No resolved pixel size collapses the capability to
+//! unsupported, regardless of what the heuristic/override/probe said —
+//! see [`crate::tui::backend::TuiBackend::kitty_graphics`]'s doc.
+
 use crate::backend::{ColorDepth, SystemTheme};
 
 /// Detect this process's terminal colour depth from `COLORTERM`/`TERM`.
@@ -471,6 +530,287 @@ pub(crate) fn detect_underline_color_support_from(
     // trailing parameters of the semicolon form as plain SGR codes
     // (`2` -> faint), the same leak ConPTY produces.
     getenv("TERM_PROGRAM").as_deref() != Some("Apple_Terminal")
+}
+
+/// Environment-only Kitty-graphics-protocol heuristic — see the module
+/// doc's "Kitty graphics protocol" section for why a positive answer here
+/// skips [`probe_kitty_graphics`]'s live round trip entirely, rather than
+/// merely backstopping it the way [`detect_kitty_keyboard`] backstops
+/// [`probe_kitty_keyboard`].
+pub fn detect_kitty_graphics() -> bool {
+    detect_kitty_graphics_from(|key| std::env::var(key).ok())
+}
+
+/// The pure decision behind [`detect_kitty_graphics`], parameterised over
+/// an environment lookup for the same reason as [`detect_color_depth_from`].
+///
+/// Only the two terminal families this crate can name with high
+/// confidence:
+///
+/// 1. `TERM` containing `kitty` (kitty's own terminfo name, `xterm-kitty`)
+///    ⇒ `true`.
+/// 2. `KITTY_WINDOW_ID` set ⇒ `true` — kitty sets this unconditionally,
+///    even inside a session that has rewritten `TERM` to something else,
+///    mirroring [`detect_kitty_keyboard_from`]'s identical reasoning for
+///    the same variable.
+/// 3. `TERM_PROGRAM` exactly `ghostty`, or `GHOSTTY_RESOURCES_DIR` set ⇒
+///    `true` — Ghostty sets both unconditionally.
+/// 4. Otherwise ⇒ `false`, the conservative fallback
+///    [`probe_kitty_graphics`]'s live round trip exists to answer for
+///    instead.
+pub(crate) fn detect_kitty_graphics_from(getenv: impl Fn(&str) -> Option<String>) -> bool {
+    if let Some(term) = getenv("TERM") {
+        if term.to_ascii_lowercase().contains("kitty") {
+            return true;
+        }
+    }
+    if getenv("KITTY_WINDOW_ID").is_some() {
+        return true;
+    }
+    if getenv("TERM_PROGRAM").as_deref() == Some("ghostty") {
+        return true;
+    }
+    if getenv("GHOSTTY_RESOURCES_DIR").is_some() {
+        return true;
+    }
+    false
+}
+
+/// The `QUADRAUI_TUI_GRAPHICS` override real callers consult — see
+/// [`kitty_graphics_override_from`].
+pub(crate) fn kitty_graphics_override() -> Option<bool> {
+    kitty_graphics_override_from(|key| std::env::var(key).ok())
+}
+
+/// Parse the `QUADRAUI_TUI_GRAPHICS` override: `off` forces
+/// [`crate::tui::backend::TuiBackend::kitty_graphics`] to `None`, `kitty`
+/// forces it supported (still subject to a usable cell pixel size — see
+/// the module doc). Any other value, or the variable being unset, is
+/// `None` here — "no opinion", not "off" — so
+/// `super::run::setup_terminal` falls through to the heuristic and live
+/// probe.
+pub(crate) fn kitty_graphics_override_from(
+    getenv: impl Fn(&str) -> Option<String>,
+) -> Option<bool> {
+    match getenv("QUADRAUI_TUI_GRAPHICS").as_deref() {
+        Some("off") => Some(false),
+        Some("kitty") => Some(true),
+        _ => None,
+    }
+}
+
+/// The live, authoritative Kitty-graphics-protocol answer — see the
+/// module doc's "Kitty graphics protocol" section. Real terminal I/O
+/// (writes the graphics query + DA1 sentinel, blocks up to 2s for a
+/// reply): call this once at startup, not from a hot path or a test that
+/// doesn't want that latency.
+///
+/// Checks [`super::backend::stdin_hung_up`] first, on unix, for the
+/// identical reason [`probe_kitty_keyboard`]'s doc gives — except this
+/// probe resolves straight to `false` rather than falling back to
+/// [`detect_kitty_graphics`], matching [`probe_sgr_pixel_mouse`]'s
+/// asymmetry, not [`probe_kitty_keyboard`]'s.
+pub(crate) fn probe_kitty_graphics() -> bool {
+    if super::backend::stdin_hung_up() {
+        return false;
+    }
+    query_kitty_graphics_probe()
+        .map(|buf| parse_kitty_graphics_probe_reply(&buf))
+        .unwrap_or(false)
+}
+
+/// Write the Kitty graphics query (`a=q`, an action the protocol defines
+/// to never display or allocate anything — safe to send to a terminal
+/// that may not understand it at all) immediately followed by a DA1
+/// sentinel (`CSI c`, which essentially every VT100-compatible terminal
+/// answers), and read whatever comes back directly off stdin — see
+/// [`query_sgr_pixel_decrqm`]'s doc for why this bypasses crossterm's
+/// event reader entirely.
+///
+/// Collects bytes until a complete DA1 reply (any CSI sequence whose
+/// final byte is `c`) has been read, the 2-second deadline passes, or an
+/// overall size guard is hit, then returns whatever was collected —
+/// including a reply with no DA1 terminator at all on a timeout — for
+/// [`parse_kitty_graphics_probe_reply`] to classify. Never panics on a
+/// malformed/partial reply; classification, not this collector, is where
+/// that's proven (see this module's `proptests`).
+#[cfg(unix)]
+fn query_kitty_graphics_probe() -> Option<Vec<u8>> {
+    use std::io::{Read, Write};
+    use std::os::unix::io::AsRawFd;
+    use std::time::{Duration, Instant};
+
+    let mut stdout = std::io::stdout();
+    // `i=1` is an arbitrary image id; `a=q` is the query action; `s=1,v=1`
+    // a throwaway 1x1 size; `f=24` 24-bit RGB with no alpha; `AAAA` a
+    // minimal base64 payload a query action never actually reads.
+    stdout
+        .write_all(b"\x1b_Gi=1,a=q,s=1,v=1,t=d,f=24;AAAA\x1b\\")
+        .ok()?;
+    stdout.write_all(b"\x1b[c").ok()?;
+    stdout.flush().ok()?;
+
+    let stdin = std::io::stdin();
+    let fd = stdin.as_raw_fd();
+    let mut handle = stdin.lock();
+    let deadline = Instant::now() + Duration::from_millis(2000);
+    let mut collected = Vec::with_capacity(64);
+    let mut esc_seen = false;
+    let mut csi_open = false;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break; // Timeout: whatever was collected is still handed off.
+        }
+        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        if super::backend::poll_fd_revents(fd, timeout_ms)
+            .revents()
+            .is_none()
+        {
+            break;
+        }
+        let mut byte = [0u8; 1];
+        match handle.read(&mut byte) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let b = byte[0];
+                collected.push(b);
+                if csi_open {
+                    if (0x40..=0x7e).contains(&b) {
+                        csi_open = false;
+                        if b == b'c' {
+                            break; // DA1 reply complete.
+                        }
+                    }
+                } else if esc_seen && b == b'[' {
+                    csi_open = true;
+                }
+                esc_seen = b == 0x1b;
+                if collected.len() >= 512 {
+                    break; // Guard against an unbounded/garbage reply.
+                }
+            }
+        }
+    }
+    Some(collected)
+}
+
+/// See [`query_sgr_pixel_decrqm`]'s non-unix arm's doc — identical
+/// rationale: no safe, cancellable raw-stdin read exists off unix, so this
+/// probe simply never answers `true` there.
+#[cfg(not(unix))]
+fn query_kitty_graphics_probe() -> Option<Vec<u8>> {
+    None
+}
+
+/// Classify a Kitty-graphics probe reply collected by
+/// [`query_kitty_graphics_probe`] (or a hand-built fixture in tests):
+/// `true` only when a complete `OK` graphics response (`ESC _ G … ; OK
+/// ESC \`) appears in the buffer — which, by construction of the read
+/// loop that stops at the DA1 terminator, can only be present if it
+/// arrived *before* that terminator. Anything else — an error response
+/// (`ESC _ G … ; <error> ESC \`), the DA1 sentinel alone with no graphics
+/// reply at all, a truncated/non-UTF-8 fragment, or no bytes collected —
+/// resolves to `false`: the same "never guess true on an inconclusive
+/// answer" posture the module doc gives for [`parse_decrqm_reply`]/
+/// [`decrqm_reply_supports_mode`], since a wrong `true` here would have a
+/// later rasteriser emit real Kitty graphics escape sequences at a
+/// terminal that doesn't understand them.
+pub(crate) fn parse_kitty_graphics_probe_reply(buf: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(buf);
+    let Some(start) = text.find("\x1b_G") else {
+        return false;
+    };
+    let after = &text[start + "\x1b_G".len()..];
+    let Some(end) = after.find("\x1b\\") else {
+        return false;
+    };
+    after[..end].rsplit(';').next() == Some("OK")
+}
+
+/// Resolve this terminal's per-cell pixel size via `CSI 16 t` ("report
+/// character cell size in pixels"), whose reply has the shape `CSI 6 ;
+/// height ; width t` — the fallback `super::run::query_cell_pixel_size`'s
+/// `TIOCGWINSZ`-backed `window_size()` reaches for when that call fails or
+/// reports a zero dimension (the same "unused `ws_xpixel`/`ws_ypixel`"
+/// gap that function's own doc names). Reads the reply directly off
+/// stdin, bypassing crossterm's event reader, for the same reason
+/// [`query_sgr_pixel_decrqm`] does.
+#[cfg(unix)]
+pub(crate) fn query_cell_pixel_size_csi16t() -> Option<(u16, u16)> {
+    use std::io::{Read, Write};
+    use std::os::unix::io::AsRawFd;
+    use std::time::{Duration, Instant};
+
+    let mut stdout = std::io::stdout();
+    stdout.write_all(b"\x1b[16t").ok()?;
+    stdout.flush().ok()?;
+
+    let stdin = std::io::stdin();
+    let fd = stdin.as_raw_fd();
+    let mut handle = stdin.lock();
+    let deadline = Instant::now() + Duration::from_millis(2000);
+    let mut collected = Vec::with_capacity(32);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        super::backend::poll_fd_revents(fd, timeout_ms).revents()?;
+        let mut byte = [0u8; 1];
+        match handle.read(&mut byte) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {
+                collected.push(byte[0]);
+                if byte[0] == b't' || collected.len() >= 32 {
+                    break;
+                }
+            }
+        }
+    }
+    parse_csi16t_reply(&collected)
+}
+
+/// See [`query_sgr_pixel_decrqm`]'s non-unix arm's doc — identical
+/// rationale.
+#[cfg(not(unix))]
+pub(crate) fn query_cell_pixel_size_csi16t() -> Option<(u16, u16)> {
+    None
+}
+
+/// Parse a `CSI 16 t` reply (`ESC [ 6 ; height ; width t`) — see
+/// [`query_cell_pixel_size_csi16t`]. Returns `(width, height)` in pixels,
+/// or `None` for anything else: a truncated reply, the wrong leading
+/// field (`6` is this report's own fixed tag — any other value is a
+/// different `t`-terminated report this crate didn't ask for), a
+/// non-numeric or zero field, an extra field, or non-UTF-8 bytes.
+///
+/// The `allow(dead_code)` mirrors [`parse_decrqm_reply`]'s: the only
+/// production caller is the `#[cfg(unix)]` [`query_cell_pixel_size_csi16t`],
+/// so a non-unix `-D warnings` build (Windows) would otherwise reject this
+/// pure parser as dead code despite it having nothing platform-specific
+/// in it — and its own unit tests (kept compiled on every target) are
+/// what proves that.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn parse_csi16t_reply(buf: &[u8]) -> Option<(u16, u16)> {
+    let text = std::str::from_utf8(buf).ok()?;
+    let body = text.strip_prefix("\x1b[")?.strip_suffix('t')?;
+    let mut parts = body.split(';');
+    if parts.next()? != "6" {
+        return None;
+    }
+    let height: u16 = parts.next()?.parse().ok()?;
+    let width: u16 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if height == 0 || width == 0 {
+        return None;
+    }
+    Some((width, height))
 }
 
 /// System dark/light detection — the TUI half of
@@ -877,6 +1217,143 @@ mod tests {
         assert!(!decrqm_reply_supports_mode(None));
     }
 
+    // ── Kitty graphics protocol ──────────────────────────────────────────
+
+    #[test]
+    fn xterm_kitty_term_is_detected_for_graphics() {
+        assert!(detect_kitty_graphics_from(env(&[("TERM", "xterm-kitty")])));
+    }
+
+    #[test]
+    fn kitty_window_id_is_detected_for_graphics() {
+        assert!(detect_kitty_graphics_from(env(&[("KITTY_WINDOW_ID", "1")])));
+    }
+
+    #[test]
+    fn ghostty_term_program_is_detected_for_graphics() {
+        assert!(detect_kitty_graphics_from(env(&[(
+            "TERM_PROGRAM",
+            "ghostty"
+        )])));
+    }
+
+    #[test]
+    fn ghostty_resources_dir_is_detected_for_graphics() {
+        assert!(detect_kitty_graphics_from(env(&[(
+            "GHOSTTY_RESOURCES_DIR",
+            "/usr/share/ghostty"
+        )])));
+    }
+
+    /// An unrecognised terminal is never guessed `true` — the live probe,
+    /// not the heuristic, is what answers for it.
+    #[test]
+    fn plain_256color_term_is_not_detected_for_graphics() {
+        assert!(!detect_kitty_graphics_from(env(&[(
+            "TERM",
+            "xterm-256color"
+        )])));
+    }
+
+    #[test]
+    fn nothing_set_is_not_detected_for_graphics() {
+        assert!(!detect_kitty_graphics_from(env(&[])));
+    }
+
+    // ── Kitty graphics override ──────────────────────────────────────────
+
+    #[test]
+    fn graphics_override_off_forces_false() {
+        assert_eq!(
+            kitty_graphics_override_from(env(&[("QUADRAUI_TUI_GRAPHICS", "off")])),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn graphics_override_kitty_forces_true() {
+        assert_eq!(
+            kitty_graphics_override_from(env(&[("QUADRAUI_TUI_GRAPHICS", "kitty")])),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn graphics_override_unset_or_unrecognised_is_no_opinion() {
+        assert_eq!(kitty_graphics_override_from(env(&[])), None);
+        assert_eq!(
+            kitty_graphics_override_from(env(&[("QUADRAUI_TUI_GRAPHICS", "nonsense")])),
+            None
+        );
+    }
+
+    // ── Kitty graphics probe-reply parsing ─────────────────────────────
+
+    /// An `OK` graphics response arriving before the DA1 reply means
+    /// supported.
+    #[test]
+    fn kitty_graphics_ok_reply_before_da1_is_supported() {
+        let mut buf = b"\x1b_Gi=1;OK\x1b\\".to_vec();
+        buf.extend_from_slice(b"\x1b[?62;c");
+        assert!(parse_kitty_graphics_probe_reply(&buf));
+    }
+
+    /// An error response (anything other than the literal `OK` message)
+    /// means unsupported.
+    #[test]
+    fn kitty_graphics_error_reply_is_unsupported() {
+        let mut buf = b"\x1b_Gi=1;EINVAL:bad request\x1b\\".to_vec();
+        buf.extend_from_slice(b"\x1b[?62;c");
+        assert!(!parse_kitty_graphics_probe_reply(&buf));
+    }
+
+    /// The DA1 sentinel alone, with no graphics reply at all, means the
+    /// terminal never answered the graphics query — unsupported.
+    #[test]
+    fn kitty_graphics_da1_only_is_unsupported() {
+        assert!(!parse_kitty_graphics_probe_reply(b"\x1b[?62;c"));
+    }
+
+    /// Garbage, truncated, or empty bytes never panic and never resolve
+    /// to supported.
+    #[test]
+    fn kitty_graphics_garbage_reply_is_unsupported() {
+        assert!(!parse_kitty_graphics_probe_reply(b""));
+        assert!(!parse_kitty_graphics_probe_reply(
+            b"not an escape sequence at all"
+        ));
+        assert!(!parse_kitty_graphics_probe_reply(b"\x1b_Gi=1;OK")); // no ST terminator
+        assert!(!parse_kitty_graphics_probe_reply(&[0xff, 0xfe, 0x00, 0x1b]));
+    }
+
+    // ── `CSI 16 t` cell-pixel-size reply parsing ───────────────────────
+
+    #[test]
+    fn csi16t_reply_parses_width_and_height() {
+        assert_eq!(parse_csi16t_reply(b"\x1b[6;16;8t"), Some((8, 16)));
+    }
+
+    #[test]
+    fn csi16t_reply_rejects_wrong_leading_field() {
+        // `14t`'s own leading field is `4`, not this report's `6` — must
+        // not be misread as a cell-size reply.
+        assert_eq!(parse_csi16t_reply(b"\x1b[4;600;800t"), None);
+    }
+
+    #[test]
+    fn csi16t_reply_rejects_zero_dimensions() {
+        assert_eq!(parse_csi16t_reply(b"\x1b[6;0;8t"), None);
+        assert_eq!(parse_csi16t_reply(b"\x1b[6;16;0t"), None);
+    }
+
+    #[test]
+    fn csi16t_reply_rejects_truncated_or_malformed() {
+        assert_eq!(parse_csi16t_reply(b""), None);
+        assert_eq!(parse_csi16t_reply(b"\x1b[6;16"), None); // no trailing `t`
+        assert_eq!(parse_csi16t_reply(b"\x1b[6;16;8;99t"), None); // extra field
+        assert_eq!(parse_csi16t_reply(b"\x1b[6;abc;8t"), None); // non-numeric
+    }
+
     // ── System theme detection ──────────────────────────────────────────
 
     #[test]
@@ -977,6 +1454,56 @@ mod proptests {
                 decrqm_reply_supports_mode(ps),
                 matches!(ps, Some(1) | Some(3))
             );
+        }
+
+        /// [`parse_kitty_graphics_probe_reply`] reads a real terminal's
+        /// reply — no byte sequence, however malformed or non-UTF-8, may
+        /// panic.
+        #[test]
+        fn parse_kitty_graphics_probe_reply_never_panics(
+            bytes in prop::collection::vec(any::<u8>(), 0..200)
+        ) {
+            let _ = parse_kitty_graphics_probe_reply(&bytes);
+        }
+
+        /// A well-formed graphics response whose message is exactly `OK`
+        /// is always read as supported, regardless of what the image id
+        /// field holds.
+        #[test]
+        fn parse_kitty_graphics_probe_reply_recognises_any_ok_response(
+            image_id in 0u32..999999,
+        ) {
+            let reply = format!("\x1b_Gi={image_id};OK\x1b\\\x1b[?62;c");
+            prop_assert!(parse_kitty_graphics_probe_reply(reply.as_bytes()));
+        }
+
+        /// A well-formed graphics response whose message is anything
+        /// other than exactly `OK` is always read as unsupported.
+        #[test]
+        fn parse_kitty_graphics_probe_reply_rejects_non_ok_messages(
+            message in "[A-Za-z0-9:]{1,20}",
+        ) {
+            prop_assume!(message != "OK");
+            let reply = format!("\x1b_Gi=1;{message}\x1b\\\x1b[?62;c");
+            prop_assert!(!parse_kitty_graphics_probe_reply(reply.as_bytes()));
+        }
+
+        /// [`parse_csi16t_reply`] reads a real terminal's reply — no byte
+        /// sequence may panic, and whenever it does parse, the two fields
+        /// it returns are exactly the ones present in a well-formed
+        /// `CSI 6 ; height ; width t` reply.
+        #[test]
+        fn parse_csi16t_reply_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..200)) {
+            let _ = parse_csi16t_reply(&bytes);
+        }
+
+        #[test]
+        fn parse_csi16t_reply_round_trips_well_formed_replies(
+            height in 1u16..=u16::MAX,
+            width in 1u16..=u16::MAX,
+        ) {
+            let reply = format!("\x1b[6;{height};{width}t");
+            prop_assert_eq!(parse_csi16t_reply(reply.as_bytes()), Some((width, height)));
         }
     }
 }

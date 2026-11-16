@@ -76,6 +76,23 @@ use super::text::display_width;
 /// `MIN_GAP_PX = 16.0`. Irrelevant for bars without right segments.
 const MIN_GAP_CELLS: f32 = 2.0;
 
+/// Kitty-protocol-graphics-with-Unicode-placeholders capability, returned
+/// by [`TuiBackend::kitty_graphics`]. `Some` only on a terminal this crate
+/// has confirmed — by live protocol probe, environment heuristic, or the
+/// `QUADRAUI_TUI_GRAPHICS=kitty` override — supports the protocol *and*
+/// whose per-cell pixel size could be resolved; see `super::caps`'s
+/// module doc ("Kitty graphics protocol" section) for the full detection
+/// story. This type only reports what a later rasteriser is safe to
+/// attempt — nothing in this crate emits a real Kitty graphics escape
+/// sequence yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KittyGraphics {
+    /// The pixel `(width, height)` of one terminal cell — needed to
+    /// convert a primitive's cell-based placement into the pixel offsets
+    /// the Kitty graphics protocol's placement commands expect.
+    pub cell_px: (u16, u16),
+}
+
 /// TUI backend implementing [`crate::Backend`].
 ///
 /// Owns the persistent UI state the trait requires plus a transient
@@ -264,6 +281,31 @@ pub struct TuiBackend {
     /// cell's `underline_color` back to `Reset` each frame, instead of
     /// leaving behind the colour ConPTY misparses as blink/faint.
     underline_color_supported: bool,
+    /// Whether this session's terminal has confirmed Kitty-protocol
+    /// graphics-with-Unicode-placeholders support — the boolean half of
+    /// [`Self::kitty_graphics`]'s state, paired with the
+    /// `kitty_graphics_cell_px` field below. Seeded from
+    /// [`super::caps::detect_kitty_graphics`]'s cheap environment
+    /// heuristic at construction time, then overwritten by
+    /// [`super::run::run`] via [`Self::set_kitty_graphics_supported`]
+    /// once it has [`super::caps::probe_kitty_graphics`]'s live answer
+    /// (or the `QUADRAUI_TUI_GRAPHICS` override) — same two-stage shape
+    /// as [`Self::kitty_keyboard`]. Deliberately **not** folded into
+    /// [`crate::backend::BackendCaps`]: native backends always rasterise
+    /// regardless, so there is nothing there for this TUI-only,
+    /// runtime-detected fact to add — see `super::caps`'s module doc.
+    kitty_graphics_supported: bool,
+    /// This session's measured terminal-cell pixel size for Kitty
+    /// graphics placement, independent of the `kitty_graphics_supported`
+    /// flag above — `None` until [`super::run::run`] resolves a real
+    /// reading (`TIOCGWINSZ`, falling back to a live `CSI 16 t` query)
+    /// via [`Self::set_kitty_graphics_cell_px`], and again on every
+    /// settled `Event::Resize` (a font-size change invalidates it the
+    /// same way it invalidates [`Self::cell_pixel_size`]).
+    /// [`Self::kitty_graphics`] treats a `None` here as "unsupported"
+    /// regardless of the flag above — there is no correct way to place a
+    /// graphic without knowing the cell's pixel size.
+    kitty_graphics_cell_px: Option<(u16, u16)>,
     /// Single owner of keyboard focus — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
@@ -381,6 +423,8 @@ impl TuiBackend {
             sgr_pixel_mouse: super::caps::detect_sgr_pixel_mouse(),
             cell_pixel_size: TerminalCellSize::new(1.0, 1.0),
             underline_color_supported: super::caps::detect_underline_color_support(),
+            kitty_graphics_supported: super::caps::detect_kitty_graphics(),
+            kitty_graphics_cell_px: None,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
@@ -584,6 +628,39 @@ impl TuiBackend {
     /// hook a test uses to exercise pixel-mode scaling without a real terminal.
     pub fn set_cell_pixel_size(&mut self, size: TerminalCellSize) {
         self.cell_pixel_size = size;
+    }
+
+    /// The Kitty-protocol-graphics-with-Unicode-placeholders capability
+    /// this session's terminal has — `Some` only once both the support
+    /// flag [`Self::set_kitty_graphics_supported`] sets and the cell size
+    /// [`Self::set_kitty_graphics_cell_px`] sets agree; see
+    /// [`KittyGraphics`]'s doc and `super::caps`'s module doc ("Kitty
+    /// graphics protocol" section) for the detection story this combines.
+    pub fn kitty_graphics(&self) -> Option<KittyGraphics> {
+        if !self.kitty_graphics_supported {
+            return None;
+        }
+        self.kitty_graphics_cell_px
+            .map(|cell_px| KittyGraphics { cell_px })
+    }
+
+    /// Override the Kitty-graphics-support flag — see
+    /// [`Self::kitty_graphics`]. [`super::run::run`] calls this once at
+    /// startup with [`super::caps::probe_kitty_graphics`]'s live answer
+    /// (or the `QUADRAUI_TUI_GRAPHICS` override), overwriting the
+    /// environment-only guess [`Self::new`] seeded it with. Also the hook
+    /// a test uses to pin the value without a real terminal.
+    pub fn set_kitty_graphics_supported(&mut self, supported: bool) {
+        self.kitty_graphics_supported = supported;
+    }
+
+    /// Override the measured Kitty-graphics cell pixel size — see
+    /// [`Self::kitty_graphics`]. [`super::run::run`] calls this once at
+    /// startup and again on every settled `Event::Resize`, mirroring
+    /// [`Self::set_cell_pixel_size`]'s own resize handling. Also the hook
+    /// a test uses to exercise the capability without a real terminal.
+    pub fn set_kitty_graphics_cell_px(&mut self, cell_px: Option<(u16, u16)>) {
+        self.kitty_graphics_cell_px = cell_px;
     }
 
     /// Whether this session's terminal correctly renders SGR 58
@@ -8365,6 +8442,65 @@ mod tests {
             crate::backend::ImagePaintResult::Unsupported,
             "mirrors the win/macOS \"no rasteriser available\" report (issue #924)"
         );
+    }
+
+    // ── Kitty graphics protocol ─────────────────────────────────────────
+
+    /// `kitty_graphics` is `None` until both halves of its state are set —
+    /// a backend whose pixel size was never measured must never report a
+    /// capability a later rasteriser could act on, even if the support
+    /// flag alone says "likely yes".
+    #[test]
+    fn kitty_graphics_is_none_without_a_measured_cell_size() {
+        let mut backend = TuiBackend::new();
+        backend.set_kitty_graphics_supported(true);
+        assert_eq!(backend.kitty_graphics(), None);
+    }
+
+    /// Symmetric case: a measured cell size with the support flag left
+    /// `false` (or explicitly cleared) must also report `None` — a
+    /// terminal confirmed-unsupported stays unsupported regardless of
+    /// whether a pixel size happens to be on file.
+    #[test]
+    fn kitty_graphics_is_none_without_the_support_flag() {
+        let mut backend = TuiBackend::new();
+        backend.set_kitty_graphics_supported(false);
+        backend.set_kitty_graphics_cell_px(Some((8, 16)));
+        assert_eq!(backend.kitty_graphics(), None);
+    }
+
+    /// `set_kitty_graphics_supported`/`set_kitty_graphics_cell_px`
+    /// round-trip through `kitty_graphics` once both agree — the same
+    /// two-piece-state shape `set_sgr_pixel_mouse`/`set_cell_pixel_size`
+    /// already has, and deliberately absent from `backend_caps()` (see
+    /// `kitty_graphics`'s doc: a TUI-only fact, not a
+    /// `crate::backend::BackendCaps` field).
+    #[test]
+    fn kitty_graphics_round_trips_once_both_halves_are_set() {
+        let mut backend = TuiBackend::new();
+        backend.set_kitty_graphics_supported(true);
+        backend.set_kitty_graphics_cell_px(Some((8, 16)));
+        assert_eq!(
+            backend.kitty_graphics(),
+            Some(KittyGraphics { cell_px: (8, 16) })
+        );
+
+        backend.set_kitty_graphics_supported(false);
+        assert_eq!(backend.kitty_graphics(), None);
+    }
+
+    /// Resetting the cell size back to `None` (mirroring what a resize
+    /// handler does when a live re-measurement fails) collapses the
+    /// capability back to unsupported even with the flag still `true`.
+    #[test]
+    fn kitty_graphics_degrades_when_cell_px_is_cleared() {
+        let mut backend = TuiBackend::new();
+        backend.set_kitty_graphics_supported(true);
+        backend.set_kitty_graphics_cell_px(Some((9, 18)));
+        assert!(backend.kitty_graphics().is_some());
+
+        backend.set_kitty_graphics_cell_px(None);
+        assert_eq!(backend.kitty_graphics(), None);
     }
 
     // ── Underline-colour (SGR 58) ConPTY misparse ───────
