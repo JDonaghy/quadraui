@@ -2,12 +2,8 @@
 //!
 //! [`draw_image`] — [`Image::fallback_text`] centered in the target rect,
 //! reporting [`ImagePaintResult::Unsupported`] — is the universal
-//! fallback: it runs whenever the terminal hasn't confirmed Kitty
-//! graphics support, isn't truecolor, the `tui-images` Cargo feature is
-//! off, or a real decode fails. There is no ASCII-art decoder as a
-//! further fallback under that — that would be a second, much larger
-//! primitive (`primitives::image` module docs' scope guard says so
-//! explicitly).
+//! fallback: it runs whenever the `tui-images` Cargo feature is off, the
+//! terminal is 256/16-colour (not truecolor), or a real decode fails.
 //!
 //! On a confirmed Kitty-graphics terminal (`tui-images` feature,
 //! [`crate::tui::backend::TuiBackend::kitty_graphics`] returning `Some`,
@@ -20,6 +16,18 @@
 //! terminal once `terminal.draw` returns — raw APC bytes can't go
 //! through `ratatui::buffer::Buffer`'s cell grid the way the placeholder
 //! glyphs themselves do. Reports [`ImagePaintResult::Painted`].
+//!
+//! On a truecolor terminal that hasn't confirmed Kitty graphics,
+//! [`draw_image_halfblock`] paints a lower-fidelity but recognisable
+//! thumbnail instead of falling all the way back to text: each cell
+//! prints `▀` with the foreground colour sampling the image's top pixel
+//! and the background colour sampling its bottom pixel, from the image
+//! downscaled to `(cols × 2·rows)` — two samples per cell, one per
+//! glyph half. There is no further ASCII-art decoder under *that*
+//! fallback (shading characters standing in for luminance, for
+//! instance) — the half-block mosaic is the floor; [`draw_image`]'s
+//! plain fallback text is what a 256/16-colour terminal or a decode
+//! failure still gets.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -86,30 +94,24 @@ impl KittyImageState {
     }
 }
 
-/// Paint `image` for real through the Kitty graphics protocol: resolve
-/// [`Image::layout`] against `area` scaled into pixel space by
-/// `cell_px` (terminal cells aren't square, and `Image::intrinsic_size`
-/// is in pixels, so the fit math has to run in the same units), scale
-/// the result back down into cell units and clip to whole cells,
-/// decode and downscale to that placement's pixel size
-/// (`cols * cell_px.0` × `rows * cell_px.1`), fill the placed cells
-/// with Unicode placeholder content colored to carry this image's id,
-/// and queue transmit + placement bytes on `state.pending_writes` for
-/// an id not already live this session. Falls back to [`draw_image`]
-/// (and its [`ImagePaintResult::Unsupported`]) when there is nothing to
-/// place — a zero-size `area`/`cell_px`, a zero-size clipped placement,
-/// or a decode failure.
+/// Resolved cell-grid placement for an image paint: top-left cell
+/// `(x0, y0)` plus `(cols, rows)`, already clipped to both `area` and
+/// `buf`'s own extent. Shared geometry behind [`draw_image_kitty`] and
+/// [`draw_image_halfblock`] — resolves [`Image::layout`] against `area`
+/// scaled into pixel space by `cell_px` (terminal cells aren't square,
+/// and `Image::intrinsic_size` is in pixels, so the fit math has to run
+/// in the same units), then scales the result back down into cell units.
+/// `None` when there is nothing to place: a zero-size `area`/`cell_px`,
+/// or a zero-size clipped placement.
 #[cfg(feature = "tui-images")]
-pub(crate) fn draw_image_kitty(
-    buf: &mut Buffer,
+fn resolve_cell_placement(
+    buf: &Buffer,
     area: Rect,
     image: &Image,
-    theme: &Theme,
     cell_px: (u16, u16),
-    state: &mut KittyImageState,
-) -> ImagePaintResult {
+) -> Option<(u16, u16, u32, u32)> {
     if area.width == 0 || area.height == 0 || cell_px.0 == 0 || cell_px.1 == 0 {
-        return draw_image(buf, area, image, theme);
+        return None;
     }
     // Clip against `buf`'s own extent too, same defensive posture as
     // `TuiBackend::register_opaque_rect` — `area` is normally already
@@ -149,8 +151,31 @@ pub(crate) fn draw_image_kitty(
     let cols = (x1 - x0).max(0) as u32;
     let rows = (y1 - y0).max(0) as u32;
     if cols == 0 || rows == 0 {
-        return draw_image(buf, area, image, theme);
+        return None;
     }
+    Some((x0 as u16, y0 as u16, cols, rows))
+}
+
+/// Paint `image` for real through the Kitty graphics protocol: resolve
+/// the placement via [`resolve_cell_placement`], decode and downscale to
+/// that placement's pixel size (`cols * cell_px.0` × `rows * cell_px.1`),
+/// fill the placed cells with Unicode placeholder content colored to
+/// carry this image's id, and queue transmit + placement bytes on
+/// `state.pending_writes` for an id not already live this session. Falls
+/// back to [`draw_image`] (and its [`ImagePaintResult::Unsupported`])
+/// when there is nothing to place, or a decode failure.
+#[cfg(feature = "tui-images")]
+pub(crate) fn draw_image_kitty(
+    buf: &mut Buffer,
+    area: Rect,
+    image: &Image,
+    theme: &Theme,
+    cell_px: (u16, u16),
+    state: &mut KittyImageState,
+) -> ImagePaintResult {
+    let Some((x0, y0, cols, rows)) = resolve_cell_placement(buf, area, image, cell_px) else {
+        return draw_image(buf, area, image, theme);
+    };
 
     let target_px = (cols * cell_px.0 as u32, rows * cell_px.1 as u32);
     let decoded = match crate::tui::image_decode::decode_and_downscale_cached(
@@ -192,11 +217,128 @@ pub(crate) fn draw_image_kitty(
                 // real terminal's viewport.
                 continue;
             };
-            let x = x0 as u16 + col as u16;
-            let y = y0 as u16 + row as u16;
+            let x = x0 + col as u16;
+            let y = y0 + row as u16;
             let cell = &mut buf[(x, y)];
             cell.set_symbol(&text);
             cell.set_fg(fg);
+        }
+    }
+    ImagePaintResult::Painted
+}
+
+/// Per-session state [`draw_image_halfblock`] threads across frames —
+/// owned by [`crate::tui::backend::TuiBackend`], mirroring
+/// [`KittyImageState`] but without an id registry or pending-writes
+/// queue: a half-block mosaic is plain cell-grid content, nothing extra
+/// to transmit to the real terminal once `terminal.draw` returns.
+#[cfg(feature = "tui-images")]
+pub(crate) struct HalfBlockImageState {
+    /// Decoded-and-downscaled pixels, keyed by source + target sample
+    /// size — see [`crate::tui::image_decode`]'s module doc, "Decode
+    /// cache" section.
+    pub(crate) cache: crate::image_cache::ImageCache<crate::tui::image_decode::DecodedImage>,
+}
+
+#[cfg(feature = "tui-images")]
+impl HalfBlockImageState {
+    pub(crate) fn new() -> Self {
+        Self {
+            cache: crate::image_cache::ImageCache::default(),
+        }
+    }
+}
+
+/// Each terminal cell's glyph grid is one column wide but two "pixel"
+/// samples tall (an upper-half-block `▀` carries two independently
+/// colourable halves) — see [`draw_image_halfblock`]'s doc.
+#[cfg(feature = "tui-images")]
+const HALFBLOCK_SAMPLE_PX: (u16, u16) = (1, 2);
+
+/// Nearest-neighbour sample of `decoded` at `(x, y)` in a `(target_w,
+/// target_h)` sample grid — `decoded`'s own pixel dimensions need not
+/// match that grid exactly, since [`crate::tui::image_decode::decode_and_downscale`]
+/// never upscales a source smaller than the requested target. Returns
+/// `theme_bg` (fully opaque) for an empty `decoded` buffer, which only
+/// happens for a zero-size source — everything else always has at least
+/// one pixel to sample.
+#[cfg(feature = "tui-images")]
+fn sample_pixel(
+    decoded: &crate::tui::image_decode::DecodedImage,
+    x: u32,
+    y: u32,
+    target_w: u32,
+    target_h: u32,
+    theme_bg: crate::types::Color,
+) -> crate::types::Color {
+    if decoded.width == 0 || decoded.height == 0 {
+        return theme_bg;
+    }
+    let src_x = (x * decoded.width / target_w.max(1)).min(decoded.width - 1);
+    let src_y = (y * decoded.height / target_h.max(1)).min(decoded.height - 1);
+    let idx = ((src_y * decoded.width + src_x) * 4) as usize;
+    let px = &decoded.rgba[idx..idx + 4];
+    let raw = crate::types::Color::rgba(px[0], px[1], px[2], px[3]);
+    // Pre-blend the source's own alpha onto the theme background —
+    // `set_fg`/`set_bg` below carry no alpha channel of their own, so an
+    // image with transparency must already be composited by the time it
+    // reaches the cell grid.
+    theme_bg.blend(raw, px[3] as f64 / 255.0)
+}
+
+/// Paint `image` as a half-block mosaic: resolve the placement via
+/// [`resolve_cell_placement`] (cell units, with [`HALFBLOCK_SAMPLE_PX`]
+/// standing in for the real per-cell pixel size `draw_image_kitty` uses
+/// — a `▀` glyph's own fixed 1-wide/2-tall sample shape, not the
+/// terminal's actual font metrics), decode and downscale to
+/// `(cols, 2 * rows)` samples, and fill each placed cell with `▀`:
+/// foreground sampling the image's top pixel, background sampling its
+/// bottom pixel, both alpha-blended onto `theme.background`. Falls back
+/// to [`draw_image`] (and its [`ImagePaintResult::Unsupported`]) when
+/// there is nothing to place, or a decode failure — the same two escape
+/// hatches [`draw_image_kitty`] has.
+#[cfg(feature = "tui-images")]
+pub(crate) fn draw_image_halfblock(
+    buf: &mut Buffer,
+    area: Rect,
+    image: &Image,
+    theme: &Theme,
+    state: &mut HalfBlockImageState,
+) -> ImagePaintResult {
+    let Some((x0, y0, cols, rows)) = resolve_cell_placement(buf, area, image, HALFBLOCK_SAMPLE_PX)
+    else {
+        return draw_image(buf, area, image, theme);
+    };
+
+    let target_w = cols;
+    let target_h = rows * 2;
+    let decoded = match crate::tui::image_decode::decode_and_downscale_cached(
+        &image.source,
+        (target_w, target_h),
+        1.0,
+        &mut state.cache,
+    ) {
+        Ok(decoded) => decoded,
+        Err(_) => return draw_image(buf, area, image, theme),
+    };
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let top = sample_pixel(decoded, col, row * 2, target_w, target_h, theme.background);
+            let bottom = sample_pixel(
+                decoded,
+                col,
+                row * 2 + 1,
+                target_w,
+                target_h,
+                theme.background,
+            );
+            let x = x0 + col as u16;
+            let y = y0 + row as u16;
+            let cell = &mut buf[(x, y)];
+            cell.set_symbol("▀");
+            cell.set_fg(qc(top));
+            cell.set_bg(qc(bottom));
         }
     }
     ImagePaintResult::Painted
@@ -463,5 +605,161 @@ mod kitty_tests {
             painted, 4,
             "None should place exactly intrinsic_size/cell_px = 2x2 cells, got {painted}"
         );
+    }
+}
+
+#[cfg(all(test, feature = "tui-images"))]
+mod halfblock_tests {
+    use super::*;
+    use crate::primitives::image::{ImageFit, ImageSource};
+    use crate::types::{Color, WidgetId};
+
+    /// A 2×4 px PNG split into four 2×1 solid-colour quadrants — red/green
+    /// on top, blue/yellow on bottom. Each quadrant maps onto exactly one
+    /// 1×1 cell of a 2×2-cell placement, so the painted cell's fg and bg
+    /// should both equal that quadrant's one colour exactly (no blending
+    /// ambiguity from two different shades sharing a cell).
+    fn quadrant_png_bytes() -> Vec<u8> {
+        let mut img = image::RgbaImage::new(2, 4);
+        let red = image::Rgba([255, 0, 0, 255]);
+        let green = image::Rgba([0, 255, 0, 255]);
+        let blue = image::Rgba([0, 0, 255, 255]);
+        let yellow = image::Rgba([255, 255, 0, 255]);
+        for y in 0..2 {
+            img.put_pixel(0, y, red);
+            img.put_pixel(1, y, green);
+        }
+        for y in 2..4 {
+            img.put_pixel(0, y, blue);
+            img.put_pixel(1, y, yellow);
+        }
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("encode tiny test PNG");
+        out
+    }
+
+    #[test]
+    fn paints_exact_quadrant_colours_into_matching_cells() {
+        let area = Rect::new(0, 0, 2, 2);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let mut state = HalfBlockImageState::new();
+        let img = Image {
+            id: WidgetId::new("photo"),
+            source: ImageSource::Bytes(quadrant_png_bytes()),
+            intrinsic_size: Some((2, 4)),
+            fit: ImageFit::Fill,
+            fallback_text: "[PHOTO]".into(),
+        };
+
+        let result = draw_image_halfblock(&mut buf, area, &img, &theme, &mut state);
+
+        assert_eq!(result, ImagePaintResult::Painted);
+        let expect_cell = |x: u16, y: u16, rgb: (u8, u8, u8)| {
+            let cell = &buf[(x, y)];
+            assert_eq!(
+                cell.symbol(),
+                "▀",
+                "cell ({x},{y}) should carry a half-block glyph"
+            );
+            assert_eq!(
+                cell.fg,
+                qc(Color::rgb(rgb.0, rgb.1, rgb.2)),
+                "cell ({x},{y}) fg"
+            );
+            assert_eq!(
+                cell.bg,
+                qc(Color::rgb(rgb.0, rgb.1, rgb.2)),
+                "cell ({x},{y}) bg"
+            );
+        };
+        expect_cell(0, 0, (255, 0, 0));
+        expect_cell(1, 0, (0, 255, 0));
+        expect_cell(0, 1, (0, 0, 255));
+        expect_cell(1, 1, (255, 255, 0));
+    }
+
+    fn image(fit: ImageFit, intrinsic_size: Option<(u32, u32)>) -> Image {
+        Image {
+            id: WidgetId::new("photo"),
+            source: ImageSource::Bytes(quadrant_png_bytes()),
+            intrinsic_size,
+            fit,
+            fallback_text: "[PHOTO]".into(),
+        }
+    }
+
+    #[test]
+    fn contain_letterboxes_against_the_halfblock_sample_grid() {
+        // 2x4 (1:2) source into a 6x2-cell area: the sample-grid bounds
+        // is 6 cols x 4 half-rows (2 samples per cell row). Width scale
+        // 6/2 = 3, height scale 4/4 = 1 — `Contain` picks the smaller (1),
+        // landing on 2 cols x 4 half-rows (2 cols x 2 cell rows),
+        // letterboxed within the 6-col-wide area rather than spanning it.
+        let area = Rect::new(0, 0, 6, 2);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let mut state = HalfBlockImageState::new();
+        let img = image(ImageFit::Contain, Some((2, 4)));
+
+        let result = draw_image_halfblock(&mut buf, area, &img, &theme, &mut state);
+
+        assert_eq!(result, ImagePaintResult::Painted);
+        let mut painted_cols = std::collections::BTreeSet::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if buf[(x, y)].symbol() == "▀" {
+                    painted_cols.insert(x);
+                }
+            }
+        }
+        // Sample-grid bounds: 6 cols x 4 half-rows. Source is 2x4 (1:2);
+        // width scale = 6/2 = 3, height scale = 4/4 = 1 — contain picks
+        // the smaller (1), landing on 2 cols x 4 half-rows = 1 cell row's
+        // worth of width (2 cols), letterboxed within the 6-col area.
+        assert_eq!(
+            painted_cols.len(),
+            2,
+            "letterboxed placement should be 2 cols wide, got cols {painted_cols:?}"
+        );
+    }
+
+    #[test]
+    fn decode_failure_falls_back_to_fallback_text() {
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let mut state = HalfBlockImageState::new();
+        let img = Image {
+            id: WidgetId::new("photo"),
+            source: ImageSource::Bytes(vec![0, 1, 2, 3]),
+            intrinsic_size: Some((4, 4)),
+            fit: ImageFit::Fill,
+            fallback_text: "[PHOTO]".into(),
+        };
+
+        let result = draw_image_halfblock(&mut buf, area, &img, &theme, &mut state);
+
+        assert_eq!(result, ImagePaintResult::Unsupported);
+        let mut text = String::new();
+        for x in area.left()..area.right() {
+            text.push_str(buf[(x, area.y + area.height / 2)].symbol());
+        }
+        assert!(text.contains("[PHOTO]"));
+    }
+
+    #[test]
+    fn zero_size_placement_falls_back_without_panicking() {
+        let area = Rect::new(0, 0, 0, 0);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+        let theme = Theme::default();
+        let mut state = HalfBlockImageState::new();
+        let img = image(ImageFit::Fill, Some((4, 4)));
+
+        let result = draw_image_halfblock(&mut buf, area, &img, &theme, &mut state);
+
+        assert_eq!(result, ImagePaintResult::Unsupported);
     }
 }

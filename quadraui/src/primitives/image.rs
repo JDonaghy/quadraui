@@ -16,10 +16,15 @@
 //! metadata; it never decodes pixels itself. Each backend's
 //! `Backend::draw_image` decodes through its native stack — GTK via
 //! `gdk_pixbuf`, macOS via `NSImage`/ImageIO, Win via WIC, and TUI
-//! (behind the `tui-images` Cargo feature, on a terminal with confirmed
-//! Kitty-protocol graphics support) via `crate::tui::image_decode` —
-//! so the primitive stays free of image-format dependencies. See that
-//! trait method's doc comment for the per-backend contract.
+//! (behind the `tui-images` Cargo feature) via `crate::tui::image_decode`
+//! — so the primitive stays free of image-format dependencies. TUI's own
+//! decode path has two tiers past plain [`Image::fallback_text`]: real
+//! pixels via the Kitty graphics protocol on a terminal that has
+//! confirmed support for it, or — on any other truecolor terminal — a
+//! `▀`-glyph half-block mosaic, a lower-fidelity but still recognisable
+//! thumbnail (`crate::tui::image::draw_image_halfblock`). There is no
+//! further ASCII-art decoder under the half-block tier; see that
+//! function's doc comment for the per-backend contract.
 //!
 //! Each backend also maintains a small fixed-capacity LRU decode cache
 //! (`crate::image_cache::ImageCache`) keyed on a hash of `image.source`
