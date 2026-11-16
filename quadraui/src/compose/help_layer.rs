@@ -9,12 +9,16 @@
 //!    accelerator) live in [`HelpAction`].
 //! 2. **[`HelpOverlayController`]** — a `?`-triggered cheatsheet overlay
 //!    rendering the active view's [`ViewHelp`]. Composed from
-//!    [`crate::SidebarPanel`] (chrome: a [`crate::Toolbar`] header carrying
-//!    the title — `Backend::draw_sidebar_panel_interactive` is implemented
-//!    on every backend) framing a [`crate::TextDisplay`] (content: the
-//!    note/action list). Views with no registered help still get a visible
-//!    (if minimal) cheatsheet rather than a silent no-op — see
-//!    [`HelpOverlayController::render`].
+//!    [`crate::Dialog`] (card chrome: padding, border, `Style::corner_radius`,
+//!    rendered in the chrome/UI font on every backend —
+//!    `Backend::draw_dialog` is implemented on every backend) with the
+//!    reference notes in [`Dialog::body`] and the registered actions in a
+//!    [`crate::DialogTable`] (two columns — "Shortcut", "Description" —
+//!    whose widths [`Dialog`]'s shared paint auto-sizes from each cell's
+//!    *real measured text width*, not a fixed character count, so columns
+//!    stay aligned under a proportional font). Views with no registered
+//!    help still get a visible (if minimal) cheatsheet rather than a
+//!    silent no-op — see [`HelpOverlayController::render`].
 //! 3. **[`help_actions_to_palette_items`] / [`filter_help_actions`]** — feed
 //!    registered actions into the existing [`crate::Palette`] /
 //!    [`crate::DualModePaletteController`] so they're searchable by label
@@ -23,18 +27,20 @@
 //! # Cross-backend portability
 //!
 //! [`HelpOverlayController::render`] sizes the popup from
-//! `backend.line_height()` / `backend.char_width()` — never hardcoded
-//! cells/pixels — so the same code paints correctly on TUI and GTK.
+//! `backend.measure()` — never hardcoded cells/pixels — so the same code
+//! paints correctly on every backend. [`Dialog`] classifies as a chrome
+//! primitive (see `primitives::dialog`'s module doc), so the cheatsheet
+//! renders in the UI font everywhere, including macOS/Win, where the
+//! editor font is typically monospace and this content isn't editor
+//! content.
 
 use std::collections::BTreeMap;
 
 use crate::compose::Handled;
 use crate::event::Rect;
-use crate::types::{Decoration, StyledSpan, StyledText, WidgetId};
-use crate::{
-    Backend, InteractionState, Key, NamedKey, PaletteItem, SidebarPanel, TextDisplay,
-    TextDisplayLine, Toolbar, ToolbarButton, UiEvent,
-};
+use crate::primitives::toolbar::ToolbarItemMeasure;
+use crate::types::{StyledSpan, StyledText, WidgetId};
+use crate::{Backend, Dialog, DialogMeasure, DialogTable, Key, NamedKey, PaletteItem, UiEvent};
 
 // ── Data model ───────────────────────────────────────────────────────────
 
@@ -192,8 +198,8 @@ pub enum HelpOverlayEvent {
 }
 
 /// Cross-backend compose controller for a `?`-triggered cheatsheet
-/// overlay. Wraps a [`SidebarPanel`] (chrome) + [`TextDisplay`] (content) —
-/// see the module docs for why not the old `Modal` primitive.
+/// overlay. Wraps a [`Dialog`] — see the module docs for the card chrome
+/// + aligned-table rendering this gets for free.
 ///
 /// Purely a display + open/close state machine: it does not own a
 /// [`HelpRegistry`] itself. Callers pass the current view's [`ViewHelp`]
@@ -216,7 +222,7 @@ impl HelpOverlayController {
         }
     }
 
-    /// Override the `WidgetId` used for the rendered [`SidebarPanel`].
+    /// Override the `WidgetId` used for the rendered [`Dialog`].
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = WidgetId::new(id.into());
         self
@@ -357,69 +363,56 @@ impl HelpOverlayController {
         if !self.open {
             return;
         }
-        let rect = Self::popup_rect(container, backend);
         let title = match help {
             Some(h) => format!("Help — {}  (Esc to close)", h.title),
             None => "Help  (Esc to close)".to_string(),
         };
-        let theme = backend.theme();
-        let panel = SidebarPanel {
-            id: self.id,
-            toolbar: Some(Toolbar {
-                id: WidgetId::new(format!("{}-toolbar", self.id.as_str())),
-                // A `Toolbar` `Label` paints flush against the toolbar's
-                // own leading edge, with no inset of its own — a leading
-                // space in the label text gives the title the same
-                // one-cell/few-pixel breathing room `Panel`'s own title
-                // bar paints, on every backend, without the
-                // `Toolbar`/`SidebarPanel` paint code itself growing a
-                // title-specific padding knob.
-                buttons: vec![ToolbarButton::Label {
-                    text: format!(" {title}"),
-                    fg: Some(theme.foreground),
-                }],
-                bg: Some(theme.separator),
-                focused_index: None,
-            }),
-            toolbar_height: None,
-        };
-        let layout = backend.draw_sidebar_panel_interactive(rect, &panel, &InteractionState::new());
-        let lines = match help {
-            Some(h) => build_cheatsheet_lines(h),
-            None => vec![TextDisplayLine {
-                spans: vec![StyledSpan::plain(
-                    "No help available for this view. (Esc to close)",
-                )],
-                decoration: Decoration::Normal,
-                timestamp: None,
-            }],
-        };
-        let td = TextDisplay {
-            id: WidgetId::new(format!("{}-content", self.id.as_str())),
-            lines,
-            scroll_offset: 0,
-            auto_scroll: false,
-            max_lines: 0,
-            has_focus: false,
-            title: None,
-            show_scrollbar: false,
-        };
-        backend.draw_text_display(layout.content_bounds, &td);
-    }
+        let (body, table) = build_help_body_and_table(help);
 
-    /// Popup geometry: 70% of `container`, floored to a readable minimum
-    /// derived from the backend's own line height / char width (never a
-    /// hardcoded cell/pixel constant — see `docs/LESSONS.md`).
-    fn popup_rect(container: Rect, backend: &dyn Backend) -> Rect {
-        let lh = backend.chrome_line_height();
-        let cw = backend.char_width();
-        let w = (container.width * 0.7).max(cw * 44.0).min(container.width);
-        let h = (container.height * 0.7)
-            .max(lh * 10.0)
-            .min(container.height);
-        let x = container.x + (container.width - w) * 0.5;
-        let y = container.y + (container.height - h) * 0.5;
-        Rect::new(x, y, w, h)
+        let m = backend.measure();
+        let line_height = m.line_height;
+        let char_width = m.char_width;
+        let table_height = table
+            .as_ref()
+            .map(|t| t.tui_total_height() as f32 * line_height)
+            .unwrap_or(0.0);
+
+        let dialog = Dialog {
+            id: self.id,
+            title: StyledText::plain(title),
+            body,
+            buttons: Vec::new(),
+            severity: None,
+            vertical_buttons: false,
+            table,
+            input: None,
+        };
+
+        // 70% of `container`, floored to a readable minimum derived from
+        // the backend's own char width (never a hardcoded pixel constant
+        // — see `docs/LESSONS.md`), clamped so a narrow `container` never
+        // produces an inverted `.max(..).min(..)` range.
+        let min_w = (char_width * 44.0).min(container.width.max(1.0));
+        let width = (container.width * 0.7)
+            .max(min_w)
+            .min(container.width.max(1.0));
+
+        let measure = DialogMeasure {
+            width,
+            title_height: line_height,
+            body_height: dialog.body.len() as f32 * line_height,
+            table_height,
+            input_height: 0.0,
+            // No buttons — a cheatsheet is dismiss-only via `Esc`/`?`,
+            // handled by `handle_event`, not a button click — so the
+            // row reserves no space.
+            button_row_height: 0.0,
+            button_width: 0.0,
+            button_gap: 0.0,
+            padding: line_height,
+        };
+        let layout = dialog.layout(container, measure, |_| ToolbarItemMeasure::new(0.0));
+        backend.draw_dialog(&dialog, &layout);
     }
 }
 
@@ -429,79 +422,67 @@ impl Default for HelpOverlayController {
     }
 }
 
-/// Build the cheatsheet body: a "Reference" section from `help.notes`
-/// (when non-empty) followed by an "Actions" section from `help.actions`
-/// (when non-empty), each entry hand-aligned into columns via padded
-/// `format!` widths.
+/// Build the cheatsheet's [`Dialog::body`] (a "Reference" header +
+/// `help.notes`, when non-empty) and its [`DialogTable`] (an "Actions"
+/// header line followed by a `"Shortcut" | "Description"` table built
+/// from `help.actions`, when non-empty).
 ///
-/// That padding is fixed-*character-count*, so it lines up exactly on a
-/// monospace TUI grid — but `quadraui::gtk::text_display` renders
-/// `TextDisplay` spans through Pango with the proportional UI font
-/// (`"Sans 11"` by default; see `gtk/backend.rs`), where two
-/// equal-character-count strings can render to different pixel widths.
-/// The accelerator/description columns are therefore ragged on GTK
-/// today. Accepted for now — it's visual-only and GTK example coverage
-/// waits on `GtkDriver` — but a real fix would render each column
-/// as its own `StyledSpan` sized from a backend-measured text width
-/// instead of character count.
-fn build_cheatsheet_lines(help: &ViewHelp) -> Vec<TextDisplayLine> {
-    let mut lines = Vec::new();
+/// The table is the "aligned two-column shortcut table" this cheatsheet
+/// renders: `Dialog`'s shared paint auto-sizes each column from the
+/// *real measured width* of its widest cell (`PaintSurface::surface_measure_text`),
+/// not a fixed character count, so the columns stay aligned under a
+/// proportional font — unlike hand-padding a `format!` width, which only
+/// lines up on a monospace grid.
+///
+/// Returns a single-line "no help available" body with no table when
+/// `help` is `None` — see [`HelpOverlayController::render`]'s doc for why
+/// a missing registration still paints something.
+fn build_help_body_and_table(help: Option<&ViewHelp>) -> (Vec<StyledText>, Option<DialogTable>) {
+    let Some(help) = help else {
+        return (
+            vec![StyledText::plain(
+                "No help available for this view. (Esc to close)",
+            )],
+            None,
+        );
+    };
 
+    let mut body = Vec::new();
     if !help.notes.is_empty() {
-        lines.push(header_line("Reference"));
+        body.push(StyledText::plain("Reference"));
         for note in &help.notes {
-            lines.push(entry_line(&note.label, None, &note.description));
+            body.push(StyledText::plain(format!(
+                "{}  —  {}",
+                note.label, note.description
+            )));
         }
     }
 
-    if !help.actions.is_empty() {
-        if !lines.is_empty() {
-            lines.push(blank_line());
+    let table = if help.actions.is_empty() {
+        None
+    } else {
+        if !body.is_empty() {
+            body.push(StyledText::plain(""));
         }
-        lines.push(header_line("Actions"));
-        for action in &help.actions {
-            lines.push(entry_line(
-                &action.label,
-                action.accelerator.as_deref(),
-                &action.description,
-            ));
-        }
-    }
+        body.push(StyledText::plain("Actions"));
+        Some(DialogTable {
+            headers: Some(vec!["Shortcut".to_string(), "Description".to_string()]),
+            rows: help
+                .actions
+                .iter()
+                .map(|action| {
+                    let shortcut = match &action.accelerator {
+                        Some(acc) => format!("{}  ({})", action.label, acc),
+                        None => action.label.clone(),
+                    };
+                    vec![shortcut, action.description.clone()]
+                })
+                .collect(),
+            column_widths: None,
+        })
+    };
 
-    lines
-}
-
-fn header_line(text: &str) -> TextDisplayLine {
-    TextDisplayLine {
-        spans: vec![StyledSpan {
-            bold: true,
-            ..StyledSpan::plain(text)
-        }],
-        decoration: Decoration::Header,
-        timestamp: None,
-    }
-}
-
-fn blank_line() -> TextDisplayLine {
-    TextDisplayLine {
-        spans: vec![StyledSpan::plain("")],
-        decoration: Decoration::Normal,
-        timestamp: None,
-    }
-}
-
-fn entry_line(label: &str, accelerator: Option<&str>, description: &str) -> TextDisplayLine {
-    let text = format!(
-        "  {:<20}{:<14}{}",
-        label,
-        accelerator.unwrap_or(""),
-        description
-    );
-    TextDisplayLine {
-        spans: vec![StyledSpan::plain(text)],
-        decoration: Decoration::Normal,
-        timestamp: None,
-    }
+    (body, table)
 }
 
 // ── Command-palette integration ─────────────────────────────────────────
@@ -787,17 +768,17 @@ mod tests {
         );
     }
 
-    // ── build_cheatsheet_lines ────────────────────────────────────────
+    // ── build_help_body_and_table ──────────────────────────────────────
 
     #[test]
-    fn cheatsheet_lines_include_notes_and_actions() {
+    fn help_body_and_table_include_notes_and_actions() {
         let help = ViewHelp::new("Explorer")
             .with_notes(vec![HelpNote::new("●", "modified file")])
             .with_actions(vec![
                 HelpAction::new("a.open", "Open", "Open the file").with_accelerator("Enter")
             ]);
-        let lines = build_cheatsheet_lines(&help);
-        let joined: String = lines
+        let (body, table) = build_help_body_and_table(Some(&help));
+        let joined: String = body
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.text.as_str()))
             .collect::<Vec<_>>()
@@ -805,15 +786,32 @@ mod tests {
         assert!(joined.contains("Reference"));
         assert!(joined.contains("modified file"));
         assert!(joined.contains("Actions"));
-        assert!(joined.contains("Open"));
-        assert!(joined.contains("Open the file"));
-        assert!(joined.contains("Enter"));
+
+        let table = table.expect("actions should produce a shortcut table");
+        assert_eq!(
+            table.headers,
+            Some(vec!["Shortcut".to_string(), "Description".to_string()])
+        );
+        assert_eq!(table.rows.len(), 1);
+        assert!(table.rows[0][0].contains("Open"));
+        assert!(table.rows[0][0].contains("Enter"));
+        assert!(table.rows[0][1].contains("Open the file"));
     }
 
     #[test]
-    fn cheatsheet_lines_empty_for_empty_help() {
+    fn help_body_and_table_empty_for_empty_help() {
         let help = ViewHelp::new("Empty");
-        assert!(build_cheatsheet_lines(&help).is_empty());
+        let (body, table) = build_help_body_and_table(Some(&help));
+        assert!(body.is_empty());
+        assert!(table.is_none());
+    }
+
+    #[test]
+    fn help_body_and_table_none_help_shows_fallback() {
+        let (body, table) = build_help_body_and_table(None);
+        assert_eq!(body.len(), 1);
+        assert!(body[0].spans[0].text.contains("No help available"));
+        assert!(table.is_none());
     }
 
     // ── help_actions_to_palette_items ─────────────────────────────────
