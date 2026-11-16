@@ -561,6 +561,204 @@ pub(crate) mod native_surface_paint {
     use crate::types::Decoration;
     use crate::Rect;
 
+    // Tree cell: indent + chevron + icon, the column-0 content of a row
+    // — shared so a future `tree_table` column 0 reuses it instead of
+    // re-deriving the same arithmetic.
+    pub(crate) mod tree_cell {
+        use crate::paint_surface::PaintSurface;
+        use crate::types::{Color, Icon};
+        use crate::Rect;
+
+        /// Chevron hit bounds (`None` for a leaf or hidden chevron) plus
+        /// the rect left over for the caller's own label.
+        pub(crate) struct TreeCellLayout {
+            pub chevron_bounds: Option<Rect>,
+            pub label_rect: Rect,
+        }
+
+        /// Paint indent + chevron (already resolved by the caller, e.g.
+        /// via [`super::super::tree_chevron_glyph`]) + icon from
+        /// `row_rect.x + row_padding_x`; `leaf_gap` substitutes for a
+        /// `None` chevron on a leaf (`is_expanded.is_none()`). Never
+        /// paints the label — callers keep their own `StyledText`/badge
+        /// logic in `label_rect`.
+        #[allow(clippy::too_many_arguments)]
+        pub(crate) fn paint_tree_cell(
+            surface: &mut dyn PaintSurface,
+            row_rect: Rect,
+            row_padding_x: f32,
+            indent: u16,
+            indent_px: f32,
+            is_expanded: Option<bool>,
+            chevron: Option<&str>,
+            leaf_gap: f32,
+            icon: Option<&Icon>,
+            nerd_fonts_enabled: bool,
+            fg: Color,
+        ) -> TreeCellLayout {
+            let mut cursor_x = row_rect.x + row_padding_x + indent as f32 * indent_px;
+            let mut chevron_bounds = None;
+            if let Some(glyph) = chevron {
+                let (cw, ch) = surface.surface_measure_text(glyph);
+                let bounds = Rect::new(cursor_x, row_rect.y + (row_rect.height - ch) / 2.0, cw, ch);
+                surface.surface_draw_icon_glyph(bounds, glyph, fg);
+                chevron_bounds = Some(bounds);
+                cursor_x += cw + 4.0;
+            } else if is_expanded.is_none() {
+                cursor_x += leaf_gap;
+            }
+            if let Some(icon) = icon {
+                let glyph = if nerd_fonts_enabled {
+                    icon.glyph.as_str()
+                } else {
+                    icon.fallback.as_str()
+                };
+                let (iw, ih) = surface.surface_measure_text(glyph);
+                let iy = row_rect.y + (row_rect.height - ih) / 2.0;
+                surface.surface_draw_text_run(
+                    Rect::new(cursor_x, iy, iw, ih),
+                    glyph,
+                    icon.color.unwrap_or(fg),
+                );
+                cursor_x += iw + 6.0;
+            }
+            // Measured, not `surface_char_width()` — GTK's `CairoSurface`
+            // doesn't implement the latter.
+            let label_w =
+                (row_rect.x + row_rect.width - cursor_x).max(surface.surface_measure_text("0").0);
+            TreeCellLayout {
+                chevron_bounds,
+                label_rect: Rect::new(cursor_x, row_rect.y, label_w, row_rect.height),
+            }
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+            use crate::backend::ImagePaintResult;
+            use crate::event::{Point, Viewport};
+            use crate::Image;
+
+            /// Minimal `PaintSurface` double: 8-unit-wide chars, 16-unit
+            /// lines — matches the mocks every other `native_surface_paint`
+            /// test module in this crate uses.
+            #[derive(Default)]
+            struct StubSurface;
+
+            impl PaintSurface for StubSurface {
+                fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+                fn surface_end_frame(&mut self) {}
+                fn surface_viewport(&self) -> Viewport {
+                    Viewport::new(200.0, 100.0, 1.0)
+                }
+                fn surface_line_height(&self) -> f32 {
+                    16.0
+                }
+                fn surface_char_width(&self) -> f32 {
+                    8.0
+                }
+                fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                    (text.chars().count() as f32 * 8.0, 16.0)
+                }
+                fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+                fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+                fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+                fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+                fn surface_draw_line(
+                    &mut self,
+                    _from: Point,
+                    _to: Point,
+                    _color: Color,
+                    _stroke_width: f32,
+                ) {
+                }
+                fn surface_push_clip(&mut self, _rect: Rect) {}
+                fn surface_pop_clip(&mut self) {}
+                fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                    ImagePaintResult::Unsupported
+                }
+            }
+
+            const ROW: Rect = Rect::new(0.0, 0.0, 200.0, 16.0);
+
+            #[test]
+            fn branch_at_indent_2_gets_chevron_bounds() {
+                let mut surface = StubSurface;
+                let cell = paint_tree_cell(
+                    &mut surface,
+                    ROW,
+                    4.0,
+                    2,
+                    18.0,
+                    Some(true),
+                    Some("▾"),
+                    0.0,
+                    None,
+                    false,
+                    Color::rgb(0, 0, 0),
+                );
+                let bounds = cell
+                    .chevron_bounds
+                    .expect("branch row must get chevron bounds");
+                // row_padding_x(4) + indent(2) * indent_px(18) = 40.
+                assert_eq!(bounds.x, 40.0);
+                assert!(
+                    cell.label_rect.x > bounds.x,
+                    "label must start right of the chevron"
+                );
+            }
+
+            #[test]
+            fn leaf_gets_no_chevron_bounds() {
+                let mut surface = StubSurface;
+                let cell = paint_tree_cell(
+                    &mut surface,
+                    ROW,
+                    4.0,
+                    0,
+                    18.0,
+                    None,
+                    None,
+                    12.0,
+                    None,
+                    false,
+                    Color::rgb(0, 0, 0),
+                );
+                assert!(
+                    cell.chevron_bounds.is_none(),
+                    "leaf row must not get chevron bounds"
+                );
+            }
+
+            #[test]
+            fn label_never_shrinks_below_one_char_on_a_narrow_rect() {
+                let mut surface = StubSurface;
+                // A row barely wider than indent + chevron + icon leaves
+                // almost no room for the label.
+                let narrow = Rect::new(0.0, 0.0, 30.0, 16.0);
+                let cell = paint_tree_cell(
+                    &mut surface,
+                    narrow,
+                    0.0,
+                    0,
+                    18.0,
+                    Some(true),
+                    Some("▾"),
+                    0.0,
+                    Some(&Icon::new("f", "f")),
+                    false,
+                    Color::rgb(0, 0, 0),
+                );
+                let (one_char_w, _) = surface.surface_measure_text("0");
+                assert!(
+                    cell.label_rect.width >= one_char_w,
+                    "label_rect must never be narrower than one char, got {}",
+                    cell.label_rect.width
+                );
+            }
+        }
+    }
+
     /// Paint a [`TreeView`]'s content — background, rows
     /// (selection/decoration/chevron/icon/badge/text or inline-edit),
     /// and vertical scrollbar — onto `surface` at `area`.
@@ -747,36 +945,24 @@ pub(crate) mod native_surface_paint {
                 );
             }
 
-            let mut cursor_x = row_x + style.row_padding_x + row.indent as f32 * indent_px;
-
-            if let Some(expanded) = row.is_expanded {
-                if tree.style.show_chevrons {
-                    let chevron = super::tree_chevron_glyph(&tree.style, expanded);
-                    let (cw, ch) = surface.surface_measure_text(&chevron);
-                    let cy = row_y + (row_h - ch) / 2.0;
-                    surface.surface_draw_icon_glyph(
-                        Rect::new(cursor_x, cy, cw, ch),
-                        &chevron,
-                        def_fg,
-                    );
-                    cursor_x += cw + 4.0;
-                }
-            } else {
-                cursor_x += line_height * 0.8;
-            }
-
-            if let Some(ref icon) = row.icon {
-                let glyph = if nerd_fonts_enabled {
-                    icon.glyph.as_str()
-                } else {
-                    icon.fallback.as_str()
-                };
-                let icon_fg = icon.color.unwrap_or(def_fg);
-                let (iw, ih) = surface.surface_measure_text(glyph);
-                let iy = row_y + (row_h - ih) / 2.0;
-                surface.surface_draw_text_run(Rect::new(cursor_x, iy, iw, ih), glyph, icon_fg);
-                cursor_x += iw + 6.0;
-            }
+            let chevron_glyph = row
+                .is_expanded
+                .filter(|_| tree.style.show_chevrons)
+                .map(|expanded| super::tree_chevron_glyph(&tree.style, expanded));
+            let cell = tree_cell::paint_tree_cell(
+                surface,
+                Rect::new(row_x, row_y, row_w, row_h),
+                style.row_padding_x,
+                row.indent,
+                indent_px,
+                row.is_expanded,
+                chevron_glyph.as_deref(),
+                line_height * 0.8,
+                row.icon.as_ref(),
+                nerd_fonts_enabled,
+                def_fg,
+            );
+            let mut cursor_x = cell.label_rect.x;
 
             if let Some(ref edit) = row.edit {
                 paint_edit_input(
