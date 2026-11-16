@@ -360,12 +360,15 @@ fn draw_form_body(
         let row_y = y + vf.bounds.y as f64;
         let row_w = vf.bounds.width as f64;
         let toolbar_row_h = vf.bounds.height as f64;
-        let toolbar_x = if no_label {
-            row_x + 6.0
-        } else {
-            row_x + 6.0 + label_w as f64 + 12.0
-        };
-        let toolbar_w = row_x + row_w - toolbar_x;
+        // Shared with every other embedded-`Toolbar` rasteriser
+        // (`GtkBackend::draw_form`, `MacBackend::draw_form`,
+        // `macos::multi_section_view`'s own form body) via
+        // `FormLayout::toolbar_field_rect` — see its doc — so this
+        // toolbar starts at the form's aligned control column instead
+        // of right past only this field's own (possibly much
+        // narrower) label.
+        let (toolbar_x, toolbar_w) =
+            flayout.toolbar_field_rect(row_x, row_w, label_w as f64, no_label);
         if toolbar_w > 0.0 {
             super::toolbar::draw_toolbar(
                 cr,
