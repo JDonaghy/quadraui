@@ -330,17 +330,23 @@ impl FindReplacePanel {
     /// [`Self::hit_regions`].
     ///
     /// `content_origin` is the absolute position of the panel's content
-    /// corner — inside the 1-cell/1px border — the same `(content_x,
-    /// content_y)` every backend already derives when painting (see
-    /// `native_surface_paint::paint`'s `Metrics` and
-    /// `tui::draw_find_replace`'s `(x + 1, y + 1)`). `char_width` /
-    /// `line_height` are the backend's per-cell metrics. Passing the
-    /// caller's own resolved origin/metrics — rather than re-deriving
-    /// the popup position here — keeps this in lock-step with each
-    /// backend's paint position without duplicating that placement
-    /// arithmetic (which differs across backends: TUI's `group_bounds`
-    /// is content-relative and needs an `editor_left` offset; GTK/macOS/
-    /// Win's is already absolute).
+    /// corner — inside the popup's own border and padding. `char_width`
+    /// is the backend's per-cell width. `line_height` is this call's row
+    /// *pitch* — the vertical distance from one row's top edge to the
+    /// next — **not** necessarily the backend's raw text line height.
+    ///
+    /// On a pixel backend (GTK/macOS/Win), [`native_surface_paint::paint`]
+    /// lays rows out at [`Style::control_height`], not the backend's raw
+    /// chrome line height, and insets the content corner by
+    /// [`Style::padding`] rather than one char cell/line — so pass
+    /// [`FindReplaceMetrics::resolve`]'s [`FindReplaceMetrics::content_origin`]
+    /// and [`FindReplaceMetrics::row_height`] here, not the backend's own
+    /// `char_width()`/`line_height()` directly, or painted boxes and
+    /// clickable bands will disagree. On TUI, `tui::draw_find_replace`
+    /// paints at `(x + 1, y + 1)` with one row per cell, so
+    /// `content_origin = (x + 1, y + 1)` and `char_width = line_height =
+    /// 1.0` (TUI's content-relative `group_bounds` needs an
+    /// `editor_left` offset GTK/macOS/Win don't).
     ///
     /// Coordinate frame: **ABSOLUTE** — `(x, y)` is compared directly
     /// against `content_origin`, no further adjustment by the caller.
@@ -348,19 +354,15 @@ impl FindReplacePanel {
     /// Each [`FrHitRegion`] is still stored in character-cell units (TUI
     /// paints cells, so it needs that), but the comparison below is done
     /// in px: every region's cell rect is projected to a px rect — `rx0
-    /// = ox + col * char_width`, `rx1 = rx0 + width * char_width`, and
-    /// likewise for `y` — using the same cell-to-px projection as
-    /// `native_surface_paint::region_rect`, and then `(x, y)` is tested
-    /// against that px rect directly. Note `region_rect` additionally
-    /// floors its width to `.max(1.0)` for painting a visible rect, which
-    /// this comparison does not need (a zero-width region simply never
-    /// matches). For every `char_width`/`line_height` pair a backend
-    /// actually passes, `x` falls in `[rx0, rx1)` iff `floor((x - ox) /
-    /// cw)` lands in `[region.col, region.col + region.width)` — so this
-    /// is a direct px-space comparison with no caller-visible behaviour
-    /// difference. TUI in particular always calls this with `char_width =
-    /// line_height = 1.0`, where px and cell space are numerically
-    /// identical.
+    /// = ox + col * char_width`, `rx1 = rx0 + width * char_width`, `ry0 =
+    /// oy + row * line_height`, `ry1 = ry0 + line_height` — and then `(x,
+    /// y)` is tested against that px rect directly. For every
+    /// `char_width`/`line_height` pair a backend actually passes, `x`
+    /// falls in `[rx0, rx1)` iff `floor((x - ox) / cw)` lands in
+    /// `[region.col, region.col + region.width)` — so this is a direct
+    /// px-space comparison with no caller-visible behaviour difference.
+    /// TUI in particular always calls this with `char_width = line_height
+    /// = 1.0`, where px and cell space are numerically identical.
     pub fn hit_test(
         &self,
         x: f32,
@@ -386,6 +388,65 @@ impl FindReplacePanel {
             }
         }
         FindReplaceHit::Empty
+    }
+}
+
+/// Resolved pixel geometry for a [`FindReplacePanel`] on a pixel backend
+/// (GTK/macOS/Win) — the single seam both [`native_surface_paint::paint`]
+/// and [`FindReplacePanel::hit_test`]'s caller read, so a painted box and
+/// its clickable band can never drift apart.
+///
+/// [`Self::resolve`] is the same arithmetic `paint` itself runs to place
+/// the popup and lay out its rows; callers resolve this once per click
+/// and feed [`Self::content_origin`] and [`Self::row_height`] straight
+/// into [`FindReplacePanel::hit_test`] as `content_origin` and
+/// `line_height` respectively — `hit_test` only ever uses `line_height`
+/// as a row *pitch*, so passing the resolved [`Style::control_height`]
+/// there (instead of the backend's raw chrome line height) is exactly
+/// what keeps the two in lock-step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FindReplaceMetrics {
+    /// Absolute position of the panel's content corner — inside the
+    /// popup's own border and [`Style::padding`] inset. Pass straight
+    /// into [`FindReplacePanel::hit_test`]'s `content_origin` parameter.
+    pub content_origin: (f32, f32),
+    /// Row pitch/box height every input and toggle/nav/action box is
+    /// painted at — [`Style::control_height`], floored at the backend's
+    /// `line_height` so an unusually tall chrome font is never clipped.
+    /// Pass into [`FindReplacePanel::hit_test`]'s `line_height` parameter.
+    pub row_height: f32,
+    /// Absolute bounds of the popup itself, border included.
+    pub popup_rect: Rect,
+}
+
+impl FindReplaceMetrics {
+    /// Resolve `panel`'s pixel geometry for one frame, given the host's
+    /// `Style` and its own per-cell metrics (`cw` = char width, `lh` =
+    /// line height, both in surface-native pixels).
+    pub fn resolve(
+        panel: &FindReplacePanel,
+        style: &crate::style::Style,
+        cw: f32,
+        lh: f32,
+    ) -> Self {
+        let cw = cw.max(1.0);
+        let lh = lh.max(1.0);
+        let row_height = style.control_height.max(lh);
+        let pad = style.padding;
+
+        let popup_w = panel.panel_width as f32 * cw;
+        let row_count = if panel.show_replace { 2.0 } else { 1.0 };
+        let popup_h = row_count * row_height + 2.0 * pad;
+
+        let gb = &panel.group_bounds;
+        let popup_x = ((gb.x + gb.width) - popup_w - 10.0).max(gb.x);
+        let popup_y = gb.y + 2.0;
+
+        FindReplaceMetrics {
+            content_origin: (popup_x + pad, popup_y + pad),
+            row_height,
+            popup_rect: Rect::new(popup_x, popup_y, popup_w, popup_h),
+        }
     }
 }
 
@@ -443,7 +504,7 @@ impl FindReplacePanel {
 ))]
 #[allow(dead_code)]
 mod native_surface_paint {
-    use super::{FindReplaceClickTarget, FindReplacePanel};
+    use super::{FindReplaceClickTarget, FindReplaceMetrics, FindReplacePanel};
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
     use crate::theme::Theme;
@@ -465,9 +526,7 @@ mod native_surface_paint {
         /// [`crate::primitives::text_input::TextInputMetrics`] resolve a
         /// `Button`/`TextInput`'s own box height from, floored at `lh` so a
         /// backend reporting an unusually tall font never clips its own
-        /// text. Replaces this module's previous row pitch of `lh` itself,
-        /// which under-sized every box on a backend whose chrome font is
-        /// shorter than VS Code's own 26px input/button height.
+        /// text.
         row_h: f32,
         content_x: f32,
         content_y: f32,
@@ -479,8 +538,8 @@ mod native_surface_paint {
     /// theoretically-zero-width region never produces a degenerate
     /// fill/stroke rect. Row pitch and box height both use [`Metrics::row_h`]
     /// (not [`Metrics::lh`]) so every input/toggle/nav/action box reaches
-    /// the full 26px [`Style::control_height`] instead of just the raw
-    /// chrome text line height.
+    /// the full [`Style::control_height`] instead of just the raw chrome
+    /// text line height.
     fn region_rect(m: &Metrics, col: u16, row: u16, width: u16) -> Rect {
         Rect::new(
             m.content_x + col as f32 * m.cw,
@@ -492,10 +551,8 @@ mod native_surface_paint {
 
     /// Vertical offset, in surface-native pixels, that centers an `lh`-tall
     /// text run inside an `m.row_h`-tall box — shared by every text-run
-    /// draw call below so a box taller than its own text (every box, once
-    /// [`Metrics::row_h`] reads a 26px [`Style::control_height`] against a
-    /// shorter chrome font) still centers its label instead of pinning it
-    /// to the box's top edge.
+    /// draw call below so a box taller than its own text still centers
+    /// its label instead of pinning it to the box's top edge.
     fn center_text_y(m: &Metrics, box_y: f32) -> f32 {
         box_y + ((m.row_h - m.lh) / 2.0).max(0.0)
     }
@@ -683,37 +740,22 @@ mod native_surface_paint {
         let cw = surface.surface_char_width().max(1.0);
         let lh = surface.surface_line_height().max(1.0);
 
-        // Row pitch/box height from `Style::control_height` (26px by
-        // default) — the same metric `ButtonMetrics::resolve` and
-        // `TextInputMetrics::resolve` read a `Button`/`TextInput`'s own
-        // box height from — floored at `lh` so an unusually tall chrome
-        // font is never clipped. `pad` (`Style::padding`, 8px by default)
-        // is the inner spacing between the popup's own border and its
-        // content, the same token `Toast`/`Tooltip`/`ContextMenu`/
-        // `Palette`/`Dialog` already reserve, replacing this module's
-        // previous one-`cw`/one-`lh` ad hoc inset.
+        // Resolved once here and by `FindReplacePanel::hit_test`'s caller
+        // (see `FindReplaceMetrics`'s own doc) so a painted box and its
+        // clickable band can never disagree about where it sits.
         let style = Style::default();
-        let row_h = style.control_height.max(lh);
-        let pad = style.padding;
+        let metrics = FindReplaceMetrics::resolve(panel, &style, cw, lh);
+        let row_h = metrics.row_height;
 
-        let popup_w = panel.panel_width as f32 * cw;
-        let row_count = if panel.show_replace { 2.0 } else { 1.0 };
-        let popup_h = row_count * row_h + 2.0 * pad;
-
-        let gb = &panel.group_bounds;
-        let popup_x = ((gb.x + gb.width) - popup_w - 10.0).max(gb.x);
-        let popup_y = gb.y + 2.0;
-        let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
-
-        surface.surface_fill_rect(popup_rect, theme.surface_bg);
-        surface.surface_stroke_rect(popup_rect, theme.separator, 1.0);
+        surface.surface_fill_rect(metrics.popup_rect, theme.surface_bg);
+        surface.surface_stroke_rect(metrics.popup_rect, theme.separator, 1.0);
 
         let m = Metrics {
             cw,
             lh,
             row_h,
-            content_x: popup_x + pad,
-            content_y: popup_y + pad,
+            content_x: metrics.content_origin.0,
+            content_y: metrics.content_origin.1,
         };
 
         // Positions derived from neighbouring hit regions, not a hit
@@ -1256,6 +1298,7 @@ mod native_surface_paint {
 #[cfg(test)]
 mod hit_test_tests {
     use super::*;
+    use crate::style::Style;
 
     fn panel(show_replace: bool) -> FindReplacePanel {
         let (hit_regions, _input_width) = compute_hit_regions(50, show_replace, "1 of 3", 2, 2);
@@ -1384,6 +1427,38 @@ mod hit_test_tests {
         let x = rx0 + 0.5;
         let y = 10.0 + (region.row as f32 + 0.5) * lh;
         let hit = p.hit_test(x, y, (10.0, 10.0), cw, lh);
+        assert_eq!(hit, FindReplaceHit::Target(target));
+    }
+
+    /// [`FindReplaceMetrics::resolve`]'s `content_origin`/`row_height`,
+    /// fed straight into [`FindReplacePanel::hit_test`], must resolve a
+    /// click on the replace row to [`FindReplaceClickTarget::ReplaceInput`]
+    /// — not to the find row above it — when `Style::control_height` is
+    /// far from the backend's raw chrome `line_height` (18px vs. 40px
+    /// here). A caller that instead passed the backend's own
+    /// `line_height` as the row pitch (the bug this seam exists to
+    /// prevent) would under-shoot the replace row and mis-hit the find
+    /// row's own `ToggleCase` region at this same click point.
+    #[test]
+    fn metrics_resolve_row_height_feeds_hit_test_to_the_replace_row() {
+        let p = panel(true);
+        let style = Style::default().with_control_height(40.0);
+        let cw = 8.0_f32;
+        let lh = 18.0_f32; // backend's raw chrome line height, deliberately far from 40.0
+        let metrics = FindReplaceMetrics::resolve(&p, &style, cw, lh);
+        assert_eq!(metrics.row_height, 40.0);
+
+        let (region, target) = p
+            .hit_regions
+            .iter()
+            .find(|(_, t)| matches!(t, FindReplaceClickTarget::ReplaceInput(_)))
+            .expect("ReplaceInput region present on the replace row");
+        let target = *target;
+        let (ox, oy) = metrics.content_origin;
+        let x = ox + (region.col as f32 + 0.5) * cw;
+        let y = oy + (region.row as f32 + 0.5) * metrics.row_height;
+
+        let hit = p.hit_test(x, y, metrics.content_origin, cw, metrics.row_height);
         assert_eq!(hit, FindReplaceHit::Target(target));
     }
 }

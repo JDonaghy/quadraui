@@ -21,15 +21,15 @@
 //! font metrics, which proves the paint math but not that a live macOS
 //! click actually lands. This test drives the real `event -> handle ->
 //! render` path (`MacBackend::draw_find_replace` for paint,
-//! `FindReplacePanel::hit_test` fed with `Backend::list_char_width()` /
-//! `Backend::chrome_line_height()` for click) the same way a production
-//! click router would, and reads the glyph back off the painted screen
-//! rather than off internal paint-call recordings. Mirrors
-//! `gtk_find_replace.rs`'s `GtkDriver` twin.
+//! `FindReplacePanel::hit_test` fed with `FindReplaceMetrics::resolve`'s
+//! `content_origin`/`row_height`, plus `Backend::list_char_width()`, for
+//! click) the same way a production click router would, and reads the
+//! glyph back off the painted screen rather than off internal paint-call
+//! recordings. Mirrors `gtk_find_replace.rs`'s `GtkDriver` twin.
 
 use quadraui::{
-    AppLogic, Backend, FindReplaceClickTarget, FindReplaceHit, FindReplacePanel, Modifiers,
-    MouseButton, Point, Reaction, Rect, UiEvent,
+    AppLogic, Backend, FindReplaceClickTarget, FindReplaceHit, FindReplaceMetrics,
+    FindReplacePanel, Modifiers, MouseButton, Point, Reaction, Rect, Style, UiEvent,
 };
 
 use quadraui::macos::testing::MacDriver;
@@ -50,9 +50,10 @@ const PRESERVE_CASE_GLYPH: char = '\u{eb2e}';
 
 /// Minimal `AppLogic` wrapping a `FindReplacePanel` with the replace row
 /// visible (so all four toggles, including `TogglePreserveCase`, have a
-/// hit region) and routing clicks through the exact popup-geometry
-/// formula `MacBackend::draw_find_replace` -> `native_surface_paint::paint`
-/// uses, fed with the backend's real (proportional) chrome-font metrics
+/// hit region) and routing clicks through [`FindReplaceMetrics::resolve`]
+/// -- the same seam `MacBackend::draw_find_replace` ->
+/// `native_surface_paint::paint` resolves its geometry through -- fed
+/// with the backend's real (proportional) chrome-font metrics
 /// (`Backend::list_char_width()` / `Backend::chrome_line_height()`) --
 /// never a hardcoded `1.0, 1.0` TUI-style scale, and never the editor
 /// font's `char_width()` / `line_height()`, which `FindReplacePanel`
@@ -87,20 +88,11 @@ impl FindReplaceDriverApp {
         Self { panel }
     }
 
-    /// The panel's content-corner origin, derived the same way
-    /// `MacBackend::draw_find_replace` (via
-    /// `primitives::find_replace::native_surface_paint::paint`) derives
-    /// it at paint time -- see that function's `popup_w`/`popup_h`/
-    /// `popup_x`/`popup_y` for the formula this mirrors.
-    fn content_origin(&self, cw: f32, lh: f32) -> (f32, f32) {
-        let popup_w = self.panel.panel_width as f32 * cw;
-        let row_count = if self.panel.show_replace { 2.0 } else { 1.0 };
-        let popup_h = (row_count + 2.0) * lh;
-        let _ = popup_h;
-        let gb = self.panel.group_bounds;
-        let popup_x = ((gb.x + gb.width) - popup_w - 10.0).max(gb.x);
-        let popup_y = gb.y + 2.0;
-        (popup_x + cw, popup_y + lh)
+    /// Resolve this panel's pixel geometry via [`FindReplaceMetrics::resolve`]
+    /// -- the same call `native_surface_paint::paint` makes -- so the
+    /// painted boxes and the click bands below can never drift apart.
+    fn metrics(&self, cw: f32, lh: f32) -> FindReplaceMetrics {
+        FindReplaceMetrics::resolve(&self.panel, &Style::default(), cw, lh)
     }
 }
 
@@ -124,8 +116,14 @@ impl AppLogic for FindReplaceDriverApp {
                 // advances differ.
                 let cw = backend.list_char_width().max(1.0);
                 let lh = backend.chrome_line_height().max(1.0);
-                let origin = self.content_origin(cw, lh);
-                match self.panel.hit_test(position.x, position.y, origin, cw, lh) {
+                let metrics = self.metrics(cw, lh);
+                match self.panel.hit_test(
+                    position.x,
+                    position.y,
+                    metrics.content_origin,
+                    cw,
+                    metrics.row_height,
+                ) {
                     FindReplaceHit::Target(FindReplaceClickTarget::ToggleCase) => {
                         self.panel.case_sensitive = !self.panel.case_sensitive;
                     }

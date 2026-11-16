@@ -8650,28 +8650,30 @@ mod tests {
         // The popup's geometry comes from the metrics the paint itself
         // reads — `MacBackend`'s `PaintSurface` grid, which is the chrome
         // advance and line height — not `Backend::char_width`/
-        // `line_height`, which report the editor font's metrics.
+        // `line_height`, which report the editor font's metrics. Resolved
+        // via the same `FindReplaceMetrics` seam `native_surface_paint::paint`
+        // itself calls, so the probe below stays in lock-step with real
+        // paint geometry.
         let cw = PaintSurface::surface_char_width(&backend).max(1.0);
         let lh = PaintSurface::surface_line_height(&backend).max(1.0);
-        let popup_w = panel.panel_width as f32 * cw;
-        let popup_h = 3.0 * lh; // show_replace == false: 1 content row + 2 border rows
-        let popup_x = (panel.group_bounds.x + panel.group_bounds.width - popup_w - 10.0)
-            .max(panel.group_bounds.x);
-        let popup_y = panel.group_bounds.y + 2.0;
+        let style = crate::style::Style::default();
+        let metrics =
+            crate::primitives::find_replace::FindReplaceMetrics::resolve(&panel, &style, cw, lh);
+        let popup = metrics.popup_rect;
 
         // A few px inside the popup's bottom-right corner: past the
         // border stroke and below the single (`row == 0`) content row,
         // so nothing but the background fill can have painted here.
-        let probe_x = (popup_x + popup_w - 4.0) as u32;
-        let probe_y = (popup_y + popup_h - 4.0) as u32;
+        let probe_x = (popup.x + popup.width - 4.0) as u32;
+        let probe_y = (popup.y + popup.height - 4.0) as u32;
         assert!(
             probe_x < W
                 && probe_y < H
-                && (probe_x as f32) >= popup_x
-                && (probe_y as f32) >= popup_y,
+                && (probe_x as f32) >= popup.x
+                && (probe_y as f32) >= popup.y,
             "test setup: the probe ({probe_x}, {probe_y}) must sit inside both the \
-             {W}×{H} surface and the popup ({popup_w}×{popup_h} at ({popup_x}, \
-             {popup_y}), chrome advance {cw}, line height {lh})",
+             {W}×{H} surface and the popup ({popup:?}, chrome advance {cw}, line \
+             height {lh})",
         );
         let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
         assert_eq!(
@@ -8679,8 +8681,7 @@ mod tests {
             (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
             "find/replace popup background must be painted through MacBackend's \
              real PaintSurface impl — probed ({probe_x}, {probe_y}) inside the \
-             popup ({popup_w}×{popup_h} at ({popup_x}, {popup_y}), chrome advance \
-             {cw}, line height {lh})",
+             popup ({popup:?}, chrome advance {cw}, line height {lh})",
         );
     }
 
