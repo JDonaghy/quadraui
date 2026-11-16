@@ -2839,10 +2839,17 @@ impl Backend for MacBackend {
             let row_y = (origin.y + vf.bounds.y) as f64;
             let row_w = vf.bounds.width as f64;
             let row_h = vf.bounds.height as f64;
+            // Widened to `flayout.left_label_width` — the same shared
+            // `Left`-label column every other field's control aligns
+            // to (see that field's doc) — so this toolbar starts at
+            // the form's aligned control column instead of right past
+            // only this field's own (possibly much narrower) label,
+            // which left it starting under where a wider-labelled row's
+            // label column sits.
             let toolbar_x = if no_label {
                 row_x + 6.0
             } else {
-                row_x + 6.0 + label_w + 12.0
+                row_x + 6.0 + (flayout.left_label_width as f64).max(label_w) + 12.0
             };
             let toolbar_w = row_x + row_w - toolbar_x;
             if toolbar_w > 0.0 {
