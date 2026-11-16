@@ -585,10 +585,13 @@ fn validation_message(field: &FormField) -> Option<&str> {
 /// When the field carries a non-empty [`ValidationState`] message, the
 /// returned height is `row_h` **plus** one more approximate text line
 /// (`row_h / 1.4`, inverting [`form_row_height`]) reserved for that
-/// message — so the field no longer squeezes the message into the same
-/// single row the label occupies. Every other field still measures
-/// exactly one `row_h`, as
-/// `form_field_measure_height_is_one_row_for_every_field_kind` asserts.
+/// message, keeping it on its own strip below the label's row instead
+/// of sharing the label's single row. Every other field measures
+/// exactly one `row_h`, except `FieldKind::Button` and `TextInput`/
+/// `PasswordInput` (each floors its row at
+/// `Style::control_height + 4.0`) and `FieldKind::RadioGroup` (one
+/// `row_h` per option) — see `form_field_measure_height_is_one_row_
+/// for_every_field_kind`'s doc for the exact set this exercises.
 pub fn form_field_measure(
     field: &FormField,
     row_h: f32,
@@ -715,12 +718,12 @@ fn form_field_measure_inner(
         // (2px top/bottom padding, mirroring the `FieldKind::Button` box
         // math above), so the row itself has to reach
         // `Style::control_height + 4.0` for the stroked box to reach
-        // `control_height` (see [`crate::primitives::text_input::
-        // TextInputMetrics::resolve`]). Only `TextInput`/`PasswordInput`
-        // rows grow; `TextArea`'s row (which shares the same painter for
-        // its single-line preview) is intentionally excluded — its
-        // `visible_rows` hint already documents that no pixel backend
-        // paints a real multi-row body yet.
+        // `control_height` (see `crate::primitives::text_input::TextInputMetrics::resolve`).
+        // Only `TextInput`/`PasswordInput` rows grow; `TextArea`'s row
+        // (which shares the same painter for its single-line preview)
+        // is intentionally excluded — its `visible_rows` hint already
+        // documents that no pixel backend paints a real multi-row body
+        // yet.
         FieldKind::TextInput { .. } | FieldKind::PasswordInput { .. } => {
             let input_box_h = crate::primitives::text_input::TextInputMetrics::resolve(
                 &crate::style::Style::default(),
