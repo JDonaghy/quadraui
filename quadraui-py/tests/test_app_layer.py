@@ -1,15 +1,17 @@
 """Unit tests for `quadraui.app`: id auto-assignment stability across
 re-render, callback dispatch (`Tree`, `Table`, `Tabs`, `Button`, `Form`
 and its field builders, and the standalone leaves that reuse `Form`'s
-own event shape), component state survival, and redraw-on-mutation --
-the four properties the app layer's own module doc promises and
-`examples/file_manager_app.py` relies on wholesale.
+own event shape), `App.confirm`/`.alert`, component state survival, and
+redraw-on-mutation -- the four properties the app layer's own module doc
+promises and `examples/file_manager_app.py` relies on wholesale.
 
 Run against a built wheel/extension, e.g.:
 
     maturin develop
     pytest quadraui-py/tests/test_app_layer.py
 """
+
+import asyncio
 
 import pytest
 
@@ -662,6 +664,169 @@ def test_form_field_event_with_no_matching_callback_falls_through_to_on_event():
     app.step()
     assert len(fallback) == 1
     assert "Form" in fallback[0]
+
+
+# --- confirm / alert ---------------------------------------------------------
+
+
+def _locate_text(app, needle):
+    """Scans the plain-text `screen()` dump for `needle` and returns the
+    `(row, col)` of its first occurrence -- no bounds/position pymethod is
+    exposed to Python, so this is the black-box way to turn a painted
+    label into click coordinates (same technique `test_extra_primitives.py`'s
+    own `_locate` uses)."""
+    for row, line in enumerate(app.screen().splitlines()):
+        col = line.find(needle)
+        if col != -1:
+            return row, col
+    raise AssertionError(f"{needle!r} not found on screen")
+
+
+def _click_text(app, needle):
+    row, col = _locate_text(app, needle)
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row}, "modifiers": {}}}
+    )
+    app.step()
+
+
+def _confirm_buttons():
+    return [
+        {"id": "save", "label": "Save", "is_default": True},
+        {"id": "discard", "label": "Discard"},
+        {"id": "cancel", "label": "Cancel", "is_cancel": True},
+    ]
+
+
+def test_confirm_resolves_on_resolve_from_a_sync_click():
+    """The delete-confirmation shape a plain (non-`async def`) `on_click`
+    uses: `on_resolve` is called with the clicked button's id, no asyncio
+    loop required. 40x20 (not the 20x5 every other test in this file
+    uses) so `_click_text`'s nudge matches the known-good one
+    `test_extra_primitives.py`'s own dialog-button click test proved
+    against that same viewport size."""
+    resolved = []
+
+    def view():
+        return TextDisplay([], id="t:text")
+
+    app = App(40, 20, view=view)
+    app.confirm("Unsaved changes", "Do you want to save?", _confirm_buttons(), on_resolve=resolved.append)
+    app.step()
+    assert app.screen_contains("Save")
+
+    _click_text(app, "Discard")
+    assert resolved == ["discard"]
+    assert not app.screen_contains("Save")
+
+
+def test_confirm_on_resolve_resolves_the_default_button_on_enter():
+    resolved = []
+
+    def view():
+        return TextDisplay([], id="t:text")
+
+    app = App(20, 5, view=view)
+    app.confirm("Unsaved changes", "Do you want to save?", _confirm_buttons(), on_resolve=resolved.append)
+    app.step()
+    app.push_event(_key_event({"Named": "Enter"}))
+    app.step()
+    assert resolved == ["save"]
+
+
+def test_confirm_on_resolve_resolves_the_cancel_button_on_escape():
+    resolved = []
+
+    def view():
+        return TextDisplay([], id="t:text")
+
+    app = App(20, 5, view=view)
+    app.confirm("Unsaved changes", "Do you want to save?", _confirm_buttons(), on_resolve=resolved.append)
+    app.step()
+    app.push_event(_key_event({"Named": "Escape"}))
+    app.step()
+    assert resolved == ["cancel"]
+
+
+def test_alert_default_button_id_and_label_are_overridable():
+    resolved = []
+
+    def view():
+        return TextDisplay([], id="t:text")
+
+    app = App(40, 20, view=view)
+    app.alert("Heads up", "Something happened.", id="dismiss", label="Got it", on_resolve=resolved.append)
+    app.step()
+    assert app.screen_contains("Got it")
+
+    _click_text(app, "Got it")
+    assert resolved == ["dismiss"]
+
+
+def test_a_message_dialog_resolved_with_no_pending_confirm_falls_through_to_on_event():
+    """A dialog opened through the lower-level `actions.show_message_dialog`
+    escape hatch directly, not through `confirm`/`alert`: its resolution
+    must not be swallowed by `_dispatch_message_dialog_resolved`."""
+    fallback = []
+
+    def view():
+        return TextDisplay([], id="t:text")
+
+    app = App(20, 5, view=view, on_event=lambda event: fallback.append(event))
+    app.actions.show_message_dialog("Title", "Body", [{"id": "ok", "label": "OK", "is_default": True}])
+    app.step()
+    app.push_event(_key_event({"Named": "Enter"}))
+    app.step()
+    assert fallback == [{"MessageDialogResolved": "ok"}]
+
+
+@pytest.mark.asyncio
+async def test_confirm_without_on_resolve_returns_an_awaitable_future_under_asyncio():
+    """The `quadraui.aio` half of the contract: with `on_resolve` omitted,
+    `confirm` returns a future an `async def` handler can `await` directly
+    to get the clicked button's id, needing only a running asyncio loop
+    (no `app.run_async()`/real event-loop drive required -- `step()` is
+    still called by hand, exactly like every synchronous test above)."""
+
+    def view():
+        return TextDisplay([], id="t:text")
+
+    app = App(40, 20, view=view)
+    pending = app.confirm("Unsaved changes", "Do you want to save?", _confirm_buttons())
+    assert isinstance(pending, asyncio.Future)
+    app.step()
+    assert app.screen_contains("Save")
+
+    _click_text(app, "Discard")
+    assert await pending == "discard"
+
+
+@pytest.mark.asyncio
+async def test_confirm_on_resolve_async_def_is_scheduled_as_a_task():
+    """`on_resolve` may itself be `async def`: `App.confirm` schedules it
+    through `quadraui.aio.schedule_callback` rather than calling it
+    directly (which would just hand back an unawaited coroutine), so its
+    body still runs -- to completion, including whatever it does after its
+    own `await` -- under the currently running loop."""
+    resolved = []
+
+    async def on_resolve(button_id):
+        await asyncio.sleep(0)
+        resolved.append(button_id)
+
+    def view():
+        return TextDisplay([], id="t:text")
+
+    app = App(40, 20, view=view)
+    app.confirm("Unsaved changes", "Do you want to save?", _confirm_buttons(), on_resolve=on_resolve)
+    app.step()
+
+    _click_text(app, "Discard")
+    for _ in range(50):
+        if resolved:
+            break
+        await asyncio.sleep(0.01)
+    assert resolved == ["discard"]
 
 
 # --- components -----------------------------------------------------------

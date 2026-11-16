@@ -34,9 +34,9 @@ import functools
 import inspect
 from typing import Any, Awaitable, Callable, Coroutine, Union, cast
 
-from ._quadraui import QuiApp
+from ._quadraui import QuiApp, QuiAppWaker
 
-__all__ = ["run", "async_handler"]
+__all__ = ["run", "async_handler", "schedule_callback"]
 
 #: `quadraui-node`'s own `run` (`js/index.ts`) defaults its matching
 #: fallback poll to 250ms for the same reason documented there: most of
@@ -147,6 +147,47 @@ def _is_async_callable(handler: Callable[[Any], Any]) -> bool:
         return True
     call = getattr(type(handler), "__call__", None)
     return call is not None and inspect.iscoroutinefunction(call)
+
+
+def schedule_callback(waker: "QuiAppWaker", func: Callable[..., Any], *args: Any) -> None:
+    """Calls `func(*args)` directly when `func` is a plain callable, or
+    schedules it as a fire-and-forget task on the currently running asyncio
+    loop (needs one) when it is an `async def` -- the exact dual shape
+    `async_handler`'s own wrapped dispatch gives a registered event
+    handler, factored out here so `quadraui.app.runtime.App.confirm`/
+    `.alert`'s own `on_resolve` argument can accept either shape the same
+    way, without duplicating the scheduling logic.
+
+    Once a scheduled task finishes, `waker.notify()` prompts an immediate
+    re-step through `run`'s own wake-notify hook, so a state mutation the
+    task made after its last `await` becomes visible without waiting for
+    `fallback_interval` to elapse -- same reasoning as `async_handler`'s
+    own doc. An exception the task raised is handed to the loop's own
+    exception handler (the default one logs it to stderr) rather than
+    propagated or silently dropped, since by the time it raises there is
+    no caller left on the stack to catch it.
+    """
+    if not _is_async_callable(func):
+        func(*args)
+        return
+
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(cast(Coroutine[Any, Any, Any], func(*args)))
+
+    def _on_done(done: "asyncio.Task[Any]") -> None:
+        if not done.cancelled():
+            exc = done.exception()
+            if exc is not None:
+                loop.call_exception_handler(
+                    {
+                        "message": "exception in quadraui.aio.schedule_callback task",
+                        "exception": exc,
+                        "task": done,
+                    }
+                )
+        waker.notify()
+
+    task.add_done_callback(_on_done)
 
 
 _run_async_method.__doc__ = (

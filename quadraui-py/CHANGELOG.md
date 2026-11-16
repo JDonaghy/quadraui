@@ -20,6 +20,15 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `App.confirm(title, body, buttons, severity=None, *, on_resolve=None)` /
+  `App.alert(title, body, *, id="ok", label="OK", severity=None,
+  on_resolve=None)`: wrap `show_message_dialog` +
+  `MessageDialogResolved` into a single call that reports the clicked
+  button's id back to the caller -- through a sync or `async def`
+  `on_resolve` callback, or, with `on_resolve` omitted, an `asyncio.Future`
+  an `async def` handler can `await` directly under `quadraui.aio`. Plus
+  `quadraui.aio.schedule_callback(waker, func, *args)`, factored out of
+  `async_handler`'s own task-scheduling so `on_resolve` can share it.
 - `quadraui.app.Form(fields=, id=, ...)` plus six typed field builders --
   `ToggleField`, `TextInputField`, `SliderField`, `PasswordField`,
   `TextAreaField`, `SelectField` -- each with its own `on_change` (and
