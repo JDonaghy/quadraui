@@ -190,6 +190,11 @@ Pick the backends you ship; `terminal` is independent of them.
 - `terminal` — PTY + vt100 + scrollback engine (`quadraui::terminal_engine`)
   for embedding a terminal. No rasteriser; pairs with any backend below.
 - `tui` — terminal backend (`quadraui::tui`), via ratatui.
+- `tui-images` — adds raster image decode + downscale (PNG/JPEG/GIF first
+  frame/WebP, via [image](https://github.com/image-rs/image)) to the `tui`
+  backend, feeding the Kitty graphics protocol transport. Implies `tui`;
+  without it a TUI build paints `Image::fallback_text` and pays for no
+  image decoder.
 - `gtk` — GTK4 backend (`quadraui::gtk`), via gtk4-rs + Cairo + Pango.
 - `macos` — macOS backend (`quadraui::macos`), via Core Graphics + Core
   Text. Compiles only on `target_os = "macos"`.
