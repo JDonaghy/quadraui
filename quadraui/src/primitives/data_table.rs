@@ -899,10 +899,10 @@ pub struct DataTablePaintState {
     pub hovered_idx: Option<usize>,
     pub scroll_px: Option<f32>,
     /// Tint every other body row with [`crate::theme::Theme::row_alt_bg`]
-    /// ("zebra striping"). `false` (the default) paints exactly as before
-    /// this field existed. The header and footer are never striped;
-    /// selection and hover highlights paint on top of the stripe rather
-    /// than being replaced by it.
+    /// ("zebra striping"). `false` (the default) paints with no stripe at
+    /// all. The header and footer are never striped; selection and hover
+    /// highlights paint on top of the stripe rather than being replaced
+    /// by it.
     pub striped: bool,
 }
 
