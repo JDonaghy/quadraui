@@ -267,6 +267,13 @@ class App:
         )
         self.qui.set_handler(self._handle)
         self.actions = self.qui.actions()
+        # Hoisted here (not inside `confirm`) because `waker()` is a `&self`
+        # method that borrows the underlying `QuiApp` cell -- calling it from
+        # inside a dispatched callback (where `step()` already holds that
+        # cell mutably) would raise a raw PyO3 `RuntimeError`, not the
+        # friendly `ReentrantCallError` the genuinely-restricted methods
+        # give. A handle taken once here stays valid for the app's lifetime.
+        self._waker = self.qui.waker()
 
     def set_on_event(self, on_event: Optional[Callable[[Any], None]]) -> None:
         """Replaces the global `on_event` fallback given at construction (or
@@ -319,19 +326,26 @@ class App:
         outstanding at a time.
         """
         if on_resolve is not None:
-            waker = self.qui.waker()
 
             def _resolve(button_id: str) -> None:
                 from quadraui import aio as _aio  # local import: avoids a cycle
 
-                _aio.schedule_callback(waker, on_resolve, button_id)
+                _aio.schedule_callback(self._waker, on_resolve, button_id)
 
             self._pending_dialog_resolve = _resolve
             self.actions.show_message_dialog(title, body, list(buttons), severity)
             return None
 
         future: "asyncio.Future[str]" = asyncio.get_running_loop().create_future()
-        self._pending_dialog_resolve = future.set_result
+
+        def _resolve_future(button_id: str) -> None:
+            # The awaiting task may already be cancelled/timed-out by the
+            # time the user clicks -- `set_result` on a done future raises
+            # `InvalidStateError`, which would propagate out of `step()`.
+            if not future.done():
+                future.set_result(button_id)
+
+        self._pending_dialog_resolve = _resolve_future
         self.actions.show_message_dialog(title, body, list(buttons), severity)
         return future
 
