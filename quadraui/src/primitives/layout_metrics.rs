@@ -337,11 +337,11 @@ fn tree_layout_inner(
         } else {
             item_height as f32
         };
-        // Chevron end x in tree-local pixels:
-        //   row_padding_x left margin + indent levels + glyph width + 4px gap.
-        // `row_padding_x` must match the leading cursor offset
-        // `native_surface_paint::paint` actually paints the chevron at, or
-        // the hit region computed here drifts from the painted glyph.
+        // `crate::primitives::tree::chevron_end_x` is the same formula
+        // `native_surface_paint::tree_cell::paint_tree_cell` advances its
+        // own paint cursor by after drawing the chevron glyph — calling
+        // it here instead of re-deriving the arithmetic keeps this hit
+        // region from ever drifting off the painted glyph.
         let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
             let glyph_w = match (measure, row.is_expanded) {
                 #[cfg(any(
@@ -351,10 +351,15 @@ fn tree_layout_inner(
                 ))]
                 (Some(m), Some(expanded)) => m.width_of(
                     &crate::primitives::tree::tree_chevron_glyph(&tree.style, expanded),
-                ) as f64,
-                _ => line_height * 0.65,
+                ),
+                _ => (line_height * 0.65) as f32,
             };
-            Some((row_padding_x as f64 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
+            Some(crate::primitives::tree::chevron_end_x(
+                row_padding_x,
+                row.indent,
+                indent_px as f32,
+                glyph_w,
+            ))
         } else {
             None
         };

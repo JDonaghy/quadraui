@@ -285,6 +285,22 @@ pub(crate) fn tree_chevron_glyph(style: &TreeStyle, expanded: bool) -> std::borr
     }
 }
 
+/// `row_padding_x + indent * indent_px + glyph_w + 4.0` — the x offset,
+/// relative to a row's own left edge, immediately past a painted
+/// chevron glyph `glyph_w` wide and its trailing 4px gap.
+///
+/// Not gated to any backend feature set (unlike [`tree_chevron_glyph`])
+/// because [`crate::primitives::layout_metrics::tree_layout_inner`]
+/// calls it unconditionally — on `tui`-only builds it still needs this
+/// formula for its glyph-width-estimate fallback. The pixel painter
+/// (`native_surface_paint::tree_cell::paint_tree_cell`) calls it too,
+/// so a `TreeViewHit::Chevron` region computed from this function's
+/// result and the rect that painter actually draws into can never
+/// drift apart.
+pub(crate) fn chevron_end_x(row_padding_x: f32, indent: u16, indent_px: f32, glyph_w: f32) -> f32 {
+    row_padding_x + indent as f32 * indent_px + glyph_w + 4.0
+}
+
 impl TreeViewLayout {
     /// Test which row (if any) contains point `(x, y)`. Returns
     /// `TreeViewHit::Empty` when the point is below the last visible row.
@@ -603,7 +619,10 @@ pub(crate) mod native_surface_paint {
                 let bounds = Rect::new(cursor_x, row_rect.y + (row_rect.height - ch) / 2.0, cw, ch);
                 surface.surface_draw_icon_glyph(bounds, glyph, fg);
                 chevron_bounds = Some(bounds);
-                cursor_x += cw + 4.0;
+                // Same formula `layout_metrics::tree_layout_inner` uses to
+                // size the `Chevron` hit region for this row.
+                cursor_x =
+                    row_rect.x + super::super::chevron_end_x(row_padding_x, indent, indent_px, cw);
             } else if is_expanded.is_none() {
                 cursor_x += leaf_gap;
             }
@@ -623,7 +642,8 @@ pub(crate) mod native_surface_paint {
                 cursor_x += iw + 6.0;
             }
             // Measured, not `surface_char_width()` — GTK's `CairoSurface`
-            // doesn't implement the latter.
+            // panics on that call (no fixed-width font assumption on a
+            // Pango surface).
             let label_w =
                 (row_rect.x + row_rect.width - cursor_x).max(surface.surface_measure_text("0").0);
             TreeCellLayout {
