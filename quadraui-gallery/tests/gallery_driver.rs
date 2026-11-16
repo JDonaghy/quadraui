@@ -585,9 +585,16 @@ fn toolbar_filter_click_updates_the_hint_line() {
 /// "View: Columns") and the next frame paints that segment with the
 /// active fill (`theme.selected_bg`) — the same fill "Icons" (the
 /// default-active segment) starts with, now moved off it.
+///
+/// 220 columns, not the 160 the sibling test above uses: this test looks
+/// for the groups' *label* text ("Icons"/"Columns"), which only paints at
+/// `GroupDegradeTier::Full`. Narrower than this and
+/// `tui::toolbar::choose_group_tier` drops to icon-only glyphs instead —
+/// correct behaviour (the whole point of the degrade ladder), just not
+/// what this test is asserting against.
 #[test]
 fn toolbar_group_third_segment_click_emits_group_selected_and_paints_it_active() {
-    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 160, 32);
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 220, 32);
     select_chrome_demo(&mut driver, "Toolbar");
     assert!(driver.screen_contains("Tab to focus"));
 

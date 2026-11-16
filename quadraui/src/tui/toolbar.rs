@@ -2,7 +2,12 @@
 //!
 //! Paints a single-row strip of `[icon label (key)]` cells with hit
 //! zones per `Action`. Separators render as a dim ` │ ` cell; non-
-//! clickable `Label` items paint their text in `theme.muted_fg`.
+//! clickable `Label` items paint their text in `theme.muted_fg`. A
+//! `Group` paints one shared `[ … ]` bracket pair around its children,
+//! with a `│` divider between them and no bracket of its own per child —
+//! see `draw_group_horizontal`. When the bar is narrower than a `Group`
+//! needs, it degrades through `GroupDegradeTier`: full labels, then
+//! icon-only children, then flat (ungrouped) items.
 //!
 //! ## Per-state colouring
 //!
@@ -94,11 +99,17 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
         // whatever room is left over) — zero here so a caller that
         // measures one directly gets an inert result.
         ToolbarButton::Spacer => 0.0,
-        // Each child keeps its own full `[ ... ]` bracket format — 1
-        // cell for the group's own leading bracket, 1 for each
-        // inter-child divider, 1 for the trailing bracket: `n + 1`
-        // 1-cell gaps, matching `layout_group_children`'s even split
-        // of `measure(group) - sum(measure(child))`.
+        // Reserves exactly as much room as `n` standalone, fully
+        // bracketed children would need, plus `n + 1` 1-cell gaps —
+        // matching `layout_group_children`'s even split of
+        // `measure(group) - sum(measure(child))`. `draw_group_horizontal`
+        // then paints only one shared `[`/`]` pair and a `│` divider
+        // into those gaps rather than per-child brackets, so each
+        // child's own slot carries a little extra blank padding where
+        // its own `[ `/` ]` would otherwise have gone — the same
+        // trade `measure_button`'s `Group` arm above makes for the
+        // pixel backends (each child still reserves its own full
+        // width; only the *painted* chrome is shared).
         ToolbarButton::Group { items, .. } => {
             let child_sum: f32 = items.iter().map(tui_item_width).sum();
             child_sum + items.len() as f32 + 1.0
@@ -106,15 +117,208 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
     }
 }
 
-/// Compute the layout the rasteriser would produce. No paint side-effects.
-pub fn tui_toolbar_layout(bar: &Toolbar, area: Rect) -> ToolbarLayout {
-    bar.layout(
+/// How a horizontal [`ToolbarButton::Group`] degrades when the bar is too
+/// narrow to paint it at full size — tried in this order by
+/// [`choose_group_tier`]:
+///
+/// 1. [`Self::Full`]: every child keeps its icon, label and key hint.
+/// 2. [`Self::IconOnly`]: child labels/key-hints drop, icons stay — same
+///    `[ icon ]` compaction a standalone icon-only `Action` already gets
+///    from [`tui_item_width`].
+/// 3. [`Self::Flat`]: the group itself disappears — its children splice
+///    into the bar as ordinary top-level items, each painting its own
+///    `[ … ]` bracket, with no shared border or divider at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupDegradeTier {
+    Full,
+    IconOnly,
+    Flat,
+}
+
+/// [`GroupDegradeTier::IconOnly`]'s per-child transform: clear `label`/
+/// `key_hint` on an [`ToolbarButton::Action`] that has an icon to fall
+/// back to (an icon-less child can't shrink further, so it's left
+/// untouched and stays at [`GroupDegradeTier::Full`] size even inside an
+/// `IconOnly` group).
+fn tui_group_child_icon_only(btn: &ToolbarButton) -> ToolbarButton {
+    match btn {
+        ToolbarButton::Action {
+            id,
+            icon: Some(icon),
+            enabled,
+            is_active,
+            tooltip,
+            spec,
+            ..
+        } => ToolbarButton::Action {
+            id: *id,
+            label: String::new(),
+            icon: Some(icon.clone()),
+            key_hint: None,
+            enabled: *enabled,
+            is_active: *is_active,
+            tooltip: tooltip.clone(),
+            spec: spec.clone(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// Build `bar.buttons` as it paints at `tier`, plus a map from each
+/// original top-level index to its new index (`None` when that index no
+/// longer names a single item — only possible for a flattened `Group`,
+/// which has no slot of its own once its children splice into the bar).
+fn tui_tiered_buttons(
+    buttons: &[ToolbarButton],
+    tier: GroupDegradeTier,
+) -> (Vec<ToolbarButton>, Vec<Option<usize>>) {
+    match tier {
+        GroupDegradeTier::Full => (buttons.to_vec(), (0..buttons.len()).map(Some).collect()),
+        GroupDegradeTier::IconOnly => {
+            let out = buttons
+                .iter()
+                .map(|b| match b {
+                    ToolbarButton::Group {
+                        id,
+                        items,
+                        exclusive,
+                        label,
+                    } => ToolbarButton::Group {
+                        id: *id,
+                        items: items.iter().map(tui_group_child_icon_only).collect(),
+                        exclusive: *exclusive,
+                        label: label.clone(),
+                    },
+                    other => other.clone(),
+                })
+                .collect();
+            (out, (0..buttons.len()).map(Some).collect())
+        }
+        GroupDegradeTier::Flat => {
+            let mut out = Vec::with_capacity(buttons.len());
+            let mut map = Vec::with_capacity(buttons.len());
+            for b in buttons {
+                match b {
+                    ToolbarButton::Group { items, .. } => {
+                        map.push(None);
+                        out.extend(items.iter().cloned());
+                    }
+                    other => {
+                        map.push(Some(out.len()));
+                        out.push(other.clone());
+                    }
+                }
+            }
+            (out, map)
+        }
+    }
+}
+
+/// Pick the narrowest-fitting [`GroupDegradeTier`] for `bar` inside
+/// `width` cells — [`GroupDegradeTier::Full`] when it already fits,
+/// otherwise [`GroupDegradeTier::IconOnly`], otherwise
+/// [`GroupDegradeTier::Flat`]. A bar with no [`ToolbarButton::Group`]
+/// is always [`GroupDegradeTier::Full`] (nothing to degrade).
+fn choose_group_tier(bar: &Toolbar, width: f32) -> GroupDegradeTier {
+    let total_width =
+        |buttons: &[ToolbarButton]| -> f32 { buttons.iter().map(tui_item_width).sum() };
+    if total_width(&bar.buttons) <= width {
+        return GroupDegradeTier::Full;
+    }
+    let (icon_only, _) = tui_tiered_buttons(&bar.buttons, GroupDegradeTier::IconOnly);
+    if total_width(&icon_only) <= width {
+        return GroupDegradeTier::IconOnly;
+    }
+    GroupDegradeTier::Flat
+}
+
+/// `bar` as it actually paints inside `width` cells: unchanged when
+/// everything fits, otherwise degraded per [`choose_group_tier`], with
+/// [`Toolbar::focused_index`] remapped to match (or cleared, for a
+/// flattened `Group`'s own now-nonexistent slot — a `Group` was never a
+/// keyboard focus target to begin with, see [`Toolbar::focused_index`]'s
+/// doc).
+fn tui_toolbar_effective(bar: &Toolbar, width: f32) -> Toolbar {
+    if !bar
+        .buttons
+        .iter()
+        .any(|b| matches!(b, ToolbarButton::Group { .. }))
+    {
+        return bar.clone();
+    }
+    let tier = choose_group_tier(bar, width);
+    if tier == GroupDegradeTier::Full {
+        return bar.clone();
+    }
+    let (buttons, index_map) = tui_tiered_buttons(&bar.buttons, tier);
+    let focused_index = bar
+        .focused_index
+        .and_then(|i| index_map.get(i).copied().flatten());
+    let mut effective = bar.clone();
+    effective.buttons = buttons;
+    effective.focused_index = focused_index;
+    effective
+}
+
+/// [`tui_toolbar_effective`] plus the layout it produces, computed once so
+/// every caller indexes the same (possibly degraded) button list the
+/// layout's `item_idx`s refer to.
+fn tui_toolbar_effective_layout(bar: &Toolbar, area: Rect) -> (Toolbar, ToolbarLayout) {
+    let effective = tui_toolbar_effective(bar, area.width as f32);
+    let layout = effective.layout(
         area.x as f32,
         area.y as f32,
         area.width as f32,
         area.height.max(1) as f32,
         |btn| ToolbarItemMeasure::new(tui_item_width(btn)),
-    )
+    );
+    (effective, layout)
+}
+
+/// Char sequence for one button's `icon label (key hint)` content, with
+/// the same icon-only compaction [`tui_item_width`]'s `Action` arm
+/// measures against (drop the trailing space after the icon when there's
+/// no label to separate it from). Shared by every call site that paints
+/// this exact content — a flat `Action`, a `Group` child, and the
+/// vertical rail's own one-row `Action` — so the three can't drift.
+/// Callers wrap the result with their own leading/trailing cells: a
+/// `[`/`]` bracket pair for a standalone button, or two blank cells for a
+/// `Group` child painting inside the group's own shared bracket.
+fn action_content_cells(icon: Option<&str>, label: &str, key_hint: Option<&str>) -> Vec<char> {
+    let label_w = display_width(label);
+    let icon_only = icon.is_some() && label_w == 0;
+    let mut cells = Vec::new();
+    if let Some(icon) = icon {
+        for ch in icon.chars() {
+            cells.push(ch);
+        }
+        if !icon_only {
+            cells.push(' ');
+        }
+    }
+    for ch in label.chars() {
+        cells.push(ch);
+    }
+    if let Some(hint) = key_hint {
+        cells.push(' ');
+        cells.push('(');
+        for ch in hint.chars() {
+            cells.push(ch);
+        }
+        cells.push(')');
+    }
+    cells
+}
+
+/// Compute the layout the rasteriser would produce. No paint side-effects.
+///
+/// When `bar` has a [`ToolbarButton::Group`] too wide for `area.width`,
+/// this is the layout of the *degraded* bar — see [`tui_toolbar_effective`]
+/// — so a caller using this purely for hit-testing (e.g. the backend's
+/// click router) agrees with whatever [`draw_toolbar_with_options`] last
+/// painted at the same `area`.
+pub fn tui_toolbar_layout(bar: &Toolbar, area: Rect) -> ToolbarLayout {
+    tui_toolbar_effective_layout(bar, area).1
 }
 
 /// [`tui_toolbar_layout`], plus [`ToolbarLayoutOptions`]: a
@@ -206,7 +410,7 @@ pub fn draw_toolbar_with_options(
         ));
     }
 
-    let layout = tui_toolbar_layout(bar, area);
+    let (effective, layout) = tui_toolbar_effective_layout(bar, area);
 
     let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
     let fg = qc(theme.foreground);
@@ -235,7 +439,7 @@ pub fn draw_toolbar_with_options(
         if item_w == 0 {
             continue;
         }
-        let btn = &bar.buttons[vis.item_idx];
+        let btn = &effective.buttons[vis.item_idx];
 
         match btn {
             ToolbarButton::Action {
@@ -250,7 +454,7 @@ pub fn draw_toolbar_with_options(
             } => {
                 let is_hovered = *enabled && hovered_id == Some(id);
                 let is_pressed = *enabled && pressed_id == Some(id);
-                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
+                let is_focused = *enabled && effective.focused_index == Some(vis.item_idx);
                 // An explicit `spec` override's `variant` tints the
                 // resting foreground the same way `crate::tui::button`
                 // paints a standalone `Danger`/`Warning` `Button` — see
@@ -283,30 +487,14 @@ pub fn draw_toolbar_with_options(
 
                 // Build the rendered cells. Icon-only buttons compact
                 // to `[ icon ]` (no trailing space after the icon).
-                let label_w = display_width(label);
-                let icon_only = icon.is_some() && label_w == 0;
                 let mut cells: Vec<char> = Vec::with_capacity(item_w as usize);
                 cells.push('[');
                 cells.push(' ');
-                if let Some(icon) = icon {
-                    for ch in icon.chars() {
-                        cells.push(ch);
-                    }
-                    if !icon_only {
-                        cells.push(' ');
-                    }
-                }
-                for ch in label.chars() {
-                    cells.push(ch);
-                }
-                if let Some(hint) = key_hint {
-                    cells.push(' ');
-                    cells.push('(');
-                    for ch in hint.chars() {
-                        cells.push(ch);
-                    }
-                    cells.push(')');
-                }
+                cells.extend(action_content_cells(
+                    icon.as_deref(),
+                    label,
+                    key_hint.as_deref(),
+                ));
                 cells.push(' ');
                 cells.push(']');
 
@@ -384,15 +572,17 @@ pub fn draw_toolbar_with_options(
 }
 
 /// Paint one [`ToolbarButton::Group`] slot (`vis`, whose `kind` is
-/// [`ToolbarItemKind::Group`]) at its own `[`/`]` bracket cells, with a
-/// `│` divider cell between children: `vis.group_children`'s bounds
-/// already reserve exactly these gaps (see [`tui_item_width`]'s `Group`
-/// arm), so this paints into them rather than re-deriving positions.
-/// Each child keeps its own `[ icon label (key) ]` bracket format and
-/// per-state colouring — the same priority order
-/// (`enabled`/`is_active`/`hovered`) [`ToolbarButton::Action`]'s own arm
-/// above uses, scoped to `child.action_id` instead of `bar.focused_index`
-/// (a `Group` child is never a keyboard focus target today).
+/// [`ToolbarItemKind::Group`]) as one shared `[ a │ b │ c ]` frame: the
+/// group's own leading/trailing bracket cells, plus a `│` divider
+/// between children — no child draws a bracket of its own, matching
+/// `crate::tui::form`'s `draw_field_segmented_control`.
+/// `vis.group_children`'s bounds already reserve exactly these gaps (see
+/// [`tui_item_width`]'s `Group` arm), so this paints into them rather
+/// than re-deriving positions. Each child keeps the per-state colouring
+/// priority order (`enabled`/`is_active`/`hovered`)
+/// [`ToolbarButton::Action`]'s own arm above uses, scoped to
+/// `child.action_id` instead of `bar.focused_index` (a `Group` child is
+/// never a keyboard focus target today).
 #[allow(clippy::too_many_arguments)]
 fn draw_group_horizontal(
     buf: &mut Buffer,
@@ -476,38 +666,23 @@ fn draw_group_horizontal(
             }
         }
 
-        // A `Label` child paints bare (no brackets, matching the flat
-        // `Label` arm above); an `Action` child keeps its own
-        // `[ icon label (key) ]` format.
-        let mut cells: Vec<char> = Vec::with_capacity(cw as usize);
+        // A `Label` child paints bare (no padding, matching the flat
+        // `Label` arm above); an `Action` child paints the same content a
+        // standalone button would, but with two blank cells where its
+        // own `[ `/` ]` would otherwise go — the group's single shared
+        // bracket pair (painted above) and the `│` divider between
+        // children are the only brackets drawn, matching
+        // `crate::tui::form`'s `draw_field_segmented_control`.
         let is_action = matches!(btn, ToolbarButton::Action { .. });
-        if is_action {
-            cells.push('[');
-            cells.push(' ');
-        }
-        let label_w = display_width(label);
-        if let Some(icon) = icon {
-            for ch in icon.chars() {
-                cells.push(ch);
-            }
-            if label_w > 0 {
-                cells.push(' ');
-            }
-        }
-        for ch in label.chars() {
-            cells.push(ch);
-        }
-        if let Some(hint) = key_hint {
-            cells.push(' ');
-            cells.push('(');
-            for ch in hint.chars() {
-                cells.push(ch);
-            }
-            cells.push(')');
-        }
+        let mut cells: Vec<char> = Vec::with_capacity(cw as usize);
         if is_action {
             cells.push(' ');
-            cells.push(']');
+            cells.push(' ');
+            cells.extend(action_content_cells(icon, label, key_hint));
+            cells.push(' ');
+            cells.push(' ');
+        } else {
+            cells.extend(label.chars());
         }
 
         let mut col: u16 = 0;
@@ -617,30 +792,14 @@ pub fn draw_toolbar_oriented(
                     (fg, bar_bg)
                 };
 
-                let label_w = display_width(label);
-                let icon_only = icon.is_some() && label_w == 0;
                 let mut cells: Vec<char> = Vec::new();
                 cells.push('[');
                 cells.push(' ');
-                if let Some(icon) = icon {
-                    for ch in icon.chars() {
-                        cells.push(ch);
-                    }
-                    if !icon_only {
-                        cells.push(' ');
-                    }
-                }
-                for ch in label.chars() {
-                    cells.push(ch);
-                }
-                if let Some(hint) = key_hint {
-                    cells.push(' ');
-                    cells.push('(');
-                    for ch in hint.chars() {
-                        cells.push(ch);
-                    }
-                    cells.push(')');
-                }
+                cells.extend(action_content_cells(
+                    icon.as_deref(),
+                    label,
+                    key_hint.as_deref(),
+                ));
                 cells.push(' ');
                 cells.push(']');
 
@@ -897,6 +1056,19 @@ mod tests {
         }
     }
 
+    fn mk_action_with_icon(id: &str, label: &str, icon: &str) -> ToolbarButton {
+        ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new(id),
+            label: label.to_string(),
+            icon: Some(icon.to_string()),
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        }
+    }
+
     #[test]
     fn draws_action_buttons_with_brackets() {
         let area = Rect::new(0, 0, 40, 1);
@@ -965,6 +1137,17 @@ mod tests {
         click_round_trip_at(7, 13);
     }
 
+    /// The painted glyphs of row `y`, `width` cells starting at `x` —
+    /// trimmed of trailing spaces so a test's expected string doesn't
+    /// have to pad out to the full row width.
+    fn row_text(buf: &Buffer, x: u16, y: u16, width: u16) -> String {
+        (x..x + width)
+            .map(|cx| cell_char(buf, cx, y))
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
     fn cell_bg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
         buf[(x, y)]
             .style()
@@ -1028,6 +1211,14 @@ mod tests {
             cell_char(&buf, divider_x, 0),
             '│',
             "divider before the third segment"
+        );
+
+        // The whole row is one shared bracket pair with one `│` between
+        // each child and no bracket of any child's own — not
+        // `[[ Icons ]│[ List ]│[ Columns ]]`.
+        assert_eq!(
+            row_text(&buf, 0, 0, area.width),
+            "[  Icons  │  List  │  Columns  ]"
         );
 
         // A click anywhere in "Columns"'s own body resolves to *its* id,
@@ -1582,6 +1773,72 @@ mod tests {
             "flush to the last row"
         );
         assert_eq!(cell_char(&buf, 0, 4), '[');
+    }
+
+    /// A `Group` too wide for its area degrades in steps: full labels
+    /// when there's room, icon-only children when there isn't, and flat
+    /// (ungrouped) items — each its own independently bracketed, flush
+    /// top-level item — as the last resort. Never just clipped mid-glyph.
+    #[test]
+    fn narrow_group_degrades_icon_only_then_flat() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_group(
+                "nav",
+                false,
+                vec![
+                    mk_action_with_icon("back", "Back", "◀"),
+                    mk_action_with_icon("forward", "Forward", "▶"),
+                ],
+            )],
+            bg: None,
+            focused_index: None,
+        };
+
+        // Full width (26 cells needed): both children keep their labels
+        // inside one shared group.
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        assert_eq!(layout.visible_items.len(), 1);
+        assert_eq!(layout.visible_items[0].kind, ToolbarItemKind::Group);
+        let row = row_text(&buf, 0, 0, area.width);
+        assert!(row.contains("Back"), "{row:?}");
+        assert!(row.contains("Forward"), "{row:?}");
+
+        // Narrower (13 cells needed at icon-only, 26 at full): labels
+        // drop, icons stay, still one shared group.
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        assert_eq!(layout.visible_items.len(), 1);
+        assert_eq!(layout.visible_items[0].kind, ToolbarItemKind::Group);
+        let row = row_text(&buf, 0, 0, area.width);
+        assert!(!row.contains("Back"), "label should drop: {row:?}");
+        assert!(row.contains('◀'), "icon should stay: {row:?}");
+
+        // Narrower still (below the 13-cell icon-only floor): the group
+        // itself disappears — each child becomes its own flat,
+        // independently bracketed top-level item.
+        let area = Rect::new(0, 0, 12, 1);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        assert_eq!(
+            layout.visible_items.len(),
+            2,
+            "the group's 2 children flatten into 2 top-level items"
+        );
+        assert_eq!(layout.visible_items[0].kind, ToolbarItemKind::Action);
+        assert_eq!(layout.visible_items[1].kind, ToolbarItemKind::Action);
+        assert_eq!(
+            cell_char(&buf, 0, 0),
+            '[',
+            "the first flattened child gets its own bracket"
+        );
+        match layout.hit_test(1.0, 0.0) {
+            ToolbarHit::Button(id) => assert_eq!(id.as_str(), "back"),
+            other => panic!("expected the flattened child's own id, got {other:?}"),
+        }
     }
 
     /// A zero-height vertical area returns an empty, non-hit-testable
