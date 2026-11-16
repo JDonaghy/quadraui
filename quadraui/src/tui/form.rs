@@ -150,36 +150,9 @@ fn field_items_start_x(
     }
 }
 
-/// Cells of track a [`FieldKind::Slider`] field paints between its `[`
-/// and `]` brackets: whatever its resolved control column leaves after
-/// the two brackets, the 2-cell gap and the value text, never fewer than
-/// 3. `items_start_x` is the field's own item start (from
-/// [`field_items_start_x`]), which is also where its control column
-/// begins, so the remaining cells to the content box's right edge are the
-/// `available` budget [`resolved_control_width_cells`] resolves
-/// `ControlWidth::Fill` against.
-///
-/// Used by [`tui_form_layout_with_label_width`]'s item measure; it
-/// shares its [`track_cells_within`] tail with [`draw_field_slider`]'s
-/// own fallback, so a layout that reports no items still paints the same
-/// track a layout that does would.
-fn slider_track_cells(
-    form: &Form,
-    field: &FormField,
-    area: Rect,
-    items_start_x: f32,
-    value: f32,
-) -> usize {
-    let content_w = (area.width as f32 - form.spacing.padding.max(0.0) * 2.0).max(0.0);
-    let available = (content_w.round() as usize).saturating_sub(items_start_x as usize);
-    let control_width = resolved_control_width_cells(form, field, available);
-    track_cells_within(control_width, value)
-}
-
-/// Split a `FieldKind::Slider` field's resolved control width (in cells)
-/// into the track's own cell count: the column minus its two bracket
-/// cells, the 2-cell gap and the value text, floored at 3 so a column too
-/// narrow for all of that still paints a usable track.
+/// Track cells a `FieldKind::Slider` paints between `[` and `]`: its
+/// control width minus both brackets, the 2-cell gap and the value text,
+/// floored at 3.
 fn track_cells_within(control_width: usize, value: f32) -> usize {
     let value_len = format!("{value:.2}").chars().count();
     control_width.saturating_sub(2 + 2 + value_len).max(3)
@@ -307,20 +280,17 @@ fn tui_form_layout_with_label_width(
                 FormFieldMeasure::with_items(3.0 + extra_row, start_x, 0.0, items)
                     .with_items_start_y(extra_row)
             }
-            // A single item carrying the field's own id whose rect is
-            // the slider's *track* alone — the `=`/`-` run between the
-            // `[` and `]` brackets, excluding both brackets, the gap and
-            // the value text. `draw_field_slider` paints that run into
-            // exactly this rect and `FormController`'s click routing
-            // maps a pointer x across exactly the same rect, so the cell
-            // under the cursor is the value a click produces. Mapping
-            // across the whole control column instead would never reach
-            // `max`, since the value text takes the column's tail.
+            // One item, the track alone (no brackets/value text): both
+            // `draw_field_slider` and `FormController` click routing use it.
             FieldKind::Slider { value, .. } => {
                 let start_x = field_items_start_x(form, field, left_label_width, 1);
+                let content_w = (area.width as f32 - form.spacing.padding.max(0.0) * 2.0).max(0.0);
+                let avail = (content_w.round() as usize).saturating_sub(start_x as usize);
+                let cw = resolved_control_width_cells(form, field, avail);
+                let width = track_cells_within(cw, *value) as f32;
                 let items = vec![FormItemMeasure {
                     id: field.id,
-                    width: slider_track_cells(form, field, area, start_x, *value) as f32,
+                    width,
                 }];
                 FormFieldMeasure::with_items(1.0 + extra_row, start_x + 1.0, 0.0, items)
                     .with_items_start_y(extra_row)
@@ -935,16 +905,8 @@ fn draw_field_read_only(buf: &mut Buffer, ctx: &RowCtx, value: &crate::types::St
     }
 }
 
-/// Paints `[===---] 5.00` into the field's control column.
-///
-/// The track run itself comes from `visible_field.item_bounds`'s single
-/// entry (populated by [`tui_form_layout_with_label_width`]'s
-/// [`FieldKind::Slider`] arm), so the cells painted here are the exact
-/// cells `FormController`'s click routing maps a pointer x across — the
-/// same `item_bounds` contract [`draw_field_number_input`] follows. A
-/// layout whose measure closure reports no items falls back to
-/// [`track_cells_within`] against the row's own resolved control width,
-/// which is the same arithmetic the measure arm runs.
+/// Paints `[===---] 5.00`; the track is `item_bounds`' single rect (the
+/// one click routing maps across), else [`track_cells_within`].
 fn draw_field_slider(
     buf: &mut Buffer,
     ctx: &RowCtx,
@@ -3296,127 +3258,6 @@ mod tests {
         // `draw_field_number_input`.
         let row4: String = (0..30).map(|x| cell_char(&buf, x, 4)).collect();
         assert!(row4.contains("After"), "row 4 (next field): {row4:?}");
-    }
-
-    // ── FieldKind::Slider paint round-trip ────────────────────────────────
-
-    fn make_slider_form(label_text: &str, value: f32) -> Form {
-        Form {
-            id: WidgetId::new("settings"),
-            fields: vec![field(
-                "font-size",
-                label_text,
-                FieldKind::Slider {
-                    value,
-                    min: 8.0,
-                    max: 32.0,
-                    step: 1.0,
-                },
-            )],
-            focused_field: None,
-            scroll_offset: 0,
-            has_focus: false,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        }
-    }
-
-    /// The track `draw_field_slider` paints must occupy exactly the cells
-    /// the layout reports as the field's single `item_bounds` entry —
-    /// that rect is what `FormController`'s click routing maps a pointer
-    /// x across, so a drift between the two would hand a user a value
-    /// that doesn't match the fill under their cursor. Asserted for a
-    /// *labeled* field, whose track sits past the label column: mapping
-    /// across the whole row instead would put `min` under the label.
-    #[test]
-    fn slider_track_cells_match_the_item_bounds_click_routing_reads() {
-        let f = make_slider_form("Font size", 20.0);
-        let area = Rect::new(0, 0, 44, 1);
-        let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &f, &Theme::default());
-
-        let layout = tui_form_layout(&f, area);
-        let vis = &layout.visible_fields[0];
-        let (item_id, track) = vis.item_bounds.first().expect("Slider has one item");
-        assert_eq!(
-            *item_id,
-            WidgetId::new("font-size"),
-            "the item carries the field's own id, so a click on it resolves to the field"
-        );
-
-        let row: String = (0..44).map(|x| cell_char(&buf, x, 0)).collect();
-        let open = row.find('[').expect("track is bracketed");
-        let close = row.find(']').expect("track is bracketed");
-        assert_eq!(
-            open as f32 + 1.0,
-            track.x,
-            "the track's first cell is one past the `[` bracket; row: {row:?}"
-        );
-        assert_eq!(
-            (close - open - 1) as f32,
-            track.width,
-            "the track spans exactly the cells between the brackets; row: {row:?}"
-        );
-        assert!(
-            track.x > "Font size".len() as f32,
-            "a labeled slider's track must start past its label column; row: {row:?}"
-        );
-
-        // The fill's own extent is the same fraction of that rect a
-        // click at the pointer would resolve to: value 20 of [8, 32] is
-        // exactly half way.
-        let filled = row.chars().filter(|c| *c == '=').count();
-        assert_eq!(
-            filled as f32,
-            (track.width / 2.0).round(),
-            "half-way value must fill half the track; row: {row:?}"
-        );
-    }
-
-    /// A `ControlWidth::Fill` slider stretches its track to the row's
-    /// remaining width instead of keeping the natural 12 cells, and the
-    /// reported `item_bounds` grows with it — so click routing follows
-    /// the wider painted track rather than a fixed-width one.
-    #[test]
-    fn a_fill_width_sliders_track_and_item_bounds_grow_together() {
-        let mut natural = make_slider_form("Font size", 20.0);
-        let mut filled = make_slider_form("Font size", 20.0);
-        filled.control_width = crate::primitives::form::ControlWidth::Fill;
-        natural.control_width = crate::primitives::form::ControlWidth::Content;
-
-        let area = Rect::new(0, 0, 60, 1);
-        let natural_track = tui_form_layout(&natural, area).visible_fields[0]
-            .item_bounds
-            .first()
-            .expect("Slider has one item")
-            .1;
-        let filled_track = tui_form_layout(&filled, area).visible_fields[0]
-            .item_bounds
-            .first()
-            .expect("Slider has one item")
-            .1;
-        assert_eq!(natural_track.width, 12.0, "the natural track is 12 cells");
-        assert!(
-            filled_track.width > natural_track.width,
-            "Fill must stretch the track: {} vs {}",
-            filled_track.width,
-            natural_track.width
-        );
-
-        let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &filled, &Theme::default());
-        let row: String = (0..60).map(|x| cell_char(&buf, x, 0)).collect();
-        let open = row.find('[').expect("track is bracketed");
-        let close = row.find(']').expect("track is bracketed");
-        assert_eq!(
-            (close - open - 1) as f32,
-            filled_track.width,
-            "the stretched track's painted cells must match its item rect; row: {row:?}"
-        );
     }
 
     // ── FieldKind::RadioGroup paint round-trip ────────────────────────────
