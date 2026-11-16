@@ -267,6 +267,39 @@ pub fn is_wide_char(c: char) -> bool {
     char_cell_width(c) == 2
 }
 
+/// How much of `text` fits a `budget` of terminal cells, for a cell-grid
+/// painter that walks `text` one `char` at a time: the number of leading
+/// **characters** to paint, whether an ellipsis must follow them, and the
+/// total cell width those characters (plus that ellipsis) occupy.
+///
+/// Measured by [`display_width`], not `char` count: a char-count budget
+/// lets a CJK/emoji run overflow its column — each wide glyph claims two
+/// cells, not one — and never adds an ellipsis within budget. The
+/// returned char count and the returned width diverge whenever a wide
+/// glyph is in play, so a caller aligning the run within its column must
+/// align by the width.
+///
+/// A `budget` of `0`, or a `text` too wide for even a bare `…`, yields
+/// `(0, false, 0)` — paint nothing rather than a lone ellipsis.
+pub fn fit_chars_to_cells(text: &str, budget: u16) -> (u16, bool, u16) {
+    let text_width = display_width(text) as u16;
+    if text_width <= budget {
+        return (text.chars().count() as u16, false, text_width);
+    }
+    let (fitted, fitted_w) =
+        truncate_with_ellipsis(text, budget as f32, |s| display_width(s) as f32);
+    if fitted.is_empty() {
+        return (0, false, 0);
+    }
+    // `fitted` is always `<content>…` here — drop the trailing ellipsis
+    // char to get the content count.
+    (
+        fitted.chars().count() as u16 - 1,
+        true,
+        fitted_w.round() as u16,
+    )
+}
+
 /// Find the longest prefix of `text` (snapped to a `char` boundary) that,
 /// with a trailing `…` appended, measures at or under `max_width` via
 /// `measure`. The one shared ellipsis-truncation algorithm behind every
@@ -976,6 +1009,29 @@ mod tests {
     /// trivial to compute by hand in these tests.
     fn chars_measure(s: &str) -> f32 {
         s.chars().count() as f32
+    }
+
+    #[test]
+    fn fit_chars_to_cells_within_budget_paints_every_char_with_no_ellipsis() {
+        assert_eq!(fit_chars_to_cells("abc", 10), (3, false, 3));
+    }
+
+    #[test]
+    fn fit_chars_to_cells_over_budget_reserves_a_cell_for_the_ellipsis() {
+        // "hello world" is 11 cells; budget 5 fits "hell" + "…".
+        assert_eq!(fit_chars_to_cells("hello world", 5), (4, true, 5));
+    }
+
+    #[test]
+    fn fit_chars_to_cells_counts_wide_glyphs_as_two_cells() {
+        // Three double-width glyphs measure 6 cells, not 3, so a 4-cell
+        // budget fits one of them plus the ellipsis.
+        assert_eq!(fit_chars_to_cells("日本語", 4), (1, true, 3));
+    }
+
+    #[test]
+    fn fit_chars_to_cells_zero_budget_paints_nothing() {
+        assert_eq!(fit_chars_to_cells("abc", 0), (0, false, 0));
     }
 
     #[test]

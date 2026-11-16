@@ -1,7 +1,7 @@
 //! macOS rasteriser for [`crate::DataTable`].
 //!
 //! Painting uses the shared
-//! [`crate::primitives::data_table::native_surface_paint::paint`] —
+//! [`crate::primitives::data_table::native_surface_paint::paint_with_state`] —
 //! see that function's documentation for the full per-backend
 //! divergence survey. [`draw_data_table`] is a thin wrapper over the
 //! shared paint, using [`crate::macos::surface::CgSurface`] as the
@@ -101,13 +101,14 @@ pub unsafe fn draw_data_table_with_glyphs(
         font: Some(font),
     };
     let rect = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
-    crate::primitives::data_table::native_surface_paint::paint_with_glyphs(
+    let state = DataTablePaintState::default().with_hovered_idx(hovered_idx);
+    crate::primitives::data_table::native_surface_paint::paint_with_state(
         table,
         &mut surface,
         theme,
         rect,
         line_height as f32,
-        hovered_idx,
+        &state,
         glyphs,
         nerd_fonts_enabled,
     )

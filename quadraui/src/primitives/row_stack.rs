@@ -116,6 +116,48 @@ where
     }
 }
 
+/// [`layout_row_stack`]'s stacking walk, driven by a row *count* from an
+/// already-resolved scroll position instead of by a `y_end` bound:
+/// `count` rows starting at `scroll_offset`, stacked from `y_start` with
+/// the first shifted up by `scroll_sub_px`, each keeping its full
+/// measured height.
+///
+/// `DataTable`'s rasterisers stack their body rows through this rather
+/// than through [`layout_row_stack`], because they differ from the
+/// `y_end`-bounded primitives on both of that function's remaining
+/// behaviours:
+///
+/// * **Scroll resolution.** `DataTable` resolves its own offset via
+///   [`DataTable::effective_scroll_offset`](crate::primitives::data_table::DataTable::effective_scroll_offset),
+///   which reads a stale `scroll_offset` raw on the `scroll_px: None`
+///   path where [`resolve_scroll_px`] would clamp it into
+///   `[0, total_rows)` — a stale offset must leave an empty visible
+///   window, not snap to the last row.
+/// * **Row count.** `DataTable::layout` derives `visible_rows` from the
+///   *inset-reduced* body height, which a `y_end` walk over the painted
+///   `rect` does not reproduce; and its rows paint at full height under
+///   the painter's own body-band clip, never height-clipped individually.
+pub fn stack_rows_from<F, E>(
+    scroll_offset: usize,
+    scroll_sub_px: f32,
+    count: usize,
+    x: f32,
+    y_start: f32,
+    width: f32,
+    mut measure: F,
+) -> impl Iterator<Item = VisibleRow<E>>
+where
+    F: FnMut(usize) -> (f32, E),
+{
+    let mut y = y_start - scroll_sub_px;
+    (scroll_offset..scroll_offset + count).map(move |idx| {
+        let (height, extra) = measure(idx);
+        let bounds = Rect::new(x, y, width, height);
+        y += height;
+        VisibleRow { idx, bounds, extra }
+    })
+}
+
 /// Shared vertical-scrollbar thumb geometry: resolve `scroll_offset` /
 /// `scroll_px` against `total_rows`, convert to a continuous row
 /// position, and build the [`Scrollbar::vertical`] thumb — the tail end
@@ -565,6 +607,41 @@ mod tests {
         let layout = layout_row_stack(0, None, 0, 0.0, 0.0, 10.0, 20.0, |_| (1.0, ()));
         assert!(layout.visible.is_empty());
         assert_eq!(layout.resolved_scroll_offset, 0);
+    }
+
+    #[test]
+    fn stack_rows_from_emits_exactly_count_rows_at_full_height() {
+        let rows: Vec<VisibleRow<()>> =
+            stack_rows_from(2, 0.0, 3, 1.0, 10.0, 20.0, |_| (4.0, ())).collect();
+        let idxs: Vec<usize> = rows.iter().map(|r| r.idx).collect();
+        assert_eq!(idxs, vec![2, 3, 4]);
+        assert_eq!(rows[0].bounds, Rect::new(1.0, 10.0, 20.0, 4.0));
+        assert_eq!(rows[2].bounds, Rect::new(1.0, 18.0, 20.0, 4.0));
+    }
+
+    #[test]
+    fn stack_rows_from_shifts_the_whole_stack_up_by_the_sub_row_remainder() {
+        let rows: Vec<VisibleRow<()>> =
+            stack_rows_from(0, 1.5, 2, 0.0, 10.0, 5.0, |_| (4.0, ())).collect();
+        assert_eq!(rows[0].bounds.y, 8.5);
+        assert_eq!(rows[1].bounds.y, 12.5);
+    }
+
+    #[test]
+    fn stack_rows_from_does_not_clamp_a_stale_scroll_offset() {
+        // `layout_row_stack` would clamp 99 into `[0, 4)`; this walk
+        // leaves it where the caller put it, which is what `DataTable`
+        // needs on its `scroll_px: None` path.
+        let rows: Vec<VisibleRow<()>> =
+            stack_rows_from(99, 0.0, 1, 0.0, 0.0, 1.0, |_| (1.0, ())).collect();
+        assert_eq!(rows[0].idx, 99);
+    }
+
+    #[test]
+    fn stack_rows_from_zero_count_is_empty() {
+        let rows: Vec<VisibleRow<()>> =
+            stack_rows_from(0, 0.0, 0, 0.0, 0.0, 1.0, |_| (1.0, ())).collect();
+        assert!(rows.is_empty());
     }
 
     #[test]

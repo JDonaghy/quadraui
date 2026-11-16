@@ -1,6 +1,6 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::DataTable`].
 //!
-//! Painting uses the shared [`crate::primitives::data_table::native_surface_paint::paint`].
+//! Painting uses the shared [`crate::primitives::data_table::native_surface_paint::paint_with_state`].
 //! See that function's documentation for the full per-backend divergence survey.
 //! This module now uses the shared, translucent
 //! [`crate::primitives::scrollbar::native_surface_paint::paint`] for scrollbars
@@ -47,7 +47,7 @@ pub fn win_data_table_layout(
 ///
 /// `hovered_idx` tints the hovered body row (skipped when it's also
 /// the selected row). See
-/// [`crate::primitives::data_table::native_surface_paint::paint`]'s doc
+/// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]'s doc
 /// for the full visual contract this now shares with
 /// `macos::data_table::draw_data_table`.
 #[cfg(target_os = "windows")]
@@ -93,13 +93,14 @@ pub fn draw_data_table_with_glyphs(
         target,
         dwrite: Some(dwrite),
     };
-    crate::primitives::data_table::native_surface_paint::paint_with_glyphs(
+    let state = DataTablePaintState::default().with_hovered_idx(hovered_idx);
+    crate::primitives::data_table::native_surface_paint::paint_with_state(
         table,
         &mut surface,
         &theme,
         rect,
         line_height,
-        hovered_idx,
+        &state,
         glyphs,
         nerd_fonts_enabled,
     )
