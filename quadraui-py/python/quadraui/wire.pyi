@@ -602,6 +602,16 @@ class TextInputDescriptor(TypedDict):
     scroll_col: NotRequired[int]
     has_focus: NotRequired[bool]
 
+class TextFieldDescriptor(TypedDict):
+    id: WidgetId
+    value: NotRequired[str]
+    placeholder: NotRequired[str]
+    cursor: NotRequired[Optional[int]]
+    selection_anchor: NotRequired[Optional[int]]
+    has_focus: NotRequired[bool]
+    leading_icon: NotRequired[Optional[Icon]]
+    clearable: NotRequired[bool]
+
 class NumberInputDescriptor(TypedDict):
     id: WidgetId
     value: NotRequired[float]
@@ -1482,6 +1492,7 @@ LayoutLeafNode = TypedDict(
         "image": NotRequired[ImageDescriptor],
         "form": NotRequired[FormDescriptor],
         "text_input": NotRequired[TextInputDescriptor],
+        "text_field": NotRequired[TextFieldDescriptor],
         "number_input": NotRequired[NumberInputDescriptor],
         "combo_box": NotRequired[ComboBoxDescriptor],
         "date_picker": NotRequired[DatePickerDescriptor],
@@ -1539,6 +1550,7 @@ class RenderFrameDict(TypedDict):
     image: NotRequired[Optional[ImageDescriptor]]
     form: NotRequired[Optional[FormDescriptor]]
     text_input: NotRequired[Optional[TextInputDescriptor]]
+    text_field: NotRequired[Optional[TextFieldDescriptor]]
     number_input: NotRequired[Optional[NumberInputDescriptor]]
     combo_box: NotRequired[Optional[ComboBoxDescriptor]]
     date_picker: NotRequired[Optional[DatePickerDescriptor]]

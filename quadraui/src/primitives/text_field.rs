@@ -46,6 +46,26 @@ use crate::types::{Icon, WidgetId};
 /// same convention as [`crate::TextInput`] — see that type's doc for why
 /// this shape never grows a `pub` field a consumer's exhaustive literal
 /// could break on.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Rect, TextField, TextFieldHit, TextFieldMeasure, WidgetId};
+///
+/// let field = TextField::new(WidgetId::new("search"))
+///     .with_value("query")
+///     .with_placeholder("Search")
+///     .with_cursor(Some(5))
+///     .with_has_focus(true)
+///     .with_clearable(true);
+///
+/// let rect = Rect::new(0.0, 0.0, 20.0, 1.0);
+/// let layout = field.layout(rect, TextFieldMeasure::new(1.0, 1.0));
+///
+/// assert!(layout.cursor_bounds.is_some());
+/// let clear = layout.clear_rect.expect("non-empty clearable value shows ×");
+/// assert_eq!(layout.hit_test(clear.x, clear.y), TextFieldHit::Clear);
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextField {
