@@ -96,6 +96,30 @@ impl MenuBarItemMeasure {
     }
 }
 
+/// Fixed height (px) of the in-canvas menu-bar strip on a pixel backend
+/// (GTK/macOS/Win) — a VS-Code-style custom title bar row, not a multiple
+/// of the backend's own chrome line height. [`resolve_bar_height`] is the
+/// single place that turns a candidate line height into this metric.
+pub const BAR_HEIGHT: f32 = 30.0;
+
+/// Resolve the menu-bar strip height a caller should use for
+/// [`MenuBar::layout`]'s (or [`MenuBar::layout_with_leading`]'s)
+/// `bounds.height`, given a candidate line height.
+///
+/// On a pixel backend (`candidate_line_height > 1.0`) this returns
+/// [`BAR_HEIGHT`] unconditionally — the in-canvas bar is sized from the
+/// fixed metric, independent of the chrome font's measured line height.
+/// On TUI (`candidate_line_height <= 1.0`, the cell-grid convention where
+/// one row is `1.0` "unit" tall) the candidate passes through unchanged:
+/// a terminal cell has no sub-cell height to refine.
+pub fn resolve_bar_height(candidate_line_height: f32) -> f32 {
+    if candidate_line_height > 1.0 {
+        BAR_HEIGHT
+    } else {
+        candidate_line_height
+    }
+}
+
 /// Resolved position of one visible menu-bar item.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisibleMenuBarItem {
@@ -1035,5 +1059,33 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 200.0, 20.0);
         let layout = bar.layout(bounds, |_| MenuBarItemMeasure::new(50.0));
         assert_eq!(layout.hit_test(100.0, 50.0), MenuBarHit::Outside);
+    }
+
+    // ── resolve_bar_height ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_bar_height_pins_pixel_backends_at_30px() {
+        // GTK/macOS/Win chrome line heights vary (16-22px typical); every
+        // one of them resolves to the same fixed 30px row.
+        assert_eq!(resolve_bar_height(16.0), BAR_HEIGHT);
+        assert_eq!(resolve_bar_height(18.0), BAR_HEIGHT);
+        assert_eq!(resolve_bar_height(22.0), BAR_HEIGHT);
+        assert_eq!(BAR_HEIGHT, 30.0);
+    }
+
+    #[test]
+    fn resolve_bar_height_leaves_tui_cell_grid_unchanged() {
+        // TUI's cell-grid convention: one row is `1.0` "unit" tall, with
+        // no sub-cell height to refine.
+        assert_eq!(resolve_bar_height(1.0), 1.0);
+        assert_eq!(resolve_bar_height(0.0), 0.0);
+    }
+
+    #[test]
+    fn resolved_bar_height_feeds_layout_straight_through() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, resolve_bar_height(18.0));
+        let layout = bar(2).layout(bounds, |_| MenuBarItemMeasure::new(50.0));
+        assert_eq!(layout.bounds.height, BAR_HEIGHT);
+        assert_eq!(layout.visible_items[0].bounds.height, BAR_HEIGHT);
     }
 }
