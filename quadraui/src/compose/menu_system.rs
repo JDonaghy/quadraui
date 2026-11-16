@@ -1238,6 +1238,9 @@ mod tests {
         fn text_input_layout(&self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
             unimplemented!()
         }
+        fn draw_text_field(&mut self, _r: Rect, _t: &crate::TextField) -> crate::TextFieldLayout {
+            unimplemented!()
+        }
         fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {}
         fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
         fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}

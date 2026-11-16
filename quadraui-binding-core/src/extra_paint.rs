@@ -16,7 +16,7 @@ use quadraui::{
     MessageList, Minimap, MultiSectionView, NumberInput, NumberInputHit, Palette, PipelineView,
     Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar,
     Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit, Terminal, TextDisplay,
-    TextDisplayLine, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, WidgetId,
+    TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -198,6 +198,30 @@ impl ExtraPaint for TextInput {
     /// click site and threads it through `text_input_click_event` for the
     /// metrics-aware part (resolving which character column, and placing
     /// the caret there).
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+impl ExtraPaint for TextField {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_text_field(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// Whole-area bounds check, same limitation [`TextInput::hit_test`]'s
+    /// doc documents: resolving a click to the text column vs. the clear
+    /// button needs the backend metrics [`quadraui::TextField::layout`]
+    /// takes, which this trait's `hit_test` has no parameter for — not
+    /// wired to a precise [`quadraui::TextFieldHit`] yet, same as
+    /// `TextInput`.
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -1566,6 +1590,7 @@ extra_primitives! {
     "image" => Image,
     "form" => Form,
     "text_input" => TextInput,
+    "text_field" => TextField,
     "number_input" => NumberInput,
     "combo_box" => ComboBox,
     "date_picker" => DatePicker,

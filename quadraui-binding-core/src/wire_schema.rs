@@ -1238,6 +1238,19 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("has_focus", bool_()),
         ],
     ));
+    let text_field_descriptor = b.define(obj(
+        "TextFieldDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("value", str_()),
+            field_opt("placeholder", str_()),
+            field_opt("cursor", nullable(int_())),
+            field_opt("selection_anchor", nullable(int_())),
+            field_opt("has_focus", bool_()),
+            field_opt("leading_icon", nullable(icon.clone())),
+            field_opt("clearable", bool_()),
+        ],
+    ));
     let number_input_descriptor = b.define(obj(
         "NumberInputDescriptor",
         vec![
@@ -2506,6 +2519,7 @@ pub fn schema() -> Vec<DefJson> {
             "image" => image_descriptor.clone(),
             "form" => form_descriptor.clone(),
             "text_input" => text_input_descriptor.clone(),
+            "text_field" => text_field_descriptor.clone(),
             "number_input" => number_input_descriptor.clone(),
             "combo_box" => combo_box_descriptor.clone(),
             "date_picker" => date_picker_descriptor.clone(),

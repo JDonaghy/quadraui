@@ -4327,6 +4327,32 @@ impl Backend for GtkBackend {
         )
     }
 
+    /// Stroked-box framed field, same shared painter as `MacBackend`/
+    /// `WinBackend` — see
+    /// [`crate::primitives::text_field::paint_text_field_gui`]'s doc.
+    fn draw_text_field(
+        &mut self,
+        rect: QRect,
+        tf: &crate::primitives::text_field::TextField,
+    ) -> crate::primitives::text_field::TextFieldLayout {
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled();
+        let measure = crate::primitives::text_field::TextFieldMeasure::new(
+            self.current_char_width as f32,
+            self.current_line_height as f32,
+        );
+        let layout = tf.layout(rect, measure);
+        crate::primitives::text_field::paint_text_field_gui(
+            self,
+            rect,
+            &layout,
+            tf,
+            &theme,
+            nerd_fonts_enabled,
+        );
+        layout
+    }
+
     fn draw_number_input(
         &mut self,
         number_input: &crate::primitives::number_input::NumberInput,

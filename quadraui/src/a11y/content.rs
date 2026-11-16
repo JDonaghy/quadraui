@@ -123,6 +123,7 @@ use crate::primitives::image::Image;
 use crate::primitives::minimap::Minimap;
 use crate::primitives::terminal::{Terminal, TerminalCell};
 use crate::primitives::text_display::TextDisplay;
+use crate::primitives::text_field::TextField;
 use crate::primitives::text_input::TextInput;
 
 impl A11yPrimitive for Editor {
@@ -177,6 +178,19 @@ impl A11yPrimitive for TextInput {
                 .as_ref()
                 .and_then(|placeholder| non_empty(placeholder.clone()))
         });
+        match value {
+            Some(value) => info.with_value(value),
+            None => info,
+        }
+    }
+}
+
+impl A11yPrimitive for TextField {
+    fn a11y_info(&self) -> A11yInfo {
+        let info = A11yInfo::new().with_role(A11yRole::TextInput);
+        // Same placeholder-as-value-fallback convention as `TextInput`'s
+        // own impl above — see this module's doc.
+        let value = non_empty(self.value.clone()).or_else(|| non_empty(self.placeholder.clone()));
         match value {
             Some(value) => info.with_value(value),
             None => info,

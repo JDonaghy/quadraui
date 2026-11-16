@@ -3345,35 +3345,16 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE**, matching [`Self::draw_text_input`].
     ///
-    /// Default body: builds a scratch single-line [`TextInput`] from
-    /// `tf`'s `value`/`placeholder`/`cursor`/`has_focus` and paints it
-    /// via [`Self::draw_text_input`] — a faithful, observable fallback
-    /// (no leading icon, no clear button) used by every backend except
-    /// `TuiBackend` until a tracked follow-up (quadraui#2609) gives
-    /// each GUI backend its own dedicated single-row painter — the
-    /// same executor split `tui::text_field` takes from `tui::form`.
-    /// `TuiBackend` overrides this with the real one-row
-    /// `[ icon value × ]` painter. quadraui#2611's `Primitive` trait
-    /// will let every backend share one generic default instead of
-    /// this one-sided fallback; until then, this default is this
-    /// primitive's deliberate, documented exception to this file's
-    /// "no default — every backend implements it explicitly"
-    /// convention.
-    fn draw_text_field(&mut self, rect: Rect, tf: &TextField) -> TextFieldLayout {
-        let char_idx = tf.cursor.map(|c| {
-            let byte = crate::text_util::snap_to_char_boundary(&tf.value, c.min(tf.value.len()));
-            tf.value[..byte].chars().count()
-        });
-        let mut scratch = TextInput::new(tf.id)
-            .with_lines(vec![tf.value.clone()])
-            .with_cursor_col(char_idx.unwrap_or(0))
-            .with_has_focus(tf.has_focus);
-        if !tf.placeholder.is_empty() {
-            scratch = scratch.with_placeholder(tf.placeholder.clone());
-        }
-        self.draw_text_input(rect, &scratch);
-        self.text_field_layout(rect, tf)
-    }
+    /// Required, no default (`PRIMITIVE_RULES.md` rule 7): `TuiBackend`
+    /// paints the one-row `[ icon value × ]` bracket form
+    /// (`tui::text_field::draw_text_field`); `GtkBackend`/`MacBackend`/
+    /// `WinBackend` paint the stroked-box form
+    /// (`primitives::text_field::paint_text_field_gui`), built from the
+    /// same `primitives::form::paint_text_run_with_caret` routine
+    /// `Form`'s own `TextInput` row paints with. A tracked follow-up
+    /// introducing a generic `Primitive` trait would let every backend
+    /// share one dispatch instead of each calling its own painter here.
+    fn draw_text_field(&mut self, rect: Rect, tf: &TextField) -> TextFieldLayout;
 
     /// Compute the layout [`Self::draw_text_field`] would produce.
     ///

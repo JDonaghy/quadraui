@@ -2549,16 +2549,6 @@ mod native_surface_paint {
         masked: bool,
         mask_char: char,
     ) {
-        let masked_value: String;
-        let shown: &str = if value.is_empty() {
-            placeholder
-        } else if masked {
-            masked_value = value.chars().map(|_| mask_char).collect();
-            &masked_value
-        } else {
-            value
-        };
-        let input_fg = if value.is_empty() { dim_fg } else { field_fg };
         let row_h = row_rect.height;
 
         // The box spans exactly `[control_start, control_start +
@@ -2587,7 +2577,63 @@ mod native_surface_paint {
         // comes from `box_w` rather than `box_right - ix` so it stays
         // independent of how far right the control column sits.
         let text_budget = (box_w - TEXT_BOX_PADDING * 2.0).max(0.0);
-        let (drawn_len, shown_w, shown_h) = clip_run_to_width(surface, shown, text_budget);
+        paint_text_run_with_caret(
+            surface,
+            row_rect,
+            ix + TEXT_BOX_PADDING,
+            text_budget,
+            value,
+            placeholder,
+            cursor,
+            selection_anchor,
+            field_fg,
+            dim_fg,
+            sel_bg,
+            accent_fg,
+            masked,
+            mask_char,
+        );
+    }
+
+    /// The inside-the-box half of [`paint_text_input_box`]: `value` (or
+    /// dimmed `placeholder` when empty) clipped to `budget`, a selection
+    /// highlight, and a block caret, all starting at the pre-resolved
+    /// column `ix` — no stroke, no padding math. [`paint_text_input_box`]
+    /// derives `ix`/`budget` from a field's `control_start`/
+    /// `control_width` and calls this directly afterward;
+    /// [`crate::primitives::text_field::TextField`]'s own GUI painter
+    /// calls it with its `text_rect`'s own origin/width instead, so the
+    /// two never carry separate copies of the selection/caret math.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_text_run_with_caret(
+        surface: &mut dyn PaintSurface,
+        row_rect: Rect,
+        ix: f32,
+        budget: f32,
+        value: &str,
+        placeholder: &str,
+        cursor: Option<usize>,
+        selection_anchor: Option<usize>,
+        field_fg: Color,
+        dim_fg: Color,
+        sel_bg: Color,
+        accent_fg: Color,
+        masked: bool,
+        mask_char: char,
+    ) {
+        let masked_value: String;
+        let shown: &str = if value.is_empty() {
+            placeholder
+        } else if masked {
+            masked_value = value.chars().map(|_| mask_char).collect();
+            &masked_value
+        } else {
+            value
+        };
+        let input_fg = if value.is_empty() { dim_fg } else { field_fg };
+        let row_h = row_rect.height;
+
+        let (drawn_len, shown_w, shown_h) = clip_run_to_width(surface, shown, budget);
         let shown = &shown[..drawn_len];
 
         let y = row_rect.y + (row_h - shown_h) / 2.0;
@@ -2605,40 +2651,18 @@ mod native_surface_paint {
             let (pw, _) = surface.surface_measure_text(prefix);
             let (sw, _) = surface.surface_measure_text(sel_text);
             surface.surface_fill_rect(
-                Rect::new(
-                    ix + TEXT_BOX_PADDING + pw,
-                    row_rect.y + 2.0,
-                    sw,
-                    row_h - 4.0,
-                ),
+                Rect::new(ix + pw, row_rect.y + 2.0, sw, row_h - 4.0),
                 sel_bg,
             );
+            surface.surface_draw_text_run(Rect::new(ix, y, pw, shown_h), prefix, input_fg);
+            surface.surface_draw_text_run(Rect::new(ix + pw, y, sw, shown_h), sel_text, field_fg);
             surface.surface_draw_text_run(
-                Rect::new(ix + TEXT_BOX_PADDING, y, pw, shown_h),
-                prefix,
-                input_fg,
-            );
-            surface.surface_draw_text_run(
-                Rect::new(ix + TEXT_BOX_PADDING + pw, y, sw, shown_h),
-                sel_text,
-                field_fg,
-            );
-            surface.surface_draw_text_run(
-                Rect::new(
-                    ix + TEXT_BOX_PADDING + pw + sw,
-                    y,
-                    shown_w - pw - sw,
-                    shown_h,
-                ),
+                Rect::new(ix + pw + sw, y, shown_w - pw - sw, shown_h),
                 suffix,
                 input_fg,
             );
         } else {
-            surface.surface_draw_text_run(
-                Rect::new(ix + TEXT_BOX_PADDING, y, shown_w, shown_h),
-                shown,
-                input_fg,
-            );
+            surface.surface_draw_text_run(Rect::new(ix, y, shown_w, shown_h), shown, input_fg);
         }
 
         if !masked {
@@ -2646,7 +2670,7 @@ mod native_surface_paint {
                 if !value.is_empty() {
                     let prefix = &shown[..snap_to_char_boundary(shown, cur)];
                     let (pw, _) = surface.surface_measure_text(prefix);
-                    let cx = ix + TEXT_BOX_PADDING + pw;
+                    let cx = ix + pw;
                     surface.surface_fill_rect(
                         Rect::new(cx, row_rect.y + 3.0, 1.5, row_h - 6.0),
                         accent_fg,
@@ -2658,7 +2682,7 @@ mod native_surface_paint {
                 let char_pos = value[..snap_to_char_boundary(value, cur)].chars().count();
                 let prefix: String = shown.chars().take(char_pos).collect();
                 let (pw, _) = surface.surface_measure_text(&prefix);
-                let cx = ix + TEXT_BOX_PADDING + pw;
+                let cx = ix + pw;
                 surface.surface_fill_rect(
                     Rect::new(cx, row_rect.y + 3.0, 1.5, row_h - 6.0),
                     accent_fg,
@@ -4900,7 +4924,9 @@ mod native_surface_paint {
     all(feature = "macos", target_os = "macos")
 ))]
 #[allow(unused_imports)]
-pub(crate) use native_surface_paint::{left_control_column_start, paint, paint_settings_chrome};
+pub(crate) use native_surface_paint::{
+    left_control_column_start, paint, paint_settings_chrome, paint_text_run_with_caret,
+};
 
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

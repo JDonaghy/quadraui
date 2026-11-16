@@ -505,6 +505,12 @@ def test_insert_extra_text_input_renders_value():
     assert app.screen_contains("hello")
 
 
+def test_insert_extra_text_field_renders_value_in_brackets():
+    app = QuiApp(40, 20)
+    app.insert_extra("text_field", {"id": "tf:1", "value": "hello"})
+    assert app.screen_contains("[hello")
+
+
 def test_insert_extra_number_input_renders_value():
     app = QuiApp(40, 20)
     app.insert_extra(

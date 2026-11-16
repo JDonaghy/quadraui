@@ -156,7 +156,9 @@ impl TextField {
             .min(self.value.len());
         let (new_value, new_cursor, new_anchor) =
             apply_flat_edit_op(&self.value, cursor, self.selection_anchor, op);
-        let changed = new_value != self.value || Some(new_cursor) != self.cursor;
+        let changed = new_value != self.value
+            || Some(new_cursor) != self.cursor
+            || new_anchor != self.selection_anchor;
         self.value = new_value;
         self.cursor = Some(new_cursor);
         self.selection_anchor = new_anchor;
@@ -235,14 +237,14 @@ impl TextField {
             row_h,
         );
         col += text_cols as f32;
+        // The column after the clear button (if any) is the closing
+        // bracket's own, not its own hit region, so `col` is never read
+        // again past this point.
         let clear_rect = if show_clear {
-            let r = Rect::new(rect.x + col * char_w, rect.y, char_w, row_h);
-            col += 1.0;
-            Some(r)
+            Some(Rect::new(rect.x + col * char_w, rect.y, char_w, row_h))
         } else {
             None
         };
-        let _ = col; // last column is the closing bracket, not its own hit region.
 
         let cursor_bounds = self.cursor.and_then(|_| {
             if text_cols == 0 {
@@ -373,6 +375,93 @@ impl TextFieldMeasure {
     /// [`crate::TextInputMeasure::from_metrics`].
     pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
         Self::new(m.char_width, m.line_height)
+    }
+}
+
+/// Paint a [`TextField`] onto a pixel [`crate::paint_surface::PaintSurface`]
+/// at its already-resolved `layout` — the GTK/macOS/Win sibling of
+/// [`crate::tui::text_field::draw_text_field`]'s one-row
+/// `[ icon value × ]` painter. A stroked box around the whole `rect`
+/// stands in for the TUI brackets; inside it, an optional leading-icon
+/// glyph, the value/placeholder/selection/caret run (through
+/// [`crate::primitives::form::paint_text_run_with_caret`] — the same
+/// routine `Form`'s own `TextInput` row paints with, so the two can
+/// never carry separate copies of that math), and an optional clear
+/// (×) button glyph.
+///
+/// [`TextFieldLayout::resolved_scroll_chars`] characters are scrolled
+/// off `tf.value`'s left edge before painting, same as the TUI painter;
+/// `tf.cursor`/`tf.selection_anchor` are re-based onto that scrolled
+/// slice's own byte offsets since `paint_text_run_with_caret` has no
+/// scroll concept of its own (`Form`'s row never scrolls, so it always
+/// passes the unscrolled value).
+// `#[allow(dead_code)]`: same reasoning as `primitives::text_input`'s own
+// `native_surface_paint` module doc — a `--features win` build on a
+// non-Windows host gates `WinBackend::draw_text_field`'s only call site
+// behind `target_os = "windows"`, leaving no reachable caller here.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) fn paint_text_field_gui(
+    surface: &mut dyn crate::paint_surface::PaintSurface,
+    rect: Rect,
+    layout: &TextFieldLayout,
+    tf: &TextField,
+    theme: &crate::theme::Theme,
+    nerd_fonts_enabled: bool,
+) {
+    use crate::primitives::form::paint_text_run_with_caret;
+
+    surface.surface_fill_rect(rect, theme.input_bg);
+
+    let field_fg = theme.foreground;
+    let dim_fg = theme.muted_fg;
+    let border_fg = if tf.has_focus {
+        theme.accent_fg
+    } else {
+        dim_fg
+    };
+    surface.surface_stroke_rect(rect, border_fg, 1.0);
+
+    if let Some(icon_rect) = layout.icon_rect {
+        if let Some(icon) = &tf.leading_icon {
+            let glyph = icon.resolve(nerd_fonts_enabled);
+            surface.surface_draw_text_run(icon_rect, glyph, dim_fg);
+        }
+    }
+
+    let scroll_byte = tf
+        .value
+        .char_indices()
+        .nth(layout.resolved_scroll_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(tf.value.len());
+    let scrolled_value = &tf.value[scroll_byte..];
+    let cursor = tf.cursor.map(|c| c.saturating_sub(scroll_byte));
+    let selection_anchor = tf.selection_anchor.map(|a| a.saturating_sub(scroll_byte));
+
+    paint_text_run_with_caret(
+        surface,
+        rect,
+        layout.text_rect.x,
+        layout.text_rect.width,
+        scrolled_value,
+        &tf.placeholder,
+        cursor,
+        selection_anchor,
+        field_fg,
+        dim_fg,
+        theme.selection_bg,
+        theme.accent_fg,
+        false,
+        '\0',
+    );
+
+    if let Some(clear_rect) = layout.clear_rect {
+        surface.surface_draw_text_run(clear_rect, "\u{00D7}", dim_fg);
     }
 }
 
