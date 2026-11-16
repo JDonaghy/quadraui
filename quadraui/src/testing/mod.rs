@@ -725,6 +725,22 @@ pub struct RecordingBackend {
     ///
     /// [`notify_or_toast`]: crate::compose::notification::notify_or_toast
     pub notification_send_result: Result<(), crate::backend::BackendError>,
+    /// Font family names [`Backend::has_font_family`] reports as present.
+    /// Empty by default, matching the trait's `None`-for-anything default
+    /// (every real backend answers `None` for a family it hasn't checked,
+    /// not `Some(false)`). Add `"codicon"` via [`Self::with_font_family`]
+    /// to fake a GUI backend's self-registered icon font for a `compose/`
+    /// helper that probes `has_font_family("codicon")` to choose a codicon
+    /// glyph over a plain-text fallback — the pattern
+    /// `compose::menu_system`'s `dropdown_width` and
+    /// `compose::sidebar_system`'s `render` both use.
+    pub font_families: std::collections::HashSet<&'static str>,
+    /// Every [`crate::MultiSectionView`] passed to
+    /// [`Backend::draw_multi_section_view`], in call order — lets a test
+    /// inspect what got painted (e.g. a section header's title text)
+    /// without a real rasteriser, mirroring what [`Self::calls`] does for
+    /// the method name alone.
+    pub multi_section_view_calls: Vec<crate::MultiSectionView>,
 }
 
 impl Default for RecordingBackend {
@@ -745,6 +761,8 @@ impl Default for RecordingBackend {
             cursor_calls: Vec::new(),
             notifications_capable: false,
             notification_send_result: Ok(()),
+            font_families: std::collections::HashSet::new(),
+            multi_section_view_calls: Vec::new(),
         }
     }
 }
@@ -788,6 +806,14 @@ impl RecordingBackend {
             notification_send_result: result,
             ..Self::default()
         }
+    }
+
+    /// A recorder reporting `family` as a present font via
+    /// [`Backend::has_font_family`] — e.g. `"codicon"` to fake a GUI
+    /// backend's self-registered icon font.
+    pub fn with_font_family(mut self, family: &'static str) -> Self {
+        self.font_families.insert(family);
+        self
     }
 
     fn record(&mut self, name: &'static str) {
@@ -1102,6 +1128,13 @@ impl crate::Backend for RecordingBackend {
             self.line_height,
         )
     }
+    fn has_font_family(&self, family: &str) -> Option<bool> {
+        if self.font_families.contains(family) {
+            Some(true)
+        } else {
+            None
+        }
+    }
     fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
         // `RecordingBackend` only records call shape, not real font
         // metrics — same rationale as `list_char_width` above. No
@@ -1362,8 +1395,9 @@ impl crate::Backend for RecordingBackend {
     fn draw_float(&mut self, _f: &crate::Float, _l: &crate::FloatLayout) {
         self.record("draw_float");
     }
-    fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {
+    fn draw_multi_section_view(&mut self, _r: Rect, v: &crate::MultiSectionView) {
         self.record("draw_multi_section_view");
+        self.multi_section_view_calls.push(v.clone());
     }
     fn msv_layout(&self, _r: Rect, _v: &crate::MultiSectionView) -> crate::MultiSectionViewLayout {
         unimplemented!("RecordingBackend has no MultiSectionView layout algorithm")
