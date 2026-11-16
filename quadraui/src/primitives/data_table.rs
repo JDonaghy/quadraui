@@ -1556,6 +1556,13 @@ pub(crate) mod native_surface_paint {
         // revealing one more partially clipped row at the bottom —
         // `scroll_px: None` always resolves `sub_px` to `0.0`, so
         // `body_y`/`visible` collapse back to the pre-existing values.
+        // Deliberately not `row_stack::layout_row_stack`: its
+        // `scroll_px: None` branch clamps via `clamp_scroll_offset`,
+        // while `effective_scroll_offset`'s `None` branch reads
+        // `table.scroll_offset` raw so a stale out-of-range offset
+        // paints an empty window instead of snapping to the last row
+        // (see that method's doc). Routing this loop through
+        // `layout_row_stack` would silently change which rows render.
         let scroll_offset = table.effective_scroll_offset(line_height, scroll_px);
         let sub_px = table.scroll_sub_row_px(line_height, scroll_px);
         let body_y = rect.y + header_height - sub_px;

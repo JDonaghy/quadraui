@@ -488,6 +488,14 @@ fn draw_data_table_inner(
     // whole row here — TUI is cell-granular, so the sub-row remainder
     // `scroll_sub_row_px` pairs with `effective_scroll_offset` for a
     // pixel-precise painter is simply never read on this backend.
+    //
+    // Deliberately not `row_stack::layout_row_stack`: its `scroll_px:
+    // None` branch clamps via `clamp_scroll_offset`, while
+    // `effective_scroll_offset`'s `None` branch reads `table.scroll_offset`
+    // raw so a stale out-of-range offset paints an empty window instead
+    // of snapping to the last row (see that method's doc). Routing this
+    // loop through `layout_row_stack` would silently change which rows
+    // render.
     let scroll_offset = table.effective_scroll_offset(layout.row_height, scroll_px);
     let body_y = area.y + oy + 1;
     let visible = layout
