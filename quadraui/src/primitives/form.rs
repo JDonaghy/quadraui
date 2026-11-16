@@ -2189,8 +2189,12 @@ mod native_surface_paint {
                             .map(plain_text)
                             .unwrap_or_default();
                         if available > 0.0 {
-                            let chevron = "\u{25BE}";
-                            let (chev_w, _) = surface.surface_measure_text(chevron);
+                            // Codicon `chevron-down`, not the plain `▾`
+                            // TUI's own `tui::form` paints — see
+                            // `crate::codicon`'s module doc for why every
+                            // GUI backend substitutes this unconditionally.
+                            let chevron = crate::codicon::CHEVRON_DOWN.to_string();
+                            let (chev_w, _) = surface.surface_measure_text(&chevron);
                             let natural_w = surface.surface_measure_text(&chosen).0
                                 + TEXT_BOX_PADDING * 2.0
                                 + chev_w
@@ -2222,7 +2226,7 @@ mod native_surface_paint {
                             let chev_x = box_rect.x + box_rect.width - TEXT_BOX_PADDING - chev_w;
                             surface.surface_draw_text_run(
                                 Rect::new(chev_x, ty, chev_w, ch),
-                                chevron,
+                                &chevron,
                                 theme.muted_fg,
                             );
                         }
@@ -2364,7 +2368,11 @@ mod native_surface_paint {
                         // painted by the app after this fn returns, per this
                         // field's doc.
                         let (tw, th) = surface.surface_measure_text(&combo.text);
-                        let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
+                        // Codicon `chevron-down`, matching `FieldKind::Dropdown`'s
+                        // own substitution above — see this field kind's doc for
+                        // why the two share the same trailing-arrow affordance.
+                        let chevron = crate::codicon::CHEVRON_DOWN.to_string();
+                        let (chev_w, _) = surface.surface_measure_text(&chevron);
                         let ix = control_start;
                         if available > 0.0 {
                             let ty = row_rect.y + (row_h - th) / 2.0;
@@ -2375,7 +2383,7 @@ mod native_surface_paint {
                             );
                             surface.surface_draw_text_run(
                                 Rect::new(ix + tw + 4.0, ty, chev_w, th),
-                                "\u{25BE}",
+                                &chevron,
                                 theme.muted_fg,
                             );
                         }
@@ -3309,8 +3317,41 @@ mod native_surface_paint {
                 surface.text_runs,
             );
             assert!(
-                surface.text_runs.iter().any(|(_, t, _)| t == "\u{25BE}"),
-                "the chevron must still be painted; text runs were {:?}",
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t == crate::codicon::CHEVRON_DOWN.to_string().as_str()),
+                "the codicon chevron must still be painted; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// `FieldKind::ComboBox` paints the same codicon `chevron-down`
+        /// trailing glyph `FieldKind::Dropdown` does, not the plain `▾`
+        /// `tui::form`'s own cell-grid renderer keeps.
+        #[test]
+        fn combo_box_field_paints_the_codicon_chevron() {
+            let form = one_field_form(
+                "language",
+                FieldKind::ComboBox(crate::primitives::combo_box::ComboBox::new(
+                    WidgetId::new("language-combo"),
+                    vec!["rust-analyzer".into(), "pyright".into()],
+                )),
+            );
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t == crate::codicon::CHEVRON_DOWN.to_string().as_str()),
+                "the codicon chevron must be painted; text runs were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t == "\u{25BE}"),
+                "the plain Unicode chevron must not leak through on a pixel \
+                 backend; text runs were {:?}",
                 surface.text_runs,
             );
         }
