@@ -4859,10 +4859,11 @@ fn help_layer_demo_question_mark_opens_cheatsheet_for_active_panel() {
     );
 }
 
-/// The cheatsheet title sits one cell to the right of the content area's
-/// own left edge (the "Reference" section header, which paints flush
-/// against `content_bounds.x` — the same x as the toolbar header's own
-/// bounds) rather than flush against the popup's leading edge.
+/// The cheatsheet card's title — drawn inline in the top border row,
+/// `tui::dialog`'s own " {title} " convention — sits two cells to the
+/// right of the content area's own left edge (the "Reference" section
+/// header, which paints flush against `body_bounds.x`): one cell for the
+/// border column itself, one more for the leading space in " {title} ".
 #[test]
 fn help_layer_demo_cheatsheet_title_keeps_leading_inset() {
     let config = HelpLayerDemo::config();
@@ -4882,8 +4883,8 @@ fn help_layer_demo_cheatsheet_title_keeps_leading_inset() {
 
     assert_eq!(
         title_x,
-        reference_x + 1.0,
-        "title should sit exactly one cell right of the content area's \
+        reference_x + 2.0,
+        "title should sit exactly two cells right of the content area's \
          own left edge, not flush against it"
     );
 }
