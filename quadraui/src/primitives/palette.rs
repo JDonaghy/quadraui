@@ -640,6 +640,28 @@ pub(crate) mod native_surface_paint {
     /// `CURSOR_W`/`CURSOR_WIDTH` bar-caret convention for every GUI backend.
     const QUERY_CURSOR_WIDTH: f32 = 2.0;
 
+    /// The list/tree row pitch — [`crate::style::Style::row_height`]'s own
+    /// default (VS Code's list/tree row height). Item rows (and the pinned
+    /// create-action row, which renders like one more item row) pitch at
+    /// this instead of the chrome `line_height`, the same way
+    /// `GtkBackend::resolved_row_height` floors `List`/`TreeView`/
+    /// `DataTable` rows at `Style::row_height`.
+    ///
+    /// `layout`/`paint` only ever see the chrome's own `line_height` here
+    /// (not a live `&Style`), so this is the *default* token value rather
+    /// than a resolved override — threading a live `Style::row_height`
+    /// through would mean widening every backend's `*_palette_layout`
+    /// wrapper, out of scope for this primitive-local fix.
+    const ITEM_ROW_HEIGHT: f32 = 22.0;
+
+    /// Item row height for a given chrome `line_height` — [`ITEM_ROW_HEIGHT`],
+    /// floored at the font's own line height so a chrome font taller than
+    /// the token isn't clipped (same rationale as
+    /// `GtkBackend::resolved_row_height`/`MacBackend::resolved_row_height`).
+    fn item_row_height(line_height: f32) -> f32 {
+        line_height.max(ITEM_ROW_HEIGHT)
+    }
+
     /// Compute the shared [`Palette`] layout — the one geometry `paint`
     /// paints from and every backend's `Backend::palette_layout` exposes
     /// for hit-testing, so paint/hit-test/backend can't drift three ways.
@@ -663,16 +685,17 @@ pub(crate) mod native_surface_paint {
         } else {
             0.0
         };
+        let item_h = item_row_height(line_height);
         let has_create = palette.create_label.is_some();
-        let create_reserved = if has_create { line_height } else { 0.0 };
+        let create_reserved = if has_create { item_h } else { 0.0 };
         let items_top = title_h + query_h;
         let raw_items_h = (h - items_top - BOTTOM_INSET - create_reserved).max(0.0);
-        let visible_rows = (raw_items_h / line_height) as usize;
-        let rows_h = visible_rows as f32 * line_height;
+        let visible_rows = (raw_items_h / item_h) as usize;
+        let rows_h = visible_rows as f32 * item_h;
         let viewport_h = items_top + rows_h + create_reserved;
 
         let resolved = palette.layout(w, viewport_h, title_h, query_h, SB_W, MIN_THUMB_LEN, |_| {
-            PaletteItemMeasure::new(line_height)
+            PaletteItemMeasure::new(item_h)
         });
         (resolved, rows_h)
     }
@@ -1005,15 +1028,6 @@ pub(crate) mod native_surface_paint {
 
             let mut cursor_x = row_x + style.row_padding_x;
 
-            let prefix = if is_selected { "\u{25b6} " } else { "  " };
-            let (pw, ph) = surface.surface_measure_text(prefix);
-            surface.surface_draw_text_run(
-                Rect::new(cursor_x, row_y + (row_h - ph) / 2.0, pw, ph),
-                prefix,
-                theme.surface_fg,
-            );
-            cursor_x += pw;
-
             cursor_x = row_stack::row_content_paint::paint_row_icon(
                 surface,
                 item.icon.as_ref(),
@@ -1077,6 +1091,7 @@ pub(crate) mod native_surface_paint {
         // ── Create action row (pinned below items) ─────────────────────
         if let Some(ref label) = palette.create_label {
             let create_y = rows_y + rows_h;
+            let create_h = item_row_height(line_height);
             let is_pressed = interaction.is_some_and(|i| i.is_pressed(&palette.id));
             let is_hovered = interaction.is_some_and(|i| i.is_hovered(&palette.id));
             let create_bg = if is_pressed {
@@ -1087,29 +1102,19 @@ pub(crate) mod native_surface_paint {
                 theme.hover_bg
             };
             surface.surface_fill_rect(
-                Rect::new(
-                    area.x,
-                    create_y,
-                    palette_layout.item_list_width,
-                    line_height,
-                ),
+                Rect::new(area.x, create_y, palette_layout.item_list_width, create_h),
                 create_bg,
             );
             let prefix = "+ ";
             let (pw, ph) = surface.surface_measure_text(prefix);
             surface.surface_draw_text_run(
-                Rect::new(area.x + 8.0, create_y + (line_height - ph) / 2.0, pw, ph),
+                Rect::new(area.x + 8.0, create_y + (create_h - ph) / 2.0, pw, ph),
                 prefix,
                 theme.accent_fg,
             );
             let (lw, lh) = surface.surface_measure_text(label);
             surface.surface_draw_text_run(
-                Rect::new(
-                    area.x + 8.0 + pw,
-                    create_y + (line_height - lh) / 2.0,
-                    lw,
-                    lh,
-                ),
+                Rect::new(area.x + 8.0 + pw, create_y + (create_h - lh) / 2.0, lw, lh),
                 label,
                 theme.accent_fg,
             );
@@ -1349,6 +1354,31 @@ pub(crate) mod native_surface_paint {
             assert_eq!(qb.y + qb.height, LINE_HEIGHT * 2.0 + 1.0);
         }
 
+        /// The issue's acceptance bullet: item rows pitch at the
+        /// `Style::row_height` list/tree token (22px) rather than the raw
+        /// chrome `line_height` — mirroring `GtkBackend::resolved_row_height`
+        /// for `List`/`TreeView`/`DataTable` rows. `LINE_HEIGHT` here (16.0)
+        /// matches `MacBackend::current_line_height`'s own default, so this
+        /// is the exact gap the issue's macOS capture measured.
+        #[test]
+        fn item_rows_pitch_at_the_22px_row_height_token_not_the_chrome_line_height() {
+            let p = sample();
+            let (palette_layout, rows_h) = layout(AREA.width, AREA.height, &p, LINE_HEIGHT);
+            assert!(
+                LINE_HEIGHT < 22.0,
+                "test assumes a chrome line height below the token"
+            );
+            for vis in &palette_layout.visible_items {
+                assert_eq!(
+                    vis.bounds.height, 22.0,
+                    "item row {} must pitch at the 22px row-height token",
+                    vis.item_idx
+                );
+            }
+            let visible_rows = palette_layout.visible_items.len();
+            assert_eq!(rows_h, visible_rows as f32 * 22.0);
+        }
+
         /// Regression test: `paint` must stroke the separator at
         /// `query_bounds.y + query_bounds.height - 1.0` (in the pixel the
         /// query band reserves), not at `query_bounds.y + query_bounds.height`
@@ -1481,14 +1511,16 @@ pub(crate) mod native_surface_paint {
         }
 
         /// The issue's first acceptance bullet: a row's text starts
-        /// `row_padding_x` in from its rect — the selection-prefix run
-        /// (`"▶ "`/`"  "`) is the first thing `paint` draws at a row's
-        /// leading edge, so its `x` is the inset to assert on. Painted
-        /// with a non-default [`Style::row_padding_x`] (15.0, not the
-        /// 8.0 default) so reverting the token back to the old
-        /// hardcoded `8.0` literal in `paint` would fail this test.
+        /// `row_padding_x` in from its rect. There is no selection-prefix
+        /// run anymore (selection is conveyed by `theme.selected_bg`
+        /// alone) — the row's own label text is the first run `paint`
+        /// draws at a row's leading edge, so its `x` is the inset to
+        /// assert on. Painted with a non-default [`Style::row_padding_x`]
+        /// (15.0, not the 8.0 default) so reverting the token back to
+        /// the old hardcoded `8.0` literal in `paint` would fail this
+        /// test.
         #[test]
-        fn row_prefix_starts_row_padding_x_in_from_the_row_rect() {
+        fn row_text_starts_row_padding_x_in_from_the_row_rect() {
             let p = sample();
             let (palette_layout, rows_h) = layout(AREA.width, AREA.height, &p, LINE_HEIGHT);
             let row = palette_layout.visible_items[0].bounds;
@@ -1507,15 +1539,28 @@ pub(crate) mod native_surface_paint {
                 &style,
             );
 
-            let (prefix_rect, _, _) = surface
+            let (label_rect, _, _) = surface
                 .texts
                 .iter()
-                .find(|(_, t, _)| t == "\u{25b6} ")
-                .expect("selected row's prefix run painted");
+                .find(|(r, _, _)| r.y >= AREA.y + row.y && r.y < AREA.y + row.y + row.height)
+                .expect("row label run painted");
             assert_eq!(
-                prefix_rect.x,
+                label_rect.x,
                 AREA.x + row.x + style.row_padding_x,
-                "row prefix must start row_padding_x in from the row's left edge"
+                "row label must start row_padding_x in from the row's left edge"
+            );
+        }
+
+        /// The issue's second acceptance bullet: no `▶` text marker —
+        /// selection is conveyed by `theme.selected_bg` alone.
+        #[test]
+        fn selected_row_paints_no_arrow_marker() {
+            let p = sample();
+            let (surface, _) = paint_sample(&p);
+            assert!(
+                !surface.texts.iter().any(|(_, t, _)| t.contains('\u{25b6}')),
+                "no row text run may contain the retired ▶ selection marker: {:?}",
+                surface.texts
             );
         }
 
@@ -1543,6 +1588,17 @@ pub(crate) mod native_surface_paint {
             let mut p = sample();
             p.create_label = Some("Create 'op'".into());
             p
+        }
+
+        /// The pinned create-action row renders like one more item row, so
+        /// it must pitch at the same 22px row-height token as the item
+        /// rows above it, not the raw chrome `line_height`.
+        #[test]
+        fn create_row_pitches_at_the_22px_row_height_token() {
+            let p = with_create_row();
+            let (palette_layout, _) = layout(AREA.width, AREA.height, &p, LINE_HEIGHT);
+            let create_bounds = palette_layout.create_bounds.expect("create bounds present");
+            assert_eq!(create_bounds.height, 22.0);
         }
 
         fn paint_sample_interactive(
