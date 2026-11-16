@@ -1,9 +1,10 @@
 """Unit tests for `quadraui.app`: id auto-assignment stability across
 re-render, callback dispatch (`Tree`, `Table`, `Tabs`, `Button`, `Form`
 and its field builders, and the standalone leaves that reuse `Form`'s
-own event shape), `App.confirm`/`.alert`, component state survival, and
-redraw-on-mutation -- the four properties the app layer's own module doc
-promises and `examples/file_manager_app.py` relies on wholesale.
+own event shape), component state survival, and redraw-on-mutation -- the
+four properties the app layer's own module doc promises (Nodes /
+Callbacks / Components / Redraw), which `examples/file_manager_app.py`
+relies on wholesale -- plus `App.confirm`/`.alert`, which it does not.
 
 Run against a built wheel/extension, e.g.:
 
@@ -826,6 +827,31 @@ async def test_confirm_on_resolve_async_def_is_scheduled_as_a_task():
         if resolved:
             break
         await asyncio.sleep(0.01)
+    assert resolved == ["discard"]
+
+
+def test_confirm_with_on_resolve_opened_from_inside_a_button_on_click():
+    """The issue's own headline shape: a delete `Button.on_click` opens a
+    `confirm(..., on_resolve=...)` dialog, i.e. `confirm` is called from
+    inside a dispatched callback -- while `step()`'s `guarded` closure still
+    holds the `QuiApp` cell mutably borrowed -- rather than from top-level
+    script code like every other test above. `App.__init__` hoists
+    `self.qui.waker()` out of `confirm` for exactly this: a `waker()` call
+    made here instead would try to take a second, shared borrow of that
+    same cell and raise `RuntimeError: Already borrowed`."""
+    resolved = []
+
+    def on_delete_clicked():
+        app.confirm("Delete?", "Delete this item?", _confirm_buttons(), on_resolve=resolved.append)
+
+    def view():
+        return Button("Delete", id="t:delete", on_click=on_delete_clicked)
+
+    app = App(40, 20, view=view)
+    _click_at(app)
+    assert app.screen_contains("Save")
+
+    _click_text(app, "Discard")
     assert resolved == ["discard"]
 
 

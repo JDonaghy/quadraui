@@ -25,6 +25,11 @@ practice: the handler's own coroutine runs as a separate `asyncio.Task`,
 the wrapper returns immediately without awaiting it, and whatever event
 arrives next (new keypress, new `post`) dispatches and renders normally
 while that task is still suspended on its own `await`.
+
+`schedule_callback(waker, func, *args)` is the dual-shape (plain-callable-or-
+`async-def`) scheduling logic `async_handler`'s own wrapper is built on,
+exposed standalone so `quadraui.app.runtime.App.confirm`/`.alert`'s
+`on_resolve` argument can accept either shape the same way.
 """
 
 from __future__ import annotations
@@ -254,22 +259,6 @@ def async_handler(
     waker = app.waker()
 
     def _dispatch(event: Any) -> None:
-        loop = asyncio.get_running_loop()
-        task = loop.create_task(cast(Coroutine[Any, Any, Any], handler(event)))
-
-        def _on_done(done: "asyncio.Task[Any]") -> None:
-            if not done.cancelled():
-                exc = done.exception()
-                if exc is not None:
-                    loop.call_exception_handler(
-                        {
-                            "message": "exception in quadraui.aio.async_handler task",
-                            "exception": exc,
-                            "task": done,
-                        }
-                    )
-            waker.notify()
-
-        task.add_done_callback(_on_done)
+        schedule_callback(waker, handler, event)
 
     return _dispatch
