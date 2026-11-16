@@ -183,14 +183,16 @@ pub unsafe fn draw_list(
 }
 
 /// [`draw_list`], plus hover/press row tinting, a focus-visible ring,
-/// and — when `state.scroll_px` is `Some` — a pixel-precise scroll
-/// position instead of only [`ListView::scroll_offset`]'s whole-row
-/// value: the first visible row is shifted up by the sub-row
-/// remainder and clipped against the list's own viewport (see
-/// [`crate::primitives::list::native_surface_paint::paint_with_scroll_px`]),
+/// a pixel-precise scroll position when `state.scroll_px` is `Some`
+/// instead of only [`ListView::scroll_offset`]'s whole-row value (the
+/// first visible row is shifted up by the sub-row remainder and
+/// clipped against the list's own viewport — see
+/// [`crate::primitives::list::native_surface_paint::paint_with_state`],
 /// producing the "partial first row clipped" look of pixel-smooth
-/// scrolling. `state.scroll_px: None` paints pixel-identically to
-/// [`draw_list`].
+/// scrolling), and zebra striping on alternate non-selected,
+/// non-hovered rows via [`Theme::row_alt_bg`] when `state.striped` is
+/// `true`. `state.scroll_px: None` and `state.striped: false` paint
+/// pixel-identically to [`draw_list`].
 ///
 /// # Safety
 ///
@@ -236,7 +238,7 @@ pub unsafe fn draw_list_with_state(
         ctx,
         font: Some(font),
     };
-    crate::primitives::list::native_surface_paint::paint_with_scroll_px(
+    crate::primitives::list::native_surface_paint::paint_with_state(
         list,
         area,
         &layout,
@@ -251,6 +253,7 @@ pub unsafe fn draw_list_with_state(
         state.pressed_idx,
         focus_ring_visible,
         state.scroll_px,
+        state.striped,
     );
 
     CGContextRestoreGState(ctx);
