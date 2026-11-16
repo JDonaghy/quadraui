@@ -30,6 +30,20 @@ fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> 
     }
 }
 
+/// The view-mode segmented control's four options (id, label, icon), in
+/// display order — shared by [`ToolbarDemo::toolbar`] (which builds the
+/// matching `ToolbarButton::Group` children) and [`ToolbarDemo::dispatch`]
+/// (which reads a `GroupSelected`/`ButtonClicked` id back into one of
+/// these). Every option carries its own icon glyph so the icon-only
+/// variant still has something to paint for each one — same rule
+/// [`ToolbarDemo::toolbar`]'s flat actions already follow.
+const VIEW_MODES: [(&str, &str, &str); 4] = [
+    ("icons", "Icons", "▦"),
+    ("list", "List", "☰"),
+    ("columns", "Columns", "⬚"),
+    ("gallery", "Gallery", "▣"),
+];
+
 // gallery:begin
 pub struct ToolbarDemo {
     filter_active: bool,
@@ -37,6 +51,10 @@ pub struct ToolbarDemo {
     last_message: String,
     interaction: InteractionState,
     focused_index: Option<usize>,
+    /// Which [`VIEW_MODES`] option is active — the exclusive 4-way
+    /// segmented group's own selection state, owned by the host the same
+    /// way `filter_active` owns the plain toggle action's.
+    view_mode: &'static str,
 }
 
 impl ToolbarDemo {
@@ -47,6 +65,7 @@ impl ToolbarDemo {
             last_message: "Click, Tab to focus, Enter to activate".into(),
             interaction: InteractionState::new(),
             focused_index: None,
+            view_mode: "icons",
         }
     }
 
@@ -57,6 +76,56 @@ impl ToolbarDemo {
         let label = |text: &str| if labeled { text.into() } else { String::new() };
         Toolbar::new(WidgetId::new("gallery:toolbar"))
             .with_buttons(vec![
+                // A non-exclusive group: back/forward share one bordered
+                // pill, but each clicks through as its own independent
+                // `ButtonClicked` — neither is a toggle on the other.
+                ToolbarButton::Group {
+                    id: WidgetId::new("gallery:toolbar:nav"),
+                    exclusive: false,
+                    label: Some("History navigation".into()),
+                    items: vec![
+                        ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new("gallery:toolbar:back"),
+                            label: label("Back"),
+                            icon: Some("←".into()),
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: "Go back".into(),
+                        },
+                        ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new("gallery:toolbar:forward"),
+                            label: label("Forward"),
+                            icon: Some("→".into()),
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: "Go forward".into(),
+                        },
+                    ],
+                },
+                // An exclusive group: a view-mode segmented control where
+                // exactly one of the four options is ever `is_active`.
+                ToolbarButton::Group {
+                    id: WidgetId::new("gallery:toolbar:view"),
+                    exclusive: true,
+                    label: Some("View mode".into()),
+                    items: VIEW_MODES
+                        .iter()
+                        .map(|(id, text, icon)| ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new(format!("gallery:toolbar:view:{id}")),
+                            label: label(text),
+                            icon: Some((*icon).into()),
+                            key_hint: None,
+                            enabled: true,
+                            is_active: self.view_mode == *id,
+                            tooltip: format!("Switch to {text} view"),
+                        })
+                        .collect(),
+                },
                 ToolbarButton::Action {
                     spec: None,
                     id: WidgetId::new("gallery:toolbar:continue"),
@@ -192,7 +261,21 @@ impl ToolbarDemo {
                 self.last_message =
                     format!("Filter {}", if self.filter_active { "on" } else { "off" });
             }
+            "gallery:toolbar:back" => {
+                self.last_message = "Back".into();
+            }
+            "gallery:toolbar:forward" => {
+                self.last_message = "Forward".into();
+            }
             other => {
+                if let Some(stripped) = other.strip_prefix("gallery:toolbar:view:") {
+                    if let Some((id, text, _)) = VIEW_MODES.iter().find(|(id, ..)| *id == stripped)
+                    {
+                        self.view_mode = id;
+                        self.last_message = format!("View: {text}");
+                        return;
+                    }
+                }
                 self.last_message = format!("Unknown action: {other}");
             }
         }
@@ -417,10 +500,18 @@ mod tests {
     #[test]
     fn advance_focus_skips_disabled_buttons() {
         let mut demo = ToolbarDemo::new();
-        // `running` starts `true`, so "Continue" (index 0) is disabled —
-        // the first focus stop must be "Pause" (index 1), not index 0.
+        // The two leading `Group` buttons (nav, view) aren't `Action`s,
+        // so `focusable_indices` skips straight over them; `running`
+        // starts `true`, so "Continue" right after them is also
+        // disabled — the first focus stop must be "Pause".
         demo.advance_focus(0, true);
-        assert_eq!(demo.focused_index, Some(1));
+        let continue_idx = demo
+            .toolbar(0)
+            .buttons
+            .iter()
+            .position(|b| matches!(b, ToolbarButton::Action { id, .. } if id.as_str() == "gallery:toolbar:continue"))
+            .unwrap();
+        assert_eq!(demo.focused_index, Some(continue_idx + 1));
     }
 
     /// [`ToolbarDemo::icons`] resolves to the codicon glyph when Nerd

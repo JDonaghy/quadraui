@@ -407,6 +407,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ToolbarButtonActionWrapper`](#wire-_toolbarbuttonactionwrapper)
 - [`_ToolbarButtonLabel`](#wire-_toolbarbuttonlabel)
 - [`_ToolbarButtonLabelWrapper`](#wire-_toolbarbuttonlabelwrapper)
+- [`_ToolbarButtonGroup`](#wire-_toolbarbuttongroup)
+- [`_ToolbarButtonGroupWrapper`](#wire-_toolbarbuttongroupwrapper)
 - [`ToolbarButtonDescriptor`](#wire-toolbarbuttondescriptor)
 - [`ToolbarDescriptor`](#wire-toolbardescriptor)
 - [`PanelActionDescriptor`](#wire-panelactiondescriptor)
@@ -647,6 +649,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_LegendClickedPayload`](#wire-_legendclickedpayload)
 - [`ChartEvent`](#wire-chartevent)
 - [`_ToolbarButtonClickedPayload`](#wire-_toolbarbuttonclickedpayload)
+- [`_ToolbarGroupSelectedPayload`](#wire-_toolbargroupselectedpayload)
 - [`ToolbarEvent`](#wire-toolbarevent)
 - [`CalendarDate`](#wire-calendardate)
 - [`_IdValueBoolPayload`](#wire-_idvalueboolpayload)
@@ -1241,12 +1244,29 @@ The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's
 | --- | --- | --- | --- |
 | `Label` | `_ToolbarButtonLabel` | yes |  |
 
+<a id="wire-_toolbarbuttongroup"></a>
+#### `_ToolbarButtonGroup`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `items` | `ToolbarButtonDescriptor[]` | yes |  |
+| `exclusive` | `boolean` | no |  |
+| `label` | `string \| null` | no |  |
+
+<a id="wire-_toolbarbuttongroupwrapper"></a>
+#### `_ToolbarButtonGroupWrapper`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Group` | `_ToolbarButtonGroup` | yes |  |
+
 <a id="wire-toolbarbuttondescriptor"></a>
 #### `ToolbarButtonDescriptor`
 
-One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, or `{"Label": {...}}`.
+One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, or `{"Group": {...}}`.
 
-Alias for `("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper`.
+Alias for `("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper`.
 
 <a id="wire-toolbardescriptor"></a>
 #### `ToolbarDescriptor`
@@ -3626,6 +3646,14 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `id` | `WidgetId` | yes |  |
 | `is_active` | `boolean` | yes |  |
 
+<a id="wire-_toolbargroupselectedpayload"></a>
+#### `_ToolbarGroupSelectedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `group` | `WidgetId` | yes |  |
+| `id` | `WidgetId` | yes |  |
+
 <a id="wire-toolbarevent"></a>
 #### `ToolbarEvent`
 
@@ -3634,6 +3662,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | Tag | Payload type | Description |
 | --- | --- | --- |
 | `ButtonClicked` | `_ToolbarButtonClickedPayload` |  |
+| `GroupSelected` | `_ToolbarGroupSelectedPayload` |  |
 
 <a id="wire-calendardate"></a>
 #### `CalendarDate`

@@ -1326,12 +1326,62 @@ fn toolbar_child_key(idx: usize, button: &ToolbarButton) -> String {
         ToolbarButton::Separator => format!("separator.{idx}"),
         ToolbarButton::Label { .. } => format!("label.{idx}"),
         ToolbarButton::Spacer => format!("spacer.{idx}"),
+        ToolbarButton::Group { id, .. } => format!("group.{}", id.as_str()),
+    }
+}
+
+/// a11y info + role for one [`ToolbarButton::Group`] child, shared by
+/// [`toolbar_child`]'s `Group` arm — `exclusive` picks
+/// [`A11yRole::RadioButton`] (a segmented control's own child role) over
+/// the plain [`A11yRole::Button`] a non-exclusive group's independent
+/// actions keep.
+fn toolbar_group_child_info(item: &ToolbarButton, exclusive: bool) -> A11yInfo {
+    match item {
+        ToolbarButton::Action {
+            label,
+            enabled,
+            is_active,
+            tooltip,
+            ..
+        } => {
+            let role = if exclusive {
+                A11yRole::RadioButton
+            } else {
+                A11yRole::Button
+            };
+            let mut info = A11yInfo::new().with_role(role).with_disabled(!*enabled);
+            if let Some(label) = non_empty(label.clone()) {
+                info = info.with_label(label);
+            }
+            info = if exclusive {
+                info.with_selected(*is_active)
+            } else if *is_active {
+                info.with_checked(A11yChecked::True)
+            } else {
+                info
+            };
+            if let Some(tooltip) = non_empty(tooltip.clone()) {
+                info = info.with_value(tooltip);
+            }
+            info
+        }
+        ToolbarButton::Label { text, .. } => {
+            let mut info = A11yInfo::new().with_role(A11yRole::Group);
+            if let Some(label) = non_empty(text.clone()) {
+                info = info.with_label(label);
+            }
+            info
+        }
+        // A well-behaved `Group` never nests one of these.
+        ToolbarButton::Separator | ToolbarButton::Spacer | ToolbarButton::Group { .. } => {
+            A11yInfo::new().with_role(A11yRole::Presentation)
+        }
     }
 }
 
 fn toolbar_child(idx: usize, button: &ToolbarButton, role: ToolbarItemRole) -> A11yChild {
     let key = toolbar_child_key(idx, button);
-    let info = match button {
+    match button {
         ToolbarButton::Action {
             label,
             enabled,
@@ -1361,11 +1411,13 @@ fn toolbar_child(idx: usize, button: &ToolbarButton, role: ToolbarItemRole) -> A
             if let Some(tooltip) = non_empty(tooltip.clone()) {
                 info = info.with_value(tooltip);
             }
-            info
+            A11yChild::new(key, info)
         }
         // A separator is pure visual grouping: an assistive technology
         // should step straight over it.
-        ToolbarButton::Separator => A11yInfo::new().with_role(A11yRole::Presentation),
+        ToolbarButton::Separator => {
+            A11yChild::new(key, A11yInfo::new().with_role(A11yRole::Presentation))
+        }
         // Static text in a toolbar has no interactive role; it reads as
         // a labelled group so its text is still announced.
         ToolbarButton::Label { text, .. } => {
@@ -1373,13 +1425,43 @@ fn toolbar_child(idx: usize, button: &ToolbarButton, role: ToolbarItemRole) -> A
             if let Some(label) = non_empty(text.clone()) {
                 info = info.with_label(label);
             }
-            info
+            A11yChild::new(key, info)
         }
         // A spacer is an invisible layout gap: no node an assistive
         // technology should ever land on.
-        ToolbarButton::Spacer => A11yInfo::new().with_role(A11yRole::Presentation),
-    };
-    A11yChild::new(key, info)
+        ToolbarButton::Spacer => {
+            A11yChild::new(key, A11yInfo::new().with_role(A11yRole::Presentation))
+        }
+        // `exclusive` picks `radiogroup` (a segmented control) over the
+        // plain `group` a cluster of independent actions (back/forward)
+        // reads as; each child nests underneath carrying its own role —
+        // see `toolbar_group_child_info`.
+        ToolbarButton::Group {
+            items,
+            exclusive,
+            label,
+            ..
+        } => {
+            let group_role = if *exclusive {
+                A11yRole::RadioGroup
+            } else {
+                A11yRole::Group
+            };
+            let mut info = A11yInfo::new().with_role(group_role);
+            if let Some(label) = label.clone().and_then(non_empty) {
+                info = info.with_label(label);
+            }
+            let children = items
+                .iter()
+                .enumerate()
+                .map(|(cidx, item)| {
+                    let ckey = format!("{key}.{}", toolbar_child_key(cidx, item));
+                    A11yChild::new(ckey, toolbar_group_child_info(item, *exclusive))
+                })
+                .collect();
+            A11yChild::new(key, info).with_children(children)
+        }
+    }
 }
 
 impl A11yPrimitive for DataTable {
@@ -2158,6 +2240,95 @@ mod tests {
         assert_eq!(tab_children[1].info.a11y_role, Some(A11yRole::Tab));
         assert_eq!(tab_children[0].info.selected, Some(true));
         assert_eq!(tab_children[1].info.selected, Some(false));
+    }
+
+    /// An `exclusive` [`ToolbarButton::Group`] (a segmented view-mode
+    /// switcher) reads as a `radiogroup` carrying `radio` children, each
+    /// nested underneath it with its own `selected` state — matching the
+    /// child's `is_active`, not `checked`.
+    #[test]
+    fn exclusive_group_reads_as_a_radiogroup_with_radio_children() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![ToolbarButton::Group {
+            id: WidgetId::new("view"),
+            exclusive: true,
+            label: Some("View mode".to_string()),
+            items: vec![
+                ToolbarButton::Action {
+                    spec: None,
+                    id: WidgetId::new("icons"),
+                    label: "Icons".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: true,
+                    tooltip: String::new(),
+                },
+                ToolbarButton::Action {
+                    spec: None,
+                    id: WidgetId::new("list"),
+                    label: "List".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+            ],
+        }]);
+
+        let children = bar.a11y_children();
+        let group = &children[0];
+        assert_eq!(group.info.a11y_role, Some(A11yRole::RadioGroup));
+        assert_eq!(group.info.a11y_label.as_deref(), Some("View mode"));
+        assert_eq!(group.children.len(), 2);
+        assert_eq!(
+            group.children[0].info.a11y_role,
+            Some(A11yRole::RadioButton)
+        );
+        assert_eq!(group.children[0].info.a11y_label.as_deref(), Some("Icons"));
+        assert_eq!(group.children[0].info.selected, Some(true));
+        assert_eq!(group.children[1].info.selected, Some(false));
+    }
+
+    /// A non-`exclusive` [`ToolbarButton::Group`] (back/forward sharing
+    /// one pill) reads as a plain `group`, not a `radiogroup` — grouping
+    /// is purely visual chrome here, so its children keep the ordinary
+    /// `Button` role a standalone `Action` would get.
+    #[test]
+    fn non_exclusive_group_reads_as_a_plain_group_with_button_children() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![ToolbarButton::Group {
+            id: WidgetId::new("nav"),
+            exclusive: false,
+            label: None,
+            items: vec![
+                ToolbarButton::Action {
+                    spec: None,
+                    id: WidgetId::new("back"),
+                    label: "Back".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+                ToolbarButton::Action {
+                    spec: None,
+                    id: WidgetId::new("forward"),
+                    label: "Forward".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: false,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+            ],
+        }]);
+
+        let children = bar.a11y_children();
+        let group = &children[0];
+        assert_eq!(group.info.a11y_role, Some(A11yRole::Group));
+        assert_eq!(group.children[0].info.a11y_role, Some(A11yRole::Button));
+        assert_eq!(group.children[1].info.disabled, Some(true));
     }
 
     /// A [`ToolbarButton::Spacer`] is an invisible layout gap: it never

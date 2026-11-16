@@ -341,8 +341,19 @@ export interface _ToolbarButtonLabelWrapper {
   Label: _ToolbarButtonLabel;
 }
 
-/** One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, or `{"Label": {...}}`. */
-export type ToolbarButtonDescriptor = ("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper;
+export interface _ToolbarButtonGroup {
+  id: WidgetId;
+  items: ToolbarButtonDescriptor[];
+  exclusive?: boolean;
+  label?: string | null;
+}
+
+export interface _ToolbarButtonGroupWrapper {
+  Group: _ToolbarButtonGroup;
+}
+
+/** One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, or `{"Group": {...}}`. */
+export type ToolbarButtonDescriptor = ("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper;
 
 export interface ToolbarDescriptor {
   id: WidgetId;
@@ -1883,7 +1894,12 @@ export interface _ToolbarButtonClickedPayload {
   is_active: boolean;
 }
 
-export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload; };
+export interface _ToolbarGroupSelectedPayload {
+  group: WidgetId;
+  id: WidgetId;
+}
+
+export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload; } | { GroupSelected: _ToolbarGroupSelectedPayload; };
 
 export interface CalendarDate {
   year: number;

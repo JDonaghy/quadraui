@@ -439,6 +439,33 @@ pub enum ToolbarButton {
     /// rasteriser's own item-width formula — its slot is whatever room is
     /// left over, not a caller-supplied measurement.
     Spacer,
+    /// A bordered cluster of buttons — back/forward sharing one pill, or
+    /// a view-mode segmented control where exactly one child is on.
+    ///
+    /// `items` holds [`Self::Action`]/[`Self::Label`] children only; a
+    /// nested `Group`/`Separator`/`Spacer` is never painted and never
+    /// clickable (defensive — a well-behaved caller never nests one).
+    /// Every backend lays the group out as one slot in the main-axis
+    /// pack ([`Toolbar::layout_with_options`]), with children packed
+    /// flush inside it (no gap) — see [`VisibleToolbarItem::group_children`]
+    /// for their resolved per-child bounds.
+    Group {
+        id: WidgetId,
+        items: Vec<ToolbarButton>,
+        /// When true, exactly one child is `is_active` and a click on
+        /// any child reports [`ToolbarEvent::GroupSelected`] instead of
+        /// [`ToolbarEvent::ButtonClicked`] — see [`Toolbar::click`].
+        /// `false` (the default) keeps every child an independent
+        /// action, each still clicking through as its own
+        /// `ButtonClicked`.
+        #[serde(default)]
+        exclusive: bool,
+        /// Optional accessibility name for the group as a whole — a11y
+        /// role `group` (`exclusive: false`) or `radiogroup`
+        /// (`exclusive: true`); see `a11y::tree`'s `Toolbar` impl.
+        #[serde(default)]
+        label: Option<String>,
+    },
 }
 
 impl ToolbarButton {
@@ -482,7 +509,10 @@ impl ToolbarButton {
                     !enabled,
                 ))
             }
-            ToolbarButton::Separator | ToolbarButton::Label { .. } | ToolbarButton::Spacer => None,
+            ToolbarButton::Separator
+            | ToolbarButton::Label { .. }
+            | ToolbarButton::Spacer
+            | ToolbarButton::Group { .. } => None,
         }
     }
 }
@@ -495,6 +525,11 @@ impl ToolbarButton {
 /// (for the `quadraui-py`/`quadraui-node` bindings) go through one of those
 /// two constructors rather than building this variant by hand, so a click
 /// and the matching keyboard activation always carry the identical shape.
+///
+/// `#[non_exhaustive]`: [`Self::GroupSelected`] is additive, and marking
+/// the enum non-exhaustive means the next variant doesn't force a second
+/// downstream migration — same rationale as [`ToolbarButton`]'s own doc.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolbarEvent {
     /// An [`ToolbarButton::Action`] button was activated. `is_active`
@@ -502,6 +537,15 @@ pub enum ToolbarEvent {
     /// flipped) — see [`Toolbar::click`]'s doc for why every action click
     /// reports this, not just a toggle's.
     ButtonClicked { id: WidgetId, is_active: bool },
+    /// A child of an **exclusive** [`ToolbarButton::Group`] (`group`)
+    /// was clicked — the segmented-control case, where exactly one
+    /// child is `is_active` at a time. `id` is the clicked child's own
+    /// id; the host is responsible for marking it (and no other sibling)
+    /// active on the next render, same as any other declarative
+    /// primitive here. A click on a non-exclusive `Group`'s child
+    /// reports a plain [`Self::ButtonClicked`] instead — see
+    /// [`Toolbar::click`].
+    GroupSelected { group: WidgetId, id: WidgetId },
 }
 
 // ── Nerd-Font icon overrides ─────────────────────────────────────────────────
@@ -667,6 +711,26 @@ pub enum ToolbarItemKind {
     Label,
     /// Flexible gap — see [`ToolbarButton::Spacer`].
     Spacer,
+    /// A bordered cluster of buttons — see [`ToolbarButton::Group`].
+    Group,
+}
+
+/// Resolved bounds of one [`ToolbarButton::Group`] child, inside a
+/// [`VisibleToolbarItem`] whose `kind` is [`ToolbarItemKind::Group`] —
+/// see [`VisibleToolbarItem::group_children`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupChildBounds {
+    /// Index into the owning [`ToolbarButton::Group`]'s `items`.
+    pub item_idx: usize,
+    pub bounds: Rect,
+    /// `true` iff this child is an [`ToolbarButton::Action`] with
+    /// `enabled == true`.
+    pub clickable: bool,
+    /// `id` of the underlying `Action`. `None` for a `Label` child (or
+    /// any other item kind a well-behaved `Group` never nests).
+    pub action_id: Option<WidgetId>,
+    /// `true` iff this child is an `Action` with `is_active == true`.
+    pub is_active: bool,
 }
 
 /// Resolved position of one visible toolbar item after layout.
@@ -682,6 +746,11 @@ pub struct VisibleToolbarItem {
     pub clickable: bool,
     /// `id` of the underlying `Action`. `None` for `Separator` / `Label`.
     pub action_id: Option<WidgetId>,
+    /// Per-child bounds when `kind == ToolbarItemKind::Group` — empty
+    /// for every other kind. [`ToolbarLayout::hit_test`] consults this
+    /// instead of `clickable`/`action_id` for a `Group` item, since a
+    /// group itself is never directly clickable; only its children are.
+    pub group_children: Vec<GroupChildBounds>,
 }
 
 /// Classification of a hit-test result on a toolbar.
@@ -723,6 +792,20 @@ impl ToolbarLayout {
     /// all map to `Empty`.
     pub fn hit_test(&self, x: f32, y: f32) -> ToolbarHit {
         for vis in &self.visible_items {
+            if vis.kind == ToolbarItemKind::Group {
+                for child in &vis.group_children {
+                    if !child.clickable {
+                        continue;
+                    }
+                    let r = &child.bounds;
+                    if x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height {
+                        if let Some(id) = &child.action_id {
+                            return ToolbarHit::Button(*id);
+                        }
+                    }
+                }
+                continue;
+            }
             if !vis.clickable {
                 continue;
             }
@@ -762,6 +845,15 @@ pub const ACTION_H_PAD: f32 = 8.0;
 /// Width of a [`ToolbarButton::Separator`] slot, in px/DIPs. See
 /// [`ACTION_H_PAD`] / [`measure_button`].
 pub const SEPARATOR_PX: f32 = 12.0;
+
+/// Leading/trailing border inset and inter-child divider width for a
+/// [`ToolbarButton::Group`], in px/DIPs — shared by [`measure_button`]'s
+/// `Group` arm and [`native_surface_paint::paint`]'s border/divider
+/// strokes, so the width this constant reserves and the width those
+/// strokes are drawn into never disagree. Uniform across all three gaps
+/// (not just the dividers) so [`layout_group_children`]'s even split
+/// recovers each one exactly.
+pub const GROUP_CHROME_PX: f32 = 2.0;
 
 /// Format an `Action`'s rendered text: `"{icon} {label} ({hint})"`, with
 /// the icon and/or key-hint sections dropped when absent.
@@ -847,6 +939,15 @@ pub fn measure_button(
         // that measures one anyway (outside `layout_with_options`) gets an
         // inert, zero-size result rather than an arbitrary guess.
         ToolbarButton::Spacer => 0.0,
+        // Each child keeps its own full `measure_button` width (so it
+        // still reads as a standalone pill inside the group's shared
+        // border), plus `GROUP_CHROME_PX` for the leading border, each
+        // inter-child divider, and the trailing border — `n + 1` gaps in
+        // total, matching `layout_group_children`'s even split.
+        ToolbarButton::Group { items, .. } => {
+            let child_sum: f32 = items.iter().map(|c| measure_button(measure, c)).sum();
+            child_sum + GROUP_CHROME_PX * (items.len() as f32 + 1.0)
+        }
     }
 }
 
@@ -894,29 +995,70 @@ impl Toolbar {
         self
     }
 
-    /// The semantic event a click on the `Action` button `id` stands for.
+    /// The semantic event a click on the `Action` button `id` stands for
+    /// — `id` may name a top-level [`ToolbarButton::Action`] or a child
+    /// of a [`ToolbarButton::Group`], searched in that order.
     ///
-    /// `None` when `id` doesn't name an enabled [`ToolbarButton::Action`] in
-    /// [`Self::buttons`] — a `Separator`/`Label`, a disabled action, or an id
-    /// this toolbar doesn't contain — mirroring [`crate::Switch::click`]'s
-    /// "disabled means inert" contract. `is_active` carries the matched
+    /// `None` when `id` doesn't name an enabled `Action` anywhere in
+    /// [`Self::buttons`] — a `Separator`/`Label`, a disabled action, or an
+    /// id this toolbar doesn't contain — mirroring [`crate::Switch::click`]'s
+    /// "disabled means inert" contract. For a top-level action or a
+    /// non-exclusive group's child, `is_active` carries the matched
     /// button's *pre-click* `is_active` flipped, the same convention
     /// `Switch::click`'s `value` uses, so a toggle button's handler can
     /// apply the reported state directly; a plain (non-toggle) action
-    /// button's handler simply ignores the field.
+    /// button's handler simply ignores the field. A click on an
+    /// **exclusive** group's child reports [`ToolbarEvent::GroupSelected`]
+    /// instead — the host, not this method, decides which sibling stops
+    /// being active.
     pub fn click(&self, id: WidgetId) -> Option<ToolbarEvent> {
-        self.buttons.iter().find_map(|button| match button {
-            ToolbarButton::Action {
-                id: button_id,
-                enabled,
-                is_active,
-                ..
-            } if *button_id == id && *enabled => Some(ToolbarEvent::ButtonClicked {
-                id,
-                is_active: !is_active,
-            }),
-            _ => None,
-        })
+        for button in &self.buttons {
+            match button {
+                ToolbarButton::Action {
+                    id: button_id,
+                    enabled,
+                    is_active,
+                    ..
+                } if *button_id == id && *enabled => {
+                    return Some(ToolbarEvent::ButtonClicked {
+                        id,
+                        is_active: !is_active,
+                    });
+                }
+                ToolbarButton::Group {
+                    id: group_id,
+                    items,
+                    exclusive,
+                    ..
+                } => {
+                    for item in items {
+                        if let ToolbarButton::Action {
+                            id: child_id,
+                            enabled,
+                            is_active,
+                            ..
+                        } = item
+                        {
+                            if *child_id == id && *enabled {
+                                return Some(if *exclusive {
+                                    ToolbarEvent::GroupSelected {
+                                        group: *group_id,
+                                        id,
+                                    }
+                                } else {
+                                    ToolbarEvent::ButtonClicked {
+                                        id,
+                                        is_active: !is_active,
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// The semantic event Enter/Space on the keyboard-focused button
@@ -931,7 +1073,10 @@ impl Toolbar {
         let idx = self.focused_index?;
         match self.buttons.get(idx)? {
             ToolbarButton::Action { id, .. } => self.click(*id),
-            ToolbarButton::Separator | ToolbarButton::Label { .. } | ToolbarButton::Spacer => None,
+            ToolbarButton::Separator
+            | ToolbarButton::Label { .. }
+            | ToolbarButton::Spacer
+            | ToolbarButton::Group { .. } => None,
         }
     }
 
@@ -1040,7 +1185,29 @@ impl Toolbar {
             ToolbarButton::Separator => (ToolbarItemKind::Separator, false, None),
             ToolbarButton::Label { .. } => (ToolbarItemKind::Label, false, None),
             ToolbarButton::Spacer => (ToolbarItemKind::Spacer, false, None),
+            // A group is never itself clickable — only its children are,
+            // via `group_children` below.
+            ToolbarButton::Group { .. } => (ToolbarItemKind::Group, false, None),
         };
+        // `measure(group_btn).width` is the group's own *ideal* (unclipped)
+        // width — the same quantity `classify`'s `visible_main` clips
+        // against for every other item kind. Reusing it here, rather than
+        // re-deriving it from the children, keeps a group's own width
+        // (used to position every *later* top-level item) and its
+        // children's positions (used only for hit-testing/paint) in
+        // agreement, regardless of which backend's `measure` produced it.
+        let group_children_for =
+            |btn: &ToolbarButton, group_bounds: Rect| -> Vec<GroupChildBounds> {
+                match btn {
+                    ToolbarButton::Group { items, .. } => layout_group_children(
+                        items,
+                        group_bounds,
+                        measure(btn).width.max(0.0),
+                        &measure,
+                    ),
+                    _ => Vec::new(),
+                }
+            };
         let main_edge = main_origin + main_len;
 
         let spacer_idx = self
@@ -1063,12 +1230,15 @@ impl Toolbar {
                     // Clip so the item doesn't paint past the trailing edge.
                     let visible = (main_edge - cursor).max(0.0).min(size);
                     let (kind, clickable, action_id) = classify(btn, visible);
+                    let bounds = mk_bounds(cursor, visible);
+                    let group_children = group_children_for(btn, bounds);
                     visible_items.push(VisibleToolbarItem {
                         item_idx: i,
                         kind,
-                        bounds: mk_bounds(cursor, visible),
+                        bounds,
                         clickable,
                         action_id,
+                        group_children,
                     });
                 }
             }
@@ -1107,12 +1277,15 @@ impl Toolbar {
                     let cursor = leading_cursors[local_i];
                     let visible = (leading_clip_edge - cursor).max(0.0).min(size);
                     let (kind, clickable, action_id) = classify(btn, visible);
+                    let bounds = mk_bounds(cursor, visible);
+                    let group_children = group_children_for(btn, bounds);
                     visible_items.push(VisibleToolbarItem {
                         item_idx: local_i,
                         kind,
-                        bounds: mk_bounds(cursor, visible),
+                        bounds,
                         clickable,
                         action_id,
+                        group_children,
                     });
                 }
 
@@ -1125,6 +1298,7 @@ impl Toolbar {
                     bounds: mk_bounds(leading_end, spacer_size),
                     clickable: false,
                     action_id: None,
+                    group_children: Vec::new(),
                 });
 
                 // Trailing group: always painted in full, clipped only
@@ -1137,12 +1311,15 @@ impl Toolbar {
                     let end = (cursor + size).min(main_edge);
                     let visible = (end - start).max(0.0);
                     let (kind, clickable, action_id) = classify(btn, visible);
+                    let bounds = mk_bounds(start, visible);
+                    let group_children = group_children_for(btn, bounds);
                     visible_items.push(VisibleToolbarItem {
                         item_idx: spacer_idx + 1 + local_i,
                         kind,
-                        bounds: mk_bounds(start, visible),
+                        bounds,
                         clickable,
                         action_id,
+                        group_children,
                     });
                 }
 
@@ -1158,6 +1335,77 @@ impl Toolbar {
             visible_items,
         }
     }
+}
+
+/// Resolve the per-child bounds of a [`ToolbarButton::Group`]'s `items`
+/// inside `group_bounds` (the group's own, possibly-clipped, slot from
+/// the main item-packing loop): children always pack along the group's
+/// own horizontal span — `group_bounds.x`/`.width` — regardless of
+/// [`ToolbarOrientation`], since a segmented control reads left-to-right
+/// even inside a vertical rail's one-row-per-item slot.
+///
+/// `group_full_width` is the group's own *ideal* (unclipped) width —
+/// `measure(group_btn).width` — which already equals
+/// `sum(measure(child))` plus whatever chrome (brackets, dividers,
+/// border padding) the backend's own `measure_button`/`tui_item_width`
+/// `Group` arm reserved. Dividing that leftover evenly across `n + 1`
+/// slots (one leading, `n - 1` between children, one trailing) recovers
+/// each slot's width without this primitive — which has no idea whether
+/// it's packing TUI cells or GTK/macOS/Win pixels — hardcoding either
+/// backend's chrome formula. Every backend that keeps its `Group` arm's
+/// per-slot chrome uniform (same leading/divider/trailing amount) gets
+/// an exact split; a backend that doesn't would only see its first/last
+/// child's bounds nudged by a sub-unit fraction, never a panic or a
+/// negative size (`chrome_total` floors at `0.0`).
+///
+/// Each child's own clip (`visible <= 0.0` past `group_bounds`'s own
+/// trailing edge) mirrors the main packing loop's trailing-edge clip —
+/// a group that itself got clipped against the bar's edge degrades by
+/// dropping its own trailing children first, same as any other item.
+fn layout_group_children<F>(
+    items: &[ToolbarButton],
+    group_bounds: Rect,
+    group_full_width: f32,
+    measure: &F,
+) -> Vec<GroupChildBounds>
+where
+    F: Fn(&ToolbarButton) -> ToolbarItemMeasure,
+{
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let child_widths: Vec<f32> = items.iter().map(|c| measure(c).width.max(0.0)).collect();
+    let child_sum: f32 = child_widths.iter().sum();
+    let n = items.len() as f32;
+    let chrome_total = (group_full_width - child_sum).max(0.0);
+    let pad = chrome_total / (n + 1.0);
+
+    let group_edge = group_bounds.x + group_bounds.width;
+    let mut cursor = group_bounds.x + pad;
+    let mut out = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let width = child_widths[i];
+        let visible = (group_edge - cursor).max(0.0).min(width);
+        let (clickable, action_id, is_active) = match item {
+            ToolbarButton::Action {
+                id,
+                enabled,
+                is_active,
+                ..
+            } => (*enabled && visible > 0.0, Some(*id), *is_active),
+            _ => (false, None, false),
+        };
+        out.push(GroupChildBounds {
+            item_idx: i,
+            bounds: Rect::new(cursor, group_bounds.y, visible, group_bounds.height),
+            clickable,
+            action_id,
+            is_active,
+        });
+        cursor += width + pad;
+    }
+    out
 }
 
 /// Compute each item's left edge given its width, left-to-right, never
@@ -1208,8 +1456,8 @@ fn item_cursor_positions(origin_x: f32, _bar_height: f32, widths: &[f32]) -> Vec
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        action_text, valign_offset_y, Toolbar, ToolbarButton, ToolbarItemKind, ToolbarLayout,
-        ToolbarPaintOptions, ToolbarRailStyle,
+        action_text, valign_offset_y, GroupChildBounds, Toolbar, ToolbarButton, ToolbarItemKind,
+        ToolbarLayout, ToolbarPaintOptions, ToolbarRailStyle,
     };
     use crate::backend::PressableVisual;
     use crate::event::{Point, Rect};
@@ -1217,7 +1465,7 @@ pub(crate) mod native_surface_paint {
     use crate::primitives::button;
     use crate::style::Style;
     use crate::theme::Theme;
-    use crate::types::WidgetId;
+    use crate::types::{Color, WidgetId};
 
     /// Corner radius for the hover/pressed/active highlight pill —
     /// mirrors `gtk::toolbar`'s pre-migration `CORNER_RADIUS`, now
@@ -1380,7 +1628,98 @@ pub(crate) mod native_surface_paint {
                 // Invisible by definition — see `ToolbarButton::Spacer`'s
                 // own doc.
                 ToolbarButton::Spacer => {}
+                ToolbarButton::Group { items, .. } => {
+                    paint_group(
+                        item,
+                        &vis.group_children,
+                        items,
+                        surface,
+                        theme,
+                        hovered_id,
+                        pressed_id,
+                        options,
+                    );
+                }
             }
+        }
+    }
+
+    /// Paint one [`ToolbarButton::Group`] slot: a shared border around
+    /// `item` (the group's own bounds), a 1px divider between adjacent
+    /// children, the active child filled with `theme.selected_bg` (the
+    /// VS Code / Finder segmented look), and each child's own
+    /// icon/label/key-hint text — the same content
+    /// [`ToolbarButton::Action`]'s own arm above paints, just scoped to
+    /// the child's bounds instead of the whole slot.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_group(
+        item: Rect,
+        group_children: &[GroupChildBounds],
+        items: &[ToolbarButton],
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
+        options: ToolbarPaintOptions,
+    ) {
+        surface.surface_stroke_rect(item, theme.separator, 1.0);
+
+        for child in group_children {
+            let r = child.bounds;
+            if r.width <= 0.0 || r.height <= 0.0 {
+                continue;
+            }
+            if child.item_idx > 0 {
+                surface.surface_fill_rect(
+                    Rect::new(r.x - 1.0, item.y, 1.0, item.height),
+                    theme.separator,
+                );
+            }
+
+            let Some(child_btn) = items.get(child.item_idx) else {
+                continue;
+            };
+            let is_hovered = child.clickable && hovered_id == child.action_id.as_ref();
+            let is_pressed = child.clickable && pressed_id == child.action_id.as_ref();
+            let highlight = if child.is_active || is_pressed {
+                Some(theme.selected_bg)
+            } else if is_hovered {
+                Some(theme.hover_bg)
+            } else {
+                None
+            };
+            if let Some(bg) = highlight {
+                surface.surface_fill_rect(r, bg);
+            }
+
+            let (text, fg): (String, Color) = match child_btn {
+                ToolbarButton::Action {
+                    label,
+                    icon,
+                    key_hint,
+                    enabled,
+                    ..
+                } => {
+                    let fg = if !*enabled {
+                        theme.muted_fg
+                    } else if is_hovered {
+                        theme.hover_fg
+                    } else {
+                        theme.foreground
+                    };
+                    (action_text(label, icon.as_deref(), key_hint.as_deref()), fg)
+                }
+                ToolbarButton::Label { text, fg } => (text.clone(), fg.unwrap_or(theme.muted_fg)),
+                // A well-behaved `Group` never nests one of these; skip
+                // rather than paint something a caller never asked for.
+                ToolbarButton::Separator | ToolbarButton::Spacer | ToolbarButton::Group { .. } => {
+                    continue;
+                }
+            };
+            let (tw, th) = surface.surface_measure_text(&text);
+            let tx = r.x + (r.width - tw) / 2.0;
+            let ty = valign_offset_y(options.valign, r.y, r.height, th);
+            surface.surface_draw_text_run(Rect::new(tx, ty, tw.max(0.0), th.max(0.0)), &text, fg);
         }
     }
 
@@ -1812,6 +2151,101 @@ pub(crate) mod native_surface_paint {
                 surface.fills,
             );
         }
+
+        /// A `Group`'s shared chrome: one stroked border around the whole
+        /// cluster, the active child filled with `theme.selected_bg` (the
+        /// VS Code / Finder segmented look), and both children's own
+        /// labels painted — proving the group paints through this one
+        /// shared `paint_group` helper rather than a per-backend copy.
+        #[test]
+        fn group_paints_one_border_and_fills_the_active_child() {
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![ToolbarButton::Group {
+                    id: WidgetId::new("view"),
+                    exclusive: true,
+                    label: None,
+                    items: vec![
+                        ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new("icons"),
+                            label: "Icons".to_string(),
+                            icon: None,
+                            key_hint: None,
+                            enabled: true,
+                            is_active: true,
+                            tooltip: String::new(),
+                        },
+                        ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new("list"),
+                            label: "List".to_string(),
+                            icon: None,
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: String::new(),
+                        },
+                    ],
+                }],
+                bg: None,
+                focused_index: None,
+            };
+            let measure = |btn: &ToolbarButton| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    ToolbarButton::Group { items, .. } => {
+                        let inner_measure = |b: &ToolbarButton| match b {
+                            ToolbarButton::Action { label, .. } => {
+                                label.chars().count() as f32 * 7.0 + 8.0
+                            }
+                            _ => 0.0,
+                        };
+                        items.iter().map(inner_measure).sum::<f32>()
+                            + crate::primitives::toolbar::GROUP_CHROME_PX
+                                * (items.len() as f32 + 1.0)
+                    }
+                    _ => 0.0,
+                })
+            };
+            let layout = bar.layout(0.0, 0.0, 200.0, 1.0, measure);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            assert!(
+                !surface.strokes.is_empty(),
+                "the group must stroke a shared border around itself"
+            );
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.selected_bg),
+                "the active child (\"Icons\") must fill with theme.selected_bg; \
+                 fills were {:?}",
+                surface.fills,
+            );
+            let labels: Vec<&str> = surface
+                .text_runs
+                .iter()
+                .map(|(_, t, _)| t.as_str())
+                .collect();
+            assert!(
+                labels.iter().any(|t| t.contains("Icons")),
+                "the active child's own label must still paint: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|t| t.contains("List")),
+                "the inactive child's own label must still paint: {labels:?}"
+            );
+        }
     }
 }
 
@@ -1864,6 +2298,11 @@ mod tests {
                 ToolbarItemMeasure::new(crate::text_util::display_width(text) as f32)
             }
             ToolbarButton::Spacer => ToolbarItemMeasure::new(0.0),
+            ToolbarButton::Group { items, .. } => {
+                let inner = cell_measure();
+                let child_sum: f32 = items.iter().map(|c| inner(c).width).sum();
+                ToolbarItemMeasure::new(child_sum + items.len() as f32 + 1.0)
+            }
         }
     }
 
@@ -1948,6 +2387,48 @@ mod tests {
         // Click anywhere in either: Empty.
         let r = layout.visible_items[1].bounds;
         assert_eq!(layout.hit_test(r.x, r.y), ToolbarHit::Empty);
+    }
+
+    /// A `Group`'s own `VisibleToolbarItem` carries one `GroupChildBounds`
+    /// per child, positioned left-to-right inside the group's own bounds —
+    /// so a backend's hit-test can resolve a click to the *child's* id,
+    /// never the group's, even though the group is the one entry the
+    /// main-axis pack sees.
+    #[test]
+    fn group_children_report_per_child_bounds_and_hit_test_resolves_to_the_child() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Group {
+                id: WidgetId::new("nav"),
+                exclusive: false,
+                label: None,
+                items: vec![
+                    mk_action("back", "Back", true),
+                    mk_action("forward", "Forward", true),
+                ],
+            }],
+            bg: None,
+            focused_index: None,
+        };
+        let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
+        let group = &layout.visible_items[0];
+        assert_eq!(group.kind, ToolbarItemKind::Group);
+        assert_eq!(group.group_children.len(), 2);
+        // Children sit left-to-right, each inside the group's own bounds,
+        // and never overlap.
+        let back = &group.group_children[0];
+        let forward = &group.group_children[1];
+        assert!(back.bounds.x >= group.bounds.x);
+        assert!(forward.bounds.x >= back.bounds.x + back.bounds.width);
+        assert!(forward.bounds.x + forward.bounds.width <= group.bounds.x + group.bounds.width);
+
+        // A click inside "Forward"'s own bounds resolves to its id, not
+        // the group's.
+        let hit = layout.hit_test(forward.bounds.x + 1.0, forward.bounds.y);
+        match hit {
+            ToolbarHit::Button(id) => assert_eq!(id.as_str(), "forward"),
+            _ => panic!("expected Button hit on the group's child, got {:?}", hit),
+        }
     }
 
     #[test]
@@ -2600,6 +3081,53 @@ mod tests {
             Some(ToolbarEvent::ButtonClicked {
                 id: WidgetId::new("filter"),
                 is_active: false,
+            })
+        );
+    }
+
+    /// Clicking an `exclusive` group's child reports `GroupSelected` with
+    /// both the owning group's id and the clicked child's own id — never
+    /// `ButtonClicked`, since the host (not the toolbar) decides which
+    /// sibling becomes active.
+    #[test]
+    fn click_on_an_exclusive_group_child_reports_group_selected() {
+        let bar = Toolbar::new(WidgetId::new("bar")).with_buttons(vec![ToolbarButton::Group {
+            id: WidgetId::new("view"),
+            exclusive: true,
+            label: None,
+            items: vec![
+                mk_action("icons", "Icons", true),
+                mk_action("list", "List", true),
+            ],
+        }]);
+        assert_eq!(
+            bar.click(WidgetId::new("list")),
+            Some(ToolbarEvent::GroupSelected {
+                group: WidgetId::new("view"),
+                id: WidgetId::new("list"),
+            })
+        );
+    }
+
+    /// A non-`exclusive` group (e.g. back/forward sharing one pill) keeps
+    /// the plain `ButtonClicked` contract for its children — grouping is
+    /// purely visual chrome, not a selection semantic.
+    #[test]
+    fn click_on_a_non_exclusive_group_child_reports_button_clicked() {
+        let bar = Toolbar::new(WidgetId::new("bar")).with_buttons(vec![ToolbarButton::Group {
+            id: WidgetId::new("nav"),
+            exclusive: false,
+            label: None,
+            items: vec![
+                mk_action("back", "Back", true),
+                mk_action("forward", "Forward", true),
+            ],
+        }]);
+        assert_eq!(
+            bar.click(WidgetId::new("forward")),
+            Some(ToolbarEvent::ButtonClicked {
+                id: WidgetId::new("forward"),
+                is_active: true,
             })
         );
     }

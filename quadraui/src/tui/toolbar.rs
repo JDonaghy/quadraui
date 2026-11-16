@@ -34,6 +34,7 @@ use super::{qc, set_cell, set_cell_wide};
 use crate::primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayout,
     ToolbarLayoutOptions, ToolbarOrientation, ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign,
+    VisibleToolbarItem,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -93,6 +94,15 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
         // whatever room is left over) — zero here so a caller that
         // measures one directly gets an inert result.
         ToolbarButton::Spacer => 0.0,
+        // Each child keeps its own full `[ ... ]` bracket format — 1
+        // cell for the group's own leading bracket, 1 for each
+        // inter-child divider, 1 for the trailing bracket: `n + 1`
+        // 1-cell gaps, matching `layout_group_children`'s even split
+        // of `measure(group) - sum(measure(child))`.
+        ToolbarButton::Group { items, .. } => {
+            let child_sum: f32 = items.iter().map(tui_item_width).sum();
+            child_sum + items.len() as f32 + 1.0
+        }
     }
 }
 
@@ -350,10 +360,166 @@ pub fn draw_toolbar_with_options(
             // fill loop above), and it is never clickable, so there is
             // nothing further to draw here.
             ToolbarButton::Spacer => {}
+            ToolbarButton::Group { items, .. } => {
+                draw_group_horizontal(
+                    buf,
+                    area.y..area.y + area.height,
+                    vis,
+                    items,
+                    hovered_id,
+                    pressed_id,
+                    text_row,
+                    bar_bg,
+                    fg,
+                    muted,
+                    hover_bg,
+                    hover_fg,
+                    active_bg,
+                );
+            }
         }
     }
 
     layout
+}
+
+/// Paint one [`ToolbarButton::Group`] slot (`vis`, whose `kind` is
+/// [`ToolbarItemKind::Group`]) at its own `[`/`]` bracket cells, with a
+/// `│` divider cell between children: `vis.group_children`'s bounds
+/// already reserve exactly these gaps (see [`tui_item_width`]'s `Group`
+/// arm), so this paints into them rather than re-deriving positions.
+/// Each child keeps its own `[ icon label (key) ]` bracket format and
+/// per-state colouring — the same priority order
+/// (`enabled`/`is_active`/`hovered`) [`ToolbarButton::Action`]'s own arm
+/// above uses, scoped to `child.action_id` instead of `bar.focused_index`
+/// (a `Group` child is never a keyboard focus target today).
+#[allow(clippy::too_many_arguments)]
+fn draw_group_horizontal(
+    buf: &mut Buffer,
+    rows: std::ops::Range<u16>,
+    vis: &VisibleToolbarItem,
+    items: &[ToolbarButton],
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+    text_row: u16,
+    bar_bg: ratatui::style::Color,
+    fg: ratatui::style::Color,
+    muted: ratatui::style::Color,
+    hover_bg: ratatui::style::Color,
+    hover_fg: ratatui::style::Color,
+    active_bg: ratatui::style::Color,
+) {
+    let item_x = vis.bounds.x.round() as u16;
+    let item_w = vis.bounds.width.round() as u16;
+    if item_w == 0 {
+        return;
+    }
+
+    // The group's own leading/trailing bracket cells.
+    for y in rows.clone() {
+        set_cell(buf, item_x, y, '[', muted, bar_bg);
+        if item_w >= 2 {
+            set_cell(buf, item_x + item_w - 1, y, ']', muted, bar_bg);
+        }
+    }
+
+    for child in &vis.group_children {
+        let cx = child.bounds.x.round() as u16;
+        let cw = child.bounds.width.round() as u16;
+        if cw == 0 {
+            continue;
+        }
+
+        // Divider cell immediately before this child (every child but
+        // the first).
+        if child.item_idx > 0 && cx > item_x {
+            for y in rows.clone() {
+                set_cell(buf, cx - 1, y, '│', muted, bar_bg);
+            }
+        }
+
+        let Some(btn) = items.get(child.item_idx) else {
+            continue;
+        };
+        let (label, icon, key_hint, enabled): (&str, Option<&str>, Option<&str>, bool) = match btn {
+            ToolbarButton::Action {
+                label,
+                icon,
+                key_hint,
+                enabled,
+                ..
+            } => (
+                label.as_str(),
+                icon.as_deref(),
+                key_hint.as_deref(),
+                *enabled,
+            ),
+            ToolbarButton::Label { text, .. } => (text.as_str(), None, None, true),
+            _ => continue,
+        };
+
+        let is_hovered = enabled && child.action_id.as_ref() == hovered_id;
+        let is_pressed = enabled && child.action_id.as_ref() == pressed_id;
+        let (cell_fg, cell_bg) = if !enabled {
+            (muted, bar_bg)
+        } else if is_pressed || child.is_active {
+            (fg, active_bg)
+        } else if is_hovered {
+            (hover_fg, hover_bg)
+        } else {
+            (fg, bar_bg)
+        };
+
+        for y in rows.clone() {
+            for dx in 0..cw {
+                set_cell(buf, cx + dx, y, ' ', cell_fg, cell_bg);
+            }
+        }
+
+        // A `Label` child paints bare (no brackets, matching the flat
+        // `Label` arm above); an `Action` child keeps its own
+        // `[ icon label (key) ]` format.
+        let mut cells: Vec<char> = Vec::with_capacity(cw as usize);
+        let is_action = matches!(btn, ToolbarButton::Action { .. });
+        if is_action {
+            cells.push('[');
+            cells.push(' ');
+        }
+        let label_w = display_width(label);
+        if let Some(icon) = icon {
+            for ch in icon.chars() {
+                cells.push(ch);
+            }
+            if label_w > 0 {
+                cells.push(' ');
+            }
+        }
+        for ch in label.chars() {
+            cells.push(ch);
+        }
+        if let Some(hint) = key_hint {
+            cells.push(' ');
+            cells.push('(');
+            for ch in hint.chars() {
+                cells.push(ch);
+            }
+            cells.push(')');
+        }
+        if is_action {
+            cells.push(' ');
+            cells.push(']');
+        }
+
+        let mut col: u16 = 0;
+        for ch in cells {
+            let cw2 = char_cell_width(ch);
+            if col + cw2 > cw {
+                break;
+            }
+            set_cell(buf, cx + col, text_row, ch, cell_fg, cell_bg);
+            col += cw2;
+        }
+    }
 }
 
 /// [`draw_toolbar`], plus [`ToolbarLayoutOptions`]: `options.orientation`
@@ -511,6 +677,23 @@ pub fn draw_toolbar_oriented(
             // The spacer's rows are already bar-background from the fill
             // loop above; nothing more to paint, and it's never clickable.
             ToolbarButton::Spacer => {}
+            ToolbarButton::Group { items, .. } => {
+                draw_group_horizontal(
+                    buf,
+                    row..row + row_h,
+                    vis,
+                    items,
+                    hovered_id,
+                    pressed_id,
+                    row,
+                    bar_bg,
+                    fg,
+                    muted,
+                    hover_bg,
+                    hover_fg,
+                    active_bg,
+                );
+            }
         }
     }
 
@@ -780,6 +963,131 @@ mod tests {
     #[test]
     fn click_round_trip_through_layout_at_nonzero_origin() {
         click_round_trip_at(7, 13);
+    }
+
+    fn cell_bg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)]
+            .style()
+            .bg
+            .unwrap_or(ratatui::style::Color::Reset)
+    }
+
+    fn mk_group(id: &str, exclusive: bool, items: Vec<ToolbarButton>) -> ToolbarButton {
+        ToolbarButton::Group {
+            id: WidgetId::new(id),
+            exclusive,
+            label: None,
+            items,
+        }
+    }
+
+    /// A `[ a │ b │ c ]`-style exclusive group: one shared bracket pair
+    /// around the whole cluster, `│` dividers between children, a click
+    /// on the third segment's own body resolves through `hit_test` to
+    /// *its* id (never the group's), and the active child paints
+    /// `theme.selected_bg` while its siblings don't.
+    #[test]
+    fn group_click_round_trip_resolves_to_the_clicked_child_and_paints_it_active() {
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_group(
+                "view",
+                true,
+                vec![
+                    mk_action("icons", "Icons", true),
+                    mk_action("list", "List", true),
+                    mk_action("columns", "Columns", true),
+                ],
+            )],
+            bg: None,
+            focused_index: None,
+        };
+        let layout = draw_toolbar(&mut buf, area, &bar, &theme, None, None);
+
+        let group = &layout.visible_items[0];
+        assert_eq!(group.group_children.len(), 3);
+        let group_x = group.bounds.x.round() as u16;
+        let group_right = group_x + group.bounds.width.round() as u16 - 1;
+        assert_eq!(
+            cell_char(&buf, group_x, 0),
+            '[',
+            "group's own leading bracket"
+        );
+        assert_eq!(
+            cell_char(&buf, group_right, 0),
+            ']',
+            "group's own trailing bracket"
+        );
+
+        let columns = &group.group_children[2];
+        let divider_x = columns.bounds.x.round() as u16 - 1;
+        assert_eq!(
+            cell_char(&buf, divider_x, 0),
+            '│',
+            "divider before the third segment"
+        );
+
+        // A click anywhere in "Columns"'s own body resolves to *its* id,
+        // not the group's ("view").
+        let hit = layout.hit_test(columns.bounds.x + 1.0, columns.bounds.y);
+        match hit {
+            ToolbarHit::Button(id) => assert_eq!(id.as_str(), "columns"),
+            _ => panic!("expected the third segment's own id, got {:?}", hit),
+        }
+
+        // No child carries `is_active` yet, so none of them paint
+        // `selected_bg`.
+        assert_ne!(
+            cell_bg(&buf, columns.bounds.x.round() as u16, 0),
+            qc(theme.selected_bg)
+        );
+
+        // Re-render with "Columns" the only active child (the host's own
+        // response to the click above) and confirm it now paints
+        // reversed/selected while "Icons" no longer does.
+        let mut buf2 = Buffer::empty(area);
+        let bar_active = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_group(
+                "view",
+                true,
+                vec![
+                    {
+                        let mut a = mk_action("icons", "Icons", true);
+                        if let ToolbarButton::Action { is_active, .. } = &mut a {
+                            *is_active = false;
+                        }
+                        a
+                    },
+                    mk_action("list", "List", true),
+                    {
+                        let mut a = mk_action("columns", "Columns", true);
+                        if let ToolbarButton::Action { is_active, .. } = &mut a {
+                            *is_active = true;
+                        }
+                        a
+                    },
+                ],
+            )],
+            bg: None,
+            focused_index: None,
+        };
+        let layout2 = draw_toolbar(&mut buf2, area, &bar_active, &theme, None, None);
+        let columns2 = &layout2.visible_items[0].group_children[2];
+        let icons2 = &layout2.visible_items[0].group_children[0];
+        assert_eq!(
+            cell_bg(&buf2, columns2.bounds.x.round() as u16, 0),
+            qc(theme.selected_bg),
+            "the now-active \"Columns\" segment must paint theme.selected_bg"
+        );
+        assert_ne!(
+            cell_bg(&buf2, icons2.bounds.x.round() as u16, 0),
+            qc(theme.selected_bg),
+            "\"Icons\" must lose the active fill once it's no longer the active child"
+        );
     }
 
     #[test]
