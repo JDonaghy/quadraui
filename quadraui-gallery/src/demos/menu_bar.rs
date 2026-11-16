@@ -9,13 +9,28 @@
 
 use quadraui::{
     resolve_bar_height, Backend, BackendCaps, Color, ContextMenuItem, InteractionState, MenuDef,
-    MenuEvent, MenuSystem, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
+    MenuEvent, MenuSystem, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, UiEvent,
     WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("menu_bar.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 fn action(id: &str, label: &str) -> ContextMenuItem {
@@ -134,15 +149,23 @@ impl Demo for MenuBarDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let bar_rect = Self::bar_rect(area, backend);
-        self.menus[variant].render(backend, bar_rect);
 
-        let lh = backend.line_height();
-        let hint_rect = Rect::new(area.x, area.y + bar_rect.height, area.width, lh);
+        // Paint the hint bar *before* the dropdown: `MenuSystem::render`
+        // paints the bar strip and then any open dropdown/submenu stack
+        // in one call, and that stack can extend below `bar_rect` far
+        // enough to overlap this hint strip. Painting the hint bar first
+        // means the dropdown — painted after, on top — stays fully
+        // visible instead of having its lower rows overwritten by the
+        // hint strip underneath it.
+        let hint_h = chrome_strip_height(backend, |s| s.status_bar_height);
+        let hint_rect = Rect::new(area.x, area.y + bar_rect.height, area.width, hint_h);
         let _ = backend.draw_status_bar_interactive(
             hint_rect,
             &self.hint_bar(variant),
             &InteractionState::new(),
         );
+
+        self.menus[variant].render(backend, bar_rect);
     }
 
     fn handle(
@@ -199,5 +222,21 @@ mod tests {
     fn hint_bar_shows_the_last_action() {
         let demo = MenuBarDemo::new();
         assert!(demo.hint_bar(0).left_segments[0].text.contains("Alt+F"));
+    }
+
+    /// On a pixel backend (a GTK-shaped chrome line height, simulated via
+    /// `RecordingBackend`), the hint strip below the bar is exactly
+    /// `Style::status_bar_height` tall — not the raw chrome line height,
+    /// the bug this test guards against regressing.
+    #[test]
+    fn hint_height_matches_status_bar_height_token_on_a_pixel_backend() {
+        let backend = quadraui::testing::RecordingBackend {
+            chrome_line_height: Some(20.0),
+            ..quadraui::testing::RecordingBackend::new()
+        };
+        assert_eq!(
+            chrome_strip_height(&backend, |s| s.status_bar_height),
+            quadraui::Style::default().status_bar_height
+        );
     }
 }

@@ -17,12 +17,27 @@ use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, Backend, BackendCaps, Color, ContextMenu,
     ContextMenuController, ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement, Icon,
     InteractionState, KeyBinding, MenuStyle, Reaction, Rect, ResolvedMenuStyle, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("context_menu.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 pub struct ContextMenuDemo {
@@ -171,7 +186,7 @@ impl Demo for ContextMenuDemo {
         // switching the variant picker is the one way to change it.
         backend.set_menu_style(Self::requested_style(variant));
         let bar = self.status_bar(variant, backend.effective_menu_style());
-        let lh = backend.line_height();
+        let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let rect = Rect::new(area.x, area.y + area.height - lh, area.width, lh);
         let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
 

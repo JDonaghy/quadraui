@@ -18,12 +18,27 @@ use std::cell::Cell;
 use quadraui::{
     Backend, BackendCaps, Color, Editor, EditorCursor, EditorCursorPos, EditorCursorShape,
     EditorLine, EditorStyle, EditorStyledSpan, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("editor.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 const LINE_LEN: usize = 500;
@@ -252,8 +267,7 @@ impl Demo for EditorDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let lh = backend.line_height();
-        let bar_h = if lh > 1.5 { lh * 1.5 } else { lh };
+        let bar_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let editor_area = Rect::new(area.x, area.y, area.width, (area.height - bar_h).max(0.0));
         let bar_rect = Rect::new(area.x, area.y + editor_area.height, area.width, bar_h);
 

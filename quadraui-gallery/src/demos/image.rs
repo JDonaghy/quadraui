@@ -8,9 +8,9 @@
 //! `Backend::draw_image` call).
 
 use quadraui::{
-    Backend, BackendCaps, Color, Image, ImageFit, ImageHit, ImageSource, InteractionState, MenuBar,
-    MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
-    WidgetId,
+    resolve_bar_height, Backend, BackendCaps, Color, Image, ImageFit, ImageHit, ImageSource,
+    InteractionState, MenuBar, MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect, StatusBar,
+    StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -18,6 +18,21 @@ use crate::demo::{extract_region, Demo};
 const SOURCE: &str = include_str!("image.rs");
 
 const LOGO_PNG: &[u8] = include_bytes!("../../assets/quadra_logo.png");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 pub struct ImageDemo {
@@ -57,9 +72,9 @@ impl ImageDemo {
     }
 
     fn bar_rects(area: Rect, backend: &dyn Backend) -> (Rect, Rect, Rect) {
-        let lh = backend.line_height();
-        let full = Rect::new(area.x, area.y, area.width, lh);
-        let icon_width = lh * 4.0;
+        let bar_h = resolve_bar_height(backend.chrome_line_height());
+        let full = Rect::new(area.x, area.y, area.width, bar_h);
+        let icon_width = bar_h * 4.0;
         let icon_rect = Rect::new(full.x, full.y, icon_width, full.height);
         let items_rect = Rect::new(
             full.x + icon_width,
@@ -89,7 +104,7 @@ impl ImageDemo {
     }
 
     fn status_rect(area: Rect, backend: &dyn Backend) -> Rect {
-        let lh = backend.line_height();
+        let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         Rect::new(area.x, area.y + area.height - lh, area.width, lh)
     }
 }

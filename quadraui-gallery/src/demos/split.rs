@@ -8,12 +8,27 @@
 
 use quadraui::{
     Backend, BackendCaps, Color, DragState, DragTarget, InteractionState, Reaction, Rect, Split,
-    SplitDirection, SplitHit, SplitTree, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    SplitDirection, SplitHit, SplitTree, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("split.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 const DIVIDER_TOLERANCE: f32 = 2.0;
@@ -62,7 +77,7 @@ impl SplitDemo {
     }
 
     fn fill_pane(backend: &mut dyn Backend, bounds: Rect, label: &str, fg: Color, bg: Color) {
-        let lh = backend.line_height();
+        let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let label_rect = Rect::new(bounds.x, bounds.y, bounds.width, lh.min(bounds.height));
         let bar = StatusBar {
             id: WidgetId::new(format!("gallery:split:label:{label}")),

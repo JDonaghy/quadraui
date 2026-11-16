@@ -18,12 +18,27 @@ use std::cell::RefCell;
 use quadraui::terminal_engine::{default_shell, TerminalSession};
 use quadraui::{
     Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    UiEvent, WidgetId,
+    Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("terminal.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 /// Shell command fed to the "Scripted output" variant immediately after
@@ -163,7 +178,7 @@ impl Demo for TerminalDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let lh = backend.line_height().max(1.0);
+        let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let term_area = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
         let mut slot = self.slot(variant);
         let (cols, rows) = area_to_pty(term_area, backend);

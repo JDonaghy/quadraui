@@ -14,12 +14,27 @@ use quadraui::compose::bottom_panel::{
 };
 use quadraui::{
     Backend, BackendCaps, Color, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment,
-    UiEvent, WidgetId,
+    Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("bottom_panel.rs");
+
+/// `Style`'s chrome-metric `token`, floored at the chrome line height on
+/// a pixel backend — never shrunk below it, so a chrome font taller than
+/// the design token isn't clipped — or the plain chrome line height on
+/// TUI's fixed cell grid, where every `Style` chrome metric is a
+/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 struct TerminalContent {
@@ -31,7 +46,7 @@ impl BackendWidget for TerminalContent {
         if rect.height < 1.0 {
             return;
         }
-        let lh = backend.line_height();
+        let row_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let prompt = self
             .lines
             .last()
@@ -49,7 +64,7 @@ impl BackendWidget for TerminalContent {
             right_segments: vec![],
         };
         backend.draw_status_bar_interactive(
-            Rect::new(rect.x, rect.y, rect.width, lh),
+            Rect::new(rect.x, rect.y, rect.width, row_h),
             &bar,
             &InteractionState::new(),
         );
@@ -65,10 +80,10 @@ impl BackendWidget for ProblemsContent {
         if rect.height < 1.0 {
             return;
         }
-        let lh = backend.line_height();
+        let row_h = chrome_strip_height(backend, |s| s.status_bar_height);
         for (i, problem) in self.problems.iter().enumerate() {
-            let y = rect.y + i as f32 * lh;
-            if y + lh > rect.y + rect.height {
+            let y = rect.y + i as f32 * row_h;
+            if y + row_h > rect.y + rect.height {
                 break;
             }
             let bar = StatusBar {
@@ -83,7 +98,7 @@ impl BackendWidget for ProblemsContent {
                 right_segments: vec![],
             };
             backend.draw_status_bar_interactive(
-                Rect::new(rect.x, y, rect.width, lh),
+                Rect::new(rect.x, y, rect.width, row_h),
                 &bar,
                 &InteractionState::new(),
             );
@@ -170,13 +185,13 @@ impl Demo for BottomPanelDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let lh = backend.line_height();
-        let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
+        let row_h = chrome_strip_height(backend, |s| s.status_bar_height);
+        let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - row_h).max(0.0));
         self.controllers[variant]
             .borrow_mut()
             .render(backend, panel_rect);
 
-        let hint_rect = Rect::new(area.x, area.y + panel_rect.height, area.width, lh);
+        let hint_rect = Rect::new(area.x, area.y + panel_rect.height, area.width, row_h);
         let bar = StatusBar {
             id: WidgetId::new("gallery:bottom-panel:hint"),
             left_segments: vec![StatusBarSegment {
@@ -254,5 +269,23 @@ mod tests {
         let demo = BottomPanelDemo::new();
         assert!(!demo.controllers[0].borrow().maximised);
         assert!(demo.controllers[1].borrow().maximised);
+    }
+
+    /// On a pixel backend (a GTK-shaped chrome line height, simulated via
+    /// `RecordingBackend`), the hint strip below the panel — and every
+    /// `StatusBar`-shaped row painted inside a tab's own content (the
+    /// terminal prompt, a problem row) — is exactly `Style::status_bar_height`
+    /// tall, not the raw chrome line height, the bug this test guards
+    /// against regressing.
+    #[test]
+    fn row_height_matches_status_bar_height_token_on_a_pixel_backend() {
+        let backend = quadraui::testing::RecordingBackend {
+            chrome_line_height: Some(20.0),
+            ..quadraui::testing::RecordingBackend::new()
+        };
+        assert_eq!(
+            chrome_strip_height(&backend, |s| s.status_bar_height),
+            quadraui::Style::default().status_bar_height
+        );
     }
 }
