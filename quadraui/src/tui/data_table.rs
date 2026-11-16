@@ -104,8 +104,7 @@ pub fn draw_data_table_with_state(
 }
 
 /// Shared paint context for [`draw_header`], [`draw_row`] and
-/// [`draw_cell`]: the table, its resolved layout, the theme and the
-/// `area` every column position is clipped against.
+/// [`draw_cell`]; columns clip against `area`.
 #[derive(Clone, Copy)]
 pub(crate) struct RowPaintCtx<'a> {
     pub table: &'a DataTable,
@@ -213,47 +212,35 @@ pub(crate) fn draw_header(
     let fg = ratatui_color(ctx.theme.foreground);
     let bg = ratatui_color(ctx.theme.tab_bar_bg);
     let (x0, x1) = ctx.bounds();
-    draw_band(
-        buf,
-        ctx,
-        header_y,
-        (fg, bg),
-        true,
-        |buf, col_idx, col_x, col_w| {
-            let Some(col) = table.columns.get(col_idx) else {
-                return;
-            };
-            let sort_glyph: Option<&str> = match &table.sort {
-                Some((si, dir)) if *si == col_idx => Some(match dir {
-                    SortDirection::Ascending => glyphs
-                        .and_then(DataTableGlyphs::sort_ascending_glyph)
-                        .map(|icon| icon.resolve(nerd_fonts_enabled))
-                        .unwrap_or("▲"),
-                    SortDirection::Descending => glyphs
-                        .and_then(DataTableGlyphs::sort_descending_glyph)
-                        .map(|icon| icon.resolve(nerd_fonts_enabled))
-                        .unwrap_or("▼"),
-                }),
-                _ => None,
-            };
-            let title = match sort_glyph {
-                Some(glyph) => format!("{} {glyph}", col.title),
-                None => col.title.clone(),
-            };
-            let usable_w = usable_width(ctx, col_idx, col_w);
-            let start = align_offset(col.align, title.chars().count() as u16, usable_w) as i32;
-            let clip = (x0, x1.min(col_x + usable_w as i32));
-            let chars = title.chars().map(|ch| (ch, fg));
-            draw_bold_chars(buf, col_x + start, header_y, clip, bg, chars);
-        },
-    );
+    let sort = table.sort.map(|(si, dir)| {
+        let (icon, plain) = match dir {
+            SortDirection::Ascending => (glyphs.and_then(|g| g.sort_ascending_glyph()), "▲"),
+            SortDirection::Descending => (glyphs.and_then(|g| g.sort_descending_glyph()), "▼"),
+        };
+        (
+            si,
+            icon.map_or(plain, |icon| icon.resolve(nerd_fonts_enabled)),
+        )
+    });
+    let paint = |buf: &mut Buffer, col_idx: usize, col_x: i32, col_w: u16| {
+        let Some(col) = table.columns.get(col_idx) else {
+            return;
+        };
+        let title = match sort {
+            Some((si, glyph)) if si == col_idx => format!("{} {glyph}", col.title),
+            _ => col.title.clone(),
+        };
+        let usable_w = usable_width(ctx, col_idx, col_w);
+        let start = align_offset(col.align, title.chars().count() as u16, usable_w) as i32;
+        let clip = (x0, x1.min(col_x + usable_w as i32));
+        let chars = title.chars().map(|ch| (ch, fg));
+        draw_bold_chars(buf, col_x + start, header_y, clip, bg, chars);
+    };
+    draw_band(buf, ctx, header_y, (fg, bg), true, paint);
 }
 
 /// Given a column index + visible (clipped) cell rect, paint it and
 /// return `true`, or decline (`false`) to fall through to [`draw_cell`].
-/// `TreeTable` uses this to paint column 0 while every other column
-/// renders as [`draw_cell`] always has.
-///
 /// The hook owns the whole visible column, separator cell included: the
 /// separator paints before the hook runs, so a hook that fills its rect
 /// erases it. The default [`draw_cell`] reserves it via [`usable_width`].
@@ -281,11 +268,7 @@ pub(crate) fn draw_cell(
     }
     let (table, (inner_x0, inner_x1)) = (ctx.table, ctx.bounds());
 
-    let align = table
-        .columns
-        .get(col_idx)
-        .map(|c| c.align)
-        .unwrap_or(ColumnAlign::Left);
+    let align = column_align(table, col_idx);
     let usable_w = usable_width(ctx, col_idx, col_w);
 
     // `displayed_len` is the run's cell width, which diverges from
@@ -369,24 +352,18 @@ pub(crate) fn draw_row(
     });
 
     let (x0, x1) = ctx.bounds();
-    draw_band(
-        buf,
-        ctx,
-        y,
-        (row_fg, row_bg),
-        true,
-        |buf, col_idx, col_x, col_w| {
-            if let Some(hook) = cell_hook.as_mut() {
-                let vx0 = col_x.max(x0);
-                let vx1 = (col_x + col_w as i32).min(x1);
-                let cell_rect = Rect::new(vx0 as u16, y, (vx1 - vx0).max(0) as u16, 1);
-                if hook(buf, col_idx, cell_rect) {
-                    return;
-                }
+    let paint = |buf: &mut Buffer, col_idx: usize, col_x: i32, col_w: u16| {
+        if let Some(hook) = cell_hook.as_mut() {
+            let vx0 = col_x.max(x0);
+            let vx1 = (col_x + col_w as i32).min(x1);
+            let cell_rect = Rect::new(vx0 as u16, y, (vx1 - vx0).max(0) as u16, 1);
+            if hook(buf, col_idx, cell_rect) {
+                return;
             }
-            draw_cell(buf, ctx, row, col_idx, (col_x, col_w), y, (row_fg, row_bg));
-        },
-    );
+        }
+        draw_cell(buf, ctx, row, col_idx, (col_x, col_w), y, (row_fg, row_bg));
+    };
+    draw_band(buf, ctx, y, (row_fg, row_bg), true, paint);
 }
 
 fn draw_data_table_inner(
@@ -443,12 +420,8 @@ fn draw_data_table_inner(
         let sb_x = (area.x + area.width).saturating_sub(ox + layout.scrollbar_width.round() as u16);
         let sb_h = area.height.saturating_sub(2 * oy + 1 + footer_h) as f32;
         let sb_track = crate::event::Rect::new(sb_x as f32, (area.y + oy + 1) as f32, 1.0, sb_h);
-        // `scroll_px: None` here, not `state.scroll_px` — `scroll_offset`
-        // above is already the quantised whole-row index
-        // [`DataTable::effective_scroll_offset`] resolved (TUI never reads
-        // the sub-row remainder), so the thumb must not let
-        // `vscrollbar_thumb` reopen that resolution with a fractional
-        // contribution.
+        // `scroll_px: None`: `scroll_offset` is already quantised to a
+        // whole row, and the thumb must not reintroduce a fractional part.
         let sb = crate::primitives::row_stack::vscrollbar_thumb(
             table.id,
             sb_track,
@@ -498,35 +471,24 @@ fn draw_data_table_inner(
         }
     }
 
-    draw_band(
-        buf,
-        &ctx,
-        footer_y,
-        (fg, bg),
-        false,
-        |buf, col_idx, col_x, col_w| {
-            let Some(styled) = footer.cells.get(col_idx).filter(|c| !c.spans.is_empty()) else {
-                return;
-            };
-            let align = table
-                .columns
-                .get(col_idx)
-                .map(|c| c.align)
-                .unwrap_or(ColumnAlign::Left);
-            let chars = styled.spans.iter().flat_map(|span| {
+    let paint = |buf: &mut Buffer, col_idx: usize, col_x: i32, col_w: u16| {
+        let Some(styled) = footer.cells.get(col_idx).filter(|c| !c.spans.is_empty()) else {
+            return;
+        };
+        let chars: Vec<_> = styled
+            .spans
+            .iter()
+            .flat_map(|span| {
                 let span_fg = span.fg.map(ratatui_color).unwrap_or(fg);
                 span.text.chars().map(move |ch| (ch, span_fg))
-            });
-            let chars_len = styled
-                .spans
-                .iter()
-                .map(|s| s.text.chars().count())
-                .sum::<usize>();
-            let start = align_offset(align, chars_len as u16, col_w) as i32;
-            let clip = (inner_x0, inner_x1);
-            draw_bold_chars(buf, col_x + start, footer_y, clip, bg, chars);
-        },
-    );
+            })
+            .collect();
+        let align = column_align(table, col_idx);
+        let start = align_offset(align, chars.len() as u16, col_w) as i32;
+        let (clip, chars) = ((inner_x0, inner_x1), chars.into_iter());
+        draw_bold_chars(buf, col_x + start, footer_y, clip, bg, chars);
+    };
+    draw_band(buf, &ctx, footer_y, (fg, bg), false, paint);
 
     layout
 }
@@ -556,6 +518,14 @@ fn draw_data_table_border(buf: &mut Buffer, area: Rect, theme: &Theme) {
             set_cell(buf, area.x + col, area.y + row, ch, cfg, bg);
         }
     }
+}
+
+/// Column `col_idx`'s alignment, `Left` when the column is missing.
+fn column_align(table: &DataTable, col_idx: usize) -> ColumnAlign {
+    table
+        .columns
+        .get(col_idx)
+        .map_or(ColumnAlign::Left, |c| c.align)
 }
 
 fn align_offset(align: ColumnAlign, text_len: u16, col_w: u16) -> u16 {
@@ -1701,42 +1671,26 @@ mod tests {
         let mut hook_calls: Vec<usize> = Vec::new();
         let mut hook = |buf: &mut Buffer, col_idx: usize, cell_rect: Rect| -> bool {
             hook_calls.push(col_idx);
-            if col_idx == 0 {
-                for x in cell_rect.x..cell_rect.x + cell_rect.width {
-                    set_cell(
-                        buf,
-                        x,
-                        cell_rect.y,
-                        '#',
-                        RatatuiColor::Reset,
-                        RatatuiColor::Reset,
-                    );
-                }
-                true
-            } else {
-                false
+            let reset = RatatuiColor::Reset;
+            for x in cell_rect.x..cell_rect.x + cell_rect.width * u16::from(col_idx == 0) {
+                set_cell(buf, x, cell_rect.y, '#', reset, reset);
             }
+            col_idx == 0
         };
-        let theme = Theme::default();
+        let (table, layout, theme) = (&table, &layout, &Theme::default());
         let ctx = RowPaintCtx {
-            table: &table,
-            layout: &layout,
-            theme: &theme,
+            table,
+            layout,
+            theme,
             area,
         };
-        draw_row(&mut buf, area.y + 1, &ctx, 0, None, false, Some(&mut hook));
+        draw_row(&mut buf, 1, &ctx, 0, None, false, Some(&mut hook));
 
         assert_eq!(hook_calls, vec![0, 1, 2]);
-        let row_y = area.y + 1;
         // Column 0 ("pod-abc") was painted by the hook's own '#' fill,
         // not the default text painter.
-        let row: String = (0..40)
-            .map(|x| buf[(x, row_y)].symbol().chars().next().unwrap_or(' '))
-            .collect();
-        assert!(
-            row.starts_with('#'),
-            "column 0 should be hook-painted, got: {row}"
-        );
+        let row: String = (0..40).map(|x| buf[(x, 1)].symbol()).collect();
+        assert!(row.starts_with('#'), "column 0 not hook-painted: {row}");
         assert!(find_char_pos(&row, "pod-abc").is_none());
         // Columns 1 ("Running") and 2 ("3d") declined by the hook, so
         // they fell through to the default `draw_cell` text painter.
