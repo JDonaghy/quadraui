@@ -627,6 +627,17 @@ export interface TextInputDescriptor {
   has_focus?: boolean;
 }
 
+export interface TextFieldDescriptor {
+  id: WidgetId;
+  value?: string;
+  placeholder?: string;
+  cursor?: number | null;
+  selection_anchor?: number | null;
+  has_focus?: boolean;
+  leading_icon?: Icon | null;
+  clearable?: boolean;
+}
+
 export interface NumberInputDescriptor {
   id: WidgetId;
   value?: number;
@@ -1592,6 +1603,7 @@ export interface LayoutLeafNode {
   image?: ImageDescriptor;
   form?: FormDescriptor;
   text_input?: TextInputDescriptor;
+  text_field?: TextFieldDescriptor;
   number_input?: NumberInputDescriptor;
   combo_box?: ComboBoxDescriptor;
   date_picker?: DatePickerDescriptor;
@@ -1647,6 +1659,7 @@ export interface RenderFrameDict {
   image?: ImageDescriptor | null;
   form?: FormDescriptor | null;
   text_input?: TextInputDescriptor | null;
+  text_field?: TextFieldDescriptor | null;
   number_input?: NumberInputDescriptor | null;
   combo_box?: ComboBoxDescriptor | null;
   date_picker?: DatePickerDescriptor | null;

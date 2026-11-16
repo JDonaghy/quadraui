@@ -445,6 +445,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ImageFit`](#wire-imagefit)
 - [`ImageDescriptor`](#wire-imagedescriptor)
 - [`TextInputDescriptor`](#wire-textinputdescriptor)
+- [`TextFieldDescriptor`](#wire-textfielddescriptor)
 - [`NumberInputDescriptor`](#wire-numberinputdescriptor)
 - [`ComboBoxDescriptor`](#wire-comboboxdescriptor)
 - [`SwitchDescriptor`](#wire-switchdescriptor)
@@ -1650,6 +1651,20 @@ Alias for `"Contain" | "Cover" | "Fill" | "None"`.
 | `scroll_offset` | `number` | no |  |
 | `scroll_col` | `number` | no |  |
 | `has_focus` | `boolean` | no |  |
+
+<a id="wire-textfielddescriptor"></a>
+#### `TextFieldDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `value` | `string` | no |  |
+| `placeholder` | `string` | no |  |
+| `cursor` | `number \| null` | no |  |
+| `selection_anchor` | `number \| null` | no |  |
+| `has_focus` | `boolean` | no |  |
+| `leading_icon` | `Icon \| null` | no |  |
+| `clearable` | `boolean` | no |  |
 
 <a id="wire-numberinputdescriptor"></a>
 #### `NumberInputDescriptor`
@@ -3131,6 +3146,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `image` | `ImageDescriptor` | no |  |
 | `form` | `FormDescriptor` | no |  |
 | `text_input` | `TextInputDescriptor` | no |  |
+| `text_field` | `TextFieldDescriptor` | no |  |
 | `number_input` | `NumberInputDescriptor` | no |  |
 | `combo_box` | `ComboBoxDescriptor` | no |  |
 | `date_picker` | `DatePickerDescriptor` | no |  |
@@ -3194,6 +3210,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `image` | `ImageDescriptor \| null` | no |  |
 | `form` | `FormDescriptor \| null` | no |  |
 | `text_input` | `TextInputDescriptor \| null` | no |  |
+| `text_field` | `TextFieldDescriptor \| null` | no |  |
 | `number_input` | `NumberInputDescriptor \| null` | no |  |
 | `combo_box` | `ComboBoxDescriptor \| null` | no |  |
 | `date_picker` | `DatePickerDescriptor \| null` | no |  |

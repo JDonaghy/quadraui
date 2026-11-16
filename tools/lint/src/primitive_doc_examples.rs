@@ -111,6 +111,7 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("tab_bar", "TabBar"),
     ("terminal", "Terminal"),
     ("text_display", "TextDisplay"),
+    ("text_field", "TextField"),
     ("text_input", "TextInput"),
     ("toast", "Toast"),
     ("toolbar", "Toolbar"),
