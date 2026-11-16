@@ -40,6 +40,7 @@
 
 use std::cell::RefCell;
 use std::io;
+use std::io::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -341,7 +342,8 @@ fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
 
 /// Restore the terminal to its pre-[`setup_terminal`] state: pop the
 /// kitty keyboard enhancement flags, disable SGR-Pixels mouse mode,
-/// disable raw mode, disable mouse capture / bracketed paste, leave the
+/// delete every Kitty-graphics image this session transmitted, disable
+/// raw mode, disable mouse capture / bracketed paste, leave the
 /// alternate screen, and show the cursor — the exact reverse of
 /// [`setup_terminal`]'s negotiation. Every step is best-effort (`let _ =`):
 /// a terminal that refused one of these on the way in isn't going to
@@ -352,6 +354,7 @@ fn teardown_terminal(
     kbd_enhanced: bool,
     sgr_pixel_mouse: bool,
     mouse: bool,
+    kitty_graphics: bool,
 ) {
     use ratatui::crossterm::event::{DisableBracketedPaste, DisableMouseCapture};
 
@@ -365,6 +368,14 @@ fn teardown_terminal(
         // a panic), so a session that turned pixel mode on always turns
         // it back off.
         let _ = disable_sgr_pixel_mouse(terminal.backend_mut());
+    }
+    if kitty_graphics {
+        // `a=d,d=A`: free every image id this session ever transmitted,
+        // not just the ones still placed — a terminal that doesn't
+        // understand the APC sequence at all simply ignores it.
+        let backend = terminal.backend_mut();
+        let _ = backend.write_all(super::kitty_graphics::delete_all().as_bytes());
+        let _ = backend.flush();
     }
     let _ = disable_raw_mode();
     if mouse {
@@ -571,6 +582,13 @@ impl<A: AppLogic> TuiRunner<A> {
                 guard.clear()?;
             }
             render_frame(&mut guard, &mut self.backend, &self.app)?;
+            // After `terminal.draw` returns inside `render_frame`
+            // above: flush this frame's queued Kitty-graphics escape
+            // bytes to the real terminal — see
+            // `flush_kitty_graphics_writes`'s doc for why this is a
+            // sibling call rather than a step inside `render_frame`
+            // itself.
+            flush_kitty_graphics_writes(&mut self.backend, guard.backend_mut())?;
             drop(guard);
             self.needs_redraw = false;
         }
@@ -715,6 +733,7 @@ impl<A: AppLogic> TuiRunner<A> {
                 self.kbd_enhanced,
                 self.sgr_pixel_mouse,
                 self.mouse,
+                self.backend.kitty_graphics().is_some(),
             );
             self.finished = true;
         }
@@ -840,6 +859,32 @@ where
         .map_err(|e| io::Error::other(e.to_string()))?;
     backend.end_frame();
     Ok(())
+}
+
+/// Write every Kitty-graphics transmit/placement/delete escape sequence
+/// `backend` queued while painting the most recent frame (see
+/// [`crate::tui::backend::TuiBackend::take_pending_kitty_graphics_writes`])
+/// to `writer`, then flush.
+///
+/// A sibling of [`paint_frame`], not a step inside it: `paint_frame`
+/// stays generic over plain `ratatui::backend::Backend` alone, since
+/// `TestBackend` — what the headless `TuiDriver` paints through — has
+/// no raw `io::Write` of its own to write a bare APC escape sequence
+/// into, only a retained cell buffer. The live runner (and any other
+/// real-terminal caller) calls this right after `render_frame`/
+/// `paint_frame` returns, against `terminal.backend_mut()`, which does
+/// implement `io::Write`. A no-op (nothing queued) on a build without
+/// the `tui-images` feature.
+pub(crate) fn flush_kitty_graphics_writes(
+    backend: &mut TuiBackend,
+    writer: &mut impl io::Write,
+) -> io::Result<()> {
+    let bytes = backend.take_pending_kitty_graphics_writes();
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    writer.write_all(&bytes)?;
+    writer.flush()
 }
 
 /// Render one frame.
@@ -1450,6 +1495,158 @@ mod tests {
             result.cursor_position_native,
             Some(Point::new(3.0, 0.0)),
             "cursor_position_native must carry the cell-rounded (x, y) pair widened to f32"
+        );
+    }
+}
+
+// ── Kitty-graphics escape-byte flush ────────────────────────────────────────
+//
+// Exercises the real `render_frame` + `flush_kitty_graphics_writes` pair
+// against a `CrosstermBackend` over a recording `io::Write` sink — the
+// production shape (minus the real tty), so the captured bytes are exactly
+// what a live terminal would receive, unlike `TuiDriver`'s `TestBackend`
+// (which `flush_kitty_graphics_writes` deliberately cannot write into — see
+// that function's doc).
+
+#[cfg(all(test, feature = "tui-images"))]
+mod kitty_graphics_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use ratatui::backend::CrosstermBackend;
+    use ratatui::layout::Rect as RtRect;
+    use ratatui::{Terminal, TerminalOptions, Viewport as RtViewport};
+
+    use super::*;
+    use crate::backend::ColorDepth;
+    use crate::primitives::image::{Image, ImageFit, ImageSource};
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{Backend, Rect as QRect, UiEvent, WidgetId};
+
+    /// `io::Write` sink that also keeps a byte count a test can inspect —
+    /// `CrosstermBackend::writer()` is itself `#[unstable]` upstream, so this
+    /// avoids depending on that rather than working around it.
+    #[derive(Clone, Default)]
+    struct RecordingSink(Rc<RefCell<Vec<u8>>>);
+
+    impl RecordingSink {
+        fn len(&self) -> usize {
+            self.0.borrow().len()
+        }
+    }
+
+    impl io::Write for RecordingSink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn tiny_png_bytes() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 128, 0, 255]));
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("encode tiny test PNG");
+        out
+    }
+
+    /// Paints a 4×4 `Image` only while `visible` is `true` — lets a test
+    /// move the image in and out of the layout across frames without
+    /// rebuilding the app.
+    struct ImageApp {
+        visible: bool,
+    }
+
+    impl AppLogic for ImageApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            if !self.visible {
+                return;
+            }
+            let image = Image {
+                id: WidgetId::new("photo"),
+                source: ImageSource::Bytes(tiny_png_bytes()),
+                intrinsic_size: Some((4, 4)),
+                fit: ImageFit::Fill,
+                fallback_text: "[PHOTO]".into(),
+            };
+            backend.draw_image(QRect::new(0.0, 0.0, 4.0, 4.0), &image);
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// `Terminal::with_options` + `Viewport::Fixed` never queries a real
+    /// terminal (see `TuiVtDriver::new`'s identical reasoning), so this is
+    /// safe to build under `cargo test` with no controlling tty.
+    fn fixed_terminal(sink: RecordingSink) -> Terminal<CrosstermBackend<RecordingSink>> {
+        Terminal::with_options(
+            CrosstermBackend::new(sink),
+            TerminalOptions {
+                viewport: RtViewport::Fixed(RtRect::new(0, 0, 20, 5)),
+            },
+        )
+        .expect("CrosstermBackend + Viewport::Fixed never queries a real terminal")
+    }
+
+    fn kitty_backend() -> TuiBackend {
+        let mut backend = TuiBackend::new();
+        backend.set_color_depth(ColorDepth::TrueColor);
+        backend.set_kitty_graphics_supported(true);
+        backend.set_kitty_graphics_cell_px(Some((8, 16)));
+        backend
+    }
+
+    /// The full acceptance shape: a new image transmits once, an identical
+    /// second frame re-transmits nothing, and the image leaving the layout
+    /// queues a delete — all observed as real bytes written to the
+    /// terminal's writer, not just `TuiBackend`'s internal bookkeeping.
+    ///
+    /// Measures bytes written by `flush_kitty_graphics_writes` alone (sink
+    /// length just before that call vs. just after), not `render_frame`'s
+    /// own ratatui cell-diff bytes landing in the same sink — the two share
+    /// a writer in the live runner too (see `TuiRunner::run_one`), so
+    /// isolating `flush_kitty_graphics_writes`'s own contribution is what
+    /// actually tests this issue's behaviour.
+    #[test]
+    fn transmits_once_then_deletes_once_the_image_leaves_the_layout() {
+        let sink = RecordingSink::default();
+        let mut terminal = fixed_terminal(sink.clone());
+        let mut backend = kitty_backend();
+        let mut app = ImageApp { visible: true };
+
+        render_frame(&mut terminal, &mut backend, &app).expect("paint frame 1");
+        let before_flush_1 = sink.len();
+        flush_kitty_graphics_writes(&mut backend, terminal.backend_mut()).expect("flush frame 1");
+        let kitty_bytes_1 = sink.len() - before_flush_1;
+        assert!(
+            kitty_bytes_1 > 0,
+            "a newly transmitted image must write transmit + placement bytes"
+        );
+
+        render_frame(&mut terminal, &mut backend, &app).expect("paint frame 2");
+        let before_flush_2 = sink.len();
+        flush_kitty_graphics_writes(&mut backend, terminal.backend_mut()).expect("flush frame 2");
+        assert_eq!(
+            sink.len() - before_flush_2,
+            0,
+            "an identical second frame must not re-transmit an id already live"
+        );
+
+        app.visible = false;
+        render_frame(&mut terminal, &mut backend, &app).expect("paint frame 3");
+        let before_flush_3 = sink.len();
+        flush_kitty_graphics_writes(&mut backend, terminal.backend_mut()).expect("flush frame 3");
+        assert!(
+            sink.len() - before_flush_3 > 0,
+            "the image leaving the layout must queue and flush a delete sequence"
         );
     }
 }

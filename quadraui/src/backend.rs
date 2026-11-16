@@ -4342,18 +4342,27 @@ pub trait Backend: sealed::Sealed {
     /// through `gdk_pixbuf` and paints real pixels; Win and macOS are
     /// scoped out for now — rather than a reachable `todo!()`,
     /// `MacBackend::draw_image` reports [`ImagePaintResult::Unsupported`]
-    /// and paints nothing, the same signal TUI's categorical case already
-    /// uses below. This method has no default (rule 7 below still
-    /// applies to it), so every backend implementer still sees a compile
-    /// error until it picks one of these two honest outcomes.
+    /// and paints nothing, the same signal TUI falls back to below. This
+    /// method has no default (rule 7 below still applies to it), so
+    /// every backend implementer still sees a compile error until it
+    /// picks one of these two honest outcomes.
     ///
-    /// **TUI cannot rasterise an image** — there is no pixel grid to
-    /// draw into, and `Image` deliberately does not attempt an ASCII-art
-    /// decoder (see `primitives::image` module docs' scope
-    /// guard). It paints [`Image::fallback_text`] instead, centered in
-    /// `rect`, and reports [`ImagePaintResult::Unsupported`] rather than
-    /// a silent no-op, so TUI genuinely says it can't do this. A GTK
-    /// decode failure (bad path, corrupt bytes) also reports
+    /// **TUI has no pixel grid**, so it cannot decode raster pixels
+    /// itself — `Image` deliberately does not attempt an ASCII-art
+    /// decoder either (see `primitives::image` module docs' scope
+    /// guard) — but on a terminal that has confirmed Kitty-protocol
+    /// graphics support (`tui-images` Cargo feature,
+    /// `crate::tui::backend::TuiBackend::kitty_graphics` returning
+    /// `Some`, truecolor) it paints real pixels a different way: decode
+    /// through [`crate::tui::image_decode`], fill the placed cells with
+    /// [`crate::tui::kitty_graphics`]'s Unicode placeholder content, and
+    /// report [`ImagePaintResult::Painted`] — the terminal emulator
+    /// itself composites the actual bitmap behind those cells. Short of
+    /// that (a bare `tui` build, an unconfirmed or non-truecolor
+    /// terminal, or a real decode failure), TUI paints
+    /// [`Image::fallback_text`] instead, centered in `rect`, and reports
+    /// [`ImagePaintResult::Unsupported`] rather than a silent no-op. A
+    /// GTK decode failure (bad path, corrupt bytes) also reports
     /// `Unsupported` and paints nothing, and macOS reports `Unsupported`
     /// unconditionally for the same reason — so a host can tell "no
     /// pixels appeared" apart from a successful paint without inspecting
@@ -4437,11 +4446,15 @@ pub struct MinimapPaintResult {
 /// threading it through the paint result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImagePaintResult {
-    /// The backend rasterised actual image pixels into the target rect.
+    /// The backend rasterised actual image pixels into the target rect
+    /// — including TUI, on a confirmed Kitty-graphics terminal, via its
+    /// Unicode-placeholder-cell paint path. See
+    /// [`Backend::draw_image`]'s doc comment.
     Painted,
-    /// The backend could not (or, for TUI/macOS, categorically can not)
-    /// rasterise pixels. TUI paints `image.fallback_text` instead; GTK on
-    /// a decode failure and macOS unconditionally (no `NSImage` decoder
+    /// The backend could not (or, for macOS, categorically can not)
+    /// rasterise pixels. TUI falls back to this short of a confirmed
+    /// Kitty-graphics terminal or on a real decode failure; GTK on a
+    /// decode failure and macOS unconditionally (no `NSImage` decoder
     /// wired up yet) both paint nothing. See
     /// [`Backend::draw_image`]'s doc comment.
     Unsupported,

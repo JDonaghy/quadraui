@@ -7,9 +7,8 @@
 //! the same way it is for [`crate::primitives::image::Image`] — or
 //! WebP) into tightly-packed RGBA8 pixels, already shrunk to fit a
 //! caller-given target pixel size; [`crate::tui::kitty_graphics`] turns
-//! that pixel buffer into protocol bytes. Nothing in this crate wires
-//! either step into a paint pass yet — see `tui::kitty_graphics`'s
-//! module doc for the frame-loop child this feeds (`TODO(#2576)`).
+//! that pixel buffer into protocol bytes. `tui::image::draw_image_kitty`
+//! is the paint-path caller that wires both steps together.
 //!
 //! # Downscale, never upscale
 //!
@@ -41,7 +40,6 @@ pub(crate) const MAX_TARGET_DIMENSION_PX: u32 = 2048;
 /// Decoded, already-downscaled image: tightly-packed RGBA8 pixels,
 /// row-major, exactly `width * height * 4` bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop reads these fields.
 pub(crate) struct DecodedImage {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -53,7 +51,6 @@ pub(crate) struct DecodedImage {
 /// failure does (see `crate::primitives::image::Image::fallback_text`'s
 /// own doc).
 #[derive(Debug)]
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop matches on this.
 pub(crate) enum DecodeError {
     /// `ImageSource::Path` couldn't be read from disk.
     Io(std::io::Error),
@@ -103,7 +100,6 @@ fn clamp_target((w, h): (u32, u32)) -> (u32, u32) {
 /// Decode `source` (sniffed from content, like every other backend's
 /// image loader) and downscale to fit within `target_px`, preserving
 /// aspect ratio. Never upscales — see the module doc.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
 pub(crate) fn decode_and_downscale(
     source: &ImageSource,
     target_px: (u32, u32),
@@ -126,7 +122,6 @@ pub(crate) fn decode_and_downscale(
 
 /// [`decode_and_downscale`], cached in `cache` by `(source, target size,
 /// scale)` — see the module doc's "Decode cache" section.
-#[allow(dead_code)] // TODO(#2576): remove once the frame-loop calls this.
 pub(crate) fn decode_and_downscale_cached<'a>(
     source: &ImageSource,
     target_px: (u32, u32),
