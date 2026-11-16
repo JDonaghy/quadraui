@@ -126,16 +126,11 @@ pub unsafe fn draw_multi_section_view(
                 char_width,
             );
 
-            // `Tree` (always) and `List` with `show_v_scrollbar` already
-            // paint their own vertical scrollbar inside `body_bounds` —
-            // see `crate::primitives::tree::native_surface_paint::paint`
-            // and `crate::primitives::list::native_surface_paint::paint`.
-            // Painting this gutter column on top of that would stack two
-            // separately shaded scrollbar-shaped columns side by side.
-            if let Some(sb_b) = s_layout.scrollbar_bounds {
-                if !body_self_paints_scrollbar(&section.body) {
-                    paint_section_scrollbar(ctx, sb_b, s_layout.thumb_bounds, theme);
-                }
+            // Skip the gutter when the body paints its own scrollbar, so
+            // only one scrollbar column shows.
+            let own_sb = body_self_paints_scrollbar(&section.body);
+            if let Some(sb_b) = s_layout.scrollbar_bounds.filter(|_| !own_sb) {
+                paint_section_scrollbar(ctx, sb_b, s_layout.thumb_bounds, theme);
             }
         }
     }
@@ -420,16 +415,8 @@ unsafe fn paint_empty_body(
     );
 }
 
-/// Does `body`'s own body rasteriser already paint a vertical scrollbar
-/// inside its `body_bounds`, independent of the MSV's own gutter column?
-///
-/// `Tree` always self-paints when its rows overflow — see
-/// [`crate::primitives::tree::native_surface_paint::paint`]'s call into
-/// [`crate::primitives::tree::TreeView::vscrollbar_with_scroll_px`]. `List`
-/// only does when the host opted in via
-/// [`crate::primitives::list::ListView::show_v_scrollbar`]. Every other
-/// body kind has no scrollbar of its own, so the MSV's gutter column
-/// (painted by [`paint_section_scrollbar`]) is the only one.
+/// Whether `body` paints its own vertical scrollbar inside `body_bounds`:
+/// `Tree` always, `List` only with `show_v_scrollbar`.
 fn body_self_paints_scrollbar(body: &SectionBody) -> bool {
     match body {
         SectionBody::Tree(_) => true,
@@ -671,42 +658,26 @@ mod tests {
         );
     }
 
-    /// An overflowing `Tree` section's body paints its own 10px overlay
-    /// scrollbar inside `body_bounds` (`draw_tree`'s own paint). The
-    /// MSV's own gutter column (`scrollbar_bounds`), immediately to its
-    /// right, must stay plain unpainted background rather than adding a
-    /// second scrollbar-shaped column beside it.
+    /// A `Tree` section paints its own scrollbar; the MSV gutter beside it stays background.
     #[test]
     fn tree_section_paints_only_its_own_scrollbar_not_a_second_gutter_column() {
         let mut view = two_section_view();
         view.sections[0] = tree_section("alpha", 50);
         let (surface, layout) = paint_via_backend(&view);
-        let theme = Theme::default();
+        let t = Theme::default();
+        let bg = (t.background.r, t.background.g, t.background.b);
         let s0 = &layout.sections[0];
-        let sb = s0
-            .scrollbar_bounds
-            .expect("50 rows must overflow the EqualShare body height");
-
-        // The tree's own scrollbar track still paints, inside body_bounds.
-        let probe_y = (sb.y + 2.0) as u32;
-        let tree_sb_x = (s0.body_bounds.x + s0.body_bounds.width - 2.0) as u32;
-        let (r, g, b, _) = surface.pixel(tree_sb_x, probe_y);
-        let bg = (theme.background.r, theme.background.g, theme.background.b);
-        assert_ne!(
-            (r, g, b),
-            bg,
-            "the tree's own vertical scrollbar should still paint inside body_bounds",
-        );
-
-        // The MSV's own gutter column, immediately to the right, must
-        // stay plain background — no second shaded strip.
-        let gutter_x = (sb.x + sb.width / 2.0) as u32;
-        let (gr, gg, gb, _) = surface.pixel(gutter_x, probe_y);
+        let sb = s0.scrollbar_bounds.expect("50 rows must overflow");
+        let y = (sb.y + 2.0) as u32;
+        let rgb = |x: f32| {
+            let (r, g, b, _) = surface.pixel(x as u32, y);
+            (r, g, b)
+        };
+        assert_ne!(rgb(s0.body_bounds.x + s0.body_bounds.width - 2.0), bg);
         assert_eq!(
-            (gr, gg, gb),
+            rgb(sb.x + sb.width / 2.0),
             bg,
-            "MSV must not paint a second scrollbar-shaped column beside a tree's own, \
-             got ({gr},{gg},{gb}) expected background {bg:?}",
+            "second scrollbar column painted"
         );
     }
 
