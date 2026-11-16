@@ -142,11 +142,17 @@ pub(crate) fn draw_dialog_with_style(
                                     continue;
                                 }
                                 if child.item_idx > 0 {
+                                    // `r.x - 1.0`, not `r.x`: the divider
+                                    // sits just *before* the child's own
+                                    // leading column, matching
+                                    // `native_surface_paint::paint_group`'s
+                                    // `Rect::new(r.x - 1.0, ...)` rather
+                                    // than overdrawing it.
                                     let _ = super::text::draw_line(
                                         target,
-                                        r.x,
+                                        r.x - 1.0,
                                         vis.bounds.y,
-                                        r.x,
+                                        r.x - 1.0,
                                         vis.bounds.y + vis.bounds.height,
                                         border,
                                         1.0,
