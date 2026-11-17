@@ -222,6 +222,61 @@ impl Anchor {
     }
 }
 
+// ── NaturalSize: best-effort intrinsic leaf size ────────────────────────
+
+/// A leaf's best-effort intrinsic `(width, height)` in surface-native
+/// units, each `None` when no cheap measurement exists for that axis.
+///
+/// A layout-tree container's non-stretch cross-axis alignment sizes a
+/// child to its own content instead of always filling the cross-axis
+/// extent; a `None` on either axis degrades that axis back to filling
+/// it — the same "no cheap measurement, don't collapse to zero" rule a
+/// consumer applies to every other `Option<f32>` this crate hands it for
+/// sizing. A primitive with no single natural size (an `Editor`, a
+/// `Terminal`, a calendar grid, a chrome bar meant to span its whole
+/// axis) reports [`NaturalSize::NONE`] on the axis it has no answer for,
+/// same as leaving a field unset; a primitive with a genuinely compact
+/// or fixed-content shape (a checkbox's toggle box, a progress bar's one
+/// row, an image's intrinsic pixel size) reports a real value instead.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct NaturalSize {
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+}
+
+impl NaturalSize {
+    /// No cheap measurement on either axis — the pre-existing "always
+    /// stretch" behaviour for a primitive that never overrides this.
+    pub const NONE: Self = Self {
+        width: None,
+        height: None,
+    };
+
+    pub const fn new(width: Option<f32>, height: Option<f32>) -> Self {
+        Self { width, height }
+    }
+
+    /// The extent along whichever axis is the container's main axis:
+    /// width for a horizontal (`Row`) container, height for a vertical
+    /// (`Column`) one.
+    pub fn main(&self, horizontal: bool) -> Option<f32> {
+        if horizontal {
+            self.width
+        } else {
+            self.height
+        }
+    }
+
+    /// [`Self::main`]'s counterpart on the container's cross axis.
+    pub fn cross(&self, horizontal: bool) -> Option<f32> {
+        if horizontal {
+            self.height
+        } else {
+            self.width
+        }
+    }
+}
+
 // ── Shared visible-range walk ────────────────────────────────────────────
 
 /// Axis a [`visible_range_walk`] lays items out along.
@@ -357,6 +412,24 @@ mod tests {
         assert_eq!(side, ResolvedSide::AtPoint);
         // Clamped so the whole box stays inside the viewport.
         assert_eq!(p, Point::new(80.0, 90.0));
+    }
+
+    // ── NaturalSize ───────────────────────────────────────────────────
+
+    #[test]
+    fn natural_size_main_cross_pick_the_matching_axis() {
+        let size = NaturalSize::new(Some(10.0), Some(20.0));
+        assert_eq!(size.main(true), Some(10.0));
+        assert_eq!(size.main(false), Some(20.0));
+        assert_eq!(size.cross(true), Some(20.0));
+        assert_eq!(size.cross(false), Some(10.0));
+    }
+
+    #[test]
+    fn natural_size_none_has_no_measurement_on_either_axis() {
+        assert_eq!(NaturalSize::NONE, NaturalSize::default());
+        assert_eq!(NaturalSize::NONE.main(true), None);
+        assert_eq!(NaturalSize::NONE.cross(true), None);
     }
 
     // ── visible_range_walk ──────────────────────────────────────────

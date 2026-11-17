@@ -784,7 +784,7 @@ pub use interaction::InteractionState;
 // `Visible*{idx, bounds}` structs). Nothing in `primitives/` consumes
 // these yet — each primitive converges onto them in its own PR behind a
 // `#[deprecated]` shim per `docs/PRIMITIVE_RULES.md` rule 8.
-pub use layout::{visible_range_walk, Anchor, Axis, ResolvedSide, Side, VisibleItem};
+pub use layout::{visible_range_walk, Anchor, Axis, NaturalSize, ResolvedSide, Side, VisibleItem};
 pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.

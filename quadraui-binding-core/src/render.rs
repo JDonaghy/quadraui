@@ -1015,9 +1015,10 @@ pub(crate) struct ScrollMetrics {
 
 /// Natural main-axis length of `node` along `axis`: for a `Leaf`, its own
 /// per-kind intrinsic size via [`natural_size`] (falling back to one
-/// `line_height`/`char_width`-scaled unit when that reports `None` — every
-/// `LeafDescriptor::Extra` and a `List`/`Tree`/`DataTable`'s width); for a
-/// `Row`/`Column` whose own main axis matches `axis` (a `Column` under a
+/// `line_height`/`char_width`-scaled unit when that reports `None` — a
+/// `List`/`Tree`/`DataTable`'s width, and whichever axis an `Extra`
+/// leaf's own `ExtraPaint::natural_size` has no cheap measurement for);
+/// for a `Row`/`Column` whose own main axis matches `axis` (a `Column` under a
 /// vertical scroll, a `Row` under a horizontal one), the sum of every
 /// child's own natural length along `axis` plus the quantised gap between
 /// them — this container's `padding`/`margin`/`justify`/`align` are NOT
@@ -1399,11 +1400,16 @@ impl NaturalSize {
 /// menu_system` already leans on for its own label widths), `TextDisplay`
 /// via its own line count/widest line, `List`/`Tree`/`DataTable` via their
 /// own row count (height only — none of the three has a cheap intrinsic
-/// width). Every other node kind (a nested `Row`/`Column`/`Split`/`Tabs`/
-/// `Panel`/`SidebarPanel`/`SplitTree`, or an `Extra` additive primitive)
-/// has no cheap measurement at this layer and reports [`None`] on both
-/// axes — see [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for
-/// how each degrades a `None`.
+/// width), and an `Extra` additive primitive via its own
+/// `crate::extra_paint::ExtraPaint::natural_size` (most additive
+/// primitives have a real answer on at least one axis — see that
+/// method's own impls — the handful of viewport-filling/multi-cell-grid
+/// ones that don't fall back to that method's own `(None, None)`
+/// default). Every other node kind (a nested `Row`/`Column`/`Split`/
+/// `Tabs`/`Panel`/`SidebarPanel`/`SplitTree`) has no cheap measurement
+/// at this layer and reports [`None`] on both axes — see
+/// [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for how each
+/// degrades a `None`.
 fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) -> NaturalSize {
     // A `Styled` wrapper carries no geometry of its own -- unwrap straight
     // through to whatever it wraps so a styled leaf still measures the
@@ -1489,10 +1495,13 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
                 height: Some(BORDER_LABEL_BORDER_ROWS * line_height),
             }
         }
-        LeafDescriptor::Extra(_) => NaturalSize {
-            width: None,
-            height: None,
-        },
+        LeafDescriptor::Extra(extra) => {
+            let natural = extra.natural_size(backend);
+            NaturalSize {
+                width: natural.width,
+                height: natural.height,
+            }
+        }
     }
 }
 
@@ -3160,6 +3169,188 @@ mod tests {
             let rects = layout_container_rects(&mut tui(), area, &end, true);
             assert_eq!(rects[0].y, height - 1.0);
             assert_eq!(rects[0].height, 1.0);
+        }
+    }
+
+    /// Every one of the additive (`LeafDescriptor::Extra`) leaf kinds
+    /// overriding `ExtraPaint::natural_size` sizes to its own content
+    /// under a non-`Stretch` `Align`, exactly like a `Button`/
+    /// `TextDisplay`/`TabBar` fixed leaf already does in
+    /// [`align_every_value_at_two_terminal_sizes`] above — the behaviour
+    /// this trait method exists to extend past the six fixed slots.
+    /// `Align::Start`/`Center`/`End` each size the child to its reported
+    /// natural height (well under the tall `area` below, so "non-
+    /// stretched" is unambiguous) and position it at the top, middle,
+    /// or bottom of the container respectively; only `Align::Stretch`
+    /// (checked once up front) still fills the whole extent.
+    #[test]
+    fn align_sizes_every_extra_leaf_kind_to_its_own_natural_height() {
+        use crate::extra_paint::{Checkbox, PasswordInput, Select, Slider, TextArea};
+        use quadraui::{
+            ComboBox, Image, ImageFit, ImageSource, ProgressBar, RadioGroup, RadioOption, Spinner,
+            Switch, TextField, TextInput,
+        };
+
+        let kinds: Vec<(&str, Rc<dyn ExtraPaint>)> = vec![
+            (
+                "progress",
+                Rc::new(ProgressBar {
+                    id: WidgetId::new("progress"),
+                    label: String::new(),
+                    value: Some(0.5),
+                    frame_idx: 0,
+                    cancellable: false,
+                    accent: None,
+                }),
+            ),
+            (
+                "spinner",
+                Rc::new(Spinner {
+                    id: WidgetId::new("spinner"),
+                    label: String::new(),
+                    frame_idx: 0,
+                    accent: None,
+                }),
+            ),
+            (
+                "image",
+                Rc::new(Image {
+                    id: WidgetId::new("image"),
+                    source: ImageSource::Path(std::path::PathBuf::new()),
+                    intrinsic_size: None,
+                    fit: ImageFit::Contain,
+                    fallback_text: "img".to_string(),
+                }),
+            ),
+            (
+                "checkbox",
+                Rc::new(Checkbox {
+                    id: WidgetId::new("checkbox"),
+                    value: false,
+                    disabled: false,
+                    focused: false,
+                }),
+            ),
+            ("switch", Rc::new(Switch::new(WidgetId::new("switch")))),
+            (
+                "radio_group",
+                Rc::new(RadioGroup::new(
+                    WidgetId::new("radio_group"),
+                    vec![
+                        RadioOption::new(WidgetId::new("radio_group:a"), "A"),
+                        RadioOption::new(WidgetId::new("radio_group:b"), "B"),
+                    ],
+                )),
+            ),
+            (
+                "slider",
+                Rc::new(Slider {
+                    id: WidgetId::new("slider"),
+                    value: 0.0,
+                    min: 0.0,
+                    max: 1.0,
+                    step: 1.0,
+                    disabled: false,
+                    focused: false,
+                }),
+            ),
+            (
+                "select",
+                Rc::new(Select {
+                    id: WidgetId::new("select"),
+                    options: vec!["a".to_string(), "b".to_string()],
+                    selected_idx: 0,
+                    disabled: false,
+                    focused: false,
+                }),
+            ),
+            (
+                "combo_box",
+                Rc::new(ComboBox::new(
+                    WidgetId::new("combo_box"),
+                    vec!["a".to_string(), "b".to_string()],
+                )),
+            ),
+            (
+                "text_input",
+                Rc::new(TextInput::new(WidgetId::new("text_input"))),
+            ),
+            (
+                "text_field",
+                Rc::new(TextField::new(WidgetId::new("text_field"))),
+            ),
+            (
+                "password",
+                Rc::new(PasswordInput {
+                    inner: TextInput::new(WidgetId::new("password")),
+                    mask_char: '*',
+                }),
+            ),
+            (
+                "textarea",
+                Rc::new(TextArea {
+                    inner: TextInput::new(WidgetId::new("textarea")),
+                    visible_rows: 3,
+                }),
+            ),
+        ];
+        assert!(
+            kinds.len() >= 10,
+            "this test's own point is coverage across at least 10 leaf kinds"
+        );
+
+        let height = 24.0_f32;
+        let area = Rect::new(0.0, 0.0, 80.0, height);
+        for (name, extra) in kinds {
+            let child = || {
+                vec![LayoutChild::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: name.to_string(),
+                    descriptor: LeafDescriptor::Extra(extra.clone()),
+                    scroll_px: None,
+                }))]
+            };
+
+            let natural = extra.natural_size(&mut tui()).height.unwrap_or_else(|| {
+                panic!("{name} should report a natural height for this test to be meaningful")
+            });
+            assert!(
+                natural < height,
+                "{name}'s natural height {natural} should be well under the container's \
+                 {height} for Start/Center/End to visibly differ from Stretch"
+            );
+
+            let stretch = row(child(), Justify::Start, Align::Stretch);
+            let rects = layout_container_rects(&mut tui(), area, &stretch, true);
+            assert_eq!(
+                rects[0].height, height,
+                "{name}: Stretch should still fill the extent"
+            );
+
+            let start = row(child(), Justify::Start, Align::Start);
+            let rects = layout_container_rects(&mut tui(), area, &start, true);
+            assert_eq!(rects[0].y, 0.0, "{name}: Start should anchor at the top");
+            assert_eq!(rects[0].height, natural, "{name}: Start should not stretch");
+
+            let center = row(child(), Justify::Start, Align::Center);
+            let rects = layout_container_rects(&mut tui(), area, &center, true);
+            assert_eq!(
+                rects[0].y,
+                (height - natural) / 2.0,
+                "{name}: Center should center on the cross axis"
+            );
+            assert_eq!(
+                rects[0].height, natural,
+                "{name}: Center should not stretch"
+            );
+
+            let end = row(child(), Justify::Start, Align::End);
+            let rects = layout_container_rects(&mut tui(), area, &end, true);
+            assert_eq!(
+                rects[0].y,
+                height - natural,
+                "{name}: End should anchor at the bottom"
+            );
+            assert_eq!(rects[0].height, natural, "{name}: End should not stretch");
         }
     }
 
