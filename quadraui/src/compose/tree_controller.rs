@@ -23,14 +23,29 @@
 //! sign convention: positive `delta.y` = scroll content up (decrease
 //! offset). Backends normalise their native direction before emitting.
 
-use crate::primitives::scrollbar::{
-    scroll_by_clamped, scroll_by_clamped_f32, scroll_rows_floor, wheel_delta, PressZone, ThumbDrag,
-};
+use crate::compose::tree_nav::{NavOutcome, NavRow, TreeNavCore};
+use crate::primitives::scrollbar::PressZone;
 use crate::text_util::{next_char_boundary, prev_char_boundary, snap_to_char_boundary};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
     SelectionMode, TreePath, TreeRow, TreeRowEditState, TreeView, TreeViewHit, UiEvent, WidgetId,
 };
+
+/// Re-exported from [`crate::compose::tree_nav`] — see its own doc for
+/// what [`TreeController::move_selection_to_edge`] does with it.
+pub use crate::compose::tree_nav::Edge;
+
+impl NavRow for TreeRow {
+    fn path(&self) -> &TreePath {
+        &self.path
+    }
+    fn indent(&self) -> u16 {
+        self.indent
+    }
+    fn is_expanded(&self) -> Option<bool> {
+        self.is_expanded
+    }
+}
 
 /// What happened after [`TreeController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,16 +89,6 @@ pub enum TreeControllerEvent {
     /// [`TreeController::right_click`]'s doc for the previous `Consumed`
     /// behavior this defaults to preserving.
     ContextMenuRequested { path: TreePath, position: Point },
-}
-
-/// Which end of the row list [`TreeController::move_selection_to_edge`]
-/// moves the selection to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Edge {
-    /// The first row.
-    Start,
-    /// The last row.
-    End,
 }
 
 /// The outcome of classifying a raw `Key` against the tree navigation key
@@ -151,16 +156,11 @@ struct EditingState {
 pub struct TreeController {
     id: WidgetId,
     rows: Vec<TreeRow>,
-    selected_path: Option<TreePath>,
-    scroll_offset: usize,
-    /// Pixel-precise scroll position, accumulated from fractional wheel
-    /// deltas. `None` whenever the scroll position was last set by a
-    /// whole-row operation (keyboard nav, scrollbar drag, programmatic
-    /// [`TreeController::set_scroll_offset`]) — see
-    /// [`TreeController::scroll_px`].
-    scroll_px: Option<f32>,
+    /// Selection, scroll position and scrollbar-drag state — the
+    /// row-agnostic core shared with any other flattened row source; see
+    /// [`crate::compose::tree_nav`].
+    nav: TreeNavCore,
     has_focus: bool,
-    scroll_drag: Option<ThumbDrag>,
     vim_keys: bool,
     editing: Option<EditingState>,
     show_scrollbar: bool,
@@ -183,11 +183,8 @@ impl TreeController {
         Self {
             id: WidgetId::new(id),
             rows: Vec::new(),
-            selected_path: None,
-            scroll_offset: 0,
-            scroll_px: None,
+            nav: TreeNavCore::new(),
             has_focus: true,
-            scroll_drag: None,
             vim_keys: true,
             editing: None,
             show_scrollbar: true,
@@ -205,11 +202,11 @@ impl TreeController {
     // ── State accessors ───────────────────────────────────────────────
 
     pub fn selected_path(&self) -> Option<&TreePath> {
-        self.selected_path.as_ref()
+        self.nav.selected_path()
     }
 
     pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
+        self.nav.scroll_offset()
     }
 
     /// Pixel-precise scroll position accumulated from fractional wheel
@@ -220,7 +217,7 @@ impl TreeController {
     /// ignores this and reads [`TreeController::scroll_offset`] alone
     /// sees the pre-existing row-quantised behaviour unchanged.
     pub fn scroll_px(&self) -> Option<f32> {
-        self.scroll_px
+        self.nav.scroll_px()
     }
 
     pub fn has_focus(&self) -> bool {
@@ -234,12 +231,11 @@ impl TreeController {
     // ── Programmatic state control ────────────────────────────────────
 
     pub fn set_selected_path(&mut self, path: Option<TreePath>) {
-        self.selected_path = path;
+        self.nav.set_selected_path(path);
     }
 
     pub fn set_scroll_offset(&mut self, offset: usize) {
-        self.scroll_offset = offset;
-        self.scroll_px = None;
+        self.nav.set_scroll_offset(offset);
     }
 
     pub fn set_has_focus(&mut self, has_focus: bool) {
@@ -315,7 +311,7 @@ impl TreeController {
             selection_anchor,
             placeholder,
         });
-        self.selected_path = Some(path);
+        self.nav.set_selected_path(Some(path));
     }
 
     /// Cancel editing programmatically.
@@ -383,7 +379,7 @@ impl TreeController {
         // behavior, so a backend that ignores `state` paints byte-for-
         // byte what it always did.
         let state =
-            crate::primitives::tree::TreePaintState::default().with_scroll_px(self.scroll_px);
+            crate::primitives::tree::TreePaintState::default().with_scroll_px(self.nav.scroll_px());
         backend.draw_tree_with_state(tree_rect, &tree, &state, false);
         // When `backend.tree_paints_own_scrollbar()`, `draw_tree` above
         // already painted the overlay scrollbar itself — `sb` exists only
@@ -439,7 +435,7 @@ impl TreeController {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.scroll_drag = None;
+                self.nav.end_scrollbar_drag();
                 TreeControllerEvent::Ignored
             }
 
@@ -473,29 +469,11 @@ impl TreeController {
     // ── Navigation primitives (pub for SidebarSystem reuse) ───────────
 
     pub fn move_selection_by(&mut self, delta: isize, viewport_rows: usize) -> TreeControllerEvent {
-        if self.rows.is_empty() {
-            return TreeControllerEvent::Ignored;
+        match self.nav.move_selection_by(&self.rows, delta, viewport_rows) {
+            NavOutcome::Empty => TreeControllerEvent::Ignored,
+            NavOutcome::Unchanged => TreeControllerEvent::Consumed,
+            NavOutcome::Selected(path) => TreeControllerEvent::RowSelected { path },
         }
-        let count = self.rows.len();
-        let current = self.selected_row_index();
-
-        let new = if let Some(cur) = current {
-            let target = cur as isize + delta;
-            target.max(0).min(count as isize - 1) as usize
-        } else if delta > 0 {
-            0
-        } else {
-            count - 1
-        };
-
-        if current == Some(new) {
-            return TreeControllerEvent::Consumed;
-        }
-
-        let path = self.rows[new].path.clone();
-        self.selected_path = Some(path.clone());
-        self.scroll_to_visible(new, viewport_rows);
-        TreeControllerEvent::RowSelected { path }
     }
 
     #[deprecated(
@@ -516,22 +494,19 @@ impl TreeController {
         edge: Edge,
         viewport_rows: usize,
     ) -> TreeControllerEvent {
-        if self.rows.is_empty() {
-            return TreeControllerEvent::Ignored;
+        match self
+            .nav
+            .move_selection_to_edge(&self.rows, edge, viewport_rows)
+        {
+            NavOutcome::Empty => TreeControllerEvent::Ignored,
+            NavOutcome::Unchanged => TreeControllerEvent::Consumed,
+            NavOutcome::Selected(path) => TreeControllerEvent::RowSelected { path },
         }
-        let row = match edge {
-            Edge::Start => 0,
-            Edge::End => self.rows.len() - 1,
-        };
-        let path = self.rows[row].path.clone();
-        self.selected_path = Some(path.clone());
-        self.scroll_to_visible(row, viewport_rows);
-        TreeControllerEvent::RowSelected { path }
     }
 
     pub fn activate_selection(&self) -> TreeControllerEvent {
-        match &self.selected_path {
-            Some(path) => TreeControllerEvent::RowActivated { path: path.clone() },
+        match self.nav.activate() {
+            Some(path) => TreeControllerEvent::RowActivated { path },
             None => TreeControllerEvent::Ignored,
         }
     }
@@ -544,38 +519,18 @@ impl TreeController {
     /// Called by the keyboard Space handler and exposed for consumers that
     /// implement custom key dispatch (e.g. [`crate::SidebarSystem`]).
     pub fn toggle_expand_selected(&self) -> TreeControllerEvent {
-        let Some(sel_path) = &self.selected_path else {
-            return TreeControllerEvent::Ignored;
-        };
-        let Some(row) = self.rows.iter().find(|r| &r.path == sel_path) else {
-            return TreeControllerEvent::Ignored;
-        };
-        if row.is_expanded.is_some() {
-            TreeControllerEvent::RowToggleExpand {
-                path: row.path.clone(),
-            }
-        } else {
-            TreeControllerEvent::Ignored
+        match self.nav.toggle_expand(&self.rows) {
+            Some(path) => TreeControllerEvent::RowToggleExpand { path },
+            None => TreeControllerEvent::Ignored,
         }
     }
 
     pub fn scroll_to_visible(&mut self, row: usize, viewport_rows: usize) {
-        if viewport_rows == 0 {
-            return;
-        }
-        if row < self.scroll_offset {
-            self.scroll_offset = row;
-            self.scroll_px = None;
-        } else if row >= self.scroll_offset + viewport_rows {
-            self.scroll_offset = row.saturating_sub(viewport_rows.saturating_sub(1));
-            self.scroll_px = None;
-        }
+        self.nav.scroll_to_visible(row, viewport_rows);
     }
 
     pub fn page_scroll(&mut self, delta: isize, viewport_rows: usize) {
-        let max = self.rows.len().saturating_sub(viewport_rows);
-        self.scroll_offset = scroll_by_clamped(self.scroll_offset, delta, max);
-        self.scroll_px = None;
+        self.nav.page_scroll(delta, self.rows.len(), viewport_rows);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -852,12 +807,12 @@ impl TreeController {
             match layout.hit_test(x - tree_rect.x, y - tree_rect.y) {
                 TreeViewHit::Row(idx) => {
                     let path = self.rows[idx].path.clone();
-                    self.selected_path = Some(path.clone());
+                    self.nav.set_selected_path(Some(path.clone()));
                     TreeControllerEvent::RowSelected { path }
                 }
                 TreeViewHit::Chevron(idx) => {
                     let path = self.rows[idx].path.clone();
-                    self.selected_path = Some(path.clone());
+                    self.nav.set_selected_path(Some(path.clone()));
                     TreeControllerEvent::RowToggleExpand { path }
                 }
                 TreeViewHit::Empty => TreeControllerEvent::Consumed,
@@ -883,7 +838,7 @@ impl TreeController {
         match layout.hit_test(x - tree_rect.x, y - tree_rect.y) {
             TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
                 let path = self.rows[idx].path.clone();
-                self.selected_path = Some(path.clone());
+                self.nav.set_selected_path(Some(path.clone()));
                 TreeControllerEvent::RowActivated { path }
             }
             TreeViewHit::Empty => TreeControllerEvent::Consumed,
@@ -919,7 +874,7 @@ impl TreeController {
         match layout.hit_test(position.x - tree_rect.x, position.y - tree_rect.y) {
             TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
                 let path = self.rows[idx].path.clone();
-                self.selected_path = Some(path.clone());
+                self.nav.set_selected_path(Some(path.clone()));
                 TreeControllerEvent::ContextMenuRequested { path, position }
             }
             TreeViewHit::Empty if self.empty_space_context_menu => {
@@ -948,12 +903,8 @@ impl TreeController {
 
         match sb.press_zone(y) {
             PressZone::Thumb => {
-                self.scroll_drag = Some(ThumbDrag::begin(
-                    y,
-                    self.scroll_offset as f32,
-                    sb.travel(),
-                    max_offset as f32,
-                ));
+                self.nav
+                    .begin_scrollbar_drag(y, sb.travel(), max_offset as f32);
                 TreeControllerEvent::ScrollChanged
             }
             PressZone::Before => {
@@ -968,25 +919,14 @@ impl TreeController {
     }
 
     fn drag_to(&mut self, y: f32) -> TreeControllerEvent {
-        let Some(drag) = &self.scroll_drag else {
-            return TreeControllerEvent::Ignored;
-        };
-        let Some(new) = drag.offset_at(y) else {
-            return TreeControllerEvent::Ignored;
-        };
-        let new = new.round() as usize;
-        if new == self.scroll_offset {
-            return TreeControllerEvent::Ignored;
+        match self.nav.drag_to(y) {
+            Some(_) => TreeControllerEvent::Consumed,
+            None => TreeControllerEvent::Ignored,
         }
-        self.scroll_offset = new;
-        self.scroll_px = None;
-        TreeControllerEvent::Consumed
     }
 
     pub fn scroll_by(&mut self, delta: isize, viewport_rows: usize) {
-        let max = self.rows.len().saturating_sub(viewport_rows);
-        self.scroll_offset = scroll_by_clamped(self.scroll_offset, delta, max);
-        self.scroll_px = None;
+        self.nav.scroll_by(delta, self.rows.len(), viewport_rows);
     }
 
     /// Accumulate a fractional wheel/trackpad row delta into
@@ -1003,25 +943,8 @@ impl TreeController {
     /// [`Self::scroll_offset`] agree with what the paint path resolves
     /// `scroll_px` against.
     fn scroll_by_wheel(&mut self, row_delta: f32, row_height: f32, viewport_rows: usize) {
-        let row_height = if row_height.is_finite() && row_height > 0.0 {
-            row_height
-        } else {
-            1.0
-        };
-        let max_offset = self.rows.len().saturating_sub(viewport_rows);
-        let max_px = max_offset as f32 * row_height;
-        let current_px = self
-            .scroll_px
-            .unwrap_or(self.scroll_offset as f32 * row_height);
-        let delta_px = wheel_delta(row_delta, row_height);
-        let new_px = scroll_by_clamped_f32(current_px, delta_px, max_px);
-        self.scroll_px = Some(new_px);
-        // `scroll_rows_floor` here must agree with `resolve_scroll_px`'s
-        // own floor — rounding instead would desync `scroll_offset` (used
-        // for hit-testing and `ensure_visible`) from the row the paint
-        // path actually starts painting from whenever the fractional part
-        // of `new_px / row_height` is >= 0.5.
-        self.scroll_offset = scroll_rows_floor(new_px, row_height).min(max_offset);
+        self.nav
+            .scroll_by_wheel(row_delta, row_height, self.rows.len(), viewport_rows);
     }
 
     fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {
@@ -1033,8 +956,7 @@ impl TreeController {
     }
 
     pub fn selected_row_index(&self) -> Option<usize> {
-        let sel = self.selected_path.as_ref()?;
-        self.rows.iter().position(|r| &r.path == sel)
+        self.nav.selected_row_index(&self.rows)
     }
 
     fn build_tree_view(&self, _rect: Rect) -> TreeView {
@@ -1053,8 +975,8 @@ impl TreeController {
             id: self.id,
             rows,
             selection_mode: SelectionMode::Single,
-            selected_path: self.selected_path.clone(),
-            scroll_offset: self.scroll_offset,
+            selected_path: self.nav.selected_path().cloned(),
+            scroll_offset: self.nav.scroll_offset(),
             style: Default::default(),
             has_focus: self.has_focus,
         }
@@ -1088,7 +1010,7 @@ impl TreeController {
         if backend.tree_paints_own_scrollbar() {
             let tree = self.build_tree_view(rect);
             let sb = backend.tree_vscrollbar(rect, &tree).map(|mut sb| {
-                sb.dragging = self.scroll_drag.is_some();
+                sb.dragging = self.nav.is_dragging();
                 sb
             });
             return (rect, sb);
@@ -1116,13 +1038,13 @@ impl TreeController {
         };
         let track_w = self.scrollbar_track_width(backend);
         let min_thumb = track_w.max(1.0);
-        let is_dragging = self.scroll_drag.is_some();
+        let is_dragging = self.nav.is_dragging();
         // A continuous `scroll_px` moves the thumb smoothly between whole
         // rows; falls back to `scroll_offset` unchanged when `scroll_px`
         // is `None`.
-        let scroll_rows = match self.scroll_px {
+        let scroll_rows = match self.nav.scroll_px() {
             Some(px) if lh > 0.0 => px / lh,
-            _ => self.scroll_offset as f32,
+            _ => self.nav.scroll_offset() as f32,
         };
         let mut sb = Scrollbar::vertical(
             format!("{}-scrollbar", self.id),
