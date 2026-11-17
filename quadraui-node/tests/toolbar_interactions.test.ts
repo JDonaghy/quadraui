@@ -265,3 +265,109 @@ ${JSON.stringify(toolbarEvent)}`,
     "the now-active third segment must still paint its label",
   );
 });
+
+// `[ Alpha ]` is 9 cells, `[ Beta ]` is 8 -- a 10-cell-wide bar fits exactly
+// one, so `ToolbarOverflow.Clip` (the default) would drop `Beta` entirely
+// while `Wrap` must place it on row 2.
+test("an 'overflow: Wrap' toolbar flows a button too wide to share row 1 onto row 2", () => {
+  const app = new QuiApp(10, 5);
+  app.setRender(() => ({
+    toolbar: {
+      id: "toolbar:main",
+      overflow: "Wrap",
+      buttons: [
+        {
+          Action: {
+            id: "alpha",
+            label: "Alpha",
+            icon: null,
+            key_hint: null,
+            enabled: true,
+            is_active: false,
+            tooltip: "",
+          },
+        },
+        {
+          Action: {
+            id: "beta",
+            label: "Beta",
+            icon: null,
+            key_hint: null,
+            enabled: true,
+            is_active: false,
+            tooltip: "",
+          },
+        },
+      ],
+    },
+  }));
+
+  const lines = app.screen().split("\n");
+  const alphaRow = lines.findIndex((line: string) => line.includes("Alpha"));
+  const betaRow = lines.findIndex((line: string) => line.includes("Beta"));
+  assert.notEqual(alphaRow, -1, "the first button must be painted somewhere on screen");
+  assert.notEqual(
+    betaRow,
+    -1,
+    "Wrap must still paint the second button somewhere on screen, not clip it",
+  );
+  assert.ok(
+    betaRow > alphaRow,
+    `Wrap must flow the second button onto a later row (row ${betaRow}), not clip it off \
+row ${alphaRow}`,
+  );
+});
+
+// `[ Keep ]` and `[ Drop ]` are both 8 cells; the trailing `[ » ]`
+// affordance is 5. A 14-wide bar has room for the affordance plus exactly
+// one of the two buttons (14 - 5 = 9 >= 8). With no priority override,
+// `ToolbarOverflow.Menu`'s own tie-break drops the trailing-most button
+// ("Drop") first; registering "keep" at priority -1 (lower than "drop"'s
+// default 0) must flip that, dropping "Keep" instead.
+test("'overflow_priorities' overrides ToolbarOverflow.Menu's default trailing-drops-first order", () => {
+  const app = new QuiApp(14, 3);
+  app.setRender(() => ({
+    toolbar: {
+      id: "toolbar:main",
+      overflow: "Menu",
+      overflow_priorities: [{ id: "keep", priority: -1 }],
+      buttons: [
+        {
+          Action: {
+            id: "keep",
+            label: "Keep",
+            icon: null,
+            key_hint: null,
+            enabled: true,
+            is_active: false,
+            tooltip: "",
+          },
+        },
+        {
+          Action: {
+            id: "drop",
+            label: "Drop",
+            icon: null,
+            key_hint: null,
+            enabled: true,
+            is_active: false,
+            tooltip: "",
+          },
+        },
+      ],
+    },
+  }));
+
+  assert.ok(
+    app.screenContains("Drop"),
+    "the lower-priority \"keep\" button must be dropped, leaving \"Drop\" painted",
+  );
+  assert.ok(
+    !app.screenContains("Keep"),
+    "overflow_priorities must override the default trailing-drops-first order",
+  );
+  assert.ok(
+    app.screenContains("»"),
+    "a dropped item must leave the trailing » affordance painted",
+  );
+});

@@ -851,6 +851,15 @@ pub fn schema() -> Vec<DefJson> {
         ],
         "One `Toolbar::buttons` entry: `\"Separator\"`/`\"Spacer\"` (bare strings), `{\"Action\": {...}}`, `{\"Label\": {...}}`, or `{\"Group\": {...}}`.",
     ));
+    let toolbar_overflow = b.define(alias_doc(
+        "ToolbarOverflow",
+        lit(&["Clip", "Wrap", "Menu"]),
+        "How a `\"toolbar\"` extra's buttons behave once they don't fit: \"Clip\" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `\"overflow\"` key; \"Wrap\" flows overflow onto additional lines/columns; \"Menu\" drops lowest-\"overflow_priorities\"-first items behind a trailing \u{00bb} affordance.",
+    ));
+    let toolbar_overflow_priority_entry = b.define(obj(
+        "ToolbarOverflowPriorityEntry",
+        vec![field("id", re("WidgetId")), field("priority", int_())],
+    ));
     let toolbar_descriptor = b.define(obj(
         "ToolbarDescriptor",
         vec![
@@ -858,6 +867,8 @@ pub fn schema() -> Vec<DefJson> {
             field("buttons", list(toolbar_button_descriptor)),
             field_opt("bg", nullable(color.clone())),
             field_opt("focused_index", nullable(int_())),
+            field_opt("overflow", toolbar_overflow),
+            field_opt("overflow_priorities", list(toolbar_overflow_priority_entry)),
         ],
     ));
     b.define(obj(

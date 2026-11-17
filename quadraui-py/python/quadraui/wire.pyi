@@ -327,11 +327,20 @@ class _ToolbarButtonGroupWrapper(TypedDict):
 # One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, or `{"Group": {...}}`.
 ToolbarButtonDescriptor = Union[Literal['Separator', 'Spacer'], _ToolbarButtonActionWrapper, _ToolbarButtonLabelWrapper, _ToolbarButtonGroupWrapper]
 
+# How a `"toolbar"` extra's buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance.
+ToolbarOverflow = Literal['Clip', 'Wrap', 'Menu']
+
+class ToolbarOverflowPriorityEntry(TypedDict):
+    id: WidgetId
+    priority: int
+
 class ToolbarDescriptor(TypedDict):
     id: WidgetId
     buttons: List[ToolbarButtonDescriptor]
     bg: NotRequired[Optional[Color]]
     focused_index: NotRequired[Optional[int]]
+    overflow: NotRequired[ToolbarOverflow]
+    overflow_priorities: NotRequired[List[ToolbarOverflowPriorityEntry]]
 
 class PanelActionDescriptor(TypedDict):
     id: WidgetId

@@ -8,11 +8,13 @@ use quadraui::{
     ActivityBar, ActivityBarEvent, ComboBox, ComboBoxEvent, DataTableEvent, DatePicker,
     DatePickerEvent, EditOp, FormEvent, Key, ListViewEvent, Modifiers, NamedKey, NumberInput,
     NumberInputEvent, RadioGroup, RadioGroupEvent, StatusBar, StatusBarEvent, Switch, SwitchEvent,
-    TabBar, TabBarEvent, TextDisplayEvent, TextInput, Toolbar, TreeEvent, UiEvent, WidgetId,
+    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
-use crate::extra_paint::{extra_as, Checkbox, Markdown, PasswordInput, Select, Slider, TextArea};
+use crate::extra_paint::{
+    extra_as, extra_as_toolbar, Checkbox, Markdown, PasswordInput, Select, Slider, TextArea,
+};
 use crate::hit::{HitDetail, PaintedHit};
 use crate::text_input::{apply_text_input_edit, text_input_key_event, TextEditorCache};
 use crate::tree_edit::tree_row_rename_key_event;
@@ -633,7 +635,7 @@ pub fn semantic_event_for_hit(
                     let url = markdown.link_url_for_child(id)?;
                     Some(UiEvent::RichTextLinkClicked(*bar, url))
                 } else {
-                    let toolbar = extra_as::<Toolbar>(extra)?;
+                    let toolbar = extra_as_toolbar(extra)?;
                     Some(UiEvent::Toolbar(*bar, toolbar.click(id)?))
                 }
             }
@@ -792,7 +794,7 @@ pub fn focus_scoped_key_event(
                 if let Some(date_picker) = extra_as::<DatePicker>(extra) {
                     return date_picker_key_event(*id, date_picker, &key);
                 }
-                if let Some(toolbar) = extra_as::<Toolbar>(extra) {
+                if let Some(toolbar) = extra_as_toolbar(extra) {
                     // Enter/Space activates whichever button
                     // `Toolbar::focused_index` names (set by the host, same
                     // convention `TabChrome::focused_index` documents);

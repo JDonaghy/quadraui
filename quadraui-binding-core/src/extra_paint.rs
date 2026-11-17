@@ -146,6 +146,21 @@ pub fn extra_as_text_input(extra: &Rc<dyn ExtraPaint>) -> Option<&TextInput> {
     None
 }
 
+/// Recovers the plain [`Toolbar`] backing the matched `"toolbar"` extra,
+/// whether `extra` is a bare standalone [`Toolbar`] (the shape in-crate
+/// Rust callers build directly, e.g. [`crate::engine`]'s own tests) or a
+/// [`ToolbarWithOverflow`] (the shape a `"toolbar"` wire dict decodes to
+/// once it sets `"overflow"`/`"overflow_priorities"`) —
+/// [`crate::semantic::semantic_event_for_hit`] only needs
+/// `Toolbar::click`/`Toolbar::activate_focused`, which read identically
+/// off either.
+pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
+    if let Some(toolbar) = extra_as::<Toolbar>(extra) {
+        return Some(toolbar);
+    }
+    extra_as::<ToolbarWithOverflow>(extra).map(|w| &w.toolbar)
+}
+
 /// A compact boolean toggle's own box, with no label of its own
 /// ([`Checkbox`]/[`Switch`] both hide their `Form`-field label — see
 /// [`single_field_form`]): `cell_width` cells on a cell-grid backend, or
@@ -1396,6 +1411,59 @@ impl ExtraPaint for ActivityBar {
     }
 }
 
+/// Converts a [`quadraui::ToolbarLayout`]'s `visible_items` into the
+/// `(Rect, WidgetId)` chrome-hit list [`ExtraPaint::paint_chrome`] returns —
+/// shared by [`Toolbar`]'s own impl and [`ToolbarWithOverflow`]'s so the two
+/// wire shapes (plain Clip-only vs. [`quadraui::ToolbarOverflow`]-aware)
+/// agree on exactly which items become clickable.
+///
+/// [`quadraui::Backend::draw_toolbar_interactive`]/
+/// [`quadraui::Backend::draw_toolbar_with_overflow`]'s own
+/// [`quadraui::ToolbarLayout::visible_items`] is already in the ABSOLUTE
+/// frame [`ExtraPaint::hit_test`] uses, so no translation is needed —
+/// unlike [`ActivityBar::paint_chrome`]'s bar-relative row spans. Disabled
+/// actions and non-action items (separators, labels) have no `action_id` or
+/// aren't `clickable`, so they never become a hit region, matching
+/// [`quadraui::ToolbarLayout::hit_test`]'s own skip rule. A
+/// [`quadraui::ToolbarButton::Group`] item is itself never clickable — its
+/// `group_children` are walked instead, same split
+/// [`quadraui::ToolbarLayout::hit_test`] makes.
+fn toolbar_chrome_hits(layout: quadraui::ToolbarLayout) -> Vec<(Rect, WidgetId)> {
+    layout
+        .visible_items
+        .into_iter()
+        .flat_map(|item| -> Vec<(Rect, WidgetId)> {
+            if item.kind == quadraui::ToolbarItemKind::Group {
+                item.group_children
+                    .into_iter()
+                    .filter(|child| child.clickable)
+                    .filter_map(|child| child.action_id.map(|id| (child.bounds, id)))
+                    .collect()
+            } else if item.clickable {
+                item.action_id
+                    .map(|id| (item.bounds, id))
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        })
+        .collect()
+}
+
+/// A tab stop whenever at least one button could ever be
+/// [`quadraui::Toolbar::activate_focused`]'s target — matching `Switch`'s
+/// own "interactive, so focusable" rule. A toolbar with no enabled `Action`
+/// (all separators/labels, or every action disabled) is skipped, the same
+/// way an empty `List`/`Tree` still counts (unlike those, nothing here
+/// could ever be activated, so there is no reason to spend a tab stop on
+/// it). Shared by [`Toolbar`]'s own impl and [`ToolbarWithOverflow`]'s.
+fn toolbar_tab_stop(bar: &Toolbar) -> bool {
+    bar.buttons
+        .iter()
+        .any(|button| matches!(button, ToolbarButton::Action { enabled: true, .. }))
+}
+
 impl ExtraPaint for Toolbar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         self.paint_chrome(backend, area, &InteractionState::default());
@@ -1405,56 +1473,139 @@ impl ExtraPaint for Toolbar {
         self.id
     }
 
-    /// [`quadraui::Backend::draw_toolbar_interactive`]'s own
-    /// [`quadraui::ToolbarLayout::visible_items`] is already in the
-    /// ABSOLUTE frame [`ExtraPaint::hit_test`] uses, so no translation is
-    /// needed — unlike [`ActivityBar::paint_chrome`]'s bar-relative row
-    /// spans. Disabled actions and non-action items (separators, labels)
-    /// have no `action_id` or aren't `clickable`, so they never become a
-    /// hit region, matching [`quadraui::ToolbarLayout::hit_test`]'s own
-    /// skip rule. A [`quadraui::ToolbarButton::Group`] item is itself
-    /// never clickable — its `group_children` are walked instead, same
-    /// split [`quadraui::ToolbarLayout::hit_test`] makes.
     fn paint_chrome(
         &self,
         backend: &mut dyn Backend,
         area: Rect,
         interaction: &InteractionState,
     ) -> Vec<(Rect, WidgetId)> {
-        backend
-            .draw_toolbar_interactive(area, self, interaction)
-            .visible_items
-            .into_iter()
-            .flat_map(|item| -> Vec<(Rect, WidgetId)> {
-                if item.kind == quadraui::ToolbarItemKind::Group {
-                    item.group_children
-                        .into_iter()
-                        .filter(|child| child.clickable)
-                        .filter_map(|child| child.action_id.map(|id| (child.bounds, id)))
-                        .collect()
-                } else if item.clickable {
-                    item.action_id
-                        .map(|id| (item.bounds, id))
-                        .into_iter()
-                        .collect()
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect()
+        toolbar_chrome_hits(backend.draw_toolbar_interactive(area, self, interaction))
     }
 
-    /// A tab stop whenever at least one button could ever be
-    /// [`Self::activate_focused`]'s target — matching `Switch`'s own
-    /// "interactive, so focusable" rule. A toolbar with no enabled
-    /// `Action` (all separators/labels, or every action disabled) is
-    /// skipped, the same way an empty `List`/`Tree` still counts (unlike
-    /// those, nothing here could ever be activated, so there is no reason
-    /// to spend a tab stop on it).
     fn tab_stop(&self) -> bool {
-        self.buttons
-            .iter()
-            .any(|button| matches!(button, ToolbarButton::Action { enabled: true, .. }))
+        toolbar_tab_stop(self)
+    }
+}
+
+/// One [`ToolbarWithOverflow::overflow_priorities`] entry: the wire's
+/// `{"id": ..., "priority": ...}` shape for a single
+/// [`quadraui::ToolbarOverflowPriorities`] registration — a list of these,
+/// not a `{id: priority}` map, since [`crate::wire_schema`]'s schema DSL
+/// has no map/record type, only objects with a fixed field set and lists
+/// of them (mirrors [`quadraui::ToolbarIcons`]'s own `Vec<(WidgetId, Icon)>`
+/// registration-by-id shape for the same reason).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+pub struct ToolbarOverflowPriorityEntry {
+    pub id: WidgetId,
+    pub priority: i32,
+}
+
+/// Wire-decoded shape of the `"toolbar"` extra when its dict carries an
+/// `"overflow"` and/or `"overflow_priorities"` key — reached via the same
+/// `"toolbar"` kind [`Toolbar`] itself decodes, see
+/// [`Self::deserialize`]. Neither knob has anywhere to live on
+/// [`quadraui::Toolbar`] directly: `overflow`
+/// ([`quadraui::ToolbarOverflow`]) is a per-call
+/// [`quadraui::ToolbarLayoutOptions`] argument to
+/// [`quadraui::Backend::draw_toolbar_with_overflow`], not a `Toolbar`
+/// field, and per-button drop priority
+/// ([`quadraui::ToolbarOverflowPriorities`]) is a side table keyed by
+/// [`WidgetId`], not a [`ToolbarButton`] field — so a dict/object wire
+/// payload has nowhere else to carry either one. Both are
+/// `#[serde(default)]` on the wire (`Self::deserialize`'s `Wire` shape):
+/// a payload with neither key decodes to `overflow:
+/// ToolbarOverflow::Clip` and empty `overflow_priorities`, which
+/// [`Self::paint_chrome`] paints byte-identically to a plain [`Toolbar`]
+/// extra — unchanged from today's rendering.
+#[derive(Debug, Clone)]
+pub struct ToolbarWithOverflow {
+    pub toolbar: Toolbar,
+    pub overflow: quadraui::ToolbarOverflow,
+    /// Per-button drop priority for [`quadraui::ToolbarOverflow::Menu`],
+    /// keyed by the owning `Action`/`Group`'s `id`. Folded into a
+    /// [`quadraui::ToolbarOverflowPriorities`] table by [`Self::priorities`].
+    pub overflow_priorities: Vec<ToolbarOverflowPriorityEntry>,
+}
+
+impl ToolbarWithOverflow {
+    /// [`Self::overflow_priorities`] folded into the
+    /// [`quadraui::ToolbarOverflowPriorities`] table
+    /// [`quadraui::Backend::draw_toolbar_with_overflow`] takes.
+    pub fn priorities(&self) -> quadraui::ToolbarOverflowPriorities {
+        self.overflow_priorities.iter().fold(
+            quadraui::ToolbarOverflowPriorities::new(),
+            |table, entry| table.with(entry.id, entry.priority),
+        )
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ToolbarWithOverflow {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Wire {
+            id: WidgetId,
+            buttons: Vec<ToolbarButton>,
+            #[serde(default)]
+            bg: Option<quadraui::Color>,
+            #[serde(default)]
+            focused_index: Option<usize>,
+            #[serde(default)]
+            overflow: quadraui::ToolbarOverflow,
+            #[serde(default)]
+            overflow_priorities: Vec<ToolbarOverflowPriorityEntry>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let mut toolbar = Toolbar::new(wire.id)
+            .with_buttons(wire.buttons)
+            .with_focused_index(wire.focused_index);
+        if let Some(bg) = wire.bg {
+            toolbar = toolbar.with_bg(bg);
+        }
+        Ok(Self {
+            toolbar,
+            overflow: wire.overflow,
+            overflow_priorities: wire.overflow_priorities,
+        })
+    }
+}
+
+impl ExtraPaint for ToolbarWithOverflow {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        self.paint_chrome(backend, area, &InteractionState::default());
+    }
+
+    fn id(&self) -> WidgetId {
+        self.toolbar.id
+    }
+
+    /// Always routes through [`quadraui::Backend::draw_toolbar_with_overflow`]
+    /// — for `overflow: ToolbarOverflow::Clip` with no registered
+    /// priorities (today's default), that method is byte-for-byte
+    /// identical to [`quadraui::Backend::draw_toolbar_interactive`] (see
+    /// `quadraui::Toolbar::layout_with_overflow`'s own doc), so decoding a
+    /// payload with neither new key changes nothing about how it paints.
+    fn paint_chrome(
+        &self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        let options = quadraui::ToolbarLayoutOptions::new().with_overflow(self.overflow);
+        let priorities = self.priorities();
+        toolbar_chrome_hits(backend.draw_toolbar_with_overflow(
+            area,
+            &self.toolbar,
+            interaction,
+            options,
+            &priorities,
+        ))
+    }
+
+    fn tab_stop(&self) -> bool {
+        toolbar_tab_stop(&self.toolbar)
     }
 }
 
@@ -1822,7 +1973,7 @@ extra_primitives! {
     "multi_section_view" => MultiSectionView,
     "diff_view" => DiffView,
     "activity_bar" => ActivityBar,
-    "toolbar" => Toolbar,
+    "toolbar" => ToolbarWithOverflow,
     "menu_bar" => MenuBar,
     "status_bar" => StatusBar,
     "command_line" => CommandLine,
