@@ -355,11 +355,21 @@ export interface _ToolbarButtonGroupWrapper {
 /** One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, or `{"Group": {...}}`. */
 export type ToolbarButtonDescriptor = ("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper;
 
+/** How a `"toolbar"` extra's buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance. */
+export type ToolbarOverflow = "Clip" | "Wrap" | "Menu";
+
+export interface ToolbarOverflowPriorityEntry {
+  id: WidgetId;
+  priority: number;
+}
+
 export interface ToolbarDescriptor {
   id: WidgetId;
   buttons: ToolbarButtonDescriptor[];
   bg?: Color | null;
   focused_index?: number | null;
+  overflow?: ToolbarOverflow;
+  overflow_priorities?: ToolbarOverflowPriorityEntry[];
 }
 
 export interface PanelActionDescriptor {

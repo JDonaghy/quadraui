@@ -18,6 +18,11 @@ fragment step for this package (that mechanism, and
 
 ### Added
 
+- A `"toolbar"` extra's object may now set `overflow` (`"Clip"`/`"Wrap"`/
+  `"Menu"`) and `overflow_priorities` (a `{id, priority}[]` list) to opt
+  into `ToolbarOverflow`'s wrap/menu-with-drop-priority layouts instead of
+  today's Clip-only behaviour. Both keys are optional; a `"toolbar"`
+  object with neither renders exactly as before.
 - `App.confirm(title, body, buttons, severity?)` and `App.alert(title,
   body, options?)`: queue an in-canvas dialog through `App.actions`
   (never the direct, mid-dispatch-unsafe `QuiApp.showMessageDialog`) and

@@ -410,6 +410,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ToolbarButtonGroup`](#wire-_toolbarbuttongroup)
 - [`_ToolbarButtonGroupWrapper`](#wire-_toolbarbuttongroupwrapper)
 - [`ToolbarButtonDescriptor`](#wire-toolbarbuttondescriptor)
+- [`ToolbarOverflow`](#wire-toolbaroverflow)
+- [`ToolbarOverflowPriorityEntry`](#wire-toolbaroverflowpriorityentry)
 - [`ToolbarDescriptor`](#wire-toolbardescriptor)
 - [`PanelActionDescriptor`](#wire-panelactiondescriptor)
 - [`PaddingAxis`](#wire-paddingaxis)
@@ -1269,6 +1271,21 @@ One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action
 
 Alias for `("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper`.
 
+<a id="wire-toolbaroverflow"></a>
+#### `ToolbarOverflow`
+
+How a `"toolbar"` extra's buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance.
+
+Alias for `"Clip" | "Wrap" | "Menu"`.
+
+<a id="wire-toolbaroverflowpriorityentry"></a>
+#### `ToolbarOverflowPriorityEntry`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `priority` | `number` | yes |  |
+
 <a id="wire-toolbardescriptor"></a>
 #### `ToolbarDescriptor`
 
@@ -1278,6 +1295,8 @@ Alias for `("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButt
 | `buttons` | `ToolbarButtonDescriptor[]` | yes |  |
 | `bg` | `Color \| null` | no |  |
 | `focused_index` | `number \| null` | no |  |
+| `overflow` | `ToolbarOverflow` | no |  |
+| `overflow_priorities` | `ToolbarOverflowPriorityEntry[]` | no |  |
 
 <a id="wire-panelactiondescriptor"></a>
 #### `PanelActionDescriptor`

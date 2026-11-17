@@ -10,6 +10,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ## [Unreleased]
 
+### Added
+
+- A `"toolbar"` extra's dict may now set `"overflow"` (`"Clip"`/`"Wrap"`/
+  `"Menu"`) and `"overflow_priorities"` (a list of `{"id", "priority"}`
+  entries) to opt into `ToolbarOverflow`'s wrap/menu-with-drop-priority
+  layouts instead of today's Clip-only behaviour. Both keys are optional;
+  a `"toolbar"` dict with neither renders exactly as before.
+
 ### Changed
 
 - `show_overlay("layout_dialog", ...)`'s `"dialog"` chrome no longer

@@ -9600,6 +9600,145 @@ def handle(event):
         });
     }
 
+    /// A standalone `toolbar` leaf with `'overflow': 'Wrap'` and two buttons
+    /// too wide to share one row: the second button must flow onto the
+    /// bar's second line (a greater `y`) instead of clipping off-screen —
+    /// proving the dict/object `"overflow"` key set by a Python render
+    /// callback actually reaches `Backend::draw_toolbar_with_overflow`,
+    /// not just `draw_toolbar_interactive`'s Clip-only path.
+    #[test]
+    fn toolbar_wrap_overflow_flows_the_second_button_onto_a_new_row() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'id': 'toolbar:main', 'toolbar': {
+        'id': 'toolbar:main',
+        'overflow': 'Wrap',
+        'buttons': [
+            {'Action': {
+                'id': 'alpha', 'label': 'Alpha', 'icon': None,
+                'key_hint': None, 'enabled': True, 'is_active': False,
+                'tooltip': '',
+            }},
+            {'Action': {
+                'id': 'beta', 'label': 'Beta', 'icon': None,
+                'key_hint': None, 'enabled': True, 'is_active': False,
+                'tooltip': '',
+            }},
+        ],
+    }}
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+
+            // `[ Alpha ]` is 9 cells, `[ Beta ]` is 8 -- 10 cells of width
+            // fits exactly one, so Clip would drop `Beta` entirely while
+            // Wrap must place it on row 2.
+            let mut app =
+                QuiApp::new(10, 5, None, Some(render), false, None).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the first button must stay on row 1"
+            );
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "Wrap must still paint the second button somewhere on screen"
+            );
+            let alpha_bounds = app
+                .driver
+                .find_bounds("Alpha")
+                .expect("Alpha must be on screen");
+            let beta_bounds = app
+                .driver
+                .find_bounds("Beta")
+                .expect("Beta must be on screen");
+            assert_eq!(alpha_bounds.y, 0.0, "the first button stays on row 1");
+            assert!(
+                beta_bounds.y > alpha_bounds.y,
+                "Wrap must flow the second button onto a later row (y={}), not clip it off \
+                 row 1 (y={})",
+                beta_bounds.y,
+                alpha_bounds.y
+            );
+        });
+    }
+
+    /// A standalone `toolbar` leaf with `'overflow': 'Menu'` and an
+    /// `'overflow_priorities'` entry giving the *leading* button the lower
+    /// priority: that button (not the trailing one `ToolbarOverflow::Menu`'s
+    /// own tie-break would otherwise drop) must be the one replaced by the
+    /// trailing `»` affordance -- proving the dict/object
+    /// `"overflow_priorities"` list actually reaches
+    /// `quadraui::ToolbarOverflowPriorities`, not just `"overflow"` alone.
+    #[test]
+    fn toolbar_menu_overflow_priorities_override_the_default_drop_order() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'id': 'toolbar:main', 'toolbar': {
+        'id': 'toolbar:main',
+        'overflow': 'Menu',
+        'overflow_priorities': [{'id': 'keep', 'priority': -1}],
+        'buttons': [
+            {'Action': {
+                'id': 'keep', 'label': 'Keep', 'icon': None,
+                'key_hint': None, 'enabled': True, 'is_active': False,
+                'tooltip': '',
+            }},
+            {'Action': {
+                'id': 'drop', 'label': 'Drop', 'icon': None,
+                'key_hint': None, 'enabled': True, 'is_active': False,
+                'tooltip': '',
+            }},
+        ],
+    }}
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+
+            // `[ Keep ]` and `[ Drop ]` are both 8 cells; the trailing `[ » ]`
+            // affordance is 5. A 14-wide bar has room for the affordance
+            // plus exactly one of the two buttons (14 - 5 = 9 >= 8). With no
+            // priority override `ToolbarOverflow::Menu`'s own tie-break
+            // drops the trailing-most button ("Drop") first; registering
+            // "keep" at priority -1 (lower than "drop"'s default 0) must
+            // flip that, dropping "Keep" instead.
+            let mut app =
+                QuiApp::new(14, 3, None, Some(render), false, None).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Drop").expect("render must not raise"),
+                "the lower-priority \"keep\" button must be dropped, leaving \"Drop\" painted"
+            );
+            assert!(
+                !app.screen_contains("Keep").expect("render must not raise"),
+                "overflow_priorities must override the default trailing-drops-first order"
+            );
+            assert!(
+                app.screen_contains("\u{bb}")
+                    .expect("render must not raise"),
+                "a dropped item must leave the trailing \u{bb} affordance painted"
+            );
+        });
+    }
+
     /// Two `tree` leaves side by side in a `Row`: `Tab` cycles focus between
     /// them (via core's shared `preprocess_event`/`FocusManager` pipeline,
     /// driven by `PyAppLogic::tab_stops`), and a plain key then routes to
