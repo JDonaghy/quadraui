@@ -7,7 +7,8 @@
 
 use quadraui::{
     Backend, BackendCaps, Color, Icon, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, UiEvent, WidgetId,
+    StatusBarSegment, Style, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarLayout,
+    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -69,10 +70,14 @@ impl ToolbarDemo {
         }
     }
 
-    /// `variant == 1` drops button labels and keeps only icon + tooltip —
-    /// the compact style a space-constrained host toolbar would use.
+    /// `variant == 1` ("Icon-only") drops button labels and keeps only
+    /// icon + tooltip — the compact style a space-constrained host
+    /// toolbar would use. Every other variant, including the narrow-bar
+    /// `Overflow: Wrap`/`Overflow: Menu` ones, keeps labels: those exist
+    /// to show *how the same labeled bar degrades* in a narrower slot,
+    /// not to also exercise the icon-only style at once.
     fn toolbar(&self, variant: usize) -> Toolbar {
-        let labeled = variant == 0;
+        let labeled = variant != 1;
         let label = |text: &str| if labeled { text.into() } else { String::new() };
         Toolbar::new(WidgetId::new("gallery:toolbar"))
             .with_buttons(vec![
@@ -232,6 +237,66 @@ impl ToolbarDemo {
         Rect::new(area.x, area.y + toolbar_h, area.width, hint_h)
     }
 
+    /// Variant 2 ("Overflow: Wrap") / 3 ("Overflow: Menu")'s narrow-bar
+    /// twin of [`Self::toolbar_rect`] — deliberately narrower than the
+    /// full labeled toolbar's combined button width so `mode` always has
+    /// something to show, the same "pick a bar narrower than its
+    /// buttons" setup `quadraui/examples/common/toolbar_overflow_demo.rs`
+    /// uses for its own fixed-width slot.
+    fn overflow_rect(area: Rect, backend: &dyn Backend, mode: ToolbarOverflow) -> Rect {
+        let h = chrome_strip_height(backend, |s| s.toolbar_height);
+        let width = (area.width * 0.4).max(h * 12.0).min(area.width);
+        // `Wrap` needs enough rows for every top-level item (both groups
+        // plus the three flat actions) to land on its own line at
+        // `width` — sized generously up front the same way
+        // `toolbar_overflow_demo.rs`'s `BAR_ROWS` is, rather than
+        // following `ToolbarLayout::cross_extent`'s two-pass protocol.
+        // `Menu` never grows past one line: dropped items move behind
+        // the trailing `»` affordance instead of onto a new row.
+        let rows = match mode {
+            ToolbarOverflow::Wrap => 6.0,
+            _ => 1.0,
+        };
+        Rect::new(area.x, area.y, width, h * rows)
+    }
+
+    /// The hint bar below an [`Self::overflow_rect`] slot — positioned
+    /// off that rect's own painted height rather than
+    /// [`Self::hint_rect`]'s single-chrome-line assumption, since `Wrap`
+    /// reserves several rows.
+    fn overflow_hint_rect(area: Rect, bar_rect: Rect, backend: &dyn Backend) -> Rect {
+        let hint_h = chrome_strip_height(backend, |s| s.status_bar_height);
+        Rect::new(area.x, bar_rect.y + bar_rect.height, area.width, hint_h)
+    }
+
+    /// `variant`'s [`ToolbarOverflow`] mode, or `None` for the two plain
+    /// `Clip` variants ("Labeled", "Icon-only").
+    fn overflow_mode(variant: usize) -> Option<ToolbarOverflow> {
+        match variant {
+            2 => Some(ToolbarOverflow::Wrap),
+            3 => Some(ToolbarOverflow::Menu),
+            _ => None,
+        }
+    }
+
+    fn overflow_options(mode: ToolbarOverflow) -> ToolbarLayoutOptions {
+        ToolbarLayoutOptions::new().with_overflow(mode)
+    }
+
+    /// Drop priorities for [`ToolbarOverflow::Menu`] — lowest dropped
+    /// first. The permanently-disabled "Debug" button goes first since
+    /// losing it costs nothing; the exclusive view-mode group goes last
+    /// since it is the one a caller is least likely to want hidden.
+    fn overflow_priorities() -> ToolbarOverflowPriorities {
+        ToolbarOverflowPriorities::new()
+            .with(WidgetId::new("gallery:toolbar:debug"), 0)
+            .with(WidgetId::new("gallery:toolbar:filter"), 1)
+            .with(WidgetId::new("gallery:toolbar:pause"), 2)
+            .with(WidgetId::new("gallery:toolbar:continue"), 3)
+            .with(WidgetId::new("gallery:toolbar:nav"), 4)
+            .with(WidgetId::new("gallery:toolbar:view"), 5)
+    }
+
     fn hint_bar(&self) -> StatusBar {
         StatusBar {
             id: WidgetId::new("gallery:toolbar:hint"),
@@ -352,20 +417,42 @@ impl Demo for ToolbarDemo {
     }
 
     fn variants(&self) -> &'static [&'static str] {
-        &["Labeled", "Icon-only"]
+        &["Labeled", "Icon-only", "Overflow: Wrap", "Overflow: Menu"]
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let rect = Self::toolbar_rect(area, backend);
-        let bar = self.painted_toolbar(variant, backend);
-        let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
+        match Self::overflow_mode(variant) {
+            None => {
+                let rect = Self::toolbar_rect(area, backend);
+                let bar = self.painted_toolbar(variant, backend);
+                let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
 
-        let hint_rect = Self::hint_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            hint_rect,
-            &self.hint_bar(),
-            &InteractionState::new(),
-        );
+                let hint_rect = Self::hint_rect(area, backend);
+                let _ = backend.draw_status_bar_interactive(
+                    hint_rect,
+                    &self.hint_bar(),
+                    &InteractionState::new(),
+                );
+            }
+            Some(mode) => {
+                let rect = Self::overflow_rect(area, backend, mode);
+                let bar = self.painted_toolbar(variant, backend);
+                let _ = backend.draw_toolbar_with_overflow(
+                    rect,
+                    &bar,
+                    &self.interaction,
+                    Self::overflow_options(mode),
+                    &Self::overflow_priorities(),
+                );
+
+                let hint_rect = Self::overflow_hint_rect(area, rect, backend);
+                let _ = backend.draw_status_bar_interactive(
+                    hint_rect,
+                    &self.hint_bar(),
+                    &InteractionState::new(),
+                );
+            }
+        }
     }
 
     fn handle(
@@ -421,26 +508,57 @@ impl Demo for ToolbarDemo {
                 Reaction::Continue
             }
             UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. } => {
-                let rect = Self::toolbar_rect(area, backend);
+                let mode = Self::overflow_mode(variant);
+                let rect = match mode {
+                    Some(m) => Self::overflow_rect(area, backend, m),
+                    None => Self::toolbar_rect(area, backend),
+                };
                 let bar = self.painted_toolbar(variant, backend);
-                let layout = backend.toolbar_layout(rect, &bar);
+                let layout: ToolbarLayout = match mode {
+                    Some(m) => backend.toolbar_layout_with_overflow(
+                        rect,
+                        &bar,
+                        Self::overflow_options(m),
+                        &Self::overflow_priorities(),
+                    ),
+                    // `Clip`'s plain layout — `Overflow` never fires here,
+                    // so it reads the same as `Empty` if it ever does.
+                    None => backend.toolbar_layout(rect, &bar),
+                };
                 let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
                     ToolbarHit::Button(id) => Some(id),
-                    // This demo keeps the default `ToolbarOverflow::Clip`,
-                    // so `Overflow` never fires — it reads the same as
-                    // `Empty` if it ever does.
+                    // `Overflow` is handled in the `MouseUp` arm below,
+                    // not through `InteractionState`'s hover/press
+                    // tracking.
                     _ => None,
                 };
                 let was_pressed = self.interaction.pressed().cloned();
                 let changed = self.interaction.handle_mouse(event, hit_test);
 
                 if let UiEvent::MouseUp { position, .. } = event {
-                    if let (Some(pressed_id), ToolbarHit::Button(release_id)) =
-                        (was_pressed, layout.hit_test(position.x, position.y))
-                    {
-                        if pressed_id == release_id {
+                    match layout.hit_test(position.x, position.y) {
+                        ToolbarHit::Button(release_id) if was_pressed == Some(release_id) => {
                             self.dispatch(&release_id);
                         }
+                        ToolbarHit::Overflow => {
+                            let dropped = layout.overflowed_items();
+                            let names: Vec<String> = dropped
+                                .iter()
+                                .map(|item| {
+                                    item.label
+                                        .spans
+                                        .iter()
+                                        .map(|s| s.text.as_str())
+                                        .collect::<String>()
+                                })
+                                .collect();
+                            self.last_message = if names.is_empty() {
+                                "Nothing overflowed".into()
+                            } else {
+                                format!("Overflowed: {}", names.join(", "))
+                            };
+                        }
+                        _ => {}
                     }
                     return Reaction::Redraw;
                 }
@@ -465,6 +583,15 @@ impl Demo for ToolbarDemo {
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
         None
     }
+
+    // No `capture_action` override: both overflow variants' idle render
+    // already shows the mode's whole point — `Overflow: Wrap`'s extra
+    // rows, `Overflow: Menu`'s trailing `»` affordance — without needing
+    // a click first. `CaptureAction::ClickText` also wouldn't reach
+    // `ToolbarHit::Overflow` here: it only delivers a `MouseDown`
+    // ([`quadraui::tui::testing::TuiDriver::click`]'s own doc), and this
+    // demo's clicks dispatch on `MouseUp` (the same press-then-release-
+    // on-the-same-target convention every button here follows).
 }
 // gallery:end
 
@@ -586,5 +713,104 @@ mod tui_tests {
 
         let hint_rect = ToolbarDemo::hint_rect(area, &backend);
         assert_eq!(hint_rect.height, backend.chrome_line_height());
+    }
+
+    /// Variant 2 ("Overflow: Wrap")'s narrow slot is actually narrower
+    /// than the full labeled toolbar's natural width, so its items
+    /// really do spread across more than one row — not a `Clip` layout
+    /// that happened to still fit on one.
+    #[test]
+    fn overflow_wrap_variant_spreads_items_across_more_than_one_row() {
+        let backend = quadraui::tui::TuiBackend::new();
+        let demo = ToolbarDemo::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let mode = ToolbarDemo::overflow_mode(2).expect("variant 2 is Wrap");
+        let rect = ToolbarDemo::overflow_rect(area, &backend, mode);
+        let bar = demo.painted_toolbar(2, &backend);
+        let layout = backend.toolbar_layout_with_overflow(
+            rect,
+            &bar,
+            ToolbarDemo::overflow_options(mode),
+            &ToolbarDemo::overflow_priorities(),
+        );
+        let rows: std::collections::BTreeSet<i32> = layout
+            .visible_items
+            .iter()
+            .map(|vis| vis.bounds.y.round() as i32)
+            .collect();
+        assert!(
+            rows.len() > 1,
+            "Wrap items should land on more than one row at this width, got rows {rows:?}"
+        );
+    }
+
+    /// Variant 3 ("Overflow: Menu") drops at least one top-level item
+    /// behind the trailing `»` affordance at the same narrow width.
+    #[test]
+    fn overflow_menu_variant_drops_at_least_one_item() {
+        let backend = quadraui::tui::TuiBackend::new();
+        let demo = ToolbarDemo::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let mode = ToolbarDemo::overflow_mode(3).expect("variant 3 is Menu");
+        let rect = ToolbarDemo::overflow_rect(area, &backend, mode);
+        let bar = demo.painted_toolbar(3, &backend);
+        let layout = backend.toolbar_layout_with_overflow(
+            rect,
+            &bar,
+            ToolbarDemo::overflow_options(mode),
+            &ToolbarDemo::overflow_priorities(),
+        );
+        assert!(
+            !layout.overflowed_items().is_empty(),
+            "Menu mode should drop at least one top-level item at this width"
+        );
+    }
+
+    /// Clicking the `»` affordance drives [`ToolbarDemo::handle`]'s
+    /// `ToolbarHit::Overflow` arm end to end: it reports the dropped
+    /// items in the hint line, the same contract
+    /// `quadraui/examples/common/toolbar_overflow_demo.rs`'s own
+    /// status-line update follows.
+    #[test]
+    fn clicking_the_overflow_affordance_reports_dropped_items_in_the_hint_line() {
+        let mut backend = quadraui::tui::TuiBackend::new();
+        let mut demo = ToolbarDemo::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+
+        let mode = ToolbarDemo::overflow_mode(3).unwrap();
+        let rect = ToolbarDemo::overflow_rect(area, &backend, mode);
+        let bar = demo.painted_toolbar(3, &backend);
+        let layout = backend.toolbar_layout_with_overflow(
+            rect,
+            &bar,
+            ToolbarDemo::overflow_options(mode),
+            &ToolbarDemo::overflow_priorities(),
+        );
+        let overflow_vis = layout
+            .visible_items
+            .iter()
+            .find(|vis| vis.kind == quadraui::ToolbarItemKind::Overflow)
+            .expect("Menu mode should paint the » affordance at this width");
+        let x = overflow_vis.bounds.x + overflow_vis.bounds.width / 2.0;
+        let y = overflow_vis.bounds.y + overflow_vis.bounds.height / 2.0;
+
+        demo.handle(
+            3,
+            &quadraui::mouse_down(quadraui::MouseButton::Left, x, y, Default::default()),
+            &mut backend,
+            area,
+        );
+        demo.handle(
+            3,
+            &quadraui::mouse_up(quadraui::MouseButton::Left, x, y),
+            &mut backend,
+            area,
+        );
+
+        assert!(
+            demo.last_message.starts_with("Overflowed:"),
+            "clicking » should report dropped items, got {:?}",
+            demo.last_message
+        );
     }
 }
