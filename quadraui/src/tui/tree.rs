@@ -31,9 +31,6 @@ fn chevron_glyph_end(style: &TreeStyle, indent: u16, expanded: bool) -> (&str, u
     (glyph, end)
 }
 
-/// `(chevron column range, label start column)` from [`paint_tree_cell`].
-pub(crate) type TreeCellCols = (Option<(usize, usize)>, usize);
-
 /// Paint a tree cell — indent + chevron + icon, column 0 of a `TreeView`
 /// row — into the 1-cell-tall `row` of `buf`, which the caller has already
 /// cleared to `bg`. Leaves get a 2-cell gap instead of a chevron. Returns
@@ -50,7 +47,7 @@ pub(crate) fn paint_tree_cell(
     icon: Option<&Icon>,
     nerd_fonts_enabled: bool,
     (fg, bg): (RatatuiColor, RatatuiColor),
-) -> TreeCellCols {
+) -> (Option<(usize, usize)>, usize) {
     let row_w = row.width as usize;
     let mut col = indent as usize * style.indent as usize;
     let mut chevron_cols = None;
@@ -68,13 +65,12 @@ pub(crate) fn paint_tree_cell(
         None => col += 2.min(row_w.saturating_sub(col)),
     }
     if let Some(icon) = icon {
-        let glyph = if nerd_fonts_enabled {
-            &icon.glyph
-        } else {
-            &icon.fallback
-        };
         let icon_fg = icon.color.map(ratatui_color).unwrap_or(fg);
-        for ch in glyph.chars().take(row_w.saturating_sub(col)) {
+        for ch in icon
+            .resolve(nerd_fonts_enabled)
+            .chars()
+            .take(row_w.saturating_sub(col))
+        {
             set_cell(buf, row.x + col as u16, row.y, ch, icon_fg, bg);
             col += 1;
         }
@@ -96,14 +92,8 @@ pub(crate) fn paint_tree_cell(
 ///   [`Theme::foreground`]. Branches and leaves get the same row
 ///   styling — `is_expanded`-ness only affects chevron rendering, not
 ///   visual emphasis.
-/// - **Indent:** `tree.style.indent` cells per depth level.
-/// - **Chevrons:** [`tree.style.chevron_expanded`] /
-///   [`tree.style.chevron_collapsed`] for branches when
-///   `tree.style.show_chevrons` is true; leaves get a 2-cell leading
-///   gap for visual alignment.
-/// - **Icon:** `row.icon.glyph` when `nerd_fonts_enabled`, else the
-///   ASCII fallback. Painted in `icon.color` when set, else the
-///   row's `default_fg`.
+/// - **Indent, chevron, icon:** painted by [`paint_tree_cell`]; the icon
+///   uses its ASCII fallback unless `nerd_fonts_enabled`.
 /// - **Badge** (right-aligned within row): rendered in
 ///   `badge.fg`/`badge.bg` (falling back to [`Theme::muted_fg`] /
 ///   row bg) when there's room past the text.
@@ -196,7 +186,7 @@ pub fn draw_tree_with_scroll_px(
             set_cell(buf, x, y, ' ', default_fg, bg);
         }
 
-        let (_, col) = paint_tree_cell(
+        let (_, text_start) = paint_tree_cell(
             buf,
             Rect::new(row_x, y, row_w, 1),
             &tree.style,
@@ -207,19 +197,14 @@ pub fn draw_tree_with_scroll_px(
             (default_fg, bg),
         );
 
-        let row_area = Rect {
-            x: row_x,
-            y: area.y,
-            width: row_w,
-            height: area.height,
-        };
+        let row_area = Rect::new(row_x, area.y, row_w, area.height);
 
         if let Some(ref edit) = row.edit {
             paint_edit_input(
                 buf,
                 row_area,
                 y,
-                col,
+                text_start,
                 edit,
                 default_fg,
                 bg,
@@ -227,8 +212,6 @@ pub fn draw_tree_with_scroll_px(
                 dim_fg,
             );
         } else {
-            let text_start = col;
-
             // Reserve room for the right-aligned badge *before*
             // painting the label, clamping the label to end at least one
             // blank column short of the badge. The label must not overwrite
@@ -237,29 +220,20 @@ pub fn draw_tree_with_scroll_px(
                 (row_w as usize).saturating_sub(crate::text_util::display_width(&badge.text))
             });
             let draw_badge = badge_start_col.is_some_and(|start| start > text_start);
-            let max_text_col = if draw_badge {
-                // Reserve one blank gap column between the label and the
-                // badge; never go below `text_start` (a zero-width label
-                // is still valid when the badge leaves no room at all).
-                badge_start_col
-                    .expect("draw_badge is only true when badge_start_col is Some")
-                    .saturating_sub(1)
-                    .max(text_start)
-            } else {
-                row_w as usize
-            };
+            // One blank gap column before the badge, never below `text_start`
+            // (a zero-width label is valid when the badge leaves no room).
+            let max_text_col = badge_start_col
+                .filter(|_| draw_badge)
+                .map_or(row_w as usize, |start| {
+                    start.saturating_sub(1).max(text_start)
+                });
 
-            let text_area = Rect {
-                x: row_x,
-                y: area.y,
-                width: max_text_col as u16,
-                height: area.height,
-            };
+            let text_area = Rect::new(row_x, area.y, max_text_col as u16, area.height);
             draw_styled_text(
                 buf,
                 text_area,
                 y,
-                col,
+                text_start,
                 &row.text,
                 default_fg,
                 bg,
@@ -276,22 +250,11 @@ pub fn draw_tree_with_scroll_px(
                 // per-span colouring (e.g. a muted/error label) survives
                 // the clamp untouched.
                 let last_col = row_x + (max_text_col - 1) as u16;
-                // Use the bounds-checked `Buffer::cell` accessor rather than
-                // direct indexing: `area` is caller-supplied (see
-                // `crate::tui::backend::draw_tree` / `multi_section_view.rs`)
-                // and isn't guaranteed to stay within the real buffer's own
-                // `area` across a resize race or a stale cached rect. Direct
-                // indexing panics in that case; `cell()` returns `None` and
-                // we fall back to the row's default colours instead.
-                //
-                // `last_col` may be the empty *continuation* cell of a
-                // wide glyph `draw_styled_text` already painted one
-                // column to its left — writing `…` straight into it would
-                // either get swallowed (ratatui skips redrawing the cell
-                // after a wide symbol) or leave a half-painted glyph next
-                // to the ellipsis. Detect that case (empty symbol, not
-                // just whitespace) and back up to overwrite the glyph's
-                // own cell instead, clearing its now-stale continuation.
+                // `Buffer::cell` is bounds-checked: the caller-supplied
+                // `area` may outrun the buffer after a resize race. If
+                // `last_col` is the empty continuation cell of a wide glyph,
+                // back up and overwrite the glyph itself, clearing the
+                // stale continuation, so the `…` is never half-painted.
                 let last_is_continuation = buf
                     .cell((last_col, y))
                     .map(|c| c.symbol().is_empty())
@@ -311,10 +274,9 @@ pub fn draw_tree_with_scroll_px(
                 }
             }
 
-            if draw_badge {
-                let badge = row.badge.as_ref().expect("draw_badge implies row.badge");
-                let badge_start_col =
-                    badge_start_col.expect("draw_badge is only true when badge_start_col is Some");
+            if let (true, Some(badge), Some(badge_start_col)) =
+                (draw_badge, row.badge.as_ref(), badge_start_col)
+            {
                 let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
                 let badge_bg = badge.bg.map(qc).unwrap_or(bg);
                 let mut bx = badge_start_col;
@@ -332,8 +294,6 @@ pub fn draw_tree_with_scroll_px(
                 }
             }
         }
-
-        let _ = col;
     }
 }
 
@@ -497,7 +457,12 @@ mod tests {
     use super::*;
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::types::{StyledSpan, StyledText, WidgetId};
-    fn cell(w: u16, indent: u16, exp: Option<bool>, icon: Option<&Icon>) -> TreeCellCols {
+    fn cell(
+        w: u16,
+        indent: u16,
+        exp: Option<bool>,
+        icon: Option<&Icon>,
+    ) -> (Option<(usize, usize)>, usize) {
         let (r, c) = (Rect::new(0, 0, w, 1), ratatui::style::Color::Reset);
         let (s, mut b) = (TreeStyle::default(), Buffer::empty(r));
         paint_tree_cell(&mut b, r, &s, indent, exp, icon, false, (c, c))
