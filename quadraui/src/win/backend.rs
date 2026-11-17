@@ -160,6 +160,61 @@ impl crate::primitives::layout_metrics::TextMeasure for NominalTextMeasure {
     }
 }
 
+/// Shared implementation behind
+/// [`super::toolbar::win_toolbar_layout_with_overflow`] and
+/// [`WinBackend::toolbar_layout_with_overflow`]'s no-DWrite fallback, so
+/// the live-`DWrite` and nominal-char-width measurers can never
+/// independently drift on which rows a `Wrap` toolbar reports as
+/// clickable. Lives here (not `win::toolbar`, which is
+/// `#[cfg(target_os = "windows")]`-only) because the fallback branch must
+/// keep compiling — and keep applying this same clamp — on a non-Windows
+/// `--features win` type-check host. The GTK sibling
+/// (`gtk::toolbar::gtk_toolbar_layout_with_overflow`) needs no equivalent
+/// because it already funnels both its measurers through one function.
+pub(super) fn toolbar_layout_with_overflow_via(
+    measure: &dyn crate::primitives::layout_metrics::TextMeasure,
+    rect: Rect,
+    bar: &crate::primitives::toolbar::Toolbar,
+    line_height: f32,
+    options: crate::primitives::toolbar::ToolbarLayoutOptions,
+    priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+) -> crate::primitives::toolbar::ToolbarLayout {
+    use crate::primitives::toolbar::{
+        measure_button, ToolbarItemMeasure, ToolbarOrientation, ToolbarOverflow,
+    };
+
+    let line_h = if options.overflow == ToolbarOverflow::Wrap {
+        line_height
+    } else {
+        rect.height
+    };
+    let mut layout = bar.layout_with_overflow(
+        rect.x,
+        rect.y,
+        rect.width,
+        line_h,
+        options,
+        priorities,
+        |btn| ToolbarItemMeasure::new(measure_button(measure, btn)),
+    );
+
+    if options.overflow == ToolbarOverflow::Wrap
+        && options.orientation == ToolbarOrientation::Horizontal
+    {
+        let area_bottom = rect.y + rect.height;
+        for vis in &mut layout.visible_items {
+            if vis.bounds.y >= area_bottom {
+                vis.clickable = false;
+                for child in &mut vis.group_children {
+                    child.clickable = false;
+                }
+            }
+        }
+    }
+
+    layout
+}
+
 /// [`super::status_bar::StatusMeasure`] impl backed by
 /// [`nominal_text_width`] — `bold` is ignored, a known gap in the
 /// nominal fallback (see `super::status_bar::StatusMeasure`'s doc for why
@@ -5806,6 +5861,82 @@ impl Backend for WinBackend {
                 crate::primitives::toolbar::measure_button(&measure, btn),
             )
         })
+    }
+
+    /// [`Self::draw_toolbar_with_options`], plus
+    /// [`crate::primitives::toolbar::ToolbarLayoutOptions`]: `layout_options.overflow`
+    /// picks how items that don't fit are handled — see
+    /// [`super::toolbar::draw_toolbar_with_overflow`]'s doc for the
+    /// per-variant painting contract. Same "surface not attached yet"
+    /// fallback posture as [`Self::draw_toolbar_with_options`].
+    fn draw_toolbar_with_overflow(
+        &mut self,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        interaction: &crate::interaction::InteractionState,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::toolbar::draw_toolbar_with_overflow(
+                &surface.target,
+                dwrite,
+                rect,
+                self.current_line_height,
+                bar,
+                hovered_id,
+                pressed_id,
+                layout_options,
+                priorities,
+            );
+        }
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `toolbar_layout_with_overflow` falls back to,
+        // and paint nothing.
+        let _ = (hovered_id, pressed_id);
+        self.toolbar_layout_with_overflow(rect, bar, layout_options, priorities)
+    }
+
+    /// See [`Self::toolbar_layout`]'s doc for why this only needs
+    /// `self.dwrite`. The layout-only twin of
+    /// [`Self::draw_toolbar_with_overflow`].
+    fn toolbar_layout_with_overflow(
+        &self,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
+            return super::toolbar::win_toolbar_layout_with_overflow(
+                dwrite,
+                rect,
+                bar,
+                self.current_line_height,
+                layout_options,
+                priorities,
+            );
+        }
+        // No live DWrite handle — nominal char-width estimate instead,
+        // same fallback measurer `toolbar_layout` uses. Routed through
+        // `toolbar_layout_with_overflow_via`, the same helper the
+        // live-DWrite branch above uses, so both branches apply the
+        // identical "rows past `rect.height` are un-clickable" clamp.
+        let measure = NominalTextMeasure {
+            char_width: self.current_char_width,
+        };
+        toolbar_layout_with_overflow_via(
+            &measure,
+            rect,
+            bar,
+            self.current_line_height,
+            layout_options,
+            priorities,
+        )
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface
@@ -13714,5 +13845,66 @@ mod tests {
                 "the tooltip must hide as soon as the pointer leaves its anchor"
             );
         }
+    }
+
+    /// Cross-platform (no `target_os = "windows"` gate): a fresh
+    /// [`WinBackend::new`] has no `dwrite`/`surface`, so
+    /// `toolbar_layout_with_overflow` always takes the no-DWrite
+    /// `NominalTextMeasure` fallback on every `--features win` host,
+    /// Windows included. It must still apply the "rows past `rect.height`
+    /// are un-clickable" clamp `toolbar_layout_with_overflow_via` shares
+    /// with the live-`DWrite` branch — this is the only test in this repo
+    /// that exercises that clamp on a non-Windows host, where
+    /// `win::toolbar`'s own `#[cfg(target_os = "windows")]`-gated tests
+    /// never run at all.
+    #[test]
+    fn win_backend_toolbar_layout_with_overflow_fallback_clamps_rows_past_rect_height() {
+        let backend = WinBackend::new();
+        let action = |id: &str| crate::primitives::toolbar::ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new(id),
+            label: "AAAA".into(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        };
+        let bar = crate::primitives::toolbar::Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![action("a"), action("b"), action("c")],
+            bg: None,
+            focused_index: None,
+        };
+        let options = crate::primitives::toolbar::ToolbarLayoutOptions::new()
+            .with_overflow(crate::primitives::toolbar::ToolbarOverflow::Wrap);
+        let priorities = crate::primitives::toolbar::ToolbarOverflowPriorities::new();
+
+        // "AAAA" at the default `current_char_width` (8.0) measures to
+        // 4*8 + 2*ACTION_H_PAD = 48.0 wide — a 60.0-wide rect fits exactly
+        // one button per row, so the three buttons wrap onto three
+        // separate rows at `current_line_height` (16.0) apart.
+        let rect = Rect::new(0.0, 0.0, 60.0, 16.0);
+        let layout = backend.toolbar_layout_with_overflow(rect, &bar, options, &priorities);
+
+        assert_eq!(
+            layout.visible_items.len(),
+            3,
+            "all three buttons must still be reported, just not all clickable"
+        );
+        assert!(
+            layout.visible_items[0].clickable,
+            "the first row (y=0) starts inside a 16.0-tall rect and must stay clickable"
+        );
+        assert!(
+            !layout.visible_items[1].clickable,
+            "the second row (y=16.0) starts at rect's bottom edge and must be clamped \
+             un-clickable, matching win_toolbar_layout_with_overflow's live-DWrite branch"
+        );
+        assert!(
+            !layout.visible_items[2].clickable,
+            "the third row (y=32.0) is well past rect's bottom edge and must be clamped \
+             un-clickable"
+        );
     }
 }

@@ -672,22 +672,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "pure fn of char_width()/line_height() + TextField's own state — paints with the same \
          metrics, so the default already agrees with draw_text_field's own layout",
     ),
-    // `toolbar_layout_with_overflow` is the layout-only twin of
-    // `draw_toolbar_with_overflow`: it honours `ToolbarLayoutOptions::overflow`
-    // (`Wrap`/`Menu`) instead of clipping unconditionally. Its trait default
-    // forwards to `toolbar_layout`, i.e. Clip-only geometry, and must stay in
-    // agreement with whatever the same backend's `draw_toolbar_with_overflow`
-    // actually paints. TUI, GTK and macOS override both; Win-GUI overrides
-    // neither, so hit-testing and painting agree there — the honest answer
-    // until a per-backend issue gives it an overflow rasteriser, at which
-    // point it overrides this and deletes its line here.
-    (
-        "win",
-        "toolbar_layout_with_overflow",
-        "no ToolbarOverflow rasteriser yet — draw_toolbar_with_overflow also takes the forwarding \
-         default, so Clip-only geometry keeps hit-testing in agreement with what Win-GUI paints; \
-         override both when Wrap/Menu lands on Win-GUI",
-    ),
     // `canvas_layout` is `CanvasLayout { bounds: rect }` — a pure function of `rect`
     // alone, with no backend-specific metric. All four backends take the default.
     (

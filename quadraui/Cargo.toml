@@ -1700,6 +1700,11 @@ path = "examples/gtk_toolbar_overflow.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "win_toolbar_overflow"
+path = "examples/win_toolbar_overflow.rs"
+required-features = ["win"]
+
+[[example]]
 name = "tui_tabgroup"
 path = "examples/tui_tabgroup.rs"
 required-features = ["tui"]
