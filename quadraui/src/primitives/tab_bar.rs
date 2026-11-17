@@ -37,43 +37,36 @@
 //! layout-in / paint-out split [`crate::primitives::toolbar::native_surface_paint::paint`]
 //! takes.
 //!
-//! **`gtk::tab_bar` paints through it; `macos::tab_bar` and `win::tab_bar`
-//! still carry their own full Core Graphics / Direct2D paint loop**, and
-//! the two remaining copies have already drifted from what this module
-//! paints:
+//! **`gtk::tab_bar` and `macos::tab_bar` both paint through it now;
+//! `win::tab_bar` still carries its own full Direct2D paint loop**, and
+//! the drift this table documents is between the shared module's own
+//! coverage and that one remaining bespoke copy:
 //!
-//! | Behaviour | GTK (through this module) | macOS | Windows |
-//! |---|---|---|---|
-//! | Active-tab background | rounded, y-inset chip (radius 4, 4 px inset) | rounded, y-inset chip (radius 4, 4 px inset) | full-height square rect |
-//! | Active-tab top accent | 1 px, on the chip's inset top edge | 1 px, on the chip's inset top edge | 2 px, on the strip's top edge |
-//! | Close-button hover backdrop | rounded, `foreground` @ 15 % alpha | **none painted** | square, `tab_bar_bg.lighten(0.15)` |
-//! | Preview-tab label | italic + `tab_preview_*_fg` | upright + `tab_preview_*_fg` | upright, **`tab_preview_*_fg` ignored** |
-//! | [`TabFrame::Brackets`] framing | painted | **not painted** | **not painted** |
+//! | Behaviour | GTK + macOS (through this module) | Windows |
+//! |---|---|---|
+//! | Active-tab background | rounded, y-inset chip (radius 4, 4 px inset) | full-height square rect |
+//! | Active-tab top accent | 1 px, on the chip's inset top edge | 2 px, on the strip's top edge |
+//! | Close-button hover backdrop | rounded, `foreground` @ 15 % alpha | square, `tab_bar_bg.lighten(0.15)` |
+//! | Preview-tab label | italic + `tab_preview_*_fg` | upright, **`tab_preview_*_fg` ignored** |
+//! | [`TabFrame::Brackets`] framing | painted | **not painted** |
 //!
-//! Migrating `macos::tab_bar`/`win::tab_bar` onto
-//! [`native_surface_paint::paint`] is a separate, per-backend issue.
+//! Migrating `win::tab_bar` onto [`native_surface_paint::paint`] is a
+//! separate, per-backend issue.
 //!
-//! ## Why each backend still carries its own loop
+//! ## The macOS `close_bounds` convention
 //!
-//! GTK and Windows resolve geometry through the shared
-//! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`],
-//! but macOS still resolves it in two bespoke, macOS-only builders
-//! that use a **different `close_bounds` convention**:
-//! macOS sizes the close box as `close_glyph_w + 2 * CLOSE_PAD` centred
-//! on the glyph, while `pixel_tab_bar_layout` sizes it as
-//! `tab_inner_gap + close_glyph_w` starting one inner gap *before* the
-//! glyph. [`native_surface_paint::paint`] sidesteps the mismatch by
-//! treating [`VisibleTab::close_bounds`] as an opaque "glyph lives
-//! somewhere in here" box and centring the glyph inside it, rather than
-//! assuming either backend's leading-gap convention — so a caller on
-//! either convention gets a correctly centred glyph without this module
-//! having to pick a side.
-//!
-//! Unifying the two backends' close-button **hit** geometry so macOS also
-//! resolves through `pixel_tab_bar_layout` remains a separate effort from
-//! wiring it onto this paint module — see [`native_surface_paint`] for
-//! what the shared painter paints, including [`TabFrame::Brackets`]
-//! framing.
+//! GTK, Windows and (now) macOS all resolve geometry through the shared
+//! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] (macOS via
+//! [`crate::primitives::layout_metrics::pixel_tab_bar_layout_fitting_boundary`]),
+//! which sizes the close box as `tab_inner_gap + close_glyph_w` starting
+//! one inner gap *before* the glyph. macOS's pre-migration bespoke
+//! builders sized it differently — `close_glyph_w + 2 * CLOSE_PAD`
+//! centred on the glyph — which is exactly the mismatch
+//! [`native_surface_paint::paint`] sidesteps: it treats
+//! [`VisibleTab::close_bounds`] as an opaque "glyph lives somewhere in
+//! here" box and centres the glyph inside it, rather than assuming
+//! either convention, so a caller on either one gets a correctly
+//! centred glyph without this module having to pick a side.
 //!
 //! # Backend contract
 //!
@@ -1418,11 +1411,18 @@ pub(crate) mod native_surface_paint {
             };
 
             if tab.is_active {
+                // Shrinks the inset (down to 0 at the limit) on a row only
+                // just tall enough for `line_height` — a fixed
+                // `TAB_CHIP_INSET_Y` on both edges there would leave the
+                // chip shorter than the label, letting a descender ink
+                // past its bottom edge.
+                let max_chip_inset_y = ((bounds.height - line_height) / 2.0).max(0.0);
+                let chip_inset_y = pixel::TAB_CHIP_INSET_Y.min(max_chip_inset_y);
                 let chip = Rect::new(
                     bounds.x,
-                    bounds.y + pixel::TAB_CHIP_INSET_Y,
+                    bounds.y + chip_inset_y,
                     bounds.width,
-                    (bounds.height - 2.0 * pixel::TAB_CHIP_INSET_Y).max(0.0),
+                    (bounds.height - 2.0 * chip_inset_y).max(0.0),
                 );
                 surface.surface_fill_rounded_rect(chip, pixel::TAB_CHIP_RADIUS, tab_base_bg);
                 if let Some(accent) = bar.active_accent {
@@ -2255,7 +2255,12 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
             );
 
-            let chip_y = layout.visible_tabs[0].bounds.y + pixel::TAB_CHIP_INSET_Y;
+            // The bar's 20.0 row height against `RecordingSurface`'s
+            // 14.0 stub line height clamps the chip inset below the
+            // fixed `TAB_CHIP_INSET_Y`, same as production's adaptive
+            // inset in `paint`.
+            let chip_inset_y = pixel::TAB_CHIP_INSET_Y.min(((20.0 - 14.0) / 2.0_f32).max(0.0));
+            let chip_y = layout.visible_tabs[0].bounds.y + chip_inset_y;
             assert!(
                 surface.fills.iter().any(|(r, c)| {
                     *c == accent && r.y == chip_y && r.height == pixel::TAB_ACCENT_THICKNESS

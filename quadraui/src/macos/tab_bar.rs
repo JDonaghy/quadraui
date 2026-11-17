@@ -1,575 +1,180 @@
-//! macOS rasteriser for [`crate::TabBar`].
-//!
-//! Mirrors [`crate::gtk::tab_bar::draw_tab_bar`]: measures tab widths
-//! via Core Text, lays out left-to-right with active-tab highlighting,
-//! close glyphs (a codicon close mark, or a filled circle for dirty —
-//! see [`crate::codicon`]), and right-aligned segments.
-//! Returns a [`TabBarHits`] carrying per-tab + per-segment screen
-//! bounds for the caller's click dispatch.
-//!
-//! ## Scope omissions
-//!
-//! - **Italic preview tabs** — needs an italic-variant `CTFont` via
-//!   `CTFontCreateCopyWithSymbolicTraits`. Same dependency as bold
-//!   support in [`super::status_bar`]; pairs naturally with that
-//!   future change. Until it lands, preview tabs render in the
-//!   active font.
-//! - **Rounded close-button hover background** — the GTK rasteriser
-//!   draws a 3 px rounded rect under the close glyph on hover. macOS
-//!   uses a simpler approach: tint the close glyph itself
-//!   (`theme.foreground`) when hovered.
-//!
-//! ## Per-backend paint loop
-//!
-//! Unlike `macos::menu_bar` / `macos::toolbar` / `macos::activity_bar`,
-//! every pixel this module paints is still Core Graphics-specific and
-//! still triplicated with `gtk::tab_bar` / `win::tab_bar`. Of the five
-//! rows in the drift table, macOS matches GTK on two — active-tab
-//! background and active-tab top accent (rounded, y-inset chip; 1 px
-//! accent on the chip's own inset top edge) — and drifts on three:
-//! the two "Scope omissions" above plus
-//! [`crate::primitives::tab_bar::TabFrame::Brackets`] framing. Windows
-//! drifts on all five rows. **This backend is the blocker**:
-//! `mac_tab_bar_layout_icons` / `mac_tab_bar_native_layout_icons`
-//! below still derive geometry themselves instead of going through the
-//! shared [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]
-//! that `gtk::tab_bar` and `win::tab_bar` already use, and they size
-//! `close_bounds` by a different convention (`CLOSE_PAD` around the
-//! glyph, rather than `tab_inner_gap + close_glyph_w` before it). See
-//! [`crate::primitives::tab_bar`]'s drift documentation for the full
-//! table and remaining work.
+//! macOS rasteriser for [`crate::TabBar`]. [`CtFontMeasure`] feeds the
+//! shared [`crate::primitives::layout_metrics::pixel_tab_bar_layout_fitting_boundary`];
+//! painting goes through the shared
+//! [`crate::primitives::tab_bar::native_surface_paint::paint`].
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-
-use super::backend::{ns_fill_rounded_rect, ns_stroke_rect};
-use super::text::{draw_text, measure_text};
-// `TabBarHits` is `#[deprecated]` — this module converts a computed
-// `TabBarLayout` into one per paint/no-paint call, so the import needs
-// the same allow every use site below does.
-use crate::event::Rect;
-use crate::primitives::tab_bar::{
-    tab_icon_at, TabBarGlyphs, TabBarHit, TabBarLayout, TabIcon, VisibleSegment, VisibleTab,
+use super::surface::CgSurface;
+use super::text::measure_text;
+use crate::backend::tab_bar_hits_from_layout;
+use crate::primitives::layout_metrics::{
+    pixel, pixel_tab_bar_layout_fitting_boundary, TextMeasure,
 };
+use crate::primitives::tab_bar::native_surface_paint::{self, TabBarPaintState};
+use crate::primitives::tab_bar::{tab_icon_at, TabBarGlyphs, TabBarLayout, TabChrome, TabIcon};
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits};
 use crate::style::Style;
 use crate::theme::Theme;
 
-/// Per-tab horizontal padding (left + right) inside the tab background
-/// fill, in `bar.compact` mode. A compact strip (used where vertical
-/// space is at a premium) keeps this fixed literal rather than scaling
-/// with [`Style::tab_padding_x`] — the non-compact case reads that style
-/// token instead, so a host-set value only ever widens the normal strip.
-const TAB_PAD_COMPACT: f64 = 2.0;
-/// Gap between the tab label and the close glyph.
-const TAB_INNER_GAP: f64 = 10.0;
-/// Gap between adjacent tabs.
-const TAB_OUTER_GAP: f64 = 1.0;
-/// Top-edge accent strip height for the active tab (when `active_accent`
-/// is set) — same value as [`crate::gtk::tab_bar`]'s
-/// `TAB_ACTIVE_BORDER_TOP_PX`, so the accent is the same thickness on
-/// both pixel backends, not just the same position on the chip.
-const ACCENT_HEIGHT: f64 = 1.0;
-/// 15-char sample used to estimate cell width for `available_cols`.
-/// Same string the GTK rasteriser uses, so app-level cell budgets
-/// remain comparable between backends.
-const CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
-/// Slack added either side of the close glyph when building its hit box.
-const CLOSE_PAD: f64 = 2.0;
-/// Tolerance (points) for comparing a tab's full, untruncated content width
-/// against its paint-time budget before reaching for
-/// [`crate::primitives::tab_bar::fit_tab_label`].
+/// `layout` translated by `dy` on the y-axis.
 ///
-/// The paint loop's budget (`tab_content_w` in `draw_tab_bar_icons_with_glyphs`)
-/// comes from [`TabBarHits::slot_positions`], which stores `Rect { x: f32,
-/// width: f32 }` — so the `f64` geometry [`mac_tab_bar_native_layout_icons`]
-/// computed takes a lossy `f64 -> f32 -> f64` round trip before paint sees
-/// it. A label that fits its slot *exactly* can therefore measure a few f32
-/// ulps wider than the rounded budget, which would send it through
-/// `fit_tab_label` and drop a character it never needed to lose. This
-/// tolerance is many orders of magnitude larger than that rounding error
-/// (bounded by roughly `width * f32::EPSILON`, i.e. well under 1e-3 for any
-/// tab-bar-scale width) and many orders of magnitude smaller than the width
-/// of a single rendered character, so it absorbs the round trip without
-/// masking a genuine overflow.
-const LABEL_FIT_TOLERANCE: f64 = 1e-3;
-/// Gap between a tab's icon glyph (see [`TabIcon`]) and its label.
-/// Same value as [`crate::gtk::tab_bar`]'s `TAB_ICON_GAP`, so a decorated
-/// tab is the same shape on both pixel backends.
-const TAB_ICON_GAP: f64 = 6.0;
-/// Vertical margin (px) above and below the active-tab chip fill — same
-/// value as [`crate::gtk::tab_bar`]'s `TAB_CHIP_INSET_Y`. VS Code insets
-/// its active-tab pill inside the tab strip rather than filling the full
-/// row height edge to edge, and this backend matches that shape.
-const TAB_CHIP_INSET_Y: f64 = 4.0;
-/// Corner radius (px) of the active-tab chip, all four corners — same
-/// value as [`crate::gtk::tab_bar`]'s `TAB_CHIP_RADIUS`.
-const TAB_CHIP_RADIUS: f64 = 4.0;
-
-/// Per-tab extra width (points) reserved for an icon glyph plus
-/// [`TAB_ICON_GAP`], indexed like `bar.tabs`. `0.0` for every tab without
-/// an icon, so an icon-less tab keeps byte-identical width and hit-test
-/// geometry to the pre-#926 rasteriser (and `&[]` — what [`draw_tab_bar`]
-/// and the other icon-less wrappers pass — reproduces it exactly for
-/// every tab).
-///
-/// This is the CoreText icon-width pass #926 was opened for. Every
-/// geometry consumer goes through it — [`mac_tab_bar_layout_icons`],
-/// [`mac_tab_bar_native_layout_icons`] and [`draw_tab_bar_icons`]'s paint
-/// loop — which is what keeps a tab's close-button hit box on the glyph
-/// it draws once an icon shifts the label right.
-///
-/// # Font choice — the current font, not a swapped-in icon family
-///
-/// Unlike GTK (`gtk::tab_bar::tab_icon_font`, which replaces the family
-/// with `Symbols Nerd Font`), macOS measures and paints the glyph with
-/// whatever font [`crate::Backend::set_current_font`] installed. That is
-/// this backend's established convention for every other glyph it draws —
-/// see [`super::activity_bar::draw_activity_bar`]'s doc, which makes the
-/// same choice for [`crate::Icon`] — and it is what keeps measure and
-/// paint using one font by construction: a family swap here would need
-/// the same swap in the paint loop or the reservation would not match the
-/// ink. A caller whose font carries no icon codepoints gets tofu of the
-/// measured width, not misplaced hit boxes.
-pub(crate) fn mac_tab_icon_extras(
-    font: &CTFont,
-    tab_count: usize,
-    icons: &[Option<TabIcon>],
-) -> Vec<f64> {
-    (0..tab_count)
-        .map(|i| match tab_icon_at(icons, i) {
-            Some(icon) => measure_text(font, &icon.glyph).0 + TAB_ICON_GAP,
-            None => 0.0,
-        })
-        .collect()
-}
-
-/// `(leading, trailing)` space reserved around a tab's label, in the same
-/// units its slot geometry is computed in. `leading` is the tab's left
-/// padding plus any icon reservation; `trailing` is the close-button
-/// reservation (when present) plus the tab's right padding.
-///
-/// Shared by [`mac_tab_bar_native_layout_icons`]'s layout loop and
-/// [`draw_tab_bar_icons_with_glyphs`]'s paint loop, both of which call
-/// [`crate::primitives::tab_bar::fit_tab_label`] with these two numbers —
-/// going through one function keeps the two call sites from ever deriving
-/// different `leading`/`trailing` for the same tab.
-fn tab_label_budget(tab_pad: f64, icon_extra: f64, close_extra: f64) -> (f64, f64) {
-    (tab_pad + icon_extra, close_extra + tab_pad)
-}
-
-/// Whether a tab's full, untruncated content width already fits inside
-/// `tab_content_w` once [`LABEL_FIT_TOLERANCE`] absorbs the budget's
-/// `f64 -> f32 -> f64` round trip (see that constant's doc). When this
-/// returns `true` the paint loop paints the label unchanged instead of
-/// calling [`crate::primitives::tab_bar::fit_tab_label`], which keeps a
-/// fully-fitting label from losing a character to the round trip's
-/// one-ulp rounding noise.
-fn label_fits_without_truncation(full_content_w: f64, tab_content_w: f64) -> bool {
-    full_content_w <= tab_content_w + LABEL_FIT_TOLERANCE
-}
-
-/// Per-tab extra width (points) reserved for an icon glyph plus
-/// [`TAB_ICON_GAP`], indexed like `bar.tabs`. `0.0` for every tab without
-/// an icon, so an icon-less tab keeps byte-identical width and hit-test
-/// geometry to the pre-#926 rasteriser (and `&[]` reproduces it exactly).
-///
-/// This is the CoreText icon-width pass. Every geometry consumer goes
-/// through it — [`mac_tab_bar_layout_icons`],
-/// [`mac_tab_bar_native_layout_icons`] and [`draw_tab_bar_icons`]'s paint
-/// loop — which keeps a tab's close-button hit box on the glyph it draws
-/// once an icon shifts the label right.
-///
-/// # Font choice — the current font, not a swapped-in icon family
-///
-/// Unlike GTK (`gtk::tab_bar::tab_icon_font`, which replaces the family
-/// with `Symbols Nerd Font`), macOS measures and paints the glyph with
-/// whatever font [`crate::Backend::set_current_font`] installed. That is
-/// this backend's established convention for every other glyph it draws —
-/// see [`super::activity_bar::draw_activity_bar`]'s doc, which makes the
-/// same choice for [`crate::Icon`] — and it is what keeps measure and
-/// paint using one font by construction: a family swap here would need
-/// the same swap in the paint loop or the reservation would not match the
-/// ink. A caller whose font carries no icon codepoints gets tofu of the
-/// measured width, not misplaced hit boxes.
-#[allow(deprecated)]
-pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar, style: &Style) -> TabBarHits {
-    mac_tab_bar_layout_icons(font, width, bar, &[], style)
-}
-
-/// Compute the [`TabBarHits`] [`draw_tab_bar`] would produce for `bar` at
-/// `width`, without painting.
-///
-/// This is the single measurement path: [`draw_tab_bar`] calls it too and
-/// paints from its output, so the no-paint twin backing
-/// [`crate::Backend::tab_bar_layout`] cannot drift from what was painted.
-/// Both spellings go through [`mac_tab_bar_layout_icons`] with an empty
-/// icon sidecar, which is equivalent point for point — pass a real sidecar
-/// to that function to decorate tabs.
-///
-/// # Coordinate space — bar-relative here; callers shift to absolute
-///
-/// This function itself returns **bar-relative** `x` (slots start at
-/// `0.0`) and is never handed `rect.x` — same shape as
-/// [`mac_tab_bar_native_layout_icons`] below. The
-/// [`crate::Backend::tab_bar_layout`] doc pins the `TabBarHits` *contract*
-/// at target-surface (absolute) coordinates though, so every caller that
-/// owes it — [`crate::macos::MacBackend::draw_tab_bar_icons`]'s paint path
-/// and [`crate::macos::MacBackend::tab_bar_layout_icons`]'s no-paint twin —
-/// runs this function's output through
-/// [`crate::backend::shift_tab_bar_hits`] with `rect.x`, the same TUI /
-/// GTK convention. `MacBackend::draw_tab_bar_icons` additionally wraps its
-/// CGContext in `CGContextTranslateCTM(ctx, rect.x, rect.y)` before calling
-/// [`draw_tab_bar_icons`] below, so the ink lands at the shifted hits'
-/// position too — mirroring `GtkBackend::draw_activity_bar`'s `cr.translate`
-/// and this crate's own `MacBackend::draw_activity_bar`. What this function
-/// guarantees is the invariant that is actually load-bearing: `tab_bar_layout`
-/// returns exactly what `draw_tab_bar` painted, once both are shifted the same way.
-#[allow(deprecated)]
-pub fn mac_tab_bar_layout_icons(
-    font: &CTFont,
-    width: f64,
-    bar: &TabBar,
-    icons: &[Option<TabIcon>],
-    style: &Style,
-) -> TabBarHits {
-    let native = mac_tab_bar_native_layout_icons(font, width, 1.0, bar, icons, style);
-    let mut hits = crate::backend::tab_bar_hits_from_layout(&native, bar);
-    // `mac_tab_bar_native_layout_icons`'s `resolved_scroll_offset` is the
-    // scroll-offset value this function reports back as engine feedback.
-    hits.correct_scroll_offset = native.resolved_scroll_offset;
-
-    // Cell-width estimation: 15-char sample width / 15 → average glyph
-    // advance. Matches the GTK/Windows convention so app-level char-col
-    // math doesn't diverge across backends.
-    let right_widths: f64 = bar
-        .right_segments
-        .iter()
-        .map(|seg| measure_text(font, &seg.text).0)
-        .sum();
-    let effective_tab_area = (width - right_widths).max(0.0);
-    let (sample_px, _) = measure_text(font, CELL_WIDTH_SAMPLE);
-    let char_w = (sample_px / CELL_WIDTH_SAMPLE.chars().count() as f64).max(1.0);
-    hits.available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
-
-    hits
-}
-
-/// Compute the [`TabBarLayout`] [`draw_tab_bar`] paints, without painting.
-///
-/// # This is the canonical composition — `mac_tab_bar_layout` derives from it
-///
-/// Every other backend derives its `TabBarHits` by calling
-/// [`crate::TabBar::layout`] (the shared D6 layout API) and narrowing the
-/// resulting `TabBarLayout` down via
-/// [`crate::backend::tab_bar_hits_from_layout`]. macOS measures and
-/// positions tabs by hand, one `f64` tuple at a time, but as of now
-/// [`mac_tab_bar_layout_icons`] calls this function and narrows the result
-/// via [`crate::backend::tab_bar_hits_from_layout`], the same pattern
-/// `gtk`/`win` use.
-///
-/// # Coordinate space — bar-relative, matching `mac_tab_bar_layout`
-///
-/// Same x-axis convention as `mac_tab_bar_layout` (see its doc): macOS
-/// paints tabs from `x = 0`, never shifted by `rect.x`, so both this
-/// and that function are already bar-relative in x — no `TabBarHits`
-/// absolute-coordinate divergence to account for. `height` (the caller's
-/// `rect.height`) becomes every tab's `bounds.height`, and every
-/// `bounds.y` is `0.0` — [`TabBarLayout`]'s own documented convention
-/// (origin at the bar's top-left).
-pub fn mac_tab_bar_native_layout(
-    font: &CTFont,
-    width: f64,
-    height: f64,
-    bar: &TabBar,
-    style: &Style,
-) -> TabBarLayout {
-    mac_tab_bar_native_layout_icons(font, width, height, bar, &[], style)
-}
-
-/// [`mac_tab_bar_native_layout`] with a per-tab icon sidecar — the
-/// `TabBarLayout`-returning twin of [`mac_tab_bar_layout_icons`], backing
-/// [`crate::Backend::resolve_tab_bar_layout_icons`].
-///
-/// `icons` follows the same convention as [`mac_tab_bar_layout_icons`]'
-/// (`&[]` reproduces the icon-less geometry point for point), and both
-/// functions source their reservation from the same
-/// [`mac_tab_icon_extras`] pass, so `native_layout_agrees_with_hits_layout`
-/// keeps holding with icons present.
-pub fn mac_tab_bar_native_layout_icons(
-    font: &CTFont,
-    width: f64,
-    height: f64,
-    bar: &TabBar,
-    icons: &[Option<TabIcon>],
-    style: &Style,
-) -> TabBarLayout {
-    let tab_pad = if bar.compact {
-        TAB_PAD_COMPACT
-    } else {
-        style.tab_padding_x as f64
-    };
-    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
-    let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
-
-    // ── Right-segment widths (reserved before tabs get their budget) ──
-    let right_widths: Vec<f64> = bar
-        .right_segments
-        .iter()
-        .map(|seg| measure_text(font, &seg.text).0)
-        .collect();
-    let reserved_px: f64 = right_widths.iter().sum();
-    let effective_tab_area = (width - reserved_px).max(0.0);
-
-    // Measure the codicon close glyph actually painted — `font`
-    // already carries the bundled codicon cascade unconditionally
-    // (`chrome_font` is wrapped via `font_with_builtin_fallback`), so
-    // this resolves the real glyph's advance width.
-    let close_w = if bar.show_tab_close {
-        measure_text(font, &crate::codicon::CLOSE.to_string()).0
-    } else {
-        0.0
-    };
-    let close_extra_for = |tab_idx: usize| -> f64 {
-        if bar.show_tab_close && bar.tabs[tab_idx].is_closable {
-            tab_inner_gap + close_w
-        } else {
-            0.0
+/// Baking `y_offset` into the layout's own `Rect`s (rather than issuing
+/// a `CGContextTranslateCTM`) keeps every recorded text run honest:
+/// macOS's text-run recording (`super::text::record_if_active`) captures
+/// the raw `x`/`y` a draw call is given, with no view onto the context's
+/// current transform — unlike GTK's `painted_text::show_layout`, which
+/// converts through `Context::user_to_device`. A CTM-based shift would
+/// paint pixels at the right place while recording them at `y_offset`
+/// too low.
+fn shift_layout_y(mut layout: TabBarLayout, dy: f32) -> TabBarLayout {
+    if dy != 0.0 {
+        for vt in &mut layout.visible_tabs {
+            vt.bounds.y += dy;
+            if let Some(cb) = &mut vt.close_bounds {
+                cb.y += dy;
+            }
         }
+        for vs in &mut layout.visible_segments {
+            vs.bounds.y += dy;
+        }
+        for r in layout
+            .scroll_left
+            .iter_mut()
+            .chain(&mut layout.scroll_right)
+        {
+            r.y += dy;
+        }
+        for (r, _) in &mut layout.hit_regions {
+            r.y += dy;
+        }
+    }
+    layout
+}
+
+/// [`TextMeasure`] over a live [`CTFont`].
+struct CtFontMeasure<'a>(&'a CTFont);
+impl TextMeasure for CtFontMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        measure_text(self.0, text).0 as f32
+    }
+}
+
+/// The [`TabBarLayout`] a paint call produces for `bar` at `(width,
+/// height)`, without painting. Returns `(layout, corrected_scroll_offset,
+/// available_cols)`.
+pub fn mac_tab_bar_pixel_layout(
+    font: &CTFont,
+    width: f32,
+    height: f32,
+    bar: &TabBar,
+    icons: &[Option<TabIcon>],
+    style: &Style,
+) -> (TabBarLayout, usize, usize) {
+    let (tab_pad, tab_inner_gap, tab_outer_gap) = if bar.compact {
+        (
+            pixel::TAB_PAD_COMPACT,
+            pixel::TAB_INNER_GAP_COMPACT,
+            pixel::TAB_OUTER_GAP_COMPACT,
+        )
+    } else {
+        (
+            style.tab_padding_x,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+        )
     };
-
-    // Icon-width pass — same call, same values as `mac_tab_bar_layout_icons`'.
-    let icon_extras = mac_tab_icon_extras(font, bar.tabs.len(), icons);
-
-    // Pre-measure every tab's full slot width — used for scroll-offset
-    // resolution, exactly as `mac_tab_bar_layout` does.
-    let tab_slot_widths: Vec<f64> = bar
+    let measure = CtFontMeasure(font);
+    let tab_name_widths: Vec<f32> = bar
         .tabs
         .iter()
-        .enumerate()
-        .map(|(i, tab)| {
-            let (name_w, _) = measure_text(font, &tab.label);
-            tab_pad + icon_extras[i] + name_w + close_extra_for(i) + tab_pad + tab_outer_gap
+        .map(|t| measure.width_of(&t.label))
+        .collect();
+    // `0.0` for a tab without an icon, so `&[]` reproduces icon-less geometry.
+    let icon_extras: Vec<f32> = (0..bar.tabs.len())
+        .map(|i| match tab_icon_at(icons, i) {
+            Some(icon) => measure_text(font, &icon.glyph).0 as f32 + pixel::TAB_ICON_GAP,
+            None => 0.0,
         })
         .collect();
-
-    let active_idx = bar.tabs.iter().position(|t| t.is_active);
-    let resolved_scroll_offset = if let Some(active) = active_idx {
-        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
-            tab_slot_widths[i] as usize
-        })
-    } else {
-        bar.scroll_offset
-    };
-
-    // ── Visible tabs ─────────────────────────────────────────────────
-    // Painted from `bar.scroll_offset` (the caller's value), not the
-    // freshly-resolved `resolved_scroll_offset` above — exactly what
-    // `mac_tab_bar_layout` does: the "engine feedback" correction is
-    // reported back for the *next* frame's caller to apply, not applied
-    // to this one. Unlike `TabBarHits`, there is no `(0.0, 0.0)`
-    // sentinel padding to keep vector indices aligned — `visible_tabs`
-    // is sparse and carries its own `tab_idx`, matching every other
-    // backend's `TabBarLayout`.
-    let mut visible_tabs: Vec<VisibleTab> = Vec::new();
-    let mut close_regions: Vec<(Rect, TabBarHit)> = Vec::new();
-    let mut body_regions: Vec<(Rect, TabBarHit)> = Vec::new();
-
-    let mut x = 0.0_f64;
-    for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
-        let (tab_name_w, _) = measure_text(font, &tab.label);
-        let icon_extra = icon_extras[tab_idx];
-        let close_extra = close_extra_for(tab_idx);
-        let (leading, trailing) = tab_label_budget(tab_pad, icon_extra, close_extra);
-        let full_content_w = leading + tab_name_w + trailing;
-        let full_slot_w = full_content_w + tab_outer_gap;
-        let remaining = (effective_tab_area - x).max(0.0);
-
-        // A tab whose full (untruncated) width would overflow the strip
-        // gets its label ellipsis-fitted into whatever space is actually
-        // left, via the shared `crate::primitives::tab_bar::fit_tab_label`,
-        // instead of being dropped from the strip outright. `name_w` below
-        // is the possibly-truncated label's own measured width, and the
-        // close-button hit box is positioned off it, so the glyph always
-        // lands inside this tab's (possibly shrunk) slot.
-        let (name_w, content_w, truncated) = if full_slot_w <= remaining {
-            (tab_name_w, full_content_w, false)
-        } else {
-            let truncated_budget = (remaining - tab_outer_gap).max(0.0);
-            if leading + trailing > truncated_budget {
-                // Not even room for this tab's own padding/close slot —
-                // nothing left on the strip to show it in.
-                break;
-            }
-            let fitted = crate::primitives::tab_bar::fit_tab_label(
-                &tab.label,
-                truncated_budget as f32,
-                leading as f32,
-                trailing as f32,
-                |s| measure_text(font, s).0 as f32,
-            );
-            let (fitted_w, _) = measure_text(font, &fitted);
-            (fitted_w, leading + fitted_w + trailing, true)
-        };
-        let slot_w = content_w + tab_outer_gap;
-        let bounds = Rect::new(x as f32, 0.0, slot_w as f32, height as f32);
-
-        let close_bounds = if bar.show_tab_close && tab.is_closable {
-            let close_x = x + tab_pad + icon_extra + name_w + tab_inner_gap;
-            let cb = Rect::new(
-                (close_x - CLOSE_PAD) as f32,
-                0.0,
-                (close_w + 2.0 * CLOSE_PAD) as f32,
-                height as f32,
-            );
-            close_regions.push((cb, TabBarHit::TabClose(tab_idx)));
-            Some(cb)
-        } else {
-            None
-        };
-
-        body_regions.push((bounds, TabBarHit::Tab(tab_idx)));
-        visible_tabs.push(VisibleTab {
-            tab_idx,
-            bounds,
-            close_bounds,
-        });
-
-        x += slot_w;
-        if truncated {
-            // This tab already consumed every point of slack the strip had
-            // left (`truncated_budget` above), and the minimum width any
-            // further tab could claim is `2 * tab_pad` for its own padding
-            // alone — more than the at-most-one-glyph-plus-ellipsis slack a
-            // truncated fit can leave behind. So no tab after this one can
-            // fit either.
-            break;
-        }
-    }
-
-    // Close regions before body regions — matches `TabBar::layout`'s own
-    // hit-region ordering (close-before-body) so `hit_test` returns the
-    // more-specific close hit when the pointer is on the × glyph.
-    let mut hit_regions: Vec<(Rect, TabBarHit)> =
-        Vec::with_capacity(close_regions.len() + body_regions.len());
-    hit_regions.extend(close_regions);
-    hit_regions.extend(body_regions);
-
-    // ── Right segments ───────────────────────────────────────────────
-    let mut visible_segments: Vec<VisibleSegment> = Vec::with_capacity(right_widths.len());
-    let mut sx = width - reserved_px;
-    for (segment_idx, seg_w) in right_widths.iter().enumerate() {
-        let bounds = Rect::new(sx as f32, 0.0, *seg_w as f32, height as f32);
-        let seg = &bar.right_segments[segment_idx];
-        let clickable = seg.id.is_some();
-        if let Some(id) = &seg.id {
-            hit_regions.push((bounds, TabBarHit::RightSegment(*id)));
-        }
-        visible_segments.push(VisibleSegment {
-            segment_idx,
-            bounds,
-            clickable,
-        });
-        sx += seg_w;
-    }
-
-    TabBarLayout {
-        bar_width: width as f32,
-        bar_height: height as f32,
-        visible_tabs,
-        visible_segments,
-        scroll_left: None,
-        scroll_right: None,
-        hit_regions,
-        resolved_scroll_offset,
-    }
+    let (layout, corrected_scroll_offset, available_cols, _fitted) =
+        pixel_tab_bar_layout_fitting_boundary(
+            bar,
+            width,
+            height,
+            tab_pad,
+            tab_inner_gap,
+            tab_outer_gap,
+            &tab_name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &measure,
+        );
+    (layout, corrected_scroll_offset, available_cols)
 }
 
-/// Paint `bar` into the rect `(0, y_offset, width, row_height)` on
-/// `ctx`. `line_height` is the *text* line height; `row_height` may be
-/// larger (callers pad file-tab bars). Returns per-tab + per-segment
-/// hit bounds plus the resolved scroll offset.
-///
+/// Paint `bar` into `(0, y_offset, width, row_height)` on `ctx`; returns
+/// [`TabBarHits`] (bar-relative — callers shift by `rect.x`).
 /// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call (typical: the frame-scope pointer stashed on
-/// [`super::MacBackend`]). Calling with a freed or null pointer is UB.
+/// `ctx` must be a valid, non-null `CGContextRef` for the call's duration.
 #[allow(clippy::too_many_arguments)]
 #[allow(deprecated)]
-pub unsafe fn draw_tab_bar(
+pub unsafe fn draw_tab_bar_icons_with_glyphs(
     ctx: CGContextRef,
     font: &CTFont,
     width: f64,
-    line_height: f64,
+    _line_height: f64, // derived from `font` — see `CgSurface::surface_line_height`
     y_offset: f64,
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
     style: &Style,
     hovered_close_tab: Option<usize>,
+    icons: &[Option<TabIcon>],
+    glyphs: Option<&TabBarGlyphs>,
+    nerd_fonts_enabled: bool,
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
+    focused_index: Option<usize>,
 ) -> TabBarHits {
-    draw_tab_bar_icons(
+    let (layout, corrected_scroll_offset, available_cols) =
+        mac_tab_bar_pixel_layout(font, width as f32, row_height as f32, bar, icons, style);
+
+    let mut hits = tab_bar_hits_from_layout(&layout, bar);
+    hits.correct_scroll_offset = corrected_scroll_offset;
+    hits.available_cols = available_cols;
+
+    let layout = shift_layout_y(layout, y_offset as f32);
+    let mut surface = CgSurface {
         ctx,
-        font,
-        width,
-        line_height,
-        y_offset,
-        row_height,
+        font: Some(font),
+    };
+    native_surface_paint::paint(
         bar,
+        &layout,
+        icons,
+        glyphs,
+        nerd_fonts_enabled,
+        TabBarPaintState {
+            hovered_tab,
+            pressed_tab,
+            hovered_close_tab,
+            focused_index,
+        },
+        &mut surface,
         theme,
         style,
-        hovered_close_tab,
-        &[],
-    )
+    );
+
+    hits
 }
 
-/// Resolve a [`TabBarGlyphs`] slot (the close or dirty override) to the
-/// text this rasteriser paints via `draw_text`, falling back to `default`
-/// when the slot is unset.
-fn tab_glyph_text(
-    icon: Option<&crate::types::Icon>,
-    nerd_fonts_enabled: bool,
-    default: char,
-) -> String {
-    icon.map(|icon| icon.resolve(nerd_fonts_enabled).to_string())
-        .unwrap_or_else(|| default.to_string())
-}
-
-/// [`draw_tab_bar`] plus per-tab icon glyphs.
-///
-/// `icons` is a sidecar slice parallel to `bar.tabs` (see
-/// [`crate::Backend::draw_tab_bar_icons`]) — entry `i` decorates tab `i`,
-/// a `None` or missing entry means "no icon", and `&[]` reproduces
-/// [`draw_tab_bar`] pixel for pixel. The glyph paints at the tab's leading
-/// edge, just inside the tab padding, in its own [`TabIcon::color`] (an
-/// icon keeps its language/identity colour rather than inheriting the
-/// tab's active/inactive foreground, matching the TUI and GTK
-/// rasterisers); the label and close glyph shift right by exactly the
-/// width [`mac_tab_icon_extras`] reserved for it, which is why the
-/// returned close-button hit boxes still land on the × the user sees.
-///
-/// # Coordinate space — paints bar-relative; caller supplies the origin
-///
-/// Like [`mac_tab_bar_layout_icons`] above, this paints into
-/// `(0, y_offset, width, row_height)` in `ctx`'s *current* coordinate
-/// space and returns bar-relative `TabBarHits`. It does not take an
-/// `x_offset` — [`crate::macos::MacBackend::draw_tab_bar_icons`] instead
-/// wraps this call in `CGContextTranslateCTM(ctx, rect.x, rect.y)` so the
-/// ink lands at the bar's real screen position, and separately shifts the
-/// returned hits by `rect.x` via [`crate::backend::shift_tab_bar_hits`] so
-/// they still describe exactly what was painted. Mirrors
-/// `MacBackend::draw_activity_bar`'s identical CTM-translate treatment of
-/// the (also bar-relative) `super::activity_bar::draw_activity_bar`.
-///
+/// [`draw_tab_bar_icons_with_glyphs`] with no glyph override and no
+/// hover/press/focus state.
 /// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
-/// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
-/// Calling with a freed or null pointer is UB.
+/// Same contract as [`draw_tab_bar_icons_with_glyphs`].
 #[allow(clippy::too_many_arguments)]
 #[allow(deprecated)]
 pub unsafe fn draw_tab_bar_icons(
@@ -605,24 +210,12 @@ pub unsafe fn draw_tab_bar_icons(
     )
 }
 
-/// [`draw_tab_bar_icons`], but honouring an optional [`TabBarGlyphs`]
-/// override for the close/dirty mark — `glyphs: None` reproduces
-/// [`draw_tab_bar_icons`] exactly. `hovered_tab`/`pressed_tab` name the
-/// whole tab (not its close glyph) the mouse is over/held down on —
-/// `None`/`None` paints every tab's resting background, same as
-/// [`draw_tab_bar_icons`]. `focused_index` names the tab the keyboard-focus
-/// ring paints on — see this function's own paint-loop comment for the
-/// geometry — with `None` painting no ring at all, same as
-/// [`draw_tab_bar_icons`].
-///
+/// [`draw_tab_bar_icons`] with an empty icon sidecar.
 /// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
-/// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
-/// Calling with a freed or null pointer is UB.
+/// Same contract as [`draw_tab_bar_icons_with_glyphs`].
 #[allow(clippy::too_many_arguments)]
 #[allow(deprecated)]
-pub unsafe fn draw_tab_bar_icons_with_glyphs(
+pub unsafe fn draw_tab_bar(
     ctx: CGContextRef,
     font: &CTFont,
     width: f64,
@@ -633,301 +226,20 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
     theme: &Theme,
     style: &Style,
     hovered_close_tab: Option<usize>,
-    icons: &[Option<TabIcon>],
-    glyphs: Option<&TabBarGlyphs>,
-    nerd_fonts_enabled: bool,
-    hovered_tab: Option<usize>,
-    pressed_tab: Option<usize>,
-    focused_index: Option<usize>,
 ) -> TabBarHits {
-    let text_y_offset = y_offset + (row_height - line_height) / 2.0;
-    let tab_pad = if bar.compact {
-        TAB_PAD_COMPACT
-    } else {
-        style.tab_padding_x as f64
-    };
-    let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
-    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
-    // Measured the same way `mac_tab_bar_native_layout_icons` sizes the
-    // close-button reservation, so the label-fit budget below agrees with
-    // the slot geometry it's derived from.
-    let close_w = if bar.show_tab_close {
-        measure_text(font, &crate::codicon::CLOSE.to_string()).0
-    } else {
-        0.0
-    };
-
-    // Single source of truth for geometry — `Backend::tab_bar_layout_icons`
-    // calls the same function with the same sidecar, so the no-paint twin
-    // can never drift from what this loop actually paints.
-    let hits = mac_tab_bar_layout_icons(font, width, bar, icons, style);
-    // Re-derived rather than threaded out of `mac_tab_bar_layout_icons`:
-    // the same pure function of (font, icons), so the label x below is
-    // offset by exactly the width the hit boxes were built around.
-    let icon_extras = mac_tab_icon_extras(font, bar.tabs.len(), icons);
-
-    CGContextSaveGState(ctx);
-
-    // Tab-bar background.
-    fill_rect(ctx, 0.0, y_offset, width, row_height, theme.tab_bar_bg);
-
-    // The active tab's chip is inset from the row by `TAB_CHIP_INSET_Y`
-    // on top and bottom — VS Code's pill, not a square block filling the
-    // row edge to edge. That fixed inset is only safe when the row has
-    // slack beyond the label's own line height; `text_y_offset` above
-    // centers the label within the *row*, so a row barely taller than
-    // `line_height` (a caller that reuses its editor line height as the
-    // tab bar's row height, e.g. `tui_tab_icons`/`macos_tab_icons`'s
-    // `backend.line_height()`) leaves less than `TAB_CHIP_INSET_Y` of
-    // slack per side above and below the label text — not enough for the
-    // fixed inset, so the chip would paint narrower than the label and a
-    // descender like "Cargo.toml"'s "g" would ink past the chip's edge.
-    // Shrinking the inset (down to 0, at the limit) whenever the row is
-    // that tight keeps the chip at least `line_height` tall, which is
-    // exactly the height `text_y_offset` already centers the label
-    // within — so the chip encloses the label whenever the row is tall
-    // enough to hold the label at all.
-    let max_chip_inset_y = ((row_height - line_height) / 2.0).max(0.0);
-    let chip_inset_y = TAB_CHIP_INSET_Y.min(max_chip_inset_y);
-    let chip_y = y_offset + chip_inset_y;
-    let chip_h = (row_height - 2.0 * chip_inset_y).max(0.0);
-
-    // ── Tabs paint loop ──────────────────────────────────────────────
-    // `slot_positions` is padded with `(0.0, 0.0)` for the scrolled-past
-    // tabs, so start after them and stop where the layout stopped.
-    for (tab_idx, tab) in bar
-        .tabs
-        .iter()
-        .enumerate()
-        .skip(bar.scroll_offset)
-        .take(hits.slot_positions.len().saturating_sub(bar.scroll_offset))
-    {
-        let (slot_x, slot_end) = hits.slot_positions[tab_idx];
-        let tab_content_w = slot_end - slot_x - tab_outer_gap;
-
-        // Whole-tab hover/pressed tint, independent of `is_close_hovered`
-        // below (which only tints the close glyph itself). Reuses
-        // `Theme::list_hover_bg`/`list_pressed_bg` — the same "blend the
-        // row's own resting background toward `foreground`" derivation
-        // `menu_item_hover_bg`/`menu_item_pressed_bg` already reuse for a
-        // popup-menu row — rather than growing a dedicated
-        // `tab_hover_bg`/`tab_pressed_bg` accessor, since a tab strip is
-        // the same flat "row under the cursor" shape. Pressed wins over
-        // hovered, matching every other `_with_state` painter in this
-        // module's sibling seams (toolbar, status bar, menu/context-menu).
-        let is_tab_pressed = pressed_tab == Some(tab_idx);
-        let is_tab_hovered = hovered_tab == Some(tab_idx);
-        let tint = |base: crate::types::Color| -> crate::types::Color {
-            if is_tab_pressed {
-                theme.list_pressed_bg(base)
-            } else if is_tab_hovered {
-                theme.list_hover_bg(base)
-            } else {
-                base
-            }
-        };
-
-        // Tab background. The active tab paints the inset, rounded chip
-        // computed above (VS Code's pill, matching `gtk::tab_bar`'s
-        // `TAB_CHIP_INSET_Y` / `TAB_CHIP_RADIUS` — the same active-tab
-        // shape on both pixel backends) rather than a square block
-        // filling the full row height edge to edge. Inactive tabs are
-        // unchanged: a full-height rectangle in the bar's own
-        // background colour.
-        if tab.is_active {
-            // SAFETY: `ctx` is a valid `CGContextRef` for the duration of
-            // this paint call — see this fn's own `# Safety` doc.
-            unsafe {
-                ns_fill_rounded_rect(
-                    ctx,
-                    Rect::new(
-                        slot_x as f32,
-                        chip_y as f32,
-                        tab_content_w as f32,
-                        chip_h as f32,
-                    ),
-                    TAB_CHIP_RADIUS as f32,
-                    tint(theme.tab_active_bg),
-                );
-            }
-        } else {
-            fill_rect(
-                ctx,
-                slot_x,
-                y_offset,
-                tab_content_w,
-                row_height,
-                tint(theme.tab_bar_bg),
-            );
-        }
-
-        // Top accent line for the active tab, painted on the chip's own
-        // inset top edge rather than the strip's top edge, so it stays
-        // attached to the pill instead of floating above it.
-        if tab.is_active {
-            if let Some(accent) = bar.active_accent {
-                fill_rect(ctx, slot_x, chip_y, tab_content_w, ACCENT_HEIGHT, accent);
-            }
-        }
-
-        // Icon glyph, at the tab's leading edge in its own colour.
-        // `icon_extras[tab_idx]` is the glyph's measured width plus
-        // `TAB_ICON_GAP`, so the label below starts one gap past the ink.
-        let icon_extra = icon_extras[tab_idx];
-        if let Some(icon) = tab_icon_at(icons, tab_idx) {
-            draw_text(
-                ctx,
-                font,
-                &icon.glyph,
-                slot_x + tab_pad,
-                text_y_offset,
-                color_to_cg(icon.color),
-            );
-        }
-
-        // Tab label. A label wider than this tab's slot is ellipsis-fitted
-        // through the shared `crate::primitives::tab_bar::fit_tab_label`
-        // instead of being drawn past the slot's edge — `tab_content_w` is
-        // the budget `mac_tab_bar_native_layout_icons` sized this tab's
-        // close-button hit box around, after that budget's own
-        // `f64 -> f32 -> f64` round trip through `TabBarHits::slot_positions`
-        // (see [`LABEL_FIT_TOLERANCE`]'s doc). A truncated label can never
-        // paint over the close glyph; the tolerance check below only
-        // decides whether a *fully-fitting* label gets ellipsis-fitted at
-        // all, which the round trip could otherwise trigger spuriously.
-        let close_extra = if bar.show_tab_close && tab.is_closable {
-            tab_inner_gap + close_w
-        } else {
-            0.0
-        };
-        let (leading, trailing) = tab_label_budget(tab_pad, icon_extra, close_extra);
-        let (tab_name_w, _) = measure_text(font, &tab.label);
-        let full_content_w = leading + tab_name_w + trailing;
-        let fitted_label = if label_fits_without_truncation(full_content_w, tab_content_w) {
-            tab.label.clone()
-        } else {
-            crate::primitives::tab_bar::fit_tab_label(
-                &tab.label,
-                tab_content_w as f32,
-                leading as f32,
-                trailing as f32,
-                |s| measure_text(font, s).0 as f32,
-            )
-        };
-        let fg_col = match (tab.is_active, tab.is_preview) {
-            (true, true) => theme.tab_preview_active_fg,
-            (true, false) => theme.tab_active_fg,
-            (false, true) => theme.tab_preview_inactive_fg,
-            (false, false) => theme.tab_inactive_fg,
-        };
-        draw_text(
-            ctx,
-            font,
-            &fitted_label,
-            slot_x + tab_pad + icon_extra,
-            text_y_offset,
-            color_to_cg(fg_col),
-        );
-
-        // Close glyph (× or ● for dirty), tinted on hover. Painted at the
-        // exact x the hit box was built around, so a click that lands in
-        // `close_bounds` lands on the glyph the user saw.
-        if let Some((close_lo, _)) = hits.close_bounds[tab_idx] {
-            let close_x = close_lo + CLOSE_PAD;
-            let is_close_hovered = hovered_close_tab == Some(tab_idx);
-            // Codicon glyphs by default, painted through the same `font`
-            // the label/icon above already use, since
-            // `MacBackend::set_chrome_font` wraps it with the bundled
-            // codicon cascade unconditionally (see
-            // `font_with_builtin_fallback`'s doc). An app-supplied
-            // `glyphs` override replaces either mark.
-            let close_glyph = if tab.is_dirty && !is_close_hovered {
-                tab_glyph_text(
-                    glyphs.and_then(TabBarGlyphs::dirty_glyph),
-                    nerd_fonts_enabled,
-                    crate::codicon::DIRTY,
-                )
-            } else {
-                tab_glyph_text(
-                    glyphs.and_then(TabBarGlyphs::close_glyph),
-                    nerd_fonts_enabled,
-                    crate::codicon::CLOSE,
-                )
-            };
-            let close_fg = if tab.is_dirty || is_close_hovered {
-                theme.foreground
-            } else if tab.is_active {
-                theme.tab_inactive_fg
-            } else {
-                theme.separator
-            };
-            draw_text(
-                ctx,
-                font,
-                &close_glyph,
-                close_x,
-                text_y_offset,
-                color_to_cg(close_fg),
-            );
-        }
-    }
-
-    // ── Keyboard-focus ring pass ─────────────────────────────────────
-    // Painted after every tab's own background/label/close glyph, not
-    // inside the loop above: slots are contiguous (only `TAB_OUTER_GAP`
-    // of bar background between them), so a ring stroked immediately
-    // after its own tab would have its trailing edge painted over by
-    // the next tab's opaque background fill. `focused_index` already
-    // carries the caller's own focus-visible suppression (see
-    // `TabChrome::focused_index`'s doc), so `None` here paints nothing.
-    //
-    // The stroked rect is inset by half of `style.focus_ring_width`
-    // from the slot's own bounds — not the outset gap `Button`'s/
-    // `TextInput`'s ring uses (`focus_ring_geometry`) — the same "flush
-    // with the item's own bounds" convention `primitives::list`'s
-    // selected-row ring and `primitives::toolbar`'s item ring use for a
-    // ring on an item inside a tightly-packed strip with no clip of its
-    // own: `ns_stroke_rect` centres its stroke on the rect edge, so an
-    // un-inset rect would ink half the line outside the row entirely on
-    // top/bottom and into the inter-tab gap on left/right. Strokes
-    // square (not the active tab's `TAB_CHIP_RADIUS`), since keyboard
-    // focus can land on an inactive tab with no chip to match.
-    if let Some(focus_idx) = focused_index {
-        let visible_lo = bar.scroll_offset;
-        let visible_hi = visible_lo + hits.slot_positions.len().saturating_sub(visible_lo);
-        if focus_idx >= visible_lo && focus_idx < visible_hi {
-            let (slot_x, slot_end) = hits.slot_positions[focus_idx];
-            let tab_content_w = slot_end - slot_x - tab_outer_gap;
-            let ring_width = style.focus_ring_width.max(1.0) as f64;
-            let inset = ring_width / 2.0;
-            let ring_rect = Rect::new(
-                (slot_x + inset) as f32,
-                (y_offset + inset) as f32,
-                (tab_content_w - ring_width).max(0.0) as f32,
-                (row_height - ring_width).max(0.0) as f32,
-            );
-            // SAFETY: `ctx` is a valid `CGContextRef` for the duration of
-            // this paint call — see this fn's own `# Safety` doc.
-            unsafe {
-                ns_stroke_rect(ctx, ring_rect, theme.focus_ring_color(), ring_width);
-            }
-        }
-    }
-
-    // ── Right segments paint loop ────────────────────────────────────
-    for (i, seg) in bar.right_segments.iter().enumerate() {
-        let (sx, _) = hits.right_segment_bounds[i];
-        let fg_col = if seg.is_active {
-            theme.tab_active_fg
-        } else {
-            theme.tab_inactive_fg
-        };
-        draw_text(ctx, font, &seg.text, sx, text_y_offset, color_to_cg(fg_col));
-    }
-
-    CGContextRestoreGState(ctx);
-
-    hits
+    draw_tab_bar_icons(
+        ctx,
+        font,
+        width,
+        line_height,
+        y_offset,
+        row_height,
+        bar,
+        theme,
+        style,
+        hovered_close_tab,
+        &[],
+    )
 }
 
 #[cfg(test)]
@@ -951,19 +263,7 @@ mod tests {
     }
 
     /// A backend whose *editor* and *chrome* fonts are both this module's
-    /// `font()`.
-    ///
-    /// The tab bar now uses the chrome font (`ChromePrimitive::TabBar`):
-    /// `draw_tab_bar`/`draw_tab_bar_icons` and their no-paint `tab_bar_layout*`
-    /// twins now measure and paint through `MacBackend::chrome_font`, which
-    /// `MacBackend::new` seeds with the ~11pt **system UI** font. A harness
-    /// that set only the editor font would therefore paint at a size no
-    /// assertion here knows about, while the `mac_tab_bar_layout*`/
-    /// `mac_tab_icon_extras` expectations several tests compute directly
-    /// still used `font()` — the two would disagree about every slot boundary
-    /// and glyph position. Setting both keeps every assertion in this module
-    /// about tab-bar geometry at a known `FONT_SIZE`, rather than about
-    /// whichever metrics the system UI font happens to have on the running host.
+    /// `font()` — the tab bar paints/measures through `MacBackend::chrome_font`.
     fn backend_with_test_fonts() -> MacBackend {
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
@@ -998,10 +298,8 @@ mod tests {
         }
     }
 
-    /// Drive a paint through the full `MacBackend::draw_tab_bar` path
-    /// and return `(surface, hits)` for inspection. Mirrors the
-    /// status_bar harness so future chrome tests follow the same
-    /// shape.
+    /// Drive a paint through the full `MacBackend::draw_tab_bar` path and
+    /// return `(surface, hits)` for inspection.
     #[allow(deprecated)]
     fn paint_via_backend(
         bar: &TabBar,
@@ -1024,10 +322,6 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn active_tab_paints_active_bg() {
-        // The active tab's bg differs from `tab_bar_bg`. Probe the
-        // vertical middle of the row, past the leading padding — safely
-        // inside the inset chip regardless of `TAB_CHIP_INSET_Y`'s exact
-        // value, unlike a bottom-edge probe, which the inset excludes.
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);
         let theme = Theme::default();
@@ -1042,17 +336,12 @@ mod tests {
         assert_eq!(
             (r, g, b),
             (expected.r, expected.g, expected.b),
-            "active tab bg at ({}, {}) should be tab_active_bg",
-            probe_x,
-            probe_y,
+            "active tab bg at ({probe_x}, {probe_y}) should be tab_active_bg",
         );
     }
 
-    /// The active tab's chip is inset by `TAB_CHIP_INSET_Y` from
-    /// both the top and bottom of the row — matching
-    /// `gtk::tab_bar::active_chip_inset_is_symmetric_around_a_nonzero_y_offset`'s
-    /// GTK twin. The very top and bottom scanlines of the row must *not*
-    /// be the active fill (a square, edge-to-edge chip would paint them).
+    /// The active tab's chip is inset by `pixel::TAB_CHIP_INSET_Y` from
+    /// both the top and bottom of the row.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn active_chip_is_inset_from_top_and_bottom_of_the_row() {
@@ -1062,9 +351,7 @@ mod tests {
         let active_bg = theme.tab_active_bg;
 
         let (start, _) = hits.slot_positions[0];
-        // Past the left padding and inset radius, so corner rounding
-        // doesn't also explain a non-active-bg top/bottom pixel.
-        let probe_x = (start + TAB_CHIP_RADIUS + 4.0) as u32;
+        let probe_x = (start + pixel::TAB_CHIP_RADIUS as f64 + 4.0) as u32;
 
         let is_active = |y: u32| {
             let (r, g, b, _) = surface.pixel(probe_x, y);
@@ -1078,43 +365,37 @@ mod tests {
             !is_active(H - 1),
             "bottom scanline of the row must be outside the inset chip"
         );
-        // But somewhere in the middle, the chip must actually paint.
         assert!(
             is_active(H / 2),
             "chip must paint the active fill in the middle of the row"
         );
     }
 
-    /// The active-tab chip is *rounded*, not just inset — mirrors
-    /// `gtk::tab_bar::active_chip_corners_are_bar_background_not_active_fill`.
-    /// `active_chip_is_inset_from_top_and_bottom_of_the_row` above only
-    /// probes a point well clear of the corners (`TAB_CHIP_RADIUS + 4.0`
-    /// in from the left edge), so a regression that swapped
-    /// `ns_fill_rounded_rect` for a plain rectangular fill at the same
-    /// inset would still pass it. Probe all four corners of the chip's
-    /// bounding rect instead: a rounded corner leaves them painted the
-    /// bar background, not the active fill.
+    /// The active-tab chip is *rounded*, not just inset — probe all four
+    /// corners of the chip's bounding rect: a rounded corner leaves them
+    /// painted the bar background, not the active fill.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn active_chip_corners_are_bar_background_not_active_fill() {
         // No `active_accent` here, unlike `sample_bar()` — the accent
         // strip paints the chip's full inset top edge including its top
-        // corners (square "ears" over the rounded chip, same as
-        // `gtk::tab_bar`), which would otherwise overwrite exactly the
-        // pixels this test probes with the accent colour instead of the
-        // bar background it's checking for.
+        // corners, which would otherwise overwrite exactly the pixels
+        // this test probes.
         let mut bar = sample_bar();
         bar.active_accent = None;
         let (surface, hits) = paint_via_backend(&bar, None);
         let theme = Theme::default();
         let bar_bg = theme.tab_bar_bg;
 
+        // The shared painter's chip spans the tab's full slot width,
+        // including `pixel::TAB_OUTER_GAP`'s share of it (unlike
+        // `gtk::tab_bar`, which subtracts the gap) — see
+        // `native_surface_paint::paint`'s doc.
         let (slot_x, slot_end) = hits.slot_positions[0];
-        let tab_content_w = slot_end - slot_x - TAB_OUTER_GAP;
         let chip_x0 = slot_x as u32;
-        let chip_x1 = (slot_x + tab_content_w) as u32 - 1;
-        let chip_y0 = TAB_CHIP_INSET_Y as u32;
-        let chip_y1 = H - TAB_CHIP_INSET_Y as u32 - 1;
+        let chip_x1 = slot_end as u32 - 1;
+        let chip_y0 = pixel::TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - pixel::TAB_CHIP_INSET_Y as u32 - 1;
 
         for (x, y) in [
             (chip_x0, chip_y0),
@@ -1127,7 +408,7 @@ mod tests {
                 (r, g, b),
                 (bar_bg.r, bar_bg.g, bar_bg.b),
                 "chip bounding-rect corner ({x},{y}) should be bar background \
-                 (rounded off by TAB_CHIP_RADIUS), not the active fill",
+                 (rounded off), not the active fill",
             );
         }
     }
@@ -1135,16 +416,12 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn active_accent_paints_at_top_of_active_tab_chip() {
-        // The accent strip paints on the chip's own inset top edge,
-        // mirroring `gtk::tab_bar`'s treatment, rather than the strip's
-        // top edge — so it stays attached to the pill.
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);
 
         let (start, _) = hits.slot_positions[0];
-        // Past leading padding so we don't overlap the second tab.
         let probe_x = (start + 4.0) as u32;
-        let probe_y = TAB_CHIP_INSET_Y as u32;
+        let probe_y = pixel::TAB_CHIP_INSET_Y as u32;
         let (r, g, b, _) = surface.pixel(probe_x, probe_y);
         let accent = bar.active_accent.unwrap();
         assert_eq!(
@@ -1153,9 +430,6 @@ mod tests {
             "accent strip at the chip's inset top edge should match TabBar.active_accent",
         );
 
-        // The strip's own top edge (y=0, above the inset) must not be
-        // the accent colour — otherwise this would pass even if the
-        // accent painted at the old, non-inset position.
         let (r0, g0, b0, _) = surface.pixel(probe_x, 0);
         assert_ne!(
             (r0, g0, b0),
@@ -1167,10 +441,6 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn close_bounds_round_trip_via_hits_struct() {
-        // Round-trip: paint, then sample a coordinate inside the
-        // reported close-bounds and assert the hits struct's bounds
-        // contain it. This is the "paint and click agree on close
-        // button location" gate.
         let bar = sample_bar();
         let (_surface, hits) = paint_via_backend(&bar, None);
 
@@ -1182,9 +452,6 @@ mod tests {
             close.0,
             close.1,
         );
-        // The reported bounds must sit inside the tab slot — a paint
-        // shift on the close glyph would land outside the slot and
-        // catch the drift here.
         let (slot_start, slot_end) = hits.slot_positions[0];
         assert!(
             close.0 >= slot_start && close.1 <= slot_end,
@@ -1199,22 +466,12 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn dirty_tab_uses_filled_circle_glyph() {
-        // `is_dirty` swaps the close glyph for a codicon filled circle
-        // (`crate::codicon::DIRTY`). We can't easily compare glyph
-        // shape pixel-by-pixel, but a row-wise ink ratio differs
-        // noticeably: a filled circle is mostly filled, the codicon
-        // close mark (`crate::codicon::CLOSE`) is thin strokes.
-        // Compare the dirty tab's close column against the active
-        // tab's: dirty should be visibly denser.
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);
 
         let active_close = hits.close_bounds[0].unwrap();
         let dirty_close = hits.close_bounds[1].unwrap();
 
-        // Count non-bg pixels in a 1-column `[y0, y1)` strip for each
-        // close glyph. The dirty (filled circle) column should have more
-        // inked pixels than the close-mark column.
         fn ink_density(surface: &BitmapSurface, x: u32, y0: u32, y1: u32, bg: Color) -> u32 {
             (y0..y1)
                 .filter(|&y| {
@@ -1224,12 +481,8 @@ mod tests {
                 .count() as u32
         }
         let theme = Theme::default();
-        // The active tab's close glyph sits over the inset chip, so only
-        // its `[chip_y, chip_y + chip_h)` band is actually painted
-        // `tab_active_bg` — the inset margin above/below it is
-        // `tab_bar_bg` and would otherwise be miscounted as glyph ink.
-        let chip_y0 = TAB_CHIP_INSET_Y as u32;
-        let chip_y1 = H - TAB_CHIP_INSET_Y as u32;
+        let chip_y0 = pixel::TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - pixel::TAB_CHIP_INSET_Y as u32;
         let active_ink = ink_density(
             &surface,
             ((active_close.0 + active_close.1) / 2.0) as u32,
@@ -1237,10 +490,6 @@ mod tests {
             chip_y1,
             theme.tab_active_bg,
         );
-        // Same `[chip_y0, chip_y1)` band as `active_ink` — scanning both
-        // columns over the same window keeps the comparison about glyph
-        // shape, not about one column getting a taller scan range than
-        // the other.
         let dirty_ink = ink_density(
             &surface,
             ((dirty_close.0 + dirty_close.1) / 2.0) as u32,
@@ -1250,21 +499,13 @@ mod tests {
         );
         assert!(
             dirty_ink > active_ink,
-            "dirty glyph should ink more rows ({}) than the active close glyph ({})",
-            dirty_ink,
-            active_ink,
+            "dirty glyph should ink more rows ({dirty_ink}) than the active close glyph ({active_ink})",
         );
     }
 
     #[test]
     #[allow(deprecated)]
     fn non_closable_tab_has_no_close_bounds_even_when_bar_show_close_is_true() {
-        // Regression: `bar.show_tab_close = true` is a bar-level flag, but
-        // individual tabs may opt out via `is_closable = false`. The macOS
-        // rasteriser must consult both — otherwise non-closable tabs render
-        // a phantom × that triggers no action when clicked.
-        // Use identical labels so the *only* width difference between the
-        // two slots is the close-glyph reservation, isolating the regression.
         let bar = TabBar {
             id: WidgetId::new("tabs"),
             tabs: vec![
@@ -1298,9 +539,6 @@ mod tests {
             hits.close_bounds[1].is_none(),
             "non-closable tab must have no close bounds even when bar.show_tab_close is true",
         );
-        // The non-closable tab's slot must also be narrower (no close-glyph
-        // reservation), so the two slot widths differ in proportion to the
-        // close glyph + inner gap.
         let (s0, e0) = hits.slot_positions[0];
         let (s1, e1) = hits.slot_positions[1];
         let closable_slot = e0 - s0;
@@ -1326,7 +564,6 @@ mod tests {
         let (surface, hits) = paint_via_backend(&bar, None);
         let theme = Theme::default();
 
-        // Whole row should be tab_bar_bg.
         let (r, g, b, _) = surface.pixel(W / 2, H / 2);
         assert_eq!(
             (r, g, b),
@@ -1365,17 +602,11 @@ mod tests {
         (surface, hits.into_inner().unwrap())
     }
 
-    /// `MouseMoved` over an inactive tab (the issue's acceptance scenario)
-    /// tints its whole background, not only the close glyph —
-    /// `draw_tab_bar` (no `hovered_tab`) leaves it a flat `tab_bar_bg`.
     #[test]
     #[allow(deprecated)]
     fn hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
         let bar = sample_bar();
         let theme = Theme::default();
-        // Tab 1 ("lib.rs") is inactive, so its resting fill is
-        // `tab_bar_bg` — the same colour as the surrounding strip, which
-        // is what makes a hover tint visible against it.
         let (_, hits) = paint_via_backend(&bar, None);
         let (start, end) = hits.slot_positions[1];
         assert!(end > start, "second tab slot must have non-zero width");
@@ -1400,10 +631,6 @@ mod tests {
         );
     }
 
-    /// `pressed_tab` tints deeper than `hovered_tab` — `Theme::list_pressed_bg`
-    /// is a higher-alpha blend than `list_hover_bg` — and wins when both
-    /// name the same tab (mirrors the precedence every sibling `_with_state`
-    /// painter in this crate already applies).
     #[test]
     #[allow(deprecated)]
     fn pressed_tab_tints_deeper_than_hovered_tab() {
@@ -1432,9 +659,6 @@ mod tests {
         );
     }
 
-    /// Leaving the hovered tab clears the tint — a plain `draw_tab_bar`
-    /// (or `draw_tab_bar_with_state` with both indices `None`) paints
-    /// exactly the untinted resting colour.
     #[test]
     #[allow(deprecated)]
     fn mouse_leaving_the_tab_clears_the_hover_tint() {
@@ -1454,11 +678,8 @@ mod tests {
         );
     }
 
-    /// `Backend::tab_bar_layout` must return exactly what
-    /// `draw_tab_bar` painted — both route through `mac_tab_bar_layout`,
-    /// and this pins that. See that function's docs for
-    /// the known bar-relative-vs-absolute divergence; what is
-    /// guaranteed here is that layout == paint.
+    /// `Backend::tab_bar_layout` must return exactly what `draw_tab_bar`
+    /// painted — both route through [`mac_tab_bar_pixel_layout`].
     #[test]
     #[allow(deprecated)]
     fn layout_twin_matches_the_painted_hits() {
@@ -1478,45 +699,8 @@ mod tests {
         );
     }
 
-    /// `mac_tab_bar_native_layout` — the `TabBarLayout`-returning function
-    /// backing `Backend::resolve_tab_bar_layout` — must report exactly the
-    /// same geometry `mac_tab_bar_layout` (the deprecated `TabBarHits`-returning
-    /// one) does, since the two duplicate rather than share their measurement
-    /// code. Converting the new function's `TabBarLayout` through the shared
-    /// `tab_bar_hits_from_layout` helper and comparing field-by-field against
-    /// the old function's direct output pins the two together.
-    #[test]
-    #[allow(deprecated)]
-    fn native_layout_agrees_with_hits_layout() {
-        let bar = sample_bar();
-        let f = font();
-
-        let style = Style::default();
-        let hits = mac_tab_bar_layout(&f, W as f64, &bar, &style);
-        let native = mac_tab_bar_native_layout(&f, W as f64, H as f64, &bar, &style);
-        let native_as_hits = crate::backend::tab_bar_hits_from_layout(&native, &bar);
-
-        assert_eq!(
-            hits.slot_positions, native_as_hits.slot_positions,
-            "tab slots must agree between the two independently-computed layouts"
-        );
-        assert_eq!(
-            hits.close_bounds, native_as_hits.close_bounds,
-            "close-button spans must agree too"
-        );
-        assert_eq!(
-            hits.right_segment_bounds, native_as_hits.right_segment_bounds,
-            "right-segment spans must agree too"
-        );
-        assert_eq!(
-            hits.correct_scroll_offset, native.resolved_scroll_offset,
-            "the \"fit active tab\" scroll correction must agree"
-        );
-    }
-
     /// A click at the centre of a reported close box lands on the close
-    /// glyph the rasteriser actually drew — the paint↔click round trip
-    /// the shared `mac_tab_bar_layout` exists to guarantee.
+    /// glyph the rasteriser actually drew.
     #[test]
     #[allow(deprecated)]
     fn close_box_centre_is_where_the_glyph_was_painted() {
@@ -1525,17 +709,9 @@ mod tests {
         let theme = Theme::default();
         let (lo, hi) = hits.close_bounds[0].expect("tab 0 is closable");
         let bg = theme.tab_active_bg;
-        // Tab 0 is active, so its close glyph sits over the inset chip
-        // — restrict the scan to the chip's own vertical band. Outside
-        // it the row is `tab_bar_bg` by design, which would
-        // otherwise register as "inked" against `tab_active_bg` even
-        // with no glyph drawn there, making this assertion pass
-        // vacuously instead of actually proving the glyph painted.
-        let chip_y0 = TAB_CHIP_INSET_Y as u32;
-        let chip_y1 = H - TAB_CHIP_INSET_Y as u32;
+        let chip_y0 = pixel::TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - pixel::TAB_CHIP_INSET_Y as u32;
 
-        // Somewhere in the close box's x-span, some row differs from the
-        // tab background: that is the glyph.
         let inked = (lo.ceil() as u32..hi.floor() as u32).any(|x| {
             (chip_y0..chip_y1).any(|y| {
                 let (r, g, b, _) = surface.pixel(x.min(W - 1), y);
@@ -1549,10 +725,8 @@ mod tests {
     }
 
     /// A helper for icon tests: drive a paint through the full
-    /// `MacBackend::draw_tab_bar_icons` path with a real sidecar and return
-    /// `(surface, hits)`. Deliberately the icon-carrying twin of
-    /// [`paint_via_backend`], so a test can compare the two outputs and
-    /// attribute every delta to the icon reservation.
+    /// `MacBackend::draw_tab_bar_icons` path with a real sidecar and
+    /// return `(surface, hits)`.
     #[allow(deprecated)]
     fn paint_icons_via_backend(
         bar: &TabBar,
@@ -1578,12 +752,9 @@ mod tests {
         (surface, hits.into_inner().unwrap())
     }
 
-    /// An ASCII icon on tab 0 only. ASCII on purpose — a Nerd Font
-    /// codepoint measures as tofu (or nothing) under Menlo, which would
-    /// make `icon_extra` uninformative; `examples/common/tab_icons_demo.rs`
-    /// makes the same choice for the same reason. Tab 1 is left `None` so
-    /// every test below also covers the mixed-sidecar case: a decorated
-    /// tab must not change an undecorated one's *width*, only its origin.
+    /// An ASCII icon on tab 0 only — ASCII on purpose, a Nerd Font
+    /// codepoint measures as tofu under Menlo. Tab 1 is left `None` so
+    /// every test below also covers the mixed-sidecar case.
     fn sample_icons() -> Vec<Option<TabIcon>> {
         vec![
             Some(TabIcon {
@@ -1594,10 +765,6 @@ mod tests {
         ]
     }
 
-    /// `draw_tab_bar_icons` with a non-empty icon sidecar must not abort;
-    /// reaching the assertions below at all is that regression test. The width
-    /// assertions pin that the sidecar actually does something: the decorated
-    /// tab is wider than its icon-less self.
     #[test]
     #[allow(deprecated)]
     fn draw_tab_bar_icons_with_non_empty_sidecar_does_not_abort() {
@@ -1607,14 +774,14 @@ mod tests {
         let (_surface, hits) = paint_icons_via_backend(&bar, &icons, None);
         let (_icon_less_surface, icon_less_hits) = paint_via_backend(&bar, None);
 
-        // The decorated tab is wider than its icon-less self by
-        // exactly the CoreText-measured glyph width plus `TAB_ICON_GAP`.
-        let expected_extra = mac_tab_icon_extras(&font(), bar.tabs.len(), &icons)[0];
+        // The decorated tab is wider than its icon-less self by exactly
+        // the CoreText-measured glyph width plus `pixel::TAB_ICON_GAP`.
+        let expected_extra = measure_text(&font(), "R").0 + pixel::TAB_ICON_GAP as f64;
         assert!(
-            expected_extra > TAB_ICON_GAP,
-            "an ASCII icon glyph must measure non-zero under Menlo (got \
-             {expected_extra} including a {TAB_ICON_GAP}pt gap)",
+            expected_extra > pixel::TAB_ICON_GAP as f64,
+            "an ASCII icon glyph must measure non-zero under Menlo (got {expected_extra})",
         );
+
         let (lo, hi) = hits.slot_positions[0];
         let (plain_lo, plain_hi) = icon_less_hits.slot_positions[0];
         assert_eq!(lo, plain_lo, "the first tab still starts at the bar origin");
@@ -1626,8 +793,6 @@ mod tests {
             plain_hi - plain_lo,
         );
 
-        // Tab 1 carries no icon, so its own width is unchanged — it is
-        // only pushed right by tab 0's reservation.
         let (t1_lo, t1_hi) = hits.slot_positions[1];
         let (p1_lo, p1_hi) = icon_less_hits.slot_positions[1];
         assert!(
@@ -1641,10 +806,8 @@ mod tests {
         );
     }
 
-    /// The layout-only twins (`draw_tab_bar_icons_layout`, `tab_bar_layout_icons`,
-    /// `resolve_tab_bar_layout_icons`) must not abort, and all four must agree
-    /// with the *painted* geometry once a sidecar is present, not merely with
-    /// each other.
+    /// The layout-only twins must not abort, and must agree with the
+    /// *painted* geometry once a sidecar is present.
     #[test]
     #[allow(deprecated)]
     fn layout_only_icon_twins_agree_with_the_icon_paint() {
@@ -1655,31 +818,23 @@ mod tests {
 
         let mut backend = backend_with_test_fonts();
 
-        // `tab_bar_layout_icons` is the no-paint twin: it must report
-        // exactly what `draw_tab_bar_icons` painted (the load-bearing
-        // macOS invariant), and must differ from the icon-less twin.
         let icon_hits = backend.tab_bar_layout_icons(rect, &bar, &icons);
         assert_eq!(icon_hits.slot_positions, painted.slot_positions);
         assert_eq!(icon_hits.close_bounds, painted.close_bounds);
         let plain_hits = backend.tab_bar_layout(rect, &bar);
         assert_ne!(
             icon_hits.slot_positions, plain_hits.slot_positions,
-            "#926: a non-empty sidecar must change the reported geometry",
+            "a non-empty sidecar must change the reported geometry",
         );
 
-        // `resolve_tab_bar_layout_icons` is the `TabBarLayout` spelling of
-        // the same measurement — independently computed (see
-        // `mac_tab_bar_native_layout_icons`' doc), so pin it against the
-        // painted hits through the shared converter.
         let icon_layout = backend.resolve_tab_bar_layout_icons(rect, &bar, &icons);
         let as_hits = crate::backend::tab_bar_hits_from_layout(&icon_layout, &bar);
         assert_eq!(
             as_hits.slot_positions, painted.slot_positions,
-            "the two independently-computed icon layouts must agree",
+            "the layout and hits spellings of the icon geometry must agree",
         );
         assert_eq!(as_hits.close_bounds, painted.close_bounds);
 
-        // And the painting `TabBarLayout` variant must match it too.
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
@@ -1694,11 +849,6 @@ mod tests {
         );
     }
 
-    /// With an icon present, a click at the centre of the reported close box
-    /// still lands on the `×` the rasteriser drew. This is precisely what a
-    /// *paint-only* icon fix would break — the glyph shifts right while the hit
-    /// box stays put — and why the reservation has to live in the shared
-    /// measurement pass.
     #[test]
     #[allow(deprecated)]
     fn close_box_still_lands_on_the_close_glyph_with_an_icon_present() {
@@ -1715,21 +865,15 @@ mod tests {
             "the icon must push the close box right (icon {lo} vs icon-less {plain_lo})",
         );
 
-        // The close box must still sit inside its own slot…
         let (slot_lo, slot_hi) = hits.slot_positions[0];
         assert!(
             lo >= slot_lo && hi <= slot_hi,
             "close box [{lo}, {hi}) must stay inside tab slot [{slot_lo}, {slot_hi})",
         );
 
-        // …and there must be ink in it: the `×` the user clicks. Tab 0 is
-        // active, so restrict the scan to the inset chip's own vertical
-        // band — outside it the row is `tab_bar_bg` by design, which
-        // would otherwise register as "inked" against `tab_active_bg`
-        // with no glyph drawn there at all.
         let bg = theme.tab_active_bg;
-        let chip_y0 = TAB_CHIP_INSET_Y as u32;
-        let chip_y1 = H - TAB_CHIP_INSET_Y as u32;
+        let chip_y0 = pixel::TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - pixel::TAB_CHIP_INSET_Y as u32;
         let inked = (lo.ceil() as u32..hi.floor() as u32).any(|x| {
             (chip_y0..chip_y1).any(|y| {
                 let (r, g, b, _) = surface.pixel(x.min(W - 1), y);
@@ -1743,10 +887,6 @@ mod tests {
         );
     }
 
-    /// The icon glyph paints at the tab's leading edge, ahead of the label, in
-    /// its own [`TabIcon::color`] rather than the tab foreground — the
-    /// "identity colour survives an inactive tab" half of the `TabIcon`
-    /// contract the TUI and GTK rasterisers already honour.
     #[test]
     #[allow(deprecated)]
     fn icon_glyph_paints_before_the_label_in_its_own_colour() {
@@ -1756,30 +896,18 @@ mod tests {
         let (surface, hits) = paint_icons_via_backend(&bar, &icons, None);
 
         let (slot_lo, _) = hits.slot_positions[0];
-        let icon_extra = mac_tab_icon_extras(&font(), bar.tabs.len(), &icons)[0];
-        // The glyph occupies `[slot_lo + tab_padding_x, slot_lo +
-        // tab_padding_x + icon_extra - TAB_ICON_GAP)`; the gap after it is
-        // bare background, which is what separates icon ink from label ink.
+        let icon_extra = measure_text(&font(), "R").0 + pixel::TAB_ICON_GAP as f64;
         let glyph_lo = slot_lo + Style::default().tab_padding_x as f64;
-        let glyph_hi = glyph_lo + icon_extra - TAB_ICON_GAP;
+        let glyph_hi = glyph_lo + icon_extra - pixel::TAB_ICON_GAP as f64;
         assert!(glyph_hi > glyph_lo, "icon span must be non-empty");
 
-        // Some pixel in the glyph span leans towards the icon colour.
-        // Exact equality would be wrong to assert — CoreText antialiases
-        // the glyph against `tab_active_bg` — so look for a pixel closer
-        // to the icon colour than to the background.
         let bg = Theme::default().tab_active_bg;
         let dist = |a: (u8, u8, u8), c: Color| {
             let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
             d(a.0, c.r) + d(a.1, c.g) + d(a.2, c.b)
         };
-        // Tab 0 is active, so restrict the scan to the inset chip's own
-        // vertical band — outside it the row is `tab_bar_bg`, not
-        // `bg` (`tab_active_bg`), and comparing against the wrong
-        // background there could pass or fail for reasons unrelated to
-        // the icon glyph.
-        let chip_y0 = TAB_CHIP_INSET_Y as u32;
-        let chip_y1 = H - TAB_CHIP_INSET_Y as u32;
+        let chip_y0 = pixel::TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - pixel::TAB_CHIP_INSET_Y as u32;
         let found = (glyph_lo.floor() as u32..glyph_hi.ceil() as u32).any(|x| {
             (chip_y0..chip_y1).any(|y| {
                 let (r, g, b, _) = surface.pixel(x.min(W - 1), y);
@@ -1794,8 +922,6 @@ mod tests {
         );
     }
 
-    /// An empty sidecar must reproduce the icon-less rasteriser *pixel for
-    /// pixel* — `draw_tab_bar` is now literally `draw_tab_bar_icons(.., &[])`.
     #[test]
     #[allow(deprecated)]
     fn empty_sidecar_is_pixel_identical_to_the_icon_less_paint() {
@@ -1817,30 +943,32 @@ mod tests {
         }
     }
 
-    /// A sidecar shorter (or longer) than `bar.tabs` must not panic —
-    /// `tab_icon_at` treats a missing entry as "no icon", the convention
-    /// every backend's sidecar handling shares.
+    /// A sidecar shorter (or longer) than `bar.tabs` must not panic.
     #[test]
     #[allow(deprecated)]
     fn short_and_overlong_sidecars_are_tolerated() {
         let bar = sample_bar();
         let f = font();
         let style = Style::default();
+        let layout_of = |icons: &[Option<TabIcon>]| {
+            mac_tab_bar_pixel_layout(&f, W as f32, H as f32, &bar, icons, &style).0
+        };
 
-        // One entry for a two-tab bar: tab 1 behaves as `None`.
         let short = vec![Some(TabIcon {
             glyph: "R".into(),
             color: Color::rgb(220, 120, 60),
         })];
-        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &short, &style);
-        assert_eq!(hits.slot_positions.len(), bar.tabs.len());
+        let short_layout = layout_of(&short);
+        let full_layout = layout_of(&sample_icons());
         assert_eq!(
-            hits.slot_positions[0],
-            mac_tab_bar_layout_icons(&f, W as f64, &bar, &sample_icons(), &style).slot_positions[0],
+            short_layout.visible_tabs.len(),
+            full_layout.visible_tabs.len()
+        );
+        assert_eq!(
+            short_layout.visible_tabs[0].bounds, full_layout.visible_tabs[0].bounds,
             "a short sidecar decorates the entries it does have",
         );
 
-        // Three entries for a two-tab bar: the extra is ignored.
         let long = vec![
             None,
             None,
@@ -1849,26 +977,20 @@ mod tests {
                 color: Color::rgb(220, 120, 60),
             }),
         ];
-        let long_hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &long, &style);
-        let plain = mac_tab_bar_layout(&f, W as f64, &bar, &style);
+        let long_layout = layout_of(&long);
+        let plain_layout = layout_of(&[]);
         assert_eq!(
-            long_hits.slot_positions, plain.slot_positions,
+            long_layout.visible_tabs, plain_layout.visible_tabs,
             "an overlong sidecar whose in-range entries are all None must \
              reproduce the icon-less geometry",
         );
     }
 
-    /// The scroll-offset correction (`fit_active_scroll_offset`) has to see
-    /// the icon reservation too — a decorated tab is wider, so fewer tabs
-    /// fit and the offset that keeps the active tab visible can differ.
-    /// Pins that `mac_tab_bar_layout_icons` feeds the *widened* slot widths
-    /// into that correction rather than the icon-less ones.
+    /// The scroll-offset correction has to see the icon reservation too —
+    /// a decorated tab is wider, so fewer tabs fit and the offset that
+    /// keeps the active tab visible can differ.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn icon_reservation_feeds_the_scroll_offset_correction() {
-        // Wide labels + the narrow test bar so the active tab can't fit
-        // without scrolling, and every tab decorated so the reservation is
-        // what tips it over.
         let bar = TabBar {
             id: WidgetId::new("tabs"),
             tabs: (0..6)
@@ -1897,78 +1019,34 @@ mod tests {
         let f = font();
         let style = Style::default();
 
-        let plain = mac_tab_bar_layout(&f, W as f64, &bar, &style);
-        let decorated = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons, &style);
-        // Guard the premise: the reservation must actually have widened
-        // the slots this correction is computed from, otherwise the
-        // assertions below would hold vacuously.
-        // `bar.scroll_offset` is 0, so slot 0 is the first *painted* tab.
-        let slot_w = |h: &TabBarHits| {
-            let (lo, hi) = h.slot_positions[0];
-            hi - lo
-        };
+        let (plain, plain_corrected, _) =
+            mac_tab_bar_pixel_layout(&f, W as f32, H as f32, &bar, &[], &style);
+        let (decorated, decorated_corrected, _) =
+            mac_tab_bar_pixel_layout(&f, W as f32, H as f32, &bar, &icons, &style);
+
+        let slot_w = |l: &TabBarLayout| l.visible_tabs[0].bounds.width;
         assert!(
             slot_w(&decorated) > slot_w(&plain),
-            "decorated slots must be wider than icon-less ones \
-             ({} vs {})",
+            "decorated slots must be wider than icon-less ones ({} vs {})",
             slot_w(&decorated),
             slot_w(&plain),
         );
         assert!(
-            decorated.correct_scroll_offset >= plain.correct_scroll_offset,
+            decorated_corrected >= plain_corrected,
             "wider tabs can only need the same or a later scroll offset \
-             (icon-less {}, decorated {})",
-            plain.correct_scroll_offset,
-            decorated.correct_scroll_offset,
+             (icon-less {plain_corrected}, decorated {decorated_corrected})",
         );
-        // Fewer decorated tabs fit in the same bar, so the visible slot
-        // count can only shrink or hold.
-        let visible = |h: &TabBarHits| h.slot_positions.len();
         assert!(
-            visible(&decorated) <= visible(&plain),
+            decorated.visible_tabs.len() <= plain.visible_tabs.len(),
             "decorated tabs are wider, so no more of them can fit \
              (icon-less {}, decorated {})",
-            visible(&plain),
-            visible(&decorated),
+            plain.visible_tabs.len(),
+            decorated.visible_tabs.len(),
         );
     }
 
-    /// `mac_tab_bar_native_layout_icons` and `mac_tab_bar_layout_icons`
-    /// duplicate their measurement code, so this test verifies they agree
-    /// with a sidecar present — the reservation must be applied in both places
-    /// to keep the implementations from drifting.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn native_layout_agrees_with_hits_layout_with_icons() {
-        let bar = sample_bar();
-        let icons = sample_icons();
-        let f = font();
-        let style = Style::default();
-
-        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons, &style);
-        let native = mac_tab_bar_native_layout_icons(&f, W as f64, H as f64, &bar, &icons, &style);
-        let native_as_hits = crate::backend::tab_bar_hits_from_layout(&native, &bar);
-
-        assert_eq!(hits.slot_positions, native_as_hits.slot_positions);
-        assert_eq!(hits.close_bounds, native_as_hits.close_bounds);
-        assert_eq!(
-            hits.right_segment_bounds,
-            native_as_hits.right_segment_bounds
-        );
-        assert_eq!(hits.correct_scroll_offset, native.resolved_scroll_offset);
-    }
-
-    /// `MacBackend::draw_tab_bar` must paint the tab bar background at `rect.x`,
-    /// not at the window origin. This test verifies that painting at a non-zero
-    /// `rect.x` (representing, for example, a sidebar's right edge) leaves the
-    /// area to the left untouched and starts the tab bar's background exactly
-    /// at `rect.x`.
-    ///
-    /// Uses an empty bar (no tabs) so the whole strip is uniformly `tab_bar_bg`,
-    /// so a probe anywhere in the strip can't land on an active tab's
-    /// differently-coloured slot instead.
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn tab_bar_paints_at_rect_x_not_at_window_origin() {
         const SIDEBAR_W: f32 = 120.0;
         let canvas_w = SIDEBAR_W as u32 + W;
@@ -1991,16 +1069,12 @@ mod tests {
         });
         backend.end_frame();
 
-        // Left of the sidebar boundary must stay exactly as the surface
-        // was initialised — fully transparent — never the tab bar's
-        // background fill.
         let (_, _, _, a) = surface.pixel(4, H / 2);
         assert_eq!(
             a, 0,
             "sidebar column (x=4) must stay untouched by the tab bar fill",
         );
 
-        // At (and past) the sidebar's right edge: tab bar background.
         let theme = Theme::default();
         let (r, g, b, _) = surface.pixel(SIDEBAR_W as u32 + 4, H / 2);
         assert_eq!(
@@ -2010,12 +1084,8 @@ mod tests {
         );
     }
 
-    /// Companion to [`tab_bar_paints_at_rect_x_not_at_window_origin`]:
-    /// `Backend::tab_bar_layout`/`draw_tab_bar` document absolute
-    /// (target-surface) coordinates for `TabBarHits` — the first tab's
-    /// slot must start at or after `rect.x`, never at bar-relative `0.0`.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn tab_bar_hits_are_absolute_at_nonzero_rect_x() {
         const SIDEBAR_W: f32 = 120.0;
         let canvas_w = SIDEBAR_W as u32 + W;
@@ -2040,12 +1110,8 @@ mod tests {
         );
     }
 
-    /// The layout must match the painted hits at non-zero `rect.x`, with the
-    /// same invariant as [`layout_twin_matches_the_painted_hits`] — paint and
-    /// layout must agree once both are shifted to the absolute contract that
-    /// `Backend::tab_bar_layout` documents.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn layout_twin_matches_the_painted_hits_at_nonzero_origin() {
         const SIDEBAR_W: f32 = 120.0;
         let canvas_w = SIDEBAR_W as u32 + W;
@@ -2068,27 +1134,16 @@ mod tests {
         assert_eq!(painted.slot_positions, computed.slot_positions);
         assert_eq!(painted.close_bounds, computed.close_bounds);
         assert_eq!(painted.right_segment_bounds, computed.right_segment_bounds);
-        // Check `available_cols` and `correct_scroll_offset` too; these are pure
-        // functions of `rect.width` and the bar's tab widths, independent of `rect.x`,
-        // but exercising them here keeps this non-zero-origin case consistent with
-        // the zero-origin case.
         assert_eq!(painted.available_cols, computed.available_cols);
         assert_eq!(
             painted.correct_scroll_offset,
             computed.correct_scroll_offset
         );
-        // Sanity: the agreement isn't just "both zero" — the geometry
-        // actually moved with the origin.
         assert!(painted.slot_positions[0].0 >= SIDEBAR_W as f64);
     }
 
-    /// The reported symptom (controls in `TabBar::right_segments` floating at
-    /// the wrong position) occurs because `right_segments` paints through the
-    /// same `draw_tab_bar_icons` call inside the same `CGContextTranslateCTM`
-    /// wrap as the tabs themselves. This test verifies that `right_segment_bounds`
-    /// are shifted by `rect.x` just like the tab slot positions.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn right_segments_are_shifted_by_rect_x_like_the_tabs() {
         const SIDEBAR_W: f32 = 120.0;
         let canvas_w = SIDEBAR_W as u32 + W;
@@ -2103,15 +1158,16 @@ mod tests {
             is_active: false,
         }];
 
-        // Bar-relative geometry `draw_tab_bar_icons` computes internally,
-        // before any `rect.x` shift — the pre-fix behaviour.
-        let bar_relative = mac_tab_bar_layout(&font(), W as f64, &bar, &Style::default());
+        // Bar-relative geometry, before any `rect.x` shift.
+        let (bar_relative, _, _) =
+            mac_tab_bar_pixel_layout(&font(), W as f32, H as f32, &bar, &[], &Style::default());
         assert_eq!(
-            bar_relative.right_segment_bounds.len(),
+            bar_relative.visible_segments.len(),
             1,
             "fixture bar should have exactly one right segment",
         );
-        let (rel_start, rel_end) = bar_relative.right_segment_bounds[0];
+        let seg = bar_relative.visible_segments[0].bounds;
+        let (rel_start, rel_end) = (seg.x as f64, (seg.x + seg.width) as f64);
 
         let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
@@ -2130,21 +1186,14 @@ mod tests {
             "right segment bounds should be the bar-relative geometry shifted by rect.x={SIDEBAR_W}",
         );
 
-        // `tab_bar_layout`'s no-paint twin must agree, same invariant as
-        // `layout_twin_matches_the_painted_hits_at_nonzero_origin` above.
         let computed = backend.tab_bar_layout(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar);
         assert_eq!(hits.right_segment_bounds, computed.right_segment_bounds);
     }
 
-    /// The active tab's chip must fully enclose the painted label —
-    /// icon, text and the close `×` — not just the label's *measured*
-    /// width. Regression test for the real system UI font at the row
-    /// height the `tui_tab_icons`/`macos_tab_icons` demo actually paints
-    /// at: `backend.line_height()`'s hardcoded 16.0 editor-font default,
-    /// which is tight enough relative to the chrome font's own line
-    /// height that a fixed `TAB_CHIP_INSET_Y` on both edges would leave
-    /// a chip shorter than the label, letting a descender like
-    /// "Cargo.toml"'s "g" ink past the chip's bottom edge.
+    /// The active tab's chip must fully enclose the painted label — icon,
+    /// text and the close `×` — not just the label's *measured* width, on
+    /// a row only just tall enough for the chrome font's own line height
+    /// (the `tui_tab_icons`/`macos_tab_icons` demo's real row height).
     #[test]
     #[allow(deprecated)]
     fn active_chip_fully_encloses_the_painted_label_at_the_real_chrome_font() {
@@ -2181,13 +1230,6 @@ mod tests {
         };
 
         const WIDE_W: u32 = 600;
-        // The live `tui_tab_icons`/`macos_tab_icons` demo passes
-        // `backend.line_height()` — `MacBackend::new()`'s hardcoded
-        // editor-font default of 16.0, never overridden since the demo
-        // never calls `AppLogic::setup()` to install an editor font — as
-        // the tab bar's row height, not this module's `H = 28` test
-        // constant. Reproduce that exact (much tighter) row height here
-        // rather than the roomier one every other test in this module uses.
         const DEMO_ROW_H: u32 = 16;
         let surface = BitmapSurface::new(WIDE_W, DEMO_ROW_H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
@@ -2209,19 +1251,8 @@ mod tests {
 
         let theme = Theme::default();
         let (slot_x, slot_end) = hits.slot_positions[1];
-        let chip_x1 = slot_end - TAB_OUTER_GAP;
+        let chip_x1 = slot_end - pixel::TAB_OUTER_GAP as f64;
 
-        // Both the bar's own background and the chip's background are
-        // dark, low-luma colours (`Theme::default()`'s
-        // `tab_bar_bg`/`tab_active_bg`), while the label text and icon
-        // glyphs are painted at a much higher-luma colour (`tab_active_fg`
-        // and the icon tints) — a wide enough gap that a luma threshold
-        // tells real label ink apart from the chip's own anti-aliased
-        // fill edge. A fractional chip inset (the case under test) means
-        // the chip's straight top/bottom edge sits mid-pixel, so the row
-        // straddling it blends `tab_bar_bg` and `tab_active_bg` into a
-        // third colour that matches neither exactly — an exact-colour
-        // background check would misclassify that blend as escaped ink.
         fn luma(c: Color) -> f64 {
             0.299 * c.r as f64 + 0.587 * c.g as f64 + 0.114 * c.b as f64
         }
@@ -2229,35 +1260,10 @@ mod tests {
             + luma(theme.tab_active_fg))
             / 2.0)
             .max(luma(theme.tab_bar_bg).max(luma(theme.tab_active_bg)) + 20.0);
-        // Inset well clear of the chip's own rounded corners (radius
-        // `TAB_CHIP_RADIUS`) so corner anti-aliasing isn't mistaken for
-        // label ink escaping the chip's top/bottom edge.
-        let inset = (TAB_CHIP_RADIUS as u32) + 6;
+        let inset = (pixel::TAB_CHIP_RADIUS as u32) + 6;
         let probe_x0 = (slot_x as u32) + inset;
         let probe_x1 = (chip_x1 as u32).saturating_sub(inset).max(probe_x0);
 
-        // No recomputed `chip_y`/`chip_bottom` here: trusting a formula
-        // that mirrors `draw_tab_bar_icons`'s own adaptive-inset formula
-        // only proves the two formulas agree with each other, not that
-        // the chip the backend actually painted encloses the label it
-        // actually painted. Instead, classify every sampled row purely
-        // from rendered pixels.
-        //
-        // A row's non-ink pixels are overwhelmingly the flat colour
-        // behind the label — either the chip (`tab_active_bg`, or a
-        // `tab_bar_bg`/`tab_active_bg` blend on a row straddling the
-        // chip's fractional top/bottom edge) or, when the chip doesn't
-        // reach that row, the bar's own flat `tab_bar_bg`. The glyphs'
-        // own anti-aliased stroke edges are a small minority of pixels
-        // confined to a ring around the ink itself, and their colour
-        // (a blend toward the bright label colour) sits below the ink
-        // luma threshold without matching either flat background —
-        // checking whether *any* non-ink pixel differs from
-        // `tab_bar_bg` mistakes those stroke-edge pixels for chip
-        // coverage even when no chip is present under the row at all.
-        // Taking the *mode* (most frequent colour) of the row's
-        // non-ink pixels instead picks out the dominant background
-        // colour and ignores the rare stroke-edge outliers.
         let bar_bg = theme.tab_bar_bg;
         const BG_DIFF_EPSILON: f64 = 4.0;
 
@@ -2296,14 +1302,8 @@ mod tests {
         );
     }
 
-    /// An app-supplied [`TabBarGlyphs`] override swaps the close/dirty
-    /// mark `Backend::draw_tab_bar_with_chrome_and_glyphs` paints on
-    /// [`MacBackend`]; with `glyphs: None` it paints the same codicon
-    /// default as [`MacBackend::draw_tab_bar`].
     #[test]
     fn close_dirty_glyph_override_paints_app_glyph_default_paints_codicon() {
-        use crate::primitives::tab_bar::TabChrome;
-
         let bar = sample_bar();
         let chrome = TabChrome::default();
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
@@ -2338,8 +1338,6 @@ mod tests {
         assert!(!overridden
             .iter()
             .any(|r| r.text.contains(crate::codicon::DIRTY)));
-        // Tab 0 (`main.rs`) is closable and not dirty, so the close-glyph
-        // override paints there too.
         assert!(
             overridden.iter().any(|r| r.text == "x"),
             "expected the overridden close glyph among painted runs, got {:?}",
@@ -2376,25 +1374,11 @@ mod tests {
     }
 
     /// `TabChrome::focused_index` paints a focus-visible ring on the
-    /// named tab — present after keyboard navigation (`focused_index:
-    /// Some(i)`), absent after a click (`focused_index: None`, the
-    /// caller's own focus-visible suppression convention documented on
-    /// [`crate::primitives::tab_bar::TabChrome::focused_index`]).
-    ///
-    /// Targets tab 0 — the active tab and the default focus target —
-    /// with a non-default `focus_ring_width`, and probes the midpoint
-    /// of all four edges of the inset rect the paint-loop's comment
-    /// describes, so a regression that drops an edge (off-canvas
-    /// top/bottom, or clobbered by the next tab's background) fails
-    /// here rather than only in a geometry picked to dodge it. The
-    /// click-suppressed half asserts the *bar background* colour, not
-    /// just "not the ring colour", so a stray mark of any other colour
-    /// also fails.
+    /// named tab — present after keyboard navigation, absent after a
+    /// click (`focused_index: None`).
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click() {
-        use crate::primitives::tab_bar::TabChrome;
-
         let bar = sample_bar();
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
         let style = Style::default().with_focus_ring_width(4.0);
@@ -2418,14 +1402,9 @@ mod tests {
             (surface, hits.into_inner().unwrap())
         };
 
-        // Keyboard focus on tab 0 ("main.rs", the active tab): all four
-        // edges of the inset ring rect must carry
-        // `theme.focus_ring_color()`. Mirrors the paint loop's own
-        // geometry exactly (slot bounds inset by half the ring width),
-        // not the outset `focus_ring_geometry` `Button`'s ring uses.
         let (focused_surface, focused_hits) = paint(Some(0));
         let (slot_x, slot_end) = focused_hits.slot_positions[0];
-        let tab_content_w = slot_end - slot_x - TAB_OUTER_GAP;
+        let tab_content_w = slot_end - slot_x - pixel::TAB_OUTER_GAP as f64;
         let ring_width = style.focus_ring_width as f64;
         let inset = ring_width / 2.0;
         let left = (slot_x + inset).round() as u32;
@@ -2435,14 +1414,6 @@ mod tests {
         let mid_x = (slot_x + tab_content_w / 2.0).round() as u32;
         let mid_y = H / 2;
 
-        // Without a ring, tab 0's *active-tab chip* (not the flat bar
-        // background) covers the left/right probes — they sit within
-        // the chip's straight vertical edge, well clear of its rounded
-        // corners — while the top/bottom probes sit above/below the
-        // chip's own `TAB_CHIP_INSET_Y` margin, where the flat bar
-        // background still shows through. Each probe's unfocused
-        // expectation reflects whichever of those two is actually
-        // painted there.
         let active_bg = theme.tab_active_bg;
         let probes = [
             ("left", left, mid_y, active_bg),
@@ -2460,10 +1431,6 @@ mod tests {
             );
         }
 
-        // Click suppresses focus-visible: `focused_index: None` must
-        // paint whatever sits under that edge absent a ring — the
-        // chip or the bar background, per `probes` above — not just
-        // "something other than the ring colour".
         let (clicked_surface, _clicked_hits) = paint(None);
         for (name, px, py, expected) in probes {
             let (r0, g0, b0, _) = clicked_surface.pixel(px, py);
@@ -2477,23 +1444,15 @@ mod tests {
     }
 
     /// `Backend::draw_tab_bar_with_chrome`/`draw_tab_bar_with_chrome_layout`
-    /// are the entry points the gallery and `quadraui-binding-core`'s
-    /// render path actually call — never the deprecated `_and_glyphs`
-    /// spelling [`focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click`]
-    /// exercises directly. Both must paint `chrome.focused_index`'s ring
-    /// too, not just the `_and_glyphs` call.
+    /// must both paint `chrome.focused_index`'s ring too, not just the
+    /// `_and_glyphs` spelling.
     #[test]
     fn draw_tab_bar_with_chrome_and_its_layout_twin_both_paint_the_focus_ring() {
-        use crate::primitives::tab_bar::TabChrome;
-
         let bar = sample_bar();
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
         let theme = Theme::default();
         let ring_color = theme.focus_ring_color();
         let chrome = TabChrome::default().with_focused_index(Some(0));
-        // Left ring edge for tab 0 (`slot_x == 0`) at the default
-        // `Style::focus_ring_width` (2.0, inset by half): matches the
-        // paint loop's own `(slot_x + inset).round()` exactly.
         let probe_x = 1;
         let probe_y = H / 2;
 
@@ -2539,12 +1498,7 @@ mod tests {
 
     /// `Style::tab_padding_x` sets the label's leading inset: with no icon
     /// decorating the tab, the label text run's painted `x` origin is
-    /// exactly `slot_x + tab_padding_x`, not a fixed literal. Uses the
-    /// painted-text-run recorder (the same choke point
-    /// `close_dirty_glyph_override_paints_app_glyph_default_paints_codicon`
-    /// drives above) rather than scanning pixels, since `draw_text`
-    /// records the exact `x` this rasteriser paints at — a direct
-    /// assertion on the ink column, not an inference from colour.
+    /// exactly `slot_x + tab_padding_x`, not a fixed literal.
     #[test]
     #[allow(deprecated)]
     fn tab_padding_x_sets_the_labels_leading_inset() {
@@ -2564,9 +1518,6 @@ mod tests {
             compact: false,
         };
 
-        // Paint once per style and return the label's recorded run x
-        // alongside the tab's slot origin, so each call is self-contained
-        // about which inset produced it.
         let label_x_for_style = |style: Style| -> (f64, f64) {
             let surface = BitmapSurface::new(W, H);
             surface.fill(0.0, 0.0, 0.0, 0.0);
@@ -2598,9 +1549,6 @@ mod tests {
             default_style.tab_padding_x,
         );
 
-        // A distinctly different inset must move the label by exactly the
-        // difference — proving the token actually drives the paint rather
-        // than the assertion above holding by coincidence at the default.
         let wide_style = Style::default().with_tab_padding_x(26.0);
         let (wide_label_x, wide_slot_x) = label_x_for_style(wide_style);
         assert!(
@@ -2616,7 +1564,6 @@ mod tests {
     }
 
     /// A label wider than the tab strip it has to fit in is ellipsis-fitted
-    /// through the shared `crate::primitives::tab_bar::fit_tab_label`
     /// instead of being dropped from the strip. The close glyph's hit box
     /// — and the glyph itself — must still land fully inside the narrow
     /// strip.
@@ -2700,31 +1647,7 @@ mod tests {
         );
     }
 
-    /// Reproduces the review's reported numbers: a label whose true
-    /// content width is `21.6` points lands against a budget that took an
-    /// `f64 -> f32 -> f64` round trip through `TabBarHits::slot_positions`
-    /// and came back one ulp short, at `21.599998`. Without the tolerance
-    /// this would wrongly be judged an overflow and sent through
-    /// `fit_tab_label`, ellipsising a label that fits exactly.
-    #[test]
-    fn label_fits_without_truncation_absorbs_f32_round_trip_noise() {
-        assert!(label_fits_without_truncation(21.6, 21.599998));
-        assert!(label_fits_without_truncation(28.8, 28.799995));
-        assert!(label_fits_without_truncation(43.2, 43.199982));
-        assert!(label_fits_without_truncation(50.4, 50.399994));
-
-        // A genuine overflow — a budget meaningfully short of the content
-        // width — must still be reported as not fitting.
-        assert!(!label_fits_without_truncation(50.0, 10.0));
-        assert!(!label_fits_without_truncation(21.6, 20.0));
-    }
-
-    /// A label that genuinely fits its slot must paint unchanged — the
-    /// non-overflow path must never reach for `fit_tab_label`. Swept
-    /// across a range of label lengths (rather than one hand-picked width)
-    /// so a regression anywhere in that range — e.g. the f32 round-trip
-    /// noise `label_fits_without_truncation` exists to absorb — shows up
-    /// as a failure here.
+    /// A label that genuinely fits its slot must paint unchanged.
     #[test]
     #[allow(deprecated)]
     fn fully_fitting_labels_never_get_an_ellipsis() {
@@ -2771,11 +1694,7 @@ mod tests {
 
     /// A label truncated by the overflow path, on a tab decorated with an
     /// icon, must reserve the icon's width identically on the hit-box side
-    /// (`mac_tab_bar_native_layout_icons`'s close-button hit box, via
-    /// `tab_label_budget`'s `leading`) and the paint side
-    /// (`draw_tab_bar_icons_with_glyphs`'s `fit_tab_label` call, via the
-    /// same `tab_label_budget`) — the one place those two `leading`
-    /// derivations could silently diverge.
+    /// and the paint side.
     #[test]
     #[allow(deprecated)]
     fn overlong_label_with_icon_in_a_narrow_strip_reserves_icon_width_on_both_paint_and_hit_sides()
@@ -2847,9 +1766,6 @@ mod tests {
             "label run {:?} must end in an ellipsis",
             label_run.text
         );
-        // The label must start to the right of the icon, on both the
-        // painted glyph and the hit-box side — exactly `tab_label_budget`'s
-        // `leading`, shared by layout and paint.
         assert!(
             (label_run.bounds.x as f64) > (icon_run.bounds.x + icon_run.bounds.width) as f64,
             "label run {:?} must start after the icon run {:?}",

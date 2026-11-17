@@ -1,8 +1,8 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::TabBar`].
 //!
 //! [`pixel_layout`] measures and positions tabs by hand with DirectWrite
-//! pixel measurers — like `macos::tab_bar`'s `mac_tab_bar_native_layout_icons`,
-//! not the shared `TabBar::layout` D6 API — so a tab whose full label
+//! pixel measurers, not the shared `TabBar::layout` D6 API — so a tab
+//! whose full label
 //! would overflow the strip gets it ellipsis-fitted through
 //! [`crate::primitives::tab_bar::fit_tab_label`] into whatever space is
 //! actually left, instead of being dropped from the strip outright. Paint
@@ -245,9 +245,10 @@ struct PixelLayout {
 /// A tab whose full (untruncated) width would overflow the strip gets its
 /// label ellipsis-fitted into whatever space is actually left, via the
 /// shared [`crate::primitives::tab_bar::fit_tab_label`], instead of being
-/// dropped from the strip outright — mirroring `macos::tab_bar`'s
-/// `mac_tab_bar_native_layout_icons`. The close-button hit region is
-/// positioned off the fitted label's own measured width, so it always
+/// dropped from the strip outright — mirroring `macos::tab_bar`'s own
+/// [`crate::primitives::layout_metrics::pixel_tab_bar_layout_fitting_boundary`]
+/// composition. The close-button hit region is positioned off the fitted
+/// label's own measured width, so it always
 /// lands fully inside the tab's (possibly shrunk) slot.
 ///
 /// `style.tab_padding_x` sets the left+right inset (DIPs) inside a tab's
