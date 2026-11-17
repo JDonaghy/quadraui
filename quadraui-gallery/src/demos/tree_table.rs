@@ -16,7 +16,8 @@ use quadraui::compose::tree_nav::{HorizontalDir, HorizontalNav, TreeNavCore};
 use quadraui::{
     Backend, BackendCaps, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Icon,
     InteractionState, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar, StatusBarSegment,
-    Style, StyledText, TreeTable, TreeTableHit, TreeTableNode, UiEvent, WidgetId,
+    Style, StyledText, TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableNode,
+    UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -208,6 +209,14 @@ fn columns_for(width: f32) -> Vec<Column> {
             align: ColumnAlign::Left,
         },
     ];
+    // Each threshold is the dropped column's own fixed width plus the
+    // narrowest `Name` the demo still wants visible at that step: 56 =
+    // 32 (`Date Modified` + `Size` + `Kind`) + 24; 46 = 22 (`Date
+    // Modified` + `Size`) + 24; 34 = 14 (`Date Modified`) + 20. `Name`
+    // itself has no fixed width — it's `Flex` — so these are a floor the
+    // demo picks for itself, not a hard minimum the shared `TreeTable`
+    // layout enforces (see `tree_column_floor_width` in `tui::data_table`
+    // for that).
     let n = if width >= 56.0 {
         4
     } else if width >= 46.0 {
@@ -304,19 +313,19 @@ impl TreeTableDemo {
         }
     }
 
-    /// Apply a [`HorizontalNav`] classification: collapse/expand mutate
-    /// `roots`, select-parent/select-first-child just move `nav`'s
-    /// selection — exactly the rule [`TreeNavCore::horizontal_nav`]
-    /// documents, applied rather than re-derived.
+    /// Apply a [`HorizontalNav`] classification: collapse/expand go
+    /// through [`TreeTableEvent::from_horizontal_nav`] and
+    /// [`Self::apply_event`] — the same path a chevron click's
+    /// [`TreeTableLayout::chevron_toggle`] event takes — select-parent/
+    /// select-first-child just move `nav`'s selection, exactly the rule
+    /// [`TreeNavCore::horizontal_nav`] documents, applied rather than
+    /// re-derived.
     fn apply_horizontal(&mut self, tree: &[TreeTableNode], dir: HorizontalDir) {
         match self.nav.horizontal_nav(tree, dir) {
-            HorizontalNav::Collapse(path) => {
-                self.set_expanded(&path, false);
-                self.last = format!("{path:?} collapsed");
-            }
-            HorizontalNav::Expand(path) => {
-                self.set_expanded(&path, true);
-                self.last = format!("{path:?} expanded");
+            nav @ (HorizontalNav::Collapse(_) | HorizontalNav::Expand(_)) => {
+                if let Some(event) = TreeTableEvent::from_horizontal_nav(nav) {
+                    self.apply_event(event);
+                }
             }
             HorizontalNav::SelectParent(path) | HorizontalNav::SelectFirstChild(path) => {
                 self.nav.set_selected_path(Some(path));
@@ -331,17 +340,15 @@ impl TreeTableDemo {
         }
     }
 
-    fn toggle_expanded(&mut self, path: &[u16]) {
-        if let Some(node) = node_at_path_mut(&mut self.roots, path) {
-            node.expanded = !node.expanded;
-            self.last = format!(
-                "{path:?} {}",
-                if node.expanded {
-                    "expanded"
-                } else {
-                    "collapsed"
-                }
-            );
+    /// Apply a [`TreeTableEvent`] the demo received from either
+    /// [`TreeTableEvent::from_horizontal_nav`] (Left/Right) or
+    /// [`TreeTableLayout::chevron_toggle`] (chevron click) — the one
+    /// place `roots` is mutated for an expand/collapse, so both paths
+    /// stay in sync.
+    fn apply_event(&mut self, event: TreeTableEvent) {
+        if let TreeTableEvent::ToggleExpanded { path, expand } = event {
+            self.set_expanded(&path, expand);
+            self.last = format!("{path:?} {}", if expand { "expanded" } else { "collapsed" });
         }
     }
 }
@@ -426,8 +433,9 @@ impl Demo for TreeTableDemo {
                         Reaction::Redraw
                     }
                     TreeTableHit::Chevron { idx } => {
-                        let path = table.tree[idx].path.clone();
-                        self.toggle_expanded(&path);
+                        if let Some(event) = TreeTableLayout::chevron_toggle(idx, &table.tree) {
+                            self.apply_event(event);
+                        }
                         Reaction::Redraw
                     }
                     TreeTableHit::Row { idx } => {
@@ -449,7 +457,7 @@ impl Demo for TreeTableDemo {
     }
 
     fn data(&self, _variant: usize) -> serde_json::Value {
-        serde_json::to_value(self.table(80.0).table).unwrap_or(serde_json::Value::Null)
+        serde_json::to_value(self.table(80.0)).unwrap_or(serde_json::Value::Null)
     }
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
@@ -490,11 +498,23 @@ mod tests {
     }
 
     #[test]
-    fn toggle_expanded_flips_a_directorys_state() {
+    fn chevron_toggle_emits_toggle_expanded_and_apply_event_flips_a_directorys_state() {
         let mut demo = TreeTableDemo::new();
-        demo.toggle_expanded(&[0]);
+        let tree = demo.table(80.0).tree;
+        let event = TreeTableLayout::chevron_toggle(0, &tree);
+        assert_eq!(
+            event,
+            Some(TreeTableEvent::ToggleExpanded {
+                path: vec![0],
+                expand: false,
+            })
+        );
+        demo.apply_event(event.unwrap());
         assert!(!demo.roots[0].expanded, "src/ should collapse");
-        demo.toggle_expanded(&[0]);
+
+        let tree = demo.table(80.0).tree;
+        let event = TreeTableLayout::chevron_toggle(0, &tree).unwrap();
+        demo.apply_event(event);
         assert!(demo.roots[0].expanded, "src/ should re-expand");
     }
 

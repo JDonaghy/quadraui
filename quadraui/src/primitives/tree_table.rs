@@ -97,6 +97,57 @@ impl NavRow for TreeTableNode {
 /// meaning unchanged — selection, scroll, sort, focus, h-scroll, column
 /// overrides, footer and `bordered` all behave exactly as they do on a
 /// plain `DataTable`. `tree` only ever adds the column-0 tree cell on top.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{
+///     Column, ColumnMeasure, DataRow, DataTable, StyledText, TreeTable, TreeTableHit,
+///     TreeTableNode, WidgetId,
+/// };
+///
+/// let table = DataTable {
+///     id: WidgetId::new("tree_table:files"),
+///     columns: vec![Column {
+///         title: "Name".to_string(),
+///         width: Default::default(),
+///         align: Default::default(),
+///     }],
+///     rows: vec![
+///         DataRow {
+///             cells: vec![StyledText::plain("src")],
+///             decoration: Default::default(),
+///         },
+///         DataRow {
+///             cells: vec![StyledText::plain("main.rs")],
+///             decoration: Default::default(),
+///         },
+///     ],
+///     selected_idx: None,
+///     scroll_offset: 0,
+///     sort: None,
+///     has_focus: true,
+///     show_scrollbar: false,
+///     min_total_width: None,
+///     h_scroll: 0.0,
+///     column_overrides: vec![],
+///     footer: None,
+///     bordered: false,
+/// };
+/// let tree = vec![
+///     TreeTableNode::new(vec![0], 0).with_expanded(true),
+///     TreeTableNode::new(vec![0, 0], 1),
+/// ];
+/// let tree_table = TreeTable { table, tree };
+///
+/// let layout = tree_table.layout(80.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(20.0), |n| {
+///     n.is_expanded.map(|_| (0.0, 1.0))
+/// }, 0.0);
+/// assert_eq!(
+///     layout.hit_test(0.0, 1.0, 0, tree_table.table.rows.len()),
+///     TreeTableHit::Chevron { idx: 0 }
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TreeTable {
     pub table: DataTable,
@@ -108,16 +159,43 @@ pub struct TreeTable {
 }
 
 impl TreeTable {
+    /// `self.table` with only its first `kept` columns (and the parallel
+    /// `column_overrides` entries) — the subset [`Self::layout`] resolves
+    /// against while probing how many rightmost columns the narrow-rect
+    /// rule needs to drop. Never touches `rows`, `footer`, `bordered` or
+    /// any other field, so the probed layout differs from the real one
+    /// only in which columns exist.
+    fn table_with_columns(&self, kept: usize) -> DataTable {
+        let mut table = self.table.clone();
+        table.columns.truncate(kept);
+        table.column_overrides.truncate(kept);
+        table
+    }
+
     /// Compute layout from viewport dimensions plus column and
     /// chevron measurers.
     ///
-    /// Calls [`DataTable::layout`] verbatim for `table`, then lays out
+    /// Calls [`DataTable::layout`] verbatim for `table` (possibly more
+    /// than once, to apply the narrow-rect rule below), then lays out
     /// column 0 of every visible row with `measure_chevron` — writing no
-    /// row-stacking, column-resolving or scrolling code of its own.
-    /// `measure_chevron(node)` returns `(start, width)` — both relative to
+    /// row-stacking or scrolling code of its own, and no column-resolving
+    /// math beyond deciding how many trailing columns reach
+    /// [`DataTable::layout`]. `measure_chevron(node)` returns `(start,
+    /// width)` — both relative to
     /// column 0's left edge, in the same content-space unit
     /// [`crate::ResolvedColumn::x`] uses — for a row whose chevron paints,
     /// or `None` for a leaf or a row whose chevron is hidden.
+    ///
+    /// `min_tree_col_width` is the narrow-rect floor: the smallest
+    /// content-space width column 0 (the tree cell) may resolve to. When
+    /// [`DataTable::layout`]'s own resolution would give column 0 less
+    /// than that, the rightmost column is dropped and resolution retried
+    /// — repeating until column 0 clears the floor or every other column
+    /// is gone. If even a single surviving column 0 still can't clear it
+    /// (the viewport itself is narrower than the floor), column 0 is
+    /// widened to the floor rather than left truncated, overflowing the
+    /// viewport instead of clipping the tree cell. Pass `0.0` to disable
+    /// the rule entirely (never drop, never widen).
     #[allow(clippy::too_many_arguments)]
     pub fn layout<F, G>(
         &self,
@@ -128,19 +206,42 @@ impl TreeTable {
         scrollbar_width: f32,
         measure_col: F,
         measure_chevron: G,
+        min_tree_col_width: f32,
     ) -> TreeTableLayout
     where
         F: Fn(&Column) -> ColumnMeasure,
         G: Fn(&TreeTableNode) -> Option<(f32, f32)>,
     {
-        let table = self.table.layout(
+        let mut kept = self.table.columns.len();
+        let mut table = self.table.layout(
             viewport_width,
             viewport_height,
             row_height,
             header_height,
             scrollbar_width,
-            measure_col,
+            &measure_col,
         );
+        while kept > 1 {
+            let col0_width = table.columns.first().map(|c| c.width).unwrap_or(0.0);
+            if col0_width >= min_tree_col_width {
+                break;
+            }
+            kept -= 1;
+            table = self.table_with_columns(kept).layout(
+                viewport_width,
+                viewport_height,
+                row_height,
+                header_height,
+                scrollbar_width,
+                &measure_col,
+            );
+        }
+        if let Some(col0) = table.columns.first_mut() {
+            if col0.width < min_tree_col_width {
+                col0.width = min_tree_col_width;
+                table.content_width = table.content_width.max(col0.x + col0.width);
+            }
+        }
         let scroll_offset = self.table.scroll_offset.min(self.table.rows.len());
         let mut chevrons = Vec::new();
         if let Some(col0) = table.columns.first() {
@@ -192,13 +293,19 @@ pub struct TreeTableLayout {
     pub table: DataTableLayout,
     /// `(absolute row index, chevron hit bounds)` for every visible row
     /// with a painted chevron, in [`DataTableLayout::columns`]' content
-    /// space (the same space [`crate::ResolvedColumn::x`] uses — not yet
-    /// shifted by `h_scroll` or [`DataTableLayout::inset_x`]). Sparse:
-    /// only branch rows with a chevron get an entry. [`Self::hit_test`]
-    /// is the only intended reader; a caller that wants to paint from
-    /// this instead should go through [`crate::tui::draw_tree_table`] (or
-    /// a GTK/macOS/Win equivalent, once one exists) rather than
-    /// re-deriving pixel bounds from these.
+    /// space (the same space [`crate::ResolvedColumn::x`] uses) — pre-
+    /// `h_scroll`, pre-[`DataTableLayout::inset_x`]. [`Self::hit_test`]
+    /// is what reconciles the two: it shifts the raw pointer position
+    /// into this same content space via [`DataTableLayout::content_x`]
+    /// before comparing against these bounds, rather than shifting the
+    /// bounds themselves. A future backend storing its own chevron
+    /// bounds should follow the same convention — store pre-`h_scroll`
+    /// content space, shift the click instead. Sparse: only branch rows
+    /// with a chevron get an entry. [`Self::hit_test`] is the only
+    /// intended reader; a caller that wants to paint from this instead
+    /// should go through [`crate::tui::draw_tree_table`] (or a GTK/
+    /// macOS/Win equivalent, once one exists) rather than re-deriving
+    /// pixel bounds from these.
     pub chevrons: Vec<(usize, Rect)>,
 }
 
@@ -232,6 +339,25 @@ impl TreeTableLayout {
             DataTableHit::Footer => TreeTableHit::Footer,
             DataTableHit::Empty => TreeTableHit::Empty,
         }
+    }
+
+    /// The event a [`TreeTableHit::Chevron { idx }`](TreeTableHit::Chevron)
+    /// resolution should emit: `tree[idx]`'s current
+    /// [`TreeTableNode::is_expanded`], flipped. `None` when `idx` has no
+    /// entry in `tree` or that entry is a leaf (`is_expanded: None`) —
+    /// the same "degrade without panicking" rule [`TreeTable::layout`]
+    /// already applies to a short `tree`. The app applies the returned
+    /// event the same way it would apply one built by
+    /// [`TreeTableEvent::from_horizontal_nav`], so a chevron click and
+    /// Left/Right on the keyboard both funnel through one handler.
+    #[must_use]
+    pub fn chevron_toggle(idx: usize, tree: &[TreeTableNode]) -> Option<TreeTableEvent> {
+        let node = tree.get(idx)?;
+        let expand = !node.is_expanded?;
+        Some(TreeTableEvent::ToggleExpanded {
+            path: node.path.clone(),
+            expand,
+        })
     }
 }
 
@@ -268,6 +394,30 @@ pub enum TreeTableEvent {
     /// [`TreeTableNode::is_expanded`] to `Some(true)` (and may need to
     /// push newly-visible child rows next frame); `false` means collapse.
     ToggleExpanded { path: TreePath, expand: bool },
+}
+
+impl TreeTableEvent {
+    /// Map [`crate::compose::tree_nav::HorizontalNav`]'s branch-toggle
+    /// variants — the Left/Right-on-the-keyboard counterpart of
+    /// [`TreeTableLayout::chevron_toggle`]'s mouse path — to
+    /// [`Self::ToggleExpanded`]. `None` for
+    /// `SelectParent`/`SelectFirstChild`/`None`, which are selection
+    /// moves rather than an expand/collapse and stay the app's own
+    /// [`Self::RowSelected`] handling.
+    #[must_use]
+    pub fn from_horizontal_nav(nav: crate::compose::tree_nav::HorizontalNav) -> Option<Self> {
+        use crate::compose::tree_nav::HorizontalNav;
+        match nav {
+            HorizontalNav::Collapse(path) => Some(Self::ToggleExpanded {
+                path,
+                expand: false,
+            }),
+            HorizontalNav::Expand(path) => Some(Self::ToggleExpanded { path, expand: true }),
+            HorizontalNav::SelectParent(_)
+            | HorizontalNav::SelectFirstChild(_)
+            | HorizontalNav::None => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,7 +482,7 @@ mod tests {
         };
         let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
         let plain = dt.layout(40.0, 10.0, 1.0, 1.0, 1.0, measure);
-        let composed = tt.layout(40.0, 10.0, 1.0, 1.0, 1.0, measure, |_| None);
+        let composed = tt.layout(40.0, 10.0, 1.0, 1.0, 1.0, measure, |_| None, 0.0);
         assert_eq!(composed.table, plain);
         assert!(composed.chevrons.is_empty());
     }
@@ -348,9 +498,16 @@ mod tests {
         let tt = TreeTable { table: dt, tree };
         let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
         // Row 0 is a branch: chevron occupies content-space x in [0, 1).
-        let layout = tt.layout(40.0, 10.0, 1.0, 1.0, 1.0, measure, |n| {
-            n.is_expanded.map(|_| (0.0, 1.0))
-        });
+        let layout = tt.layout(
+            40.0,
+            10.0,
+            1.0,
+            1.0,
+            1.0,
+            measure,
+            |n| n.is_expanded.map(|_| (0.0, 1.0)),
+            0.0,
+        );
         assert_eq!(
             layout.hit_test(0.0, 1.0, 0, 3),
             TreeTableHit::Chevron { idx: 0 }
@@ -384,7 +541,16 @@ mod tests {
         ];
         let tt = TreeTable { table: dt, tree };
         let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
-        let layout = tt.layout(40.0, 10.0, 1.0, 1.0, 1.0, measure, |_| Some((0.0, 1.0)));
+        let layout = tt.layout(
+            40.0,
+            10.0,
+            1.0,
+            1.0,
+            1.0,
+            measure,
+            |_| Some((0.0, 1.0)),
+            0.0,
+        );
         let indices: Vec<usize> = layout.chevrons.iter().map(|(idx, _)| *idx).collect();
         assert_eq!(indices, vec![2, 3]);
     }
@@ -397,7 +563,108 @@ mod tests {
             tree: vec![node(&[0], 0, Some(true))], // shorter than `table.rows`
         };
         let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
-        let layout = tt.layout(40.0, 10.0, 1.0, 1.0, 1.0, measure, |_| Some((0.0, 1.0)));
+        let layout = tt.layout(
+            40.0,
+            10.0,
+            1.0,
+            1.0,
+            1.0,
+            measure,
+            |_| Some((0.0, 1.0)),
+            0.0,
+        );
         assert_eq!(layout.chevrons.len(), 1);
+    }
+
+    /// Reproduces the narrow-rect scenario the acceptance criteria name:
+    /// a `Flex` tree column followed by several `FixedCells` columns,
+    /// resolved at a viewport too narrow to give all of them anything.
+    /// With no floor, column 0 collapses to width `0.0` (the fixed
+    /// columns eat the whole viewport before the flex pass ever runs);
+    /// with a floor, the rightmost fixed columns are dropped one at a
+    /// time until column 0 clears it.
+    fn narrow_tree_table() -> TreeTable {
+        let dt = DataTable {
+            id: WidgetId::new("tt:narrow"),
+            columns: vec![
+                Column {
+                    title: "Name".into(),
+                    width: ColumnWidth::Flex(3.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "Modified".into(),
+                    width: ColumnWidth::FixedCells(14.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "Kind".into(),
+                    width: ColumnWidth::FixedCells(8.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "Size".into(),
+                    width: ColumnWidth::FixedCells(10.0),
+                    align: ColumnAlign::Right,
+                },
+            ],
+            rows: (0..3)
+                .map(|i| DataRow {
+                    cells: vec![
+                        StyledText::plain(format!("row{i}")),
+                        StyledText::plain("—"),
+                        StyledText::plain("—"),
+                        StyledText::plain("—"),
+                    ],
+                    decoration: Default::default(),
+                })
+                .collect(),
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+            bordered: false,
+        };
+        let tree: Vec<TreeTableNode> = (0..3).map(|i| node(&[i as u16], 0, None)).collect();
+        TreeTable { table: dt, tree }
+    }
+
+    #[test]
+    fn with_no_floor_a_narrow_rect_can_starve_the_tree_column() {
+        let tt = narrow_tree_table();
+        let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
+        let layout = tt.layout(20.0, 10.0, 1.0, 1.0, 1.0, measure, |_| None, 0.0);
+        assert_eq!(layout.table.columns.len(), 4);
+        assert_eq!(layout.table.columns[0].width, 0.0);
+    }
+
+    #[test]
+    fn narrow_rect_drops_rightmost_columns_before_starving_the_tree_column() {
+        let tt = narrow_tree_table();
+        let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
+        let layout = tt.layout(20.0, 10.0, 1.0, 1.0, 1.0, measure, |_| None, 5.0);
+        // The two rightmost (`Kind`, `Size`) columns are dropped — only
+        // `Name` and `Modified` survive — and column 0 clears the floor.
+        assert_eq!(layout.table.columns.len(), 2);
+        assert!(layout.table.columns[0].width >= 5.0);
+    }
+
+    #[test]
+    fn narrow_rect_widens_the_tree_column_past_the_floor_when_dropping_everything_else_still_isnt_enough(
+    ) {
+        let mut tt = narrow_tree_table();
+        tt.table.columns.truncate(1); // only the tree column itself is left
+        tt.table.rows.iter_mut().for_each(|r| r.cells.truncate(1));
+        let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
+        // Viewport narrower than the floor: even the lone surviving
+        // column can't clear it by resolution alone.
+        let layout = tt.layout(2.0, 10.0, 1.0, 1.0, 1.0, measure, |_| None, 5.0);
+        assert_eq!(layout.table.columns.len(), 1);
+        assert_eq!(layout.table.columns[0].width, 5.0);
     }
 }
