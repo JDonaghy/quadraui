@@ -143,10 +143,14 @@ impl SidebarPanelLayout {
                 return match tlayout.hit_test(x, y) {
                     ToolbarHit::Button(id) => SidebarPanelHit::ToolbarButton(id),
                     // `SidebarPanel`'s own toolbar slot never opts into
-                    // `ToolbarOverflow::Menu` today, so this arm is
-                    // unreachable in practice; reads the same as `Empty`
-                    // if a future caller ever does.
-                    ToolbarHit::Empty | ToolbarHit::Overflow => SidebarPanelHit::ToolbarEmpty,
+                    // `ToolbarOverflow::Menu` or embeds a `Field`/
+                    // `MenuButton` today, so these arms are unreachable
+                    // in practice; reads the same as `Empty` if a future
+                    // caller ever does.
+                    ToolbarHit::Empty
+                    | ToolbarHit::Overflow
+                    | ToolbarHit::Field(_)
+                    | ToolbarHit::MenuButton(_) => SidebarPanelHit::ToolbarEmpty,
                 };
             }
         }
@@ -467,9 +471,12 @@ pub(crate) mod native_surface_paint {
                 // Not yet painted by this header-scoped port of
                 // `toolbar::draw_toolbar` (see this fn's own doc for the
                 // four divergences it already names) — a sidebar panel
-                // header with a segmented `Group` paints only its shared
-                // border/divider-less background for now.
-                ToolbarButton::Group { .. } => {}
+                // header with a segmented `Group`, embedded `Field`, or
+                // `MenuButton` paints only its shared border/divider-less
+                // background for now.
+                ToolbarButton::Group { .. }
+                | ToolbarButton::Field { .. }
+                | ToolbarButton::MenuButton { .. } => {}
             }
         }
 

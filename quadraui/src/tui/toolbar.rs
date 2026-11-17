@@ -35,6 +35,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
 use super::text::{char_cell_width, display_width};
+use super::text_field::draw_text_field;
 use super::{qc, set_cell, set_cell_wide};
 use crate::primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayout,
@@ -43,6 +44,16 @@ use crate::primitives::toolbar::{
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
+
+/// Minimum cell width for a [`ToolbarButton::Field`] to paint its full
+/// `[icon value ×]` box. Narrower than this (only reachable via a
+/// [`ToolbarOverflow::Menu`] layout that couldn't fit even `width`'s own
+/// minimum once every droppable item was gone), it paints a single
+/// centred magnifier glyph instead — the "icon-only search action" that
+/// variant's own doc describes. Mirrors the GUI rasteriser's own
+/// `FIELD_ICON_ONLY_PX` floor in spirit, not value — a cell and a px/DIP
+/// aren't the same unit.
+const FIELD_ICON_ONLY_CELLS: u16 = 3;
 
 /// Resolve which row within `[area.y, area.y + area.height)` button /
 /// label text paints on, per `valign`. TUI's own cell-grid
@@ -113,6 +124,21 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
         ToolbarButton::Group { items, .. } => {
             let child_sum: f32 = items.iter().map(tui_item_width).sum();
             child_sum + items.len() as f32 + 1.0
+        }
+        // The baseline (un-grown) cell width — `width`'s own minimum.
+        // `distribute_flex_width` grows a `Flex` field past this once
+        // every other item's width is known.
+        ToolbarButton::Field { width, .. } => width.min_width().max(0.0),
+        ToolbarButton::MenuButton { label, icon, .. } => {
+            let label_w = display_width(label);
+            let icon_w = icon.as_ref().map(|s| display_width(s)).unwrap_or(0);
+            let icon_block = if icon.is_some() && label_w > 0 {
+                icon_w + 1
+            } else {
+                icon_w
+            };
+            // "[ " + icon_block + label + " ▾" + " ]"
+            (4 + icon_block + label_w + 2) as f32
         }
     }
 }
@@ -604,6 +630,68 @@ fn draw_toolbar_item(
                 hover_bg, hover_fg, active_bg,
             );
         }
+        ToolbarButton::Field { field, .. } => {
+            if item_w < FIELD_ICON_ONLY_CELLS {
+                let glyph = field
+                    .leading_icon
+                    .as_ref()
+                    .and_then(|icon| icon.resolve(false).chars().next())
+                    .unwrap_or('\u{1F50D}');
+                for y in rows.clone() {
+                    for dx in 0..item_w {
+                        set_cell(buf, item_x + dx, y, ' ', muted, bar_bg);
+                    }
+                }
+                let gx = item_x + item_w.saturating_sub(1) / 2;
+                set_cell(buf, gx, text_row, glyph, muted, bar_bg);
+            } else {
+                let field_rect = Rect::new(item_x, text_row, item_w, 1);
+                // Nerd Fonts default off on TUI — same documented
+                // default `tui::toolbar`'s own `Action` icons already
+                // assume (they arrive pre-resolved by the host, which
+                // picks the fallback half on this backend).
+                draw_text_field(buf, field_rect, field, theme, false);
+            }
+        }
+        ToolbarButton::MenuButton {
+            id, label, icon, ..
+        } => {
+            let is_hovered = hovered_id == Some(id);
+            let is_pressed = pressed_id == Some(id);
+            let (cell_fg, cell_bg) = if is_pressed {
+                (fg, active_bg)
+            } else if is_hovered {
+                (hover_fg, hover_bg)
+            } else if item_focused {
+                (fg, focus_bg)
+            } else {
+                (fg, bar_bg)
+            };
+
+            let mut cells: Vec<char> = Vec::with_capacity(item_w as usize);
+            cells.push('[');
+            cells.push(' ');
+            cells.extend(action_content_cells(icon.as_deref(), label, None));
+            cells.push(' ');
+            cells.push('\u{25BE}');
+            cells.push(' ');
+            cells.push(']');
+
+            for y in rows.clone() {
+                for dx in 0..item_w {
+                    set_cell(buf, item_x + dx, y, ' ', cell_fg, cell_bg);
+                }
+            }
+            let mut col: u16 = 0;
+            for ch in cells {
+                let cw = char_cell_width(ch);
+                if col + cw > item_w {
+                    break;
+                }
+                set_cell(buf, item_x + col, text_row, ch, cell_fg, cell_bg);
+                col += cw;
+            }
+        }
     }
 }
 
@@ -888,6 +976,36 @@ pub fn draw_toolbar_oriented(
                     hover_fg,
                     active_bg,
                 );
+            }
+            // Neither shape a vertical icon-rail (`ActivityBar`'s own
+            // use of this orientation) ever embeds in practice — both
+            // paint the same single-row content their horizontal arm
+            // does, just inside this one `area.width`-wide row.
+            ToolbarButton::Field { field, .. } => {
+                let field_rect = Rect::new(area.x, row, area.width, 1);
+                draw_text_field(buf, field_rect, field, theme, false);
+            }
+            ToolbarButton::MenuButton { icon, label, .. } => {
+                let mut cells: Vec<char> = Vec::new();
+                cells.push('[');
+                cells.push(' ');
+                cells.extend(action_content_cells(icon.as_deref(), label, None));
+                cells.push(' ');
+                cells.push('\u{25BE}');
+                cells.push(' ');
+                cells.push(']');
+                for dx in 0..area.width {
+                    set_cell(buf, area.x + dx, row, ' ', fg, bar_bg);
+                }
+                let mut col: u16 = 0;
+                for ch in cells {
+                    let cw = char_cell_width(ch);
+                    if col + cw > area.width {
+                        break;
+                    }
+                    set_cell(buf, area.x + col, row, ch, fg, bar_bg);
+                    col += cw;
+                }
             }
         }
     }

@@ -158,8 +158,13 @@ pub fn draw_panel(buf: &mut Buffer, area: Rect, panel: &Panel, theme: &Theme) ->
                 }
                 // Already painted by the whole-bar background fill
                 // above; a `Toolbar` built by `header_toolbar` never
-                // contains a `Separator` or a `Group`.
-                ToolbarButton::Spacer | ToolbarButton::Separator | ToolbarButton::Group { .. } => {}
+                // contains a `Separator`, `Group`, `Field` or
+                // `MenuButton`.
+                ToolbarButton::Spacer
+                | ToolbarButton::Separator
+                | ToolbarButton::Group { .. }
+                | ToolbarButton::Field { .. }
+                | ToolbarButton::MenuButton { .. } => {}
             }
         }
     }

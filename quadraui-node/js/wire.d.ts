@@ -352,8 +352,45 @@ export interface _ToolbarButtonGroupWrapper {
   Group: _ToolbarButtonGroup;
 }
 
-/** One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, or `{"Group": {...}}`. */
-export type ToolbarButtonDescriptor = ("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper;
+export interface _ToolbarItemWidthFlex {
+  min: number;
+  max: number;
+}
+
+export interface _ToolbarItemWidthFixedWrapper {
+  Fixed: number;
+}
+
+export interface _ToolbarItemWidthFlexWrapper {
+  Flex: _ToolbarItemWidthFlex;
+}
+
+/** A `ToolbarButton::Field`'s main-axis sizing: `{"Fixed": px_or_cells}` (never grows) or `{"Flex": {"min": ..., "max": ...}}` (grows into spare bar room, up to `max`). */
+export type ToolbarItemWidth = _ToolbarItemWidthFixedWrapper | _ToolbarItemWidthFlexWrapper;
+
+export interface _ToolbarButtonField {
+  id: WidgetId;
+  field: TextFieldDescriptor;
+  width: ToolbarItemWidth;
+}
+
+export interface _ToolbarButtonFieldWrapper {
+  Field: _ToolbarButtonField;
+}
+
+export interface _ToolbarButtonMenuButton {
+  id: WidgetId;
+  label: string;
+  icon?: string | null;
+  menu: ContextMenuItem[];
+}
+
+export interface _ToolbarButtonMenuButtonWrapper {
+  MenuButton: _ToolbarButtonMenuButton;
+}
+
+/** One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, `{"Group": {...}}`, `{"Field": {...}}` (an embedded `TextFieldDescriptor`), or `{"MenuButton": {...}}` (a pull-down; `menu` is a list of `ContextMenuItem`). */
+export type ToolbarButtonDescriptor = ("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper | _ToolbarButtonFieldWrapper | _ToolbarButtonMenuButtonWrapper;
 
 /** How a `"toolbar"` extra's buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance. */
 export type ToolbarOverflow = "Clip" | "Wrap" | "Menu";
@@ -1922,7 +1959,21 @@ export interface _ToolbarGroupSelectedPayload {
   id: WidgetId;
 }
 
-export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload; } | { GroupSelected: _ToolbarGroupSelectedPayload; };
+export interface _ToolbarFieldChangedPayload {
+  id: WidgetId;
+  value: string;
+}
+
+export interface _ToolbarFieldCommittedPayload {
+  id: WidgetId;
+  value: string;
+}
+
+export interface _ToolbarFieldClearedPayload {
+  id: WidgetId;
+}
+
+export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload; } | { GroupSelected: _ToolbarGroupSelectedPayload; } | { FieldChanged: _ToolbarFieldChangedPayload; } | { FieldCommitted: _ToolbarFieldCommittedPayload; } | { FieldCleared: _ToolbarFieldClearedPayload; };
 
 export interface CalendarDate {
   year: number;

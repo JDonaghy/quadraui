@@ -684,4 +684,159 @@ mod tests {
             "the `»` affordance must paint ink, not just a hit region"
         );
     }
+
+    // ── Field / MenuButton ──────────────────────────────────────────────
+
+    /// `measure_button`'s `Field`/`MenuButton` arms plus the shared
+    /// `native_surface_paint::paint` arms added for them paint and
+    /// hit-test correctly through this backend's own entry points — no
+    /// GTK-specific code needed for either variant beyond the
+    /// `PangoMeasure` adapter every other button already goes through.
+    #[test]
+    fn field_and_menu_button_paint_and_hit_test() {
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::primitives::text_field::TextField;
+        use crate::primitives::toolbar::ToolbarItemWidth;
+        use crate::types::StyledText;
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                ToolbarButton::MenuButton {
+                    id: WidgetId::new("tb:action-menu"),
+                    label: "Action".into(),
+                    icon: None,
+                    menu: vec![ContextMenuItem {
+                        label: StyledText::plain("Get Info"),
+                        ..Default::default()
+                    }],
+                },
+                ToolbarButton::Field {
+                    id: WidgetId::new("tb:search"),
+                    field: TextField::new(WidgetId::new("tb:search")).with_placeholder("Search"),
+                    width: ToolbarItemWidth::Fixed(120.0),
+                },
+            ],
+            bg: None,
+            focused_index: None,
+        };
+
+        const W: i32 = 300;
+        const H: i32 = 24;
+        let theme = Theme::default();
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_toolbar(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                &bar,
+                &theme,
+                None,
+                None,
+            )
+        };
+
+        let menu_vis = layout
+            .visible_items
+            .iter()
+            .find(|v| v.action_id == Some(WidgetId::new("tb:action-menu")))
+            .expect("MenuButton has a visible slot");
+        assert_eq!(
+            menu_vis.kind,
+            crate::primitives::toolbar::ToolbarItemKind::MenuButton
+        );
+        let mx = menu_vis.bounds.x + menu_vis.bounds.width / 2.0;
+        let my = menu_vis.bounds.y + menu_vis.bounds.height / 2.0;
+        assert_eq!(
+            layout.hit_test(mx, my),
+            ToolbarHit::MenuButton(WidgetId::new("tb:action-menu"))
+        );
+
+        let field_vis = layout
+            .visible_items
+            .iter()
+            .find(|v| v.action_id == Some(WidgetId::new("tb:search")))
+            .expect("Field has a visible slot");
+        assert_eq!(field_vis.bounds.width, 120.0);
+        let fx = field_vis.bounds.x + field_vis.bounds.width / 2.0;
+        let fy = field_vis.bounds.y + field_vis.bounds.height / 2.0;
+        assert_eq!(
+            layout.hit_test(fx, fy),
+            ToolbarHit::Field(WidgetId::new("tb:search"))
+        );
+
+        // Painted real ink inside the field's bounds (the framed box),
+        // not just a hit-testable hole.
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let bg = theme.header_bg;
+        let x0 = field_vis.bounds.x.round() as i32;
+        let x1 = (field_vis.bounds.x + field_vis.bounds.width).round() as i32;
+        let y0 = field_vis.bounds.y.round() as i32;
+        let y1 = (field_vis.bounds.y + field_vis.bounds.height).round() as i32;
+        let mut painted = false;
+        for y in y0.max(0)..y1.min(H) {
+            for x in x0.max(0)..x1.min(W) {
+                let off = y as usize * stride + x as usize * 4;
+                let (b, g, r) = (data[off], data[off + 1], data[off + 2]);
+                if (r, g, b) != (bg.r, bg.g, bg.b) {
+                    painted = true;
+                }
+            }
+        }
+        assert!(painted, "the field's framed box must paint ink");
+    }
+
+    /// A [`ToolbarButton::Field`] with [`ToolbarItemWidth::Flex`] grows
+    /// into the room a `Spacer` would otherwise leave blank, up to its
+    /// own `max` — the Finder-style trailing search box.
+    #[test]
+    fn flex_field_grows_into_spare_space_after_a_spacer() {
+        use crate::primitives::text_field::TextField;
+        use crate::primitives::toolbar::ToolbarItemWidth;
+
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA"),
+                ToolbarButton::Spacer,
+                ToolbarButton::Field {
+                    id: WidgetId::new("tb:search"),
+                    field: TextField::new(WidgetId::new("tb:search")),
+                    width: ToolbarItemWidth::Flex {
+                        min: 40.0,
+                        max: 200.0,
+                    },
+                },
+            ],
+            bg: None,
+            focused_index: None,
+        };
+        let layout = gtk_toolbar_layout(&bar, None, 8.0, 0.0, 0.0, 300.0, 24.0);
+        let field_vis = layout
+            .visible_items
+            .iter()
+            .find(|v| v.action_id == Some(WidgetId::new("tb:search")))
+            .expect("Field has a visible slot");
+        // "AAAA" at `char_width: 8.0` plus padding is well under 100px,
+        // so the field grows past its 40px minimum into the rest of the
+        // 300px bar, clamped at its own 200px max.
+        assert!(
+            field_vis.bounds.width > 40.0,
+            "flex field should grow past its own min, got {}",
+            field_vis.bounds.width
+        );
+        assert!(
+            field_vis.bounds.width <= 200.0,
+            "flex field must never exceed its own max, got {}",
+            field_vis.bounds.width
+        );
+    }
 }
