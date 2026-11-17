@@ -1,9 +1,10 @@
 {
-  "src": 710,
-  "compose": 259,
+  "src": 144,
+  "compose": 33,
   "primitives": 110,
-  "tui": 829,
-  "gtk": 1078,
+  "tui": 132,
+  "gtk": 98,
   "macos": 79,
-  "win": 1238
+  "win": 137,
+  "bindings": 32
 }

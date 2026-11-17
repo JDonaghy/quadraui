@@ -19,6 +19,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backend_loc_ratchet as ratchet  # noqa: E402
 
 
+class CountNonTestLinesTest(unittest.TestCase):
+    def test_counts_every_line_when_no_test_module(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.rs"
+            path.write_text("line1\nline2\nline3\n")
+            self.assertEqual(ratchet.count_non_test_lines(path), 3)
+
+    def test_stops_counting_at_first_cfg_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.rs"
+            path.write_text("fn f() {}\n\n#[cfg(test)]\nmod tests {\n    // lots more\n}\n")
+            self.assertEqual(ratchet.count_non_test_lines(path), 2)
+
+    def test_missing_file_counts_as_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(ratchet.count_non_test_lines(Path(tmp) / "missing.rs"), 0)
+
+
 class CountLinesTest(unittest.TestCase):
     def test_counts_lines_across_rust_files_recursively(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -39,6 +57,14 @@ class CountLinesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(ratchet.count_lines(Path(tmp) / "does_not_exist"), 0)
 
+    def test_excludes_lines_at_and_after_cfg_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.rs").write_text(
+                "fn real() {}\n\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n"
+            )
+            self.assertEqual(ratchet.count_lines(root), 2)
+
 
 class BuildReportTest(unittest.TestCase):
     def test_growth_past_allowance_fails(self):
@@ -55,11 +81,12 @@ class BuildReportTest(unittest.TestCase):
         self.assertFalse(any_over)
         self.assertIn("ok", report)
 
-    def test_shrink_passes_and_prints_the_suggested_update(self):
+    def test_shrink_fails_and_prints_the_suggested_update(self):
         counts = {"tui": 80}
         baseline = {"tui": 100}
         any_over, report = ratchet.build_report(counts, baseline, allowance=40)
-        self.assertFalse(any_over)
+        self.assertTrue(any_over)
+        self.assertIn("STALE", report)
         self.assertIn("shrink", report)
         self.assertIn("baseline=80", report)
 
@@ -84,6 +111,28 @@ class BuildReportTest(unittest.TestCase):
         lines = {line.split()[0]: line for line in report.splitlines()}
         self.assertIn("OVER", lines["tui"])
         self.assertIn("ok", lines["gtk"])
+
+
+class ReconcileBaselineTest(unittest.TestCase):
+    def test_lowers_shrunk_entry(self):
+        counts = {"tui": 80}
+        baseline = {"tui": 100}
+        self.assertEqual(ratchet.reconcile_baseline(counts, baseline), {"tui": 80})
+
+    def test_leaves_grown_entry_untouched(self):
+        counts = {"tui": 150}
+        baseline = {"tui": 100}
+        self.assertEqual(ratchet.reconcile_baseline(counts, baseline), {"tui": 100})
+
+    def test_leaves_unchanged_entry_untouched(self):
+        counts = {"tui": 100}
+        baseline = {"tui": 100}
+        self.assertEqual(ratchet.reconcile_baseline(counts, baseline), {"tui": 100})
+
+    def test_leaves_unthresholded_dir_untouched(self):
+        counts = {"tui": 80, "gtk": 50}
+        baseline = {"tui": 100}
+        self.assertEqual(ratchet.reconcile_baseline(counts, baseline), {"tui": 80})
 
 
 class LoadBaselineTest(unittest.TestCase):
@@ -143,7 +192,7 @@ class MainExitStatusTest(unittest.TestCase):
             )
             self.assertEqual(rc, 1)
 
-    def test_shrink_passes_the_gate(self):
+    def test_shrink_fails_the_gate_until_written(self):
         with tempfile.TemporaryDirectory() as tmp:
             src_root = self._make_tree(tmp, {"tui": 50})
             baseline = Path(tmp) / "baseline.json"
@@ -158,7 +207,45 @@ class MainExitStatusTest(unittest.TestCase):
                     "10",
                 ]
             )
+            self.assertEqual(rc, 1)
+
+    def test_write_lowers_the_baseline_file_and_then_the_gate_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src_root = self._make_tree(tmp, {"tui": 50})
+            baseline = Path(tmp) / "baseline.json"
+            baseline.write_text(json.dumps({"tui": 100}))
+            rc = ratchet.main(
+                [
+                    "--write",
+                    "--src-root",
+                    str(src_root),
+                    "--baseline",
+                    str(baseline),
+                    "--allowance",
+                    "10",
+                ]
+            )
             self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(baseline.read_text()), {"tui": 50})
+
+    def test_write_does_not_touch_a_grown_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src_root = self._make_tree(tmp, {"tui": 200})
+            baseline = Path(tmp) / "baseline.json"
+            baseline.write_text(json.dumps({"tui": 100}))
+            rc = ratchet.main(
+                [
+                    "--write",
+                    "--src-root",
+                    str(src_root),
+                    "--baseline",
+                    str(baseline),
+                    "--allowance",
+                    "10",
+                ]
+            )
+            self.assertEqual(rc, 1)
+            self.assertEqual(json.loads(baseline.read_text()), {"tui": 100})
 
     def test_escape_hatch_raising_the_baseline_passes_the_gate(self):
         # Simulates a PR that legitimately needs to grow a backend directory
