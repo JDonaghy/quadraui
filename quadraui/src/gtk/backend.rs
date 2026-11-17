@@ -58,7 +58,7 @@ use crate::types::{Color, WidgetId};
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, Form,
     GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
-    Rect as QRect, ResizeEdge, Split, StatusBar, TabBar, TabBarLayout, TabChrome,
+    Rect as QRect, ResizeEdge, Split, StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame,
     Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
 // `AcceleratorScope`/`KeyBinding` are only used by `#[cfg(test)]`
@@ -611,6 +611,189 @@ impl crate::primitives::layout_metrics::TextMeasure for PangoTextMeasure<'_> {
         } else {
             (text.chars().count() as f32 * self.char_w).ceil() + 2.0
         }
+    }
+}
+
+/// Shared single source of truth for `pixel_tab_bar_layout`
+/// plus the ellipsis-fit of the one boundary tab a narrow strip can show
+/// only partially. Called by both the paint path
+/// (`gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs`) and this
+/// type's four no-paint `tab_bar_layout*`/`resolve_tab_bar_layout*` twins
+/// below — a caller that invokes
+/// `crate::primitives::layout_metrics::pixel_tab_bar_layout` directly
+/// instead disagrees with what gets painted for a strip that cuts a tab
+/// off partway through its label.
+///
+/// `pango_layout` is `Some` on every real paint (never headless) but may
+/// be `None` for a no-paint twin with no realised Pango context and no
+/// matching painted cache yet — in that case labels are measured with the
+/// `char_w`-based estimate, matching [`crate::primitives::layout_metrics`]'s
+/// own fallback convention. `tab_name_widths` are each tab's full,
+/// un-shrunk measured label width; this fn never mutates the caller's
+/// copy. `normal_font`/`italic_font` select which font measures (and, for
+/// the paint path, later paints) the boundary tab's fitted label —
+/// `italic_font` only when that tab is a preview tab.
+///
+/// Returns `(layout, corrected_scroll_offset, available_cols, fitted)`.
+/// `fitted` is `Some((idx, label))` iff tab `idx` is the boundary tab and
+/// its full label didn't fit, but an ellipsis-shortened `label` did —
+/// `layout` is then the recomputed geometry with `idx` visible at that
+/// shrunk width. `None` means `layout` is the plain, unmodified
+/// `pixel_tab_bar_layout` result: every tab fit at full width, there was
+/// no boundary tab left to shrink, or shrinking it didn't actually help
+/// (see the scroll/geometry-stability guard below).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pixel_tab_bar_layout_fitting_boundary(
+    bar: &TabBar,
+    width: f32,
+    height: f32,
+    tab_pad: f32,
+    tab_inner_gap: f32,
+    tab_outer_gap: f32,
+    tab_name_widths: &[f32],
+    tab_icon_extras: &[f32],
+    chrome: &TabChrome,
+    measure: &dyn crate::primitives::layout_metrics::TextMeasure,
+    pango_layout: Option<&pango::Layout>,
+    char_w: f32,
+    normal_font: &pango::FontDescription,
+    italic_font: &pango::FontDescription,
+) -> (TabBarLayout, usize, usize, Option<(usize, String)>) {
+    let (layout, corrected_scroll_offset, available_cols) =
+        crate::primitives::layout_metrics::pixel_tab_bar_layout(
+            bar,
+            width,
+            height,
+            tab_pad,
+            tab_inner_gap,
+            tab_outer_gap,
+            tab_name_widths,
+            tab_icon_extras,
+            chrome,
+            measure,
+        );
+
+    // The tab right after the last one that fit — `None` (via
+    // `resolved_scroll_offset` when nothing is visible at all) iff every
+    // tab from the scroll offset onward already fit.
+    let next_idx = layout
+        .visible_tabs
+        .last()
+        .map_or(layout.resolved_scroll_offset, |vt| vt.tab_idx + 1);
+    if next_idx >= bar.tabs.len() {
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+
+    let reserved_px: f32 = layout
+        .visible_segments
+        .iter()
+        .map(|vs| vs.bounds.width)
+        .sum();
+    let last_tab_end = layout
+        .visible_tabs
+        .last()
+        .map_or(0.0, |vt| vt.bounds.x + vt.bounds.width);
+    let remaining = (width - reserved_px - last_tab_end).max(0.0);
+    if remaining <= 0.0 {
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+
+    // Measures through the *same* underlying layout `measure` wraps, so
+    // this can never drift from what `pixel_tab_bar_layout`'s own
+    // internal close-glyph/bracket-glyph reservations compute — both read
+    // the identical Pango object (or the identical char-width fallback).
+    let measure_px = move |text: &str| -> f32 {
+        match pango_layout {
+            Some(pl) => {
+                pl.set_text(text);
+                pl.pixel_size().0 as f32
+            }
+            None => (text.chars().count() as f32 * char_w).ceil() + 2.0,
+        }
+    };
+
+    let boundary_tab = &bar.tabs[next_idx];
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let is_bracket_tab = brackets && boundary_tab.is_active;
+
+    if let Some(pl) = pango_layout {
+        pl.set_font_description(Some(normal_font));
+    }
+    let close_extra = if bar.show_tab_close && boundary_tab.is_closable {
+        tab_inner_gap + measure_px("×")
+    } else {
+        0.0
+    };
+    let bracket_extra = if is_bracket_tab {
+        measure_px("[") + measure_px("]")
+    } else {
+        0.0
+    };
+    // Mirrors `pixel_tab_bar_layout`'s own `TabMeasure::total` grouping:
+    // `tab_pad + bracket_extra + icon_extra` ahead of the label,
+    // `close_extra + tab_pad + tab_outer_gap` after it.
+    let leading_extra = tab_pad + bracket_extra + tab_icon_extras[next_idx];
+    let trailing_extra = close_extra + tab_pad + tab_outer_gap;
+
+    if let Some(pl) = pango_layout {
+        pl.set_font_description(Some(if boundary_tab.is_preview {
+            italic_font
+        } else {
+            normal_font
+        }));
+    }
+    let fitted = crate::primitives::tab_bar::fit_tab_label(
+        &boundary_tab.label,
+        remaining,
+        leading_extra,
+        trailing_extra,
+        measure_px,
+    );
+    if fitted.is_empty() {
+        if let Some(pl) = pango_layout {
+            pl.set_font_description(Some(normal_font));
+        }
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+    let fitted_w = measure_px(&fitted);
+    if let Some(pl) = pango_layout {
+        pl.set_font_description(Some(normal_font));
+    }
+
+    let mut widths2 = tab_name_widths.to_vec();
+    widths2[next_idx] = fitted_w;
+    let (layout2, corrected2, cols2) = crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        bar,
+        width,
+        height,
+        tab_pad,
+        tab_inner_gap,
+        tab_outer_gap,
+        &widths2,
+        tab_icon_extras,
+        chrome,
+        measure,
+    );
+
+    // Adopt the recomputed layout only when it strictly gained the
+    // boundary tab and moved nothing else: shrinking the boundary label
+    // lowers `total_tab_width`, which `TabBar::layout` sums over *every*
+    // tab (not just the visible window), so on a strip only slightly over
+    // budget this can flip `resolved_scroll_offset` back to 0 and jump
+    // the whole strip to tab 0 instead of only growing it by the one
+    // boundary tab. Guard against that by requiring the scroll offset and
+    // every previously-visible tab's bounds to come out byte-identical.
+    let same_scroll = layout2.resolved_scroll_offset == layout.resolved_scroll_offset;
+    let rest_unchanged = layout
+        .visible_tabs
+        .iter()
+        .all(|vt| layout2.visible_tabs.contains(vt));
+    let gained_boundary_tab = layout2.visible_tabs.iter().any(|vt| vt.tab_idx == next_idx);
+
+    if same_scroll && rest_unchanged && gained_boundary_tab {
+        (layout2, corrected2, cols2, Some((next_idx, fitted)))
+    } else {
+        (layout, corrected_scroll_offset, available_cols, None)
     }
 }
 
@@ -3776,7 +3959,7 @@ impl Backend for GtkBackend {
         // actually painted instead of reporting the ellipsis-fitted
         // boundary tab as scrolled out of view.
         let (layout, corrected_scroll_offset, available_cols, _fitted) =
-            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
+            pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3873,7 +4056,7 @@ impl Backend for GtkBackend {
         // `pixel_tab_bar_layout_fitting_boundary` rather than
         // `pixel_tab_bar_layout` directly.
         let (layout, _corrected_scroll_offset, _available_cols, _fitted) =
-            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
+            pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3949,7 +4132,7 @@ impl Backend for GtkBackend {
         // `pixel_tab_bar_layout_fitting_boundary` rather than
         // `pixel_tab_bar_layout` directly.
         let (layout, corrected_scroll_offset, available_cols, _fitted) =
-            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
+            pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -4024,7 +4207,7 @@ impl Backend for GtkBackend {
         // `pixel_tab_bar_layout_fitting_boundary` rather than
         // `pixel_tab_bar_layout` directly.
         let (layout, _corrected_scroll_offset, _available_cols, _fitted) =
-            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
+            pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
