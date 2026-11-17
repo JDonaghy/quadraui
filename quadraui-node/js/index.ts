@@ -40,8 +40,9 @@ const native: typeof import("../index.js") = require("../index.js");
 // caller the same `instanceof`-based catch ergonomics `quadraui-py`'s real
 // exception subclasses have: `wrapNativeErrors` replaces every writable,
 // configurable method `native.QuiApp`/`QuiShellApp`/`QuiAppWaker`/
-// `QuiAppActions` exposes with a wrapper that recognizes that tag on a
-// caught `Error` and re-throws the matching subclass instance instead.
+// `QuiAppActions`/`RenderCtx` exposes with a wrapper that recognizes that
+// tag on a caught `Error` and re-throws the matching subclass instance
+// instead.
 // `.message` keeps the original tagged text verbatim, so an
 // `assert.throws(fn, /TagName/)` check written against the untyped native
 // error keeps passing unchanged against the typed one.
@@ -163,6 +164,10 @@ exports.InternalError = InternalError;
 class InvalidFontRoleError extends QuadrauiError {}
 exports.InvalidFontRoleError = InvalidFontRoleError;
 
+/** A `RenderCtx`'s `measureText`/`lineHeight`/`charWidth` was called after the render call that handed it out already returned -- mirrors `quadraui-py`'s `StaleRenderCtxError`. */
+class StaleRenderCtxError extends QuadrauiError {}
+exports.StaleRenderCtxError = StaleRenderCtxError;
+
 /**
  * One of `QuiApp`'s methods restricted to top-level script code (the ones
  * with a matching `QuiAppActions` method -- `showMessageDialog`,
@@ -229,6 +234,7 @@ const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiErro
   PoisonedError,
   InternalError,
   InvalidFontRoleError,
+  StaleRenderCtxError,
   ReentrantCallError,
   LiveRunnerActiveError,
   LiveRunnerExitedError,
@@ -404,6 +410,7 @@ wrapNativeErrors(native.QuiApp.prototype, REENTRANT_RESTRICTED_METHODS);
 wrapNativeErrors(native.QuiShellApp.prototype);
 wrapNativeErrors(native.QuiAppWaker.prototype);
 wrapNativeErrors(native.QuiAppActions.prototype);
+wrapNativeErrors(native.RenderCtx.prototype);
 
 // ─── Module-level platform-services functions ──────────────────────────
 //
@@ -464,6 +471,39 @@ function installCrashHandler(cfg: unknown): void {
   }
 }
 exports.installCrashHandler = installCrashHandler;
+
+/**
+ * The {@link RenderCtx} for whichever `render`/`view` callback is currently
+ * executing on this thread, or `null` outside of one -- including from a
+ * tick/event-handler callback, which paints no frame of its own, and from
+ * any call before the first render. `quadraui-node/js/app/runtime.ts`'s
+ * `App` calls this once per render and forwards the result to the script's
+ * own `view(ctx)` positionally; a script using `QuiApp.setRender` directly
+ * (bypassing the `App` wrapper) calls this itself instead. See the native
+ * binding's own doc comment (`quadraui-node/src/lib.rs`'s "Render context
+ * for script widgets" module section) for the full contract.
+ */
+function getCurrentCtx(): RenderCtx | null {
+  try {
+    return native.getCurrentCtx() ?? null;
+  } catch (err) {
+    throw toQuadrauiError(err);
+  }
+}
+exports.getCurrentCtx = getCurrentCtx;
+
+/**
+ * Render-time capabilities a script `render`/`view` callback needs from
+ * the live backend painting this frame -- real text measurement
+ * (`measureText`/`lineHeight`/`charWidth`), cell-grid-vs-pixel surface
+ * facts (`cellGrid`/`scale`), and read-only theme/style token lookup by
+ * name (`themeToken`/`styleToken`) -- mirroring what a Rust widget already
+ * gets through its own `Backend` parameter. Only reachable via
+ * {@link getCurrentCtx}; never constructed directly from JS. See the
+ * native binding's own doc comment (`quadraui-node/src/lib.rs`'s
+ * `RenderCtx`) for the full method list.
+ */
+export type RenderCtx = InstanceType<typeof native.RenderCtx>;
 
 /**
  * A headless quadraui app, driven entirely from JavaScript/TypeScript.

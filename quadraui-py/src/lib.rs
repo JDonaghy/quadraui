@@ -125,7 +125,6 @@
 // whenever this feature gate is active, including the non-native-`target_os`
 // typecheck arms, since `CapturedWaker` itself is defined and referenced at
 // that same gate.
-#[cfg(any(feature = "macos", feature = "win"))]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -457,6 +456,18 @@ create_exception!(
 
 create_exception!(
     _quadraui,
+    StaleRenderCtxError,
+    QuadrauiError,
+    "A `RenderCtx`'s `measure_text`/`line_height`/`char_width` was called \
+    after the `render`/`view` call that constructed it has already \
+    returned -- a `RenderCtx` is only valid for the duration of that one \
+    call (it proxies the live backend painting that frame), so a script \
+    that stashes it in a module global and calls it later gets this \
+    instead of a stale measurement."
+);
+
+create_exception!(
+    _quadraui,
     UnsupportedError,
     QuadrauiError,
     "A platform-services call (auto-update, the power-save blocker, launch- \
@@ -718,6 +729,244 @@ impl PyAppLogic {
 impl WindowCloseHandling for PyAppLogic {
     fn has_window_close_handler(&self) -> bool {
         self.handler.is_some()
+    }
+}
+
+// ─── Render context for script widgets ──────────────────────────
+//
+// A Rust widget's own `Backend::draw_*`/`*_layout` gets real text
+// measurement, cell-grid-vs-pixel surface facts and the live theme/style
+// straight from its `&mut dyn Backend` parameter. A Python `render`/`view`
+// callback has no such parameter -- `PyAppLogic::render` calls it with no
+// arguments (`render_output_from_callback`'s `callback.call0`), the same
+// contract every existing script already relies on. [`RenderCtx`] is the
+// seam that gives a callback the same capabilities anyway, without
+// changing that contract: `PyAppLogic::render` builds one fresh each frame
+// a render callback runs, stashes it in [`CURRENT_RENDER_CTX`] for the
+// span of that one `call0`, and clears it again immediately after --
+// [`current_ctx`] (exposed as `quadraui.current_ctx()`) is how a callback
+// running on this thread reaches it; `quadraui.app.runtime.App` forwards
+// the same object to the script's own `view(ctx)` positionally (detecting
+// whether `view` accepts one -- see that module's own doc), which is the
+// "ctx object passed to render" shape a script-widget render context
+// needs; a script using the native `QuiApp.set_render`/`QuiApp(render=...)`
+// entry point directly (bypassing the `App` wrapper) calls
+// `quadraui.current_ctx()` itself instead.
+//
+// `measure_text`/`line_height`/`char_width` are the one part of this that
+// must stay live for the real duration of the call -- they ask the actual
+// backend painting this frame, not a cached number -- so [`RenderCtx`]
+// holds a raw pointer to it rather than a snapshot, guarded by
+// [`RenderCtx::backend`]'s own `None` sentinel so a script that keeps the
+// object past its one valid frame (stashed in a module global, say) gets
+// [`StaleRenderCtxError`] instead of a dangling dereference.
+// `theme_token`/`style_token`/`cell_grid`/`scale` have no such liveness
+// need -- `Theme`/`Style` are `Copy`, so [`RenderCtx`] just snapshots them
+// once at construction and answers from that snapshot for as long as the
+// object itself survives.
+
+thread_local! {
+    /// Set by [`RenderCtxScope::enter`] for the duration of one
+    /// `PyAppLogic::render` call, read back by [`current_ctx`]. A plain
+    /// `thread_local!` is correct here, not a global: `QuiApp` is
+    /// `#[pyclass(unsendable)]`, pinned to the one Python thread that
+    /// constructed it (see that attribute's own doc on this type), so
+    /// every render this app ever drives -- headless, `run_tui`, or
+    /// `run_native` -- happens on that same thread. `RefCell`, not
+    /// `Cell<Option<Py<RenderCtx>>>`: `Py<T>` isn't `Copy`, which `Cell::get`
+    /// would need.
+    static CURRENT_RENDER_CTX: RefCell<Option<Py<RenderCtx>>> = const { RefCell::new(None) };
+}
+
+/// The [`RenderCtx`] for whichever `render`/`view` callback is currently
+/// executing on this thread, or `None` outside of one -- including from a
+/// `handle`/`tick` callback, which paints no frame of its own, and from any
+/// call before the first render. See the module section's own doc for who
+/// calls this and why.
+#[pyfunction]
+fn current_ctx(py: Python<'_>) -> Option<Py<RenderCtx>> {
+    CURRENT_RENDER_CTX.with(|cell| cell.borrow().as_ref().map(|ctx| ctx.clone_ref(py)))
+}
+
+/// Render-time capabilities a script `render`/`view` callback needs from
+/// the live backend painting this frame -- real text measurement,
+/// cell-grid-vs-pixel surface facts, and read-only theme/style token
+/// lookup by name -- mirroring what a Rust widget already gets through its
+/// own `&mut dyn Backend` parameter. See the module section's own doc for
+/// the full contract and why `measure_text`/`line_height`/`char_width`
+/// alone need [`Self::backend`]'s liveness guard.
+#[pyclass(module = "quadraui", unsendable)]
+struct RenderCtx {
+    /// `Some` for exactly the duration of the render call that constructed
+    /// this -- cleared by [`RenderCtxScope`]'s `Drop` right after the
+    /// callback returns (even if it raised). The shared `Rc<Cell<_>>`
+    /// (rather than a plain field) is what lets that `Drop` reach in and
+    /// invalidate this specific `RenderCtx` even though Python may still
+    /// be holding its own reference to the `Py<RenderCtx>` handed out.
+    ///
+    /// # Safety
+    ///
+    /// While `Some`, the pointer is valid for the lifetime of the
+    /// `&mut dyn Backend` [`PyAppLogic::render`] was called with --
+    /// [`RenderCtxScope::enter`] derives it from exactly that reference
+    /// and nothing but that same scope's `Drop` ever clears it, so no
+    /// access through [`Self::with_backend`] ever happens once the
+    /// reference it came from could have gone out of scope.
+    backend: Rc<Cell<Option<*mut dyn Backend>>>,
+    theme: quadraui::Theme,
+    style: quadraui::Style,
+    cell_grid: bool,
+    scale: f32,
+}
+
+impl RenderCtx {
+    /// Runs `body` against the live backend if [`Self::backend`] is still
+    /// `Some`, else raises [`StaleRenderCtxError`] naming the calling
+    /// method (`what`).
+    fn with_backend<T>(&self, what: &str, body: impl FnOnce(&dyn Backend) -> T) -> PyResult<T> {
+        match self.backend.get() {
+            // SAFETY: see `Self::backend`'s own doc.
+            Some(ptr) => Ok(body(unsafe { &*ptr })),
+            None => Err(StaleRenderCtxError::new_err(format!(
+                "{what}: this RenderCtx is only valid for the duration of the render call \
+                 that created it"
+            ))),
+        }
+    }
+}
+
+#[pymethods]
+impl RenderCtx {
+    /// Real `(width, height)`, in the live backend's native units, of
+    /// `text` rendered in `role`'s font -- [`Backend::measure_text`].
+    /// `role` is `"chrome"` (the default) or `"editor"`; on TUI this
+    /// returns the same cell-count width (height always `1.0`) for either.
+    /// Raises `InvalidFontRoleError` for any other `role` value, or
+    /// `StaleRenderCtxError` if called after the render call that handed
+    /// out this `RenderCtx` has already returned.
+    #[pyo3(signature = (text, role="chrome"))]
+    fn measure_text(&self, text: &str, role: &str) -> PyResult<(f32, f32)> {
+        let role = font_role(role)
+            .map_err(|err| InvalidFontRoleError::new_err(format!("measure_text: {err}")))?;
+        self.with_backend("measure_text", |backend| backend.measure_text(text, role))
+    }
+
+    /// Height of one standard text row, in the live backend's native units
+    /// -- [`Backend::line_height`].
+    fn line_height(&self) -> PyResult<f32> {
+        self.with_backend("line_height", |backend| backend.line_height())
+    }
+
+    /// Approximate monospace character width, in the live backend's native
+    /// units -- [`Backend::char_width`].
+    fn char_width(&self) -> PyResult<f32> {
+        self.with_backend("char_width", |backend| backend.char_width())
+    }
+
+    /// Whether the live backend's native unit is a whole terminal cell
+    /// (`True` on TUI) rather than a sub-cell pixel/DIP (`False` on every
+    /// pixel backend) -- [`Backend::cell_grid`]. A snapshot taken when this
+    /// `RenderCtx` was constructed, not a live backend call -- safe to read
+    /// even after the render call that handed out this `RenderCtx` has
+    /// returned. A plain method, not a `#[getter]` property -- this
+    /// crate's `.pyi`-stub generator (`scripts/gen_wire_types.py`) has no
+    /// case for a PyO3 property, and every other `RenderCtx` method is
+    /// already called, not read, so there's no existing property
+    /// convention here to match either.
+    fn cell_grid(&self) -> bool {
+        self.cell_grid
+    }
+
+    /// The live backend's DPI scale -- [`quadraui::Viewport::scale`]'s
+    /// value as of this `RenderCtx`'s construction. `1.0` on TUI and on an
+    /// unscaled pixel display. A snapshot, like [`Self::cell_grid`].
+    fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Looks up colour role `name` (one of [`quadraui::Theme`]'s own field
+    /// names -- `"background"`, `"accent_fg"`, `"selected_bg"`, ...) on the
+    /// theme active when this `RenderCtx` was constructed, as a
+    /// `{"r":.., "g":.., "b":.., "a":..}` dict, or `None` if `name` isn't a
+    /// real field. A snapshot, like [`Self::cell_grid`] -- reads the same
+    /// value all frame no matter how many times it's called.
+    fn theme_token(&self, py: Python<'_>, name: &str) -> PyResult<Option<Py<PyAny>>> {
+        match quadraui_binding_core::theme_token(&self.theme, name) {
+            Some(value) => pythonize::pythonize(py, &value)
+                .map(|v| Some(v.unbind()))
+                .map_err(|err| InternalError::new_err(format!("theme_token: {err}"))),
+            None => Ok(None),
+        }
+    }
+
+    /// Looks up geometry token `name` (one of [`quadraui::Style`]'s own
+    /// field names -- `"focus_ring_width"`, `"padding"`,
+    /// `"corner_radius"`, ...) on the style active when this `RenderCtx`
+    /// was constructed, or `None` if `name` isn't a real field. A
+    /// snapshot, like [`Self::theme_token`].
+    fn style_token(&self, py: Python<'_>, name: &str) -> PyResult<Option<Py<PyAny>>> {
+        match quadraui_binding_core::style_token(&self.style, name) {
+            Some(value) => pythonize::pythonize(py, &value)
+                .map(|v| Some(v.unbind()))
+                .map_err(|err| InternalError::new_err(format!("style_token: {err}"))),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Builds a fresh [`RenderCtx`] over `backend` and installs it into
+/// [`CURRENT_RENDER_CTX`] for as long as this guard lives, restoring
+/// whatever was there before (always `None` in practice -- renders never
+/// nest) and invalidating the `RenderCtx`'s own backend pointer on `Drop`,
+/// which runs even if the render callback in between panicked or raised --
+/// so a script that stashes the `RenderCtx` it was handed into a module
+/// global and calls a method on it later gets a clean
+/// `StaleRenderCtxError` instead of a dangling `&mut dyn Backend`
+/// dereference.
+struct RenderCtxScope {
+    backend: Rc<Cell<Option<*mut dyn Backend>>>,
+    previous: Option<Py<RenderCtx>>,
+}
+
+impl RenderCtxScope {
+    fn enter(py: Python<'_>, backend: &mut dyn Backend) -> PyResult<Self> {
+        let theme = backend.theme();
+        let style = backend.style();
+        let cell_grid = backend.cell_grid();
+        let scale = backend.viewport().scale;
+        // SAFETY: `backend`'s real lifetime is this call's own stack frame,
+        // shorter than the `'static` `RenderCtx`'s pyclass field type
+        // requires (`Cell<T>` is invariant, so an ordinary `as`/unsizing
+        // cast of a shorter-lived reference is rejected outright). This
+        // `transmute` erases that lifetime rather than asserting it, which
+        // is exactly why `RenderCtxScope::drop` below must clear this cell
+        // before this function returns and `backend` goes out of scope —
+        // see `RenderCtx::backend`'s own doc for the invariant that keeps
+        // the erasure sound.
+        let backend_ptr: *mut dyn Backend =
+            unsafe { std::mem::transmute::<&mut dyn Backend, *mut dyn Backend>(backend) };
+        let backend_cell: Rc<Cell<Option<*mut dyn Backend>>> =
+            Rc::new(Cell::new(Some(backend_ptr)));
+        let ctx = RenderCtx {
+            backend: backend_cell.clone(),
+            theme,
+            style,
+            cell_grid,
+            scale,
+        };
+        let ctx = Py::new(py, ctx)?;
+        let previous = CURRENT_RENDER_CTX.with(|cell| cell.borrow_mut().replace(ctx));
+        Ok(Self {
+            backend: backend_cell,
+            previous,
+        })
+    }
+}
+
+impl Drop for RenderCtxScope {
+    fn drop(&mut self) {
+        self.backend.set(None);
+        CURRENT_RENDER_CTX.with(|cell| *cell.borrow_mut() = self.previous.take());
     }
 }
 
@@ -1000,12 +1249,30 @@ impl AppLogic for PyAppLogic {
         // every node in the tree resolves against the same palette.
         let theme = backend.theme();
         let styles = StyleContext::new(&self.host.style_sets, &theme);
-        match render_output_from_callback(
+        // Installs a fresh `RenderCtx` over `backend` for the span of the
+        // callback call below, so `quadraui.current_ctx()` (and the
+        // `App` wrapper's `view(ctx)`) can reach real text measurement and
+        // the live theme/style/surface facts -- see the `RenderCtx` module
+        // section's own doc. `&mut *backend` reborrows rather than moves:
+        // `backend` is still needed by `draw_bands`/`paint_layout` below,
+        // once this scope -- and the callback it wraps -- has returned.
+        // Construction failure (Python allocation failure, in practice)
+        // degrades to no ctx for this frame rather than skipping the
+        // render outright.
+        let ctx_scope = Python::attach(|py| RenderCtxScope::enter(py, &mut *backend))
+            .map_err(|err| record_error(&self.pending_error, err))
+            .ok();
+        let render_result = render_output_from_callback(
             callback,
             &self.pending_error,
             styles,
             &self.host.wire_diagnostics,
-        ) {
+        );
+        // Dropped before `backend` is touched again below -- see
+        // `RenderCtxScope`'s own doc for why this must happen before, not
+        // after, `draw_bands`/`paint_layout` resume using it directly.
+        drop(ctx_scope);
+        match render_result {
             Some(RenderOutput::Flat(mut frame)) => {
                 // Merges the engine's own stored cursor/scroll/active-tab
                 // into whatever the callback's `tree`/`list`/`data_table`/
@@ -6696,6 +6963,8 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiAppWaker>()?;
     m.add_class::<QuiAppActions>()?;
     m.add_class::<QuiShellApp>()?;
+    m.add_class::<RenderCtx>()?;
+    m.add_function(wrap_pyfunction!(current_ctx, m)?)?;
     m.add_function(wrap_pyfunction!(app_path, m)?)?;
     m.add_function(wrap_pyfunction!(set_app_identifier, m)?)?;
     m.add_function(wrap_pyfunction!(install_crash_handler, m)?)?;
@@ -6751,6 +7020,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "InvalidFontRoleError",
         py.get_type::<InvalidFontRoleError>(),
     )?;
+    m.add("StaleRenderCtxError", py.get_type::<StaleRenderCtxError>())?;
     m.add("UnsupportedError", py.get_type::<UnsupportedError>())?;
     m.add("ReentrantCallError", py.get_type::<ReentrantCallError>())?;
     // Which native *feature* (if any) this build was compiled with — `gtk`
@@ -7283,6 +7553,69 @@ mod tests {
         });
     }
 
+    /// `RenderCtx` answers from whichever live backend `PyAppLogic::render`
+    /// was actually called with, not just the headless `TuiBackend`
+    /// `step`/`run` drive — `run_native`'s `GtkRunner` calls
+    /// `NativeAppLogic::render` (which forwards straight to this) with a
+    /// real `GtkBackend`, so `cell_grid` must report `False` and
+    /// `measure_text` must return the font's real shaped pixel advance
+    /// rather than TUI's cell count, matching [`Backend::cell_grid`]/
+    /// [`Backend::measure_text`]'s own documented GTK behaviour. Builds a
+    /// `GtkBackend` directly rather than opening a real window, the same
+    /// no-window pattern [`handle_flushes_a_deferred_action_against_a_real_gtk_backend`]
+    /// uses.
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn render_ctx_answers_from_a_real_gtk_backend() {
+        Python::attach(|py| {
+            let mut app_logic = PyAppLogic::default();
+            let locals = PyDict::new(py);
+            bind_current_ctx(py, &locals);
+            py.run(
+                c"
+captured = {}
+def render():
+    ctx = current_ctx()
+    captured['cell_grid'] = ctx.cell_grid()
+    captured['width'] = ctx.measure_text('abc')[0]
+    return {}
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render_fn: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            app_logic.render_callback = Some(render_fn);
+
+            let mut backend = quadraui::gtk::GtkBackend::new();
+            app_logic.render(&mut backend, ());
+
+            let captured = locals
+                .get_item("captured")
+                .expect("dict lookup")
+                .expect("captured must be defined");
+            let cell_grid: bool = captured
+                .get_item("cell_grid")
+                .expect("dict lookup")
+                .extract()
+                .expect("cell_grid must be a bool");
+            assert!(!cell_grid, "a real GtkBackend is not a cell grid");
+            let width: f32 = captured
+                .get_item("width")
+                .expect("dict lookup")
+                .extract()
+                .expect("width must be a float");
+            assert_ne!(
+                width, 3.0,
+                "GTK's real shaped advance for \"abc\" must not coincide with TUI's 3-cell count"
+            );
+        });
+    }
+
     /// `PyAppLogic::handle` flushes a `QuiAppActions`-queued action against
     /// whatever live `Backend` it was given, not just the headless
     /// `TuiBackend` `step`/`run` drive — `run_native`'s `GtkRunner` calls
@@ -7641,6 +7974,224 @@ mod tests {
                 tree_bounds.x + tree_bounds.width <= table_bounds.x,
                 "the tree's columns must be entirely left of the table's: tree={tree_bounds:?} table={table_bounds:?}"
             );
+        });
+    }
+
+    /// Binds the native [`current_ctx`] function under the name
+    /// `"current_ctx"` in `locals` so a `py.run`-defined render callback
+    /// can call it directly, without needing a real `import quadraui` --
+    /// the shared setup every `render_ctx_*` test below starts from.
+    fn bind_current_ctx(py: Python<'_>, locals: &Bound<'_, PyDict>) {
+        locals
+            .set_item(
+                "current_ctx",
+                wrap_pyfunction!(current_ctx, py).expect("wrap current_ctx"),
+            )
+            .expect("set current_ctx in locals");
+    }
+
+    /// `quadraui.current_ctx()` is reachable from inside a render callback
+    /// and answers from the live (headless `TuiBackend`) backend painting
+    /// that frame: `cell_grid` is `True` and `measure_text` returns a
+    /// cell count, matching [`Backend::cell_grid`]/[`Backend::measure_text`]'s
+    /// own TUI contract.
+    #[test]
+    fn render_ctx_is_reachable_from_current_ctx_during_render() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(40, 20, None, None, false, None).expect("valid dimensions");
+            let locals = PyDict::new(py);
+            bind_current_ctx(py, &locals);
+            py.run(
+                c"
+captured = {}
+def render():
+    ctx = current_ctx()
+    captured['cell_grid'] = ctx.cell_grid()
+    captured['scale'] = ctx.scale()
+    captured['width'] = ctx.measure_text('abc')[0]
+    captured['line_height'] = ctx.line_height()
+    return {}
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render_fn: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            app.set_render(render_fn);
+            app.screen().expect("render must not raise");
+
+            let captured = locals
+                .get_item("captured")
+                .expect("dict lookup")
+                .expect("captured must be defined");
+            let cell_grid: bool = captured
+                .get_item("cell_grid")
+                .expect("dict lookup")
+                .extract()
+                .expect("cell_grid must be a bool");
+            assert!(cell_grid, "the headless TuiBackend is a cell grid");
+            let width: f32 = captured
+                .get_item("width")
+                .expect("dict lookup")
+                .extract()
+                .expect("width must be a float");
+            assert_eq!(width, 3.0, "TUI measure_text returns a cell count");
+            let line_height: f32 = captured
+                .get_item("line_height")
+                .expect("dict lookup")
+                .extract()
+                .expect("line_height must be a float");
+            assert_eq!(line_height, 1.0, "TUI line_height is one cell");
+        });
+    }
+
+    /// `quadraui.current_ctx()` returns `None` outside of a render call --
+    /// before the first render, and from a plain top-level script call.
+    #[test]
+    fn current_ctx_is_none_outside_a_render_call() {
+        Python::attach(|py| {
+            assert!(current_ctx(py).is_none());
+        });
+    }
+
+    /// A `RenderCtx` handed out by one render call raises
+    /// `StaleRenderCtxError` -- not a crash -- if a script stashes it
+    /// somewhere and calls `measure_text`/`line_height`/`char_width` on it
+    /// after that render call has already returned.
+    #[test]
+    fn render_ctx_measure_methods_raise_once_stale() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(40, 20, None, None, false, None).expect("valid dimensions");
+            let locals = PyDict::new(py);
+            bind_current_ctx(py, &locals);
+            py.run(
+                c"
+stashed = {}
+def render():
+    stashed['ctx'] = current_ctx()
+    return {}
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render_fn: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            app.set_render(render_fn);
+            app.screen().expect("render must not raise");
+
+            let stashed = locals
+                .get_item("stashed")
+                .expect("dict lookup")
+                .expect("stashed must be defined");
+            let ctx = stashed
+                .get_item("ctx")
+                .expect("ctx must have been captured");
+            let err = ctx
+                .call_method1("measure_text", ("abc",))
+                .expect_err("a stale RenderCtx must raise, not return a number");
+            assert!(
+                err.is_instance_of::<StaleRenderCtxError>(py),
+                "wrong exception type: {err}"
+            );
+        });
+    }
+
+    /// `RenderCtx.theme_token`/`style_token` read the live theme/style by
+    /// field name, and track `set_theme`/`set_style` across frames -- the
+    /// "a theme token switches value when the theme switches" acceptance
+    /// scenario.
+    #[test]
+    fn render_ctx_theme_token_switches_when_the_theme_switches() {
+        Python::attach(|py| {
+            // `QuiApp::set_theme` is one of the methods restricted via
+            // `Py<Self>` (see `guard_against_reentrant_call`'s own doc),
+            // so this test needs a `Py<QuiApp>` handle rather than the
+            // plain `QuiApp` value every other test in this module uses.
+            let app = Py::new(
+                py,
+                QuiApp::new(40, 20, None, None, false, None).expect("valid dimensions"),
+            )
+            .expect("wrap QuiApp");
+            let locals = PyDict::new(py);
+            bind_current_ctx(py, &locals);
+            py.run(
+                c"
+captured = {}
+def render():
+    ctx = current_ctx()
+    captured['accent_fg'] = ctx.theme_token('accent_fg')
+    captured['unknown'] = ctx.theme_token('not_a_real_field')
+    captured['padding'] = ctx.style_token('padding')
+    return {}
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render_fn: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            app.bind(py).borrow_mut().set_render(render_fn);
+            app.bind(py)
+                .borrow_mut()
+                .screen()
+                .expect("render must not raise");
+
+            let captured = locals
+                .get_item("captured")
+                .expect("dict lookup")
+                .expect("captured must be defined");
+            assert!(
+                captured.get_item("unknown").expect("dict lookup").is_none(),
+                "an unrecognized field name must look up to None"
+            );
+            let before: std::collections::HashMap<String, u8> = captured
+                .get_item("accent_fg")
+                .expect("dict lookup")
+                .extract()
+                .expect("accent_fg must decode as an {r, g, b, a} dict");
+            let padding: f32 = captured
+                .get_item("padding")
+                .expect("dict lookup")
+                .extract()
+                .expect("padding must decode as a float");
+            assert_eq!(padding, quadraui::Style::default().padding);
+
+            let overrides = PyDict::new(py);
+            overrides
+                .set_item("accent_fg", "#010203")
+                .expect("set accent_fg override");
+            QuiApp::set_theme(app.clone_ref(py), py, &overrides).expect("set_theme must not raise");
+            app.bind(py)
+                .borrow_mut()
+                .screen()
+                .expect("render must not raise");
+            let after: std::collections::HashMap<String, u8> = locals
+                .get_item("captured")
+                .expect("dict lookup")
+                .expect("captured must be defined")
+                .get_item("accent_fg")
+                .expect("dict lookup")
+                .extract()
+                .expect("accent_fg must decode as an {r, g, b, a} dict");
+            assert_ne!(
+                before, after,
+                "overriding accent_fg must change what theme_token('accent_fg') reports"
+            );
+            assert_eq!(after["r"], 1);
+            assert_eq!(after["g"], 2);
+            assert_eq!(after["b"], 3);
+            assert_eq!(after["a"], 255);
         });
     }
 
