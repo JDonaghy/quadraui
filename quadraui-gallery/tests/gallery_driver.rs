@@ -644,6 +644,80 @@ fn toolbar_group_third_segment_click_emits_group_selected_and_paints_it_active()
     );
 }
 
+/// Variant 4 ("Finder-style")'s embedded `Field` search box: Tab walks
+/// focus off the two non-`Action` groups straight onto the `MenuButton`
+/// and then the `Field`, typing there edits the field in place, Escape
+/// clears it, and a direct click on the `MenuButton` reports its own
+/// painted anchor rect — end to end through `ToolbarDemo::handle`, not
+/// just the primitive's own layout/paint (that's `quadraui`'s own
+/// `gtk::toolbar`/`primitives::toolbar` test suite's job).
+#[test]
+fn toolbar_finder_style_field_focus_edit_and_menu_button_anchor() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 160, 32);
+    select_chrome_demo(&mut driver, "Toolbar");
+
+    let (vx, vy) = driver.find("Finder-style").unwrap_or_else(|| {
+        panic!(
+            "\"Finder-style\" variant tab should paint:\n{}",
+            driver.screen()
+        )
+    });
+    driver.click(vx, vy);
+    assert!(
+        driver.screen_contains("Search"),
+        "the Field's placeholder should paint once Finder-style is selected:\n{}",
+        driver.screen()
+    );
+
+    // Cold start: Tab past the nav/view `Group`s (neither is a focus
+    // stop) straight onto the `MenuButton`.
+    driver.press_named(quadraui::NamedKey::Tab);
+    assert!(
+        driver.screen_contains("Action"),
+        "the MenuButton's label should paint:\n{}",
+        driver.screen()
+    );
+
+    // Tab again onto the `Field` and type into it.
+    driver.press_named(quadraui::NamedKey::Tab);
+    driver.type_char('h');
+    driver.type_char('i');
+    assert!(
+        driver.screen_contains("hi"),
+        "typing while the Field has focus should edit its value:\n{}",
+        driver.screen()
+    );
+
+    // Escape clears it.
+    driver.press_named(quadraui::NamedKey::Escape);
+    assert!(
+        !driver.screen_contains("hi"),
+        "Escape should clear the Field's value:\n{}",
+        driver.screen()
+    );
+
+    // Tab out, back onto the `MenuButton`.
+    driver.press_named(quadraui::NamedKey::BackTab);
+    assert!(
+        driver.screen_contains("Action"),
+        "Shift-Tab should move focus back onto the MenuButton:\n{}",
+        driver.screen()
+    );
+
+    // A direct click on the MenuButton (not via Tab) reports its own
+    // painted anchor rect in the hint line.
+    let (mx, my) = driver
+        .find("Action")
+        .unwrap_or_else(|| panic!("MenuButton label should paint:\n{}", driver.screen()));
+    driver.mouse_down(mx, my);
+    driver.mouse_up(mx, my);
+    assert!(
+        driver.screen_contains("Action menu anchor:"),
+        "clicking the MenuButton should report its anchor rect in the hint line:\n{}",
+        driver.screen()
+    );
+}
+
 /// Clicking the second Activity Bar icon activates it — visible on the
 /// Data tab as the `last_action` field recording the newly-activated item.
 /// Before the click `last_action` is `"ready"`, so this cannot pass without

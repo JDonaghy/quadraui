@@ -409,6 +409,14 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ToolbarButtonLabelWrapper`](#wire-_toolbarbuttonlabelwrapper)
 - [`_ToolbarButtonGroup`](#wire-_toolbarbuttongroup)
 - [`_ToolbarButtonGroupWrapper`](#wire-_toolbarbuttongroupwrapper)
+- [`_ToolbarItemWidthFlex`](#wire-_toolbaritemwidthflex)
+- [`_ToolbarItemWidthFixedWrapper`](#wire-_toolbaritemwidthfixedwrapper)
+- [`_ToolbarItemWidthFlexWrapper`](#wire-_toolbaritemwidthflexwrapper)
+- [`ToolbarItemWidth`](#wire-toolbaritemwidth)
+- [`_ToolbarButtonField`](#wire-_toolbarbuttonfield)
+- [`_ToolbarButtonFieldWrapper`](#wire-_toolbarbuttonfieldwrapper)
+- [`_ToolbarButtonMenuButton`](#wire-_toolbarbuttonmenubutton)
+- [`_ToolbarButtonMenuButtonWrapper`](#wire-_toolbarbuttonmenubuttonwrapper)
 - [`ToolbarButtonDescriptor`](#wire-toolbarbuttondescriptor)
 - [`ToolbarOverflow`](#wire-toolbaroverflow)
 - [`ToolbarOverflowPriorityEntry`](#wire-toolbaroverflowpriorityentry)
@@ -653,6 +661,9 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ChartEvent`](#wire-chartevent)
 - [`_ToolbarButtonClickedPayload`](#wire-_toolbarbuttonclickedpayload)
 - [`_ToolbarGroupSelectedPayload`](#wire-_toolbargroupselectedpayload)
+- [`_ToolbarFieldChangedPayload`](#wire-_toolbarfieldchangedpayload)
+- [`_ToolbarFieldCommittedPayload`](#wire-_toolbarfieldcommittedpayload)
+- [`_ToolbarFieldClearedPayload`](#wire-_toolbarfieldclearedpayload)
 - [`ToolbarEvent`](#wire-toolbarevent)
 - [`CalendarDate`](#wire-calendardate)
 - [`_IdValueBoolPayload`](#wire-_idvalueboolpayload)
@@ -1264,12 +1275,74 @@ The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's
 | --- | --- | --- | --- |
 | `Group` | `_ToolbarButtonGroup` | yes |  |
 
+<a id="wire-_toolbaritemwidthflex"></a>
+#### `_ToolbarItemWidthFlex`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `min` | `number` | yes |  |
+| `max` | `number` | yes |  |
+
+<a id="wire-_toolbaritemwidthfixedwrapper"></a>
+#### `_ToolbarItemWidthFixedWrapper`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Fixed` | `number` | yes |  |
+
+<a id="wire-_toolbaritemwidthflexwrapper"></a>
+#### `_ToolbarItemWidthFlexWrapper`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Flex` | `_ToolbarItemWidthFlex` | yes |  |
+
+<a id="wire-toolbaritemwidth"></a>
+#### `ToolbarItemWidth`
+
+A `ToolbarButton::Field`'s main-axis sizing: `{"Fixed": px_or_cells}` (never grows) or `{"Flex": {"min": ..., "max": ...}}` (grows into spare bar room, up to `max`).
+
+Alias for `_ToolbarItemWidthFixedWrapper | _ToolbarItemWidthFlexWrapper`.
+
+<a id="wire-_toolbarbuttonfield"></a>
+#### `_ToolbarButtonField`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `field` | `TextFieldDescriptor` | yes |  |
+| `width` | `ToolbarItemWidth` | yes |  |
+
+<a id="wire-_toolbarbuttonfieldwrapper"></a>
+#### `_ToolbarButtonFieldWrapper`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Field` | `_ToolbarButtonField` | yes |  |
+
+<a id="wire-_toolbarbuttonmenubutton"></a>
+#### `_ToolbarButtonMenuButton`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `label` | `string` | yes |  |
+| `icon` | `string \| null` | no |  |
+| `menu` | `ContextMenuItem[]` | yes |  |
+
+<a id="wire-_toolbarbuttonmenubuttonwrapper"></a>
+#### `_ToolbarButtonMenuButtonWrapper`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MenuButton` | `_ToolbarButtonMenuButton` | yes |  |
+
 <a id="wire-toolbarbuttondescriptor"></a>
 #### `ToolbarButtonDescriptor`
 
-One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, or `{"Group": {...}}`.
+One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, `{"Group": {...}}`, `{"Field": {...}}` (an embedded `TextFieldDescriptor`), or `{"MenuButton": {...}}` (a pull-down; `menu` is a list of `ContextMenuItem`).
 
-Alias for `("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper`.
+Alias for `("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper | _ToolbarButtonFieldWrapper | _ToolbarButtonMenuButtonWrapper`.
 
 <a id="wire-toolbaroverflow"></a>
 #### `ToolbarOverflow`
@@ -3690,6 +3763,29 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `group` | `WidgetId` | yes |  |
 | `id` | `WidgetId` | yes |  |
 
+<a id="wire-_toolbarfieldchangedpayload"></a>
+#### `_ToolbarFieldChangedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `value` | `string` | yes |  |
+
+<a id="wire-_toolbarfieldcommittedpayload"></a>
+#### `_ToolbarFieldCommittedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `value` | `string` | yes |  |
+
+<a id="wire-_toolbarfieldclearedpayload"></a>
+#### `_ToolbarFieldClearedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+
 <a id="wire-toolbarevent"></a>
 #### `ToolbarEvent`
 
@@ -3699,6 +3795,9 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- |
 | `ButtonClicked` | `_ToolbarButtonClickedPayload` |  |
 | `GroupSelected` | `_ToolbarGroupSelectedPayload` |  |
+| `FieldChanged` | `_ToolbarFieldChangedPayload` |  |
+| `FieldCommitted` | `_ToolbarFieldCommittedPayload` |  |
+| `FieldCleared` | `_ToolbarFieldClearedPayload` |  |
 
 <a id="wire-calendardate"></a>
 #### `CalendarDate`

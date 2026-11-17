@@ -371,3 +371,39 @@ test("'overflow_priorities' overrides ToolbarOverflow.Menu's default trailing-dr
     "a dropped item must leave the trailing » affordance painted",
   );
 });
+
+test("Field and MenuButton toolbar entries paint their placeholder and caret from a plain object", () => {
+  // `ToolbarButton::Field`/`ToolbarButton::MenuButton` are additive
+  // variants carried through the same JSON wire every other
+  // `ToolbarButton` case already uses -- a plain JS object for each
+  // round-trips with no special-casing on this binding's side.
+  const app = new QuiApp(60, 5);
+  app.setRender(() => ({
+    toolbar: {
+      id: "toolbar:main",
+      buttons: [
+        {
+          MenuButton: {
+            id: "toolbar:action-menu",
+            label: "Action",
+            menu: [],
+          },
+        },
+        {
+          Field: {
+            id: "toolbar:search",
+            field: {
+              id: "toolbar:search",
+              placeholder: "Search",
+            },
+            width: { Fixed: 20.0 },
+          },
+        },
+      ],
+    },
+  }));
+
+  assert.ok(app.screenContains("Action"), "the MenuButton's label must be painted");
+  assert.ok(app.screenContains("▾"), "the MenuButton's trailing caret must be painted");
+  assert.ok(app.screenContains("Search"), "the Field's placeholder must be painted");
+});

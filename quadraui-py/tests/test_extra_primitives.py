@@ -1831,6 +1831,45 @@ def test_toolbar_renders_action_label():
     assert app.screen_contains("Refresh")
 
 
+def test_toolbar_renders_field_placeholder_and_menu_button_caret():
+    # `ToolbarButton::Field`/`ToolbarButton::MenuButton` are additive
+    # `#[serde(default)]`-backed variants (new fields on `Field`/
+    # `MenuButton` have defaults; the variants themselves don't, same as
+    # every other `ToolbarButton` case) -- a plain dict/object for each
+    # flows through the wire unchanged. `Field`'s embedded `TextField`
+    # paints its placeholder in brackets; `MenuButton` paints its label
+    # plus a trailing caret.
+    app = QuiApp(60, 20)
+    app.insert_extra(
+        "toolbar",
+        {
+            "id": "toolbar:main",
+            "buttons": [
+                {
+                    "MenuButton": {
+                        "id": "toolbar:action-menu",
+                        "label": "Action",
+                        "menu": [],
+                    }
+                },
+                {
+                    "Field": {
+                        "id": "toolbar:search",
+                        "field": {
+                            "id": "toolbar:search",
+                            "placeholder": "Search",
+                        },
+                        "width": {"Fixed": 20.0},
+                    }
+                },
+            ],
+        },
+    )
+    assert app.screen_contains("Action")
+    assert app.screen_contains("▾")  # the pull-down ▾ affordance
+    assert app.screen_contains("Search")
+
+
 def test_menu_bar_renders_item_label():
     app = QuiApp(40, 20)
     app.insert_extra(

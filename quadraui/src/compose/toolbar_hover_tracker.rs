@@ -114,7 +114,12 @@ impl ToolbarHoverTracker {
     /// (caller should redraw), `false` if it stayed the same.
     pub fn update(&mut self, layout: &ToolbarLayout, x: f32, y: f32) -> bool {
         let new_hover = match layout.hit_test(x, y) {
-            ToolbarHit::Button(id) => Some(id),
+            // `MenuButton` hovers the same way an `Action` does (its own
+            // id drives the hover-highlight paint); `Field` reports its
+            // id too, though no rasteriser reads it for a hover tint
+            // today — a text field has no separate hover state from
+            // its own `has_focus`.
+            ToolbarHit::Button(id) | ToolbarHit::MenuButton(id) | ToolbarHit::Field(id) => Some(id),
             // The `»` affordance has no `WidgetId` of its own to hover —
             // same "no specific button" reading as `Empty`.
             ToolbarHit::Empty | ToolbarHit::Overflow => None,

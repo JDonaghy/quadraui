@@ -841,6 +841,48 @@ pub fn schema() -> Vec<DefJson> {
         "_ToolbarButtonGroupWrapper",
         vec![field("Group", toolbar_button_group)],
     ));
+    let toolbar_item_width_flex_fields = b.define(obj(
+        "_ToolbarItemWidthFlex",
+        vec![field("min", float_()), field("max", float_())],
+    ));
+    let toolbar_item_width_fixed_wrapper = b.define(obj(
+        "_ToolbarItemWidthFixedWrapper",
+        vec![field("Fixed", float_())],
+    ));
+    let toolbar_item_width_flex_wrapper = b.define(obj(
+        "_ToolbarItemWidthFlexWrapper",
+        vec![field("Flex", toolbar_item_width_flex_fields)],
+    ));
+    let toolbar_item_width = b.define(union_of_doc(
+        "ToolbarItemWidth",
+        vec![toolbar_item_width_fixed_wrapper, toolbar_item_width_flex_wrapper],
+        "A `ToolbarButton::Field`'s main-axis sizing: `{\"Fixed\": px_or_cells}` (never grows) or `{\"Flex\": {\"min\": ..., \"max\": ...}}` (grows into spare bar room, up to `max`).",
+    ));
+    let toolbar_button_field = b.define(obj(
+        "_ToolbarButtonField",
+        vec![
+            field("id", re("WidgetId")),
+            field("field", re("TextFieldDescriptor")),
+            field("width", toolbar_item_width),
+        ],
+    ));
+    let toolbar_button_field_wrapper = b.define(obj(
+        "_ToolbarButtonFieldWrapper",
+        vec![field("Field", toolbar_button_field)],
+    ));
+    let toolbar_button_menu_button = b.define(obj(
+        "_ToolbarButtonMenuButton",
+        vec![
+            field("id", re("WidgetId")),
+            field("label", str_()),
+            field_opt("icon", nullable(str_())),
+            field("menu", list(re("ContextMenuItem"))),
+        ],
+    ));
+    let toolbar_button_menu_button_wrapper = b.define(obj(
+        "_ToolbarButtonMenuButtonWrapper",
+        vec![field("MenuButton", toolbar_button_menu_button)],
+    ));
     let toolbar_button_descriptor = b.define(union_of_doc(
         "ToolbarButtonDescriptor",
         vec![
@@ -848,8 +890,10 @@ pub fn schema() -> Vec<DefJson> {
             toolbar_button_action_wrapper,
             toolbar_button_label_wrapper,
             toolbar_button_group_wrapper,
+            toolbar_button_field_wrapper,
+            toolbar_button_menu_button_wrapper,
         ],
-        "One `Toolbar::buttons` entry: `\"Separator\"`/`\"Spacer\"` (bare strings), `{\"Action\": {...}}`, `{\"Label\": {...}}`, or `{\"Group\": {...}}`.",
+        "One `Toolbar::buttons` entry: `\"Separator\"`/`\"Spacer\"` (bare strings), `{\"Action\": {...}}`, `{\"Label\": {...}}`, `{\"Group\": {...}}`, `{\"Field\": {...}}` (an embedded `TextFieldDescriptor`), or `{\"MenuButton\": {...}}` (a pull-down; `menu` is a list of `ContextMenuItem`).",
     ));
     let toolbar_overflow = b.define(alias_doc(
         "ToolbarOverflow",
@@ -2923,11 +2967,26 @@ pub fn schema() -> Vec<DefJson> {
         "_ToolbarGroupSelectedPayload",
         vec![field("group", re("WidgetId")), field("id", re("WidgetId"))],
     ));
+    let toolbar_field_changed_payload = b.define(obj(
+        "_ToolbarFieldChangedPayload",
+        vec![field("id", re("WidgetId")), field("value", str_())],
+    ));
+    let toolbar_field_committed_payload = b.define(obj(
+        "_ToolbarFieldCommittedPayload",
+        vec![field("id", re("WidgetId")), field("value", str_())],
+    ));
+    let toolbar_field_cleared_payload = b.define(obj(
+        "_ToolbarFieldClearedPayload",
+        vec![field("id", re("WidgetId"))],
+    ));
     b.define(flat(
         "ToolbarEvent",
         &[
             ("ButtonClicked", toolbar_button_clicked_payload),
             ("GroupSelected", toolbar_group_selected_payload),
+            ("FieldChanged", toolbar_field_changed_payload),
+            ("FieldCommitted", toolbar_field_committed_payload),
+            ("FieldCleared", toolbar_field_cleared_payload),
         ],
         vec![],
     ));
@@ -5342,6 +5401,17 @@ mod coverage {
                 exclusive: _,
                 label: _,
             } => {}
+            ToolbarButton::Field {
+                id: _,
+                field: _,
+                width: _,
+            } => {}
+            ToolbarButton::MenuButton {
+                id: _,
+                label: _,
+                icon: _,
+                menu: _,
+            } => {}
             // `ToolbarButton` is `#[non_exhaustive]` -- see
             // `assert_tab_bar_event`'s matching comment.
             _ => {}
@@ -5717,7 +5787,15 @@ mod coverage {
             ToolbarButton,
             "ToolbarButton",
             "ToolbarButtonDescriptor",
-            ["Action", "Separator", "Label", "Spacer", "Group"]
+            [
+                "Action",
+                "Separator",
+                "Label",
+                "Spacer",
+                "Group",
+                "Field",
+                "MenuButton"
+            ]
         );
 
         variant_shape_test!(
@@ -5725,7 +5803,13 @@ mod coverage {
             ToolbarEvent,
             "ToolbarEvent",
             "ToolbarEvent",
-            ["ButtonClicked", "GroupSelected"]
+            [
+                "ButtonClicked",
+                "GroupSelected",
+                "FieldChanged",
+                "FieldCommitted",
+                "FieldCleared"
+            ]
         );
 
         variant_shape_test!(

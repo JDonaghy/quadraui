@@ -3,12 +3,17 @@
 //! Exercises action buttons, a toggle action, a permanently-disabled
 //! action, a separator, a non-clickable label, hover/press state and
 //! keyboard focus (Tab / Shift-Tab / Enter) — the `Toolbar` primitive's
-//! full surface.
+//! full surface. The "Finder-style" variant additionally exercises an
+//! embedded [`ToolbarButton::Field`] search box (growing into spare bar
+//! room via [`ToolbarItemWidth::Flex`]) and a [`ToolbarButton::MenuButton`]
+//! pull-down, both focusable the same Tab/Shift-Tab way as every other
+//! button here.
 
 use quadraui::{
-    Backend, BackendCaps, Color, Icon, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarLayout,
-    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, ContextMenuItem, EditOp, Icon, InteractionState, Key, Modifiers,
+    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, TextField, Toolbar,
+    ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemWidth, ToolbarLayout, ToolbarLayoutOptions,
+    ToolbarOverflow, ToolbarOverflowPriorities, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -56,6 +61,11 @@ pub struct ToolbarDemo {
     /// segmented group's own selection state, owned by the host the same
     /// way `filter_active` owns the plain toggle action's.
     view_mode: &'static str,
+    /// Variant 4 ("Finder-style")'s embedded search box. Owned here (not
+    /// derived from `focused_index`/`last_message`) because `TextField`
+    /// carries its own edit state (`value`/`cursor`/`selection_anchor`)
+    /// that no other demo field can stand in for.
+    search: TextField,
 }
 
 impl ToolbarDemo {
@@ -67,6 +77,17 @@ impl ToolbarDemo {
             interaction: InteractionState::new(),
             focused_index: None,
             view_mode: "icons",
+            search: TextField::new(WidgetId::new("gallery:toolbar:search"))
+                .with_placeholder("Search")
+                // ASCII fallback is a plain single-width `?`, not the
+                // magnifier emoji itself — on TUI (no Nerd Fonts) a wide
+                // emoji glyph eats the display column right after it,
+                // the same quirk `TextFieldDemo::new`'s own search field
+                // avoids this way.
+                .with_leading_icon(
+                    Icon::codicon("search", "?").unwrap_or_else(|| Icon::new("\u{1F50D}", "?")),
+                )
+                .with_clearable(true),
         }
     }
 
@@ -190,6 +211,125 @@ impl ToolbarDemo {
             .with_focused_index(self.focused_index)
     }
 
+    /// Variant 4 ("Finder-style")'s bar: the same back/forward and
+    /// view-mode groups [`Self::toolbar`] builds, followed by a
+    /// pull-down [`ToolbarButton::MenuButton`] ("Action ▾"), a
+    /// [`ToolbarButton::Spacer`] that pushes everything after it to the
+    /// trailing edge, and [`Self::search`] embedded as a
+    /// [`ToolbarButton::Field`] that grows into whatever room the spacer
+    /// leaves — the Finder search-box toolbar shape this variant exists
+    /// to exercise. `width`'s `Flex { min, max }` are read as cells on
+    /// TUI and pixels on GUI, the same dual-unit convention
+    /// `ControlWidth::Fixed` already uses in `quadraui::Form`.
+    fn finder_style_toolbar(&self) -> Toolbar {
+        Toolbar::new(WidgetId::new("gallery:toolbar"))
+            .with_buttons(vec![
+                ToolbarButton::Group {
+                    id: WidgetId::new("gallery:toolbar:nav"),
+                    exclusive: false,
+                    label: Some("History navigation".into()),
+                    items: vec![
+                        ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new("gallery:toolbar:back"),
+                            label: "Back".into(),
+                            icon: Some("←".into()),
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: "Go back".into(),
+                        },
+                        ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new("gallery:toolbar:forward"),
+                            label: "Forward".into(),
+                            icon: Some("→".into()),
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: "Go forward".into(),
+                        },
+                    ],
+                },
+                ToolbarButton::Group {
+                    id: WidgetId::new("gallery:toolbar:view"),
+                    exclusive: true,
+                    label: Some("View mode".into()),
+                    items: VIEW_MODES
+                        .iter()
+                        .map(|(id, text, icon)| ToolbarButton::Action {
+                            spec: None,
+                            id: WidgetId::new(format!("gallery:toolbar:view:{id}")),
+                            label: (*text).into(),
+                            icon: Some((*icon).into()),
+                            key_hint: None,
+                            enabled: true,
+                            is_active: self.view_mode == *id,
+                            tooltip: format!("Switch to {text} view"),
+                        })
+                        .collect(),
+                },
+                ToolbarButton::MenuButton {
+                    id: WidgetId::new("gallery:toolbar:action-menu"),
+                    label: "Action".into(),
+                    icon: None,
+                    menu: vec![
+                        ContextMenuItem {
+                            id: Some(WidgetId::new("gallery:toolbar:action-menu:get-info")),
+                            label: StyledText::plain("Get Info"),
+                            ..Default::default()
+                        },
+                        ContextMenuItem {
+                            id: Some(WidgetId::new("gallery:toolbar:action-menu:rename")),
+                            label: StyledText::plain("Rename"),
+                            ..Default::default()
+                        },
+                    ],
+                },
+                ToolbarButton::Spacer,
+                ToolbarButton::Field {
+                    id: self.search.id,
+                    field: self.search.clone().with_has_focus(self.field_has_focus(4)),
+                    width: ToolbarItemWidth::Flex {
+                        min: 60.0,
+                        max: 240.0,
+                    },
+                },
+            ])
+            .with_focused_index(self.focused_index)
+    }
+
+    /// The index of variant 4's embedded [`ToolbarButton::Field`] in
+    /// [`Self::finder_style_toolbar`]'s button list (nav group, view
+    /// group, action menu button, spacer, field — fixed by that
+    /// function's own literal `vec![...]` order), or `None` for every
+    /// other variant (none of them have a `Field` at all).
+    fn field_index(&self, variant: usize) -> Option<usize> {
+        (variant == 4).then_some(4)
+    }
+
+    /// Whether [`Self::field_index`] is the current [`Self::focused_index`]
+    /// — the signal [`Self::finder_style_toolbar`] paints its `Field`'s
+    /// focus ring/caret from, and [`Self::handle`] reads to decide whether
+    /// a key event edits the field instead of driving focus/activation.
+    fn field_has_focus(&self, variant: usize) -> bool {
+        self.focused_index.is_some() && self.focused_index == self.field_index(variant)
+    }
+
+    /// `variant`'s full [`Toolbar`] — variant 4 ("Finder-style") gets its
+    /// own shape ([`Self::finder_style_toolbar`]); every other variant
+    /// shares [`Self::toolbar`]'s labeled/icon-only/overflow bar. Every
+    /// internal call site that needs `variant`'s bar goes through this,
+    /// not [`Self::toolbar`] directly, so variant 4 behaves consistently
+    /// everywhere (painting, hit-testing, focus, the exported `data`).
+    fn toolbar_for(&self, variant: usize) -> Toolbar {
+        if variant == 4 {
+            self.finder_style_toolbar()
+        } else {
+            self.toolbar(variant)
+        }
+    }
+
     /// Nerd-Font glyph + ASCII fallback pair for each action button, keyed
     /// by id — [`ToolbarIcons::apply`] bakes the right half into the
     /// returned `Toolbar` depending on `backend.nerd_fonts_enabled()`
@@ -217,10 +357,13 @@ impl ToolbarDemo {
             )
     }
 
-    /// [`Self::toolbar`] with [`Self::icons`] resolved against `backend`'s
-    /// Nerd-Font flag — the form actually painted and hit-tested.
+    /// [`Self::toolbar_for`] with [`Self::icons`] resolved against
+    /// `backend`'s Nerd-Font flag — the form actually painted and
+    /// hit-tested. `icons()` only keys the ids [`Self::toolbar`] uses, so
+    /// applying it to variant 4's different id set is a no-op for every
+    /// button it doesn't recognize.
     fn painted_toolbar(&self, variant: usize, backend: &dyn Backend) -> Toolbar {
-        Self::icons().apply(&self.toolbar(variant), backend.nerd_fonts_enabled())
+        Self::icons().apply(&self.toolbar_for(variant), backend.nerd_fonts_enabled())
     }
 
     fn toolbar_rect(area: Rect, backend: &dyn Backend) -> Rect {
@@ -311,6 +454,37 @@ impl ToolbarDemo {
         }
     }
 
+    /// Routes one `KeyPressed` into [`Self::search`]'s edit state while
+    /// variant 4's `Field` has focus — [`Self::handle`]'s `field_has_focus`
+    /// guard arm is the only caller. Escape clears the field (matching its
+    /// clearable `×` button); Enter commits the current value into the
+    /// hint line; everything else goes through [`EditOp::from_key`], the
+    /// same raw-key-to-edit mapping `quadraui::compose::form_controller`
+    /// uses for its own text inputs.
+    fn handle_field_key(&mut self, key: &Key, modifiers: Modifiers) -> Reaction {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
+            if self.search.value.is_empty() {
+                return Reaction::Continue;
+            }
+            self.search.clear();
+            self.last_message = "Search cleared".into();
+            return Reaction::Redraw;
+        }
+        if matches!(key, Key::Named(NamedKey::Enter)) {
+            self.last_message = format!("Search: {}", self.search.value);
+            return Reaction::Redraw;
+        }
+        let Some(op) = EditOp::from_key(key, modifiers) else {
+            return Reaction::Continue;
+        };
+        if self.search.apply_edit_op(op) {
+            self.last_message = format!("Search: {}", self.search.value);
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
+        }
+    }
+
     fn dispatch(&mut self, id: &WidgetId) {
         match id.as_str() {
             "gallery:toolbar:continue" => {
@@ -347,12 +521,15 @@ impl ToolbarDemo {
     }
 
     fn focusable_indices(&self, variant: usize) -> Vec<usize> {
-        self.toolbar(variant)
+        self.toolbar_for(variant)
             .buttons
             .into_iter()
             .enumerate()
             .filter_map(|(i, btn)| match btn {
                 ToolbarButton::Action { enabled, .. } if enabled => Some(i),
+                // A `MenuButton`/`Field` is always a focus stop — unlike
+                // an `Action` it carries no `enabled` flag of its own.
+                ToolbarButton::MenuButton { .. } | ToolbarButton::Field { .. } => Some(i),
                 _ => None,
             })
             .collect()
@@ -383,21 +560,35 @@ impl ToolbarDemo {
                 }
             },
         });
+        // Arriving on the `Field` by Tab shows a caret right away
+        // instead of waiting for the first keystroke — `cursor` starts
+        // `None` (read-only look) until something sets it.
+        if self.field_has_focus(variant) && self.search.cursor.is_none() {
+            self.search.cursor = Some(self.search.value.len());
+        }
     }
 
     fn activate_focused(&mut self, variant: usize) -> bool {
         let Some(idx) = self.focused_index else {
             return false;
         };
-        let bar = self.toolbar(variant);
-        if let Some(ToolbarButton::Action { id, enabled, .. }) = bar.buttons.get(idx) {
-            if *enabled {
+        let bar = self.toolbar_for(variant);
+        match bar.buttons.get(idx) {
+            Some(ToolbarButton::Action { id, enabled, .. }) if *enabled => {
                 let id = *id;
                 self.dispatch(&id);
-                return true;
+                true
             }
+            // Enter/Space on the `MenuButton` focus stop: a real host
+            // would open its `menu` here; this demo only has the one
+            // `hint_bar` line to report through, same as every other
+            // button's `last_message` update below.
+            Some(ToolbarButton::MenuButton { label, .. }) => {
+                self.last_message = format!("{label} menu activated");
+                true
+            }
+            _ => false,
         }
-        false
     }
 }
 
@@ -417,7 +608,13 @@ impl Demo for ToolbarDemo {
     }
 
     fn variants(&self) -> &'static [&'static str] {
-        &["Labeled", "Icon-only", "Overflow: Wrap", "Overflow: Menu"]
+        &[
+            "Labeled",
+            "Icon-only",
+            "Overflow: Wrap",
+            "Overflow: Menu",
+            "Finder-style",
+        ]
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
@@ -477,6 +674,13 @@ impl Demo for ToolbarDemo {
                 self.advance_focus(variant, false);
                 Reaction::Redraw
             }
+            // Tab/BackTab always move focus, even off the `Field` —
+            // handled above, before this arm. Every other key, while
+            // the `Field` has focus, edits it instead of activating
+            // whatever a bare `Enter`/digit would normally mean.
+            UiEvent::KeyPressed { key, modifiers, .. } if self.field_has_focus(variant) => {
+                self.handle_field_key(key, *modifiers)
+            }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Enter) | Key::Char(' '),
                 ..
@@ -496,7 +700,7 @@ impl Demo for ToolbarDemo {
                     '2' => "gallery:toolbar:pause",
                     _ => "gallery:toolbar:filter",
                 };
-                let bar = self.toolbar(variant);
+                let bar = self.toolbar_for(variant);
                 let allowed = bar.buttons.iter().any(|btn| {
                     matches!(btn, ToolbarButton::Action { id: bid, enabled, .. }
                         if bid.as_str() == id && *enabled)
@@ -526,7 +730,9 @@ impl Demo for ToolbarDemo {
                     None => backend.toolbar_layout(rect, &bar),
                 };
                 let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
-                    ToolbarHit::Button(id) => Some(id),
+                    ToolbarHit::Button(id) | ToolbarHit::MenuButton(id) | ToolbarHit::Field(id) => {
+                        Some(id)
+                    }
                     // `Overflow` is handled in the `MouseUp` arm below,
                     // not through `InteractionState`'s hover/press
                     // tracking.
@@ -539,6 +745,40 @@ impl Demo for ToolbarDemo {
                     match layout.hit_test(position.x, position.y) {
                         ToolbarHit::Button(release_id) if was_pressed == Some(release_id) => {
                             self.dispatch(&release_id);
+                        }
+                        // A click on the `Field` just moves focus onto
+                        // it — the same "click to focus" contract a real
+                        // `TextField` host follows; editing then goes
+                        // through the `field_has_focus` key arm above.
+                        ToolbarHit::Field(field_id) if was_pressed == Some(field_id) => {
+                            self.focused_index = bar.buttons.iter().position(
+                                |b| matches!(b, ToolbarButton::Field { id, .. } if *id == field_id),
+                            );
+                            if self.search.cursor.is_none() {
+                                self.search.cursor = Some(self.search.value.len());
+                            }
+                            self.last_message = "Search focused".into();
+                        }
+                        // A click on the `MenuButton` reports its own
+                        // painted bounds — the "anchor rect" a real host
+                        // opens a `ContextMenu` under, taken straight off
+                        // `ToolbarLayout::visible_items` rather than a
+                        // new API.
+                        ToolbarHit::MenuButton(menu_id) if was_pressed == Some(menu_id) => {
+                            self.focused_index = bar
+                                .buttons
+                                .iter()
+                                .position(|b| matches!(b, ToolbarButton::MenuButton { id, .. } if *id == menu_id));
+                            if let Some(vis) = layout
+                                .visible_items
+                                .iter()
+                                .find(|v| v.action_id == Some(menu_id))
+                            {
+                                self.last_message = format!(
+                                    "Action menu anchor: x={:.0} y={:.0} w={:.0} h={:.0}",
+                                    vis.bounds.x, vis.bounds.y, vis.bounds.width, vis.bounds.height
+                                );
+                            }
                         }
                         ToolbarHit::Overflow => {
                             let dropped = layout.overflowed_items();
@@ -577,7 +817,7 @@ impl Demo for ToolbarDemo {
     }
 
     fn data(&self, variant: usize) -> serde_json::Value {
-        serde_json::to_value(self.toolbar(variant)).unwrap_or(serde_json::Value::Null)
+        serde_json::to_value(self.toolbar_for(variant)).unwrap_or(serde_json::Value::Null)
     }
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {

@@ -506,6 +506,87 @@ pub enum ToolbarButton {
         #[serde(default)]
         label: Option<String>,
     },
+    /// An embedded [`crate::primitives::text_field::TextField`] — the
+    /// Finder-style trailing-edge search box. `width` resolves how much
+    /// main-axis room [`Toolbar::layout_with_options`] gives it: a fixed
+    /// slot, or a [`ToolbarItemWidth::Flex`] range that grows into
+    /// whatever main-axis room is left over once every other item has
+    /// its own size, the same room a lone [`Self::Spacer`] would
+    /// otherwise have absorbed as blank space — see
+    /// [`distribute_flex_width`].
+    ///
+    /// Key events while [`TextField::has_focus`] is set go to the field,
+    /// not through [`Toolbar::click`]/[`Toolbar::activate_focused`] — the
+    /// host reads/mutates `field` directly (`TextField::apply_edit_op`,
+    /// `TextField::clear`) and reports the result as
+    /// [`ToolbarEvent::FieldChanged`]/[`ToolbarEvent::FieldCommitted`]/
+    /// [`ToolbarEvent::FieldCleared`] on its own event stream; this
+    /// primitive only owns layout, measurement and hit-testing
+    /// ([`ToolbarHit::Field`]).
+    ///
+    /// Never moved into a [`ToolbarOverflow::Menu`] overflow menu — see
+    /// that variant's own doc. Under width pressure it shrinks toward
+    /// `width`'s minimum and, past that, each rasteriser paints it
+    /// icon-only (magnifier glyph, no bracket/text) rather than clipping
+    /// mid-character — see `tui::toolbar`'s and
+    /// [`native_surface_paint::paint`]'s own `Field` arm.
+    Field {
+        id: WidgetId,
+        field: crate::primitives::text_field::TextField,
+        width: ToolbarItemWidth,
+    },
+    /// A pull-down button — "Group by ▾", "Action ▾" — painted as an
+    /// [`Self::Action`]-shaped pill plus a trailing `▾` affordance.
+    ///
+    /// Never dispatches a [`ToolbarEvent`] on its own: a click hit-tests
+    /// to [`ToolbarHit::MenuButton`], and the host opens a
+    /// [`crate::ContextMenu`] built from `menu`, anchored at the clicked
+    /// item's own [`VisibleToolbarItem::bounds`] (looked up in
+    /// [`ToolbarLayout::visible_items`] by this button's `id`).
+    MenuButton {
+        id: WidgetId,
+        label: String,
+        #[serde(default)]
+        icon: Option<String>,
+        menu: Vec<crate::primitives::context_menu::ContextMenuItem>,
+    },
+}
+
+/// Main-axis width policy for a [`ToolbarButton::Field`], passed to
+/// [`Toolbar::layout_with_options`] via [`measure_button`]/`tui_item_width`.
+///
+/// `#[non_exhaustive]`: a future percentage-of-bar-width policy is
+/// additive.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ToolbarItemWidth {
+    /// Always this wide: cells for TUI, device px/DIPs for GTK / macOS /
+    /// Win — the same dual-unit convention [`crate::primitives::form::ControlWidth::Fixed`]
+    /// already uses, so a single `f32` reused verbatim by
+    /// `tui_item_width` (cells) and [`measure_button`] (px). Never grows,
+    /// never shrinks below it (clipped against the bar's edge like any
+    /// other item when the bar itself is too small).
+    Fixed(f32),
+    /// At least `min`, growing up to `max` to absorb main-axis room that
+    /// would otherwise sit blank — see [`distribute_flex_width`]. Never
+    /// grown past `max` even when more room is available; never shrunk
+    /// below `min` by [`Toolbar::layout_with_options`] itself (a
+    /// [`ToolbarOverflow::Menu`] layout's own drop/clip logic is the one
+    /// path that can still clip it narrower — see [`ToolbarButton::Field`]'s
+    /// doc).
+    Flex { min: f32, max: f32 },
+}
+
+impl ToolbarItemWidth {
+    /// The narrowest this policy ever resolves to — [`Self::Fixed`]'s own
+    /// value, or [`Self::Flex::min`]. The baseline [`measure_button`]/
+    /// `tui_item_width` report before [`distribute_flex_width`] grows it.
+    pub fn min_width(&self) -> f32 {
+        match self {
+            ToolbarItemWidth::Fixed(w) => *w,
+            ToolbarItemWidth::Flex { min, .. } => *min,
+        }
+    }
 }
 
 impl ToolbarButton {
@@ -552,7 +633,9 @@ impl ToolbarButton {
             ToolbarButton::Separator
             | ToolbarButton::Label { .. }
             | ToolbarButton::Spacer
-            | ToolbarButton::Group { .. } => None,
+            | ToolbarButton::Group { .. }
+            | ToolbarButton::Field { .. }
+            | ToolbarButton::MenuButton { .. } => None,
         }
     }
 }
@@ -586,6 +669,18 @@ pub enum ToolbarEvent {
     /// reports a plain [`Self::ButtonClicked`] instead — see
     /// [`Toolbar::click`].
     GroupSelected { group: WidgetId, id: WidgetId },
+    /// A [`ToolbarButton::Field`]'s value changed while editing (every
+    /// keystroke) — the host's own equivalent of `TextField::value`
+    /// after applying the edit, not a byte-diff.
+    FieldChanged { id: WidgetId, value: String },
+    /// A [`ToolbarButton::Field`] was committed — Enter while it has
+    /// focus. Distinct from [`Self::FieldChanged`] so a host can debounce
+    /// a live-filter-as-you-type search from a "run the search now" verb.
+    FieldCommitted { id: WidgetId, value: String },
+    /// A [`ToolbarButton::Field`]'s clear (×) control was activated, or
+    /// Escape was pressed while it had focus and a non-empty value — the
+    /// field's value is now empty.
+    FieldCleared { id: WidgetId },
 }
 
 // ── Nerd-Font icon overrides ─────────────────────────────────────────────────
@@ -834,6 +929,10 @@ pub enum ToolbarItemKind {
     /// [`Toolbar::buttons`] index — [`VisibleToolbarItem::item_idx`] is
     /// [`TOOLBAR_OVERFLOW_ITEM_IDX`] on this kind's entry.
     Overflow,
+    /// Embedded [`ToolbarButton::Field`].
+    Field,
+    /// [`ToolbarButton::MenuButton`] pull-down.
+    MenuButton,
 }
 
 /// Resolved bounds of one [`ToolbarButton::Group`] child, inside a
@@ -896,6 +995,16 @@ pub enum ToolbarHit {
     /// host opens a [`crate::ContextMenu`] built from
     /// [`ToolbarLayout::overflowed_items`].
     Overflow,
+    /// Click landed on a [`ToolbarButton::Field`] — the host should give
+    /// it keyboard focus (set [`Toolbar::focused_index`] to its slot and
+    /// `field.has_focus = true` on the next render). Carries the field's
+    /// own `id`, not its current value.
+    Field(WidgetId),
+    /// Click landed on a [`ToolbarButton::MenuButton`] — the host opens a
+    /// [`crate::ContextMenu`] built from that button's `menu`, anchored
+    /// at its own bounds (look up the matching [`VisibleToolbarItem`] in
+    /// [`ToolbarLayout::visible_items`] by this `id`).
+    MenuButton(WidgetId),
 }
 
 /// Sentinel [`VisibleToolbarItem::item_idx`] for the [`ToolbarItemKind::Overflow`]
@@ -969,11 +1078,23 @@ impl ToolbarLayout {
             }
             let r = vis.bounds;
             if x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height {
-                if vis.kind == ToolbarItemKind::Overflow {
-                    return ToolbarHit::Overflow;
-                }
-                if let Some(id) = &vis.action_id {
-                    return ToolbarHit::Button(*id);
+                match vis.kind {
+                    ToolbarItemKind::Overflow => return ToolbarHit::Overflow,
+                    ToolbarItemKind::Field => {
+                        if let Some(id) = &vis.action_id {
+                            return ToolbarHit::Field(*id);
+                        }
+                    }
+                    ToolbarItemKind::MenuButton => {
+                        if let Some(id) = &vis.action_id {
+                            return ToolbarHit::MenuButton(*id);
+                        }
+                    }
+                    _ => {
+                        if let Some(id) = &vis.action_id {
+                            return ToolbarHit::Button(*id);
+                        }
+                    }
                 }
             }
         }
@@ -1144,6 +1265,13 @@ pub const SEPARATOR_PX: f32 = 12.0;
 /// recovers each one exactly.
 pub const GROUP_CHROME_PX: f32 = 2.0;
 
+/// Width reserved for a [`ToolbarButton::MenuButton`]'s trailing `▾`
+/// affordance plus its own leading gap, in px/DIPs — shared by
+/// [`measure_button`]'s `MenuButton` arm and
+/// [`native_surface_paint::paint`]'s own `▾` glyph placement, so the
+/// width reserved and the width painted into never disagree.
+pub const MENU_BUTTON_CARET_PX: f32 = 16.0;
+
 /// Format an `Action`'s rendered text: `"{icon} {label} ({hint})"`, with
 /// the icon and/or key-hint sections dropped when absent.
 ///
@@ -1236,6 +1364,14 @@ pub fn measure_button(
         ToolbarButton::Group { items, .. } => {
             let child_sum: f32 = items.iter().map(|c| measure_button(measure, c)).sum();
             child_sum + GROUP_CHROME_PX * (items.len() as f32 + 1.0)
+        }
+        // The baseline (un-grown) width — `width`'s own minimum.
+        // `distribute_flex_width` is what grows a `Flex` field past this
+        // once every other item's size is known.
+        ToolbarButton::Field { width, .. } => width.min_width().max(0.0),
+        ToolbarButton::MenuButton { label, icon, .. } => {
+            let text = action_text(label, icon.as_deref(), None);
+            measure.width_of(&text) + 2.0 * ACTION_H_PAD + MENU_BUTTON_CARET_PX
         }
     }
 }
@@ -1362,10 +1498,21 @@ impl Toolbar {
         let idx = self.focused_index?;
         match self.buttons.get(idx)? {
             ToolbarButton::Action { id, .. } => self.click(*id),
+            // Enter while a `Field` has focus commits it — the same
+            // "activation" an `Action` gets, in `TextField` vocabulary.
+            ToolbarButton::Field { id, field, .. } => Some(ToolbarEvent::FieldCommitted {
+                id: *id,
+                value: field.value.clone(),
+            }),
             ToolbarButton::Separator
             | ToolbarButton::Label { .. }
             | ToolbarButton::Spacer
-            | ToolbarButton::Group { .. } => None,
+            | ToolbarButton::Group { .. }
+            // Enter has no keyboard equivalent for opening a menu here —
+            // the host's own key router maps Enter/Down on a focused
+            // `MenuButton` to the same `ToolbarHit::MenuButton` path a
+            // click takes, using this item's own bounds as the anchor.
+            | ToolbarButton::MenuButton { .. } => None,
         }
     }
 
@@ -1477,6 +1624,12 @@ impl Toolbar {
             // A group is never itself clickable — only its children are,
             // via `group_children` below.
             ToolbarButton::Group { .. } => (ToolbarItemKind::Group, false, None),
+            ToolbarButton::Field { id, .. } => {
+                (ToolbarItemKind::Field, visible_main > 0.0, Some(*id))
+            }
+            ToolbarButton::MenuButton { id, .. } => {
+                (ToolbarItemKind::MenuButton, visible_main > 0.0, Some(*id))
+            }
         };
         // `measure(group_btn).width` is the group's own *ideal* (unclipped)
         // width — the same quantity `classify`'s `visible_main` clips
@@ -1506,11 +1659,13 @@ impl Toolbar {
 
         match spacer_idx {
             None => {
-                let sizes: Vec<f32> = self
+                let mut sizes: Vec<f32> = self
                     .buttons
                     .iter()
                     .map(|btn| measure(btn).width.max(0.0))
                     .collect();
+                let mut extra = (main_len - sizes.iter().sum::<f32>()).max(0.0);
+                distribute_flex_width(&mut sizes, &self.buttons, &mut extra);
                 let cursors = item_cursor_positions(main_origin, cross_len, &sizes);
 
                 for (i, btn) in self.buttons.iter().enumerate() {
@@ -1532,14 +1687,29 @@ impl Toolbar {
                 }
             }
             Some(spacer_idx) => {
-                let leading_sizes: Vec<f32> = self.buttons[..spacer_idx]
+                let mut leading_sizes: Vec<f32> = self.buttons[..spacer_idx]
                     .iter()
                     .map(|btn| measure(btn).width.max(0.0))
                     .collect();
-                let trailing_sizes: Vec<f32> = self.buttons[spacer_idx + 1..]
+                let mut trailing_sizes: Vec<f32> = self.buttons[spacer_idx + 1..]
                     .iter()
                     .map(|btn| measure(btn).width.max(0.0))
                     .collect();
+
+                // Grow any `Flex` field(s) into the room a lone `Spacer`
+                // would otherwise have left blank, trailing group first —
+                // the common Finder shape puts the search field after
+                // the spacer, flush against the trailing edge.
+                let mut extra = (main_len
+                    - leading_sizes.iter().sum::<f32>()
+                    - trailing_sizes.iter().sum::<f32>())
+                .max(0.0);
+                distribute_flex_width(
+                    &mut trailing_sizes,
+                    &self.buttons[spacer_idx + 1..],
+                    &mut extra,
+                );
+                distribute_flex_width(&mut leading_sizes, &self.buttons[..spacer_idx], &mut extra);
 
                 let leading_end = main_origin + leading_sizes.iter().sum::<f32>();
                 let trailing_total: f32 = trailing_sizes.iter().sum();
@@ -2039,6 +2209,37 @@ fn item_cursor_positions(origin_x: f32, _bar_height: f32, widths: &[f32]) -> Vec
     cursors
 }
 
+/// Grow each [`ToolbarButton::Field`] in `buttons` whose
+/// [`ToolbarButton::Field::width`] is [`ToolbarItemWidth::Flex`] by up to
+/// its own `max - min`, consuming `extra` in document order until it's
+/// exhausted or every flex field has reached its `max`. `sizes[i]` is
+/// `buttons[i]`'s already-measured baseline width (its `min`, same
+/// convention [`measure_button`]/`tui_item_width` already use) — grown in
+/// place.
+///
+/// Called once per main-axis "group" [`Toolbar::layout_with_options`]
+/// packs independently (the whole bar with no `Spacer`, or the
+/// leading/trailing halves when one is present), each with its own
+/// `extra` budget, so a flex field never grows past the room its own
+/// group actually has.
+fn distribute_flex_width(sizes: &mut [f32], buttons: &[ToolbarButton], extra: &mut f32) {
+    for (i, btn) in buttons.iter().enumerate() {
+        if *extra <= 0.0 {
+            break;
+        }
+        if let ToolbarButton::Field {
+            width: ToolbarItemWidth::Flex { min, max },
+            ..
+        } = btn
+        {
+            let room = (max - min).max(0.0);
+            let grow = room.min(*extra);
+            sizes[i] += grow;
+            *extra -= grow;
+        }
+    }
+}
+
 // Shared paint implementation written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's API.
 // All pixel backends now use [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
@@ -2270,7 +2471,189 @@ pub(crate) mod native_surface_paint {
                         options,
                     );
                 }
+                ToolbarButton::Field { field, .. } => {
+                    paint_field(item, field, surface, theme);
+                }
+                ToolbarButton::MenuButton {
+                    id, label, icon, ..
+                } => {
+                    let is_hovered = hovered_id == Some(id);
+                    let is_pressed = pressed_id == Some(id);
+                    let is_focused = bar.focused_index == Some(vis.item_idx);
+
+                    let highlight = match PressableVisual::resolve(is_pressed, false, is_hovered) {
+                        PressableVisual::PressedOrActive => Some(theme.selected_bg),
+                        PressableVisual::Hovered => Some(theme.hover_bg),
+                        PressableVisual::Resting => None,
+                    };
+                    if let Some(bg) = highlight {
+                        let inset = Rect::new(
+                            item.x + 2.0,
+                            item.y + 2.0,
+                            (item.width - 4.0).max(0.0),
+                            (item.height - 4.0).max(0.0),
+                        );
+                        surface.surface_fill_rounded_rect(inset, CORNER_RADIUS, bg);
+                    }
+                    if is_focused && !is_hovered && !is_pressed {
+                        let ring = Rect::new(
+                            item.x + 1.5,
+                            item.y + 1.5,
+                            (item.width - 3.0).max(0.0),
+                            (item.height - 3.0).max(0.0),
+                        );
+                        surface.surface_stroke_rect(ring, theme.accent_fg, 1.0);
+                    }
+
+                    let fg = if is_hovered {
+                        theme.hover_fg
+                    } else {
+                        theme.foreground
+                    };
+                    let text = action_text(label, icon.as_deref(), None);
+                    const CARET: &str = "\u{25BE}";
+                    let (tw, th) = surface.surface_measure_text(&text);
+                    let (cw, _) = surface.surface_measure_text(CARET);
+                    let total_w = tw + 4.0 + cw;
+                    let tx = item.x + ((item.width - total_w).max(0.0)) / 2.0;
+                    let ty = valign_offset_y(options.valign, item.y, item.height, th);
+                    surface.surface_draw_text_run(
+                        Rect::new(tx, ty, tw.max(0.0), th.max(0.0)),
+                        &text,
+                        fg,
+                    );
+                    surface.surface_draw_text_run(
+                        Rect::new(tx + tw + 4.0, ty, cw.max(0.0), th.max(0.0)),
+                        CARET,
+                        fg,
+                    );
+                }
             }
+        }
+    }
+
+    /// Minimum width, px/DIPs, for a [`ToolbarButton::Field`] to paint its
+    /// full framed box (border, icon, text, clear button). Narrower than
+    /// this, [`paint_field`] drops straight to a centred magnifier glyph
+    /// with no border or text column — the "icon-only search action" a
+    /// [`super::ToolbarOverflow::Menu`] layout clips down to once there's
+    /// no room left even for `width`'s own minimum. Shared with
+    /// `tui::toolbar`'s own cell-unit twin (`FIELD_ICON_ONLY_CELLS`) only
+    /// in spirit — a terminal cell and a px/DIP aren't the same unit, so
+    /// each backend picks its own floor.
+    const FIELD_ICON_ONLY_PX: f32 = 28.0;
+
+    /// Paint a [`ToolbarButton::Field`] at `item`: a framed box (border,
+    /// leading icon, text/placeholder, clear button, caret) above
+    /// [`FIELD_ICON_ONLY_PX`], or just a centred magnifier glyph below it
+    /// — see that constant's own doc. Nerd Fonts are assumed available
+    /// (GTK/macOS/Win's own default — see `crate::Backend::nerd_fonts_enabled`'s
+    /// doc); `tui::text_field::draw_text_field` is the TUI twin that
+    /// threads the live flag through instead.
+    fn paint_field(
+        item: Rect,
+        field: &crate::primitives::text_field::TextField,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
+        if item.width <= 0.0 || item.height <= 0.0 {
+            return;
+        }
+
+        let icon_glyph = field
+            .leading_icon
+            .as_ref()
+            .map(|icon| icon.resolve(true))
+            .unwrap_or("\u{1F50D}");
+
+        if item.width < FIELD_ICON_ONLY_PX {
+            let (gw, gh) = surface.surface_measure_text(icon_glyph);
+            let gx = item.x + (item.width - gw).max(0.0) / 2.0;
+            let gy = item.y + (item.height - gh).max(0.0) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(gx, gy, gw.max(0.0), gh.max(0.0)),
+                icon_glyph,
+                theme.muted_fg,
+            );
+            return;
+        }
+
+        let border = if field.has_focus {
+            theme.accent_fg
+        } else {
+            theme.separator
+        };
+        surface.surface_fill_rounded_rect(item, CORNER_RADIUS, theme.input_bg);
+        surface.surface_stroke_rounded_rect(item, CORNER_RADIUS, border, 1.0);
+
+        let pad = 6.0_f32;
+        let mut cursor_x = item.x + pad;
+        let (iw, ih) = surface.surface_measure_text(icon_glyph);
+        surface.surface_draw_text_run(
+            Rect::new(
+                cursor_x,
+                item.y + (item.height - ih).max(0.0) / 2.0,
+                iw.max(0.0),
+                ih.max(0.0),
+            ),
+            icon_glyph,
+            theme.muted_fg,
+        );
+        cursor_x += iw + pad;
+
+        let show_clear = field.clearable && !field.value.is_empty();
+        let clear_w = if show_clear {
+            surface.surface_measure_text("\u{00D7}").0 + pad
+        } else {
+            0.0
+        };
+        let text_right = (item.x + item.width - pad - clear_w).max(cursor_x);
+        let text_width = (text_right - cursor_x).max(0.0);
+
+        let (shown, fg): (&str, Color) = if field.value.is_empty() {
+            (&field.placeholder, theme.muted_fg)
+        } else {
+            (&field.value, theme.foreground)
+        };
+        let (_, th) = surface.surface_measure_text(shown);
+        let ty = item.y + (item.height - th).max(0.0) / 2.0;
+        // No per-character scroll math here (unlike `TextField::layout`'s
+        // own pixel-accurate version) — clip at the character count that
+        // roughly fits `text_width`, favouring "never paint past the
+        // clear button" over exact cursor-follows-typing scrolling.
+        let avg_char_w = surface.surface_measure_text("n").0.max(1.0);
+        let max_chars = (text_width / avg_char_w).floor().max(0.0) as usize;
+        let clipped: String = shown.chars().take(max_chars).collect();
+        surface.surface_draw_text_run(
+            Rect::new(cursor_x, ty, text_width, th.max(0.0)),
+            &clipped,
+            fg,
+        );
+
+        if field.has_focus && field.cursor.is_some() {
+            let caret_chars = clipped.chars().count().min(max_chars);
+            let caret_x = cursor_x + avg_char_w * caret_chars as f32;
+            surface.surface_draw_line(
+                Point::new(caret_x, item.y + 3.0),
+                Point::new(caret_x, item.y + item.height - 3.0),
+                theme.accent_fg,
+                1.0,
+            );
+        }
+
+        if show_clear {
+            let clear_x = item.x + item.width - pad - surface.surface_measure_text("\u{00D7}").0;
+            let (cw, ch) = surface.surface_measure_text("\u{00D7}");
+            surface.surface_draw_text_run(
+                Rect::new(
+                    clear_x,
+                    item.y + (item.height - ch).max(0.0) / 2.0,
+                    cw.max(0.0),
+                    ch.max(0.0),
+                ),
+                "\u{00D7}",
+                theme.muted_fg,
+            );
         }
     }
 
@@ -2342,7 +2725,11 @@ pub(crate) mod native_surface_paint {
                 ToolbarButton::Label { text, fg } => (text.clone(), fg.unwrap_or(theme.muted_fg)),
                 // A well-behaved `Group` never nests one of these; skip
                 // rather than paint something a caller never asked for.
-                ToolbarButton::Separator | ToolbarButton::Spacer | ToolbarButton::Group { .. } => {
+                ToolbarButton::Separator
+                | ToolbarButton::Spacer
+                | ToolbarButton::Group { .. }
+                | ToolbarButton::Field { .. }
+                | ToolbarButton::MenuButton { .. } => {
                     continue;
                 }
             };
@@ -2936,6 +3323,10 @@ mod tests {
                 let inner = cell_measure();
                 let child_sum: f32 = items.iter().map(|c| inner(c).width).sum();
                 ToolbarItemMeasure::new(child_sum + items.len() as f32 + 1.0)
+            }
+            ToolbarButton::Field { width, .. } => ToolbarItemMeasure::new(width.min_width()),
+            ToolbarButton::MenuButton { label, .. } => {
+                ToolbarItemMeasure::new((4 + crate::text_util::display_width(label) + 2) as f32)
             }
         }
     }

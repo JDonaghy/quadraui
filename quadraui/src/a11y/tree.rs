@@ -1329,6 +1329,8 @@ fn toolbar_child_key(idx: usize, button: &ToolbarButton) -> String {
         ToolbarButton::Label { .. } => format!("label.{idx}"),
         ToolbarButton::Spacer => format!("spacer.{idx}"),
         ToolbarButton::Group { id, .. } => format!("group.{}", id.as_str()),
+        ToolbarButton::Field { id, .. } => format!("field.{}", id.as_str()),
+        ToolbarButton::MenuButton { id, .. } => format!("menubutton.{}", id.as_str()),
     }
 }
 
@@ -1375,9 +1377,11 @@ fn toolbar_group_child_info(item: &ToolbarButton, exclusive: bool) -> A11yInfo {
             info
         }
         // A well-behaved `Group` never nests one of these.
-        ToolbarButton::Separator | ToolbarButton::Spacer | ToolbarButton::Group { .. } => {
-            A11yInfo::new().with_role(A11yRole::Presentation)
-        }
+        ToolbarButton::Separator
+        | ToolbarButton::Spacer
+        | ToolbarButton::Group { .. }
+        | ToolbarButton::Field { .. }
+        | ToolbarButton::MenuButton { .. } => A11yInfo::new().with_role(A11yRole::Presentation),
     }
 }
 
@@ -1462,6 +1466,27 @@ fn toolbar_child(idx: usize, button: &ToolbarButton, role: ToolbarItemRole) -> A
                 })
                 .collect();
             A11yChild::new(key, info).with_children(children)
+        }
+        // An embedded search/filter field — reads the same as a
+        // standalone `TextInput`.
+        ToolbarButton::Field { field, .. } => {
+            let mut info = A11yInfo::new().with_role(A11yRole::TextInput);
+            if let Some(label) = non_empty(field.placeholder.clone()) {
+                info = info.with_label(label);
+            }
+            if !field.value.is_empty() {
+                info = info.with_value(field.value.clone());
+            }
+            A11yChild::new(key, info)
+        }
+        // A pull-down button — reads as a plain button; the submenu it
+        // opens isn't part of this static tree.
+        ToolbarButton::MenuButton { label, .. } => {
+            let mut info = A11yInfo::new().with_role(A11yRole::Button);
+            if let Some(label) = non_empty(label.clone()) {
+                info = info.with_label(label);
+            }
+            A11yChild::new(key, info)
         }
     }
 }

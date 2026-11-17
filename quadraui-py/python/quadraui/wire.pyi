@@ -324,8 +324,38 @@ class _ToolbarButtonGroup(TypedDict):
 class _ToolbarButtonGroupWrapper(TypedDict):
     Group: _ToolbarButtonGroup
 
-# One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, or `{"Group": {...}}`.
-ToolbarButtonDescriptor = Union[Literal['Separator', 'Spacer'], _ToolbarButtonActionWrapper, _ToolbarButtonLabelWrapper, _ToolbarButtonGroupWrapper]
+class _ToolbarItemWidthFlex(TypedDict):
+    min: float
+    max: float
+
+class _ToolbarItemWidthFixedWrapper(TypedDict):
+    Fixed: float
+
+class _ToolbarItemWidthFlexWrapper(TypedDict):
+    Flex: _ToolbarItemWidthFlex
+
+# A `ToolbarButton::Field`'s main-axis sizing: `{"Fixed": px_or_cells}` (never grows) or `{"Flex": {"min": ..., "max": ...}}` (grows into spare bar room, up to `max`).
+ToolbarItemWidth = Union[_ToolbarItemWidthFixedWrapper, _ToolbarItemWidthFlexWrapper]
+
+class _ToolbarButtonField(TypedDict):
+    id: WidgetId
+    field: TextFieldDescriptor
+    width: ToolbarItemWidth
+
+class _ToolbarButtonFieldWrapper(TypedDict):
+    Field: _ToolbarButtonField
+
+class _ToolbarButtonMenuButton(TypedDict):
+    id: WidgetId
+    label: str
+    icon: NotRequired[Optional[str]]
+    menu: List[ContextMenuItem]
+
+class _ToolbarButtonMenuButtonWrapper(TypedDict):
+    MenuButton: _ToolbarButtonMenuButton
+
+# One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, `{"Group": {...}}`, `{"Field": {...}}` (an embedded `TextFieldDescriptor`), or `{"MenuButton": {...}}` (a pull-down; `menu` is a list of `ContextMenuItem`).
+ToolbarButtonDescriptor = Union[Literal['Separator', 'Spacer'], _ToolbarButtonActionWrapper, _ToolbarButtonLabelWrapper, _ToolbarButtonGroupWrapper, _ToolbarButtonFieldWrapper, _ToolbarButtonMenuButtonWrapper]
 
 # How a `"toolbar"` extra's buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance.
 ToolbarOverflow = Literal['Clip', 'Wrap', 'Menu']
@@ -1819,9 +1849,23 @@ class _ToolbarGroupSelectedPayload(TypedDict):
     group: WidgetId
     id: WidgetId
 
+class _ToolbarFieldChangedPayload(TypedDict):
+    id: WidgetId
+    value: str
+
+class _ToolbarFieldCommittedPayload(TypedDict):
+    id: WidgetId
+    value: str
+
+class _ToolbarFieldClearedPayload(TypedDict):
+    id: WidgetId
+
 class ToolbarEvent(TypedDict):
     ButtonClicked: NotRequired[_ToolbarButtonClickedPayload]
     GroupSelected: NotRequired[_ToolbarGroupSelectedPayload]
+    FieldChanged: NotRequired[_ToolbarFieldChangedPayload]
+    FieldCommitted: NotRequired[_ToolbarFieldCommittedPayload]
+    FieldCleared: NotRequired[_ToolbarFieldClearedPayload]
 
 class CalendarDate(TypedDict):
     year: int

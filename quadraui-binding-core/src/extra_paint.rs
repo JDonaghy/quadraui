@@ -1459,9 +1459,14 @@ fn toolbar_chrome_hits(layout: quadraui::ToolbarLayout) -> Vec<(Rect, WidgetId)>
 /// could ever be activated, so there is no reason to spend a tab stop on
 /// it). Shared by [`Toolbar`]'s own impl and [`ToolbarWithOverflow`]'s.
 fn toolbar_tab_stop(bar: &Toolbar) -> bool {
-    bar.buttons
-        .iter()
-        .any(|button| matches!(button, ToolbarButton::Action { enabled: true, .. }))
+    bar.buttons.iter().any(|button| {
+        matches!(
+            button,
+            ToolbarButton::Action { enabled: true, .. }
+                | ToolbarButton::Field { .. }
+                | ToolbarButton::MenuButton { .. }
+        )
+    })
 }
 
 impl ExtraPaint for Toolbar {
