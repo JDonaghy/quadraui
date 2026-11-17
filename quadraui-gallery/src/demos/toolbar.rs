@@ -426,7 +426,10 @@ impl Demo for ToolbarDemo {
                 let layout = backend.toolbar_layout(rect, &bar);
                 let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
                     ToolbarHit::Button(id) => Some(id),
-                    ToolbarHit::Empty => None,
+                    // This demo keeps the default `ToolbarOverflow::Clip`,
+                    // so `Overflow` never fires — it reads the same as
+                    // `Empty` if it ever does.
+                    _ => None,
                 };
                 let was_pressed = self.interaction.pressed().cloned();
                 let changed = self.interaction.handle_mouse(event, hit_test);
