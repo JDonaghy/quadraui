@@ -710,6 +710,31 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "canvas_layout",
         "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
     ),
+    // `tree_table_layout` is the layout-only twin of `draw_tree_table`:
+    // `data_table_layout` for the wrapped table, plus chevron hit bounds
+    // for the tree cell column 0 paints. TUI overrides both. GTK, macOS
+    // and Win-GUI paint a `TreeTable` as a plain `DataTable` (the
+    // `draw_tree_table` default) — no chevron is on screen to hit — so
+    // the chevron-free default here is exactly what each of them paints;
+    // override both together when the tree cell lands on that backend.
+    (
+        "gtk",
+        "tree_table_layout",
+        "GTK paints a TreeTable as a plain DataTable, so empty chevron bounds agree with what \
+         draw_tree_table puts on screen — override both when the tree cell lands",
+    ),
+    (
+        "macos",
+        "tree_table_layout",
+        "macOS paints a TreeTable as a plain DataTable, so empty chevron bounds agree with what \
+         draw_tree_table puts on screen — override both when the tree cell lands",
+    ),
+    (
+        "win",
+        "tree_table_layout",
+        "Win-GUI paints a TreeTable as a plain DataTable, so empty chevron bounds agree with \
+         what draw_tree_table puts on screen — override both when the tree cell lands",
+    ),
     // `scrollbar_reserve` is the width of *toolkit* scrollbar chrome that a backend paints
     // over the content edge. GTK is the only backend that hosts its content inside
     // something with such chrome (a `ScrolledWindow`). The other three draw into a surface
