@@ -115,7 +115,9 @@ impl ToolbarHoverTracker {
     pub fn update(&mut self, layout: &ToolbarLayout, x: f32, y: f32) -> bool {
         let new_hover = match layout.hit_test(x, y) {
             ToolbarHit::Button(id) => Some(id),
-            ToolbarHit::Empty => None,
+            // The `»` affordance has no `WidgetId` of its own to hover —
+            // same "no specific button" reading as `Empty`.
+            ToolbarHit::Empty | ToolbarHit::Overflow => None,
         };
         self.core.set(new_hover)
     }

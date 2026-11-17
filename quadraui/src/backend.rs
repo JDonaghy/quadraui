@@ -96,7 +96,9 @@ use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_field::{TextField, TextFieldLayout, TextFieldMeasure};
 use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
-use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
+use crate::primitives::toolbar::{
+    Toolbar, ToolbarLayout, ToolbarLayoutOptions, ToolbarOverflowPriorities, ToolbarPaintOptions,
+};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::types::{Color, WidgetId};
@@ -4210,11 +4212,58 @@ pub trait Backend: sealed::Sealed {
         options: ToolbarPaintOptions,
     ) -> ToolbarLayout;
 
+    /// [`Self::draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]
+    /// (orientation, `ToolbarOverflow`) and `priorities` (read only by
+    /// [`crate::primitives::toolbar::ToolbarOverflow::Menu`]).
+    ///
+    /// **Defaulted, not required.** The default ignores `layout_options`
+    /// and `priorities` entirely and forwards to
+    /// [`Self::draw_toolbar_with_options`] — today's single-row Clip
+    /// geometry, unchanged — so a backend with no `ToolbarOverflow`
+    /// rasteriser of its own keeps compiling and painting exactly as it
+    /// does today. TUI overrides this with a real
+    /// [`crate::primitives::toolbar::ToolbarOverflow::Wrap`] /
+    /// [`crate::primitives::toolbar::ToolbarOverflow::Menu`] rasteriser;
+    /// GTK / macOS / Win-GUI pick that up once a per-backend issue gives
+    /// them one (see `CLAUDE.md`'s "One backend per issue").
+    fn draw_toolbar_with_overflow(
+        &mut self,
+        rect: Rect,
+        bar: &Toolbar,
+        interaction: &InteractionState,
+        _layout_options: ToolbarLayoutOptions,
+        _priorities: &ToolbarOverflowPriorities,
+    ) -> ToolbarLayout {
+        self.draw_toolbar_with_options(rect, bar, interaction, ToolbarPaintOptions::default())
+    }
+
     /// Compute toolbar layout without painting. Hosts call this after
     /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn toolbar_layout(&self, rect: Rect, bar: &Toolbar) -> ToolbarLayout;
+
+    /// [`Self::toolbar_layout`], plus [`ToolbarLayoutOptions`]/`priorities`
+    /// — the layout-only twin of [`Self::draw_toolbar_with_overflow`], for
+    /// a host that wants to hit-test (or read
+    /// [`ToolbarLayout::cross_extent`]/[`ToolbarLayout::overflowed_items`])
+    /// without repainting.
+    ///
+    /// **Defaulted, not required** — same rationale as
+    /// [`Self::draw_toolbar_with_overflow`]: a backend with no
+    /// `ToolbarOverflow` rasteriser of its own gets today's Clip-only
+    /// [`Self::toolbar_layout`] geometry.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
+    fn toolbar_layout_with_overflow(
+        &self,
+        rect: Rect,
+        bar: &Toolbar,
+        _layout_options: ToolbarLayoutOptions,
+        _priorities: &ToolbarOverflowPriorities,
+    ) -> ToolbarLayout {
+        self.toolbar_layout(rect, bar)
+    }
 
     /// Draw a [`SidebarPanel`] — optional header toolbar + content
     /// region. Backends paint the toolbar slot only; the content rect

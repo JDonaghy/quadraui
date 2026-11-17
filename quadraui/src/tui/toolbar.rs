@@ -38,8 +38,8 @@ use super::text::{char_cell_width, display_width};
 use super::{qc, set_cell, set_cell_wide};
 use crate::primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayout,
-    ToolbarLayoutOptions, ToolbarOrientation, ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign,
-    VisibleToolbarItem,
+    ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
+    ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign, VisibleToolbarItem,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -845,6 +845,246 @@ pub fn draw_toolbar_oriented(
                     hovered_id,
                     pressed_id,
                     row,
+                    bar_bg,
+                    fg,
+                    muted,
+                    hover_bg,
+                    hover_fg,
+                    active_bg,
+                );
+            }
+        }
+    }
+
+    layout
+}
+
+/// Compute the layout [`draw_toolbar_with_overflow`] would paint. No
+/// paint side-effects — same split [`tui_toolbar_layout`] keeps from
+/// [`draw_toolbar`], so a click router can hit-test without a `Buffer`.
+///
+/// [`ToolbarOverflow::Wrap`] always measures each wrapped line at exactly
+/// one terminal row — a terminal cell has no sub-row granularity to spend
+/// on a taller line the way a pixel backend could — regardless of
+/// `area.height`; [`ToolbarLayout::cross_extent`] on the result reports
+/// how many rows the wrapped content actually used, so a caller sizes
+/// `area` from that before the next [`draw_toolbar_with_overflow`] call.
+/// [`ToolbarOverflow::Clip`]/[`ToolbarOverflow::Menu`] keep `area.height`
+/// as the single line's row count, same as [`tui_toolbar_layout`].
+pub fn tui_toolbar_layout_with_overflow(
+    bar: &Toolbar,
+    area: Rect,
+    options: ToolbarLayoutOptions,
+    priorities: &ToolbarOverflowPriorities,
+) -> ToolbarLayout {
+    let line_height: f32 = match options.overflow {
+        ToolbarOverflow::Wrap => 1.0,
+        _ => area.height.max(1) as f32,
+    };
+    match options.orientation {
+        ToolbarOrientation::Horizontal => bar.layout_with_overflow(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            line_height,
+            options,
+            priorities,
+            |btn| ToolbarItemMeasure::new(tui_item_width(btn)),
+        ),
+        ToolbarOrientation::Vertical => bar.layout_with_overflow(
+            area.x as f32,
+            area.y as f32,
+            area.width.max(1) as f32,
+            area.height as f32,
+            options,
+            priorities,
+            |_btn| ToolbarItemMeasure::new(1.0),
+        ),
+    }
+}
+
+/// [`draw_toolbar_with_options`], plus [`ToolbarOverflow`]:
+/// `options.overflow` picks how items that don't fit are handled.
+///
+/// - [`ToolbarOverflow::Clip`] paints identically to
+///   [`draw_toolbar_with_options`] (same single-row geometry).
+/// - [`ToolbarOverflow::Wrap`] paints each wrapped line on its own
+///   terminal row below `area.y`, clipped to `area.height` — call
+///   [`tui_toolbar_layout_with_overflow`] first and grow `area` to its
+///   `ToolbarLayout::cross_extent` so every row actually paints.
+/// - [`ToolbarOverflow::Menu`] paints a trailing `[ » ]` cell in the same
+///   bracket format as a plain `Action` — the `»` affordance has no
+///   `WidgetId` a host can compare against `hovered_id`/`pressed_id`, so
+///   it always paints in the resting `fg`/`bar_bg` pair. A click on it
+///   hit-tests to [`crate::primitives::toolbar::ToolbarHit::Overflow`];
+///   open a [`crate::ContextMenu`] built from
+///   [`ToolbarLayout::overflowed_items`].
+///
+/// `priorities` is read only when `options.overflow` is
+/// [`ToolbarOverflow::Menu`] — pass [`ToolbarOverflowPriorities::new`]
+/// for the other two variants.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_toolbar_with_overflow(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &Toolbar,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+    options: ToolbarLayoutOptions,
+    priorities: &ToolbarOverflowPriorities,
+) -> ToolbarLayout {
+    if area.width == 0 || area.height == 0 {
+        return ToolbarLayout::empty(crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ));
+    }
+
+    let layout = tui_toolbar_layout_with_overflow(bar, area, options, priorities);
+
+    let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
+    let fg = qc(theme.foreground);
+    let muted = qc(theme.muted_fg);
+    let hover_bg = qc(theme.hover_bg);
+    let hover_fg = qc(theme.hover_fg);
+    let active_bg = qc(theme.selected_bg);
+    let focus_bg = qc(theme.accent_bg);
+
+    let area_bottom = area.y + area.height;
+    for dy in area.y..area_bottom {
+        for dx in area.x..area.x + area.width {
+            set_cell(buf, dx, dy, ' ', fg, bar_bg);
+        }
+    }
+
+    for vis in &layout.visible_items {
+        let item_x = vis.bounds.x.round() as u16;
+        let item_y = vis.bounds.y.round() as u16;
+        let item_w = vis.bounds.width.round() as u16;
+        let item_h = (vis.bounds.height.round() as u16).max(1);
+        if item_w == 0 || item_y >= area_bottom {
+            continue;
+        }
+        let row_h = item_h.min(area_bottom - item_y);
+        let text_row = item_y;
+
+        if vis.kind == ToolbarItemKind::Overflow {
+            for dy in 0..row_h {
+                for dx in 0..item_w {
+                    set_cell(buf, item_x + dx, item_y + dy, ' ', fg, bar_bg);
+                }
+            }
+            let mut col: u16 = 0;
+            for ch in ['[', ' ', '»', ' ', ']'] {
+                let cw = char_cell_width(ch);
+                if col + cw > item_w {
+                    break;
+                }
+                set_cell(buf, item_x + col, text_row, ch, fg, bar_bg);
+                col += cw;
+            }
+            continue;
+        }
+
+        let Some(btn) = bar.buttons.get(vis.item_idx) else {
+            continue;
+        };
+        match btn {
+            ToolbarButton::Action {
+                id,
+                label,
+                icon,
+                key_hint,
+                enabled,
+                is_active,
+                spec,
+                ..
+            } => {
+                let is_hovered = *enabled && hovered_id == Some(id);
+                let is_pressed = *enabled && pressed_id == Some(id);
+                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
+                let intent_fg = spec.as_ref().and_then(|s| match s.variant {
+                    crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
+                    crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),
+                    _ => None,
+                });
+                let (cell_fg, cell_bg) = if !*enabled {
+                    (muted, bar_bg)
+                } else if is_pressed || *is_active {
+                    (fg, active_bg)
+                } else if is_hovered {
+                    (hover_fg, hover_bg)
+                } else if is_focused {
+                    (fg, focus_bg)
+                } else if let Some(intent) = intent_fg {
+                    (qc(intent), bar_bg)
+                } else {
+                    (fg, bar_bg)
+                };
+
+                let mut cells: Vec<char> = Vec::new();
+                cells.push('[');
+                cells.push(' ');
+                cells.extend(action_content_cells(
+                    icon.as_deref(),
+                    label,
+                    key_hint.as_deref(),
+                ));
+                cells.push(' ');
+                cells.push(']');
+
+                for dy in 0..row_h {
+                    for dx in 0..item_w {
+                        set_cell(buf, item_x + dx, item_y + dy, ' ', cell_fg, cell_bg);
+                    }
+                }
+                let mut col: u16 = 0;
+                for ch in cells {
+                    let cw = char_cell_width(ch);
+                    if col + cw > item_w {
+                        break;
+                    }
+                    set_cell(buf, item_x + col, text_row, ch, cell_fg, cell_bg);
+                    col += cw;
+                }
+            }
+            ToolbarButton::Separator => {
+                for dy in 0..row_h {
+                    if item_w >= 1 {
+                        set_cell(buf, item_x, item_y + dy, ' ', muted, bar_bg);
+                    }
+                    if item_w >= 2 {
+                        set_cell(buf, item_x + 1, item_y + dy, '│', muted, bar_bg);
+                    }
+                }
+            }
+            ToolbarButton::Label { text, fg: label_fg } => {
+                let color = label_fg.map(qc).unwrap_or(muted);
+                let mut col: u16 = 0;
+                for ch in text.chars() {
+                    let cw = char_cell_width(ch);
+                    if col + cw > item_w {
+                        break;
+                    }
+                    set_cell(buf, item_x + col, text_row, ch, color, bar_bg);
+                    col += cw;
+                }
+            }
+            // Already painted by the bar-background fill loop above, and
+            // never clickable.
+            ToolbarButton::Spacer => {}
+            ToolbarButton::Group { items, .. } => {
+                draw_group_horizontal(
+                    buf,
+                    item_y..item_y + row_h,
+                    vis,
+                    items,
+                    hovered_id,
+                    pressed_id,
+                    text_row,
                     bar_bg,
                     fg,
                     muted,
@@ -1862,5 +2102,109 @@ mod tests {
 
         assert!(layout.visible_items.is_empty());
         assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
+    }
+
+    // ── ToolbarOverflow ─────────────────────────────────────────────────
+
+    /// `ToolbarOverflow::Wrap` on a bar too narrow for one row paints the
+    /// overflow buttons on additional terminal rows below the first, and
+    /// `cross_extent` reports exactly how many rows that took — the value
+    /// a host reads before growing `area` to fit.
+    #[test]
+    fn overflow_wrap_paints_extra_terminal_rows() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA", true),
+                mk_action("b", "BBBB", true),
+                mk_action("c", "CCCC", true),
+            ],
+            bg: None,
+            focused_index: None,
+        };
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        let priorities = ToolbarOverflowPriorities::new();
+
+        // Each `[ XXXX ]` button is 8 cells; a 10-cell-wide bar fits one
+        // per row, so 3 buttons need 3 rows.
+        let probe_area = Rect::new(0, 0, 10, 1);
+        let probe = tui_toolbar_layout_with_overflow(&bar, probe_area, options, &priorities);
+        let rows_needed = probe.cross_extent(ToolbarOrientation::Horizontal) as u16;
+        assert_eq!(rows_needed, 3, "one button per row at this width");
+
+        let area = Rect::new(0, 0, 10, rows_needed);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_toolbar_with_overflow(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            options,
+            &priorities,
+        );
+
+        assert_eq!(cell_char(&buf, 0, 0), '[', "row 0 has a button");
+        assert_eq!(cell_char(&buf, 0, 1), '[', "row 1 has a button");
+        assert_eq!(cell_char(&buf, 0, 2), '[', "row 2 has a button");
+        match layout.hit_test(1.0, 2.0) {
+            ToolbarHit::Button(id) => assert_eq!(id.as_str(), "c"),
+            other => panic!("expected the third button on row 2, got {other:?}"),
+        }
+    }
+
+    /// `ToolbarOverflow::Menu` on a bar too narrow for every button paints
+    /// a trailing `[ » ]` cell in place of whatever it dropped, and a
+    /// click there hit-tests to `ToolbarHit::Overflow`.
+    #[test]
+    fn overflow_menu_paints_bracket_and_hit_tests_overflow() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA", true),
+                mk_action("b", "BBBB", true),
+                mk_action("c", "CCCC", true),
+            ],
+            bg: None,
+            focused_index: None,
+        };
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Menu);
+        let priorities = ToolbarOverflowPriorities::new();
+
+        // Each `[ XXXX ]` button is 8 cells and the `[ » ]` affordance is
+        // 5 — only one button plus the affordance fits in 14 cells, so
+        // two of the three buttons must drop.
+        let area = Rect::new(0, 0, 14, 1);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_toolbar_with_overflow(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            options,
+            &priorities,
+        );
+
+        let overflow_vis = layout
+            .visible_items
+            .iter()
+            .find(|v| v.kind == crate::primitives::toolbar::ToolbarItemKind::Overflow)
+            .expect("overflow affordance present");
+        assert_eq!(
+            overflow_vis.item_idx,
+            crate::primitives::toolbar::TOOLBAR_OVERFLOW_ITEM_IDX
+        );
+        let ox = overflow_vis.bounds.x.round() as u16;
+        assert_eq!(cell_char(&buf, ox, 0), '[');
+        assert_eq!(cell_char(&buf, ox + 1, 0), ' ');
+        assert_eq!(cell_char(&buf, ox + 2, 0), '»');
+        assert_eq!(
+            layout.hit_test(overflow_vis.bounds.x, overflow_vis.bounds.y),
+            ToolbarHit::Overflow
+        );
+        assert_eq!(layout.overflowed_items().len(), 2);
     }
 }

@@ -107,7 +107,15 @@ pub(crate) fn draw_dialog_with_style(
                             1.0,
                         );
                     }
-                    ToolbarItemKind::Action | ToolbarItemKind::Label | ToolbarItemKind::Spacer => {
+                    // `Overflow`'s `item_idx` is `TOOLBAR_OVERFLOW_ITEM_IDX`,
+                    // never a real `toolbar.buttons` index, so `.get`
+                    // below safely returns `None` and this paints nothing
+                    // — Win-GUI has no `ToolbarOverflow::Menu` rasteriser
+                    // yet (TUI-only for this issue).
+                    ToolbarItemKind::Action
+                    | ToolbarItemKind::Label
+                    | ToolbarItemKind::Spacer
+                    | ToolbarItemKind::Overflow => {
                         if let Some(crate::primitives::toolbar::ToolbarButton::Action {
                             label,
                             enabled,

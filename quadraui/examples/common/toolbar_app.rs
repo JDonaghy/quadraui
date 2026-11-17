@@ -514,7 +514,10 @@ impl AppLogic for ToolbarApp {
                 let layout = backend.toolbar_layout(rect, &bar);
                 let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
                     ToolbarHit::Button(id) => Some(id),
-                    ToolbarHit::Empty => None,
+                    // This demo never opts into `ToolbarOverflow::Menu`,
+                    // so `Overflow` never actually fires — reads the
+                    // same as `Empty` if it ever does.
+                    _ => None,
                 };
 
                 // Snapshot before the store consumes the event: a

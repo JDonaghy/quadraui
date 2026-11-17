@@ -4850,6 +4850,35 @@ impl Backend for TuiBackend {
         )
     }
 
+    fn draw_toolbar_with_overflow(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        interaction: &crate::interaction::InteractionState,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_toolbar_with_overflow called outside enter_frame_scope"
+            );
+            return self.toolbar_layout(rect, bar);
+        };
+        crate::tui::draw_toolbar_with_overflow(
+            frame.buffer_mut(),
+            area,
+            bar,
+            &theme,
+            interaction.hovered(),
+            interaction.pressed(),
+            layout_options,
+            priorities,
+        )
+    }
+
     fn toolbar_layout(
         &self,
         rect: QRect,
@@ -4857,6 +4886,17 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_toolbar_layout(bar, area)
+    }
+
+    fn toolbar_layout_with_overflow(
+        &self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_toolbar_layout_with_overflow(bar, area, layout_options, priorities)
     }
 
     fn draw_sidebar_panel_interactive(

@@ -32,6 +32,10 @@ use hello_ex::Hello;
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
 
+#[path = "../examples/common/toolbar_overflow_demo.rs"]
+mod toolbar_overflow_demo;
+use toolbar_overflow_demo::ToolbarOverflowDemo;
+
 #[path = "../examples/common/activity_style_demo.rs"]
 mod activity_style_demo;
 #[path = "../examples/common/ai_transcript.rs"]
@@ -3311,6 +3315,113 @@ fn toolbar_v_cycles_valign_and_moves_the_button_row() {
     assert_eq!(
         wrapped_y, top_y,
         "cycling back to Top should repaint at the original row"
+    );
+}
+
+// ─── ToolbarOverflowDemo: Clip / Wrap / Menu ────────────────────────────────
+
+/// A 50-column driver makes the demo's (viewport-width/2, floored at 24)
+/// toolbar rect 25 cells wide — narrower than the five buttons' combined
+/// ~58 cells, so every mode below actually has something to overflow.
+const OVERFLOW_DEMO_WIDTH: u16 = 50;
+
+#[test]
+fn toolbar_overflow_clip_shows_only_the_leading_buttons() {
+    // Default mode is Clip: the bar paints as many leading buttons as
+    // fit and clips the rest — no wrap, no `»`.
+    let driver = TuiDriver::new(ToolbarOverflowDemo::new(), OVERFLOW_DEMO_WIDTH, 10);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("New File"),
+        "leading button:\n{screen}"
+    );
+    assert!(
+        !driver.screen_contains("»"),
+        "Clip never shows the affordance:\n{screen}"
+    );
+}
+
+/// `m` once (Clip → Wrap) makes the overflow buttons continue on
+/// additional terminal rows instead of clipping — every button becomes
+/// visible, just not all on the same row.
+#[test]
+fn toolbar_overflow_wrap_paints_buttons_on_additional_rows() {
+    let mut driver = TuiDriver::new(ToolbarOverflowDemo::new(), OVERFLOW_DEMO_WIDTH, 10);
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("Mode: Wrap"),
+        "status line should confirm Wrap:\n{}",
+        driver.screen()
+    );
+
+    let screen = driver.screen();
+    assert!(driver.screen_contains("New File"), "{screen}");
+    assert!(
+        driver.screen_contains("Deploy"),
+        "Deploy must still paint in Wrap mode, just on a later row:\n{screen}"
+    );
+
+    let new_file_y = driver
+        .find_bounds("New File")
+        .unwrap_or_else(|| panic!("New File must be visible:\n{screen}"))
+        .y;
+    let deploy_y = driver
+        .find_bounds("Deploy")
+        .unwrap_or_else(|| panic!("Deploy must be visible:\n{screen}"))
+        .y;
+    assert!(
+        deploy_y > new_file_y,
+        "Deploy should wrap onto a row below New File (new_file_y={new_file_y}, deploy_y={deploy_y})"
+    );
+}
+
+/// `m` twice (Clip → Wrap → Menu) drops the lowest-priority buttons and
+/// replaces them with a trailing `[ » ]` affordance; clicking it
+/// hit-tests to `ToolbarHit::Overflow` and lists what was dropped.
+#[test]
+fn toolbar_overflow_menu_hit_tests_overflow_and_lists_dropped_items() {
+    let mut driver = TuiDriver::new(ToolbarOverflowDemo::new(), OVERFLOW_DEMO_WIDTH, 10);
+    driver.type_char('m');
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("Mode: Menu"),
+        "status line should confirm Menu:\n{}",
+        driver.screen()
+    );
+
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("»"),
+        "Menu mode should show the overflow affordance once something is dropped:\n{screen}"
+    );
+    // "Build Project" is this demo's lowest-priority button — it should
+    // have been dropped, not painted.
+    assert!(
+        !driver.screen_contains("Build Project"),
+        "lowest-priority button should be dropped, not painted:\n{screen}"
+    );
+    // "Save" is this demo's highest-priority button among the ones that
+    // don't fit — it survives.
+    assert!(driver.screen_contains("Save"), "{screen}");
+
+    let (ox, oy) = driver
+        .find("»")
+        .unwrap_or_else(|| panic!("overflow affordance must be visible:\n{screen}"));
+    // `click` is a bare press with no release (see `DriverInput::click`'s
+    // own doc); the demo's dispatch fires on `MouseUp`, so press and
+    // release explicitly, same as `DriverInput::drag`'s down → up shape.
+    driver.mouse_down(ox, oy);
+    driver.mouse_up(ox, oy);
+
+    assert!(
+        driver.screen_contains("Overflowed:"),
+        "clicking the affordance should report the dropped items:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Build Project"),
+        "the dropped item's label should appear in the report:\n{}",
+        driver.screen()
     );
 }
 

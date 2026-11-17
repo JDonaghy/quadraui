@@ -703,7 +703,8 @@ pub use primitives::toast::{
 pub use primitives::toolbar::{
     GroupChildBounds, Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarIcons,
     ToolbarItemKind, ToolbarItemMeasure, ToolbarItemRole, ToolbarLayout, ToolbarLayoutOptions,
-    ToolbarOrientation, ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign, VisibleToolbarItem,
+    ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
+    ToolbarRailStyle, ToolbarVAlign, VisibleToolbarItem, TOOLBAR_OVERFLOW_ITEM_IDX,
 };
 pub use primitives::tooltip::{
     ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipHit, TooltipLayout,

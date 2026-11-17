@@ -427,7 +427,10 @@ impl DialogLayout {
         if let Some(ref tl) = self.body_toolbar_layout {
             match tl.hit_test(x, y) {
                 ToolbarHit::Button(id) => return DialogHit::BodyToolbarButton(id),
-                ToolbarHit::Empty => {}
+                // `Dialog`'s body toolbar never opts into
+                // `ToolbarOverflow::Menu` today; falls through to the
+                // generic `hit_regions` scan below, same as `Empty`.
+                ToolbarHit::Empty | ToolbarHit::Overflow => {}
             }
         }
         for (rect, hit) in &self.hit_regions {

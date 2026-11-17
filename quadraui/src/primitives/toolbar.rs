@@ -280,6 +280,32 @@ pub enum ToolbarOrientation {
     Vertical,
 }
 
+/// How a [`Toolbar`] handles buttons that don't fit `bar_width`/`bar_height`,
+/// passed via [`ToolbarLayoutOptions::with_overflow`] and consumed by
+/// [`Toolbar::layout_with_overflow`] (`layout`/`layout_with_options` keep
+/// ignoring this field — see that method's own doc for why).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ToolbarOverflow {
+    /// (default) Today's behaviour: an item that doesn't fit clips against
+    /// the bar's trailing edge (or the `Spacer` collision rule when one is
+    /// present). Identical to [`Toolbar::layout_with_options`].
+    #[default]
+    Clip,
+    /// Items that don't fit flow onto additional rows (horizontal) or
+    /// columns (vertical) instead of clipping. A [`ToolbarButton::Group`]
+    /// is never split across lines — it moves to the next line whole.
+    /// [`ToolbarLayout::cross_extent`] reports how much cross-axis room the
+    /// wrapped layout actually used, so the host can size its container
+    /// before the next paint.
+    Wrap,
+    /// Items that don't fit are dropped lowest-[`ToolbarOverflowPriorities`]-first
+    /// and replaced by a trailing `»` affordance
+    /// ([`ToolbarHit::Overflow`] / [`ToolbarItemKind::Overflow`]).
+    /// [`ToolbarLayout::overflowed_items`] converts the dropped items into
+    /// a flat list ready for a [`crate::ContextMenu`].
+    Menu,
+}
+
 /// a11y role applied to every [`ToolbarButton::Action`] child by
 /// [`Toolbar::a11y_children_with_role`].
 ///
@@ -328,6 +354,13 @@ pub struct ToolbarLayoutOptions {
     /// packs from `y=0` downward and drops its last item — the one visible
     /// row ordering every backend's existing hit-testing already expects.
     pub pin_trailing_overflow_to_origin: bool,
+    /// How items that don't fit are handled. Only
+    /// [`Toolbar::layout_with_overflow`] honours this field —
+    /// [`Toolbar::layout`] and [`Toolbar::layout_with_options`] keep
+    /// clipping unconditionally (today's behaviour), the same way they
+    /// already ignore any option added after their own signature froze.
+    /// See [`ToolbarOverflow`].
+    pub overflow: ToolbarOverflow,
 }
 
 impl ToolbarLayoutOptions {
@@ -349,6 +382,13 @@ impl ToolbarLayoutOptions {
     #[must_use]
     pub fn with_pin_trailing_overflow_to_origin(mut self, pin: bool) -> Self {
         self.pin_trailing_overflow_to_origin = pin;
+        self
+    }
+
+    /// Set [`Self::overflow`].
+    #[must_use]
+    pub fn with_overflow(mut self, overflow: ToolbarOverflow) -> Self {
+        self.overflow = overflow;
         self
     }
 }
@@ -720,6 +760,55 @@ impl ToolbarIcons {
     }
 }
 
+// ── Overflow priorities ──────────────────────────────────────────────────────
+
+/// Per-top-level-item drop priority for [`ToolbarOverflow::Menu`], keyed by
+/// the owning [`ToolbarButton::Action`]/[`ToolbarButton::Group`]'s `id` —
+/// same registration shape as [`ToolbarIcons`], for the same reason: a new
+/// per-button property goes on a side table instead of a field on
+/// [`ToolbarButton`], so an existing exhaustive `Action { .. }` /
+/// `Group { .. }` struct literal downstream keeps compiling.
+///
+/// Higher priority is dropped **last**. An id with no registered entry
+/// defaults to priority `0`, so an all-default-priority bar drops
+/// trailing-most first (ties break by original bar position, closest to
+/// the `»` affordance drops first) — the same left-to-right reading order
+/// [`ToolbarLayoutOptions::pin_trailing_overflow_to_origin`]'s `false` arm
+/// already uses for `Spacer` collisions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarOverflowPriorities {
+    entries: Vec<(WidgetId, i32)>,
+}
+
+impl ToolbarOverflowPriorities {
+    /// An empty table — every id resolves to priority `0`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `id`'s drop priority. Registering the same id twice keeps
+    /// the earliest entry, since [`Self::get`] returns the first match.
+    #[must_use]
+    pub fn with(mut self, id: WidgetId, priority: i32) -> Self {
+        self.entries.push((id, priority));
+        self
+    }
+
+    /// `id`'s registered priority, or `0` when unregistered.
+    pub fn get(&self, id: &WidgetId) -> i32 {
+        self.entries
+            .iter()
+            .find(|(oid, _)| oid == id)
+            .map(|(_, p)| *p)
+            .unwrap_or(0)
+    }
+
+    /// `true` when nothing is registered — every id resolves to `0`.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 // ── Layout + hit-testing ─────────────────────────────────────────────────────
 
 /// Which variant a visible toolbar slot belongs to.
@@ -740,6 +829,11 @@ pub enum ToolbarItemKind {
     Spacer,
     /// A bordered cluster of buttons — see [`ToolbarButton::Group`].
     Group,
+    /// The trailing `»` affordance [`ToolbarOverflow::Menu`] paints in
+    /// place of whatever it dropped. Never corresponds to a real
+    /// [`Toolbar::buttons`] index — [`VisibleToolbarItem::item_idx`] is
+    /// [`TOOLBAR_OVERFLOW_ITEM_IDX`] on this kind's entry.
+    Overflow,
 }
 
 /// Resolved bounds of one [`ToolbarButton::Group`] child, inside a
@@ -763,7 +857,10 @@ pub struct GroupChildBounds {
 /// Resolved position of one visible toolbar item after layout.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisibleToolbarItem {
-    /// Index into [`Toolbar::buttons`].
+    /// Index into [`Toolbar::buttons`] — except when `kind ==
+    /// `[`ToolbarItemKind::Overflow`]`, where this is
+    /// [`TOOLBAR_OVERFLOW_ITEM_IDX`] (the entry paints the `»` affordance,
+    /// not a real button).
     pub item_idx: usize,
     pub kind: ToolbarItemKind,
     pub bounds: Rect,
@@ -781,6 +878,12 @@ pub struct VisibleToolbarItem {
 }
 
 /// Classification of a hit-test result on a toolbar.
+///
+/// `#[non_exhaustive]`: [`Self::Overflow`] is new as of the `ToolbarOverflow`
+/// layout engine — a downstream exhaustive `match` needs a wildcard arm to
+/// keep compiling, the same migration [`ToolbarButton`]'s own
+/// `#[non_exhaustive]` already asks for.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolbarHit {
     /// Click landed on a clickable action button — carries its id.
@@ -788,14 +891,39 @@ pub enum ToolbarHit {
     /// Click landed inside the bar but not on a clickable button
     /// (gap, separator, label, or disabled action).
     Empty,
+    /// Click landed on the trailing `»` affordance
+    /// [`ToolbarOverflow::Menu`] paints when it has dropped items — the
+    /// host opens a [`crate::ContextMenu`] built from
+    /// [`ToolbarLayout::overflowed_items`].
+    Overflow,
 }
+
+/// Sentinel [`VisibleToolbarItem::item_idx`] for the [`ToolbarItemKind::Overflow`]
+/// entry [`ToolbarOverflow::Menu`] appends — never a real [`Toolbar::buttons`]
+/// index since no `Toolbar` can hold `usize::MAX` buttons.
+pub const TOOLBAR_OVERFLOW_ITEM_IDX: usize = usize::MAX;
 
 /// Fully-resolved toolbar layout. Backends iterate `visible_items` for
 /// painting and call [`Self::hit_test`] for clicks.
+///
+/// `#[non_exhaustive]`: carries a private field recording which items
+/// [`ToolbarOverflow::Menu`] dropped (for [`Self::overflowed_items`]) —
+/// there was never a public constructor taking every field (only
+/// [`Self::empty`] and the `Toolbar::layout*` family), so no known
+/// construction site breaks; the attribute documents that this stays true
+/// going forward.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ToolbarLayout {
     pub bar_bounds: Rect,
     pub visible_items: Vec<VisibleToolbarItem>,
+    /// `(original index into `Toolbar::buttons`, that button)` for every
+    /// top-level `Action`/`Group` [`ToolbarOverflow::Menu`] dropped to make
+    /// room for the `»` affordance. Empty for [`ToolbarOverflow::Clip`]/
+    /// [`ToolbarOverflow::Wrap`] layouts, and for a `Menu` layout whose
+    /// content fit without dropping anything. Read via
+    /// [`Self::overflowed_items`], never directly.
+    overflow_dropped: Vec<(usize, ToolbarButton)>,
 }
 
 impl ToolbarLayout {
@@ -810,13 +938,16 @@ impl ToolbarLayout {
         ToolbarLayout {
             bar_bounds,
             visible_items: Vec::new(),
+            overflow_dropped: Vec::new(),
         }
     }
 
     /// Test which clickable action (if any) contains point `(x, y)`.
     /// Returns [`ToolbarHit::Empty`] when no clickable region matches —
     /// disabled actions, separators, labels, and the gap between buttons
-    /// all map to `Empty`.
+    /// all map to `Empty`. Returns [`ToolbarHit::Overflow`] for the
+    /// trailing `»` affordance a [`ToolbarOverflow::Menu`] layout paints
+    /// when it dropped items.
     pub fn hit_test(&self, x: f32, y: f32) -> ToolbarHit {
         for vis in &self.visible_items {
             if vis.kind == ToolbarItemKind::Group {
@@ -838,12 +969,143 @@ impl ToolbarLayout {
             }
             let r = vis.bounds;
             if x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height {
+                if vis.kind == ToolbarItemKind::Overflow {
+                    return ToolbarHit::Overflow;
+                }
                 if let Some(id) = &vis.action_id {
                     return ToolbarHit::Button(*id);
                 }
             }
         }
         ToolbarHit::Empty
+    }
+
+    /// The cross-axis extent (height for [`ToolbarOrientation::Horizontal`],
+    /// width for [`ToolbarOrientation::Vertical`]) this layout's items
+    /// actually occupy — the room a [`ToolbarOverflow::Wrap`] layout's
+    /// extra lines need, beyond the single-line `bar_bounds` the caller
+    /// passed into [`Toolbar::layout_with_overflow`]. A caller re-paints
+    /// into a taller/wider area sized from this value when it exceeds the
+    /// area it first offered.
+    ///
+    /// For a [`ToolbarOverflow::Clip`]/[`ToolbarOverflow::Menu`] layout
+    /// (never more than one line) this equals `bar_bounds`'s own
+    /// cross-axis length — every item's bounds stay inside it, so the max
+    /// never exceeds that baseline.
+    pub fn cross_extent(&self, orientation: ToolbarOrientation) -> f32 {
+        let (start, mut max_edge) = match orientation {
+            ToolbarOrientation::Horizontal => (
+                self.bar_bounds.y,
+                self.bar_bounds.y + self.bar_bounds.height,
+            ),
+            ToolbarOrientation::Vertical => {
+                (self.bar_bounds.x, self.bar_bounds.x + self.bar_bounds.width)
+            }
+        };
+        for vis in &self.visible_items {
+            if vis.bounds.width <= 0.0 || vis.bounds.height <= 0.0 {
+                continue;
+            }
+            let edge = match orientation {
+                ToolbarOrientation::Horizontal => vis.bounds.y + vis.bounds.height,
+                ToolbarOrientation::Vertical => vis.bounds.x + vis.bounds.width,
+            };
+            if edge > max_edge {
+                max_edge = edge;
+            }
+        }
+        max_edge - start
+    }
+
+    /// Every top-level `Action`/`Group` [`ToolbarOverflow::Menu`] dropped
+    /// to make room for the `»` affordance, converted into
+    /// [`crate::ContextMenu`]-ready items in their original bar order — an
+    /// `Action` becomes a plain item (`checked: Some(true)` when it was
+    /// `is_active`); a `Group` becomes a parent item whose `submenu` holds
+    /// its children, each `checked: Some(child.is_active)` when the group
+    /// is `exclusive` (the radio-group reading an exclusive `Group`
+    /// already carries — see [`ToolbarButton::Group::exclusive`]) and
+    /// `None` otherwise. Empty for a [`ToolbarOverflow::Clip`]/
+    /// [`ToolbarOverflow::Wrap`] layout, or a `Menu` layout that fit
+    /// without dropping anything.
+    pub fn overflowed_items(&self) -> Vec<crate::primitives::context_menu::ContextMenuItem> {
+        self.overflow_dropped
+            .iter()
+            .filter_map(|(_, btn)| toolbar_button_to_menu_item(btn))
+            .collect()
+    }
+}
+
+/// [`ToolbarLayout::overflowed_items`]'s per-button conversion. `None` for
+/// anything but [`ToolbarButton::Action`]/[`ToolbarButton::Group`] — the
+/// only kinds [`ToolbarOverflowPriorities`] ever drops.
+fn toolbar_button_to_menu_item(
+    btn: &ToolbarButton,
+) -> Option<crate::primitives::context_menu::ContextMenuItem> {
+    use crate::primitives::context_menu::ContextMenuItem;
+    use crate::types::StyledText;
+    match btn {
+        ToolbarButton::Action {
+            id,
+            label,
+            icon,
+            enabled,
+            is_active,
+            ..
+        } => Some(ContextMenuItem {
+            id: Some(*id),
+            label: StyledText::plain(label.clone()),
+            disabled: !*enabled,
+            checked: if *is_active { Some(true) } else { None },
+            icon: icon
+                .as_ref()
+                .map(|glyph| crate::types::Icon::new(glyph.clone(), glyph.clone())),
+            ..Default::default()
+        }),
+        ToolbarButton::Group {
+            id,
+            items,
+            exclusive,
+            label,
+        } => {
+            let children: Vec<ContextMenuItem> = items
+                .iter()
+                .filter_map(|child| match child {
+                    ToolbarButton::Action {
+                        id,
+                        label,
+                        enabled,
+                        is_active,
+                        ..
+                    } => Some(ContextMenuItem {
+                        id: Some(*id),
+                        label: StyledText::plain(label.clone()),
+                        disabled: !*enabled,
+                        checked: if *exclusive {
+                            Some(*is_active)
+                        } else if *is_active {
+                            Some(true)
+                        } else {
+                            None
+                        },
+                        ..Default::default()
+                    }),
+                    ToolbarButton::Label { text, .. } => Some(ContextMenuItem {
+                        id: None,
+                        label: StyledText::plain(text.clone()),
+                        ..Default::default()
+                    }),
+                    _ => None,
+                })
+                .collect();
+            Some(ContextMenuItem {
+                id: Some(*id),
+                label: StyledText::plain(label.clone().unwrap_or_default()),
+                submenu: Some(children),
+                ..Default::default()
+            })
+        }
+        _ => None,
     }
 }
 
@@ -1360,7 +1622,309 @@ impl Toolbar {
         ToolbarLayout {
             bar_bounds,
             visible_items,
+            overflow_dropped: Vec::new(),
         }
+    }
+
+    /// [`Self::layout_with_options`], plus [`ToolbarOverflow`]:
+    /// `options.overflow` picks how items that don't fit are handled (see
+    /// that type), and `priorities` resolves each top-level `Action`/
+    /// `Group`'s drop order for [`ToolbarOverflow::Menu`] (ignored by the
+    /// other two variants — pass [`ToolbarOverflowPriorities::new`] when
+    /// not using `Menu`).
+    ///
+    /// Kept as a separate method — rather than growing
+    /// [`Self::layout_with_options`]'s own signature — for the same
+    /// reason that method stayed separate from [`Self::layout`]: every
+    /// existing caller of the narrower method keeps compiling untouched,
+    /// and [`ToolbarOverflow::Clip`] here delegates straight through to
+    /// it, so the two can never disagree about Clip's own geometry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_with_overflow<F>(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        bar_width: f32,
+        bar_height: f32,
+        options: ToolbarLayoutOptions,
+        priorities: &ToolbarOverflowPriorities,
+        measure: F,
+    ) -> ToolbarLayout
+    where
+        F: Fn(&ToolbarButton) -> ToolbarItemMeasure,
+    {
+        match options.overflow {
+            ToolbarOverflow::Clip => self
+                .layout_with_options(origin_x, origin_y, bar_width, bar_height, options, measure),
+            ToolbarOverflow::Wrap => {
+                self.layout_wrap(origin_x, origin_y, bar_width, bar_height, options, measure)
+            }
+            ToolbarOverflow::Menu => self.layout_menu(
+                origin_x, origin_y, bar_width, bar_height, options, priorities, measure,
+            ),
+        }
+    }
+
+    /// [`ToolbarOverflow::Wrap`]'s layout: greedily assigns each top-level
+    /// item to the first line it fits on (never splitting a
+    /// [`ToolbarButton::Group`]), then lays out each line independently
+    /// through [`Self::layout_with_options`] — so a line with a `Spacer`
+    /// still gets that `Spacer`'s leading/trailing split, scoped to just
+    /// that line, and every line shares the exact Clip-mode geometry a
+    /// single-line bar would produce.
+    fn layout_wrap<F>(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        bar_width: f32,
+        bar_height: f32,
+        options: ToolbarLayoutOptions,
+        measure: F,
+    ) -> ToolbarLayout
+    where
+        F: Fn(&ToolbarButton) -> ToolbarItemMeasure,
+    {
+        let (main_origin, main_len, cross_origin, cross_len) = match options.orientation {
+            ToolbarOrientation::Horizontal => (origin_x, bar_width, origin_y, bar_height),
+            ToolbarOrientation::Vertical => (origin_y, bar_height, origin_x, bar_width),
+        };
+
+        let lines = wrap_line_assignment(&self.buttons, main_len.max(0.0), &measure);
+        let line_options = ToolbarLayoutOptions::new()
+            .with_orientation(options.orientation)
+            .with_pin_trailing_overflow_to_origin(options.pin_trailing_overflow_to_origin);
+
+        let mut visible_items = Vec::with_capacity(self.buttons.len());
+        for (line_idx, indices) in lines.iter().enumerate() {
+            if indices.is_empty() {
+                continue;
+            }
+            let line_buttons: Vec<ToolbarButton> =
+                indices.iter().map(|&i| self.buttons[i].clone()).collect();
+            let sub = Toolbar {
+                id: self.id,
+                buttons: line_buttons,
+                bg: None,
+                focused_index: None,
+            };
+            let line_cross = cross_origin + line_idx as f32 * cross_len;
+            let (sub_x, sub_y, sub_w, sub_h) = match options.orientation {
+                ToolbarOrientation::Horizontal => (main_origin, line_cross, main_len, cross_len),
+                ToolbarOrientation::Vertical => (line_cross, main_origin, cross_len, main_len),
+            };
+            let sub_layout =
+                sub.layout_with_options(sub_x, sub_y, sub_w, sub_h, line_options, &measure);
+            for mut vis in sub_layout.visible_items {
+                vis.item_idx = indices[vis.item_idx];
+                visible_items.push(vis);
+            }
+        }
+        visible_items.sort_by_key(|v| v.item_idx);
+
+        ToolbarLayout {
+            bar_bounds: Rect::new(origin_x, origin_y, bar_width, bar_height),
+            visible_items,
+            overflow_dropped: Vec::new(),
+        }
+    }
+
+    /// [`ToolbarOverflow::Menu`]'s layout: when everything fits, identical
+    /// to [`Self::layout_with_options`] (no dropping, no `»`). Otherwise,
+    /// top-level `Action`/`Group` items are dropped lowest-`priorities`
+    /// first (ties broken trailing-most-first) until the survivors plus a
+    /// trailing `»` affordance fit, then that survivor list (plus the
+    /// affordance) is packed through [`Self::layout_with_options`] exactly
+    /// like a fresh, smaller bar — so a `Spacer` among the survivors still
+    /// gets its usual leading/trailing split, now including the `»` as
+    /// the trailing group's last member.
+    #[allow(clippy::too_many_arguments)]
+    fn layout_menu<F>(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        bar_width: f32,
+        bar_height: f32,
+        options: ToolbarLayoutOptions,
+        priorities: &ToolbarOverflowPriorities,
+        measure: F,
+    ) -> ToolbarLayout
+    where
+        F: Fn(&ToolbarButton) -> ToolbarItemMeasure,
+    {
+        let main_len = match options.orientation {
+            ToolbarOrientation::Horizontal => bar_width,
+            ToolbarOrientation::Vertical => bar_height,
+        }
+        .max(0.0);
+
+        let widths: Vec<f32> = self
+            .buttons
+            .iter()
+            .map(|b| measure(b).width.max(0.0))
+            .collect();
+        let total: f32 = widths.iter().sum();
+
+        if total <= main_len {
+            let mut layout = self
+                .layout_with_options(origin_x, origin_y, bar_width, bar_height, options, measure);
+            layout.overflow_dropped = Vec::new();
+            return layout;
+        }
+
+        let overflow_btn = overflow_indicator_button();
+        let overflow_w = measure(&overflow_btn).width.max(0.0);
+        let budget = (main_len - overflow_w).max(0.0);
+
+        // Drop order: trailing-most first, then stable-sorted by ascending
+        // priority — the initial reverse keeps that trailing-first order
+        // for any priority tier the sort doesn't otherwise distinguish.
+        let mut candidates: Vec<usize> = self
+            .buttons
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| {
+                matches!(
+                    b,
+                    ToolbarButton::Action { .. } | ToolbarButton::Group { .. }
+                )
+            })
+            .map(|(i, _)| i)
+            .collect();
+        candidates.reverse();
+        candidates.sort_by_key(|&i| toolbar_item_priority(&self.buttons[i], priorities));
+
+        let mut dropped: Vec<usize> = Vec::new();
+        let mut remaining = total;
+        for idx in candidates {
+            if remaining <= budget {
+                break;
+            }
+            dropped.push(idx);
+            remaining -= widths[idx];
+        }
+        dropped.sort_unstable();
+
+        if dropped.is_empty() {
+            // Nothing droppable brought it under budget (e.g. the overflow
+            // is made of `Separator`/`Label` items, which this method
+            // never drops) — fall back to plain Clip geometry rather than
+            // showing a `»` affordance for an empty menu.
+            let mut layout = self
+                .layout_with_options(origin_x, origin_y, bar_width, bar_height, options, measure);
+            layout.overflow_dropped = Vec::new();
+            return layout;
+        }
+
+        let kept_indices: Vec<usize> = (0..self.buttons.len())
+            .filter(|i| !dropped.contains(i))
+            .collect();
+        let mut sub_buttons: Vec<ToolbarButton> = kept_indices
+            .iter()
+            .map(|&i| self.buttons[i].clone())
+            .collect();
+        sub_buttons.push(overflow_btn);
+        let mut index_map: Vec<usize> = kept_indices;
+        index_map.push(TOOLBAR_OVERFLOW_ITEM_IDX);
+
+        let sub = Toolbar {
+            id: self.id,
+            buttons: sub_buttons,
+            bg: None,
+            focused_index: None,
+        };
+        let sub_options = ToolbarLayoutOptions::new()
+            .with_orientation(options.orientation)
+            .with_pin_trailing_overflow_to_origin(options.pin_trailing_overflow_to_origin);
+        let sub_layout = sub.layout_with_options(
+            origin_x,
+            origin_y,
+            bar_width,
+            bar_height,
+            sub_options,
+            &measure,
+        );
+
+        let mut visible_items = Vec::with_capacity(sub_layout.visible_items.len());
+        for mut vis in sub_layout.visible_items {
+            let orig_idx = index_map[vis.item_idx];
+            vis.item_idx = orig_idx;
+            if orig_idx == TOOLBAR_OVERFLOW_ITEM_IDX {
+                vis.kind = ToolbarItemKind::Overflow;
+                vis.action_id = None;
+            }
+            visible_items.push(vis);
+        }
+
+        let overflow_dropped: Vec<(usize, ToolbarButton)> = dropped
+            .into_iter()
+            .map(|i| (i, self.buttons[i].clone()))
+            .collect();
+
+        ToolbarLayout {
+            bar_bounds: Rect::new(origin_x, origin_y, bar_width, bar_height),
+            visible_items,
+            overflow_dropped,
+        }
+    }
+}
+
+/// [`Toolbar::layout_wrap`]'s line-assignment pass: greedily walks
+/// `buttons` in order, starting a new line whenever the next item
+/// wouldn't fit on the current one (a [`ToolbarButton::Spacer`] always
+/// measures `0.0` — same convention [`measure_button`]'s own `Spacer` arm
+/// uses — so it never itself forces a break). Returns each line as the
+/// original `buttons` indices it holds, in order; an empty `buttons` list
+/// returns a single empty line.
+fn wrap_line_assignment<F>(buttons: &[ToolbarButton], main_len: f32, measure: &F) -> Vec<Vec<usize>>
+where
+    F: Fn(&ToolbarButton) -> ToolbarItemMeasure,
+{
+    let mut lines: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut cursor = 0.0_f32;
+    for (i, btn) in buttons.iter().enumerate() {
+        let w = measure(btn).width.max(0.0);
+        if !lines.last().unwrap().is_empty() && cursor + w > main_len {
+            lines.push(Vec::new());
+            cursor = 0.0;
+        }
+        lines.last_mut().unwrap().push(i);
+        cursor += w;
+    }
+    lines
+}
+
+/// Stable id for [`ToolbarOverflow::Menu`]'s own trailing `»` entry.
+/// Never matched against — the primitive strips its `action_id` back to
+/// `None` before returning the layout (see [`Toolbar::layout_menu`]) — it
+/// only needs to be *some* id so [`measure_button`]/a backend's own
+/// measure closure sizes it through the ordinary `Action` formula.
+fn toolbar_overflow_widget_id() -> WidgetId {
+    WidgetId::new("quadraui:toolbar-overflow")
+}
+
+/// The synthetic trailing item [`Toolbar::layout_menu`] appends once it
+/// has decided to drop something — a plain `[ » ]` button in every
+/// backend's existing `Action` measure/paint formula.
+fn overflow_indicator_button() -> ToolbarButton {
+    ToolbarButton::Action {
+        id: toolbar_overflow_widget_id(),
+        label: "»".to_string(),
+        icon: None,
+        key_hint: None,
+        enabled: true,
+        is_active: false,
+        tooltip: String::new(),
+        spec: None,
+    }
+}
+
+/// [`Toolbar::layout_menu`]'s priority lookup: `0` for anything but a
+/// top-level `Action`/`Group` (already excluded from its own candidate
+/// list, so this arm is purely defensive).
+fn toolbar_item_priority(btn: &ToolbarButton, priorities: &ToolbarOverflowPriorities) -> i32 {
+    match btn {
+        ToolbarButton::Action { id, .. } | ToolbarButton::Group { id, .. } => priorities.get(id),
+        _ => 0,
     }
 }
 
@@ -1527,7 +2091,14 @@ pub(crate) mod native_surface_paint {
                 continue;
             }
 
-            let btn = &bar.buttons[vis.item_idx];
+            // `vis.item_idx` is `TOOLBAR_OVERFLOW_ITEM_IDX` for a
+            // `ToolbarItemKind::Overflow` entry — not a real `bar.buttons`
+            // index. None of GTK/macOS/Win-GUI paint `ToolbarOverflow::Menu`
+            // yet (TUI-only for this issue), but `.get` keeps this a no-op
+            // instead of a panic if a layout carrying one ever does reach here.
+            let Some(btn) = bar.buttons.get(vis.item_idx) else {
+                continue;
+            };
             match btn {
                 ToolbarButton::Action {
                     id,
@@ -2284,6 +2855,10 @@ mod tests {
     use crate::types::WidgetId;
 
     fn mk_action(id: &str, label: &str, enabled: bool) -> ToolbarButton {
+        mk_action_active(id, label, enabled, false)
+    }
+
+    fn mk_action_active(id: &str, label: &str, enabled: bool, is_active: bool) -> ToolbarButton {
         ToolbarButton::Action {
             spec: None,
             id: WidgetId::new(id),
@@ -2291,7 +2866,7 @@ mod tests {
             icon: None,
             key_hint: None,
             enabled,
-            is_active: false,
+            is_active,
             tooltip: String::new(),
         }
     }
@@ -3365,5 +3940,187 @@ mod tests {
         let old_json = "{}";
         let defaulted: ToolbarRailStyle = serde_json::from_str(old_json).unwrap();
         assert_eq!(defaulted, ToolbarRailStyle::default());
+    }
+
+    // ── ToolbarOverflow ─────────────────────────────────────────────────
+
+    /// `layout_with_overflow` with `ToolbarOverflow::Clip` is byte-for-byte
+    /// identical to `layout_with_options` — the default/Clip arm just
+    /// delegates straight through.
+    #[test]
+    fn overflow_clip_matches_layout_with_options() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("a", "A", true),
+            mk_action("b", "B", true),
+            mk_action("c", "C", true),
+        ]);
+        let options = ToolbarLayoutOptions::new();
+        let plain = bar.layout_with_options(0.0, 0.0, 2.0, 1.0, options, |_| {
+            ToolbarItemMeasure::new(1.0)
+        });
+        let overflow = bar.layout_with_overflow(
+            0.0,
+            0.0,
+            2.0,
+            1.0,
+            options,
+            &ToolbarOverflowPriorities::new(),
+            |_| ToolbarItemMeasure::new(1.0),
+        );
+        assert_eq!(plain.visible_items, overflow.visible_items);
+        assert!(overflow.overflowed_items().is_empty());
+    }
+
+    /// `ToolbarOverflow::Wrap` packs items greedily onto additional lines,
+    /// never splitting a `Group`, and reports the extra cross-axis extent
+    /// those lines need.
+    #[test]
+    fn wrap_produces_multiple_lines_with_groups_intact() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("a", "A", true),
+            mk_action("b", "B", true),
+            ToolbarButton::Group {
+                id: WidgetId::new("g"),
+                items: vec![mk_action("c", "C", true), mk_action("d", "D", true)],
+                exclusive: false,
+                label: None,
+            },
+            mk_action("e", "E", true),
+        ]);
+        // Each plain action measures 1.0; the group measures 2.0 (its two
+        // children, flush with no extra chrome in this test's `measure`).
+        let measure = |btn: &ToolbarButton| match btn {
+            ToolbarButton::Group { items, .. } => ToolbarItemMeasure::new(items.len() as f32),
+            _ => ToolbarItemMeasure::new(1.0),
+        };
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        // Bar width 2.0: "a","b" fill line 0; the Group (width 2.0) can't
+        // join them, so it starts line 1 whole; "e" doesn't fit beside it
+        // (2.0 + 1.0 > 2.0), so it starts line 2.
+        let layout = bar.layout_with_overflow(
+            0.0,
+            0.0,
+            2.0,
+            1.0,
+            options,
+            &ToolbarOverflowPriorities::new(),
+            measure,
+        );
+
+        let line_of = |idx: usize| -> f32 {
+            layout
+                .visible_items
+                .iter()
+                .find(|v| v.item_idx == idx)
+                .unwrap()
+                .bounds
+                .y
+        };
+        assert_eq!(line_of(0), 0.0, "a on line 0");
+        assert_eq!(line_of(1), 0.0, "b on line 0");
+        assert_eq!(line_of(2), 1.0, "group on line 1, not split");
+        assert_eq!(line_of(3), 2.0, "e pushed to line 2");
+
+        let group_vis = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 2)
+            .unwrap();
+        assert_eq!(group_vis.kind, ToolbarItemKind::Group);
+        assert_eq!(group_vis.group_children.len(), 2, "group children intact");
+
+        // 3 lines of height 1.0 each.
+        assert_eq!(layout.cross_extent(ToolbarOrientation::Horizontal), 3.0);
+    }
+
+    /// `ToolbarOverflow::Menu` drops the lowest-priority top-level items
+    /// first (ties break trailing-most-first) and replaces them with a
+    /// trailing `»` affordance; `overflowed_items()` lists exactly what
+    /// was dropped, in bar order.
+    #[test]
+    fn menu_drops_lowest_priority_first_and_reports_overflowed_items() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("a", "A", true),
+            mk_action("b", "B", true),
+            mk_action("c", "C", true),
+            mk_action("d", "D", true),
+        ]);
+        let priorities = ToolbarOverflowPriorities::new()
+            .with(WidgetId::new("a"), 10)
+            .with(WidgetId::new("b"), 0)
+            .with(WidgetId::new("c"), 5)
+            .with(WidgetId::new("d"), 10);
+        // Each action measures 1.0 (total 4.0) and so does the `»`
+        // affordance; a bar 3.0 wide has room for 2 kept actions plus the
+        // affordance, so 2 of the 4 must go. "b" (priority 0) is lowest
+        // and drops first; "c" (priority 5) is next-lowest and also drops
+        // — "a"/"d" (priority 10) survive.
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Menu);
+        let layout = bar.layout_with_overflow(0.0, 0.0, 3.0, 1.0, options, &priorities, |_| {
+            ToolbarItemMeasure::new(1.0)
+        });
+
+        let overflow_vis = layout
+            .visible_items
+            .iter()
+            .find(|v| v.kind == ToolbarItemKind::Overflow)
+            .expect("overflow affordance present");
+        assert_eq!(overflow_vis.item_idx, TOOLBAR_OVERFLOW_ITEM_IDX);
+        assert_eq!(
+            layout.hit_test(overflow_vis.bounds.x, overflow_vis.bounds.y),
+            ToolbarHit::Overflow
+        );
+
+        for dropped_id in ["b", "c"] {
+            assert!(
+                !layout.visible_items.iter().any(|v| {
+                    v.kind == ToolbarItemKind::Action
+                        && v.action_id == Some(WidgetId::new(dropped_id))
+                }),
+                "{dropped_id} was dropped, not painted"
+            );
+        }
+
+        let overflowed = layout.overflowed_items();
+        assert_eq!(overflowed.len(), 2);
+        assert_eq!(overflowed[0].id, Some(WidgetId::new("b")));
+        assert_eq!(overflowed[1].id, Some(WidgetId::new("c")));
+    }
+
+    /// A `Group` dropped by `ToolbarOverflow::Menu` becomes a submenu
+    /// parent whose children carry `checked` state when the group is
+    /// exclusive — the radio-item reading `overflowed_items` promises.
+    #[test]
+    fn menu_dropped_exclusive_group_becomes_radio_submenu() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("keep", "Keep", true),
+            ToolbarButton::Group {
+                id: WidgetId::new("g"),
+                items: vec![
+                    mk_action_active("left", "Left", true, false),
+                    mk_action_active("right", "Right", true, true),
+                ],
+                exclusive: true,
+                label: Some("Align".to_string()),
+            },
+        ]);
+        let priorities = ToolbarOverflowPriorities::new().with(WidgetId::new("g"), -1);
+        // "keep" (1.0) + group (2.0) + »  (1.0) = 4.0 > budget 2.0, so the
+        // lowest-priority group must go, leaving "keep" + "»" at 2.0.
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Menu);
+        let layout =
+            bar.layout_with_overflow(0.0, 0.0, 2.0, 1.0, options, &priorities, |btn| match btn {
+                ToolbarButton::Group { items, .. } => ToolbarItemMeasure::new(items.len() as f32),
+                _ => ToolbarItemMeasure::new(1.0),
+            });
+
+        let overflowed = layout.overflowed_items();
+        assert_eq!(overflowed.len(), 1);
+        let parent = &overflowed[0];
+        assert_eq!(parent.id, Some(WidgetId::new("g")));
+        let children = parent.submenu.as_ref().expect("group has submenu");
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].checked, Some(false));
+        assert_eq!(children[1].checked, Some(true));
     }
 }
