@@ -36,6 +36,58 @@ class CountNonTestLinesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(ratchet.count_non_test_lines(Path(tmp) / "missing.rs"), 0)
 
+    def test_comment_quoting_the_marker_does_not_truncate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.rs"
+            path.write_text(
+                "fn f() {}\n"
+                "// this comment quotes `#[cfg(test)]` but is not the marker\n"
+                "fn g() {}\n\n"
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    // lots more\n"
+                "}\n"
+            )
+            self.assertEqual(ratchet.count_non_test_lines(path), 4)
+
+    def test_cfg_test_use_above_production_code_does_not_truncate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.rs"
+            path.write_text(
+                "#[cfg(test)]\n"
+                "use super::test_helpers::make_fixture;\n\n"
+                "fn f() {}\n"
+                "fn g() {}\n\n"
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    use super::*;\n"
+                "}\n"
+            )
+            self.assertEqual(ratchet.count_non_test_lines(path), 6)
+
+    def test_several_cfg_test_blocks_stop_at_the_mod_tests_block(self):
+        # Mirrors the real shape of `tui/backend.rs`: a `#[cfg(test)]`
+        # gated helper function, then a `mod tests` block, then a
+        # differently-named `#[cfg(test)]` module (e.g. `proptests`) that
+        # is not the file-bottom boundary the convention describes and
+        # must not move the count past it.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.rs"
+            path.write_text(
+                "fn f() {}\n\n"
+                "#[cfg(test)]\n"
+                "pub(crate) fn test_only_helper() {}\n\n"
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    use super::*;\n"
+                "}\n\n"
+                "#[cfg(test)]\n"
+                "mod proptests {\n"
+                "    use super::*;\n"
+                "}\n"
+            )
+            self.assertEqual(ratchet.count_non_test_lines(path), 5)
+
 
 class CountLinesTest(unittest.TestCase):
     def test_counts_lines_across_rust_files_recursively(self):
@@ -70,22 +122,22 @@ class BuildReportTest(unittest.TestCase):
     def test_growth_past_allowance_fails(self):
         counts = {"tui": 150}
         baseline = {"tui": 100}
-        any_over, report = ratchet.build_report(counts, baseline, allowance=40)
-        self.assertTrue(any_over)
+        any_fail, report = ratchet.build_report(counts, baseline, allowance=40)
+        self.assertTrue(any_fail)
         self.assertIn("OVER", report)
 
     def test_growth_within_allowance_passes(self):
         counts = {"tui": 120}
         baseline = {"tui": 100}
-        any_over, report = ratchet.build_report(counts, baseline, allowance=40)
-        self.assertFalse(any_over)
+        any_fail, report = ratchet.build_report(counts, baseline, allowance=40)
+        self.assertFalse(any_fail)
         self.assertIn("ok", report)
 
     def test_shrink_fails_and_prints_the_suggested_update(self):
         counts = {"tui": 80}
         baseline = {"tui": 100}
-        any_over, report = ratchet.build_report(counts, baseline, allowance=40)
-        self.assertTrue(any_over)
+        any_fail, report = ratchet.build_report(counts, baseline, allowance=40)
+        self.assertTrue(any_fail)
         self.assertIn("STALE", report)
         self.assertIn("shrink", report)
         self.assertIn("baseline=80", report)
@@ -93,21 +145,21 @@ class BuildReportTest(unittest.TestCase):
     def test_no_change_passes(self):
         counts = {"tui": 100}
         baseline = {"tui": 100}
-        any_over, report = ratchet.build_report(counts, baseline, allowance=40)
-        self.assertFalse(any_over)
+        any_fail, report = ratchet.build_report(counts, baseline, allowance=40)
+        self.assertFalse(any_fail)
 
     def test_missing_baseline_entry_is_unthresholded(self):
         counts = {"tui": 999999}
         baseline: dict[str, int] = {}
-        any_over, report = ratchet.build_report(counts, baseline, allowance=40)
-        self.assertFalse(any_over)
+        any_fail, report = ratchet.build_report(counts, baseline, allowance=40)
+        self.assertFalse(any_fail)
         self.assertIn("no baseline", report)
 
     def test_one_dir_over_does_not_mask_another_dir_ok(self):
         counts = {"tui": 200, "gtk": 100}
         baseline = {"tui": 100, "gtk": 100}
-        any_over, report = ratchet.build_report(counts, baseline, allowance=40)
-        self.assertTrue(any_over)
+        any_fail, report = ratchet.build_report(counts, baseline, allowance=40)
+        self.assertTrue(any_fail)
         lines = {line.split()[0]: line for line in report.splitlines()}
         self.assertIn("OVER", lines["tui"])
         self.assertIn("ok", lines["gtk"])

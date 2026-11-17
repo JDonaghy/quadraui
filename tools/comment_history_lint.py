@@ -37,7 +37,7 @@ actually changed (diffed against its fork point from develop/main), not a
 repo-wide sweep -- that broader cleanup is the human mechanical pass's job
 (quadraui#1243-#1249), not a single worker's fix round.
 
-Grouping mirrors quadraui#1112's module table, plus a `bindings` group for the
+Grouping mirrors the module table below, plus a `bindings` group for the
 language-binding crates:
     src         quadraui/src/*.rs (not in a listed subdir below) + both Cargo.toml files (#1243)
     compose     quadraui/src/compose/ (#1244)
