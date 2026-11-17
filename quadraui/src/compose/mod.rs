@@ -12,6 +12,9 @@
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
 //! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
+//! - [`tree_nav`] — row-agnostic navigation/selection core (`TreeNavCore`)
+//!   [`TreeController`] is a thin layer over; reusable by any flattened row
+//!   source that implements `tree_nav::NavRow`.
 //! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar.
 //! - [`AppShell`] — ActivityBar + sidebar panel container composition.
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
@@ -92,6 +95,7 @@ pub mod tab_group;
 pub mod toast_stack;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
+pub mod tree_nav;
 pub mod workspace;
 
 pub use app_shell::{
