@@ -5808,6 +5808,90 @@ impl Backend for WinBackend {
         })
     }
 
+    /// [`Self::draw_toolbar_with_options`], plus
+    /// [`crate::primitives::toolbar::ToolbarLayoutOptions`]: `layout_options.overflow`
+    /// picks how items that don't fit are handled — see
+    /// [`super::toolbar::draw_toolbar_with_overflow`]'s doc for the
+    /// per-variant painting contract. Same "surface not attached yet"
+    /// fallback posture as [`Self::draw_toolbar_with_options`].
+    fn draw_toolbar_with_overflow(
+        &mut self,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        interaction: &crate::interaction::InteractionState,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::toolbar::draw_toolbar_with_overflow(
+                &surface.target,
+                dwrite,
+                rect,
+                self.current_line_height,
+                bar,
+                hovered_id,
+                pressed_id,
+                layout_options,
+                priorities,
+            );
+        }
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `toolbar_layout_with_overflow` falls back to,
+        // and paint nothing.
+        let _ = (hovered_id, pressed_id);
+        self.toolbar_layout_with_overflow(rect, bar, layout_options, priorities)
+    }
+
+    /// See [`Self::toolbar_layout`]'s doc for why this only needs
+    /// `self.dwrite`. The layout-only twin of
+    /// [`Self::draw_toolbar_with_overflow`].
+    fn toolbar_layout_with_overflow(
+        &self,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
+            return super::toolbar::win_toolbar_layout_with_overflow(
+                dwrite,
+                rect,
+                bar,
+                self.current_line_height,
+                layout_options,
+                priorities,
+            );
+        }
+        // No live DWrite handle — nominal char-width estimate instead,
+        // same fallback measurer `toolbar_layout` uses.
+        let measure = NominalTextMeasure {
+            char_width: self.current_char_width,
+        };
+        let line_h = if layout_options.overflow == crate::primitives::toolbar::ToolbarOverflow::Wrap
+        {
+            self.current_line_height
+        } else {
+            rect.height
+        };
+        bar.layout_with_overflow(
+            rect.x,
+            rect.y,
+            rect.width,
+            line_h,
+            layout_options,
+            priorities,
+            |btn| {
+                crate::primitives::toolbar::ToolbarItemMeasure::new(
+                    crate::primitives::toolbar::measure_button(&measure, btn),
+                )
+            },
+        )
+    }
+
     /// See [`Self::draw_status_bar`]'s doc for the "surface
     /// not attached yet" fallback posture. `SidebarPanel` embeds a
     /// [`crate::primitives::toolbar::Toolbar`] header, painted here via

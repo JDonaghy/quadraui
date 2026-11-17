@@ -30,10 +30,12 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::DWrite;
+use super::text::{pop_clip, push_clip, DWrite};
 use crate::event::Rect;
+use crate::paint_surface::PaintSurface;
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
+    ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
     ToolbarPaintOptions,
 };
 use crate::theme::Theme;
@@ -118,6 +120,135 @@ pub fn draw_toolbar_with_options(
         options,
     );
 
+    layout
+}
+
+/// Compute the Win-GUI layout [`draw_toolbar_with_overflow`] would paint,
+/// without painting — the layout-only twin
+/// [`win_toolbar_layout`] is to [`draw_toolbar_with_options`].
+///
+/// `line_height` is the DIP height of **one** toolbar row — this
+/// backend's analog to [`crate::gtk::toolbar::gtk_toolbar_layout_with_overflow`]'s
+/// own `line_height` parameter. Ignored for [`ToolbarOverflow::Clip`]/
+/// [`ToolbarOverflow::Menu`], which never need more than one line and use
+/// `rect.height` directly, same as [`win_toolbar_layout`].
+///
+/// For [`ToolbarOverflow::Wrap`], `rect.height` is the **total** area the
+/// host has (or is probing with) — [`ToolbarLayout::cross_extent`] on the
+/// result reports how many DIPs of that the wrapped content actually
+/// needs, so a host sizes its container from that before the next paint.
+/// Any item whose row starts at or past `rect.y + rect.height` is marked
+/// un-clickable (its `Group` children too) while still appearing in
+/// `visible_items`, so a host that skips the resize step never gets a hit
+/// region for a row [`draw_toolbar_with_overflow`] never actually paints.
+pub fn win_toolbar_layout_with_overflow(
+    dwrite: &DWrite,
+    rect: Rect,
+    bar: &Toolbar,
+    line_height: f32,
+    options: ToolbarLayoutOptions,
+    priorities: &ToolbarOverflowPriorities,
+) -> ToolbarLayout {
+    let line_h = if options.overflow == ToolbarOverflow::Wrap {
+        line_height
+    } else {
+        rect.height
+    };
+    let mut layout = bar.layout_with_overflow(
+        rect.x,
+        rect.y,
+        rect.width,
+        line_h,
+        options,
+        priorities,
+        |btn| ToolbarItemMeasure::new(measure_button(dwrite, btn)),
+    );
+
+    if options.overflow == ToolbarOverflow::Wrap
+        && options.orientation == ToolbarOrientation::Horizontal
+    {
+        let area_bottom = rect.y + rect.height;
+        for vis in &mut layout.visible_items {
+            if vis.bounds.y >= area_bottom {
+                vis.clickable = false;
+                for child in &mut vis.group_children {
+                    child.clickable = false;
+                }
+            }
+        }
+    }
+
+    layout
+}
+
+/// [`draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]:
+/// `options.overflow` picks how items that don't fit are handled.
+///
+/// - [`ToolbarOverflow::Clip`] paints identically to
+///   [`draw_toolbar_with_options`] (same single-line geometry; `rect` is
+///   the one line).
+/// - [`ToolbarOverflow::Wrap`] paints each wrapped line `line_height` DIPs
+///   below the last, clipped to `rect` — call
+///   [`win_toolbar_layout_with_overflow`] first and grow `rect.height` to
+///   its [`ToolbarLayout::cross_extent`] so every row actually paints.
+/// - [`ToolbarOverflow::Menu`] paints a trailing `[ » ]` affordance —
+///   [`crate::primitives::toolbar::native_surface_paint::paint`]'s
+///   [`crate::primitives::toolbar::ToolbarItemKind::Overflow`] arm reuses
+///   the same pill/label `Action` paint every other button gets, through
+///   [`crate::primitives::toolbar::overflow_indicator_button`]. A click on
+///   it hit-tests to [`crate::primitives::toolbar::ToolbarHit::Overflow`];
+///   open a [`crate::ContextMenu`] built from
+///   [`ToolbarLayout::overflowed_items`].
+///
+/// `priorities` is read only when `options.overflow` is
+/// [`ToolbarOverflow::Menu`] — pass [`ToolbarOverflowPriorities::new`]
+/// for the other two variants.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_toolbar_with_overflow(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    line_height: f32,
+    bar: &Toolbar,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+    options: ToolbarLayoutOptions,
+    priorities: &ToolbarOverflowPriorities,
+) -> ToolbarLayout {
+    let layout =
+        win_toolbar_layout_with_overflow(dwrite, rect, bar, line_height, options, priorities);
+
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return layout;
+    }
+
+    let theme = Theme::default();
+    push_clip(target, rect);
+
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    // `native_surface_paint::paint`'s own background fill only covers
+    // `layout.bar_bounds`, which for `ToolbarOverflow::Wrap` is exactly
+    // one `line_height`-tall line (see `win_toolbar_layout_with_overflow`'s
+    // own doc) — not every wrapped row. Fill the full `rect` the caller
+    // actually gave us first, so every row this clip can reach gets the
+    // bar's background before `paint` re-paints the first line's worth on
+    // top of it.
+    let bar_bg = bar.bg.unwrap_or(theme.header_bg);
+    surface.surface_fill_rect(rect, bar_bg);
+    native_surface_paint::paint(
+        bar,
+        &layout,
+        &mut surface,
+        &theme,
+        hovered_id,
+        pressed_id,
+        ToolbarPaintOptions::default(),
+    );
+
+    pop_clip(target);
     layout
 }
 
@@ -449,6 +580,195 @@ mod tests {
         assert!(
             top_row < bottom_row,
             "Top should paint higher than Bottom (top={top_row}, bottom={bottom_row})"
+        );
+    }
+
+    // ── ToolbarOverflow ─────────────────────────────────────────────────
+
+    fn three_button_bar() -> Toolbar {
+        Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA", true),
+                mk_action("b", "BBBB", true),
+                mk_action("c", "CCCC", true),
+            ],
+            bg: None,
+            focused_index: None,
+        }
+    }
+
+    /// `ToolbarOverflow::Wrap` places overflow on additional rows
+    /// `line_height` DIPs apart, and `cross_extent` reports exactly how
+    /// tall a host must grow its container for every row to actually
+    /// paint — the value a two-pass caller reads between the probe layout
+    /// and the real one. `bar_w` is sized from the real DWrite-measured
+    /// button width so exactly one button fits per row.
+    #[test]
+    fn wrap_mode_places_overflow_on_additional_rows() {
+        let bar = three_button_bar();
+        let (dwrite, line_h, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let btn_w = measure_button(&dwrite, &bar.buttons[0]);
+        let bar_w = btn_w + 1.0;
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        let priorities = ToolbarOverflowPriorities::new();
+
+        let probe = win_toolbar_layout_with_overflow(
+            &dwrite,
+            Rect::new(0.0, 0.0, bar_w, line_h),
+            &bar,
+            line_h,
+            options,
+            &priorities,
+        );
+        let rows_needed = probe.cross_extent(ToolbarOrientation::Horizontal);
+        assert_eq!(
+            rows_needed,
+            3.0 * line_h,
+            "one button per row at this width"
+        );
+
+        let layout = win_toolbar_layout_with_overflow(
+            &dwrite,
+            Rect::new(0.0, 0.0, bar_w, rows_needed),
+            &bar,
+            line_h,
+            options,
+            &priorities,
+        );
+        assert_eq!(
+            layout.hit_test(1.0, 1.0),
+            ToolbarHit::Button(WidgetId::new("a"))
+        );
+        assert_eq!(
+            layout.hit_test(1.0, line_h + 1.0),
+            ToolbarHit::Button(WidgetId::new("b"))
+        );
+        assert_eq!(
+            layout.hit_test(1.0, 2.0 * line_h + 1.0),
+            ToolbarHit::Button(WidgetId::new("c"))
+        );
+    }
+
+    /// A host that skips the resize step and hands a height smaller than
+    /// `cross_extent` reports still gets every wrapped item back in
+    /// `visible_items` (so a probing caller can measure the full extent),
+    /// but only the first row is clickable — matching the clip
+    /// [`draw_toolbar_with_overflow`] applies at `rect`, which never
+    /// paints past it. Guards against the hit-test/paint drift a `Wrap`
+    /// layout that ignored `rect.height` entirely would produce.
+    #[test]
+    fn wrap_mode_marks_rows_past_height_unclickable() {
+        let bar = three_button_bar();
+        let (dwrite, line_h, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let btn_w = measure_button(&dwrite, &bar.buttons[0]);
+        let bar_w = btn_w + 1.0;
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        let priorities = ToolbarOverflowPriorities::new();
+
+        // 3 buttons need 3 rows at this width, but this host only offers 1.
+        let layout = win_toolbar_layout_with_overflow(
+            &dwrite,
+            Rect::new(0.0, 0.0, bar_w, line_h),
+            &bar,
+            line_h,
+            options,
+            &priorities,
+        );
+
+        assert_eq!(layout.visible_items.len(), 3, "kept for cross_extent");
+        assert_eq!(
+            layout.cross_extent(ToolbarOrientation::Horizontal),
+            3.0 * line_h
+        );
+        assert_eq!(
+            layout.hit_test(1.0, 1.0),
+            ToolbarHit::Button(WidgetId::new("a")),
+            "row 0 is still clickable"
+        );
+        assert_eq!(
+            layout.hit_test(1.0, line_h + 1.0),
+            ToolbarHit::Empty,
+            "row 1 was never painted at this height"
+        );
+        assert_eq!(
+            layout.hit_test(1.0, 2.0 * line_h + 1.0),
+            ToolbarHit::Empty,
+            "row 2 was never painted at this height"
+        );
+    }
+
+    /// `ToolbarOverflow::Menu` on a bar too narrow for every button paints
+    /// a trailing `[ » ]` affordance in place of whatever it dropped —
+    /// through [`crate::primitives::toolbar::native_surface_paint::paint`]'s
+    /// `Overflow` arm, the same pill/label path every other `Action`
+    /// button gets — and a click there hit-tests to
+    /// [`crate::primitives::toolbar::ToolbarHit::Overflow`], ready to open
+    /// a [`crate::ContextMenu`] from `overflowed_items()`.
+    #[test]
+    fn menu_mode_paints_affordance_and_hit_tests_overflow() {
+        let bar = three_button_bar();
+        let (dwrite, line_h, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let btn_w = measure_button(&dwrite, &bar.buttons[0]);
+        // Wide enough for one button plus the `»` affordance, not all three.
+        let bar_w = btn_w * 1.5;
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Menu);
+        let priorities = ToolbarOverflowPriorities::new();
+        let theme = Theme::default();
+        let rect = Rect::new(0.0, 0.0, bar_w, line_h);
+
+        let surface = HeadlessSurface::new(bar_w.ceil() as u32, line_h.ceil() as u32)
+            .expect("create surface");
+        let layout = surface
+            .paint(|target| {
+                draw_toolbar_with_overflow(
+                    target,
+                    &dwrite,
+                    rect,
+                    line_h,
+                    &bar,
+                    None,
+                    None,
+                    options,
+                    &priorities,
+                );
+            })
+            .map(|_| {
+                win_toolbar_layout_with_overflow(&dwrite, rect, &bar, line_h, options, &priorities)
+            })
+            .expect("paint toolbar");
+
+        let overflowed = layout.overflowed_items();
+        assert!(!overflowed.is_empty(), "narrow bar must drop something");
+
+        let overflow_vis = layout
+            .visible_items
+            .iter()
+            .find(|vis| vis.kind == crate::primitives::toolbar::ToolbarItemKind::Overflow)
+            .expect("Menu layout paints a trailing `»` entry when it drops items");
+        let mid_x = overflow_vis.bounds.x + overflow_vis.bounds.width / 2.0;
+        let mid_y = overflow_vis.bounds.y + overflow_vis.bounds.height / 2.0;
+        assert_eq!(layout.hit_test(mid_x, mid_y), ToolbarHit::Overflow);
+
+        // The affordance actually painted ink somewhere inside its own
+        // bounds — not just a hit-testable hole.
+        let bg = theme.header_bg;
+        let x0 = overflow_vis.bounds.x.round() as u32;
+        let x1 = (overflow_vis.bounds.x + overflow_vis.bounds.width).round() as u32;
+        let y0 = overflow_vis.bounds.y.round() as u32;
+        let y1 = (overflow_vis.bounds.y + overflow_vis.bounds.height).round() as u32;
+        let mut painted = false;
+        for y in y0..y1.min(line_h.ceil() as u32) {
+            for x in x0..x1.min(bar_w.ceil() as u32) {
+                let px = surface.pixel_at(x, y);
+                if (px.r, px.g, px.b) != (bg.r, bg.g, bg.b) {
+                    painted = true;
+                }
+            }
+        }
+        assert!(
+            painted,
+            "overflow affordance should paint ink inside its own bounds"
         );
     }
 }
