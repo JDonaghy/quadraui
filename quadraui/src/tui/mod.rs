@@ -141,11 +141,10 @@ pub use context_menu::{
     BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
 };
 pub use data_table::draw_data_table;
-pub use data_table::draw_tree_table;
-#[doc(hidden)]
-pub use data_table::tree_table_layout;
 #[doc(hidden)]
 pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
+#[doc(hidden)]
+pub use data_table::{draw_tree_table, tree_table_layout};
 #[doc(hidden)]
 pub use date_picker::draw_date_picker;
 #[doc(hidden)]
