@@ -739,10 +739,11 @@ jobs:
     # non-blocking state is indistinguishable from having no Windows CI.
     # #1292: this job's steps (build/test/clippy across tui+win+macos
     # compile checks, benches, pty smoke, terminal_engine, conformance
-    # matrix) normally take ~5-10 min per matrix leg; 30 gives headroom
-    # without masking a real hang (see PR #1287/#1282's 4h+ stuck
-    # `Test (win feature, real Windows)` step this issue exists to catch).
-    timeout-minutes: 30
+    # matrix) take ~18-30 min on the windows-latest leg (longer on a cold
+    # rust-cache); 45 gives headroom without masking a real hang (see PR
+    # #1287/#1282's 4h+ stuck `Test (win feature, real Windows)` step this
+    # issue exists to catch).
+    timeout-minutes: 45
     strategy:
       # One platform failing must not cancel the other — seeing both columns
       # is the entire reason this is a matrix rather than two hardcoded jobs.

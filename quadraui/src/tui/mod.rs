@@ -144,6 +144,8 @@ pub use data_table::draw_data_table;
 #[doc(hidden)]
 pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
 #[doc(hidden)]
+pub use data_table::{draw_tree_table, tree_table_layout};
+#[doc(hidden)]
 pub use date_picker::draw_date_picker;
 #[doc(hidden)]
 pub use dialog::{draw_dialog, draw_dialog_with_nerd_fonts, tui_dialog_layout};

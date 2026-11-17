@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 51 primitive modules (one each under `src/primitives/`) — widgets,
+//! 52 primitive modules (one each under `src/primitives/`) — widgets,
 //! each declarative + serde-friendly so apps and Lua plugins can
 //! describe UI as data, plus the `layout_metrics` and `row_stack`
 //! shared-math helpers the widget modules reuse. A representative
@@ -616,11 +616,13 @@ pub use primitives::list::{
     ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
     ListViewLayout, VisibleListItem,
 };
-// `ListView`'s `Primitive::Layout` — only defined when `native_surface_paint`
-// is (see that module's `cfg`), so the pilot `impl Primitive for ListView`
-// it supports exists on the same feature set.
+// `ListView`'s `Primitive::Layout` — defined on every feature set the
+// pilot `impl Primitive for ListView` itself is (see that impl's own
+// `cfg`): the three pixel backends via `native_surface_paint`, plus
+// `tui` via `Primitive::paint_cells`/`crate::tui::draw_list`.
 #[cfg(any(
     feature = "gtk",
+    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
@@ -731,6 +733,9 @@ pub use primitives::tooltip::{
 pub use primitives::tree::{
     selected_paths_for_indices, TreeEvent, TreePaintState, TreeRow, TreeRowEditState,
     TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
+};
+pub use primitives::tree_table::{
+    TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableNode,
 };
 pub use style::Style;
 pub use text_util::{

@@ -102,11 +102,12 @@ use crate::primitives::toolbar::{
 };
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
+use crate::primitives::tree_table::TreeTableLayout;
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
-    PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeView,
+    PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeTable, TreeView,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2017,6 +2018,29 @@ pub trait Backend: sealed::Sealed {
         None
     }
 
+    /// This backend's cell grid — [`crate::tui::backend::TuiBackend`]'s
+    /// counterpart to [`Self::paint_surface`], for the one rasteriser
+    /// that has a cell buffer instead of a pixel canvas.
+    ///
+    /// Same `Option`-not-required shape as [`Self::paint_surface`] and
+    /// for the same reason: `None` here is structural (GTK/macOS/Win
+    /// have no cell grid to offer), not a missing override, so a caller
+    /// checks one `Option` instead of a capability flag it could forget.
+    /// [`DrawsPrimitives::draw_primitive`]'s default body calls this
+    /// (alongside [`Self::paint_surface`]) so [`crate::primitive::Primitive::paint_cells`]
+    /// is reachable through `&mut dyn Backend` — the shape every
+    /// `compose::*` controller's `render` is handed — not only through a
+    /// concrete `&mut TuiBackend`.
+    ///
+    /// Default: `None`. [`crate::tui::backend::TuiBackend`] overrides
+    /// this to return `Some` of its current frame's `ratatui::buffer::Buffer`
+    /// while inside [`crate::tui::backend::TuiBackend::enter_frame_scope`],
+    /// `None` outside it.
+    #[cfg(feature = "tui")]
+    fn cell_buffer(&mut self) -> Option<&mut ratatui::buffer::Buffer> {
+        None
+    }
+
     // ─── Capability declaration ─────────────────────────────────────────
     /// This backend's declared [`BackendCaps`] — which optional surfaces
     /// it actually implements, versus which ones are still sitting on the
@@ -2563,6 +2587,39 @@ pub trait Backend: sealed::Sealed {
     /// click coordinates before calling `hit_test` (see the module doc's
     /// *Coordinate frames* section).
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
+    /// Draw `table` — a [`DataTable`] plus per-row tree metadata — into
+    /// `rect` and return its layout for hit-testing. Coordinate frame:
+    /// **LOCAL**, matching [`Self::draw_data_table`].
+    ///
+    /// Given a default body rather than required: TUI overrides it with
+    /// real tree-cell painting (indent + chevron + icon on column 0);
+    /// GTK/macOS/Win-GUI don't yet, so the default
+    /// here paints `table.table` as a plain `DataTable` — same rows and
+    /// columns, no chevron/indent decoration — via [`Self::draw_data_table`],
+    /// with an empty [`TreeTableLayout::chevrons`]. A backend that hasn't
+    /// implemented this still renders every row's label; it just doesn't
+    /// show the tree shape yet.
+    fn draw_tree_table(
+        &mut self,
+        rect: Rect,
+        table: &TreeTable,
+        hovered_idx: Option<usize>,
+    ) -> TreeTableLayout {
+        TreeTableLayout {
+            table: self.draw_data_table(rect, &table.table, hovered_idx),
+            chevrons: Vec::new(),
+        }
+    }
+    /// Compute the tree-table layout without painting, mirroring
+    /// [`Self::data_table_layout`]. Same TUI-only-for-now default as
+    /// [`Self::draw_tree_table`]: delegates to [`Self::data_table_layout`]
+    /// with no chevron bounds until a backend overrides it.
+    fn tree_table_layout(&self, rect: Rect, table: &TreeTable) -> TreeTableLayout {
+        TreeTableLayout {
+            table: self.data_table_layout(rect, &table.table),
+            chevrons: Vec::new(),
+        }
+    }
     /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when its content fits. Each backend supplies its native row
     /// height; the resolved track + thumb are the same values the
@@ -4545,6 +4602,10 @@ pub trait DrawsPrimitives: Backend {
         let style = self.style();
         if let Some(surface) = self.paint_surface() {
             primitive.paint(&layout, surface, &theme, &style);
+        }
+        #[cfg(feature = "tui")]
+        if let Some(buf) = self.cell_buffer() {
+            primitive.paint_cells(&layout, buf, &theme);
         }
         layout
     }

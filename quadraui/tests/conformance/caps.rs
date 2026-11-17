@@ -694,6 +694,31 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "canvas_layout",
         "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
     ),
+    // `tree_table_layout` is the layout-only twin of `draw_tree_table`:
+    // `data_table_layout` for the wrapped table, plus chevron hit bounds
+    // for the tree cell column 0 paints. TUI overrides both. GTK, macOS
+    // and Win-GUI paint a `TreeTable` as a plain `DataTable` (the
+    // `draw_tree_table` default) — no chevron is on screen to hit — so
+    // the chevron-free default here is exactly what each of them paints;
+    // override both together when the tree cell lands on that backend.
+    (
+        "gtk",
+        "tree_table_layout",
+        "GTK paints a TreeTable as a plain DataTable, so empty chevron bounds agree with what \
+         draw_tree_table puts on screen — override both when the tree cell lands",
+    ),
+    (
+        "macos",
+        "tree_table_layout",
+        "macOS paints a TreeTable as a plain DataTable, so empty chevron bounds agree with what \
+         draw_tree_table puts on screen — override both when the tree cell lands",
+    ),
+    (
+        "win",
+        "tree_table_layout",
+        "Win-GUI paints a TreeTable as a plain DataTable, so empty chevron bounds agree with \
+         what draw_tree_table puts on screen — override both when the tree cell lands",
+    ),
     // `scrollbar_reserve` is the width of *toolkit* scrollbar chrome that a backend paints
     // over the content edge. GTK is the only backend that hosts its content inside
     // something with such chrome (a `ScrolledWindow`). The other three draw into a surface
@@ -983,6 +1008,28 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "paint_surface",
         "a terminal cell grid has no sub-cell Rect to paint into — PaintSurface's own module \
          doc, \"Why TUI stays out\", explains why TuiBackend never implements this trait (#1101)",
+    ),
+    // ── GTK/macOS/Win: `cell_buffer` — `paint_surface`'s mirror image.
+    // Each has a real pixel canvas, not a cell grid, so there is no
+    // `ratatui::buffer::Buffer` to hand back; `TuiBackend` is the only
+    // backend that overrides this (#2647).
+    (
+        "gtk",
+        "cell_buffer",
+        "GTK paints a pixel canvas through PaintSurface, not a cell grid — there is no \
+         ratatui::buffer::Buffer to hand back (#2647)",
+    ),
+    (
+        "macos",
+        "cell_buffer",
+        "macOS paints a pixel canvas through PaintSurface, not a cell grid — there is no \
+         ratatui::buffer::Buffer to hand back (#2647)",
+    ),
+    (
+        "win",
+        "cell_buffer",
+        "Win-GUI paints a pixel canvas through PaintSurface, not a cell grid — there is no \
+         ratatui::buffer::Buffer to hand back (#2647)",
     ),
     // ── TUI: `set_editor_v_scrollbar_width` / `editor_v_scrollbar_width`.
     // The editor's vertical scrollbar on a terminal is one cell wide by

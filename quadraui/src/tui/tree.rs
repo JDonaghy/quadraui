@@ -21,7 +21,11 @@ use crate::types::{Decoration, Icon, TreeStyle};
 /// The chevron glyph a row at `indent` paints and the column just past it
 /// (unclipped). Shared by [`paint_tree_cell`] and the hit-test in
 /// [`tui_tree_layout_with_scroll_px`] so the two never drift.
-fn chevron_glyph_end(style: &TreeStyle, indent: u16, expanded: bool) -> (&str, usize) {
+///
+/// `pub(crate)`, not private: `tui::data_table`'s `TreeTable` chevron
+/// measurer reuses it too, so a `TreeTable` row's chevron hit bounds are
+/// computed from the exact same formula `TreeView` already paints with.
+pub(crate) fn chevron_glyph_end(style: &TreeStyle, indent: u16, expanded: bool) -> (&str, usize) {
     let glyph = if expanded {
         &style.chevron_expanded
     } else {

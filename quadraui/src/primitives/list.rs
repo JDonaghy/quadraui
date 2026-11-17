@@ -2117,8 +2117,10 @@ pub(crate) mod native_surface_paint {
 
 // ── `crate::primitive::Primitive` pilot ─────────────────────────────
 //
-// Gated the same as `native_surface_paint` above, since `paint` below
-// calls straight through to it — a `tui`-only build has neither.
+// `paint`'s pixel-backend branch below needs `native_surface_paint`;
+// `paint_cells` needs `crate::tui::draw_list`/`ratatui` — gated to
+// whichever of those a build actually has, same as those modules
+// themselves.
 
 /// [`crate::primitive::Primitive::Layout`] for [`ListView`] — the
 /// list-local [`ListViewLayout`] paired with the absolute area it was
@@ -2131,6 +2133,7 @@ pub(crate) mod native_surface_paint {
 /// itself.
 #[cfg(any(
     feature = "gtk",
+    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
@@ -2153,6 +2156,7 @@ pub struct ListViewPrimitiveLayout {
 
 #[cfg(any(
     feature = "gtk",
+    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
@@ -2167,6 +2171,7 @@ impl ListViewPrimitiveLayout {
 
 #[cfg(any(
     feature = "gtk",
+    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
@@ -2175,6 +2180,30 @@ impl crate::primitive::Primitive for ListView {
     type Event = ListViewEvent;
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        // TUI's row height is architecturally always exactly `1.0` cell
+        // (see `crate::primitives::layout_metrics::tree_row_pitch`'s own
+        // `is_cell_grid = line_height <= 1.0` convention); every pixel
+        // backend passes a real measured line height, always well above
+        // one. That makes `ctx.line_height` a reliable *runtime*
+        // discriminator between a TUI caller and a pixel-backend one even
+        // when both features are compiled into the same binary (`cargo
+        // build --features gtk,tui`), where a compile-time `cfg` alone
+        // could not tell them apart.
+        #[cfg(feature = "tui")]
+        if ctx.line_height <= 1.0 {
+            // Route through the exact resolver `crate::tui::draw_list`
+            // itself calls (`tui_list_layout`) so this layout can never
+            // drift from what TUI actually paints — `Self::paint_cells`
+            // below makes the matching paint-side guarantee.
+            let area = crate::tui::backend::q_rect_to_ratatui(rect);
+            let layout = crate::tui::tui_list_layout(area, self);
+            return ListViewPrimitiveLayout {
+                area: rect,
+                line_height: ctx.line_height,
+                nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+                layout,
+            };
+        }
         let layout = crate::primitives::layout_metrics::list_layout(
             self,
             rect.width as f64,
@@ -2198,21 +2227,61 @@ impl crate::primitive::Primitive for ListView {
         theme: &crate::theme::Theme,
         style: &crate::style::Style,
     ) {
-        native_surface_paint::paint(
-            self,
-            layout.area,
-            &layout.layout,
-            layout.line_height,
-            layout.nerd_fonts_enabled,
-            /* supports_border */ false,
-            /* supports_hscrollbar */ true,
-            surface,
-            theme,
-            style,
-            /* hovered_idx */ None,
-            /* pressed_idx */ None,
-            /* focus_ring_visible */ false,
-        );
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(
+                self,
+                layout.area,
+                &layout.layout,
+                layout.line_height,
+                layout.nerd_fonts_enabled,
+                /* supports_border */ false,
+                /* supports_hscrollbar */ true,
+                surface,
+                theme,
+                style,
+                /* hovered_idx */ None,
+                /* pressed_idx */ None,
+                /* focus_ring_visible */ false,
+            );
+        }
+        // A `tui`-only build has no `PaintSurface` to paint into at all
+        // (`PaintSurface`'s module doc, "Why TUI stays out") — `self`
+        // reaching the screen on TUI goes through `Self::paint_cells`
+        // instead, which `DrawsPrimitives::draw_primitive`'s default body
+        // calls in place of this method whenever `Backend::cell_buffer`
+        // answers `Some`.
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// Delegates straight to [`crate::tui::draw_list`] — the exact
+    /// function [`crate::tui::backend::TuiBackend::draw_list`] itself
+    /// calls — so painting `ListView` through [`crate::primitive::Primitive`]
+    /// on TUI is byte-for-byte identical to painting it through
+    /// `Backend::draw_list` by construction, not by separately
+    /// maintained parity. See [`crate::primitive::Primitive::paint_cells`]'s
+    /// own doc for why this method exists instead of a cell-quantised
+    /// `PaintSurface` impl.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        crate::tui::draw_list(buf, area, self, theme, layout.nerd_fonts_enabled);
     }
 }
 

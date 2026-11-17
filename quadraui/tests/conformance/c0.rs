@@ -50,7 +50,7 @@ use quadraui::{
     ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
     ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
     ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
-    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 // `Panel` is `#[deprecated]`; imported separately so the allow stays
 // scoped to the one `draw_panel` back-compat case below.
@@ -773,6 +773,53 @@ pub const CASES: &[Case] = &[
                 bordered: false,
             };
             let _ = b.draw_data_table(area, &table, None);
+        },
+    },
+    // `draw_tree_table`'s trait default forwards to `draw_data_table`,
+    // painting the rows with no chevron/indent decoration, on any backend
+    // that doesn't override it (currently GTK/macOS/Win-GUI); TUI
+    // overrides it with real tree-cell painting on column 0. This row
+    // proves the method reaches a rasteriser and still paints observable
+    // content on every backend, default or overridden.
+    Case {
+        method: "draw_tree_table",
+        needle: Some("c0ttbl"),
+        paint: |b, area| {
+            let table = TreeTable {
+                table: DataTable {
+                    id: id("tree-table"),
+                    columns: vec![Column {
+                        title: "c0ttbl".to_string(),
+                        width: ColumnWidth::Flex(1.0),
+                        align: ColumnAlign::Left,
+                    }],
+                    rows: vec![
+                        DataRow {
+                            cells: vec![StyledText::plain("branch")],
+                            decoration: Decoration::Normal,
+                        },
+                        DataRow {
+                            cells: vec![StyledText::plain("leaf")],
+                            decoration: Decoration::Normal,
+                        },
+                    ],
+                    selected_idx: None,
+                    scroll_offset: 0,
+                    sort: None,
+                    has_focus: false,
+                    show_scrollbar: false,
+                    min_total_width: None,
+                    h_scroll: 0.0,
+                    column_overrides: vec![],
+                    footer: None,
+                    bordered: false,
+                },
+                tree: vec![
+                    TreeTableNode::new(vec![0], 0).with_expanded(true),
+                    TreeTableNode::new(vec![0, 0], 1),
+                ],
+            };
+            let _ = b.draw_tree_table(area, &table, None);
         },
     },
     // `draw_data_table_with_state`'s trait default forwards to
@@ -2072,8 +2119,12 @@ mod tests {
     /// `Backend` is used as `&mut dyn Backend` crate-wide. It is declared
     /// once on a sibling trait blanket-implemented for every `Backend`,
     /// which no backend can override, and its body paints only through
-    /// `Backend::paint_surface` — absent on TUI by structural design — so
-    /// there is no observable-on-every-backend frame for C0 to assert.
+    /// whichever of `Backend::paint_surface` (GTK/macOS/Win) or
+    /// `Backend::cell_buffer` (TUI) the receiving backend answers `Some`
+    /// from — and even then, only for a `Primitive` whose own `paint`/
+    /// `paint_cells` impl does something observable, which `CASES`' fixed
+    /// set of built-in primitives has no entry for. So there is no
+    /// observable-on-every-backend frame for C0 to assert.
     /// `tests/primitive_public_api.rs` covers the method's own contract
     /// instead, and `src/primitives/list.rs`'s parity tests cover the
     /// pilot `Primitive` impl's pixel output.

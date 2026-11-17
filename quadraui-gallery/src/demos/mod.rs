@@ -51,5 +51,6 @@ pub mod toast;
 pub mod toolbar;
 pub mod tooltip;
 pub mod tree;
+pub mod tree_table;
 pub mod window_control;
 pub mod workspace;
