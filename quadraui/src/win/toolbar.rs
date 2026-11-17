@@ -149,44 +149,24 @@ pub fn win_toolbar_layout_with_overflow(
     options: ToolbarLayoutOptions,
     priorities: &ToolbarOverflowPriorities,
 ) -> ToolbarLayout {
-    let line_h = if options.overflow == ToolbarOverflow::Wrap {
-        line_height
-    } else {
-        rect.height
-    };
-    let mut layout = bar.layout_with_overflow(
-        rect.x,
-        rect.y,
-        rect.width,
-        line_h,
+    super::backend::toolbar_layout_with_overflow_via(
+        dwrite,
+        rect,
+        bar,
+        line_height,
         options,
         priorities,
-        |btn| ToolbarItemMeasure::new(measure_button(dwrite, btn)),
-    );
-
-    if options.overflow == ToolbarOverflow::Wrap
-        && options.orientation == ToolbarOrientation::Horizontal
-    {
-        let area_bottom = rect.y + rect.height;
-        for vis in &mut layout.visible_items {
-            if vis.bounds.y >= area_bottom {
-                vis.clickable = false;
-                for child in &mut vis.group_children {
-                    child.clickable = false;
-                }
-            }
-        }
-    }
-
-    layout
+    )
 }
 
 /// [`draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]:
 /// `options.overflow` picks how items that don't fit are handled.
 ///
-/// - [`ToolbarOverflow::Clip`] paints identically to
-///   [`draw_toolbar_with_options`] (same single-line geometry; `rect` is
-///   the one line).
+/// - [`ToolbarOverflow::Clip`] uses the same single-line geometry as
+///   [`draw_toolbar_with_options`] (`rect` is the one line) — visually
+///   equivalent for a `rect`-sized bar, though this function additionally
+///   pre-fills the whole `rect` and pushes a clip at `rect` first, which
+///   [`draw_toolbar_with_options`] does not.
 /// - [`ToolbarOverflow::Wrap`] paints each wrapped line `line_height` DIPs
 ///   below the last, clipped to `rect` — call
 ///   [`win_toolbar_layout_with_overflow`] first and grow `rect.height` to
@@ -758,11 +738,12 @@ mod tests {
         let y0 = overflow_vis.bounds.y.round() as u32;
         let y1 = (overflow_vis.bounds.y + overflow_vis.bounds.height).round() as u32;
         let mut painted = false;
-        for y in y0..y1.min(line_h.ceil() as u32) {
+        'scan: for y in y0..y1.min(line_h.ceil() as u32) {
             for x in x0..x1.min(bar_w.ceil() as u32) {
                 let px = surface.pixel_at(x, y);
                 if (px.r, px.g, px.b) != (bg.r, bg.g, bg.b) {
                     painted = true;
+                    break 'scan;
                 }
             }
         }

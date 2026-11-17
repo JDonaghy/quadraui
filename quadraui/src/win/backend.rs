@@ -160,6 +160,61 @@ impl crate::primitives::layout_metrics::TextMeasure for NominalTextMeasure {
     }
 }
 
+/// Shared implementation behind
+/// [`super::toolbar::win_toolbar_layout_with_overflow`] and
+/// [`WinBackend::toolbar_layout_with_overflow`]'s no-DWrite fallback, so
+/// the live-`DWrite` and nominal-char-width measurers can never
+/// independently drift on which rows a `Wrap` toolbar reports as
+/// clickable. Lives here (not `win::toolbar`, which is
+/// `#[cfg(target_os = "windows")]`-only) because the fallback branch must
+/// keep compiling — and keep applying this same clamp — on a non-Windows
+/// `--features win` type-check host. The GTK sibling
+/// (`gtk::toolbar::gtk_toolbar_layout_with_overflow`) needs no equivalent
+/// because it already funnels both its measurers through one function.
+pub(super) fn toolbar_layout_with_overflow_via(
+    measure: &dyn crate::primitives::layout_metrics::TextMeasure,
+    rect: Rect,
+    bar: &crate::primitives::toolbar::Toolbar,
+    line_height: f32,
+    options: crate::primitives::toolbar::ToolbarLayoutOptions,
+    priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+) -> crate::primitives::toolbar::ToolbarLayout {
+    use crate::primitives::toolbar::{
+        measure_button, ToolbarItemMeasure, ToolbarOrientation, ToolbarOverflow,
+    };
+
+    let line_h = if options.overflow == ToolbarOverflow::Wrap {
+        line_height
+    } else {
+        rect.height
+    };
+    let mut layout = bar.layout_with_overflow(
+        rect.x,
+        rect.y,
+        rect.width,
+        line_h,
+        options,
+        priorities,
+        |btn| ToolbarItemMeasure::new(measure_button(measure, btn)),
+    );
+
+    if options.overflow == ToolbarOverflow::Wrap
+        && options.orientation == ToolbarOrientation::Horizontal
+    {
+        let area_bottom = rect.y + rect.height;
+        for vis in &mut layout.visible_items {
+            if vis.bounds.y >= area_bottom {
+                vis.clickable = false;
+                for child in &mut vis.group_children {
+                    child.clickable = false;
+                }
+            }
+        }
+    }
+
+    layout
+}
+
 /// [`super::status_bar::StatusMeasure`] impl backed by
 /// [`nominal_text_width`] — `bold` is ignored, a known gap in the
 /// nominal fallback (see `super::status_bar::StatusMeasure`'s doc for why
@@ -5867,28 +5922,20 @@ impl Backend for WinBackend {
             );
         }
         // No live DWrite handle — nominal char-width estimate instead,
-        // same fallback measurer `toolbar_layout` uses.
+        // same fallback measurer `toolbar_layout` uses. Routed through
+        // `toolbar_layout_with_overflow_via`, the same helper the
+        // live-DWrite branch above uses, so both branches apply the
+        // identical "rows past `rect.height` are un-clickable" clamp.
         let measure = NominalTextMeasure {
             char_width: self.current_char_width,
         };
-        let line_h = if layout_options.overflow == crate::primitives::toolbar::ToolbarOverflow::Wrap
-        {
-            self.current_line_height
-        } else {
-            rect.height
-        };
-        bar.layout_with_overflow(
-            rect.x,
-            rect.y,
-            rect.width,
-            line_h,
+        toolbar_layout_with_overflow_via(
+            &measure,
+            rect,
+            bar,
+            self.current_line_height,
             layout_options,
             priorities,
-            |btn| {
-                crate::primitives::toolbar::ToolbarItemMeasure::new(
-                    crate::primitives::toolbar::measure_button(&measure, btn),
-                )
-            },
         )
     }
 
