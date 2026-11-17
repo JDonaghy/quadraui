@@ -1000,6 +1000,28 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "a terminal cell grid has no sub-cell Rect to paint into — PaintSurface's own module \
          doc, \"Why TUI stays out\", explains why TuiBackend never implements this trait (#1101)",
     ),
+    // ── GTK/macOS/Win: `cell_buffer` — `paint_surface`'s mirror image.
+    // Each has a real pixel canvas, not a cell grid, so there is no
+    // `ratatui::buffer::Buffer` to hand back; `TuiBackend` is the only
+    // backend that overrides this (#2647).
+    (
+        "gtk",
+        "cell_buffer",
+        "GTK paints a pixel canvas through PaintSurface, not a cell grid — there is no \
+         ratatui::buffer::Buffer to hand back (#2647)",
+    ),
+    (
+        "macos",
+        "cell_buffer",
+        "macOS paints a pixel canvas through PaintSurface, not a cell grid — there is no \
+         ratatui::buffer::Buffer to hand back (#2647)",
+    ),
+    (
+        "win",
+        "cell_buffer",
+        "Win-GUI paints a pixel canvas through PaintSurface, not a cell grid — there is no \
+         ratatui::buffer::Buffer to hand back (#2647)",
+    ),
     // ── TUI: `set_editor_v_scrollbar_width` / `editor_v_scrollbar_width`.
     // The editor's vertical scrollbar on a terminal is one cell wide by
     // construction — a pixel width has no cell grid to land on — so TUI

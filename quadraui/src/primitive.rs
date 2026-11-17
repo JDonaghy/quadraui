@@ -190,11 +190,12 @@ pub trait Primitive: A11yPrimitive {
         style: &Style,
     );
 
-    /// Paint `layout` onto a TUI cell buffer — [`crate::tui::backend::TuiBackend`]'s
-    /// paint entry point ([`crate::tui::backend::TuiBackend::draw_primitive`])
-    /// calls this instead of [`Self::paint`], since TUI has no
-    /// [`PaintSurface`] to hand it (see that trait's module doc, "Why TUI
-    /// stays out").
+    /// Paint `layout` onto a TUI cell buffer —
+    /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s default body
+    /// calls this instead of [`Self::paint`] whenever
+    /// [`crate::backend::Backend::cell_buffer`] answers `Some`
+    /// (`TuiBackend`'s case), since TUI has no [`PaintSurface`] to hand
+    /// it (see that trait's module doc, "Why TUI stays out").
     ///
     /// # Why a second method instead of a cell-quantised `PaintSurface`
     ///
@@ -202,13 +203,13 @@ pub trait Primitive: A11yPrimitive {
     /// impl) ruled out a `TuiBackend: PaintSurface` impl that reproduces
     /// `crate::tui::draw_list`'s output byte-for-byte: `ListView::bordered`'s
     /// frame is painted as literal box-drawing glyphs (`╭─╮│╰─╯`) chosen
-    /// per-corner, which [`PaintSurface::surface_stroke_rect`]/
-    /// [`PaintSurface::surface_draw_path`]'s axis-aligned-rect and
-    /// straight-segment verbs have no way to express — a `PaintSurface`
-    /// verb general enough to pick "this exact glyph at this exact
-    /// corner" stops being a backend-agnostic drawing primitive and
-    /// becomes a terminal-box-drawing API wearing a `PaintSurface`
-    /// costume. Row text also carries its own cell-count accounting
+    /// per-corner — a choice [`PaintSurface`]'s verbs have no way to
+    /// express, since none of them picks a glyph, only a rect or a path
+    /// shape. A `PaintSurface` verb general enough to pick "this exact
+    /// glyph at this exact corner" stops being a backend-agnostic
+    /// drawing primitive and becomes a terminal-box-drawing API wearing
+    /// a `PaintSurface` costume. Row text also carries its own cell-count
+    /// accounting
     /// (`crate::text_util::display_width`/`char_cell_width`, double-width
     /// CJK glyphs occupying two cells) that a pixel-shaped
     /// `surface_draw_text_run` has no parallel for — a font-shaped text
@@ -235,11 +236,11 @@ pub trait Primitive: A11yPrimitive {
     /// Default: no-op — correct for the common case of a `Primitive`
     /// implementor with no TUI story at all (every built-in primitive
     /// except [`crate::ListView`]'s pilot today); such an implementor
-    /// painted through [`crate::tui::backend::TuiBackend::draw_primitive`]
-    /// still gets a real, hit-testable [`Self::Layout`] back, just no
-    /// pixels on screen, the same "resolve layout, maybe paint" contract
-    /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s own default
-    /// already has for a `PaintSurface`-less backend.
+    /// painted through [`crate::backend::DrawsPrimitives::draw_primitive`]
+    /// on TUI still gets a real, hit-testable [`Self::Layout`] back, just
+    /// no pixels on screen, the same "resolve layout, maybe paint"
+    /// contract that default already has for a `PaintSurface`-less
+    /// backend.
     #[cfg(feature = "tui")]
     fn paint_cells(&self, layout: &Self::Layout, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let _ = (layout, buf, theme);
