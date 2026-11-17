@@ -2115,6 +2115,107 @@ pub(crate) mod native_surface_paint {
     }
 }
 
+// ── `crate::primitive::Primitive` pilot ─────────────────────────────
+//
+// Gated the same as `native_surface_paint` above, since `paint` below
+// calls straight through to it — a `tui`-only build has neither.
+
+/// [`crate::primitive::Primitive::Layout`] for [`ListView`] — the
+/// list-local [`ListViewLayout`] paired with the absolute area it was
+/// laid out into and the resolved row-paint metrics
+/// [`crate::primitive::Primitive::paint`]'s fixed signature has no
+/// other way to carry (see that trait's module doc, "Design").
+///
+/// `#[non_exhaustive]`: backend-returned, never constructed by a
+/// consumer via struct literal, same convention as [`ListViewLayout`]
+/// itself.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ListViewPrimitiveLayout {
+    /// Absolute area [`ListView::layout`] was called with — `layout`'s
+    /// own `title_bounds`/`visible_items`/`hit_regions` are relative to
+    /// this rect's origin.
+    pub area: Rect,
+    /// Row height resolved from the [`crate::primitive::LayoutCtx`]
+    /// [`Primitive::layout`](crate::primitive::Primitive::layout) was
+    /// called with.
+    pub line_height: f32,
+    /// Nerd-Font toggle resolved the same way.
+    pub nerd_fonts_enabled: bool,
+    /// The list-local layout itself.
+    pub layout: ListViewLayout,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl ListViewPrimitiveLayout {
+    /// Hit-test at an absolute `(x, y)` — subtracts [`Self::area`]'s
+    /// origin before delegating to [`ListViewLayout::hit_test`], whose
+    /// `hit_regions` are list-local.
+    pub fn hit_test(&self, x: f32, y: f32) -> ListViewHit {
+        self.layout.hit_test(x - self.area.x, y - self.area.y)
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl crate::primitive::Primitive for ListView {
+    type Layout = ListViewPrimitiveLayout;
+    type Event = ListViewEvent;
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        let layout = crate::primitives::layout_metrics::list_layout(
+            self,
+            rect.width as f64,
+            rect.height as f64,
+            ctx.line_height as f64,
+            ctx.char_width as f64,
+            /* border_inset */ 0.0,
+        );
+        ListViewPrimitiveLayout {
+            area: rect,
+            line_height: ctx.line_height,
+            nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+            layout,
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        native_surface_paint::paint(
+            self,
+            layout.area,
+            &layout.layout,
+            layout.line_height,
+            layout.nerd_fonts_enabled,
+            /* supports_border */ false,
+            /* supports_hscrollbar */ true,
+            surface,
+            theme,
+            style,
+            /* hovered_idx */ None,
+            /* pressed_idx */ None,
+            /* focus_ring_visible */ false,
+        );
+    }
+}
+
 /// Events a `ListView` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ListViewEvent {
@@ -2384,5 +2485,180 @@ mod tests {
         assert!(layout.title_bounds.is_none());
         // Without title, items still start at y=1 (top border).
         assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[cfg(test)]
+mod primitive_parity_tests {
+    use super::*;
+    use crate::backend::ImagePaintResult;
+    use crate::event::{Point, Viewport};
+    use crate::primitive::{LayoutCtx, Primitive};
+    use crate::style::Style;
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Image;
+    use crate::PaintSurface;
+
+    /// Records every verb call as a formatted line, in call order — a
+    /// byte-for-byte equal log from two different call paths is strong
+    /// evidence they painted the same thing.
+    #[derive(Default)]
+    struct LogSurface {
+        calls: Vec<String>,
+    }
+
+    impl PaintSurface for LogSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(200.0, 100.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            16.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 8.0, 14.0)
+        }
+        fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+            self.calls.push(format!("fill_rect {rect:?} {color:?}"));
+        }
+        fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+            self.calls
+                .push(format!("fill_rounded_rect {rect:?} {radius} {color:?}"));
+        }
+        fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+            self.calls
+                .push(format!("stroke_rect {rect:?} {color:?} {stroke_width}"));
+        }
+        fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+            self.calls
+                .push(format!("draw_text_run {rect:?} {text:?} {color:?}"));
+        }
+        fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+            self.calls.push(format!(
+                "draw_line {from:?} {to:?} {color:?} {stroke_width}"
+            ));
+        }
+        fn surface_push_clip(&mut self, rect: Rect) {
+            self.calls.push(format!("push_clip {rect:?}"));
+        }
+        fn surface_pop_clip(&mut self) {
+            self.calls.push("pop_clip".to_string());
+        }
+        fn surface_draw_image(&mut self, rect: Rect, _image: &Image) -> ImagePaintResult {
+            self.calls.push(format!("draw_image {rect:?}"));
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    fn sample_list() -> ListView {
+        ListView {
+            id: WidgetId::new("quickfix"),
+            title: Some(StyledText::plain("QUICKFIX")),
+            items: (0..5)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("row {i}")),
+                    icon: None,
+                    detail: Some(StyledText::plain("detail")),
+                    decoration: Decoration::default(),
+                })
+                .collect(),
+            selected_idx: 2,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: Some(60),
+            show_v_scrollbar: false,
+        }
+    }
+
+    /// The acceptance criterion: `ListView`'s [`Primitive::layout`] +
+    /// [`Primitive::paint`] must produce the exact same verb log as
+    /// calling [`native_surface_paint::paint`] directly with the
+    /// equivalent arguments — the pilot changes *how* a caller reaches
+    /// the paint, not *what* gets painted.
+    #[test]
+    fn list_primitive_paint_matches_native_surface_paint() {
+        let list = sample_list();
+        let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
+        let ctx = LayoutCtx {
+            line_height: 16.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: true,
+        };
+        let theme = Theme::default();
+        let style = Style::default();
+
+        let via_primitive_layout = Primitive::layout(&list, &ctx, rect);
+        let mut via_primitive_surface = LogSurface::default();
+        Primitive::paint(
+            &list,
+            &via_primitive_layout,
+            &mut via_primitive_surface,
+            &theme,
+            &style,
+        );
+
+        let direct_layout = crate::primitives::layout_metrics::list_layout(
+            &list,
+            rect.width as f64,
+            rect.height as f64,
+            ctx.line_height as f64,
+            ctx.char_width as f64,
+            0.0,
+        );
+        let mut direct_surface = LogSurface::default();
+        native_surface_paint::paint(
+            &list,
+            rect,
+            &direct_layout,
+            ctx.line_height,
+            ctx.nerd_fonts_enabled,
+            false,
+            true,
+            &mut direct_surface,
+            &theme,
+            &style,
+            None,
+            None,
+            false,
+        );
+
+        assert!(
+            !via_primitive_surface.calls.is_empty(),
+            "the list must paint something for this comparison to be meaningful"
+        );
+        assert_eq!(via_primitive_surface.calls, direct_surface.calls);
+    }
+
+    /// [`ListViewPrimitiveLayout::hit_test`] subtracts the area's
+    /// origin before delegating — a click at the layout's absolute
+    /// origin must resolve to the same hit as `(0, 0)` on the
+    /// underlying list-local [`ListViewLayout`].
+    #[test]
+    fn primitive_layout_hit_test_is_relative_to_area_origin() {
+        let list = sample_list();
+        let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
+        let ctx = LayoutCtx {
+            line_height: 16.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: false,
+        };
+
+        let layout = Primitive::layout(&list, &ctx, rect);
+        assert_eq!(
+            layout.hit_test(rect.x, rect.y + layout.line_height / 2.0),
+            layout.layout.hit_test(0.0, layout.line_height / 2.0),
+        );
     }
 }

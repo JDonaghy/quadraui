@@ -441,6 +441,15 @@ pub mod update;
 // way it did back when this was `pub(crate)`.
 pub mod paint_surface;
 
+// ── Primitive ──────────────────────────────────────────────────────────────
+// The `Primitive` trait — one `layout()` + `paint()` pair a widget outside
+// this crate implements to compose with every `PaintSurface` backend through
+// `Backend::draw_primitive`, without a bespoke `draw_*`/`*_layout` pair added
+// to the sealed `Backend` trait. Compiled unconditionally, same rationale as
+// `paint_surface` above: a `pub` trait with zero in-crate implementors on a
+// `tui`-only build is not dead code from this crate's own boundary.
+pub mod primitive;
+
 // Host-independent paint-geometry helpers — pure rect/inset
 // arithmetic pulled out from behind `src/macos/`'s whole-module
 // `target_os = "macos"` gate (mirrors `src/win/msg.rs`'s equivalent split
@@ -607,6 +616,15 @@ pub use primitives::list::{
     ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
     ListViewLayout, VisibleListItem,
 };
+// `ListView`'s `Primitive::Layout` — only defined when `native_surface_paint`
+// is (see that module's `cfg`), so the pilot `impl Primitive for ListView`
+// it supports exists on the same feature set.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use primitives::list::ListViewPrimitiveLayout;
 pub use primitives::menu_bar::{
     resolve_bar_height, MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout,
     VisibleMenuBarItem, BAR_HEIGHT,
@@ -734,10 +752,10 @@ pub use accelerator::{
 };
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, Display,
-    FileDialogOptions, InvalidationLog, MenuStyle, MessageDialogButton, MessageDialogChoice,
-    MessageDialogOptions, Metrics, Notification, PlatformFontDefaults, PlatformServices,
-    PointerShape, ResizeEdge, ResolvedMenuStyle, RgbaImage, SecretStore, ServiceResult,
-    SystemTheme, WindowControl,
+    DrawsPrimitives, FileDialogOptions, InvalidationLog, MenuStyle, MessageDialogButton,
+    MessageDialogChoice, MessageDialogOptions, Metrics, Notification, PlatformFontDefaults,
+    PlatformServices, PointerShape, ResizeEdge, ResolvedMenuStyle, RgbaImage, SecretStore,
+    ServiceResult, SystemTheme, WindowControl,
 };
 // `PlatformServices::update_service`'s vended trait and types — same
 // service-seam shape as `Clipboard`/`SecretStore` above; see `update`'s
@@ -767,6 +785,8 @@ pub use frame::{
     FrameZone, OwnedContent, OwnedFrame, OwnedNode, ScreenLayout, Surface,
 };
 pub use paint_surface::{PaintSurface, PathVerb};
+// The `Primitive` trait — see that module's doc.
+pub use primitive::{LayoutCtx, Primitive};
 // `InteractionState` — a single hover/pressed store keyed by `WidgetId`,
 // meant to replace the bespoke per-primitive trackers and positional arguments
 // (`hovered_id`, `pressed_id`, `hovered_toolbar_id`) the old `Backend` methods
