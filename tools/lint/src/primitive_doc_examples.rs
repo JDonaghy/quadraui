@@ -117,6 +117,7 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("toolbar", "Toolbar"),
     ("tooltip", "Tooltip"),
     ("tree", "TreeView"),
+    ("tree_table", "TreeTable"),
 ];
 
 /// Primitives that don't yet have an `# Examples` section. See this

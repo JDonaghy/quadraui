@@ -565,10 +565,40 @@ fn tui_tree_chevron_measure(style: &TreeStyle, node: &TreeTableNode) -> Option<(
     Some(((end - width) as f32, width as f32))
 }
 
+/// The narrow-rect floor [`TreeTable::layout`]'s `min_tree_col_width`
+/// takes: the deepest indent level across every row in `tree`, plus one
+/// chevron glyph (when `style` shows chevrons at all — a leaf still pays
+/// the indent even though it paints no chevron of its own) and at least
+/// one character for the label. Computed from the whole tree rather than
+/// only the rows that happen to be visible today, so the floor — and
+/// therefore which columns are dropped — doesn't change as the table
+/// scrolls.
+fn tree_column_floor_width(style: &TreeStyle, tree: &[TreeTableNode]) -> f32 {
+    let chevron_width = if style.show_chevrons {
+        style
+            .chevron_expanded
+            .chars()
+            .count()
+            .max(style.chevron_collapsed.chars().count())
+    } else {
+        0
+    };
+    let max_indent = tree.iter().map(|n| n.indent).max().unwrap_or(0);
+    (max_indent as usize * style.indent as usize + chevron_width + 1) as f32
+}
+
 /// Resolve the layout [`draw_tree_table`] paints `table` at, without
 /// touching a buffer — the `TreeTable` counterpart of [`data_table_layout`].
+///
+/// Applies the narrow-rect rule: column 0 (the tree cell) never resolves
+/// below [`tree_column_floor_width`] (indent plus chevron plus one label
+/// character) — rightmost columns are dropped, and failing that column 0
+/// is widened past the viewport, before that floor is ever truncated.
+/// See [`crate::primitives::tree_table::TreeTable::layout`]'s
+/// `min_tree_col_width` doc for the exact rule.
 pub fn tree_table_layout(area: Rect, table: &TreeTable) -> TreeTableLayout {
     let style = TreeStyle::default();
+    let floor = tree_column_floor_width(&style, &table.tree);
     let mut layout = table.layout(
         area.width as f32,
         area.height as f32,
@@ -577,10 +607,27 @@ pub fn tree_table_layout(area: Rect, table: &TreeTable) -> TreeTableLayout {
         1.0,
         |col| ColumnMeasure::new(col.title.chars().count() as f32),
         |node| tui_tree_chevron_measure(&style, node),
+        floor,
     );
     // Same cell-granular rounding `data_table_layout` applies, and for the
     // same reason: `draw_tree_table` paints every column at `h_scroll.round()`.
     layout.table.h_scroll = table.table.h_scroll.round();
+    // Clamp chevron hit bounds to column 0's resolved width — `measure`
+    // above returns bounds relative to column 0's left edge, unclipped,
+    // but a narrow column 0 (whether from the floor above or a plain
+    // override) can resolve narrower than the deepest indent's chevron.
+    // `paint_tree_cell` already clips what it paints; without this, a
+    // click just past the clipped glyph would still hit-test as
+    // `Chevron` even though nothing painted there.
+    if let Some(col0_width) = layout.table.columns.first().map(|c| c.width) {
+        layout.chevrons.retain_mut(|(_, bounds)| {
+            if bounds.x >= col0_width {
+                return false;
+            }
+            bounds.width = bounds.width.min(col0_width - bounds.x);
+            true
+        });
+    }
     layout
 }
 
@@ -2187,12 +2234,21 @@ mod tree_table_tests {
     fn column_1_stays_aligned_across_every_indent_level() {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        // Row 0 (indent 0, "src") and row 1 (indent 1, "main.rs") paint
+        // different-length tree-cell prefixes, but column 1's own text
+        // ("2kb" on row 1; row 0's cell is empty) still starts at the
+        // same screen column on both rows — the indent only pushes
+        // column 0's label, never column 1's.
         let layout = tree_table_layout(area, &table);
-        // Column 1's resolved x/width is pure `DataTable` column geometry —
-        // untouched by any row's indent, same as a plain `DataTable`.
-        let col1 = layout.table.columns[1];
-        assert_eq!(col1.x, layout.table.columns[1].x);
-        assert!(col1.width > 0.0);
+        let col1_x = layout.table.columns[1].x.round() as usize;
+        let row0 = line(&buf, 1, 30);
+        let row1 = line(&buf, 2, 30);
+        let row0_tail: String = row0.chars().skip(col1_x).collect();
+        let row1_tail: String = row1.chars().skip(col1_x).collect();
+        assert!(row1_tail.trim_start().starts_with("2kb"));
+        assert!(row0_tail.trim_end().is_empty());
     }
 
     #[test]
@@ -2248,14 +2304,30 @@ mod tree_table_tests {
     }
 
     #[test]
-    fn narrow_rect_never_panics_and_still_paints_the_tree_column() {
+    fn narrow_rect_drops_the_size_column_before_starving_the_tree_column() {
         let table = make_tree_table();
-        // Narrower than the full column set — exercises the same column
-        // squeeze `DataTable::layout` already applies; `TreeTable` doesn't
-        // write any narrow-rect handling of its own.
+        // `make_tree_table`'s deepest row is indent 1 — floor is
+        // `1 * TreeStyle::default().indent (2) + chevron (1) + label (1)`
+        // = 4.0. At width 8 the plain `DataTable` squeeze alone (no
+        // dropping) would leave column 0 at 2.0, below that floor, so
+        // `Size` is dropped entirely and column 0 takes the rest.
         let area = Rect::new(0, 0, 8, 10);
         let mut buf = Buffer::empty(area);
         let layout = draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
-        assert!(layout.table.columns[0].width >= 1.0);
+        assert_eq!(layout.table.columns.len(), 1);
+        assert!(layout.table.columns[0].width >= 4.0);
+    }
+
+    #[test]
+    fn narrow_rect_never_panics_even_when_the_viewport_is_narrower_than_the_floor() {
+        let table = make_tree_table();
+        // Narrower than the floor itself (4.0) — every other column is
+        // already gone; column 0 is widened past the viewport rather
+        // than truncated below the floor.
+        let area = Rect::new(0, 0, 2, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        assert_eq!(layout.table.columns.len(), 1);
+        assert_eq!(layout.table.columns[0].width, 4.0);
     }
 }
