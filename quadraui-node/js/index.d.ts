@@ -97,6 +97,8 @@ export declare class PoisonedError extends QuadrauiError {}
 export declare class InternalError extends QuadrauiError {}
 /** A `role` string `measureText` does not recognize. */
 export declare class InvalidFontRoleError extends QuadrauiError {}
+/** A `RenderCtx`'s `measureText`/`lineHeight`/`charWidth` was called after the render call that handed it out already returned. */
+export declare class StaleRenderCtxError extends QuadrauiError {}
 /** A method called re-entrantly from inside this same app's own registered event/tick/render callback. */
 export declare class ReentrantCallError extends QuadrauiError {}
 /** A `QuiApp` method called while `startTui`/`startNative` is live. */
@@ -150,6 +152,24 @@ export declare function appPath(kind: string): string;
 export declare function setAppIdentifier(identifier: string): void;
 /** Installs a crash handler that writes a crash record on an uncaught panic. */
 export declare function installCrashHandler(cfg: unknown): void;
+
+/**
+ * The {@link RenderCtx} for whichever `render`/`view` callback is
+ * currently executing on this thread, or `null` outside of one -- see
+ * `index.ts`'s own doc comment for the full contract.
+ */
+export declare function getCurrentCtx(): RenderCtx | null;
+
+/**
+ * Render-time capabilities a script `render`/`view` callback needs from
+ * the live backend painting this frame -- real text measurement
+ * (`measureText`/`lineHeight`/`charWidth`), cell-grid-vs-pixel surface
+ * facts (`cellGrid`/`scale`), and read-only theme/style token lookup by
+ * name (`themeToken`/`styleToken`) -- see the native binding's own doc
+ * comment (`quadraui-node/src/lib.rs`'s `RenderCtx`) for the full method
+ * list.
+ */
+export type RenderCtx = InstanceType<typeof native.RenderCtx>;
 
 /**
  * A headless `ShellApp`/`ShellConfig`-backed app -- see `index.ts`'s own

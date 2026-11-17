@@ -34,10 +34,10 @@
 // same reason `../index.ts`'s own header comment gives.
 
 import type { Node, Renderable, ComponentLike } from "./nodes";
-import type { QuiAppActions, WidgetState, RunHandle } from "../index";
+import type { QuiAppActions, RenderCtx, WidgetState, RunHandle } from "../index";
 import type { Poller, ReboundPrototypes, Watcher } from "./hotReload";
 
-const { QuiApp, run } = require("../index.ts");
+const { QuiApp, run, getCurrentCtx } = require("../index.ts");
 const hr = require("./hotReload.ts");
 
 type AnyCallback = (...args: unknown[]) => void;
@@ -315,8 +315,16 @@ export interface AppOptions {
    * object, the same gate `quadraui-py`'s own `render` callback has
    * always had. Return `{}` (or a `Node`/`Component` tree) for an empty
    * frame instead.
+   *
+   * `ctx` is this frame's {@link RenderCtx} -- real text measurement
+   * (`measureText`/`lineHeight`/`charWidth`), cell-grid-vs-pixel surface
+   * facts (`cellGrid`/`scale`), and read-only theme/style token lookup by
+   * name (`themeToken`/`styleToken`), answered from the live backend
+   * painting this exact frame. A `view` declared with no parameters (every
+   * one written before this existed) keeps working unchanged -- JS simply
+   * ignores an argument a function never declared.
    */
-  view(): Renderable;
+  view(ctx: RenderCtx): Renderable;
   /**
    * Called for every event this layer's own dispatch doesn't claim (a
    * global key, an unrecognized shape, ...) -- the escape hatch a
@@ -397,7 +405,7 @@ class App {
   reloadError: unknown = null;
   /** How many reloads have succeeded and rendered. */
   reloadCount = 0;
-  private _view: () => Renderable;
+  private _view: (ctx: RenderCtx) => Renderable;
   private _onEvent: ((event: unknown) => void) | undefined;
   private _watcher: Watcher | null = null;
   private _poller: Poller | null = null;
@@ -626,7 +634,14 @@ class App {
     this._migrateNextRender = false;
     let wire;
     try {
-      wire = walk(this._view(), [], registry, this._componentStates, newStates, migrate);
+      // `getCurrentCtx()` only answers non-`null` while this `setRender`
+      // callback's own native call is on the stack -- which it is here,
+      // since `_renderOnce` is reached synchronously from
+      // `qui.setRender(() => this._render())`, so the cast below is safe
+      // -- see `RenderCtx`'s own doc (`../index.ts`) for the staleness
+      // contract past that point.
+      const ctx = getCurrentCtx() as RenderCtx;
+      wire = walk(this._view(ctx), [], registry, this._componentStates, newStates, migrate);
     } catch (error) {
       this._migrateNextRender = migrate;
       throw error;

@@ -1030,7 +1030,7 @@ def rust_type_to_py(rust_type: str, is_param: bool = False) -> str:
         return "str"
     if t == "CellColors":
         return "Tuple[Tuple[int, int, int], Tuple[int, int, int]]"
-    if t in ("QuiApp", "QuiShellApp", "QuiAppWaker", "QuiAppActions"):
+    if t in ("QuiApp", "QuiShellApp", "QuiAppWaker", "QuiAppActions", "RenderCtx"):
         return t
     m = re.match(r"^PyResult<(.+)>$", t)
     if m:
@@ -1065,6 +1065,8 @@ def rust_type_to_py(rust_type: str, is_param: bool = False) -> str:
         return "Any"
     if t == "Py<PyDict>":
         return "Dict[str, Any]"
+    if t == "Py<RenderCtx>":
+        return "RenderCtx"
     raise ValueError(f"gen_wire_types.py: no .pyi mapping for rust type {rust_type!r}")
 
 

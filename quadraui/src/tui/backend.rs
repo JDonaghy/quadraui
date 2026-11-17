@@ -2189,6 +2189,10 @@ impl Backend for TuiBackend {
         self.viewport
     }
 
+    fn cell_grid(&self) -> bool {
+        true
+    }
+
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
         // Clear per-frame text regions so stale registrations from the

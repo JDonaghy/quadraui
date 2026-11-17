@@ -1135,6 +1135,20 @@ pub trait Backend: sealed::Sealed {
     /// pixel-ish units with `scale` set to the DPI ratio.
     fn viewport(&self) -> Viewport;
 
+    /// Whether [`Self::viewport`]'s native unit is a whole terminal cell
+    /// rather than a sub-cell pixel/DIP — the fact a script-authored widget
+    /// (`quadraui-py`/`quadraui-node`) needs alongside [`Self::measure_text`]
+    /// to lay out in cells or pixels, since [`Viewport::scale`] alone
+    /// doesn't say which regime a backend is in (a pixel backend at `1.0`
+    /// DPI scale looks numerically identical to a cell backend otherwise).
+    ///
+    /// Default `false`. [`crate::tui::backend::TuiBackend`] overrides this
+    /// to `true`; every pixel backend (GTK, macOS, Win-GUI) keeps the
+    /// default.
+    fn cell_grid(&self) -> bool {
+        false
+    }
+
     /// Begin a frame. Backends may set up the render target, clear, etc.
     fn begin_frame(&mut self, viewport: Viewport);
 

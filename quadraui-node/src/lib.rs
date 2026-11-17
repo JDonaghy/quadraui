@@ -791,6 +791,253 @@ impl WindowCloseHandling for NodeAppLogic {
     }
 }
 
+// ─── Render context for script widgets ──────────────────────────
+//
+// A Rust widget's own `Backend::draw_*`/`*_layout` gets real text
+// measurement, cell-grid-vs-pixel surface facts and the live theme/style
+// straight from its `&mut dyn Backend` parameter. A JS/TS `render`/`view`
+// callback has no such parameter -- `NodeAppLogic::render` invokes it with
+// no meaningful argument (the same zero-argument contract every existing
+// script already relies on). [`RenderCtx`] is the seam that gives a
+// callback the same capabilities anyway, without changing that contract:
+// [`NodeAppLogic::render`] builds one fresh each frame a render callback
+// runs, stashes it in [`CURRENT_RENDER_CTX`] for the span of that one call,
+// and clears it again immediately after -- [`get_current_ctx`] (exposed as
+// `getCurrentCtx()`) is how a callback running on this thread reaches it;
+// `quadraui-node/js/app/runtime.ts`'s `App` forwards the same values to the
+// script's own `view(ctx)` positionally (a plain JS function tolerates an
+// extra argument it never declared, so no arity detection is needed the way
+// `quadraui-py`'s own `App` wrapper needs one), which is the "ctx object
+// passed to render" shape a script-widget render context needs; a script
+// using the native `QuiApp.setRender`/`QuiApp.render` entry point directly
+// (bypassing the `App` wrapper) calls `getCurrentCtx()` itself instead.
+//
+// `measureText`/`lineHeight`/`charWidth` are the one part of this that must
+// stay live for the real duration of the call -- they ask the actual
+// backend painting this frame, not a cached number -- so [`RenderCtx`]
+// holds a raw pointer to it rather than a snapshot, guarded by
+// [`RenderCtx::backend`]'s own `None` sentinel so a script that keeps the
+// object past its one valid frame (stashed in a module-level variable, say)
+// gets `StaleRenderCtxError` instead of a dangling dereference.
+// `themeToken`/`styleToken`/`cellGrid`/`scale` have no such liveness need --
+// `Theme`/`Style` are `Copy`, so [`RenderCtx`] just snapshots them once at
+// construction and answers from that snapshot for as long as the object
+// itself survives. [`RenderCtx`] derives `Clone` so [`get_current_ctx`] can
+// hand out its own independent napi-wrapped JS object on every call rather
+// than needing a `Reference<RenderCtx>` kept alive across calls -- every
+// clone shares the same backing `Rc<Cell<_>>`, so staleness and the live
+// backend answers stay identical across every clone outstanding at once,
+// even though each is its own distinct JS object (unlike `quadraui-py`'s
+// `current_ctx()`, which hands back the exact same `Py<RenderCtx>` --
+// nothing here depends on JS object identity, only on the shared liveness
+// cell and the snapshotted fields).
+
+thread_local! {
+    /// Set by [`RenderCtxScope::enter`] for the duration of one
+    /// [`NodeAppLogic::render`] call, read back by [`get_current_ctx`]. A
+    /// plain `thread_local!` is correct here, not a global: `QuiApp` is
+    /// pinned to the one JS thread that created it, so every render this
+    /// app ever drives -- headless, `startTui`, or `startNative` -- happens
+    /// on that same thread.
+    static CURRENT_RENDER_CTX: RefCell<Option<RenderCtx>> = const { RefCell::new(None) };
+}
+
+/// The [`RenderCtx`] for whichever `render`/`view` callback is currently
+/// executing on this thread, or `None` outside of one -- including from a
+/// tick/event-handler callback, which paints no frame of its own, and from
+/// any call before the first render. See the module section's own doc for
+/// who calls this and why.
+///
+/// `#[cfg_attr(test, allow(dead_code))]`: napi-rs's own module-export
+/// registration for a free `#[napi]` function only exists for a real cdylib
+/// load, not the plain `rlib` `cargo test` compiles, so this function is
+/// genuinely unreferenced from Rust in that configuration -- same story as
+/// [`app_path`]'s own doc.
+#[cfg_attr(test, allow(dead_code))]
+#[napi(js_name = "getCurrentCtx")]
+pub fn get_current_ctx() -> Option<RenderCtx> {
+    CURRENT_RENDER_CTX.with(|cell| cell.borrow().clone())
+}
+
+/// Render-time capabilities a script `render`/`view` callback needs from
+/// the live backend painting this frame -- real text measurement,
+/// cell-grid-vs-pixel surface facts, and read-only theme/style token lookup
+/// by name -- mirroring what a Rust widget already gets through its own
+/// `&mut dyn Backend` parameter. See the module section's own doc for the
+/// full contract and why `measureText`/`lineHeight`/`charWidth` alone need
+/// [`Self::backend`]'s liveness guard.
+#[napi]
+#[derive(Clone)]
+pub struct RenderCtx {
+    /// `Some` for exactly the duration of the render call that constructed
+    /// this -- cleared by [`RenderCtxScope`]'s `Drop` right after the
+    /// callback returns (even if it threw). The shared `Rc<Cell<_>>`
+    /// (rather than a plain field) is what lets that `Drop` reach in and
+    /// invalidate every clone of this `RenderCtx` at once, even though JS
+    /// may still be holding its own reference to one or more of the
+    /// JS-wrapped objects [`get_current_ctx`]/[`RenderCtxScope::enter`]
+    /// handed out.
+    ///
+    /// # Safety
+    ///
+    /// While `Some`, the pointer is valid for the lifetime of the
+    /// `&mut dyn Backend` [`NodeAppLogic::render`] was called with --
+    /// [`RenderCtxScope::enter`] derives it from exactly that reference and
+    /// nothing but that same scope's `Drop` ever clears it, so no access
+    /// through [`Self::with_backend`] ever happens once the reference it
+    /// came from could have gone out of scope.
+    backend: Rc<Cell<Option<*mut dyn Backend>>>,
+    theme: quadraui::Theme,
+    style: quadraui::Style,
+    cell_grid: bool,
+    scale: f32,
+}
+
+impl RenderCtx {
+    /// Runs `body` against the live backend if [`Self::backend`] is still
+    /// `Some`, else raises `StaleRenderCtxError` naming the calling method
+    /// (`what`).
+    fn with_backend<T>(&self, what: &str, body: impl FnOnce(&dyn Backend) -> T) -> Result<T> {
+        match self.backend.get() {
+            // SAFETY: see `Self::backend`'s own doc.
+            Some(ptr) => Ok(body(unsafe { &*ptr })),
+            None => Err(stale_render_ctx_error(format!(
+                "{what}: this RenderCtx is only valid for the duration of the render call that \
+                 created it"
+            ))),
+        }
+    }
+}
+
+#[napi]
+impl RenderCtx {
+    /// Real `[width, height]`, in the live backend's native units, of
+    /// `text` rendered in `role`'s font -- [`Backend::measure_text`]. `role`
+    /// is `"chrome"` (the default) or `"editor"`; on TUI this returns the
+    /// same cell-count width (height always `1.0`) for either. Raises
+    /// `InvalidFontRoleError` for any other `role` value, or
+    /// `StaleRenderCtxError` if called after the render call that handed
+    /// out this `RenderCtx` has already returned.
+    #[napi(js_name = "measureText")]
+    pub fn measure_text(&self, text: String, role: Option<String>) -> Result<(f64, f64)> {
+        let role = font_role(role.as_deref().unwrap_or("chrome"))
+            .map_err(|err| invalid_font_role_error(format!("measureText: {err}")))?;
+        self.with_backend("measureText", |backend| {
+            let (w, h) = backend.measure_text(&text, role);
+            (w as f64, h as f64)
+        })
+    }
+
+    /// Height of one standard text row, in the live backend's native units
+    /// -- [`Backend::line_height`].
+    #[napi(js_name = "lineHeight")]
+    pub fn line_height(&self) -> Result<f64> {
+        self.with_backend("lineHeight", |backend| backend.line_height() as f64)
+    }
+
+    /// Approximate monospace character width, in the live backend's native
+    /// units -- [`Backend::char_width`].
+    #[napi(js_name = "charWidth")]
+    pub fn char_width(&self) -> Result<f64> {
+        self.with_backend("charWidth", |backend| backend.char_width() as f64)
+    }
+
+    /// Whether the live backend's native unit is a whole terminal cell
+    /// (`true` on TUI) rather than a sub-cell pixel/DIP (`false` on every
+    /// pixel backend) -- [`Backend::cell_grid`]. A snapshot taken when this
+    /// `RenderCtx` was constructed, not a live backend call -- safe to read
+    /// even after the render call that handed out this `RenderCtx` has
+    /// returned.
+    #[napi(js_name = "cellGrid")]
+    pub fn cell_grid(&self) -> bool {
+        self.cell_grid
+    }
+
+    /// The live backend's DPI scale -- [`quadraui::Viewport::scale`]'s
+    /// value as of this `RenderCtx`'s construction. `1.0` on TUI and on an
+    /// unscaled pixel display. A snapshot, like [`Self::cell_grid`].
+    #[napi]
+    pub fn scale(&self) -> f64 {
+        self.scale as f64
+    }
+
+    /// Looks up colour role `name` (one of [`quadraui::Theme`]'s own field
+    /// names -- `"background"`, `"accent_fg"`, `"selected_bg"`, ...) on the
+    /// theme active when this `RenderCtx` was constructed, as a
+    /// `{"r":.., "g":.., "b":.., "a":..}` object, or `null` if `name` isn't
+    /// a real field. A snapshot, like [`Self::cell_grid`] -- reads the same
+    /// value all frame no matter how many times it's called.
+    #[napi(js_name = "themeToken")]
+    pub fn theme_token(&self, name: String) -> Option<serde_json::Value> {
+        quadraui_binding_core::theme_token(&self.theme, &name)
+    }
+
+    /// Looks up geometry token `name` (one of [`quadraui::Style`]'s own
+    /// field names -- `"focus_ring_width"`, `"padding"`, `"corner_radius"`,
+    /// ...) on the style active when this `RenderCtx` was constructed, or
+    /// `null` if `name` isn't a real field. A snapshot, like
+    /// [`Self::theme_token`].
+    #[napi(js_name = "styleToken")]
+    pub fn style_token(&self, name: String) -> Option<serde_json::Value> {
+        quadraui_binding_core::style_token(&self.style, &name)
+    }
+}
+
+/// Builds a fresh [`RenderCtx`] over `backend` and installs it into
+/// [`CURRENT_RENDER_CTX`] for as long as this guard lives, restoring
+/// whatever was there before (always `None` in practice -- renders never
+/// nest) and invalidating the `RenderCtx`'s own backend pointer on `Drop`,
+/// which runs even if the render callback in between panicked or threw --
+/// so a script that stashes the `RenderCtx` it was handed into a
+/// module-level variable and calls a method on it later gets a clean
+/// `StaleRenderCtxError` instead of a dangling `&mut dyn Backend`
+/// dereference.
+struct RenderCtxScope {
+    backend: Rc<Cell<Option<*mut dyn Backend>>>,
+    previous: Option<RenderCtx>,
+}
+
+impl RenderCtxScope {
+    fn enter(backend: &mut dyn Backend) -> Self {
+        let theme = backend.theme();
+        let style = backend.style();
+        let cell_grid = backend.cell_grid();
+        let scale = backend.viewport().scale;
+        // SAFETY: `backend`'s real lifetime is this call's own stack frame,
+        // shorter than the `'static` `RenderCtx`'s field type requires
+        // (`Cell<T>` is invariant, so an ordinary `as`/unsizing cast of a
+        // shorter-lived reference is rejected outright). This `transmute`
+        // erases that lifetime rather than asserting it, which is exactly
+        // why `RenderCtxScope::drop` below must clear this cell before this
+        // function returns and `backend` goes out of scope -- see
+        // `RenderCtx::backend`'s own doc for the invariant that keeps the
+        // erasure sound.
+        let backend_ptr: *mut dyn Backend =
+            unsafe { std::mem::transmute::<&mut dyn Backend, *mut dyn Backend>(backend) };
+        let backend_cell: Rc<Cell<Option<*mut dyn Backend>>> =
+            Rc::new(Cell::new(Some(backend_ptr)));
+        let ctx = RenderCtx {
+            backend: backend_cell.clone(),
+            theme,
+            style,
+            cell_grid,
+            scale,
+        };
+        let previous = CURRENT_RENDER_CTX.with(|cell| cell.borrow_mut().replace(ctx));
+        Self {
+            backend: backend_cell,
+            previous,
+        }
+    }
+}
+
+impl Drop for RenderCtxScope {
+    fn drop(&mut self) {
+        self.backend.set(None);
+        CURRENT_RENDER_CTX.with(|cell| *cell.borrow_mut() = self.previous.take());
+    }
+}
+
 impl AppLogic for NodeAppLogic {
     type AreaId = ();
 
@@ -839,13 +1086,24 @@ impl AppLogic for NodeAppLogic {
         // every node in the tree resolves against the same palette.
         let theme = backend.theme();
         let styles = StyleContext::new(&self.host.style_sets, &theme);
-        match render_output_from_callback(
+        // Installs a fresh `RenderCtx` over `backend` for the span of the
+        // callback call below, so `getCurrentCtx()` (and whatever the
+        // `App` wrapper forwards positionally) answers from the live
+        // backend painting this exact frame -- see the `RenderCtx` module
+        // section's own doc. Dropped (invalidating the `RenderCtx`) right
+        // after the callback returns, before `backend` is used again below
+        // to actually paint this frame -- `RenderCtxScope`'s own doc
+        // explains why this must happen before, not after, that reuse.
+        let ctx_scope = RenderCtxScope::enter(&mut *backend);
+        let render_result = render_output_from_callback(
             env,
             callback,
             &self.pending_error,
             styles,
             &self.host.wire_diagnostics,
-        ) {
+        );
+        drop(ctx_scope);
+        match render_result {
             Some(RenderOutput::Flat(frame)) => {
                 let resolved =
                     resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
@@ -1646,6 +1904,14 @@ fn invalid_dimensions_error(detail: impl std::fmt::Display) -> Error {
 /// exception subclass.
 fn invalid_font_role_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("InvalidFontRoleError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for a [`RenderCtx`] method called
+/// after the render call that handed it out has already returned -- see
+/// [`RenderCtx::backend`]'s own doc -- the napi-rs analog of `quadraui-py`'s
+/// `StaleRenderCtxError` exception subclass.
+fn stale_render_ctx_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("StaleRenderCtxError: {detail}"))
 }
 
 /// Mirrors [`invalid_descriptor_error`] for a `QuiApp` method called
@@ -5011,5 +5277,70 @@ mod tests {
             serde_json::to_value(BottomPanelEvent::Resized(8.0)).unwrap(),
             serde_json::json!({"Resized": 8.0})
         );
+    }
+
+    /// Exercises [`RenderCtxScope`]/[`RenderCtx`]/[`CURRENT_RENDER_CTX`]
+    /// directly against a headless `TuiBackend`, with no live Node/V8
+    /// runtime behind it -- unlike a JS callback-driven path (no
+    /// `NodeCallback` is constructible from a plain `#[test]`, see
+    /// [`null_env_for_test`]'s own doc), these three are plain Rust and
+    /// need no `Env` at all. Covers the cell-grid surface fact, the exact
+    /// cell-count `measureText` answer, a `themeToken` lookup, and the
+    /// staleness guard firing once the scope has dropped.
+    #[test]
+    fn render_ctx_answers_from_a_real_tui_backend_and_goes_stale_after_the_scope_drops() {
+        let mut app = QuiApp::new(5, 5).expect("valid dimensions");
+        let (backend, _app_logic) = app.driver.parts_mut();
+
+        let scope = RenderCtxScope::enter(backend);
+        let ctx = CURRENT_RENDER_CTX
+            .with(|cell| cell.borrow().clone())
+            .expect("RenderCtxScope::enter must install a RenderCtx");
+        assert!(ctx.cell_grid(), "a headless TuiBackend is a cell grid");
+        assert_eq!(
+            ctx.measure_text("hello".to_string(), None)
+                .expect("measureText must succeed while the scope is live"),
+            (5.0, 1.0),
+        );
+        assert!(ctx.theme_token("accent_fg".to_string()).is_some());
+        assert!(ctx.theme_token("not_a_real_field".to_string()).is_none());
+        drop(scope);
+
+        assert!(
+            CURRENT_RENDER_CTX.with(|cell| cell.borrow().is_none()),
+            "dropping the scope must clear CURRENT_RENDER_CTX again"
+        );
+        let err = ctx
+            .measure_text("x".to_string(), None)
+            .expect_err("measureText must raise once the owning scope has dropped");
+        assert!(
+            err.reason.starts_with("StaleRenderCtxError:"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// `RenderCtx::cell_grid`/`measure_text` answer from whichever live
+    /// backend a frame actually painted with -- a real `GtkBackend`
+    /// reports `cellGrid() == false` and a pixel-shaped `measureText`
+    /// width, unlike the headless `TuiBackend`'s exact cell count --
+    /// mirrors `quadraui-py`'s own
+    /// `render_ctx_answers_from_a_real_gtk_backend`.
+    #[test]
+    #[cfg(feature = "gtk")]
+    fn render_ctx_answers_from_a_real_gtk_backend() {
+        let mut backend = quadraui::gtk::GtkBackend::new();
+        let scope = RenderCtxScope::enter(&mut backend);
+        let ctx = CURRENT_RENDER_CTX
+            .with(|cell| cell.borrow().clone())
+            .expect("RenderCtxScope::enter must install a RenderCtx");
+        assert!(!ctx.cell_grid(), "a real GtkBackend is not a cell grid");
+        let (width, _height) = ctx
+            .measure_text("abc".to_string(), None)
+            .expect("measureText must succeed while the scope is live");
+        assert!(
+            width > 0.0,
+            "a real GtkBackend must report a positive pixel width, got {width}"
+        );
+        drop(scope);
     }
 }

@@ -34,6 +34,7 @@ mutation a callback makes is already visible by the time that same
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 
 from . import hot_reload as _hr
@@ -154,6 +155,26 @@ def _is_activate_key(name: Optional[str]) -> bool:
     return name in _ACTIVATE_KEY_NAMES
 
 
+def _accepts_positional_ctx(fn: Callable[..., Any]) -> bool:
+    """Whether `fn` -- an app's own `view` callback -- can take a `ctx`
+    argument positionally: `True` for `def view(ctx):`/`def view(ctx=None):`/
+    `def view(*args):`, `False` for the original zero-argument `def view():`
+    shape every pre-#2613 script still uses (and still works unchanged,
+    since `_render_once` below only passes `ctx` when this reports `True`).
+
+    Checked via `inspect.Signature.bind_partial`, not a bare parameter
+    count, so `def view(**kwargs):` (one parameter, but not a positional
+    one) still reports `False` rather than being handed `ctx` it has no
+    slot for. A callable `inspect.signature` can't introspect (some
+    C-implemented callables) also reports `False` -- the same "call with
+    no arguments" default every pre-#2613 script already relies on."""
+    try:
+        inspect.signature(fn).bind_partial(None)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 # Maps a container-event wrapper's own key (`event["Tree"]`, `event["DataTable"]`,
 # ...) to {variant_name: (callback_name, args_from_payload)} -- the shape
 # every typed leaf node constructor's own `on_*` keyword documents.
@@ -231,6 +252,18 @@ class App:
     caller, either through an `on_resolve` callback (sync or `async def`)
     or, when `on_resolve` is omitted, an awaitable future -- see `confirm`'s
     own doc for the full contract.
+
+    `view` may declare an optional `ctx` parameter (`def view(ctx):` or
+    `def view(ctx=None):`) to receive this frame's `quadraui.RenderCtx` --
+    real text measurement (`ctx.measure_text`/`ctx.line_height`/
+    `ctx.char_width`), the cell-grid-vs-pixel surface facts
+    (`ctx.cell_grid`/`ctx.scale`), and read-only theme/style token lookup
+    by name (`ctx.theme_token`/`ctx.style_token`), answered by whichever
+    live backend is painting this frame -- the same capabilities a Rust
+    widget gets through its own `Backend` parameter. A `view()` that keeps
+    the original zero-argument shape is called exactly as before; only one
+    that actually declares a slot for it receives `ctx` -- see
+    `_accepts_positional_ctx`'s own doc.
     """
 
     def __init__(
@@ -238,7 +271,7 @@ class App:
         width: int,
         height: int,
         *,
-        view: Callable[[], Any],
+        view: Callable[..., Any],
         on_event: Optional[Callable[[Any], None]] = None,
         strict: bool = False,
         on_unknown_key: Optional[Callable[[str, str], None]] = None,
@@ -479,11 +512,26 @@ class App:
             return self._render_once()
 
     def _render_once(self) -> Any:
+        # Local import: avoids a cycle with `quadraui/__init__.py`, same
+        # reason `__init__`'s own `from quadraui import QuiApp` is local
+        # rather than module-level.
+        from quadraui import current_ctx
+
         registry: Dict[str, Dict[str, Callable[..., None]]] = {}
         new_states: Dict[Any, Dict[str, Any]] = {}
         migrate, self._migrate_next_render = self._migrate_next_render, False
         try:
-            wire = _walk(self._view(), (), registry, self._component_states, new_states, migrate)
+            # `current_ctx()` is only non-`None` while this call is itself
+            # nested inside `QuiApp`'s own native render callback -- see
+            # `quadraui._quadraui`'s own `RenderCtx` module doc -- which is
+            # exactly the call this method *is*, so it is always real here,
+            # not a leftover from the "outside render" case. Forwarded to
+            # `self._view` only when it can take a positional argument, so
+            # a script's pre-#2613 zero-argument `view()` keeps working
+            # unchanged -- see `_accepts_positional_ctx`'s own doc.
+            ctx = current_ctx()
+            view = self._view(ctx) if _accepts_positional_ctx(self._view) else self._view()
+            wire = _walk(view, (), registry, self._component_states, new_states, migrate)
         except BaseException:
             self._migrate_next_render = migrate
             raise

@@ -3909,6 +3909,37 @@ pub fn message_dialog_options_from_buttons(
     })
 }
 
+// ─── Render context for script widgets ──────────────────────────
+//
+// `measure_text`/`line_height`/`char_width` reach the live `&dyn Backend`
+// directly at whichever call site already holds one (a binding's own
+// `RenderCtx` wrapper, constructed fresh each `AppLogic::render` call —
+// see `quadraui-py`'s/`quadraui-node`'s own type of that name). The two
+// functions below are the shared half every binding's "theme/style token
+// by name" accessor delegates to instead of hand-rolling its own
+// field-by-field match over `Theme`'s/`Style`'s dozens of fields: both
+// types already derive `Serialize`, so a generic `serde_json::to_value`
+// lookup is exhaustive by construction — a future field on either becomes
+// queryable here for free, with no match arm to add or keep in sync.
+
+/// Looks up colour role `name` on `theme` — one of its own field names
+/// (`"background"`, `"accent_fg"`, `"selected_bg"`, …) — returning its
+/// `{"r":.., "g":.., "b":.., "a":..}` JSON shape, or `None` if `name` isn't
+/// a field [`quadraui::Theme`] declares.
+pub fn theme_token(theme: &quadraui::Theme, name: &str) -> Option<serde_json::Value> {
+    let value = serde_json::to_value(theme).ok()?;
+    value.as_object()?.get(name).cloned()
+}
+
+/// Looks up geometry token `name` on `style` — one of its own field names
+/// (`"focus_ring_width"`, `"padding"`, `"corner_radius"`, …) — returning
+/// its plain JSON number (or boolean, for a non-numeric future token), or
+/// `None` if `name` isn't a field [`quadraui::Style`] declares.
+pub fn style_token(style: &quadraui::Style, name: &str) -> Option<serde_json::Value> {
+    let value = serde_json::to_value(style).ok()?;
+    value.as_object()?.get(name).cloned()
+}
+
 #[cfg(test)]
 #[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; `PanelLogic` and its tests cover `LayoutNode::Panel`'s own plumbing directly.
 mod tests {
@@ -3925,7 +3956,7 @@ mod tests {
         UiEvent, WidgetId,
     };
 
-    use super::{viewport_rect, EventSink, InteractionEngine};
+    use super::{style_token, theme_token, viewport_rect, EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
     use crate::hit::{HitDetail, PaintedHit};
     use crate::host::{
@@ -9785,5 +9816,45 @@ mod tests {
              never echoed back: {:?}",
             driver.app().sink.borrow().dispatched
         );
+    }
+
+    #[test]
+    fn theme_token_looks_up_a_colour_field_by_name() {
+        let theme = quadraui::Theme::default();
+        let looked_up = theme_token(&theme, "accent_fg").expect("accent_fg is a real field");
+        let expected = serde_json::to_value(theme.accent_fg).unwrap();
+        assert_eq!(looked_up, expected);
+    }
+
+    #[test]
+    fn theme_token_switches_value_when_the_theme_switches() {
+        let dark = quadraui::Theme::default();
+        let light = quadraui::Theme::light_default();
+        assert_ne!(
+            theme_token(&dark, "background"),
+            theme_token(&light, "background"),
+            "the dark and light default palettes disagree on `background`, so the looked-up \
+             token must disagree too"
+        );
+    }
+
+    #[test]
+    fn theme_token_returns_none_for_an_unknown_name() {
+        let theme = quadraui::Theme::default();
+        assert_eq!(theme_token(&theme, "not_a_real_field"), None);
+    }
+
+    #[test]
+    fn style_token_looks_up_a_geometry_field_by_name() {
+        let style = quadraui::Style::default();
+        let looked_up =
+            style_token(&style, "focus_ring_width").expect("focus_ring_width is a real field");
+        assert_eq!(looked_up, serde_json::json!(style.focus_ring_width));
+    }
+
+    #[test]
+    fn style_token_returns_none_for_an_unknown_name() {
+        let style = quadraui::Style::default();
+        assert_eq!(style_token(&style, "not_a_real_field"), None);
     }
 }
