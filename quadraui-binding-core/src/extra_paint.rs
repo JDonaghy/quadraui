@@ -12,11 +12,12 @@ use std::rc::Rc;
 use quadraui::{
     render_markdown_to_styled, ActivityBar, Backend, BoardModel, Canvas, Chart, ComboBox,
     CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor,
-    FieldKind, FindReplacePanel, Form, FormField, Image, InteractionState, LabelPosition, MenuBar,
-    MessageList, Minimap, MultiSectionView, NumberInput, NumberInputHit, Palette, PipelineView,
-    Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar,
-    Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit, Terminal, TextDisplay,
-    TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, WidgetId,
+    FieldKind, FindReplacePanel, FontRole, Form, FormField, Image, InteractionState, LabelPosition,
+    MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize, NumberInput, NumberInputHit,
+    Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis,
+    ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit,
+    Terminal, TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar,
+    ToolbarButton, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -60,6 +61,30 @@ pub trait ExtraPaint: std::any::Any {
     /// interactive unless overridden" default.
     fn tab_stop(&self) -> bool {
         false
+    }
+
+    /// Best-effort intrinsic size of this descriptor — the `ExtraPaint`
+    /// counterpart of `crate::render::natural_size`'s per-kind arms for
+    /// the six fixed leaf slots (`Button`/`TextDisplay`/`List`/`Tree`/
+    /// `DataTable`/`TabBar`). Consulted by
+    /// [`crate::render::layout_container_rects`]'s non-`Stretch`
+    /// `crate::layout::Align` so a compact additive leaf (`Checkbox`,
+    /// `Switch`, `ProgressBar`, `Image`, ...) sizes to its own content
+    /// under `Align::Start`/`Center`/`End` instead of always filling the
+    /// cross-axis extent — a `None` on either axis still degrades that
+    /// axis to filling it, same as [`quadraui::NaturalSize`]'s own doc
+    /// describes.
+    ///
+    /// Defaults to [`quadraui::NaturalSize::NONE`], correct for every
+    /// extra with no single natural size to report: a viewport-filling
+    /// primitive (`Editor`, `Terminal`, `Canvas`, `ScrollView`, ...), a
+    /// multi-cell grid (`DatePicker`), or a chrome bar meant to span
+    /// its whole axis (`Toolbar`, `StatusBar`, `MenuBar`, ...). The
+    /// impls below override it for the primitives with a genuinely
+    /// compact or fixed-content shape.
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        let _ = backend;
+        NaturalSize::NONE
     }
 
     /// Paints with real hover/pressed state, returning the absolute bounds
@@ -121,6 +146,25 @@ pub fn extra_as_text_input(extra: &Rc<dyn ExtraPaint>) -> Option<&TextInput> {
     None
 }
 
+/// A compact boolean toggle's own box, with no label of its own
+/// ([`Checkbox`]/[`Switch`] both hide their `Form`-field label — see
+/// [`single_field_form`]): `3` cells on a cell-grid backend (TUI's own
+/// `"[x]"`-shaped chrome, mirroring `quadraui::tui::form`'s `Toggle`
+/// control-width constant), or two text rows' worth on a pixel backend
+/// (a nominal pill/box width, the same "no real `Style::padding` to
+/// read at this layer" caveat `crate::render::natural_size`'s own
+/// `Button` arm already documents for its own chrome estimate).
+fn toggle_control_size(backend: &mut dyn Backend) -> (f32, f32) {
+    let line_height = backend.line_height();
+    let char_width = backend.char_width();
+    let width = if char_width <= 1.0 {
+        3.0 * char_width
+    } else {
+        2.0 * line_height
+    };
+    (width, line_height)
+}
+
 impl ExtraPaint for ProgressBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_progress(area, self);
@@ -128,6 +172,14 @@ impl ExtraPaint for ProgressBar {
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// One text row tall; no natural width — a progress bar's own point
+    /// is to fill whatever horizontal space its container gives it, the
+    /// same "no cheap width" treatment `crate::render::natural_size`'s
+    /// `List`/`Tree`/`DataTable` arms already give their own main axis.
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        NaturalSize::new(None, Some(backend.line_height()))
     }
 }
 
@@ -139,6 +191,29 @@ impl ExtraPaint for Spinner {
     fn id(&self) -> WidgetId {
         self.id
     }
+
+    /// The animated glyph's own box (one cell on TUI, a nominal
+    /// icon-sized square on a pixel backend — the same cell-grid test
+    /// [`toggle_control_size`] uses) plus, when `label` is non-empty, a
+    /// one-`char_width` gap and the label's own measured width in
+    /// `FontRole::Chrome` (the role every chrome label on this trait
+    /// measures in — see `crate::render::natural_size`'s `Button` arm).
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        let line_height = backend.line_height();
+        let char_width = backend.char_width();
+        let glyph_width = if char_width <= 1.0 {
+            char_width
+        } else {
+            line_height
+        };
+        let width = if self.label.is_empty() {
+            glyph_width
+        } else {
+            let (label_w, _) = backend.measure_text(&self.label, FontRole::Chrome);
+            glyph_width + char_width.max(1.0) + label_w
+        };
+        NaturalSize::new(Some(width), Some(line_height))
+    }
 }
 
 impl ExtraPaint for Image {
@@ -148,6 +223,32 @@ impl ExtraPaint for Image {
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Natural size depends on whether this backend can rasterise the
+    /// real image at all. On a cell-grid backend with no graphics
+    /// protocol (`char_width() <= 1.0` — the same test every chrome-
+    /// padding estimate on this trait uses), `self.fallback_text` is
+    /// what actually paints (see [`quadraui::Image::fallback_text`]'s
+    /// own doc), so that text's own measured width is the real natural
+    /// size, not `intrinsic_size`'s pixel dimensions, which have no
+    /// defined cell-grid mapping. On a pixel backend, `intrinsic_size`
+    /// (device-independent pixels, close enough to this backend's own
+    /// native units for a best-effort estimate) is the real content
+    /// size when known; `None` when it isn't, same as every other axis
+    /// with no cheap measurement.
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        if backend.char_width() <= 1.0 {
+            if self.fallback_text.is_empty() {
+                return NaturalSize::NONE;
+            }
+            let (w, _) = backend.measure_text(&self.fallback_text, FontRole::Chrome);
+            return NaturalSize::new(Some(w), Some(backend.line_height()));
+        }
+        match self.intrinsic_size {
+            Some((w, h)) => NaturalSize::new(Some(w as f32), Some(h as f32)),
+            None => NaturalSize::NONE,
+        }
     }
 }
 
@@ -205,6 +306,17 @@ impl ExtraPaint for TextInput {
     fn tab_stop(&self) -> bool {
         true
     }
+
+    /// No natural width — a standalone text input fills whatever width
+    /// its container gives it, same as `crate::render::natural_size`'s
+    /// own `List`/`Tree`/`DataTable` arms. Height is `lines.len()` rows:
+    /// unlike [`PasswordInput`]/[`TextField`] (always exactly one line
+    /// by construction) a bare standalone `TextInput` leaf may hold
+    /// several, the same count [`quadraui::TextInput::layout`] paints.
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        let rows = self.lines.len().max(1) as f32;
+        NaturalSize::new(None, Some(rows * backend.line_height()))
+    }
 }
 
 impl ExtraPaint for TextField {
@@ -228,6 +340,13 @@ impl ExtraPaint for TextField {
 
     fn tab_stop(&self) -> bool {
         true
+    }
+
+    /// Always exactly one line — [`quadraui::TextField`] has no
+    /// multi-line mode, unlike a bare [`TextInput`]. No natural width,
+    /// same reasoning as [`TextInput::natural_size`].
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        NaturalSize::new(None, Some(backend.line_height()))
     }
 }
 
@@ -258,6 +377,33 @@ impl ExtraPaint for RadioGroup {
     fn tab_stop(&self) -> bool {
         true
     }
+
+    /// One row per option ([`quadraui::RadioGroup::layout`] stacks them
+    /// top-to-bottom, never side by side), as wide as a selection glyph
+    /// plus the widest option label, both measured the same way
+    /// [`toggle_control_size`]/`crate::render::natural_size`'s `Button`
+    /// arm measure their own chrome/label.
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        if self.options.is_empty() {
+            return NaturalSize::NONE;
+        }
+        let line_height = backend.line_height();
+        let char_width = backend.char_width();
+        let glyph_width = if char_width <= 1.0 {
+            3.0 * char_width
+        } else {
+            1.5 * line_height
+        };
+        let widest_label = self
+            .options
+            .iter()
+            .map(|opt| backend.measure_text(&opt.label, FontRole::Chrome).0)
+            .fold(0.0_f32, f32::max);
+        NaturalSize::new(
+            Some(glyph_width + widest_label),
+            Some(self.options.len() as f32 * line_height),
+        )
+    }
 }
 
 impl ExtraPaint for Switch {
@@ -275,6 +421,13 @@ impl ExtraPaint for Switch {
 
     fn tab_stop(&self) -> bool {
         true
+    }
+
+    /// Toggle box only — same shape as [`Checkbox`], no label of its
+    /// own.
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        let (width, height) = toggle_control_size(backend);
+        NaturalSize::new(Some(width), Some(height))
     }
 }
 
@@ -351,6 +504,16 @@ impl ExtraPaint for ComboBox {
 
     fn tab_stop(&self) -> bool {
         true
+    }
+
+    /// Closed state only — [`ExtraPaint::paint`]'s own `field_bounds`
+    /// is one row regardless of `area`'s height, and that closed field
+    /// is the shape worth reporting here: the open dropdown is a
+    /// transient overlay, not this leaf's own steady-state size. No
+    /// natural width: the field always fills `area.width`, same as a
+    /// bare [`TextInput`].
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        NaturalSize::new(None, Some(backend.line_height()))
     }
 }
 
@@ -504,6 +667,13 @@ impl ExtraPaint for Checkbox {
     fn tab_stop(&self) -> bool {
         true
     }
+
+    /// Toggle box only — [`single_field_form`] hides this leaf's own
+    /// `Form` label, same as [`Switch`].
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        let (width, height) = toggle_control_size(backend);
+        NaturalSize::new(Some(width), Some(height))
+    }
 }
 
 /// A standalone numeric slider — the layout-leaf lift of
@@ -568,6 +738,13 @@ impl ExtraPaint for Slider {
     fn tab_stop(&self) -> bool {
         true
     }
+
+    /// One row tall; no natural width — a slider's track fills whatever
+    /// width its container gives it, same reasoning as
+    /// [`ProgressBar::natural_size`].
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        NaturalSize::new(None, Some(backend.line_height()))
+    }
 }
 
 /// A standalone single-choice option list — the layout-leaf lift of
@@ -622,6 +799,15 @@ impl ExtraPaint for Select {
 
     fn tab_stop(&self) -> bool {
         true
+    }
+
+    /// One row tall, same reasoning as [`ComboBox::natural_size`]'s
+    /// closed-field shape — `Select` has no separate open/closed state
+    /// of its own ([`FieldKind::Dropdown`] renders its options inline,
+    /// never as a popup), but is still always exactly one row. No
+    /// natural width: the field fills `area.width`.
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        NaturalSize::new(None, Some(backend.line_height()))
     }
 }
 
@@ -718,6 +904,14 @@ impl ExtraPaint for PasswordInput {
 
     fn tab_stop(&self) -> bool {
         true
+    }
+
+    /// Always exactly one line, by the same "`Enter` commits, never
+    /// inserts `'\n'`" invariant [`PasswordInput::as_form`]'s own doc
+    /// describes. No natural width, same reasoning as
+    /// [`TextInput::natural_size`].
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        NaturalSize::new(None, Some(backend.line_height()))
     }
 }
 
@@ -846,6 +1040,15 @@ impl ExtraPaint for TextArea {
 
     fn tab_stop(&self) -> bool {
         true
+    }
+
+    /// `visible_rows` rows tall — the field's own declared viewport
+    /// height, independent of how many lines `inner` actually holds
+    /// (scrolling, not growth, absorbs the difference). No natural
+    /// width, same reasoning as [`TextInput::natural_size`].
+    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
+        let rows = self.visible_rows.max(1) as f32;
+        NaturalSize::new(None, Some(rows * backend.line_height()))
     }
 }
 

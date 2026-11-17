@@ -527,11 +527,11 @@ pub enum Justify {
 /// supports. `Stretch` (the default) gives every child the container's
 /// full cross-axis extent, exactly like every `Row`/`Column` child before
 /// `align` existed. `Start`/`Center`/`End` instead size a child to its own
-/// natural cross-axis extent (see `crate::render::natural_size`) and
-/// position it within the container's cross-axis extent; a child with no
-/// cheap natural-size measurement on that axis (anything but a `Button`/
-/// `TextDisplay`/`TabBar` leaf) degrades to `Stretch` instead of collapsing
-/// to zero.
+/// natural cross-axis extent (see `crate::render::natural_size`, which
+/// also consults `crate::extra_paint::ExtraPaint::natural_size` for an
+/// `Extra` leaf) and position it within the container's cross-axis
+/// extent; a child with no cheap natural-size measurement on that axis
+/// degrades to `Stretch` instead of collapsing to zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
     Start,
