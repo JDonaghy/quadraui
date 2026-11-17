@@ -181,6 +181,41 @@ pub(crate) fn draw_dialog_with_style(
                             }
                         }
                     }
+                    // Embedded search box: a framed slot holding the
+                    // field's own text, dimmed to the placeholder while
+                    // the value is empty. The leading magnifier, the
+                    // clear button and the caret come from
+                    // `crate::primitives::toolbar::native_surface_paint::paint`,
+                    // which `win::toolbar` delegates to and this block
+                    // doesn't share yet — the same follow-up its own
+                    // `Separator` note names.
+                    ToolbarItemKind::Field => {
+                        if let Some(crate::primitives::toolbar::ToolbarButton::Field {
+                            field,
+                            ..
+                        }) = toolbar.buttons.get(vis.item_idx)
+                        {
+                            let _ = stroke_rect(target, vis.bounds, border, 1.0);
+                            let (text, text_fg) = if field.value.is_empty() {
+                                (&field.placeholder, theme.muted_fg)
+                            } else {
+                                (&field.value, fg)
+                            };
+                            let _ = dwrite.draw_text(target, text, vis.bounds, text_fg);
+                        }
+                    }
+                    // Pull-down: the label plus the `▾` affordance the
+                    // shared painter draws, as one text run.
+                    ToolbarItemKind::MenuButton => {
+                        if let Some(crate::primitives::toolbar::ToolbarButton::MenuButton {
+                            label,
+                            ..
+                        }) = toolbar.buttons.get(vis.item_idx)
+                        {
+                            let text = format!("{label} \u{25BE}");
+                            let _ = dwrite.draw_text(target, &text, vis.bounds, fg);
+                        }
+                    }
                 }
             }
         }
