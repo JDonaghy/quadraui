@@ -2993,9 +2993,10 @@ impl Backend for MacBackend {
         // one implementation rather than two paint paths that can drift.
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
-    /// Per-tab icon glyphs, implemented on macOS via [`super::tab_bar::mac_tab_icon_extras`]
-    /// which measures each glyph with CoreText and every geometry consumer
-    /// reserves that width, so a decorated tab's label and close-button hit
+    /// Per-tab icon glyphs, implemented on macOS via
+    /// [`super::tab_bar::mac_tab_bar_pixel_layout`], which measures each
+    /// glyph with CoreText and every geometry consumer reserves that
+    /// width, so a decorated tab's label and close-button hit
     /// box shift together and a click on the painted × still closes the tab.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_icons(
@@ -3118,14 +3119,15 @@ impl Backend for MacBackend {
             );
             CGContextRestoreGState(ctx);
         }
-        super::tab_bar::mac_tab_bar_native_layout_icons(
+        super::tab_bar::mac_tab_bar_pixel_layout(
             font,
-            rect.width as f64,
-            rect.height as f64,
+            rect.width,
+            rect.height,
             bar,
             &[],
             &self.current_style,
         )
+        .0
     }
     /// [`Self::draw_tab_bar_icons`], but honouring an optional
     /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
@@ -3183,14 +3185,8 @@ impl Backend for MacBackend {
             hits
         }
     }
-    /// `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar`]. Paints exactly as that method does
-    /// (discarding the deprecated `TabBarHits` it returns), then
-    /// separately resolves the real `TabBarLayout` via
-    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] — see that
-    /// function's doc for why macOS can't share one measurement path
-    /// between its `TabBarHits` and `TabBarLayout` accessors the way
-    /// TUI/GTK/Win do.
+    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar`],
+    /// via [`super::tab_bar::mac_tab_bar_pixel_layout`].
     fn draw_tab_bar_layout(
         &mut self,
         rect: Rect,
@@ -3201,11 +3197,10 @@ impl Backend for MacBackend {
         // `draw_tab_bar` above for why the empty sidecar shares one path.
         self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
     }
-    /// `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar_icons`] — same CoreText icon-width pass
-    /// applied to both the paint and the separately-computed
-    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] so the
-    /// returned layout describes the pixels this call just painted.
+    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_icons`]
+    /// — same [`super::tab_bar::mac_tab_bar_pixel_layout`] call feeds both
+    /// the paint and the returned layout, so the latter describes exactly
+    /// the pixels this call just painted.
     fn draw_tab_bar_icons_layout(
         &mut self,
         rect: Rect,
@@ -3247,14 +3242,15 @@ impl Backend for MacBackend {
             );
             CGContextRestoreGState(ctx);
         }
-        super::tab_bar::mac_tab_bar_native_layout_icons(
+        super::tab_bar::mac_tab_bar_pixel_layout(
             font,
-            rect.width as f64,
-            rect.height as f64,
+            rect.width,
+            rect.height,
             bar,
             icons,
             &self.current_style,
         )
+        .0
     }
     /// [`Self::draw_tab_bar_icons`], plus `hovered_tab`/`pressed_tab`
     /// indices naming the whole tab (not its close glyph) the mouse is
@@ -3364,14 +3360,15 @@ impl Backend for MacBackend {
             );
             CGContextRestoreGState(ctx);
         }
-        super::tab_bar::mac_tab_bar_native_layout_icons(
+        super::tab_bar::mac_tab_bar_pixel_layout(
             font,
-            rect.width as f64,
-            rect.height as f64,
+            rect.width,
+            rect.height,
             bar,
             &[],
             &self.current_style,
         )
+        .0
     }
     fn draw_activity_bar(
         &mut self,
@@ -3484,14 +3481,13 @@ impl Backend for MacBackend {
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
         // No-paint twin of `draw_tab_bar`, routed through the same
-        // `mac_tab_bar_layout_icons` + `shift_tab_bar_hits` pair
         // `tab_bar_layout_icons` below uses, so both agree on the
         // documented absolute contract.
         self.tab_bar_layout_icons(rect, bar, &[])
     }
 
     /// No-paint twin of [`Self::draw_tab_bar_icons`], routed through the
-    /// same [`super::tab_bar::mac_tab_bar_layout_icons`] with the same
+    /// same [`super::tab_bar::mac_tab_bar_pixel_layout`] with the same
     /// sidecar — so the load-bearing macOS invariant (`tab_bar_layout*`
     /// returns exactly what `draw_tab_bar*` painted) holds for decorated
     /// tabs too, not just icon-less ones.
@@ -3504,13 +3500,20 @@ impl Backend for MacBackend {
     ) -> TabBarHits {
         // No-paint twin of `draw_tab_bar_icons` — must agree with what
         // that method painted, so it measures against `chrome_font` too.
-        let mut hits = super::tab_bar::mac_tab_bar_layout_icons(
-            &self.chrome_font,
-            rect.width as f64,
-            bar,
-            icons,
-            &self.current_style,
-        );
+        // `height: 1.0` matches the deprecated `TabBarHits`' own
+        // height-agnostic contract (it carries only x-ranges).
+        let (layout, corrected_scroll_offset, available_cols) =
+            super::tab_bar::mac_tab_bar_pixel_layout(
+                &self.chrome_font,
+                rect.width,
+                1.0,
+                bar,
+                icons,
+                &self.current_style,
+            );
+        let mut hits = crate::backend::tab_bar_hits_from_layout(&layout, bar);
+        hits.correct_scroll_offset = corrected_scroll_offset;
+        hits.available_cols = available_cols;
         // Bar-relative → target-surface-absolute, the same
         // shift `Self::draw_tab_bar_icons` applies to its own returned
         // hits after painting, so a caller that measures here and paints
@@ -3519,19 +3522,15 @@ impl Backend for MacBackend {
         hits
     }
 
-    /// `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout`], routed through
-    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] — see that
-    /// function's doc for why macOS can't share one measurement path
-    /// between its `TabBarHits` and `TabBarLayout` accessors.
+    /// `TabBarLayout`-returning counterpart to [`Self::tab_bar_layout`].
     fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
         self.resolve_tab_bar_layout_icons(rect, bar, &[])
     }
 
     /// No-paint twin of [`Self::draw_tab_bar_icons_layout`], routed
-    /// through [`super::tab_bar::mac_tab_bar_native_layout_icons`] with
-    /// the same sidecar — so a consumer that measures with this
-    /// and paints with `draw_tab_bar_icons` gets one agreed geometry.
+    /// through [`super::tab_bar::mac_tab_bar_pixel_layout`] with the same
+    /// sidecar — so a consumer that measures with this and paints with
+    /// `draw_tab_bar_icons` gets one agreed geometry.
     fn resolve_tab_bar_layout_icons(
         &self,
         rect: Rect,
@@ -3540,14 +3539,15 @@ impl Backend for MacBackend {
     ) -> TabBarLayout {
         // No-paint twin of `draw_tab_bar_icons_layout` — must agree with
         // what that method painted, so it measures against `chrome_font` too.
-        super::tab_bar::mac_tab_bar_native_layout_icons(
+        super::tab_bar::mac_tab_bar_pixel_layout(
             &self.chrome_font,
-            rect.width as f64,
-            rect.height as f64,
+            rect.width,
+            rect.height,
             bar,
             icons,
             &self.current_style,
         )
+        .0
     }
 
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {

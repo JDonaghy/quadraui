@@ -1224,6 +1224,145 @@ pub fn pixel_tab_bar_layout(
     (layout, corrected_scroll_offset, available_cols)
 }
 
+/// [`pixel_tab_bar_layout`], plus ellipsis-fitting the one *boundary*
+/// tab — the tab right after the last one that fit in full — into
+/// whatever space is actually left, rather than dropping it from the
+/// strip outright. A narrow strip that cuts a tab off mid-label reads as
+/// broken, not merely scrolled, so every pixel backend that calls
+/// [`pixel_tab_bar_layout`] directly wants this refinement for its own
+/// boundary case; this is the one shared composition for it, generic
+/// over [`TextMeasure`] alone (no per-backend font-swap hook — a preview
+/// tab's italic styling, where a backend supports it, stays a paint-time
+/// concern).
+///
+/// Returns `(layout, corrected_scroll_offset, available_cols, fitted)`.
+/// `fitted` is `Some((idx, label))` iff tab `idx` is the boundary tab and
+/// got an ellipsis-shortened `label` instead of being dropped — `layout`
+/// is then the recomputed geometry with `idx` visible at that shrunk
+/// width. `None` means `layout` is `pixel_tab_bar_layout`'s own,
+/// unmodified result: every tab fit at full width, there was no boundary
+/// tab left to shrink, or shrinking it didn't actually help (see the
+/// scroll/geometry-stability guard below).
+#[cfg(all(feature = "macos", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pixel_tab_bar_layout_fitting_boundary(
+    bar: &TabBar,
+    width: f32,
+    height: f32,
+    tab_pad: f32,
+    tab_inner_gap: f32,
+    tab_outer_gap: f32,
+    tab_name_widths: &[f32],
+    tab_icon_extras: &[f32],
+    chrome: &TabChrome,
+    measure: &dyn TextMeasure,
+) -> (TabBarLayout, usize, usize, Option<(usize, String)>) {
+    let (layout, corrected_scroll_offset, available_cols) = pixel_tab_bar_layout(
+        bar,
+        width,
+        height,
+        tab_pad,
+        tab_inner_gap,
+        tab_outer_gap,
+        tab_name_widths,
+        tab_icon_extras,
+        chrome,
+        measure,
+    );
+
+    // The tab right after the last one that fit — `None` (via
+    // `resolved_scroll_offset`) iff every tab from the scroll offset
+    // onward already fit.
+    let next_idx = layout
+        .visible_tabs
+        .last()
+        .map_or(layout.resolved_scroll_offset, |vt| vt.tab_idx + 1);
+    if next_idx >= bar.tabs.len() {
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+
+    let reserved_px: f32 = layout
+        .visible_segments
+        .iter()
+        .map(|vs| vs.bounds.width)
+        .sum();
+    let last_tab_end = layout
+        .visible_tabs
+        .last()
+        .map_or(0.0, |vt| vt.bounds.x + vt.bounds.width);
+    let remaining = (width - reserved_px - last_tab_end).max(0.0);
+    if remaining <= 0.0 {
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+
+    let boundary_tab = &bar.tabs[next_idx];
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let is_bracket_tab = brackets && boundary_tab.is_active;
+    let close_extra = if bar.show_tab_close && boundary_tab.is_closable {
+        tab_inner_gap + measure.width_of("×")
+    } else {
+        0.0
+    };
+    let bracket_extra = if is_bracket_tab {
+        measure.width_of("[") + measure.width_of("]")
+    } else {
+        0.0
+    };
+    // Mirrors `pixel_tab_bar_layout`'s own `TabMeasure::total` grouping:
+    // `tab_pad + bracket_extra + icon_extra` ahead of the label,
+    // `close_extra + tab_pad + tab_outer_gap` after it.
+    let leading_extra = tab_pad + bracket_extra + tab_icon_extras[next_idx];
+    let trailing_extra = close_extra + tab_pad + tab_outer_gap;
+
+    let fitted = crate::primitives::tab_bar::fit_tab_label(
+        &boundary_tab.label,
+        remaining,
+        leading_extra,
+        trailing_extra,
+        |s| measure.width_of(s),
+    );
+    if fitted.is_empty() {
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+    let fitted_w = measure.width_of(&fitted);
+
+    let mut widths2 = tab_name_widths.to_vec();
+    widths2[next_idx] = fitted_w;
+    let (layout2, corrected2, cols2) = pixel_tab_bar_layout(
+        bar,
+        width,
+        height,
+        tab_pad,
+        tab_inner_gap,
+        tab_outer_gap,
+        &widths2,
+        tab_icon_extras,
+        chrome,
+        measure,
+    );
+
+    // Adopt the recomputed layout only when it strictly gained the
+    // boundary tab and moved nothing else: shrinking the boundary label
+    // lowers `total_tab_width`, which `TabBar::layout` sums over *every*
+    // tab (not just the visible window), so on a strip only slightly over
+    // budget this can flip `resolved_scroll_offset` back to 0 and jump
+    // the whole strip to tab 0 instead of only growing it by the one
+    // boundary tab. Guard against that by requiring the scroll offset and
+    // every previously-visible tab's bounds to come out byte-identical.
+    let same_scroll = layout2.resolved_scroll_offset == layout.resolved_scroll_offset;
+    let rest_unchanged = layout
+        .visible_tabs
+        .iter()
+        .all(|vt| layout2.visible_tabs.contains(vt));
+    let gained_boundary_tab = layout2.visible_tabs.iter().any(|vt| vt.tab_idx == next_idx);
+
+    if same_scroll && rest_unchanged && gained_boundary_tab {
+        (layout2, corrected2, cols2, Some((next_idx, fitted)))
+    } else {
+        (layout, corrected_scroll_offset, available_cols, None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1960,6 +2099,65 @@ mod tests {
             vt.bounds.y + vt.bounds.height / 2.0,
         );
         assert_eq!(layout.hit_test(cx, cy), TabBarHit::TabClose(0));
+    }
+
+    /// A label too wide for the strip is ellipsis-fitted into whatever
+    /// space is left for its boundary tab, rather than dropped outright
+    /// — the refinement [`pixel_tab_bar_layout`] alone doesn't make.
+    #[test]
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    fn pixel_tab_bar_layout_fitting_boundary_ellipsis_fits_the_boundary_tab() {
+        let bar = tab_bar_with(vec![closable_tab(
+            "a_very_long_filename_for_this_single_tab.rs",
+            true,
+        )]);
+        let name_widths = [bar.tabs[0].label.chars().count() as f32 * 6.0];
+        let icon_extras = [0.0_f32];
+
+        let (plain, _, _) = pixel_tab_bar_layout(
+            &bar,
+            110.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        assert!(
+            plain.visible_tabs.is_empty(),
+            "fixture premise: the plain layout must drop the oversized tab outright"
+        );
+
+        let (fitted_layout, _, _, fitted) = pixel_tab_bar_layout_fitting_boundary(
+            &bar,
+            110.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        assert_eq!(
+            fitted_layout.visible_tabs.len(),
+            1,
+            "the boundary-fitting layout must show the tab, ellipsis-fitted"
+        );
+        let (idx, label) = fitted.expect("boundary tab must have been ellipsis-fitted");
+        assert_eq!(idx, 0);
+        assert!(
+            label.ends_with('…'),
+            "fitted label {label:?} must end in an ellipsis"
+        );
+        assert!(
+            label.chars().count() < bar.tabs[0].label.chars().count(),
+            "fitted label {label:?} must be shorter than the original"
+        );
     }
 
     #[test]

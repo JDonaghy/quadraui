@@ -19,6 +19,12 @@
 //! take the trait's default everywhere on macOS — macOS ignores a segment's
 //! own `bold` weight, unlike GTK/Win.
 //!
+//! [`Self::surface_line_height`] computes `ascent + descent + leading` on
+//! [`Self::font`] directly via [`super::text::font_metrics`] — the same
+//! derivation [`crate::macos::MacBackend::set_chrome_font`] uses to seed
+//! `chrome_line_height`, and `MacBackend` has no override setter for that
+//! field (unlike `current_line_height`), so the two can never disagree.
+//!
 //! `surface_draw_image` returns [`ImagePaintResult::Unsupported`]
 //! uniformly, matching `MacBackend::draw_image`'s contract (no decoder
 //! wired up yet); no primitive using this adapter paints an image.
@@ -67,7 +73,7 @@ impl PaintSurface for CgSurface<'_> {
     }
 
     fn surface_line_height(&self) -> f32 {
-        unreachable!("CgSurface has no backend line height")
+        super::text::font_metrics(self.font_or_panic()).line_height as f32
     }
 
     fn surface_char_width(&self) -> f32 {
