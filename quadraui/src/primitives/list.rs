@@ -2252,8 +2252,9 @@ impl crate::primitive::Primitive for ListView {
         // A `tui`-only build has no `PaintSurface` to paint into at all
         // (`PaintSurface`'s module doc, "Why TUI stays out") — `self`
         // reaching the screen on TUI goes through `Self::paint_cells`
-        // instead, which `TuiBackend::draw_primitive` calls in place of
-        // this method.
+        // instead, which `DrawsPrimitives::draw_primitive`'s default body
+        // calls in place of this method whenever `Backend::cell_buffer`
+        // answers `Some`.
         #[cfg(not(any(
             feature = "gtk",
             feature = "win",

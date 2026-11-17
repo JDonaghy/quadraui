@@ -800,58 +800,6 @@ impl TuiBackend {
         result
     }
 
-    /// [`crate::primitive::Primitive`] entry point for TUI.
-    ///
-    /// `Backend::paint_surface` always returns `None` on this backend
-    /// (`PaintSurface`'s module doc, "Why TUI stays out" — a cell grid
-    /// has no sub-cell `Rect`), so `DrawsPrimitives::draw_primitive`'s
-    /// blanket default — the one every other backend uses unmodified —
-    /// resolves `primitive.layout()` but never calls `primitive.paint()`
-    /// on TUI, silently painting nothing. This inherent method is TUI's
-    /// real paint entry point instead: it calls the same `layout()`, then
-    /// [`crate::primitive::Primitive::paint_cells`] — the cell-buffer
-    /// paint method that exists precisely because `PaintSurface` itself
-    /// cannot (see that method's own doc for why a byte-for-byte
-    /// `draw_list` match is not achievable through `PaintSurface`'s
-    /// pixel-shaped verbs).
-    ///
-    /// An inherent method of the same name as `DrawsPrimitives`' trait
-    /// method is not ambiguous: Rust always prefers an inherent method
-    /// over a trait method for a receiver of a concrete, known type, so
-    /// any call site holding a concrete `TuiBackend` (every in-crate
-    /// caller — `DrawsPrimitives::draw_primitive`'s generic `<P:
-    /// Primitive>` parameter means it can only ever be called this way,
-    /// never through `&mut dyn Backend`, so there is no call site this
-    /// quietly redirects) reaches this method, not the blanket default.
-    ///
-    /// Must be called inside [`Self::enter_frame_scope`], same contract
-    /// as every `Backend::draw_*` method on this backend; outside it,
-    /// this still returns a real (unpainted) layout rather than
-    /// panicking, matching [`crate::backend::DrawsPrimitives::draw_primitive`]'s
-    /// own "always returns the resolved layout, painted or not" contract.
-    pub fn draw_primitive<P: crate::primitive::Primitive>(
-        &mut self,
-        rect: QRect,
-        primitive: &P,
-    ) -> P::Layout {
-        let ctx = crate::primitive::LayoutCtx {
-            line_height: self.chrome_line_height(),
-            char_width: self.char_width(),
-            nerd_fonts_enabled: self.nerd_fonts_enabled(),
-        };
-        let layout = primitive.layout(&ctx, rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_primitive called outside enter_frame_scope"
-            );
-            return layout;
-        };
-        primitive.paint_cells(&layout, frame.buffer_mut(), &theme);
-        layout
-    }
-
     /// Get the current frame inside [`Self::enter_frame_scope`], or
     /// `None` outside it. Trait `draw_*` methods call this and bail
     /// (panic in dev, silent return otherwise) if `None`: each call site
@@ -2686,6 +2634,22 @@ impl Backend for TuiBackend {
             sgr_pixel_mouse: self.sgr_pixel_mouse,
             ..crate::backend::BackendCaps::empty()
         }
+    }
+
+    /// `Some` of the current frame's cell buffer while inside
+    /// [`Self::enter_frame_scope`], `None` outside it — the shape
+    /// [`crate::backend::Backend::cell_buffer`]'s own doc describes.
+    /// Reached through `&mut dyn Backend` from
+    /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s default
+    /// body, this is TUI's half of the `Primitive` paint seam:
+    /// [`crate::primitive::Primitive::paint_cells`] runs against
+    /// whatever this returns, the same way [`Self::paint_surface`]
+    /// (always `None` here — `PaintSurface`'s module doc, "Why TUI
+    /// stays out") feeds [`crate::primitive::Primitive::paint`] on a
+    /// pixel backend.
+    #[cfg(feature = "tui")]
+    fn cell_buffer(&mut self) -> Option<&mut ratatui::buffer::Buffer> {
+        self.current_frame_mut().map(Frame::buffer_mut)
     }
 
     fn line_height(&self) -> f32 {
@@ -5233,7 +5197,7 @@ impl crate::backend::WindowControl for TuiBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::MessageDialogOptions;
+    use crate::backend::{DrawsPrimitives, MessageDialogOptions};
     use crate::{
         ListItem, ListView, Palette, PaletteItem, StyledSpan, StyledText, TerminalCursorShape,
         WidgetId,
@@ -8255,13 +8219,19 @@ mod tests {
     }
 
     /// `ListView` painted through `crate::primitive::Primitive`
-    /// (`TuiBackend::draw_primitive`, which calls `Primitive::paint_cells`)
-    /// must match `TuiBackend::draw_list`'s own output byte-for-byte — the
-    /// `Primitive` pilot's TUI story. Covers the whole surface a
-    /// cell-quantised `PaintSurface` impl could not reach: a `bordered`
-    /// box (box-drawing glyphs), a title row, per-item icon/detail/
-    /// decoration, and both scrollbars (an overflowing `max_content_width`
-    /// for the horizontal one, more items than fit for the vertical one).
+    /// (via [`crate::backend::DrawsPrimitives::draw_primitive`]'s default
+    /// body, which calls [`crate::backend::Backend::cell_buffer`] then
+    /// `Primitive::paint_cells`) must match `TuiBackend::draw_list`'s own
+    /// output byte-for-byte — the `Primitive` pilot's TUI story. Routed
+    /// through `&mut dyn Backend`, not a concrete `&mut TuiBackend` — the
+    /// shape every `compose::*` controller's `render` is handed — so this
+    /// proves the seam works through the generic trait path, not only an
+    /// inherent shortcut only reachable with a concrete receiver type.
+    /// Covers the whole surface a cell-quantised `PaintSurface` impl could
+    /// not reach: a `bordered` box (box-drawing glyphs), a title row,
+    /// per-item icon/detail/decoration, and both scrollbars (an
+    /// overflowing `max_content_width` for the horizontal one, more items
+    /// than fit for the vertical one).
     #[test]
     fn list_primitive_paint_cells_matches_draw_list() {
         use ratatui::backend::TestBackend;
@@ -8288,7 +8258,7 @@ mod tests {
             bordered: true,
             h_scroll: 0,
             max_content_width: Some(80),
-            show_v_scrollbar: false,
+            show_v_scrollbar: true,
         };
         let rect = QRect::new(2.0, 1.0, 24.0, 6.0);
 
@@ -8298,6 +8268,7 @@ mod tests {
         via_primitive_terminal
             .draw(|frame| {
                 via_primitive_backend.enter_frame_scope(frame, |b| {
+                    let b: &mut dyn Backend = b;
                     b.draw_primitive(rect, &list);
                 });
             })
@@ -8327,12 +8298,14 @@ mod tests {
         );
     }
 
-    /// `TuiBackend::draw_primitive`'s returned [`crate::ListViewPrimitiveLayout`]
-    /// must hit-test against the same absolute area it was just painted
-    /// into — not merely paint the same pixels `draw_list` does
+    /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s returned
+    /// [`crate::ListViewPrimitiveLayout`] must hit-test against the same
+    /// absolute area it was just painted into — not merely paint the
+    /// same pixels `draw_list` does
     /// ([`list_primitive_paint_cells_matches_draw_list`] above), but also
     /// resolve to the same row [`TuiBackend::list_layout`] does for a
-    /// click at that row's position.
+    /// click at that row's position. Routed through `&mut dyn Backend`,
+    /// same reasoning as that test.
     #[test]
     fn list_primitive_draw_primitive_layout_hit_tests_correctly() {
         use ratatui::backend::TestBackend;
@@ -8347,6 +8320,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
+                    let b: &mut dyn Backend = b;
                     captured = Some(b.draw_primitive(rect, &list));
                 });
             })

@@ -2072,8 +2072,12 @@ mod tests {
     /// `Backend` is used as `&mut dyn Backend` crate-wide. It is declared
     /// once on a sibling trait blanket-implemented for every `Backend`,
     /// which no backend can override, and its body paints only through
-    /// `Backend::paint_surface` — absent on TUI by structural design — so
-    /// there is no observable-on-every-backend frame for C0 to assert.
+    /// whichever of `Backend::paint_surface` (GTK/macOS/Win) or
+    /// `Backend::cell_buffer` (TUI) the receiving backend answers `Some`
+    /// from — and even then, only for a `Primitive` whose own `paint`/
+    /// `paint_cells` impl does something observable, which `CASES`' fixed
+    /// set of built-in primitives has no entry for. So there is no
+    /// observable-on-every-backend frame for C0 to assert.
     /// `tests/primitive_public_api.rs` covers the method's own contract
     /// instead, and `src/primitives/list.rs`'s parity tests cover the
     /// pilot `Primitive` impl's pixel output.

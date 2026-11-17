@@ -18,8 +18,12 @@
 //!    own `chrome_line_height` / `char_width` / `nerd_fonts_enabled`.
 //! 3. It paints exactly when [`quadraui::Backend::paint_surface`] answers
 //!    `Some` (GTK, Win-GUI), and still returns the resolved layout when it
-//!    answers `None` (TUI), so a host can hit-test against geometry it
-//!    cannot paint.
+//!    answers `None` (TUI, for a `Primitive` impl with no
+//!    [`quadraui::primitive::Primitive::paint_cells`] override), so a host
+//!    can hit-test against geometry it cannot paint.
+//! 4. On TUI, a `Primitive` impl that *does* override `paint_cells` gets
+//!    painted too, through [`quadraui::Backend::cell_buffer`] — the same
+//!    `&mut dyn Backend` seam, not a concrete `&mut TuiBackend`.
 //!
 //! `Swatch::paint` records its call rather than issuing a paint verb: a live
 //! Cairo/Direct2D render target is needed to exercise the verbs themselves,
@@ -134,6 +138,86 @@ fn tui_draw_primitive_resolves_layout_without_painting() {
          surface to paint onto and must skip Primitive::paint — the layout it still returns \
          is what lets a TUI host reserve space for, and hit-test, a GUI-only Primitive; \
          painted areas were {painted:?}"
+    );
+}
+
+/// A primitive with a real [`Primitive::paint_cells`] impl, unlike
+/// [`Swatch`] (which takes the no-op default) — proves
+/// `draw_primitive`'s TUI cell path is reachable through `&mut dyn
+/// Backend`, not only a concrete `&mut TuiBackend`.
+#[cfg(feature = "tui")]
+struct CellSwatch;
+
+#[cfg(feature = "tui")]
+impl A11yPrimitive for CellSwatch {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::default()
+    }
+}
+
+#[cfg(feature = "tui")]
+impl Primitive for CellSwatch {
+    type Layout = Rect;
+    type Event = ();
+
+    fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+        rect
+    }
+
+    fn paint(
+        &self,
+        _layout: &Rect,
+        _surface: &mut dyn PaintSurface,
+        _theme: &Theme,
+        _style: &Style,
+    ) {
+    }
+
+    fn paint_cells(&self, layout: &Rect, buf: &mut ratatui::buffer::Buffer, _theme: &Theme) {
+        let area = ratatui::layout::Rect::new(
+            layout.x as u16,
+            layout.y as u16,
+            layout.width as u16,
+            layout.height as u16,
+        );
+        buf.set_string(area.x, area.y, "X", ratatui::style::Style::default());
+    }
+}
+
+/// [`CellSwatch::paint_cells`] must run when `draw_primitive` is called
+/// through `&mut dyn Backend` against a real `TuiBackend` — the shape
+/// every `compose::*` controller's `render` is handed
+/// ([`Backend::cell_buffer`] is what makes this reachable; before it
+/// existed, this path painted nothing — see issue #2647).
+#[cfg(feature = "tui")]
+#[test]
+fn tui_draw_primitive_paints_cells_through_dyn_backend() {
+    use quadraui::tui::backend::TuiBackend;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut backend = TuiBackend::new();
+    let area = Rect::new(1.0, 2.0, 10.0, 4.0);
+    let mut terminal = Terminal::new(TestBackend::new(20, 10)).expect("test terminal");
+    terminal
+        .draw(|frame| {
+            backend.enter_frame_scope(frame, |b: &mut TuiBackend| {
+                let b: &mut dyn Backend = b;
+                b.draw_primitive(area, &CellSwatch);
+            });
+        })
+        .expect("draw");
+
+    let cell = terminal
+        .backend()
+        .buffer()
+        .cell((1, 2))
+        .expect("cell in bounds");
+    assert_eq!(
+        cell.symbol(),
+        "X",
+        "CellSwatch::paint_cells must have painted through draw_primitive's &mut dyn \
+         Backend path, not been silently skipped the way the no-op default is"
     );
 }
 
