@@ -33,11 +33,18 @@ pub(crate) fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(
     match btn {
         ToolbarButton::Action { id, label, .. } => Some((*id, label.clone())),
         ToolbarButton::Label { text, .. } => Some((*field_id, text.clone())),
-        // No single (id, text) pair represents a whole `Group` — unifying
-        // this plain-text path with `win::toolbar`'s full chrome is the
-        // same follow-up this module's own doc already names for
+        // No single (id, text) pair represents a whole `Group`, an
+        // editable `Field` box or a `MenuButton`'s pull-down — unifying
+        // this plain-text path with `win::toolbar`'s full chrome (which
+        // paints all three through the shared
+        // `crate::primitives::toolbar::native_surface_paint::paint`) is
+        // the same follow-up this module's own doc already names for
         // `Separator`/`Spacer`.
-        ToolbarButton::Separator | ToolbarButton::Spacer | ToolbarButton::Group { .. } => None,
+        ToolbarButton::Separator
+        | ToolbarButton::Spacer
+        | ToolbarButton::Group { .. }
+        | ToolbarButton::Field { .. }
+        | ToolbarButton::MenuButton { .. } => None,
     }
 }
 

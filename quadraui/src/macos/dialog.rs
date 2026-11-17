@@ -153,9 +153,12 @@ mod tests {
                 }
                 crate::primitives::toolbar::ToolbarButton::Spacer => 0.0,
                 // This fixture's button row never builds a segmented
-                // `Group`; zero here keeps the match exhaustive without
-                // claiming a measurement this test never exercises.
-                crate::primitives::toolbar::ToolbarButton::Group { .. } => 0.0,
+                // `Group`, an embedded `Field` or a `MenuButton`; zero
+                // here keeps the match exhaustive without claiming a
+                // measurement this test never exercises.
+                crate::primitives::toolbar::ToolbarButton::Group { .. }
+                | crate::primitives::toolbar::ToolbarButton::Field { .. }
+                | crate::primitives::toolbar::ToolbarButton::MenuButton { .. } => 0.0,
             };
             ToolbarItemMeasure::new(text_w as f32)
         })
