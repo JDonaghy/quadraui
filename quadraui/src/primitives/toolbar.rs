@@ -2546,10 +2546,17 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`ToolbarButton::Field`] at `item`: a framed box (border,
     /// leading icon, text/placeholder, clear button, caret) above
     /// [`FIELD_ICON_ONLY_PX`], or just a centred magnifier glyph below it
-    /// — see that constant's own doc. Nerd Fonts are assumed available
-    /// (GTK/macOS/Win's own default — see `crate::Backend::nerd_fonts_enabled`'s
-    /// doc); `tui::text_field::draw_text_field` is the TUI twin that
-    /// threads the live flag through instead.
+    /// — see that constant's own doc. Above the floor, this composes
+    /// [`crate::primitives::text_field::TextField::layout`] +
+    /// [`crate::primitives::text_field::paint_text_field_gui`] rather than
+    /// re-deriving the border/icon/text/caret/clear math here, so
+    /// selection highlighting, cursor-follows-typing scroll
+    /// (`TextFieldLayout::resolved_scroll_chars`) and real glyph advances
+    /// all come free and can never drift from the standalone `TextField`'s
+    /// own GUI painter. Nerd Fonts are assumed available (GTK/macOS/Win's
+    /// own default — see `crate::Backend::nerd_fonts_enabled`'s doc);
+    /// `tui::text_field::draw_text_field` is the TUI twin that threads the
+    /// live flag through instead.
     fn paint_field(
         item: Rect,
         field: &crate::primitives::text_field::TextField,
@@ -2578,83 +2585,12 @@ pub(crate) mod native_surface_paint {
             return;
         }
 
-        let border = if field.has_focus {
-            theme.accent_fg
-        } else {
-            theme.separator
-        };
-        surface.surface_fill_rounded_rect(item, CORNER_RADIUS, theme.input_bg);
-        surface.surface_stroke_rounded_rect(item, CORNER_RADIUS, border, 1.0);
-
-        let pad = 6.0_f32;
-        let mut cursor_x = item.x + pad;
-        let (iw, ih) = surface.surface_measure_text(icon_glyph);
-        surface.surface_draw_text_run(
-            Rect::new(
-                cursor_x,
-                item.y + (item.height - ih).max(0.0) / 2.0,
-                iw.max(0.0),
-                ih.max(0.0),
-            ),
-            icon_glyph,
-            theme.muted_fg,
-        );
-        cursor_x += iw + pad;
-
-        let show_clear = field.clearable && !field.value.is_empty();
-        let clear_w = if show_clear {
-            surface.surface_measure_text("\u{00D7}").0 + pad
-        } else {
-            0.0
-        };
-        let text_right = (item.x + item.width - pad - clear_w).max(cursor_x);
-        let text_width = (text_right - cursor_x).max(0.0);
-
-        let (shown, fg): (&str, Color) = if field.value.is_empty() {
-            (&field.placeholder, theme.muted_fg)
-        } else {
-            (&field.value, theme.foreground)
-        };
-        let (_, th) = surface.surface_measure_text(shown);
-        let ty = item.y + (item.height - th).max(0.0) / 2.0;
-        // No per-character scroll math here (unlike `TextField::layout`'s
-        // own pixel-accurate version) — clip at the character count that
-        // roughly fits `text_width`, favouring "never paint past the
-        // clear button" over exact cursor-follows-typing scrolling.
-        let avg_char_w = surface.surface_measure_text("n").0.max(1.0);
-        let max_chars = (text_width / avg_char_w).floor().max(0.0) as usize;
-        let clipped: String = shown.chars().take(max_chars).collect();
-        surface.surface_draw_text_run(
-            Rect::new(cursor_x, ty, text_width, th.max(0.0)),
-            &clipped,
-            fg,
-        );
-
-        if field.has_focus && field.cursor.is_some() {
-            let caret_chars = clipped.chars().count().min(max_chars);
-            let caret_x = cursor_x + avg_char_w * caret_chars as f32;
-            surface.surface_draw_line(
-                Point::new(caret_x, item.y + 3.0),
-                Point::new(caret_x, item.y + item.height - 3.0),
-                theme.accent_fg,
-                1.0,
-            );
-        }
-
-        if show_clear {
-            let clear_x = item.x + item.width - pad - surface.surface_measure_text("\u{00D7}").0;
-            let (cw, ch) = surface.surface_measure_text("\u{00D7}");
-            surface.surface_draw_text_run(
-                Rect::new(
-                    clear_x,
-                    item.y + (item.height - ch).max(0.0) / 2.0,
-                    cw.max(0.0),
-                    ch.max(0.0),
-                ),
-                "\u{00D7}",
-                theme.muted_fg,
-            );
-        }
+        use crate::primitives::text_field::{paint_text_field_gui, TextFieldMeasure};
+        let char_w = surface.surface_measure_text("n").0.max(1.0);
+        let (_, line_h) = surface.surface_measure_text("n");
+        let measure = TextFieldMeasure::new(char_w, line_h.max(1.0));
+        let layout = field.layout(item, measure);
+        paint_text_field_gui(surface, item, &layout, field, theme, true);
     }
 
     /// Paint one [`ToolbarButton::Group`] slot: a shared border around
@@ -3261,6 +3197,85 @@ pub(crate) mod native_surface_paint {
             assert!(
                 labels.iter().any(|t| t.contains("List")),
                 "the inactive child's own label must still paint: {labels:?}"
+            );
+        }
+
+        /// Regression for the caret tracking `field.cursor` rather than
+        /// the painted text's own length: with the cursor parked mid-value
+        /// (`"hello"` into `"hello world"`), the caret must land right
+        /// after "hello" — not after the full clipped run, which is where
+        /// a length-derived caret would have drawn it.
+        #[test]
+        fn field_caret_tracks_cursor_not_painted_text_length() {
+            let field = crate::primitives::text_field::TextField::new(WidgetId::new("f"))
+                .with_value("hello world")
+                .with_cursor(Some(5))
+                .with_has_focus(true);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint_field(
+                Rect::new(0.0, 0.0, 160.0, 20.0),
+                &field,
+                &mut surface,
+                &theme,
+            );
+
+            // char width 7.0 (`RecordingSurface::surface_measure_text`):
+            // one bracket column (7.0) + "hello" (5 chars * 7.0) = 42.0.
+            let caret_x = 42.0_f32;
+            let wrong_caret_x = 7.0 + "hello world".chars().count() as f32 * 7.0;
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *c == theme.accent_fg && (r.x - caret_x).abs() < 0.01),
+                "expected a caret fill at x={caret_x} for cursor after \"hello\"; fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *c == theme.accent_fg && (r.x - wrong_caret_x).abs() < 0.01),
+                "caret must not land at the end of the painted run ({wrong_caret_x}); fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// Regression for the caret painting after the placeholder on an
+        /// empty, focused field: `field.value` is empty, so no caret fill
+        /// paints at all (the placeholder has no cursor position of its
+        /// own) — not one pinned after `"Search"`.
+        #[test]
+        fn field_caret_does_not_paint_after_an_empty_values_placeholder() {
+            let field = crate::primitives::text_field::TextField::new(WidgetId::new("f"))
+                .with_placeholder("Search")
+                .with_cursor(Some(0))
+                .with_has_focus(true);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint_field(
+                Rect::new(0.0, 0.0, 160.0, 20.0),
+                &field,
+                &mut surface,
+                &theme,
+            );
+
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t.contains("Search")),
+                "placeholder must still paint: {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == theme.accent_fg),
+                "an empty value has no cursor position of its own, so no caret fill \
+                 should paint; fills were {:?}",
+                surface.fills,
             );
         }
     }
