@@ -4893,6 +4893,12 @@ impl Backend for MacBackend {
         );
         let font = &self.chrome_font;
         let theme = self.current_theme;
+        // `Wrap`'s per-row height — `rect.height` is the whole slot the
+        // host allocated the bar, not one row's height (see
+        // `super::toolbar::mac_toolbar_layout_with_overflow`'s doc); this
+        // is the same default row height `draw_sidebar_panel_interactive`
+        // sizes its own toolbar header slot from.
+        let row_h = self.resolved_toolbar_height(self.chrome_line_height);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::toolbar::draw_toolbar_with_overflow(
@@ -4902,6 +4908,7 @@ impl Backend for MacBackend {
                 rect.y as f64,
                 rect.width as f64,
                 rect.height as f64,
+                row_h,
                 bar,
                 &theme,
                 hovered_id,
@@ -4920,7 +4927,9 @@ impl Backend for MacBackend {
         priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         // No-paint twin of `draw_toolbar_with_overflow` — must agree with
-        // what that method painted, so it measures against `chrome_font` too.
+        // what that method painted, so it measures against `chrome_font`
+        // and sizes `Wrap`'s row height identically too.
+        let row_h = self.resolved_toolbar_height(self.chrome_line_height);
         super::toolbar::mac_toolbar_layout_with_overflow(
             bar,
             &self.chrome_font,
@@ -4928,6 +4937,7 @@ impl Backend for MacBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
+            row_h,
             layout_options,
             priorities,
         )

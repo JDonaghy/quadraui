@@ -14,7 +14,8 @@ use core_text::font::CTFont;
 
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
-    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
+    ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
+    ToolbarPaintOptions,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -131,13 +132,20 @@ pub unsafe fn draw_toolbar_with_options(
 }
 
 /// Compute the macOS pixel-unit layout for a [`Toolbar`] without painting,
-/// honouring [`ToolbarLayoutOptions::overflow`]. `h` is the height of one
-/// row — for [`ToolbarOverflow::Wrap`], [`crate::primitives::toolbar::Toolbar::layout_with_overflow`]
-/// stacks each wrapped line on its own `h`-tall row below `y`; read
-/// [`ToolbarLayout::cross_extent`] on the result to learn how tall the
-/// full stack actually is before laying out whatever a host paints below
-/// it. [`ToolbarOverflow::Clip`]/[`ToolbarOverflow::Menu`] keep `h` as the
-/// single row's height, same as [`mac_toolbar_layout`].
+/// honouring [`ToolbarLayoutOptions::overflow`]. `h` is the **slot** a host
+/// allocated the whole bar — same contract as [`mac_toolbar_layout`]'s own
+/// `h` — not a per-row height: [`ToolbarOverflow::Wrap`] always stacks
+/// wrapped lines at `row_h` each (a pixel backend has no terminal-cell
+/// grid to pin a line to, so `row_h` plays the role
+/// [`crate::tui::toolbar::tui_toolbar_layout_with_overflow`]'s hardcoded
+/// `1.0` line height plays there), and any item whose row starts at or
+/// past `y + h` is marked un-clickable so hit-testing can't claim a
+/// button [`draw_toolbar_with_overflow`] never actually paints inside the
+/// slot. Read [`ToolbarLayout::cross_extent`] on the result to learn how
+/// tall the full wrapped stack actually needs were a host to grow `h` to
+/// fit every row. [`ToolbarOverflow::Clip`]/[`ToolbarOverflow::Menu`] keep
+/// `h` as the single row's height (`row_h` is unused), same as
+/// [`mac_toolbar_layout`].
 #[allow(clippy::too_many_arguments)]
 pub fn mac_toolbar_layout_with_overflow(
     bar: &Toolbar,
@@ -146,32 +154,65 @@ pub fn mac_toolbar_layout_with_overflow(
     y: f64,
     w: f64,
     h: f64,
+    row_h: f64,
     options: ToolbarLayoutOptions,
     priorities: &ToolbarOverflowPriorities,
 ) -> ToolbarLayout {
-    bar.layout_with_overflow(
+    let line_height = match options.overflow {
+        ToolbarOverflow::Wrap => row_h.max(1.0),
+        _ => h,
+    } as f32;
+
+    let mut layout = bar.layout_with_overflow(
         x as f32,
         y as f32,
         w as f32,
-        h as f32,
+        line_height,
         options,
         priorities,
         |btn| ToolbarItemMeasure::new(measure_button(font, btn)),
-    )
+    );
+
+    // Mirrors `tui_toolbar_layout_with_overflow`'s own demotion: a row
+    // stacked at or past the slot's bottom edge was never going to be
+    // painted (`draw_toolbar_with_overflow` clips to `(x, y, w, h)`), so
+    // hit-testing must not report a hit on it either. `Vertical` wrapping
+    // has no analogous "ran past the bottom" edge along this axis — same
+    // scope TUI's own demotion keeps.
+    if options.overflow == ToolbarOverflow::Wrap
+        && options.orientation == ToolbarOrientation::Horizontal
+    {
+        let area_bottom = y as f32 + h as f32;
+        for vis in &mut layout.visible_items {
+            if vis.bounds.y >= area_bottom {
+                vis.clickable = false;
+                for child in &mut vis.group_children {
+                    child.clickable = false;
+                }
+            }
+        }
+    }
+
+    layout
 }
 
 /// [`draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]:
 /// `options.overflow` picks how items that don't fit are handled — mirrors
 /// `tui::toolbar::draw_toolbar_with_overflow`'s own per-variant contract:
 ///
-/// - [`ToolbarOverflow::Clip`] paints identically to
-///   [`draw_toolbar_with_options`] (same single-row geometry).
-/// - [`ToolbarOverflow::Wrap`] paints each wrapped line on its own `h`-tall
-///   row below `y`. Unlike a terminal `Buffer`'s fixed row budget, a
-///   `CGContextRef` has nothing to run out of, so this clips to whatever
-///   [`ToolbarLayout::cross_extent`] says the content actually needs
-///   (never less than `h`) rather than requiring the caller to pre-size
-///   `h` around a layout-only probe first.
+/// - [`ToolbarOverflow::Clip`] paints the same single-row geometry
+///   [`draw_toolbar_with_options`] would for `options.orientation`'s
+///   default (`Horizontal`) — for `Vertical` it honours the orientation
+///   `draw_toolbar_with_options` always ignores.
+/// - [`ToolbarOverflow::Wrap`] paints each wrapped line on its own
+///   `row_h`-tall row below `y`, clipped to the slot `(x, y, w, h)` the
+///   caller allocated — same clip a terminal's `Buffer` imposes for
+///   free, re-created here explicitly since a `CGContextRef` has nothing
+///   to run out of on its own. A row (or part of one) that would land
+///   past `y + h` is clipped away and its items are marked un-clickable
+///   by [`mac_toolbar_layout_with_overflow`] — grow `h` first (sized from
+///   that function's [`ToolbarLayout::cross_extent`]) if every row must
+///   paint.
 /// - [`ToolbarOverflow::Menu`] paints a trailing `[ » ]` cell through the
 ///   same shared [`native_surface_paint::paint`] every other item uses — a
 ///   click on it hit-tests to
@@ -179,8 +220,10 @@ pub fn mac_toolbar_layout_with_overflow(
 ///   [`crate::ContextMenu`]/native menu built from
 ///   [`ToolbarLayout::overflowed_items`].
 ///
-/// `priorities` is read only when `options.overflow` is
-/// [`ToolbarOverflow::Menu`].
+/// `row_h` is the per-row height [`ToolbarOverflow::Wrap`] stacks lines
+/// at — see [`mac_toolbar_layout_with_overflow`]'s doc — and is ignored by
+/// the other two variants. `priorities` is read only when
+/// `options.overflow` is [`ToolbarOverflow::Menu`].
 ///
 /// # Safety
 ///
@@ -194,6 +237,7 @@ pub unsafe fn draw_toolbar_with_overflow(
     y: f64,
     w: f64,
     h: f64,
+    row_h: f64,
     bar: &Toolbar,
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
@@ -201,35 +245,20 @@ pub unsafe fn draw_toolbar_with_overflow(
     options: ToolbarLayoutOptions,
     priorities: &ToolbarOverflowPriorities,
 ) -> ToolbarLayout {
-    // `Clip` paints identically to `draw_toolbar_with_options` — delegate
-    // rather than re-deriving the same geometry.
-    if options.overflow == ToolbarOverflow::Clip {
-        return draw_toolbar_with_options(
-            ctx,
-            font,
-            x,
-            y,
-            w,
-            h,
-            bar,
-            theme,
-            hovered_id,
-            pressed_id,
-            ToolbarPaintOptions::default(),
-        );
-    }
-
-    let layout = mac_toolbar_layout_with_overflow(bar, font, x, y, w, h, options, priorities);
+    let layout =
+        mac_toolbar_layout_with_overflow(bar, font, x, y, w, h, row_h, options, priorities);
 
     if w <= 0.0 || h <= 0.0 {
         return layout;
     }
 
-    let paint_h = (layout.cross_extent(options.orientation) as f64).max(h);
-
+    // Clip to the slot the caller allocated — never grow past it, so an
+    // out-of-slot `Wrap` row can't paint over whatever the host placed
+    // below the bar (the un-clickable items `mac_toolbar_layout_with_overflow`
+    // marks past this same edge agree with what's actually visible here).
     super::backend::ns_push_clip(
         ctx,
-        crate::event::Rect::new(x as f32, y as f32, w as f32, paint_h as f32),
+        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
     );
 
     let mut surface = super::surface::CgSurface {
@@ -257,7 +286,9 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::toolbar::{ToolbarButton, ToolbarHit};
+    use crate::primitives::toolbar::{
+        ToolbarButton, ToolbarHit, ToolbarItemKind, TOOLBAR_OVERFLOW_ITEM_IDX,
+    };
     use crate::types::WidgetId;
     use crate::Backend;
 
@@ -645,15 +676,11 @@ mod tests {
         );
     }
 
-    use crate::primitives::toolbar::{
-        ToolbarItemKind, ToolbarOrientation, ToolbarOverflow, TOOLBAR_OVERFLOW_ITEM_IDX,
-    };
-
     /// `ToolbarOverflow::Wrap` on a bar too narrow for every button stacks
-    /// each one onto its own `h`-tall row below `y`, and
-    /// `MacBackend::draw_toolbar_with_overflow` actually paints every row
-    /// (not just the first) — both the per-row background fill and the
-    /// button it holds.
+    /// each one onto its own `row_h`-tall row below `y`; when the slot
+    /// `h` the caller allocated covers every row, `draw_toolbar_with_overflow`
+    /// paints every one of them (not just the first) — both the per-row
+    /// background fill and the button it holds.
     #[test]
     fn wrap_mode_paints_every_row_not_just_the_first() {
         let bar = Toolbar {
@@ -667,51 +694,68 @@ mod tests {
             focused_index: None,
         };
         let f = font();
-        let h = 20.0_f64;
+        let row_h = 20.0_f64;
 
         // One button's width at this font, measured via the ordinary
         // Clip-mode layout — a bar exactly that wide forces each of the
         // three buttons onto its own `Wrap` row.
-        let clip = mac_toolbar_layout(&bar, &f, 0.0, 0.0, 1000.0, h);
+        let clip = mac_toolbar_layout(&bar, &f, 0.0, 0.0, 1000.0, row_h);
         let w = clip.visible_items[0].bounds.width as f64 + 2.0;
 
         let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
         let priorities = ToolbarOverflowPriorities::new();
 
-        let probe =
-            mac_toolbar_layout_with_overflow(&bar, &f, 0.0, 0.0, w, h, options, &priorities);
+        // The slot covers all three rows, so nothing is demoted.
+        let total_h = row_h * 3.0;
+        let probe = mac_toolbar_layout_with_overflow(
+            &bar,
+            &f,
+            0.0,
+            0.0,
+            w,
+            total_h,
+            row_h,
+            options,
+            &priorities,
+        );
         assert_eq!(
             probe.visible_items.len(),
             3,
             "every button kept, just re-rowed"
         );
+        assert!(
+            probe.visible_items.iter().all(|v| v.clickable),
+            "every row fits inside the slot, so every button stays clickable",
+        );
         assert_eq!(
             probe.cross_extent(ToolbarOrientation::Horizontal),
-            h as f32 * 3.0,
-            "three rows of height h",
+            row_h as f32 * 3.0,
+            "three rows of height row_h",
         );
 
-        let total_h = h * 3.0;
         let surface = BitmapSurface::new(w.ceil() as u32, total_h.ceil() as u32);
         surface.fill(0.0, 0.0, 0.0, 0.0);
-        let mut backend = MacBackend::new();
-        backend.set_current_font(f);
-        backend.begin_frame(Viewport::new(w as f32, total_h as f32, 1.0));
-        let layout = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_toolbar_with_overflow(
-                QRect::new(0.0, 0.0, w as f32, h as f32),
+        let theme = Theme::default();
+        // SAFETY: `surface.context_ptr()` is a freshly created, valid
+        // `CGContextRef` held alive by `surface` for this call.
+        let layout = unsafe {
+            draw_toolbar_with_overflow(
+                surface.context_ptr(),
+                &f,
+                0.0,
+                0.0,
+                w,
+                total_h,
+                row_h,
                 &bar,
-                &crate::InteractionState::new(),
+                &theme,
+                None,
+                None,
                 options,
                 &priorities,
-            );
-            *layout.borrow_mut() = Some(l);
-        });
-        backend.end_frame();
-        let layout = layout.into_inner().unwrap();
+            )
+        };
 
-        let theme = Theme::default();
         let bar_bg = (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b);
         for (row, vis) in layout.visible_items.iter().enumerate() {
             // Sample inside the row's own background fill, left of the
@@ -737,6 +781,98 @@ mod tests {
         }
     }
 
+    /// A `Wrap` slot shorter than every row needs clips to exactly that
+    /// slot — never past it — and demotes any row stacked at or beyond the
+    /// slot's bottom edge to un-clickable, so `ToolbarLayout::hit_test`
+    /// can't claim a button that was never actually painted. Mirrors
+    /// `tui::toolbar`'s own `overflow_wrap_hit_test_agrees_with_the_rows_actually_painted`.
+    #[test]
+    fn wrap_mode_clips_to_the_slot_and_demotes_rows_past_it() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA", true),
+                mk_action("b", "BBBB", true),
+                mk_action("c", "CCCC", true),
+            ],
+            bg: None,
+            focused_index: None,
+        };
+        let f = font();
+        let row_h = 20.0_f64;
+
+        let clip = mac_toolbar_layout(&bar, &f, 0.0, 0.0, 1000.0, row_h);
+        let w = clip.visible_items[0].bounds.width as f64 + 2.0;
+
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        let priorities = ToolbarOverflowPriorities::new();
+
+        // The slot only covers the first two rows — the third button's
+        // row starts exactly at the slot's bottom edge.
+        let slot_h = row_h * 2.0;
+        let probe = mac_toolbar_layout_with_overflow(
+            &bar,
+            &f,
+            0.0,
+            0.0,
+            w,
+            slot_h,
+            row_h,
+            options,
+            &priorities,
+        );
+        assert_eq!(
+            probe.visible_items.len(),
+            3,
+            "every button kept, just re-rowed"
+        );
+        assert!(probe.visible_items[0].clickable, "row 0 is inside the slot");
+        assert!(probe.visible_items[1].clickable, "row 1 is inside the slot");
+        assert!(
+            !probe.visible_items[2].clickable,
+            "row 2 starts at the slot's bottom edge, never painted, so not clickable",
+        );
+        assert_eq!(
+            probe.hit_test(
+                probe.visible_items[2].bounds.x + 1.0,
+                probe.visible_items[2].bounds.y + 1.0,
+            ),
+            ToolbarHit::Empty,
+            "a point over the un-clickable row must not resolve to a button",
+        );
+
+        // Painting into a surface sized exactly to the slot must not
+        // panic or write past its own bounds — proving the clip really
+        // stops at `slot_h`, not wherever `cross_extent` says the wrapped
+        // content would ideally like to go.
+        let surface = BitmapSurface::new(w.ceil() as u32, slot_h.ceil() as u32);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let theme = Theme::default();
+        // SAFETY: `surface.context_ptr()` is a freshly created, valid
+        // `CGContextRef` held alive by `surface` for this call.
+        let layout = unsafe {
+            draw_toolbar_with_overflow(
+                surface.context_ptr(),
+                &f,
+                0.0,
+                0.0,
+                w,
+                slot_h,
+                row_h,
+                &bar,
+                &theme,
+                None,
+                None,
+                options,
+                &priorities,
+            )
+        };
+        assert!(
+            !layout.visible_items[2].clickable,
+            "the paint call's own returned layout agrees with the probe",
+        );
+    }
+
     /// `ToolbarOverflow::Menu` on a bar too narrow for every button drops
     /// the lowest-priority ones and paints a trailing `[ » ]` affordance in
     /// their place; a click there hit-tests to `ToolbarHit::Overflow`, and
@@ -758,9 +894,17 @@ mod tests {
         let f = font();
         let h = 20.0_f64;
 
+        let mut backend = MacBackend::new();
+        backend.set_current_font(f);
+
         // One button's width, so a bar just wide enough for one button
-        // plus the `»` affordance forces the other two to drop.
-        let clip = mac_toolbar_layout(&bar, &f, 0.0, 0.0, 1000.0, h);
+        // plus the `»` affordance forces the other two to drop. Sized
+        // through `backend.toolbar_layout` (measures with `chrome_font`,
+        // the font this test's own paint call below resolves through)
+        // rather than `mac_toolbar_layout` with a plain `Menlo` `CTFont`,
+        // so `w` stays correct regardless of how the two fonts' advance
+        // widths compare.
+        let clip = backend.toolbar_layout(QRect::new(0.0, 0.0, 1000.0, h as f32), &bar);
         let item_w = clip.visible_items[0].bounds.width as f64;
         let w = item_w * 1.6;
 
@@ -769,8 +913,6 @@ mod tests {
 
         let surface = BitmapSurface::new(w.ceil() as u32, h.ceil() as u32);
         surface.fill(0.0, 0.0, 0.0, 0.0);
-        let mut backend = MacBackend::new();
-        backend.set_current_font(f);
         backend.begin_frame(Viewport::new(w as f32, h as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
