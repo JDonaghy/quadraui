@@ -5,11 +5,14 @@ Those four directories grew by roughly 4.1k lines in three days while the
 consolidation epics' shared engines landed beside them instead of replacing
 code inside them. This script is the CI gate that stops that from happening
 silently again: it counts each directory's *non-test* `.rs` lines (every
-line before the first `#[cfg(test)]` in a file -- matching this repo's
-"tests live in a `#[cfg(test)] mod tests` at file bottom" convention, so a
-growing test module never trips the gate) and compares the count against a
-committed baseline (`scripts/backend_loc_baseline.json`), the same ratchet
-shape as `tools/comment_history_lint.py`'s per-module thresholds.
+line before the last `#[cfg(test)] mod tests { ... }` block in a file --
+matching this repo's "tests live in a `#[cfg(test)] mod tests` at file
+bottom" convention, so a growing test module never trips the gate, while
+a comment that quotes `#[cfg(test)]`, an early `#[cfg(test)] use ...`, or
+a differently-named `#[cfg(test)]` module never truncates the count) and
+compares the count against a committed baseline
+(`scripts/backend_loc_baseline.json`), the same ratchet shape as
+`tools/comment_history_lint.py`'s per-module thresholds.
 
 A directory fails when it grows *past its baseline by more than a small
 allowance* (`--allowance`, default below) -- a one- or two-line diff doesn't
@@ -58,19 +61,73 @@ BACKEND_DIRS = ("tui", "macos", "win", "gtk")
 DEFAULT_ALLOWANCE = 40
 
 
+def _is_comment_line(stripped: str) -> bool:
+    return stripped.startswith("//")
+
+
+def _gates_the_tests_mod(stripped: str) -> bool:
+    """Whether a stripped line is the `mod tests` declaration (bare, `pub`
+    or `pub(crate)`) that `#[cfg(test)]` gates under this repo's own
+    convention. Deliberately narrower than "any `mod`": a backend file can
+    carry other, differently-named `#[cfg(test)]` modules (`proptests`,
+    `run_config_tests`, ...) alongside or after the real `mod tests` --
+    those aren't the file-bottom boundary the convention describes, so
+    they must not move it."""
+    return stripped in ("mod tests {", "mod tests;") or stripped.startswith(
+        ("mod tests {", "pub mod tests {", "pub(crate) mod tests {")
+    )
+
+
+def _find_test_mod_boundary(lines: list[str]) -> int | None:
+    """Index of the attribute line that starts the *last* top-level
+    `#[cfg(test)] mod tests { ... }` block in `lines`, or `None` if there
+    is no such block.
+
+    A plain brace-depth scan, skipping `//` comment lines entirely (so a
+    comment that merely quotes the literal `#[cfg(test)]` text is never
+    mistaken for the marker) and only treating a `#[cfg(test)]` attribute
+    as a boundary candidate when the next non-blank, non-comment line
+    declares `mod tests` specifically (so a `#[cfg(test)] use ...` import
+    near the top of a file, or a differently-named `#[cfg(test)]` module,
+    never truncates the count). Scanning the whole file and keeping the
+    last match -- rather than stopping at the first -- handles a file with
+    several `#[cfg(test)]` blocks, matching this repo's convention that
+    the real test module sits at the bottom of the file."""
+    boundary = None
+    depth = 0
+    n = len(lines)
+    i = 0
+    while i < n:
+        stripped = lines[i].strip()
+        if _is_comment_line(stripped):
+            i += 1
+            continue
+        if depth == 0 and stripped == "#[cfg(test)]":
+            j = i + 1
+            while j < n and (lines[j].strip() == "" or _is_comment_line(lines[j].strip())):
+                j += 1
+            if j < n and _gates_the_tests_mod(lines[j].strip()):
+                boundary = i
+        depth += lines[i].count("{") - lines[i].count("}")
+        i += 1
+    return boundary
+
+
 def count_non_test_lines(path: Path) -> int:
-    """Lines in `path` before its first `#[cfg(test)]`, or all of them if it
-    has none. Tests live in a `#[cfg(test)] mod tests` block at file bottom
-    (this repo's own code-style convention), so this is a one-pass scan for
-    the marker rather than a real Rust parse."""
+    """Lines in `path` before the *last* `#[cfg(test)] mod tests { ... }`
+    block, or all of them if it has none. Tests live in a `#[cfg(test)]
+    mod tests` block at file bottom (this repo's own code-style
+    convention); finding that trailing module boundary -- rather than the
+    first line that merely mentions `#[cfg(test)]` -- is what keeps a
+    comment quoting the marker, an early `#[cfg(test)] use ...`, or an
+    unrelated `#[cfg(test)]` module with a different name, from
+    truncating the count."""
     try:
-        lines = path.read_text(errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return 0
-    for i, line in enumerate(lines):
-        if "#[cfg(test)]" in line:
-            return i
-    return len(lines)
+    boundary = _find_test_mod_boundary(lines)
+    return len(lines) if boundary is None else boundary
 
 
 def count_lines(directory: Path) -> int:
