@@ -2052,8 +2052,8 @@ fn item_cursor_positions(origin_x: f32, _bar_height: f32, widths: &[f32]) -> Vec
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        action_text, valign_offset_y, GroupChildBounds, Toolbar, ToolbarButton, ToolbarItemKind,
-        ToolbarLayout, ToolbarPaintOptions, ToolbarRailStyle,
+        action_text, overflow_indicator_button, valign_offset_y, GroupChildBounds, Toolbar,
+        ToolbarButton, ToolbarItemKind, ToolbarLayout, ToolbarPaintOptions, ToolbarRailStyle,
     };
     use crate::backend::PressableVisual;
     use crate::event::{Point, Rect};
@@ -2088,7 +2088,27 @@ pub(crate) mod native_surface_paint {
         }
 
         let bar_bg = bar.bg.unwrap_or(theme.header_bg);
-        surface.surface_fill_rect(layout.bar_bounds, bar_bg);
+        // Fill the full area every visible item's bounds span, not just
+        // `layout.bar_bounds` — a `ToolbarOverflow::Wrap` layout's items
+        // extend past the originally-requested rect's height (its own doc
+        // on `bar_bounds`/`cross_extent` explains why), so backfilling
+        // only `bar_bounds` would leave every row but the first showing
+        // whatever the surface already held.
+        let mut fill_rect = layout.bar_bounds;
+        for vis in &layout.visible_items {
+            if vis.bounds.width <= 0.0 || vis.bounds.height <= 0.0 {
+                continue;
+            }
+            let right = vis.bounds.x + vis.bounds.width;
+            let bottom = vis.bounds.y + vis.bounds.height;
+            if right > fill_rect.x + fill_rect.width {
+                fill_rect.width = right - fill_rect.x;
+            }
+            if bottom > fill_rect.y + fill_rect.height {
+                fill_rect.height = bottom - fill_rect.y;
+            }
+        }
+        surface.surface_fill_rect(fill_rect, bar_bg);
 
         for vis in &layout.visible_items {
             let item = vis.bounds;
@@ -2103,7 +2123,7 @@ pub(crate) mod native_surface_paint {
             // hit-test already answers; `.get` keeps a layout carrying any
             // other out-of-range index a no-op instead of a panic.
             let overflow_btn =
-                (vis.kind == ToolbarItemKind::Overflow).then(super::overflow_indicator_button);
+                (vis.kind == ToolbarItemKind::Overflow).then(overflow_indicator_button);
             let btn = match &overflow_btn {
                 Some(b) => b,
                 None => match bar.buttons.get(vis.item_idx) {

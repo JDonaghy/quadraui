@@ -19,20 +19,22 @@
 //! - m                cycle Clip -> Wrap -> Menu
 //! - Click a button    report it in the status line
 //! - Click `[ » ]` (Menu mode)   list the dropped items in the status line
+//!   and, on a backend with a real [`quadraui::Backend::show_context_menu`]
+//!   (macOS), pop up a native menu built from the same dropped items
 //! - q / Esc          quit
 //!
-//! TUI and GTK both render `Wrap`'s extra rows and `Menu`'s `[ » ]`
+//! TUI, GTK and macOS all render `Wrap`'s extra rows and `Menu`'s `[ » ]`
 //! affordance for real, through each backend's own
 //! [`quadraui::Backend::draw_toolbar_with_overflow`] /
-//! [`quadraui::Backend::toolbar_layout_with_overflow`] override. macOS and
-//! Win-GUI still inherit the trait's default, which forwards to today's
-//! Clip-only geometry until a per-backend issue gives them one (see
+//! [`quadraui::Backend::toolbar_layout_with_overflow`] override. Win-GUI
+//! still inherits the trait's default, which forwards to today's
+//! Clip-only geometry until a per-backend issue gives it one (see
 //! `CLAUDE.md`'s "One backend per issue").
 
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarLayoutOptions, ToolbarOverflow,
-    ToolbarOverflowPriorities, UiEvent, WidgetId,
+    AppLogic, Backend, Color, ContextMenu, InteractionState, Key, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarLayoutOptions,
+    ToolbarOverflow, ToolbarOverflowPriorities, UiEvent, WidgetId,
 };
 
 /// Rows reserved for the toolbar slot — generous enough for `Wrap` to
@@ -226,8 +228,8 @@ impl AppLogic for ToolbarOverflowDemo {
                             self.last_message = format!("Clicked: {}", release_id.as_str());
                         }
                         ToolbarHit::Overflow => {
-                            let names: Vec<String> = layout
-                                .overflowed_items()
+                            let dropped = layout.overflowed_items();
+                            let names: Vec<String> = dropped
                                 .iter()
                                 .map(|item| {
                                     item.label
@@ -242,6 +244,23 @@ impl AppLogic for ToolbarOverflowDemo {
                             } else {
                                 format!("Overflowed: {}", names.join(", "))
                             };
+                            // No-op on a backend with no real
+                            // `show_context_menu` (TUI/GTK/Win-GUI) — those
+                            // hosts read `self.last_message` above instead.
+                            // macOS pops up the dropped items as a native
+                            // `NSMenu` anchored at the click.
+                            if !dropped.is_empty() {
+                                backend.show_context_menu(
+                                    &ContextMenu {
+                                        id: WidgetId::new("overflow-demo:overflow-menu"),
+                                        items: dropped,
+                                        selected_idx: 0,
+                                        bg: None,
+                                        placement: Default::default(),
+                                    },
+                                    *position,
+                                );
+                            }
                         }
                         _ => {}
                     }

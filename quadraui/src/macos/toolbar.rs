@@ -14,7 +14,7 @@ use core_text::font::CTFont;
 
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
-    ToolbarPaintOptions,
+    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -124,6 +124,126 @@ pub unsafe fn draw_toolbar_with_options(
         hovered_id,
         pressed_id,
         options,
+    );
+
+    super::backend::ns_pop_clip(ctx);
+    layout
+}
+
+/// Compute the macOS pixel-unit layout for a [`Toolbar`] without painting,
+/// honouring [`ToolbarLayoutOptions::overflow`]. `h` is the height of one
+/// row — for [`ToolbarOverflow::Wrap`], [`crate::primitives::toolbar::Toolbar::layout_with_overflow`]
+/// stacks each wrapped line on its own `h`-tall row below `y`; read
+/// [`ToolbarLayout::cross_extent`] on the result to learn how tall the
+/// full stack actually is before laying out whatever a host paints below
+/// it. [`ToolbarOverflow::Clip`]/[`ToolbarOverflow::Menu`] keep `h` as the
+/// single row's height, same as [`mac_toolbar_layout`].
+#[allow(clippy::too_many_arguments)]
+pub fn mac_toolbar_layout_with_overflow(
+    bar: &Toolbar,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    options: ToolbarLayoutOptions,
+    priorities: &ToolbarOverflowPriorities,
+) -> ToolbarLayout {
+    bar.layout_with_overflow(
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        options,
+        priorities,
+        |btn| ToolbarItemMeasure::new(measure_button(font, btn)),
+    )
+}
+
+/// [`draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]:
+/// `options.overflow` picks how items that don't fit are handled — mirrors
+/// `tui::toolbar::draw_toolbar_with_overflow`'s own per-variant contract:
+///
+/// - [`ToolbarOverflow::Clip`] paints identically to
+///   [`draw_toolbar_with_options`] (same single-row geometry).
+/// - [`ToolbarOverflow::Wrap`] paints each wrapped line on its own `h`-tall
+///   row below `y`. Unlike a terminal `Buffer`'s fixed row budget, a
+///   `CGContextRef` has nothing to run out of, so this clips to whatever
+///   [`ToolbarLayout::cross_extent`] says the content actually needs
+///   (never less than `h`) rather than requiring the caller to pre-size
+///   `h` around a layout-only probe first.
+/// - [`ToolbarOverflow::Menu`] paints a trailing `[ » ]` cell through the
+///   same shared [`native_surface_paint::paint`] every other item uses — a
+///   click on it hit-tests to
+///   [`crate::primitives::toolbar::ToolbarHit::Overflow`]; the host opens a
+///   [`crate::ContextMenu`]/native menu built from
+///   [`ToolbarLayout::overflowed_items`].
+///
+/// `priorities` is read only when `options.overflow` is
+/// [`ToolbarOverflow::Menu`].
+///
+/// # Safety
+///
+/// Same contract as [`draw_toolbar`] — `ctx` must be a valid
+/// `CGContextRef` borrowed for the duration of the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_toolbar_with_overflow(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    bar: &Toolbar,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+    options: ToolbarLayoutOptions,
+    priorities: &ToolbarOverflowPriorities,
+) -> ToolbarLayout {
+    // `Clip` paints identically to `draw_toolbar_with_options` — delegate
+    // rather than re-deriving the same geometry.
+    if options.overflow == ToolbarOverflow::Clip {
+        return draw_toolbar_with_options(
+            ctx,
+            font,
+            x,
+            y,
+            w,
+            h,
+            bar,
+            theme,
+            hovered_id,
+            pressed_id,
+            ToolbarPaintOptions::default(),
+        );
+    }
+
+    let layout = mac_toolbar_layout_with_overflow(bar, font, x, y, w, h, options, priorities);
+
+    if w <= 0.0 || h <= 0.0 {
+        return layout;
+    }
+
+    let paint_h = (layout.cross_extent(options.orientation) as f64).max(h);
+
+    super::backend::ns_push_clip(
+        ctx,
+        crate::event::Rect::new(x as f32, y as f32, w as f32, paint_h as f32),
+    );
+
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    native_surface_paint::paint(
+        bar,
+        &layout,
+        &mut surface,
+        theme,
+        hovered_id,
+        pressed_id,
+        ToolbarPaintOptions::default(),
     );
 
     super::backend::ns_pop_clip(ctx);
@@ -522,6 +642,185 @@ mod tests {
             (r, g, b),
             (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
             "highlight should reach the static theme colour once the fade-in finishes",
+        );
+    }
+
+    use crate::primitives::toolbar::{
+        ToolbarItemKind, ToolbarOrientation, ToolbarOverflow, TOOLBAR_OVERFLOW_ITEM_IDX,
+    };
+
+    /// `ToolbarOverflow::Wrap` on a bar too narrow for every button stacks
+    /// each one onto its own `h`-tall row below `y`, and
+    /// `MacBackend::draw_toolbar_with_overflow` actually paints every row
+    /// (not just the first) — both the per-row background fill and the
+    /// button it holds.
+    #[test]
+    fn wrap_mode_paints_every_row_not_just_the_first() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA", true),
+                mk_action("b", "BBBB", true),
+                mk_action("c", "CCCC", true),
+            ],
+            bg: None,
+            focused_index: None,
+        };
+        let f = font();
+        let h = 20.0_f64;
+
+        // One button's width at this font, measured via the ordinary
+        // Clip-mode layout — a bar exactly that wide forces each of the
+        // three buttons onto its own `Wrap` row.
+        let clip = mac_toolbar_layout(&bar, &f, 0.0, 0.0, 1000.0, h);
+        let w = clip.visible_items[0].bounds.width as f64 + 2.0;
+
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        let priorities = ToolbarOverflowPriorities::new();
+
+        let probe =
+            mac_toolbar_layout_with_overflow(&bar, &f, 0.0, 0.0, w, h, options, &priorities);
+        assert_eq!(
+            probe.visible_items.len(),
+            3,
+            "every button kept, just re-rowed"
+        );
+        assert_eq!(
+            probe.cross_extent(ToolbarOrientation::Horizontal),
+            h as f32 * 3.0,
+            "three rows of height h",
+        );
+
+        let total_h = h * 3.0;
+        let surface = BitmapSurface::new(w.ceil() as u32, total_h.ceil() as u32);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(f);
+        backend.begin_frame(Viewport::new(w as f32, total_h as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_toolbar_with_overflow(
+                QRect::new(0.0, 0.0, w as f32, h as f32),
+                &bar,
+                &crate::InteractionState::new(),
+                options,
+                &priorities,
+            );
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        let layout = layout.into_inner().unwrap();
+
+        let theme = Theme::default();
+        let bar_bg = (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b);
+        for (row, vis) in layout.visible_items.iter().enumerate() {
+            // Sample inside the row's own background fill, left of the
+            // label text (same text-free strip the hover-highlight tests
+            // above sample) — proving the row got a real background fill,
+            // not just whatever the untouched bitmap started as.
+            let cx = (vis.bounds.x + 5.0) as u32;
+            let cy = (vis.bounds.y + vis.bounds.height / 2.0) as u32;
+            let (r, g, b, a) = surface.pixel(cx, cy);
+            assert_eq!(
+                (r, g, b, a),
+                (bar_bg.0, bar_bg.1, bar_bg.2, 255),
+                "row {row} should be filled with the bar background, not left untouched",
+            );
+        }
+
+        match layout.hit_test(
+            layout.visible_items[2].bounds.x + 1.0,
+            layout.visible_items[2].bounds.y + 1.0,
+        ) {
+            ToolbarHit::Button(id) => assert_eq!(id, WidgetId::new("c")),
+            other => panic!("expected the third button on row 2, got {other:?}"),
+        }
+    }
+
+    /// `ToolbarOverflow::Menu` on a bar too narrow for every button drops
+    /// the lowest-priority ones and paints a trailing `[ » ]` affordance in
+    /// their place; a click there hit-tests to `ToolbarHit::Overflow` and
+    /// the affordance itself is actually painted (not skipped, the way the
+    /// shared paint code treated any synthetic `TOOLBAR_OVERFLOW_ITEM_IDX`
+    /// entry before this backend started resolving it).
+    #[test]
+    fn menu_mode_paints_overflow_affordance_and_hit_tests_overflow() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA", true),
+                mk_action("b", "BBBB", true),
+                mk_action("c", "CCCC", true),
+            ],
+            bg: None,
+            focused_index: None,
+        };
+        let f = font();
+        let h = 20.0_f64;
+
+        // One button's width, so a bar just wide enough for one button
+        // plus the `»` affordance forces the other two to drop.
+        let clip = mac_toolbar_layout(&bar, &f, 0.0, 0.0, 1000.0, h);
+        let item_w = clip.visible_items[0].bounds.width as f64;
+        let w = item_w * 1.6;
+
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Menu);
+        let priorities = ToolbarOverflowPriorities::new();
+
+        let surface = BitmapSurface::new(w.ceil() as u32, h.ceil() as u32);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(f);
+        backend.begin_frame(Viewport::new(w as f32, h as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_toolbar_with_overflow(
+                QRect::new(0.0, 0.0, w as f32, h as f32),
+                &bar,
+                &crate::InteractionState::new(),
+                options,
+                &priorities,
+            );
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        let layout = layout.into_inner().unwrap();
+
+        let overflow_vis = layout
+            .visible_items
+            .iter()
+            .find(|v| v.kind == ToolbarItemKind::Overflow)
+            .expect("overflow affordance present");
+        assert_eq!(overflow_vis.item_idx, TOOLBAR_OVERFLOW_ITEM_IDX);
+        assert!(
+            !layout.overflowed_items().is_empty(),
+            "at least one button should have been dropped",
+        );
+        assert_eq!(
+            layout.hit_test(overflow_vis.bounds.x + 1.0, overflow_vis.bounds.y + 1.0,),
+            ToolbarHit::Overflow,
+        );
+
+        // The affordance's own pill must actually be painted — not just
+        // the row background around it — proving the `»` button resolves
+        // through the ordinary `Action` paint arm instead of being
+        // silently skipped as an unknown `bar.buttons` index.
+        let theme = Theme::default();
+        let mut any_non_bg = false;
+        for dx in 0..(overflow_vis.bounds.width as u32).max(1) {
+            for dy in 0..(overflow_vis.bounds.height as u32).max(1) {
+                let (r, g, b, a) = surface.pixel(
+                    overflow_vis.bounds.x as u32 + dx,
+                    overflow_vis.bounds.y as u32 + dy,
+                );
+                if a > 0 && (r, g, b) != (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b) {
+                    any_non_bg = true;
+                }
+            }
+        }
+        assert!(
+            any_non_bg,
+            "overflow affordance bounds should contain glyph ink, not just the bar background",
         );
     }
 }

@@ -1675,6 +1675,11 @@ path = "examples/tui_toolbar_overflow.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "macos_toolbar_overflow"
+path = "examples/macos_toolbar_overflow.rs"
+required-features = ["macos"]
+
+[[example]]
 name = "tui_terminal"
 path = "examples/tui_terminal.rs"
 required-features = ["tui", "terminal"]
