@@ -248,7 +248,9 @@ pub fn draw_toolbar_with_overflow(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::toolbar::{ToolbarButton, ToolbarHit};
+    use crate::primitives::toolbar::{
+        ToolbarButton, ToolbarHit, ToolbarOrientation, ToolbarOverflow,
+    };
     use crate::win::testing::HeadlessSurface;
 
     const W: f32 = 240.0;
