@@ -1670,6 +1670,11 @@ path = "examples/tui_toolbar.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_toolbar_overflow"
+path = "examples/tui_toolbar_overflow.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "tui_terminal"
 path = "examples/tui_terminal.rs"
 required-features = ["tui", "terminal"]
