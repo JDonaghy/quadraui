@@ -278,7 +278,10 @@ pub use text_input::{draw_text_input, gtk_text_input_layout};
 #[doc(hidden)]
 pub use toast::gtk_toast_stack_layout;
 #[doc(hidden)]
-pub use toolbar::{draw_toolbar, draw_toolbar_with_options, gtk_toolbar_layout};
+pub use toolbar::{
+    draw_toolbar, draw_toolbar_with_options, draw_toolbar_with_overflow, gtk_toolbar_layout,
+    gtk_toolbar_layout_with_overflow,
+};
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 pub use tree::draw_tree;

@@ -5647,6 +5647,76 @@ impl Backend for GtkBackend {
         result
     }
 
+    fn draw_toolbar_with_overflow(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        interaction: &crate::interaction::InteractionState,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_toolbar_with_overflow called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let layout = crate::gtk::draw_toolbar_with_overflow(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            line_height,
+            bar,
+            &theme,
+            hovered_id,
+            pressed_id,
+            layout_options,
+            priorities,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        layout
+    }
+
+    fn toolbar_layout_with_overflow(
+        &self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let char_w = self.current_char_width;
+        let line_height = self.current_line_height;
+        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
+        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(Some(&ui_font_desc));
+        }
+        let result = crate::gtk::gtk_toolbar_layout_with_overflow(
+            bar,
+            pango_layout.as_ref(),
+            char_w,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            line_height,
+            layout_options,
+            priorities,
+        );
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(saved_font.as_ref());
+        }
+        result
+    }
+
     fn draw_sidebar_panel_interactive(
         &mut self,
         rect: QRect,
