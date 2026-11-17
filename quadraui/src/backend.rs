@@ -45,6 +45,7 @@ use crate::login_item::LoginItemOptions;
 use crate::modal_stack::ModalStack;
 use crate::paths::AppPathKind;
 use crate::power::{BlockerId, PowerSaveKind, ThermalState};
+use crate::primitive::{LayoutCtx, Primitive};
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::button::{Button, ButtonLayout};
@@ -4448,6 +4449,59 @@ pub trait Backend: sealed::Sealed {
         CanvasLayout { bounds: rect }
     }
 }
+
+/// [`Backend::draw_primitive`]-shaped entry point for any [`Primitive`]
+/// — a sibling trait with a blanket impl, not a method on [`Backend`]
+/// itself, because a generic method is not dyn-compatible and `Backend`
+/// is used as `&mut dyn Backend` throughout this crate (every
+/// `compose::*` controller's `render` signature). The blanket `impl`
+/// below makes `backend.draw_primitive(rect, &primitive)` callable on
+/// *any* [`Backend`] implementor — concrete, or reached through `&mut
+/// dyn Backend` — with no change needed at any existing call site.
+///
+/// See `crate::primitive`'s module doc for the full `Primitive`
+/// rationale and a worked example.
+pub trait DrawsPrimitives: Backend {
+    /// Resolve `primitive`'s [`Primitive::Layout`] for `rect` and, when
+    /// this backend implements [`crate::PaintSurface`] (today: GTK,
+    /// macOS, Win — see [`Backend::paint_surface`]), paint it too.
+    /// Always returns the resolved layout, painted or not, so a caller
+    /// can hit-test against it (e.g. a TUI host that lays out a
+    /// GUI-only [`Primitive`] purely to reserve space) without a
+    /// backend check of its own.
+    ///
+    /// `ctx`'s `line_height`/`char_width`/`nerd_fonts_enabled` come from
+    /// [`Backend::chrome_line_height`], [`Backend::char_width`] and
+    /// [`Backend::nerd_fonts_enabled`] — the same chrome-oriented
+    /// metrics [`Backend::draw_list`]'s own backend wrappers resolve
+    /// before calling into
+    /// [`crate::primitives::list::native_surface_paint::paint`].
+    ///
+    /// ```ignore
+    /// // `MyBackend` implements `Backend` (sealed — in-crate only, so
+    /// // this example can't actually run as a doctest); `Swatch`
+    /// // implements `Primitive` from outside this crate, with no
+    /// // change to `Backend`/`gtk`/`macos`/`win` needed to draw it.
+    /// let layout = backend.draw_primitive(rect, &swatch);
+    /// if layout.hit_test(click_x, click_y) { /* ... */ }
+    /// ```
+    fn draw_primitive<P: Primitive>(&mut self, rect: Rect, primitive: &P) -> P::Layout {
+        let ctx = LayoutCtx {
+            line_height: self.chrome_line_height(),
+            char_width: self.char_width(),
+            nerd_fonts_enabled: self.nerd_fonts_enabled(),
+        };
+        let layout = primitive.layout(&ctx, rect);
+        let theme = self.theme();
+        let style = self.style();
+        if let Some(surface) = self.paint_surface() {
+            primitive.paint(&layout, surface, &theme, &style);
+        }
+        layout
+    }
+}
+
+impl<B: Backend + ?Sized> DrawsPrimitives for B {}
 
 /// Paint-side data returned by [`Backend::draw_minimap`]. See
 /// [`EditorPaintResult`] for the sibling pattern this mirrors.
