@@ -35,8 +35,7 @@ use crate::event::Rect;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
-    ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
-    ToolbarPaintOptions,
+    ToolbarLayoutOptions, ToolbarOverflowPriorities, ToolbarPaintOptions,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -129,11 +128,11 @@ pub fn draw_toolbar_with_options(
 ///
 /// `line_height` is the DIP height of **one** toolbar row — this
 /// backend's analog to [`crate::gtk::toolbar::gtk_toolbar_layout_with_overflow`]'s
-/// own `line_height` parameter. Ignored for [`ToolbarOverflow::Clip`]/
-/// [`ToolbarOverflow::Menu`], which never need more than one line and use
+/// own `line_height` parameter. Ignored for [`ToolbarOverflow::Clip`](crate::primitives::toolbar::ToolbarOverflow::Clip)/
+/// [`ToolbarOverflow::Menu`](crate::primitives::toolbar::ToolbarOverflow::Menu), which never need more than one line and use
 /// `rect.height` directly, same as [`win_toolbar_layout`].
 ///
-/// For [`ToolbarOverflow::Wrap`], `rect.height` is the **total** area the
+/// For [`ToolbarOverflow::Wrap`](crate::primitives::toolbar::ToolbarOverflow::Wrap), `rect.height` is the **total** area the
 /// host has (or is probing with) — [`ToolbarLayout::cross_extent`] on the
 /// result reports how many DIPs of that the wrapped content actually
 /// needs, so a host sizes its container from that before the next paint.
@@ -143,9 +142,9 @@ pub fn draw_toolbar_with_options(
 /// region for a row [`draw_toolbar_with_overflow`] never actually paints.
 ///
 /// Known gap: the un-clickable clamp above only applies to
-/// [`ToolbarOrientation::Horizontal`], and `line_height` is substituted
+/// [`ToolbarOrientation::Horizontal`](crate::primitives::toolbar::ToolbarOrientation::Horizontal), and `line_height` is substituted
 /// for the toolbar's main-axis length regardless of orientation, so
-/// [`ToolbarOrientation::Vertical`] + [`ToolbarOverflow::Wrap`] gets a
+/// [`ToolbarOrientation::Vertical`](crate::primitives::toolbar::ToolbarOrientation::Vertical) + [`ToolbarOverflow::Wrap`](crate::primitives::toolbar::ToolbarOverflow::Wrap) gets a
 /// one-row-tall main axis and every item wraps into its own column
 /// instead of filling `rect.height` first — matching
 /// [`crate::gtk::toolbar::gtk_toolbar_layout_with_overflow`]'s own gap,
@@ -171,16 +170,16 @@ pub fn win_toolbar_layout_with_overflow(
 /// [`draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]:
 /// `options.overflow` picks how items that don't fit are handled.
 ///
-/// - [`ToolbarOverflow::Clip`] uses the same single-line geometry as
+/// - [`ToolbarOverflow::Clip`](crate::primitives::toolbar::ToolbarOverflow::Clip) uses the same single-line geometry as
 ///   [`draw_toolbar_with_options`] (`rect` is the one line) — visually
 ///   equivalent for a `rect`-sized bar, though this function additionally
 ///   pre-fills the whole `rect` and pushes a clip at `rect` first, which
 ///   [`draw_toolbar_with_options`] does not.
-/// - [`ToolbarOverflow::Wrap`] paints each wrapped line `line_height` DIPs
+/// - [`ToolbarOverflow::Wrap`](crate::primitives::toolbar::ToolbarOverflow::Wrap) paints each wrapped line `line_height` DIPs
 ///   below the last, clipped to `rect` — call
 ///   [`win_toolbar_layout_with_overflow`] first and grow `rect.height` to
 ///   its [`ToolbarLayout::cross_extent`] so every row actually paints.
-/// - [`ToolbarOverflow::Menu`] paints a trailing `[ » ]` affordance —
+/// - [`ToolbarOverflow::Menu`](crate::primitives::toolbar::ToolbarOverflow::Menu) paints a trailing `[ » ]` affordance —
 ///   [`crate::primitives::toolbar::native_surface_paint::paint`]'s
 ///   [`crate::primitives::toolbar::ToolbarItemKind::Overflow`] arm reuses
 ///   the same pill/label `Action` paint every other button gets, through
@@ -190,7 +189,7 @@ pub fn win_toolbar_layout_with_overflow(
 ///   [`ToolbarLayout::overflowed_items`].
 ///
 /// `priorities` is read only when `options.overflow` is
-/// [`ToolbarOverflow::Menu`] — pass [`ToolbarOverflowPriorities::new`]
+/// [`ToolbarOverflow::Menu`](crate::primitives::toolbar::ToolbarOverflow::Menu) — pass [`ToolbarOverflowPriorities::new`]
 /// for the other two variants.
 ///
 /// Always paints with [`ToolbarPaintOptions::default`] — a host cannot
