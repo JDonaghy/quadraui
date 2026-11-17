@@ -2092,6 +2092,13 @@ impl Backend for GtkBackend {
         self.viewport
     }
 
+    fn cell_grid(&self) -> bool {
+        // Cairo draws on a continuous device-independent-pixel surface:
+        // `viewport` is in DIPs, scaled by the display's DPI ratio, not in
+        // whole terminal cells.
+        false
+    }
+
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
         // Bump once per frame so `TermPaintCache::painted_frame`

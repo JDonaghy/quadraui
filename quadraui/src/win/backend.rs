@@ -1967,6 +1967,13 @@ impl Backend for WinBackend {
         self.viewport
     }
 
+    fn cell_grid(&self) -> bool {
+        // Direct2D draws in device-independent pixels on a continuous
+        // render target: `viewport` is in DIPs, scaled by the window's DPI,
+        // not in whole terminal cells.
+        false
+    }
+
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
         // Clear the focused activity bar — re-set by `draw_activity_bar`
