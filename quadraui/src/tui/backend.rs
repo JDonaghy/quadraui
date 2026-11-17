@@ -800,6 +800,58 @@ impl TuiBackend {
         result
     }
 
+    /// [`crate::primitive::Primitive`] entry point for TUI.
+    ///
+    /// `Backend::paint_surface` always returns `None` on this backend
+    /// (`PaintSurface`'s module doc, "Why TUI stays out" — a cell grid
+    /// has no sub-cell `Rect`), so `DrawsPrimitives::draw_primitive`'s
+    /// blanket default — the one every other backend uses unmodified —
+    /// resolves `primitive.layout()` but never calls `primitive.paint()`
+    /// on TUI, silently painting nothing. This inherent method is TUI's
+    /// real paint entry point instead: it calls the same `layout()`, then
+    /// [`crate::primitive::Primitive::paint_cells`] — the cell-buffer
+    /// paint method that exists precisely because `PaintSurface` itself
+    /// cannot (see that method's own doc for why a byte-for-byte
+    /// `draw_list` match is not achievable through `PaintSurface`'s
+    /// pixel-shaped verbs).
+    ///
+    /// An inherent method of the same name as `DrawsPrimitives`' trait
+    /// method is not ambiguous: Rust always prefers an inherent method
+    /// over a trait method for a receiver of a concrete, known type, so
+    /// any call site holding a concrete `TuiBackend` (every in-crate
+    /// caller — `DrawsPrimitives::draw_primitive`'s generic `<P:
+    /// Primitive>` parameter means it can only ever be called this way,
+    /// never through `&mut dyn Backend`, so there is no call site this
+    /// quietly redirects) reaches this method, not the blanket default.
+    ///
+    /// Must be called inside [`Self::enter_frame_scope`], same contract
+    /// as every `Backend::draw_*` method on this backend; outside it,
+    /// this still returns a real (unpainted) layout rather than
+    /// panicking, matching [`crate::backend::DrawsPrimitives::draw_primitive`]'s
+    /// own "always returns the resolved layout, painted or not" contract.
+    pub fn draw_primitive<P: crate::primitive::Primitive>(
+        &mut self,
+        rect: QRect,
+        primitive: &P,
+    ) -> P::Layout {
+        let ctx = crate::primitive::LayoutCtx {
+            line_height: self.chrome_line_height(),
+            char_width: self.char_width(),
+            nerd_fonts_enabled: self.nerd_fonts_enabled(),
+        };
+        let layout = primitive.layout(&ctx, rect);
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_primitive called outside enter_frame_scope"
+            );
+            return layout;
+        };
+        primitive.paint_cells(&layout, frame.buffer_mut(), &theme);
+        layout
+    }
+
     /// Get the current frame inside [`Self::enter_frame_scope`], or
     /// `None` outside it. Trait `draw_*` methods call this and bail
     /// (panic in dev, silent return otherwise) if `None`: each call site
@@ -1512,8 +1564,12 @@ impl crate::runtime::PreprocessBackend for TuiBackend {
 /// Convert a [`crate::Rect`] (f32 coordinates) to a
 /// [`ratatui::layout::Rect`] (u16). Any negative values clamp to 0;
 /// fractional widths/heights round to nearest. Used by every trait
-/// `draw_*` method to translate the trait's `Rect` argument.
-fn q_rect_to_ratatui(r: QRect) -> Rect {
+/// `draw_*` method to translate the trait's `Rect` argument, and by
+/// [`crate::primitives::list::ListView`]'s `Primitive::layout`/
+/// `paint_cells` (`primitives/list.rs`) so the cell-quantised area a
+/// `Primitive` caller lays out against is identical to the one
+/// `draw_list` paints into — `pub(crate)` for that cross-module reuse.
+pub(crate) fn q_rect_to_ratatui(r: QRect) -> Rect {
     let x = r.x.max(0.0).round() as u16;
     let y = r.y.max(0.0).round() as u16;
     let w = r.width.max(0.0).round() as u16;
@@ -8195,6 +8251,114 @@ mod tests {
         assert!(
             !no_paint.visible_items.is_empty(),
             "sanity: the sample list has an item to lay out"
+        );
+    }
+
+    /// `ListView` painted through `crate::primitive::Primitive`
+    /// (`TuiBackend::draw_primitive`, which calls `Primitive::paint_cells`)
+    /// must match `TuiBackend::draw_list`'s own output byte-for-byte — the
+    /// `Primitive` pilot's TUI story. Covers the whole surface a
+    /// cell-quantised `PaintSurface` impl could not reach: a `bordered`
+    /// box (box-drawing glyphs), a title row, per-item icon/detail/
+    /// decoration, and both scrollbars (an overflowing `max_content_width`
+    /// for the horizontal one, more items than fit for the vertical one).
+    #[test]
+    fn list_primitive_paint_cells_matches_draw_list() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let list = ListView {
+            id: WidgetId::new("test:list-primitive-pilot"),
+            title: Some(StyledText::plain("QUICKFIX")),
+            items: (0..8)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("row {i} some long content here")),
+                    icon: Some(crate::types::Icon::new("", "*")),
+                    detail: Some(StyledText::plain("detail")),
+                    decoration: if i == 1 {
+                        crate::Decoration::Error
+                    } else {
+                        crate::Decoration::Normal
+                    },
+                })
+                .collect(),
+            selected_idx: 2,
+            scroll_offset: 1,
+            has_focus: true,
+            bordered: true,
+            h_scroll: 0,
+            max_content_width: Some(80),
+            show_v_scrollbar: false,
+        };
+        let rect = QRect::new(2.0, 1.0, 24.0, 6.0);
+
+        let mut via_primitive_backend = TuiBackend::new();
+        let mut via_primitive_terminal =
+            Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
+        via_primitive_terminal
+            .draw(|frame| {
+                via_primitive_backend.enter_frame_scope(frame, |b| {
+                    b.draw_primitive(rect, &list);
+                });
+            })
+            .expect("draw");
+
+        let mut via_draw_list_backend = TuiBackend::new();
+        let mut via_draw_list_terminal =
+            Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
+        via_draw_list_terminal
+            .draw(|frame| {
+                via_draw_list_backend.enter_frame_scope(frame, |b| {
+                    b.draw_list(rect, &list);
+                });
+            })
+            .expect("draw");
+
+        assert_eq!(
+            via_primitive_terminal.backend().buffer(),
+            via_draw_list_terminal.backend().buffer(),
+            "ListView painted through Primitive::paint_cells must match \
+             TuiBackend::draw_list byte-for-byte"
+        );
+        let screen = screen_text(via_primitive_terminal.backend().buffer());
+        assert!(
+            screen.contains("QUICKFIX") && screen.contains("row 2"),
+            "sanity: the list actually painted its title/rows, got: {screen}"
+        );
+    }
+
+    /// `TuiBackend::draw_primitive`'s returned [`crate::ListViewPrimitiveLayout`]
+    /// must hit-test against the same absolute area it was just painted
+    /// into — not merely paint the same pixels `draw_list` does
+    /// ([`list_primitive_paint_cells_matches_draw_list`] above), but also
+    /// resolve to the same row [`TuiBackend::list_layout`] does for a
+    /// click at that row's position.
+    #[test]
+    fn list_primitive_draw_primitive_layout_hit_tests_correctly() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let list = sample_list();
+        let rect = QRect::new(2.0, 1.0, 20.0, 5.0);
+
+        let mut backend = TuiBackend::new();
+        let mut captured = None;
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    captured = Some(b.draw_primitive(rect, &list));
+                });
+            })
+            .expect("draw");
+        let primitive_layout = captured.expect("draw_primitive ran inside the frame scope");
+
+        let no_paint_layout = backend.list_layout(rect, &list);
+        assert_eq!(
+            primitive_layout.hit_test(rect.x, rect.y),
+            no_paint_layout.hit_test(0.0, 0.0),
+            "Primitive::layout's absolute hit_test must agree with \
+             TuiBackend::list_layout's local one at the same point"
         );
     }
 

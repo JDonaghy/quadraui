@@ -616,11 +616,13 @@ pub use primitives::list::{
     ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
     ListViewLayout, VisibleListItem,
 };
-// `ListView`'s `Primitive::Layout` — only defined when `native_surface_paint`
-// is (see that module's `cfg`), so the pilot `impl Primitive for ListView`
-// it supports exists on the same feature set.
+// `ListView`'s `Primitive::Layout` — defined on every feature set the
+// pilot `impl Primitive for ListView` itself is (see that impl's own
+// `cfg`): the three pixel backends via `native_surface_paint`, plus
+// `tui` via `Primitive::paint_cells`/`crate::tui::draw_list`.
 #[cfg(any(
     feature = "gtk",
+    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]

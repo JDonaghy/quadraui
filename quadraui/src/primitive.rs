@@ -189,4 +189,59 @@ pub trait Primitive: A11yPrimitive {
         theme: &Theme,
         style: &Style,
     );
+
+    /// Paint `layout` onto a TUI cell buffer — [`crate::tui::backend::TuiBackend`]'s
+    /// paint entry point ([`crate::tui::backend::TuiBackend::draw_primitive`])
+    /// calls this instead of [`Self::paint`], since TUI has no
+    /// [`PaintSurface`] to hand it (see that trait's module doc, "Why TUI
+    /// stays out").
+    ///
+    /// # Why a second method instead of a cell-quantised `PaintSurface`
+    ///
+    /// A real prototype (`crate::primitives::list::ListView`'s pilot
+    /// impl) ruled out a `TuiBackend: PaintSurface` impl that reproduces
+    /// `crate::tui::draw_list`'s output byte-for-byte: `ListView::bordered`'s
+    /// frame is painted as literal box-drawing glyphs (`╭─╮│╰─╯`) chosen
+    /// per-corner, which [`PaintSurface::surface_stroke_rect`]/
+    /// [`PaintSurface::surface_draw_path`]'s axis-aligned-rect and
+    /// straight-segment verbs have no way to express — a `PaintSurface`
+    /// verb general enough to pick "this exact glyph at this exact
+    /// corner" stops being a backend-agnostic drawing primitive and
+    /// becomes a terminal-box-drawing API wearing a `PaintSurface`
+    /// costume. Row text also carries its own cell-count accounting
+    /// (`crate::text_util::display_width`/`char_cell_width`, double-width
+    /// CJK glyphs occupying two cells) that a pixel-shaped
+    /// `surface_draw_text_run` has no parallel for — a font-shaped text
+    /// run has no "how many terminal columns wide" concept to quantise
+    /// to. Both gaps are structural, not missing verbs that a future
+    /// `PaintSurface` addition could close, so TUI gets this second,
+    /// cell-buffer-flavored method instead — mirroring how
+    /// [`crate::tui::draw_list`] itself already exists as a parallel
+    /// rasteriser to the shared `native_surface_paint` helper, not a
+    /// `PaintSurface` implementor.
+    ///
+    /// Takes `&mut ratatui::buffer::Buffer` directly (the same type
+    /// [`crate::tui::draw_list`] itself takes) rather than inventing a
+    /// quadraui-local cell-surface abstraction — every `tui`-feature
+    /// consumer already depends on the same `ratatui` version to call
+    /// [`crate::tui::draw_list`] and friends, so this adds no new
+    /// dependency surface.
+    ///
+    /// `#[cfg(feature = "tui")]`: unlike [`Self::paint`], which exists
+    /// unconditionally because every pixel backend needs it, nothing
+    /// outside a `tui`-enabled build can construct a `ratatui::buffer::Buffer`
+    /// to call this with.
+    ///
+    /// Default: no-op — correct for the common case of a `Primitive`
+    /// implementor with no TUI story at all (every built-in primitive
+    /// except [`crate::ListView`]'s pilot today); such an implementor
+    /// painted through [`crate::tui::backend::TuiBackend::draw_primitive`]
+    /// still gets a real, hit-testable [`Self::Layout`] back, just no
+    /// pixels on screen, the same "resolve layout, maybe paint" contract
+    /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s own default
+    /// already has for a `PaintSurface`-less backend.
+    #[cfg(feature = "tui")]
+    fn paint_cells(&self, layout: &Self::Layout, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
+        let _ = (layout, buf, theme);
+    }
 }
