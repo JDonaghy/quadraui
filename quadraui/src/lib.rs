@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 51 primitive modules (one each under `src/primitives/`) — widgets,
+//! 52 primitive modules (one each under `src/primitives/`) — widgets,
 //! each declarative + serde-friendly so apps and Lua plugins can
 //! describe UI as data, plus the `layout_metrics` and `row_stack`
 //! shared-math helpers the widget modules reuse. A representative
@@ -733,6 +733,9 @@ pub use primitives::tooltip::{
 pub use primitives::tree::{
     selected_paths_for_indices, TreeEvent, TreePaintState, TreeRow, TreeRowEditState,
     TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
+};
+pub use primitives::tree_table::{
+    TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableNode,
 };
 pub use style::Style;
 pub use text_util::{

@@ -509,8 +509,13 @@ impl DataTableLayout {
     /// Also undoes [`Self::inset_x`]'s left-margin shift first — `0.0`
     /// when the table isn't [`DataTable::bordered`], so this is an
     /// identity add-on to the pre-existing behaviour.
+    ///
+    /// `pub(crate)`, not private: [`crate::primitives::tree_table::TreeTableLayout::hit_test`]
+    /// reuses it to convert a chevron hit-test's incoming pointer `x`
+    /// into the same content space [`TreeTableLayout::chevrons`] stores
+    /// its bounds in, rather than re-deriving this formula.
     #[inline]
-    fn content_x(&self, x: f32) -> f32 {
+    pub(crate) fn content_x(&self, x: f32) -> f32 {
         (x - self.inset_x) + self.h_scroll
     }
 

@@ -2944,6 +2944,44 @@ impl Backend for TuiBackend {
         crate::tui::data_table_layout(area, table)
     }
 
+    fn draw_tree_table(
+        &mut self,
+        rect: QRect,
+        table: &crate::TreeTable,
+        hovered_idx: Option<usize>,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tree_table called outside enter_frame_scope"
+            );
+            return self.tree_table_layout(rect, table);
+        };
+        crate::tui::draw_tree_table(
+            frame.buffer_mut(),
+            area,
+            table,
+            &theme,
+            hovered_idx,
+            nerd_fonts,
+        )
+    }
+
+    fn tree_table_layout(
+        &self,
+        rect: QRect,
+        table: &crate::TreeTable,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        // Same rationale as `data_table_layout`: go through the exact
+        // resolver `draw_tree_table` paints with, so a cache-free
+        // layout-on-demand hit-test agrees with what's on screen.
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tree_table_layout(area, table)
+    }
+
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
         // Snap through the same u16 cell truncation `draw_list` uses so
         // the consumer's thumb hit-region matches the painted thumb.

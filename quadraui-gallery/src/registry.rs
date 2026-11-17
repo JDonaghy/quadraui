@@ -52,6 +52,7 @@ use crate::demos::toast::ToastDemo;
 use crate::demos::toolbar::ToolbarDemo;
 use crate::demos::tooltip::TooltipDemo;
 use crate::demos::tree::TreeDemo;
+use crate::demos::tree_table::TreeTableDemo;
 use crate::demos::window_control::WindowControlDemo;
 use crate::demos::workspace::WorkspaceDemo;
 use crate::Demo;
@@ -106,6 +107,7 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         // Data views.
         Box::new(DataTableDemo::new()),
         Box::new(TreeDemo::new()),
+        Box::new(TreeTableDemo::new()),
         Box::new(ChartDemo::new()),
         Box::new(BoardDemo::new()),
         Box::new(PipelineDemo::new()),
