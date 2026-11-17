@@ -434,141 +434,177 @@ pub fn draw_toolbar_with_options(
     }
 
     for vis in &layout.visible_items {
-        let item_x = vis.bounds.x.round() as u16;
-        let item_w = vis.bounds.width.round() as u16;
-        if item_w == 0 {
-            continue;
-        }
         let btn = &effective.buttons[vis.item_idx];
-
-        match btn {
-            ToolbarButton::Action {
-                id,
-                label,
-                icon,
-                key_hint,
-                enabled,
-                is_active,
-                spec,
-                ..
-            } => {
-                let is_hovered = *enabled && hovered_id == Some(id);
-                let is_pressed = *enabled && pressed_id == Some(id);
-                let is_focused = *enabled && effective.focused_index == Some(vis.item_idx);
-                // An explicit `spec` override's `variant` tints the
-                // resting foreground the same way `crate::tui::button`
-                // paints a standalone `Danger`/`Warning` `Button` — see
-                // that module's doc. Lowest priority: pressed/hovered/
-                // focused/is_active all still win, same as a focused
-                // `Button` wins over its own intent colour. Only
-                // `variant` is honoured here today — `icon`/
-                // `icon_position`/`icon_gap`/`tooltip`/`disabled` on the
-                // spec have no TUI toolbar effect yet; this button keeps
-                // painting through its own legacy `icon`/`enabled` fields.
-                let intent_fg = spec.as_ref().and_then(|s| match s.variant {
-                    crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
-                    crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),
-                    _ => None,
-                });
-                // Priority: pressed > hovered > focused > is_active > enabled > intent.
-                let (cell_fg, cell_bg) = if !*enabled {
-                    (muted, bar_bg)
-                } else if is_pressed || *is_active {
-                    (fg, active_bg)
-                } else if is_hovered {
-                    (hover_fg, hover_bg)
-                } else if is_focused {
-                    (fg, focus_bg)
-                } else if let Some(intent) = intent_fg {
-                    (qc(intent), bar_bg)
-                } else {
-                    (fg, bar_bg)
-                };
-
-                // Build the rendered cells. Icon-only buttons compact
-                // to `[ icon ]` (no trailing space after the icon).
-                let mut cells: Vec<char> = Vec::with_capacity(item_w as usize);
-                cells.push('[');
-                cells.push(' ');
-                cells.extend(action_content_cells(
-                    icon.as_deref(),
-                    label,
-                    key_hint.as_deref(),
-                ));
-                cells.push(' ');
-                cells.push(']');
-
-                // Paint background across every row of the item so the
-                // hover/active highlight reads as one solid button on
-                // multi-row toolbars (Gap 1).
-                for dy in 0..area.height {
-                    for dx in 0..item_w {
-                        set_cell(buf, item_x + dx, area.y + dy, ' ', cell_fg, cell_bg);
-                    }
-                }
-
-                // Paint text on the vertically-centred row, advancing
-                // by the wide-char-aware cell width of each glyph.
-                let mut col: u16 = 0;
-                for ch in cells {
-                    let cw = char_cell_width(ch);
-                    if col + cw > item_w {
-                        break;
-                    }
-                    set_cell(buf, item_x + col, text_row, ch, cell_fg, cell_bg);
-                    col += cw;
-                }
-            }
-            ToolbarButton::Separator => {
-                // 2 cells: ` │`, drawn through every row of the bar so
-                // the divider reads as a single full-height rule on
-                // multi-row toolbars.
-                for dy in 0..area.height {
-                    if item_w >= 1 {
-                        set_cell(buf, item_x, area.y + dy, ' ', muted, bar_bg);
-                    }
-                    if item_w >= 2 {
-                        set_cell(buf, item_x + 1, area.y + dy, '│', muted, bar_bg);
-                    }
-                }
-            }
-            ToolbarButton::Label { text, fg: label_fg } => {
-                let color = label_fg.map(qc).unwrap_or(muted);
-                let mut col: u16 = 0;
-                for ch in text.chars() {
-                    let cw = char_cell_width(ch);
-                    if col + cw > item_w {
-                        break;
-                    }
-                    set_cell(buf, item_x + col, text_row, ch, color, bar_bg);
-                    col += cw;
-                }
-            }
-            // A `Spacer`'s slot is painted already (the bar-background
-            // fill loop above), and it is never clickable, so there is
-            // nothing further to draw here.
-            ToolbarButton::Spacer => {}
-            ToolbarButton::Group { items, .. } => {
-                draw_group_horizontal(
-                    buf,
-                    area.y..area.y + area.height,
-                    vis,
-                    items,
-                    hovered_id,
-                    pressed_id,
-                    text_row,
-                    bar_bg,
-                    fg,
-                    muted,
-                    hover_bg,
-                    hover_fg,
-                    active_bg,
-                );
-            }
-        }
+        let is_focused = effective.focused_index == Some(vis.item_idx);
+        draw_toolbar_item(
+            buf,
+            area.y..area.y + area.height,
+            text_row,
+            vis,
+            btn,
+            is_focused,
+            theme,
+            hovered_id,
+            pressed_id,
+            bar_bg,
+            fg,
+            muted,
+            hover_bg,
+            hover_fg,
+            active_bg,
+            focus_bg,
+        );
     }
 
     layout
+}
+
+/// Paint one [`VisibleToolbarItem`]/[`ToolbarButton`] pair — the body every
+/// per-item match arm in [`draw_toolbar_with_options`] and
+/// [`draw_toolbar_with_overflow`] shares. `rows` is the terminal rows the
+/// caller has room to paint this item into; `text_row` (within `rows`) is
+/// where the label/key-hint text lands. `item_focused` is precomputed by
+/// the caller, since the two callers compare `vis.item_idx` against two
+/// different focus sources.
+#[allow(clippy::too_many_arguments)]
+fn draw_toolbar_item(
+    buf: &mut Buffer,
+    rows: std::ops::Range<u16>,
+    text_row: u16,
+    vis: &VisibleToolbarItem,
+    btn: &ToolbarButton,
+    item_focused: bool,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+    bar_bg: ratatui::style::Color,
+    fg: ratatui::style::Color,
+    muted: ratatui::style::Color,
+    hover_bg: ratatui::style::Color,
+    hover_fg: ratatui::style::Color,
+    active_bg: ratatui::style::Color,
+    focus_bg: ratatui::style::Color,
+) {
+    let item_x = vis.bounds.x.round() as u16;
+    let item_w = vis.bounds.width.round() as u16;
+    if item_w == 0 {
+        return;
+    }
+
+    match btn {
+        ToolbarButton::Action {
+            id,
+            label,
+            icon,
+            key_hint,
+            enabled,
+            is_active,
+            spec,
+            ..
+        } => {
+            let is_hovered = *enabled && hovered_id == Some(id);
+            let is_pressed = *enabled && pressed_id == Some(id);
+            let is_focused = *enabled && item_focused;
+            // An explicit `spec` override's `variant` tints the
+            // resting foreground the same way `crate::tui::button`
+            // paints a standalone `Danger`/`Warning` `Button` — see
+            // that module's doc. Lowest priority: pressed/hovered/
+            // focused/is_active all still win, same as a focused
+            // `Button` wins over its own intent colour. Only
+            // `variant` is honoured here today — `icon`/
+            // `icon_position`/`icon_gap`/`tooltip`/`disabled` on the
+            // spec have no TUI toolbar effect yet; this button keeps
+            // painting through its own legacy `icon`/`enabled` fields.
+            let intent_fg = spec.as_ref().and_then(|s| match s.variant {
+                crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
+                crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),
+                _ => None,
+            });
+            // Priority: pressed > hovered > focused > is_active > enabled > intent.
+            let (cell_fg, cell_bg) = if !*enabled {
+                (muted, bar_bg)
+            } else if is_pressed || *is_active {
+                (fg, active_bg)
+            } else if is_hovered {
+                (hover_fg, hover_bg)
+            } else if is_focused {
+                (fg, focus_bg)
+            } else if let Some(intent) = intent_fg {
+                (qc(intent), bar_bg)
+            } else {
+                (fg, bar_bg)
+            };
+
+            // Build the rendered cells. Icon-only buttons compact
+            // to `[ icon ]` (no trailing space after the icon).
+            let mut cells: Vec<char> = Vec::with_capacity(item_w as usize);
+            cells.push('[');
+            cells.push(' ');
+            cells.extend(action_content_cells(
+                icon.as_deref(),
+                label,
+                key_hint.as_deref(),
+            ));
+            cells.push(' ');
+            cells.push(']');
+
+            // Paint background across every row of the item so the
+            // hover/active highlight reads as one solid button on
+            // multi-row toolbars (Gap 1).
+            for y in rows.clone() {
+                for dx in 0..item_w {
+                    set_cell(buf, item_x + dx, y, ' ', cell_fg, cell_bg);
+                }
+            }
+
+            // Paint text on the vertically-centred row, advancing
+            // by the wide-char-aware cell width of each glyph.
+            let mut col: u16 = 0;
+            for ch in cells {
+                let cw = char_cell_width(ch);
+                if col + cw > item_w {
+                    break;
+                }
+                set_cell(buf, item_x + col, text_row, ch, cell_fg, cell_bg);
+                col += cw;
+            }
+        }
+        ToolbarButton::Separator => {
+            // 2 cells: ` │`, drawn through every row of the bar so
+            // the divider reads as a single full-height rule on
+            // multi-row toolbars.
+            for y in rows.clone() {
+                if item_w >= 1 {
+                    set_cell(buf, item_x, y, ' ', muted, bar_bg);
+                }
+                if item_w >= 2 {
+                    set_cell(buf, item_x + 1, y, '│', muted, bar_bg);
+                }
+            }
+        }
+        ToolbarButton::Label { text, fg: label_fg } => {
+            let color = label_fg.map(qc).unwrap_or(muted);
+            let mut col: u16 = 0;
+            for ch in text.chars() {
+                let cw = char_cell_width(ch);
+                if col + cw > item_w {
+                    break;
+                }
+                set_cell(buf, item_x + col, text_row, ch, color, bar_bg);
+                col += cw;
+            }
+        }
+        // A `Spacer`'s slot is painted already (the bar-background
+        // fill loop above), and it is never clickable, so there is
+        // nothing further to draw here.
+        ToolbarButton::Spacer => {}
+        ToolbarButton::Group { items, .. } => {
+            draw_group_horizontal(
+                buf, rows, vis, items, hovered_id, pressed_id, text_row, bar_bg, fg, muted,
+                hover_bg, hover_fg, active_bg,
+            );
+        }
+    }
 }
 
 /// Paint one [`ToolbarButton::Group`] slot (`vis`, whose `kind` is
@@ -871,17 +907,30 @@ pub fn draw_toolbar_oriented(
 /// `area` from that before the next [`draw_toolbar_with_overflow`] call.
 /// [`ToolbarOverflow::Clip`]/[`ToolbarOverflow::Menu`] keep `area.height`
 /// as the single line's row count, same as [`tui_toolbar_layout`].
+///
+/// A host that skips the resize step above still gets every wrapped line
+/// back in `visible_items` (so a 1-row probe `area` can still discover
+/// `cross_extent`), but any item on a row at or past `area.height` is
+/// marked un-clickable, matching [`draw_toolbar_with_overflow`]'s own clip
+/// at `area_bottom` — otherwise [`ToolbarLayout::hit_test`] would report a
+/// hit on a button never actually painted.
 pub fn tui_toolbar_layout_with_overflow(
     bar: &Toolbar,
     area: Rect,
     options: ToolbarLayoutOptions,
     priorities: &ToolbarOverflowPriorities,
 ) -> ToolbarLayout {
+    // `Clip` matches [`tui_toolbar_layout_with_options`] exactly, group
+    // degrade tiers included — compute it that way instead of re-deriving.
+    if options.overflow == ToolbarOverflow::Clip {
+        return tui_toolbar_layout_with_options(bar, area, options);
+    }
+
     let line_height: f32 = match options.overflow {
         ToolbarOverflow::Wrap => 1.0,
         _ => area.height.max(1) as f32,
     };
-    match options.orientation {
+    let mut layout = match options.orientation {
         ToolbarOrientation::Horizontal => bar.layout_with_overflow(
             area.x as f32,
             area.y as f32,
@@ -900,7 +949,23 @@ pub fn tui_toolbar_layout_with_overflow(
             priorities,
             |_btn| ToolbarItemMeasure::new(1.0),
         ),
+    };
+
+    if options.overflow == ToolbarOverflow::Wrap
+        && options.orientation == ToolbarOrientation::Horizontal
+    {
+        let area_bottom = area.y as f32 + area.height as f32;
+        for vis in &mut layout.visible_items {
+            if vis.bounds.y >= area_bottom {
+                vis.clickable = false;
+                for child in &mut vis.group_children {
+                    child.clickable = false;
+                }
+            }
+        }
     }
+
+    layout
 }
 
 /// [`draw_toolbar_with_options`], plus [`ToolbarOverflow`]:
@@ -943,6 +1008,13 @@ pub fn draw_toolbar_with_overflow(
         ));
     }
 
+    // `Clip` paints identically to `draw_toolbar_oriented` (see this fn's
+    // own doc) — delegate rather than re-deriving the same geometry, so
+    // the group-degrade tiers can't drift out of step with what paints.
+    if options.overflow == ToolbarOverflow::Clip {
+        return draw_toolbar_oriented(buf, area, bar, theme, hovered_id, pressed_id, options);
+    }
+
     let layout = tui_toolbar_layout_with_overflow(bar, area, options, priorities);
 
     let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
@@ -961,7 +1033,6 @@ pub fn draw_toolbar_with_overflow(
     }
 
     for vis in &layout.visible_items {
-        let item_x = vis.bounds.x.round() as u16;
         let item_y = vis.bounds.y.round() as u16;
         let item_w = vis.bounds.width.round() as u16;
         let item_h = (vis.bounds.height.round() as u16).max(1);
@@ -969,131 +1040,52 @@ pub fn draw_toolbar_with_overflow(
             continue;
         }
         let row_h = item_h.min(area_bottom - item_y);
+        let rows = item_y..item_y + row_h;
         let text_row = item_y;
 
-        if vis.kind == ToolbarItemKind::Overflow {
-            for dy in 0..row_h {
-                for dx in 0..item_w {
-                    set_cell(buf, item_x + dx, item_y + dy, ' ', fg, bar_bg);
-                }
-            }
-            let mut col: u16 = 0;
-            for ch in ['[', ' ', '»', ' ', ']'] {
-                let cw = char_cell_width(ch);
-                if col + cw > item_w {
-                    break;
-                }
-                set_cell(buf, item_x + col, text_row, ch, fg, bar_bg);
-                col += cw;
-            }
-            continue;
-        }
-
-        let Some(btn) = bar.buttons.get(vis.item_idx) else {
-            continue;
+        // The `»` affordance has no `Toolbar::buttons` entry of its own —
+        // paint it as the same `[ » ]` `Action` `Toolbar::layout_menu`
+        // already measured it as, through the ordinary `Action` arm.
+        let overflow_btn = if vis.kind == ToolbarItemKind::Overflow {
+            Some(crate::primitives::toolbar::overflow_indicator_button())
+        } else {
+            None
         };
-        match btn {
-            ToolbarButton::Action {
-                id,
-                label,
-                icon,
-                key_hint,
-                enabled,
-                is_active,
-                spec,
-                ..
-            } => {
-                let is_hovered = *enabled && hovered_id == Some(id);
-                let is_pressed = *enabled && pressed_id == Some(id);
-                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
-                let intent_fg = spec.as_ref().and_then(|s| match s.variant {
-                    crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
-                    crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),
-                    _ => None,
-                });
-                let (cell_fg, cell_bg) = if !*enabled {
-                    (muted, bar_bg)
-                } else if is_pressed || *is_active {
-                    (fg, active_bg)
-                } else if is_hovered {
-                    (hover_fg, hover_bg)
-                } else if is_focused {
-                    (fg, focus_bg)
-                } else if let Some(intent) = intent_fg {
-                    (qc(intent), bar_bg)
-                } else {
-                    (fg, bar_bg)
-                };
+        let btn = match &overflow_btn {
+            Some(b) => b,
+            None => match bar.buttons.get(vis.item_idx) {
+                Some(b) => b,
+                None => continue,
+            },
+        };
+        let is_focused = overflow_btn.is_none() && bar.focused_index == Some(vis.item_idx);
+        // The `»` entry's id is a sentinel no host hands back as its own
+        // `hovered_id`/`pressed_id` — pin both to `None` so it always
+        // paints in the resting `fg`/`bar_bg` pair.
+        let (item_hovered_id, item_pressed_id) = if overflow_btn.is_some() {
+            (None, None)
+        } else {
+            (hovered_id, pressed_id)
+        };
 
-                let mut cells: Vec<char> = Vec::new();
-                cells.push('[');
-                cells.push(' ');
-                cells.extend(action_content_cells(
-                    icon.as_deref(),
-                    label,
-                    key_hint.as_deref(),
-                ));
-                cells.push(' ');
-                cells.push(']');
-
-                for dy in 0..row_h {
-                    for dx in 0..item_w {
-                        set_cell(buf, item_x + dx, item_y + dy, ' ', cell_fg, cell_bg);
-                    }
-                }
-                let mut col: u16 = 0;
-                for ch in cells {
-                    let cw = char_cell_width(ch);
-                    if col + cw > item_w {
-                        break;
-                    }
-                    set_cell(buf, item_x + col, text_row, ch, cell_fg, cell_bg);
-                    col += cw;
-                }
-            }
-            ToolbarButton::Separator => {
-                for dy in 0..row_h {
-                    if item_w >= 1 {
-                        set_cell(buf, item_x, item_y + dy, ' ', muted, bar_bg);
-                    }
-                    if item_w >= 2 {
-                        set_cell(buf, item_x + 1, item_y + dy, '│', muted, bar_bg);
-                    }
-                }
-            }
-            ToolbarButton::Label { text, fg: label_fg } => {
-                let color = label_fg.map(qc).unwrap_or(muted);
-                let mut col: u16 = 0;
-                for ch in text.chars() {
-                    let cw = char_cell_width(ch);
-                    if col + cw > item_w {
-                        break;
-                    }
-                    set_cell(buf, item_x + col, text_row, ch, color, bar_bg);
-                    col += cw;
-                }
-            }
-            // Already painted by the bar-background fill loop above, and
-            // never clickable.
-            ToolbarButton::Spacer => {}
-            ToolbarButton::Group { items, .. } => {
-                draw_group_horizontal(
-                    buf,
-                    item_y..item_y + row_h,
-                    vis,
-                    items,
-                    hovered_id,
-                    pressed_id,
-                    text_row,
-                    bar_bg,
-                    fg,
-                    muted,
-                    hover_bg,
-                    hover_fg,
-                    active_bg,
-                );
-            }
-        }
+        draw_toolbar_item(
+            buf,
+            rows,
+            text_row,
+            vis,
+            btn,
+            is_focused,
+            theme,
+            item_hovered_id,
+            item_pressed_id,
+            bar_bg,
+            fg,
+            muted,
+            hover_bg,
+            hover_fg,
+            active_bg,
+            focus_bg,
+        );
     }
 
     layout
@@ -2152,6 +2144,54 @@ mod tests {
             ToolbarHit::Button(id) => assert_eq!(id.as_str(), "c"),
             other => panic!("expected the third button on row 2, got {other:?}"),
         }
+    }
+
+    /// A host that skips the resize step and hands `area.height` smaller
+    /// than `cross_extent` reports still gets every wrapped item back (so
+    /// a probing caller can measure the full extent), but only row 0 is
+    /// clickable — matching `draw_toolbar_with_overflow`'s own clip, which
+    /// never paints past `area_bottom`.
+    #[test]
+    fn overflow_wrap_hit_test_agrees_with_the_rows_actually_painted() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA", true),
+                mk_action("b", "BBBB", true),
+                mk_action("c", "CCCC", true),
+            ],
+            bg: None,
+            focused_index: None,
+        };
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        let priorities = ToolbarOverflowPriorities::new();
+
+        // 3 buttons need 3 rows at this width, but this host only offers 1.
+        let area = Rect::new(0, 0, 10, 1);
+        let layout = tui_toolbar_layout_with_overflow(&bar, area, options, &priorities);
+
+        assert_eq!(layout.visible_items.len(), 3, "kept for cross_extent");
+        let rows_needed = layout.cross_extent(ToolbarOrientation::Horizontal) as u16;
+        assert_eq!(rows_needed, 3);
+        match layout.hit_test(1.0, 0.0) {
+            ToolbarHit::Button(id) => assert_eq!(id.as_str(), "a"),
+            other => panic!("expected the first button on row 0, got {other:?}"),
+        }
+        assert_eq!(layout.hit_test(1.0, 1.0), ToolbarHit::Empty);
+        assert_eq!(layout.hit_test(1.0, 2.0), ToolbarHit::Empty);
+
+        let mut buf = Buffer::empty(area);
+        draw_toolbar_with_overflow(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            options,
+            &priorities,
+        );
+        assert_eq!(cell_char(&buf, 0, 0), '[', "row 0 is the only row painted");
     }
 
     /// `ToolbarOverflow::Menu` on a bar too narrow for every button paints
