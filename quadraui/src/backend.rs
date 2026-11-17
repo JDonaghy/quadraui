@@ -4450,7 +4450,7 @@ pub trait Backend: sealed::Sealed {
     }
 }
 
-/// [`Backend::draw_primitive`]-shaped entry point for any [`Primitive`]
+/// `draw_*`-shaped entry point for any [`Primitive`]
 /// — a sibling trait with a blanket impl, not a method on [`Backend`]
 /// itself, because a generic method is not dyn-compatible and `Backend`
 /// is used as `&mut dyn Backend` throughout this crate (every

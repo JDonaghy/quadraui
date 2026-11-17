@@ -1,7 +1,7 @@
 //! The [`Primitive`] trait — a single `layout()` + `paint()` pair a
 //! widget outside this crate implements to compose with every pixel
 //! [`crate::Backend`] through one generic entry point,
-//! [`crate::Backend::draw_primitive`], instead of needing a bespoke
+//! [`crate::DrawsPrimitives::draw_primitive`], instead of needing a bespoke
 //! `draw_*`/`*_layout` pair added to the sealed [`crate::Backend`]
 //! trait itself.
 //!
@@ -21,7 +21,7 @@
 //! ("the unsealed paint seam"): a widget built against `Primitive`
 //! composes `layout()` + `paint()` the same way every built-in
 //! primitive's `native_surface_paint::paint` helper already does
-//! internally, and [`crate::Backend::draw_primitive`]'s provided
+//! internally, and [`crate::DrawsPrimitives::draw_primitive`]'s provided
 //! default runs both against [`crate::Backend::paint_surface`] for any
 //! backend that implements [`crate::PaintSurface`] (today: GTK, macOS,
 //! Win) — zero new `Backend` methods, zero per-backend opt-in.
@@ -120,7 +120,7 @@
 //! #     }
 //! # }
 //! // Any `&mut dyn PaintSurface` paints it — this is what
-//! // `Backend::draw_primitive`'s default body does internally, against
+//! // `DrawsPrimitives::draw_primitive`'s default body does internally, against
 //! // whatever `Backend::paint_surface` hands back.
 //! let swatch = Swatch { color: Color::rgb(255, 0, 0) };
 //! let ctx = LayoutCtx {
@@ -144,7 +144,7 @@ use crate::theme::Theme;
 ///
 /// Mirrors the handful of [`crate::Backend`] measurement methods every
 /// pixel backend already exposes (`chrome_line_height`, `char_width`,
-/// `nerd_fonts_enabled`) — [`crate::Backend::draw_primitive`]'s default
+/// `nerd_fonts_enabled`) — [`crate::DrawsPrimitives::draw_primitive`]'s default
 /// body builds one of these from `self` before calling
 /// [`Primitive::layout`], so a `Primitive` impl never has to reach for
 /// `&dyn Backend` itself.
