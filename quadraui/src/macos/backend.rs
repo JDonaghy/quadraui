@@ -4877,6 +4877,62 @@ impl Backend for MacBackend {
         )
     }
 
+    fn draw_toolbar_with_overflow(
+        &mut self,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        interaction: &crate::interaction::InteractionState,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_toolbar_with_overflow called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::toolbar::draw_toolbar_with_overflow(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                hovered_id,
+                pressed_id,
+                layout_options,
+                priorities,
+            )
+        }
+    }
+
+    fn toolbar_layout_with_overflow(
+        &self,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
+        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        // No-paint twin of `draw_toolbar_with_overflow` — must agree with
+        // what that method painted, so it measures against `chrome_font` too.
+        super::toolbar::mac_toolbar_layout_with_overflow(
+            bar,
+            &self.chrome_font,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            layout_options,
+            priorities,
+        )
+    }
+
     fn draw_sidebar_panel_interactive(
         &mut self,
         rect: Rect,
