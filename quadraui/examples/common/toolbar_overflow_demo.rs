@@ -21,12 +21,13 @@
 //! - Click `[ » ]` (Menu mode)   list the dropped items in the status line
 //! - q / Esc          quit
 //!
-//! TUI-only — [`quadraui::Backend::draw_toolbar_with_overflow`] /
-//! [`quadraui::Backend::toolbar_layout_with_overflow`] default to
-//! Clip-only geometry on every backend but TUI (see those methods' own
-//! doc), so running this example under `quadraui::gtk::run` still paints
-//! and clicks correctly — it just never shows `Wrap`'s extra rows or
-//! `Menu`'s `[ » ]` affordance there yet.
+//! TUI and GTK both render `Wrap`'s extra rows and `Menu`'s `[ » ]`
+//! affordance for real, through each backend's own
+//! [`quadraui::Backend::draw_toolbar_with_overflow`] /
+//! [`quadraui::Backend::toolbar_layout_with_overflow`] override. macOS and
+//! Win-GUI still inherit the trait's default, which forwards to today's
+//! Clip-only geometry until a per-backend issue gives them one (see
+//! `CLAUDE.md`'s "One backend per issue").
 
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,

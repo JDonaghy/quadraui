@@ -2098,11 +2098,18 @@ pub(crate) mod native_surface_paint {
 
             // `vis.item_idx` is `TOOLBAR_OVERFLOW_ITEM_IDX` for a
             // `ToolbarItemKind::Overflow` entry — not a real `bar.buttons`
-            // index. None of GTK/macOS/Win-GUI paint `ToolbarOverflow::Menu`
-            // yet (TUI-only for this issue), but `.get` keeps this a no-op
-            // instead of a panic if a layout carrying one ever does reach here.
-            let Some(btn) = bar.buttons.get(vis.item_idx) else {
-                continue;
+            // index. Paint it through `overflow_indicator_button`'s synthetic
+            // `Action`, the same `[ » ]` affordance every backend's Overflow
+            // hit-test already answers; `.get` keeps a layout carrying any
+            // other out-of-range index a no-op instead of a panic.
+            let overflow_btn =
+                (vis.kind == ToolbarItemKind::Overflow).then(super::overflow_indicator_button);
+            let btn = match &overflow_btn {
+                Some(b) => b,
+                None => match bar.buttons.get(vis.item_idx) {
+                    Some(b) => b,
+                    None => continue,
+                },
             };
             match btn {
                 ToolbarButton::Action {

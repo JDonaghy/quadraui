@@ -1690,6 +1690,11 @@ path = "examples/gtk_toolbar.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "gtk_toolbar_overflow"
+path = "examples/gtk_toolbar_overflow.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_tabgroup"
 path = "examples/tui_tabgroup.rs"
 required-features = ["tui"]

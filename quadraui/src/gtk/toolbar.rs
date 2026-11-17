@@ -15,9 +15,11 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 
+use crate::paint_surface::PaintSurface;
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
+    ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
     ToolbarPaintOptions,
 };
 use crate::theme::Theme;
@@ -157,6 +159,171 @@ pub fn draw_toolbar_with_options(
         hovered_id,
         pressed_id,
         options,
+    );
+    pango_layout.set_attributes(None);
+
+    cr.restore().ok();
+    toolbar_layout
+}
+
+/// Compute the GTK pixel-unit layout [`draw_toolbar_with_overflow`] would
+/// paint, without painting — the layout-only twin
+/// [`gtk_toolbar_layout`] is to [`draw_toolbar_with_options`].
+///
+/// `line_height` is the pixel height of **one** toolbar row — GTK's analog
+/// to [`crate::tui::toolbar`]'s hardcoded one-terminal-row constant for
+/// [`ToolbarOverflow::Wrap`] (TUI has no sub-row unit to pick; GTK's pixel
+/// rows do, so the caller supplies it — typically the backend's own
+/// `line_height()`). Ignored for [`ToolbarOverflow::Clip`]/
+/// [`ToolbarOverflow::Menu`], which never need more than one line and use
+/// `h` for it directly, same as [`gtk_toolbar_layout`].
+///
+/// For [`ToolbarOverflow::Wrap`], `h` is the **total** area the host has
+/// (or is probing with) — [`ToolbarLayout::cross_extent`] on the result
+/// reports how many pixels of that the wrapped content actually needs, so
+/// a host sizes its container from that before the next paint. Any item
+/// whose row starts at or past `y + h` is marked un-clickable (its
+/// `Group` children too) while still appearing in `visible_items`, so a
+/// host that skips the resize step never gets a hit region for a row
+/// [`draw_toolbar_with_overflow`]'s own `(x, y, w, h)` cairo clip didn't
+/// actually paint.
+#[allow(clippy::too_many_arguments)]
+pub fn gtk_toolbar_layout_with_overflow(
+    bar: &Toolbar,
+    pango_layout: Option<&pango::Layout>,
+    char_width: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    line_height: f64,
+    options: ToolbarLayoutOptions,
+    priorities: &ToolbarOverflowPriorities,
+) -> ToolbarLayout {
+    let measure = PangoMeasure {
+        pango_layout,
+        char_width,
+    };
+    let line_h = if options.overflow == ToolbarOverflow::Wrap {
+        line_height
+    } else {
+        h
+    };
+    let mut layout = bar.layout_with_overflow(
+        x as f32,
+        y as f32,
+        w as f32,
+        line_h as f32,
+        options,
+        priorities,
+        |btn| ToolbarItemMeasure::new(measure_button(&measure, btn)),
+    );
+
+    if options.overflow == ToolbarOverflow::Wrap
+        && options.orientation == ToolbarOrientation::Horizontal
+    {
+        let area_bottom = (y + h) as f32;
+        for vis in &mut layout.visible_items {
+            if vis.bounds.y >= area_bottom {
+                vis.clickable = false;
+                for child in &mut vis.group_children {
+                    child.clickable = false;
+                }
+            }
+        }
+    }
+
+    layout
+}
+
+/// [`draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]:
+/// `options.overflow` picks how items that don't fit are handled.
+///
+/// - [`ToolbarOverflow::Clip`] paints identically to
+///   [`draw_toolbar_with_options`] (same single-line geometry; `(w, h)`
+///   is the one line).
+/// - [`ToolbarOverflow::Wrap`] paints each wrapped line `line_height`
+///   pixels below the last, clipped to `(x, y, w, h)` — call
+///   [`gtk_toolbar_layout_with_overflow`] first and grow `h` to its
+///   [`ToolbarLayout::cross_extent`] so every row actually paints.
+/// - [`ToolbarOverflow::Menu`] paints a trailing `[ » ]` affordance —
+///   [`crate::primitives::toolbar::native_surface_paint::paint`]'s
+///   [`crate::primitives::toolbar::ToolbarItemKind::Overflow`] arm reuses
+///   the same pill/label `Action` paint every other button gets, through
+///   [`crate::primitives::toolbar::overflow_indicator_button`]. A click on
+///   it hit-tests to [`crate::primitives::toolbar::ToolbarHit::Overflow`];
+///   open a [`crate::ContextMenu`] built from
+///   [`ToolbarLayout::overflowed_items`].
+///
+/// `priorities` is read only when `options.overflow` is
+/// [`ToolbarOverflow::Menu`] — pass [`ToolbarOverflowPriorities::new`]
+/// for the other two variants.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_toolbar_with_overflow(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    line_height: f64,
+    bar: &Toolbar,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+    options: ToolbarLayoutOptions,
+    priorities: &ToolbarOverflowPriorities,
+) -> ToolbarLayout {
+    pango_layout.set_attributes(None);
+    pango_layout.set_width(-1);
+    pango_layout.set_ellipsize(pango::EllipsizeMode::None);
+
+    let toolbar_layout = gtk_toolbar_layout_with_overflow(
+        bar,
+        Some(pango_layout),
+        8.0,
+        x,
+        y,
+        w,
+        h,
+        line_height,
+        options,
+        priorities,
+    );
+
+    if w <= 0.0 || h <= 0.0 {
+        return toolbar_layout;
+    }
+
+    cr.save().ok();
+    cr.rectangle(x, y, w, h);
+    cr.clip();
+
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
+    // `native_surface_paint::paint`'s own background fill only covers
+    // `toolbar_layout.bar_bounds`, which for `ToolbarOverflow::Wrap` is
+    // exactly one `line_height`-tall line (see `gtk_toolbar_layout_with_overflow`'s
+    // own doc) — not every wrapped row. Fill the full `(x, y, w, h)` the
+    // caller actually gave us first, so every row this cairo clip can
+    // reach gets the bar's background before `paint` re-paints the first
+    // line's worth on top of it.
+    let bar_bg = bar.bg.unwrap_or(theme.header_bg);
+    surface.surface_fill_rect(
+        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
+        bar_bg,
+    );
+    native_surface_paint::paint(
+        bar,
+        &toolbar_layout,
+        &mut surface,
+        theme,
+        hovered_id,
+        pressed_id,
+        ToolbarPaintOptions::default(),
     );
     pango_layout.set_attributes(None);
 
@@ -309,6 +476,212 @@ mod tests {
         assert!(
             center_row < bottom_row,
             "Center should paint higher than Bottom (center={center_row}, bottom={bottom_row})"
+        );
+    }
+
+    // ── ToolbarOverflow ─────────────────────────────────────────────────
+
+    fn mk_action(id: &str, label: &str) -> ToolbarButton {
+        ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new(id),
+            label: label.to_string(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        }
+    }
+
+    fn three_button_bar() -> Toolbar {
+        Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "AAAA"),
+                mk_action("b", "BBBB"),
+                mk_action("c", "CCCC"),
+            ],
+            bg: None,
+            focused_index: None,
+        }
+    }
+
+    /// With the `char_width`-fallback measurer, each `[ XXXX ]` button is
+    /// `4 * 8.0 + 2 * ACTION_H_PAD(8.0) = 48.0` px wide, so a 50px-wide bar
+    /// fits exactly one per row. `ToolbarOverflow::Wrap` places the other
+    /// two on additional rows `line_height` apart, and `cross_extent`
+    /// reports exactly how tall a host must grow its container for every
+    /// row to actually paint — the value a two-pass caller reads between
+    /// the probe layout and the real one.
+    #[test]
+    fn wrap_mode_places_overflow_on_additional_rows() {
+        let bar = three_button_bar();
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        let priorities = ToolbarOverflowPriorities::new();
+        const LINE_H: f64 = 20.0;
+
+        let probe = gtk_toolbar_layout_with_overflow(
+            &bar,
+            None,
+            8.0,
+            0.0,
+            0.0,
+            50.0,
+            LINE_H,
+            LINE_H,
+            options,
+            &priorities,
+        );
+        let rows_needed = probe.cross_extent(ToolbarOrientation::Horizontal);
+        assert_eq!(rows_needed, 60.0, "one button per row at this width");
+
+        let layout = gtk_toolbar_layout_with_overflow(
+            &bar,
+            None,
+            8.0,
+            0.0,
+            0.0,
+            50.0,
+            rows_needed as f64,
+            LINE_H,
+            options,
+            &priorities,
+        );
+        assert_eq!(
+            layout.hit_test(1.0, 1.0),
+            ToolbarHit::Button(WidgetId::new("a"))
+        );
+        assert_eq!(
+            layout.hit_test(1.0, LINE_H as f32 + 1.0),
+            ToolbarHit::Button(WidgetId::new("b"))
+        );
+        assert_eq!(
+            layout.hit_test(1.0, 2.0 * LINE_H as f32 + 1.0),
+            ToolbarHit::Button(WidgetId::new("c"))
+        );
+    }
+
+    /// A host that skips the resize step and hands `h` smaller than
+    /// `cross_extent` reports still gets every wrapped item back in
+    /// `visible_items` (so a probing caller can measure the full extent),
+    /// but only the first row is clickable — matching the Cairo clip
+    /// [`draw_toolbar_with_overflow`] applies at `(x, y, w, h)`, which
+    /// never paints past that rect. Guards against the hit-test/paint
+    /// drift a `Wrap` layout that ignored `h` entirely would produce.
+    #[test]
+    fn wrap_mode_marks_rows_past_h_unclickable() {
+        let bar = three_button_bar();
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
+        let priorities = ToolbarOverflowPriorities::new();
+        const LINE_H: f64 = 20.0;
+
+        // 3 buttons need 3 rows at this width, but this host only offers 1.
+        let layout = gtk_toolbar_layout_with_overflow(
+            &bar,
+            None,
+            8.0,
+            0.0,
+            0.0,
+            50.0,
+            LINE_H,
+            LINE_H,
+            options,
+            &priorities,
+        );
+
+        assert_eq!(layout.visible_items.len(), 3, "kept for cross_extent");
+        assert_eq!(layout.cross_extent(ToolbarOrientation::Horizontal), 60.0);
+        assert_eq!(
+            layout.hit_test(1.0, 1.0),
+            ToolbarHit::Button(WidgetId::new("a")),
+            "row 0 is still clickable"
+        );
+        assert_eq!(
+            layout.hit_test(1.0, LINE_H as f32 + 1.0),
+            ToolbarHit::Empty,
+            "row 1 was never painted at this h"
+        );
+        assert_eq!(
+            layout.hit_test(1.0, 2.0 * LINE_H as f32 + 1.0),
+            ToolbarHit::Empty,
+            "row 2 was never painted at this h"
+        );
+    }
+
+    /// `ToolbarOverflow::Menu` on a bar too narrow for every button paints
+    /// a trailing `[ » ]` affordance in place of whatever it dropped —
+    /// through [`crate::primitives::toolbar::native_surface_paint::paint`]'s
+    /// `Overflow` arm, the same pill/label path every other `Action`
+    /// button gets — and a click there hit-tests to
+    /// [`crate::primitives::toolbar::ToolbarHit::Overflow`], ready to open
+    /// a [`crate::ContextMenu`] from `overflowed_items()`.
+    #[test]
+    fn menu_mode_paints_affordance_and_hit_tests_overflow() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let bar = three_button_bar();
+        let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Menu);
+        let priorities = ToolbarOverflowPriorities::new();
+        let theme = Theme::default();
+
+        const W: i32 = 90;
+        const H: i32 = 30;
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_toolbar_with_overflow(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                H as f64,
+                &bar,
+                &theme,
+                None,
+                None,
+                options,
+                &priorities,
+            )
+        };
+
+        let overflowed = layout.overflowed_items();
+        assert!(!overflowed.is_empty(), "narrow bar must drop something");
+
+        let overflow_vis = layout
+            .visible_items
+            .iter()
+            .find(|vis| vis.kind == crate::primitives::toolbar::ToolbarItemKind::Overflow)
+            .expect("Menu layout paints a trailing `»` entry when it drops items");
+        let mid_x = overflow_vis.bounds.x + overflow_vis.bounds.width / 2.0;
+        let mid_y = overflow_vis.bounds.y + overflow_vis.bounds.height / 2.0;
+        assert_eq!(layout.hit_test(mid_x, mid_y), ToolbarHit::Overflow);
+
+        // The affordance actually painted ink somewhere inside its own
+        // bounds — not just a hit-testable hole.
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let bg = theme.header_bg;
+        let x0 = overflow_vis.bounds.x.round() as i32;
+        let x1 = (overflow_vis.bounds.x + overflow_vis.bounds.width).round() as i32;
+        let y0 = overflow_vis.bounds.y.round() as i32;
+        let y1 = (overflow_vis.bounds.y + overflow_vis.bounds.height).round() as i32;
+        let mut painted = false;
+        for y in y0.max(0)..y1.min(H) {
+            for x in x0.max(0)..x1.min(W) {
+                let off = y as usize * stride + x as usize * 4;
+                let (b, g, r) = (data[off], data[off + 1], data[off + 2]);
+                if (r, g, b) != (bg.r, bg.g, bg.b) {
+                    painted = true;
+                }
+            }
+        }
+        assert!(
+            painted,
+            "the `»` affordance must paint ink, not just a hit region"
         );
     }
 }
