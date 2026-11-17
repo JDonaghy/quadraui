@@ -2329,7 +2329,28 @@ impl Backend for GtkBackend {
     /// occasional extra, harmless early wake is an accepted tradeoff for
     /// not needing to track "is there already a sooner one pending" state
     /// here.
+    ///
+    /// # Foreign main-context ownership
+    ///
+    /// `glib::source::timeout_add_local_once` panics outright ("default
+    /// main context already acquired by another thread") when the default
+    /// `glib::MainContext` is owned by a *different* thread than the
+    /// caller, so this acquires it first and arms nothing when ownership
+    /// is foreign. Live apps never see that state — GTK's loop owns the
+    /// context from the one thread this method is called on, and a nested
+    /// acquire by the owner always succeeds — but a test process can:
+    /// anything that runs `gtk4::init()` from a harness-spawned thread
+    /// leaves the default context owned by a thread that then exits, and
+    /// every later `request_frame_in` on any other thread would panic.
+    /// Headless [`crate::gtk::testing::GtkDriver`] tests are exactly that
+    /// case, and they have no main loop for the source to fire against
+    /// anyway (they drive `tick()` themselves), so skipping the timer
+    /// costs them nothing a panic did not already cost them.
     fn request_frame_in(&self, delay: Duration) {
+        let context = glib::MainContext::default();
+        let Ok(_owner) = context.acquire() else {
+            return;
+        };
         let wake_id = self.wake_id;
         glib::source::timeout_add_local_once(delay, move || {
             if let Some(callback) = wake_callback_for(wake_id) {
@@ -7001,10 +7022,12 @@ mod tests {
     /// `cargo test --lib` unit test contending for the global context.
     #[test]
     fn request_frame_in_does_not_panic_with_or_without_a_wake_callback_installed() {
-        // `timeout_add_local_once` panics ("default main context already
-        // acquired by another thread") if a parallel test happens to own
-        // the default context at that instant — the same race
-        // `with_owned_main_context` documents. Own it for the call.
+        // Owning the default context for the call pins the path under
+        // test to the one that really arms the timer: without it, a
+        // parallel test owning the context at that instant sends
+        // `request_frame_in` down its "ownership is foreign, arm
+        // nothing" branch instead (covered by
+        // `request_frame_in_is_a_no_op_while_another_thread_owns_the_main_context`).
         let backend = GtkBackend::new();
         with_owned_main_context(|| Backend::request_frame_in(&backend, Duration::from_millis(50)));
 
@@ -7012,6 +7035,50 @@ mod tests {
         let fired_from_callback = Rc::clone(&fired);
         backend.set_wake_callback(Rc::new(move || fired_from_callback.set(true)));
         with_owned_main_context(|| Backend::request_frame_in(&backend, Duration::from_millis(50)));
+    }
+
+    /// A caller on a thread that does *not* own the default GLib main
+    /// context must still get a plain no-op out of `request_frame_in`,
+    /// not the `timeout_add_local_once` panic. Any test process where
+    /// something ran `gtk4::init()` from a harness-spawned thread lands
+    /// in exactly this state permanently — that thread owns the context
+    /// and then exits — which is how a headless
+    /// `gtk::testing::GtkDriver` test whose app returns
+    /// `Reaction::RedrawAfter` reaches this path.
+    #[test]
+    fn request_frame_in_is_a_no_op_while_another_thread_owns_the_main_context() {
+        use std::sync::mpsc;
+
+        let (owned_tx, owned_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        // Hold the context from a second thread for the duration of the
+        // call under test. Acquiring can lose a race against a parallel
+        // test holding it (see `with_owned_main_context`), so retry.
+        let owner = std::thread::spawn(move || {
+            let ctx = glib::MainContext::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if let Ok(_guard) = ctx.acquire() {
+                    owned_tx.send(()).expect("test thread still waiting");
+                    let _ = release_rx.recv();
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "another thread held the default GLib main context for 10s"
+                );
+                std::thread::yield_now();
+            }
+        });
+        owned_rx
+            .recv()
+            .expect("owner thread must report ownership before the call under test");
+
+        let backend = GtkBackend::new();
+        Backend::request_frame_in(&backend, Duration::from_millis(50));
+
+        let _ = release_tx.send(());
+        owner.join().expect("owner thread must not panic");
     }
 
     /// A `waker()` handle is `Send + Sync`, so the last handle can
