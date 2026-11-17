@@ -1905,7 +1905,12 @@ fn toolbar_overflow_widget_id() -> WidgetId {
 /// The synthetic trailing item [`Toolbar::layout_menu`] appends once it
 /// has decided to drop something — a plain `[ » ]` button in every
 /// backend's existing `Action` measure/paint formula.
-fn overflow_indicator_button() -> ToolbarButton {
+///
+/// `pub(crate)`: a backend rasteriser's own `ToolbarItemKind::Overflow`
+/// paint arm reuses this instead of hand-building a second `[ » ]` button,
+/// so the affordance paints through the ordinary `Action` arm rather than
+/// a bespoke one.
+pub(crate) fn overflow_indicator_button() -> ToolbarButton {
     ToolbarButton::Action {
         id: toolbar_overflow_widget_id(),
         label: "»".to_string(),
