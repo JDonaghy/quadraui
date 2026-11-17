@@ -3354,6 +3354,53 @@ mod tests {
         }
     }
 
+    /// [`Switch`]'s and [`RadioGroup`]'s cross-axis (width) natural size on
+    /// a cell-grid backend has to match the cell count their own TUI
+    /// rasteriser actually paints, not just [`Checkbox`]'s shape: a
+    /// `Switch` under-reporting its `4`-cell `[● ]`/`[ ●]` track collapses
+    /// `draw_switch`'s knob column so on/off paint identically, and a
+    /// `RadioGroup` under-reporting its `"(x) label"` chrome by even one
+    /// cell gets its last label character truncated by `draw_radio_group`
+    /// under a non-`Stretch` `Column` align.
+    #[test]
+    fn switch_and_radio_group_natural_width_matches_what_tui_paints() {
+        use quadraui::{RadioGroup, RadioOption, Switch};
+
+        let mut backend = tui();
+        let char_width = backend.char_width();
+
+        let switch = Switch::new(WidgetId::new("switch"));
+        let switch_width = switch
+            .natural_size(&mut backend)
+            .width
+            .expect("Switch reports a natural width");
+        assert_eq!(
+            switch_width,
+            4.0 * char_width,
+            "Switch's natural width should match draw_switch's 4-cell track"
+        );
+
+        let group = RadioGroup::new(
+            WidgetId::new("radio_group"),
+            vec![
+                RadioOption::new(WidgetId::new("radio_group:a"), "Ab"),
+                RadioOption::new(WidgetId::new("radio_group:b"), "C"),
+            ],
+        );
+        let group_width = group
+            .natural_size(&mut backend)
+            .width
+            .expect("RadioGroup reports a natural width");
+        // `draw_radio_group` paints `"({glyph}) {label}"`: `'('`, glyph,
+        // `')'`, a gap, then the widest label -- 4 cells of chrome plus
+        // the label's own width.
+        assert_eq!(
+            group_width,
+            4.0 * char_width + 2.0 * char_width,
+            "RadioGroup's natural width should fit its widest label without truncation"
+        );
+    }
+
     /// A pre-per-child-sizing tree (every child defaults to `EqualShare`,
     /// no min/max, `Justify::Start`/`Align::Stretch`) divides the row the
     /// same way [`split_rects_with_gap`]'s plain equal-share split always

@@ -148,17 +148,22 @@ pub fn extra_as_text_input(extra: &Rc<dyn ExtraPaint>) -> Option<&TextInput> {
 
 /// A compact boolean toggle's own box, with no label of its own
 /// ([`Checkbox`]/[`Switch`] both hide their `Form`-field label — see
-/// [`single_field_form`]): `3` cells on a cell-grid backend (TUI's own
-/// `"[x]"`-shaped chrome, mirroring `quadraui::tui::form`'s `Toggle`
-/// control-width constant), or two text rows' worth on a pixel backend
-/// (a nominal pill/box width, the same "no real `Style::padding` to
-/// read at this layer" caveat `crate::render::natural_size`'s own
-/// `Button` arm already documents for its own chrome estimate).
-fn toggle_control_size(backend: &mut dyn Backend) -> (f32, f32) {
+/// [`single_field_form`]): `cell_width` cells on a cell-grid backend, or
+/// two text rows' worth on a pixel backend (a nominal pill/box width, the
+/// same "no real `Style::padding` to read at this layer" caveat
+/// `crate::render::natural_size`'s own `Button` arm already documents for
+/// its own chrome estimate). `cell_width` differs by caller: [`Checkbox`]
+/// paints through `Form`'s `FieldKind::Toggle` control, which is `3`
+/// cells wide (`quadraui::tui::form`'s `natural_content_width`); `Switch`
+/// paints through its own `draw_switch`, a `4`-cell `[● ]`/`[ ●]` track
+/// (`quadraui::tui::switch::TUI_SWITCH_WIDTH`) — reporting `3` there
+/// collapses `draw_switch`'s knob column so the on/off states paint
+/// identically.
+fn toggle_control_size(backend: &mut dyn Backend, cell_width: f32) -> (f32, f32) {
     let line_height = backend.line_height();
     let char_width = backend.char_width();
     let width = if char_width <= 1.0 {
-        3.0 * char_width
+        cell_width * char_width
     } else {
         2.0 * line_height
     };
@@ -382,7 +387,12 @@ impl ExtraPaint for RadioGroup {
     /// top-to-bottom, never side by side), as wide as a selection glyph
     /// plus the widest option label, both measured the same way
     /// [`toggle_control_size`]/`crate::render::natural_size`'s `Button`
-    /// arm measure their own chrome/label.
+    /// arm measure their own chrome/label. TUI paints
+    /// `"({glyph}) {label}"` — `'('`, glyph, `')'`, a gap, then the
+    /// label — so `glyph_width` carries a `char_width` gap in addition to
+    /// the `"(x)"` chrome; omitting it undersizes the natural width by
+    /// one cell and `draw_radio_group` truncates the last label
+    /// character under a non-`Stretch` align.
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
         if self.options.is_empty() {
             return NaturalSize::NONE;
@@ -390,7 +400,7 @@ impl ExtraPaint for RadioGroup {
         let line_height = backend.line_height();
         let char_width = backend.char_width();
         let glyph_width = if char_width <= 1.0 {
-            3.0 * char_width
+            4.0 * char_width
         } else {
             1.5 * line_height
         };
@@ -423,10 +433,12 @@ impl ExtraPaint for Switch {
         true
     }
 
-    /// Toggle box only — same shape as [`Checkbox`], no label of its
-    /// own.
+    /// Toggle box only, no label of its own. Reports the `4`-cell track
+    /// `draw_switch` actually paints on a cell-grid backend — narrower
+    /// than that collapses the knob column and makes the on/off states
+    /// paint identically (see [`toggle_control_size`]).
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let (width, height) = toggle_control_size(backend);
+        let (width, height) = toggle_control_size(backend, 4.0);
         NaturalSize::new(Some(width), Some(height))
     }
 }
@@ -669,9 +681,12 @@ impl ExtraPaint for Checkbox {
     }
 
     /// Toggle box only — [`single_field_form`] hides this leaf's own
-    /// `Form` label, same as [`Switch`].
+    /// `Form` label, and this leaf paints through `draw_form`, whose
+    /// `FieldKind::Toggle` control is `3` cells wide on a cell-grid
+    /// backend (`quadraui::tui::form`'s `natural_content_width`) — unlike
+    /// [`Switch`], which paints a `4`-cell track directly.
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let (width, height) = toggle_control_size(backend);
+        let (width, height) = toggle_control_size(backend, 3.0);
         NaturalSize::new(Some(width), Some(height))
     }
 }
