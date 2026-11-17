@@ -677,17 +677,10 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // (`Wrap`/`Menu`) instead of clipping unconditionally. Its trait default
     // forwards to `toolbar_layout`, i.e. Clip-only geometry, and must stay in
     // agreement with whatever the same backend's `draw_toolbar_with_overflow`
-    // actually paints. TUI and GTK override both; macOS and Win-GUI override
+    // actually paints. TUI, GTK and macOS override both; Win-GUI overrides
     // neither, so hit-testing and painting agree there — the honest answer
-    // until a per-backend issue gives each one an overflow rasteriser, at which
+    // until a per-backend issue gives it an overflow rasteriser, at which
     // point it overrides this and deletes its line here.
-    (
-        "macos",
-        "toolbar_layout_with_overflow",
-        "no ToolbarOverflow rasteriser yet — draw_toolbar_with_overflow also takes the forwarding \
-         default, so Clip-only geometry keeps hit-testing in agreement with what macOS paints; \
-         override both when Wrap/Menu lands on macOS",
-    ),
     (
         "win",
         "toolbar_layout_with_overflow",

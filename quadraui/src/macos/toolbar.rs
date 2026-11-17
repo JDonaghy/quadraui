@@ -739,10 +739,10 @@ mod tests {
 
     /// `ToolbarOverflow::Menu` on a bar too narrow for every button drops
     /// the lowest-priority ones and paints a trailing `[ » ]` affordance in
-    /// their place; a click there hit-tests to `ToolbarHit::Overflow` and
-    /// the affordance itself is actually painted (not skipped, the way the
-    /// shared paint code treated any synthetic `TOOLBAR_OVERFLOW_ITEM_IDX`
-    /// entry before this backend started resolving it).
+    /// their place; a click there hit-tests to `ToolbarHit::Overflow`, and
+    /// the affordance itself is painted rather than skipped — the shared
+    /// paint code resolves a synthetic `TOOLBAR_OVERFLOW_ITEM_IDX` entry to
+    /// the `[ » ]` button instead of ignoring it.
     #[test]
     fn menu_mode_paints_overflow_affordance_and_hit_tests_overflow() {
         let bar = Toolbar {
