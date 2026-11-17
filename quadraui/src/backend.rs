@@ -4222,11 +4222,11 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::draw_toolbar_with_options`] — today's single-row Clip
     /// geometry, unchanged — so a backend with no `ToolbarOverflow`
     /// rasteriser of its own keeps compiling and painting exactly as it
-    /// does today. TUI overrides this with a real
+    /// does today. TUI and macOS override this with a real
     /// [`crate::primitives::toolbar::ToolbarOverflow::Wrap`] /
     /// [`crate::primitives::toolbar::ToolbarOverflow::Menu`] rasteriser;
-    /// GTK / macOS / Win-GUI pick that up once a per-backend issue gives
-    /// them one (see `CLAUDE.md`'s "One backend per issue").
+    /// GTK / Win-GUI pick that up once a per-backend issue gives them one
+    /// (see `CLAUDE.md`'s "One backend per issue").
     fn draw_toolbar_with_overflow(
         &mut self,
         rect: Rect,
