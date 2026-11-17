@@ -756,9 +756,12 @@ fn readme_compose_section() -> String {
 /// `PascalCase(stem) + "Controller"` (`workspace` -> `WorkspaceController`,
 /// `tab_group` -> `TabGroupController`). A handful of modules don't fit
 /// either shape — because they expose more than one primary type
-/// (`help_layer` -> `HelpRegistry` + `HelpOverlayController`) or because
+/// (`help_layer` -> `HelpRegistry` + `HelpOverlayController`), because
 /// they're a utility rather than a stateful controller (`markdown`,
-/// `notification`) — and are listed here explicitly instead of guessed at.
+/// `notification`), or because they expose a shared state core other
+/// controllers are built on rather than a controller of their own
+/// (`tree_nav` -> `TreeNavCore`) — and are listed here explicitly instead
+/// of guessed at.
 /// Adding a *conventionally-named* module needs no change here: the
 /// fallback derives its expected name automatically.
 fn expected_compose_type_names(stem: &str) -> Vec<String> {
@@ -786,6 +789,10 @@ fn expected_compose_type_names(stem: &str) -> Vec<String> {
         // rather than `` `Name` ``.
         "markdown" => vec!["Markdown".to_string()],
         "notification" => vec!["notify_or_toast".to_string()],
+        // The row-agnostic navigation/selection core `TreeController` (and
+        // any future flattened-row controller) is built on — a shared state
+        // core, so it carries no `Controller` suffix.
+        "tree_nav" => vec!["TreeNavCore".to_string()],
         _ => {
             let base = pascal_case(stem);
             let mut names = vec![base.clone()];

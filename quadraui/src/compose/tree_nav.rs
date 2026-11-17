@@ -1,14 +1,14 @@
-//! Row-agnostic navigation/selection core shared by [`crate::TreeController`]
-//! and (once #2599 lands) TreeTable's own row controller.
+//! Row-agnostic navigation/selection core, shared by every controller over a
+//! flattened tree-shaped row list — [`crate::TreeController`] today.
 //!
 //! [`TreeNavCore`] owns exactly the state and transitions that depend only on
 //! a flattened row's `path`/`indent`/`is_expanded` shape — selection by
 //! [`TreePath`], Up/Down/PageUp/PageDown/Home/End, Left/Right
 //! collapse-or-select-parent / expand-or-select-first-child, scroll-to-follow,
 //! scrollbar drag, and activation. A caller's row type implements [`NavRow`]
-//! to plug into it; [`crate::TreeRow`] does ([`impl NavRow for TreeRow`] in
-//! `tree_controller.rs`), and `TreeController` is a thin layer over this core
-//! plus its own `TreeView`-specific rendering, hit-testing and inline-editing.
+//! to plug into it; [`crate::TreeRow`] does, in `tree_controller.rs`, and
+//! `TreeController` is a thin layer over this core plus its own
+//! `TreeView`-specific rendering, hit-testing and inline editing.
 
 use crate::primitives::scrollbar::{
     scroll_by_clamped, scroll_by_clamped_f32, scroll_rows_floor, wheel_delta, ThumbDrag,
