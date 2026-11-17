@@ -13,254 +13,74 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color as RatatuiColor;
 
-use self::tree_cell::paint_tree_cell;
 use super::{draw_styled_text, qc, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::theme::Theme;
-use crate::types::Decoration;
+use crate::types::{Decoration, Icon, TreeStyle};
 
-// Tree cell: indent + chevron + icon, the column-0 content of a
-// `TreeView` row on a cell grid — shared so a future `tree_table`
-// column 0 reuses it instead of re-deriving the column arithmetic.
-//
-// Split into a surface-free layout half (`chevron_layout`, pure
-// arithmetic over char counts) and a paint half (`paint_tree_cell`,
-// which calls the layout half and then writes cells) so a hit-tester
-// — `tui_tree_layout_with_scroll_px`, below — can derive the exact
-// same chevron columns the painter uses without re-deriving the
-// indent + chevron + gap formula itself.
-pub(crate) mod tree_cell {
-    use super::{ratatui_color, set_cell, RatatuiColor};
-    use crate::types::Icon;
-    use ratatui::buffer::Buffer;
+/// The chevron glyph a row at `indent` paints and the column just past it
+/// (unclipped). Shared by [`paint_tree_cell`] and the hit-test in
+/// [`tui_tree_layout_with_scroll_px`] so the two never drift.
+fn chevron_glyph_end(style: &TreeStyle, indent: u16, expanded: bool) -> (&str, usize) {
+    let glyph = if expanded {
+        &style.chevron_expanded
+    } else {
+        &style.chevron_collapsed
+    };
+    let end = indent as usize * style.indent as usize + glyph.chars().count();
+    (glyph, end)
+}
 
-    /// Chevron column range (`start..end`, `None` for a leaf or hidden
-    /// chevron) plus the column the caller's own label starts at.
-    /// [`paint_tree_cell`] clamps `label_col` so at least one column is
-    /// left for the label on a non-empty row.
-    pub(crate) struct TreeCellCols {
-        #[allow(dead_code)]
-        // read only by tests; `draw_tree_with_scroll_px` reads `label_col` instead
-        pub chevron_cols: Option<(usize, usize)>,
-        pub label_col: usize,
-    }
+/// `(chevron column range, label start column)` from [`paint_tree_cell`].
+pub(crate) type TreeCellCols = (Option<(usize, usize)>, usize);
 
-    /// Column where a chevron `glyph_chars` wide, drawn after `indent`
-    /// levels of `indent_cells`-wide indentation, would end — unclipped,
-    /// so a row-width-aware caller (e.g. a hit-test clamp) can clip it to
-    /// its own `row_w` itself. This is the one formula both the painter
-    /// below and [`super::tui_tree_layout_with_scroll_px`]'s hit-test
-    /// measurer read, so neither can drift from the other.
-    pub(crate) fn chevron_end_col(indent: u16, indent_cells: usize, glyph_chars: usize) -> usize {
-        indent as usize * indent_cells + glyph_chars
-    }
-
-    /// Lay out indent + chevron (+ trailing gap) for a row `row_w` cells
-    /// wide: the chevron's column range (clipped to `row_w`, `None` for
-    /// a leaf or hidden chevron) and the column immediately past it (the
-    /// leaf gap's end column when there's no chevron). Pure arithmetic —
-    /// no `Buffer` — so [`paint_tree_cell`] and a hit-tester derive the
-    /// same columns from one function.
-    fn chevron_layout(
-        row_w: usize,
-        indent: u16,
-        indent_cells: usize,
-        is_expanded: Option<bool>,
-        show_chevrons: bool,
-        glyph_chars: usize,
-    ) -> (Option<(usize, usize)>, usize) {
-        let mut col = (indent as usize) * indent_cells;
-        let mut chevron_cols = None;
-
-        if is_expanded.is_some() {
-            if show_chevrons {
-                let start = col;
-                col = chevron_end_col(indent, indent_cells, glyph_chars).min(row_w);
-                chevron_cols = Some((start, col));
-                if col < row_w {
-                    col += 1;
-                }
+/// Paint a tree cell — indent + chevron + icon, column 0 of a `TreeView`
+/// row — into the 1-cell-tall `row` of `buf`, which the caller has already
+/// cleared to `bg`. Leaves get a 2-cell gap instead of a chevron. Returns
+/// the chevron's column range (`None` for a leaf or hidden chevron) and the
+/// label's start column, which always leaves at least one column for the
+/// label on a non-empty row.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_tree_cell(
+    buf: &mut Buffer,
+    row: Rect,
+    style: &TreeStyle,
+    indent: u16,
+    is_expanded: Option<bool>,
+    icon: Option<&Icon>,
+    nerd_fonts_enabled: bool,
+    (fg, bg): (RatatuiColor, RatatuiColor),
+) -> TreeCellCols {
+    let row_w = row.width as usize;
+    let mut col = indent as usize * style.indent as usize;
+    let mut chevron_cols = None;
+    match is_expanded {
+        Some(expanded) if style.show_chevrons => {
+            let (glyph, end) = chevron_glyph_end(style, indent, expanded);
+            let end = end.min(row_w);
+            for (c, ch) in (col..end).zip(glyph.chars()) {
+                set_cell(buf, row.x + c as u16, row.y, ch, fg, bg);
             }
+            chevron_cols = Some((col, end));
+            col = (end + 1).min(row_w);
+        }
+        Some(_) => {}
+        None => col += 2.min(row_w.saturating_sub(col)),
+    }
+    if let Some(icon) = icon {
+        let glyph = if nerd_fonts_enabled {
+            &icon.glyph
         } else {
-            // Leaves: small leading gap for readability.
-            col += 2.min(row_w.saturating_sub(col));
+            &icon.fallback
+        };
+        let icon_fg = icon.color.map(ratatui_color).unwrap_or(fg);
+        for ch in glyph.chars().take(row_w.saturating_sub(col)) {
+            set_cell(buf, row.x + col as u16, row.y, ch, icon_fg, bg);
+            col += 1;
         }
-
-        (chevron_cols, col)
+        col = (col + 1).min(row_w);
     }
-
-    /// Paint indent + chevron (`chevron_expanded`/`chevron_collapsed`,
-    /// read verbatim — TUI never substitutes a codicon glyph) + icon
-    /// into `buf` at `(row_x, y)`, `row_w` cells wide. Never paints
-    /// `StyledText` or a badge — those stay the caller's responsibility
-    /// past `label_col`.
-    ///
-    /// `label_col` never leaves zero columns for the label on a
-    /// non-empty row: it is clamped to at most `row_w - 1`, matching the
-    /// GUI painter's equivalent floor.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn paint_tree_cell(
-        buf: &mut Buffer,
-        row_x: u16,
-        y: u16,
-        row_w: u16,
-        indent: u16,
-        indent_cells: usize,
-        is_expanded: Option<bool>,
-        show_chevrons: bool,
-        chevron_expanded: &str,
-        chevron_collapsed: &str,
-        icon: Option<&Icon>,
-        nerd_fonts_enabled: bool,
-        fg: RatatuiColor,
-        bg: RatatuiColor,
-    ) -> TreeCellCols {
-        let row_w = row_w as usize;
-        let chevron_glyph = is_expanded.map(|expanded| {
-            if expanded {
-                chevron_expanded
-            } else {
-                chevron_collapsed
-            }
-        });
-        let glyph_chars = chevron_glyph.map_or(0, |g| g.chars().count());
-        let (chevron_cols, mut col) = chevron_layout(
-            row_w,
-            indent,
-            indent_cells,
-            is_expanded,
-            show_chevrons,
-            glyph_chars,
-        );
-
-        if let (Some((start, end)), Some(glyph)) = (chevron_cols, chevron_glyph) {
-            for (c, ch) in (start..end).zip(glyph.chars()) {
-                set_cell(buf, row_x + c as u16, y, ch, fg, bg);
-            }
-        }
-
-        if let Some(icon) = icon {
-            let glyph = if nerd_fonts_enabled {
-                icon.glyph.as_str()
-            } else {
-                icon.fallback.as_str()
-            };
-            let icon_fg = icon.color.map(ratatui_color).unwrap_or(fg);
-            for ch in glyph.chars() {
-                if col >= row_w {
-                    break;
-                }
-                set_cell(buf, row_x + col as u16, y, ch, icon_fg, bg);
-                col += 1;
-            }
-            if col < row_w {
-                set_cell(buf, row_x + col as u16, y, ' ', fg, bg);
-                col += 1;
-            }
-        }
-
-        // Leave at least one column for the label on a non-empty row —
-        // mirrors `native_surface_paint::tree_cell::paint_tree_cell`'s
-        // `label_rect.width` floor.
-        let label_col = if row_w > 0 { col.min(row_w - 1) } else { col };
-
-        TreeCellCols {
-            chevron_cols,
-            label_col,
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use crate::tui::ratatui_color as rc;
-        use crate::types::Color;
-        use ratatui::layout::Rect as RRect;
-
-        fn buf() -> Buffer {
-            Buffer::empty(RRect::new(0, 0, 30, 1))
-        }
-
-        #[test]
-        fn branch_at_indent_2_gets_chevron_cols() {
-            let mut b = buf();
-            let fg = rc(Color::rgb(255, 255, 255));
-            let bg = rc(Color::rgb(0, 0, 0));
-            let cell = paint_tree_cell(
-                &mut b,
-                0,
-                0,
-                30,
-                2,
-                2,
-                Some(true),
-                true,
-                "▾",
-                "▸",
-                None,
-                false,
-                fg,
-                bg,
-            );
-            // indent(2) * indent_cells(2) = 4.
-            assert_eq!(
-                cell.chevron_cols,
-                Some((4, 5)),
-                "chevron must start right after indent"
-            );
-            assert!(
-                cell.label_col > 5,
-                "label must start right of the chevron + gap"
-            );
-        }
-
-        #[test]
-        fn leaf_gets_no_chevron_cols() {
-            let mut b = buf();
-            let fg = rc(Color::rgb(255, 255, 255));
-            let bg = rc(Color::rgb(0, 0, 0));
-            let cell = paint_tree_cell(
-                &mut b, 0, 0, 30, 0, 2, None, true, "▾", "▸", None, false, fg, bg,
-            );
-            assert!(
-                cell.chevron_cols.is_none(),
-                "leaf row must not get chevron columns"
-            );
-        }
-
-        #[test]
-        fn label_never_shrinks_below_one_char_on_a_narrow_row() {
-            // 4 cells: indent(0) + chevron(1) + gap(1) + icon(1) + gap(1) = 4
-            // == row_w, which would leave *zero* columns without the
-            // `paint_tree_cell` floor — genuinely exercises the clamp.
-            let row_w = 4u16;
-            let mut b = Buffer::empty(RRect::new(0, 0, row_w, 1));
-            let fg = rc(Color::rgb(255, 255, 255));
-            let bg = rc(Color::rgb(0, 0, 0));
-            let cell = paint_tree_cell(
-                &mut b,
-                0,
-                0,
-                row_w,
-                0,
-                2,
-                Some(true),
-                true,
-                "▾",
-                "▸",
-                Some(&Icon::new("f", "f")),
-                false,
-                fg,
-                bg,
-            );
-            assert!(
-                (row_w as usize).saturating_sub(cell.label_col) >= 1,
-                "label_col {} must leave at least one column on a {}-wide row",
-                cell.label_col,
-                row_w
-            );
-        }
-    }
+    (chevron_cols, col.min(row_w.saturating_sub(1)))
 }
 
 /// Draw a [`TreeView`] into `area` on `buf`.
@@ -341,8 +161,6 @@ pub fn draw_tree_with_scroll_px(
     let text_sel_bg = ratatui_color(theme.selection_bg);
     let dim_fg = ratatui_color(theme.muted_fg);
 
-    let indent_cells = tree.style.indent as usize;
-
     let layout = tui_tree_layout_with_scroll_px(tree, area, scroll_px);
 
     if tree.style.bordered {
@@ -378,23 +196,16 @@ pub fn draw_tree_with_scroll_px(
             set_cell(buf, x, y, ' ', default_fg, bg);
         }
 
-        let cell = paint_tree_cell(
+        let (_, col) = paint_tree_cell(
             buf,
-            row_x,
-            y,
-            row_w,
+            Rect::new(row_x, y, row_w, 1),
+            &tree.style,
             row.indent,
-            indent_cells,
             row.is_expanded,
-            tree.style.show_chevrons,
-            &tree.style.chevron_expanded,
-            &tree.style.chevron_collapsed,
             row.icon.as_ref(),
             nerd_fonts_enabled,
-            default_fg,
-            bg,
+            (default_fg, bg),
         );
-        let col = cell.label_col;
 
         let row_area = Rect {
             x: row_x,
@@ -668,22 +479,12 @@ pub fn tui_tree_layout_with_scroll_px(
     // first guarantees `scroll_sub_px == 0.0` and TUI never paints a
     // partial row.
     let scroll_px = scroll_px.map(f32::floor);
-    let indent_cells = tree.style.indent as usize;
-    let show_chevrons = tree.style.show_chevrons;
     tree.layout_with_scroll_px(area.width as f32, area.height as f32, scroll_px, |i| {
         let row = &tree.rows[i];
-        // Same `chevron_end_col` formula `tree_cell::paint_tree_cell` uses
-        // for the glyph it actually paints on this row (expanded vs.
-        // collapsed), plus the 1-cell trailing gap — the hit region this
-        // produces lines up with the painted chevron + gap exactly.
-        let chevron_end_x = row.is_expanded.filter(|_| show_chevrons).map(|expanded| {
-            let glyph = if expanded {
-                &tree.style.chevron_expanded
-            } else {
-                &tree.style.chevron_collapsed
-            };
-            tree_cell::chevron_end_col(row.indent, indent_cells, glyph.chars().count()) as f32 + 1.0
-        });
+        // Chevron + 1-cell trailing gap, from the formula the painter uses.
+        let chevron_end_x = (row.is_expanded)
+            .filter(|_| tree.style.show_chevrons)
+            .map(|exp| chevron_glyph_end(&tree.style, row.indent, exp).1 as f32 + 1.0);
         TreeRowMeasure {
             height: 1.0,
             chevron_end_x,
@@ -695,7 +496,26 @@ pub fn tui_tree_layout_with_scroll_px(
 mod tests {
     use super::*;
     use crate::primitives::tree::{TreeRow, TreeView};
-    use crate::types::{StyledSpan, StyledText, TreeStyle, WidgetId};
+    use crate::types::{StyledSpan, StyledText, WidgetId};
+    fn cell(w: u16, indent: u16, exp: Option<bool>, icon: Option<&Icon>) -> TreeCellCols {
+        let (r, c) = (Rect::new(0, 0, w, 1), ratatui::style::Color::Reset);
+        let (s, mut b) = (TreeStyle::default(), Buffer::empty(r));
+        paint_tree_cell(&mut b, r, &s, indent, exp, icon, false, (c, c))
+    }
+
+    #[test]
+    fn tree_cell_chevron_cols_for_branch_at_indent_2_and_none_for_leaf() {
+        // indent(2) * default indent_cells(2) = 4; 1-char chevron + 1 gap.
+        assert_eq!(cell(30, 2, Some(true), None), (Some((4, 5)), 6));
+        assert_eq!(cell(30, 0, None, None), (None, 2));
+    }
+
+    #[test]
+    fn tree_cell_label_never_shrinks_below_one_char_on_a_narrow_row() {
+        // chevron(1) + gap(1) + icon(1) + gap(1) == row_w would leave zero.
+        let (_, label_col) = cell(4, 0, Some(true), Some(&Icon::new("f", "f")));
+        assert_eq!(label_col, 3);
+    }
 
     fn row(path: &[u16], indent: u16, label: &str, expanded: Option<bool>) -> TreeRow {
         TreeRow {
