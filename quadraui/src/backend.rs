@@ -102,11 +102,12 @@ use crate::primitives::toolbar::{
 };
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
+use crate::primitives::tree_table::TreeTableLayout;
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
-    PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeView,
+    PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeTable, TreeView,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2586,6 +2587,39 @@ pub trait Backend: sealed::Sealed {
     /// click coordinates before calling `hit_test` (see the module doc's
     /// *Coordinate frames* section).
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
+    /// Draw `table` — a [`DataTable`] plus per-row tree metadata — into
+    /// `rect` and return its layout for hit-testing. Coordinate frame:
+    /// **LOCAL**, matching [`Self::draw_data_table`].
+    ///
+    /// Given a default body rather than required: TUI overrides it with
+    /// real tree-cell painting (indent + chevron + icon on column 0);
+    /// GTK/macOS/Win-GUI don't yet, so the default
+    /// here paints `table.table` as a plain `DataTable` — same rows and
+    /// columns, no chevron/indent decoration — via [`Self::draw_data_table`],
+    /// with an empty [`TreeTableLayout::chevrons`]. A backend that hasn't
+    /// implemented this still renders every row's label; it just doesn't
+    /// show the tree shape yet.
+    fn draw_tree_table(
+        &mut self,
+        rect: Rect,
+        table: &TreeTable,
+        hovered_idx: Option<usize>,
+    ) -> TreeTableLayout {
+        TreeTableLayout {
+            table: self.draw_data_table(rect, &table.table, hovered_idx),
+            chevrons: Vec::new(),
+        }
+    }
+    /// Compute the tree-table layout without painting, mirroring
+    /// [`Self::data_table_layout`]. Same TUI-only-for-now default as
+    /// [`Self::draw_tree_table`]: delegates to [`Self::data_table_layout`]
+    /// with no chevron bounds until a backend overrides it.
+    fn tree_table_layout(&self, rect: Rect, table: &TreeTable) -> TreeTableLayout {
+        TreeTableLayout {
+            table: self.data_table_layout(rect, &table.table),
+            chevrons: Vec::new(),
+        }
+    }
     /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when its content fits. Each backend supplies its native row
     /// height; the resolved track + thumb are the same values the

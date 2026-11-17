@@ -19,7 +19,9 @@ use crate::primitives::data_table::{
     DataTablePaintState, ResolvedColumn, SortDirection,
 };
 use crate::primitives::row_stack::stack_rows_from;
+use crate::primitives::tree_table::{TreeTable, TreeTableLayout, TreeTableNode};
 use crate::theme::Theme;
+use crate::types::TreeStyle;
 
 /// Resolve the layout `draw_data_table` paints `table` at, without
 /// touching a buffer.
@@ -315,6 +317,41 @@ pub(crate) fn draw_cell(
     }
 }
 
+/// Selected/hovered/zebra-striped `(row_fg, row_bg)` for body row
+/// `abs_idx` — shared by [`draw_row`] and `tree_table`'s per-row tree-cell
+/// hook (`draw_tree_table_row`) so both resolve the exact same colors
+/// instead of each re-deriving this precedence.
+///
+/// Zebra stripe on the absolute row index (not the visible on-screen
+/// position), so a given row's shading survives scrolling, the same
+/// convention Finder/Explorer use. Selection and hover both take
+/// priority over the stripe — it only shows through on an otherwise
+/// plain row. A terminal quantised to `ColorDepth::Ansi16` rounds
+/// `theme.row_alt_bg` back to the background's own nearest ANSI colour
+/// (see `tui::color::quantize`), which is how a low-colour terminal
+/// drops the stripe for free.
+pub(crate) fn resolve_row_colors(
+    ctx: &RowPaintCtx<'_>,
+    abs_idx: usize,
+    hovered_idx: Option<usize>,
+    striped: bool,
+) -> (RatatuiColor, RatatuiColor) {
+    let theme = ctx.theme;
+    let is_selected = ctx.table.selected_idx == Some(abs_idx);
+    let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
+    let row_fg = ratatui_color(theme.foreground);
+    let row_bg = ratatui_color(if is_selected {
+        theme.selection_bg
+    } else if is_hovered {
+        theme.tab_bar_bg
+    } else if striped && abs_idx % 2 == 1 {
+        theme.row_alt_bg(theme.background)
+    } else {
+        theme.background
+    });
+    (row_fg, row_bg)
+}
+
 /// Paint one body row: selection/hover/zebra-stripe background, every
 /// column's cell (via `cell_hook` when present, else [`draw_cell`]),
 /// then the column-divider separators.
@@ -327,29 +364,9 @@ pub(crate) fn draw_row(
     striped: bool,
     mut cell_hook: Option<&mut CellPaintHook<'_>>,
 ) {
-    let (table, theme) = (ctx.table, ctx.theme);
+    let table = ctx.table;
     let row = &table.rows[abs_idx];
-    let is_selected = table.selected_idx == Some(abs_idx);
-    let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
-
-    // Zebra stripe on the absolute row index (not the visible on-screen
-    // position), so a given row's shading survives scrolling, the same
-    // convention Finder/Explorer use. Selection and hover both take
-    // priority over the stripe — it only shows through on an otherwise
-    // plain row. A terminal quantised to `ColorDepth::Ansi16` rounds
-    // `theme.row_alt_bg` back to the background's own nearest ANSI colour
-    // (see `tui::color::quantize`), which is how a low-colour terminal
-    // drops the stripe for free.
-    let row_fg = ratatui_color(theme.foreground);
-    let row_bg = ratatui_color(if is_selected {
-        theme.selection_bg
-    } else if is_hovered {
-        theme.tab_bar_bg
-    } else if striped && abs_idx % 2 == 1 {
-        theme.row_alt_bg(theme.background)
-    } else {
-        theme.background
-    });
+    let (row_fg, row_bg) = resolve_row_colors(ctx, abs_idx, hovered_idx, striped);
 
     let (x0, x1) = ctx.bounds();
     let paint = |buf: &mut Buffer, col_idx: usize, col_x: i32, col_w: u16| {
@@ -376,7 +393,40 @@ fn draw_data_table_inner(
     nerd_fonts_enabled: bool,
 ) -> DataTableLayout {
     let layout = data_table_layout(area, table);
+    draw_data_table_body(
+        buf,
+        area,
+        table,
+        theme,
+        state,
+        glyphs,
+        nerd_fonts_enabled,
+        layout,
+        |buf, y, ctx, idx, hovered, striped| draw_row(buf, y, ctx, idx, hovered, striped, None),
+    )
+}
 
+/// [`draw_data_table_inner`]'s header/body/scrollbar/footer skeleton,
+/// generalised over how a body row paints: `body_row(buf, y, ctx, abs_idx,
+/// hovered_idx, striped)` stands in for [`draw_row`]'s own default call,
+/// so [`draw_tree_table`] can paint column 0 as a tree cell while reusing
+/// every other line of this function unchanged — header, scrollbars,
+/// footer and the rest of the body row included. Takes `layout` already
+/// resolved (rather than computing it from `table`) so a caller that also
+/// needs the layout for its own purposes (e.g. [`tree_table_layout`]'s
+/// chevron bounds) never resolves it twice.
+#[allow(clippy::too_many_arguments)]
+fn draw_data_table_body(
+    buf: &mut Buffer,
+    area: Rect,
+    table: &DataTable,
+    theme: &Theme,
+    state: &DataTablePaintState,
+    glyphs: Option<&DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+    layout: DataTableLayout,
+    mut body_row: impl FnMut(&mut Buffer, u16, &RowPaintCtx<'_>, usize, Option<usize>, bool),
+) -> DataTableLayout {
     if area.width == 0 || area.height == 0 {
         return layout;
     }
@@ -408,7 +458,7 @@ fn draw_data_table_inner(
     let body_y = (area.y + oy + 1) as f32;
     let (hovered, striped) = (state.hovered_idx, state.striped);
     for r in stack_rows_from(scroll_offset, 0.0, visible, 0.0, body_y, 0.0, |_| (1.0, ())) {
-        draw_row(buf, r.bounds.y as u16, &ctx, r.idx, hovered, striped, None);
+        body_row(buf, r.bounds.y as u16, &ctx, r.idx, hovered, striped);
     }
 
     // ── Scrollbar ──────────────────────────────────────────────────────
@@ -491,6 +541,138 @@ fn draw_data_table_inner(
     draw_band(buf, &ctx, footer_y, (fg, bg), false, paint);
 
     layout
+}
+
+// ── TreeTable ───────────────────────────────────────────────────────────
+//
+// No `tui/tree_table.rs`: `TreeTable` is `DataTable` plus a tree cell on
+// column 0, so its TUI story is "the functions above, plus the tree-cell
+// prefix" — not a parallel painter.
+
+/// `(start, width)`, relative to column 0's left edge, of `node`'s
+/// chevron glyph — [`crate::primitives::tree_table::TreeTable::layout`]'s
+/// `measure_chevron` callback for TUI. `None` for a leaf or a hidden
+/// chevron. Reuses [`super::tree::chevron_glyph_end`] — the exact formula
+/// [`crate::tui::draw_tree`] already paints a `TreeView` branch's chevron
+/// with — instead of re-deriving the indent arithmetic.
+fn tui_tree_chevron_measure(style: &TreeStyle, node: &TreeTableNode) -> Option<(f32, f32)> {
+    if !style.show_chevrons {
+        return None;
+    }
+    let expanded = node.is_expanded?;
+    let (glyph, end) = super::tree::chevron_glyph_end(style, node.indent, expanded);
+    let width = glyph.chars().count();
+    Some(((end - width) as f32, width as f32))
+}
+
+/// Resolve the layout [`draw_tree_table`] paints `table` at, without
+/// touching a buffer — the `TreeTable` counterpart of [`data_table_layout`].
+pub fn tree_table_layout(area: Rect, table: &TreeTable) -> TreeTableLayout {
+    let style = TreeStyle::default();
+    let mut layout = table.layout(
+        area.width as f32,
+        area.height as f32,
+        1.0,
+        1.0,
+        1.0,
+        |col| ColumnMeasure::new(col.title.chars().count() as f32),
+        |node| tui_tree_chevron_measure(&style, node),
+    );
+    // Same cell-granular rounding `data_table_layout` applies, and for the
+    // same reason: `draw_tree_table` paints every column at `h_scroll.round()`.
+    layout.table.h_scroll = table.table.h_scroll.round();
+    layout
+}
+
+/// Paint one `TreeTable` body row: [`draw_row`]'s selection/hover
+/// background (zebra striping isn't offered — mirrors
+/// [`draw_tree_table`] never taking a `striped` argument) and every
+/// column but 0 exactly as [`draw_cell`] already paints it, with column 0
+/// painted as indent + chevron + icon via [`super::tree::paint_tree_cell`],
+/// followed by its label through the same [`draw_cell`] every other
+/// column uses — offset past the tree-cell prefix rather than
+/// re-implementing text painting.
+#[allow(clippy::too_many_arguments)]
+fn draw_tree_table_row(
+    buf: &mut Buffer,
+    y: u16,
+    ctx: &RowPaintCtx<'_>,
+    abs_idx: usize,
+    node: &TreeTableNode,
+    hovered_idx: Option<usize>,
+    style: &TreeStyle,
+    nerd_fonts_enabled: bool,
+) {
+    let (row_fg, row_bg) = resolve_row_colors(ctx, abs_idx, hovered_idx, false);
+    let mut hook = |buf: &mut Buffer, col_idx: usize, cell_rect: Rect| -> bool {
+        if col_idx != 0 {
+            return false;
+        }
+        let (_, text_start) = super::tree::paint_tree_cell(
+            buf,
+            cell_rect,
+            style,
+            node.indent,
+            node.is_expanded,
+            node.icon.as_ref(),
+            nerd_fonts_enabled,
+            (row_fg, row_bg),
+        );
+        let text_start = (text_start as u16).min(cell_rect.width);
+        draw_cell(
+            buf,
+            ctx,
+            &ctx.table.rows[abs_idx],
+            0,
+            (
+                cell_rect.x as i32 + text_start as i32,
+                cell_rect.width - text_start,
+            ),
+            y,
+            (row_fg, row_bg),
+        );
+        true
+    };
+    draw_row(buf, y, ctx, abs_idx, hovered_idx, false, Some(&mut hook));
+}
+
+/// Draw a `TreeTable` into `area`. Identical to [`draw_data_table`] except
+/// column 0 of every row carries indent + chevron + icon ahead of its
+/// label (rows beyond `table.tree`'s length paint as a plain `DataTable`
+/// row — see [`TreeTable::tree`](crate::primitives::tree_table::TreeTable::tree)'s
+/// doc). Returns the layout used for painting, including chevron hit
+/// bounds, so callers hit-test at the same coordinates.
+pub fn draw_tree_table(
+    buf: &mut Buffer,
+    area: Rect,
+    table: &TreeTable,
+    theme: &Theme,
+    hovered_idx: Option<usize>,
+    nerd_fonts_enabled: bool,
+) -> TreeTableLayout {
+    let style = TreeStyle::default();
+    let tt_layout = tree_table_layout(area, table);
+    let state = DataTablePaintState::default().with_hovered_idx(hovered_idx);
+    let dt_layout = draw_data_table_body(
+        buf,
+        area,
+        &table.table,
+        theme,
+        &state,
+        None,
+        nerd_fonts_enabled,
+        tt_layout.table.clone(),
+        |buf, y, ctx, idx, hovered, striped| match table.tree.get(idx) {
+            Some(node) => {
+                draw_tree_table_row(buf, y, ctx, idx, node, hovered, &style, nerd_fonts_enabled)
+            }
+            None => draw_row(buf, y, ctx, idx, hovered, striped, None),
+        },
+    );
+    TreeTableLayout {
+        table: dt_layout,
+        chevrons: tt_layout.chevrons,
+    }
 }
 
 /// Paint a rounded `╭─╮ │ ╰─╯` frame around `area` in `border_fg` and fill
@@ -1884,5 +2066,196 @@ mod multi_select_driver_tests {
                 indices: vec![0, 1, 2, 3]
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod tree_table_tests {
+    use super::*;
+    use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
+    use crate::types::{Decoration, StyledText, WidgetId};
+
+    fn make_tree_table() -> TreeTable {
+        TreeTable {
+            table: DataTable {
+                id: WidgetId::new("files"),
+                columns: vec![
+                    Column {
+                        title: "Name".into(),
+                        width: ColumnWidth::Flex(2.0),
+                        align: ColumnAlign::Left,
+                    },
+                    Column {
+                        title: "Size".into(),
+                        width: ColumnWidth::FixedCells(6.0),
+                        align: ColumnAlign::Right,
+                    },
+                ],
+                rows: vec![
+                    DataRow {
+                        cells: vec![StyledText::plain("src"), StyledText::plain("")],
+                        decoration: Decoration::Normal,
+                    },
+                    DataRow {
+                        cells: vec![StyledText::plain("main.rs"), StyledText::plain("2kb")],
+                        decoration: Decoration::Normal,
+                    },
+                    DataRow {
+                        cells: vec![StyledText::plain("docs"), StyledText::plain("")],
+                        decoration: Decoration::Normal,
+                    },
+                ],
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: true,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+                bordered: false,
+            },
+            tree: vec![
+                TreeTableNode::new(vec![0], 0).with_expanded(true),
+                TreeTableNode::new(vec![0, 0], 1),
+                TreeTableNode::new(vec![1], 0).with_expanded(false),
+            ],
+        }
+    }
+
+    fn line(buf: &Buffer, y: u16, width: u16) -> String {
+        (0..width)
+            .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect()
+    }
+
+    /// Char-cell index of `needle`'s first occurrence in `line` — unlike
+    /// `str::find`, which returns a *byte* offset and desyncs from the
+    /// screen column as soon as a row contains a multi-byte glyph (the
+    /// chevron here).
+    fn find_char_pos(line: &str, needle: &str) -> Option<usize> {
+        let chars: Vec<char> = line.chars().collect();
+        let needle: Vec<char> = needle.chars().collect();
+        if needle.is_empty() || chars.len() < needle.len() {
+            return None;
+        }
+        chars
+            .windows(needle.len())
+            .position(|w| w == needle.as_slice())
+    }
+
+    #[test]
+    fn branch_row_paints_a_chevron_and_the_label_still_appears() {
+        let table = make_tree_table();
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        // Row 0 ("src", expanded, indent 0) paints its chevron at column 0
+        // and the label somewhere after it.
+        let row0 = line(&buf, 1, 20);
+        assert!(
+            row0.contains('▾'),
+            "expanded branch row should paint the expanded chevron: {row0:?}"
+        );
+        assert!(
+            row0.contains("src"),
+            "the row's label should still paint after the tree-cell prefix: {row0:?}"
+        );
+    }
+
+    #[test]
+    fn indented_leaf_row_has_no_chevron_but_keeps_its_label() {
+        let table = make_tree_table();
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        let row1 = line(&buf, 2, 20);
+        assert!(!row1.contains('▾') && !row1.contains('▸'));
+        assert!(row1.contains("main.rs"));
+        // Indented further right than row 0's un-indented label.
+        let row0 = line(&buf, 1, 20);
+        let src_at = find_char_pos(&row0, "src").unwrap();
+        let main_at = find_char_pos(&row1, "main.rs").unwrap();
+        assert!(
+            main_at > src_at,
+            "indent 1 should start further right than indent 0: {row0:?} / {row1:?}"
+        );
+    }
+
+    #[test]
+    fn column_1_stays_aligned_across_every_indent_level() {
+        let table = make_tree_table();
+        let area = Rect::new(0, 0, 30, 10);
+        let layout = tree_table_layout(area, &table);
+        // Column 1's resolved x/width is pure `DataTable` column geometry —
+        // untouched by any row's indent, same as a plain `DataTable`.
+        let col1 = layout.table.columns[1];
+        assert_eq!(col1.x, layout.table.columns[1].x);
+        assert!(col1.width > 0.0);
+    }
+
+    #[test]
+    fn clicking_the_chevron_resolves_to_a_chevron_hit_not_a_row_hit() {
+        let table = make_tree_table();
+        let area = Rect::new(0, 0, 30, 10);
+        let layout = tree_table_layout(area, &table);
+        let (idx, bounds) = layout.chevrons[0];
+        assert_eq!(idx, 0);
+        let hit = layout.hit_test(bounds.x, bounds.y, 0, table.table.rows.len());
+        assert_eq!(
+            hit,
+            crate::primitives::tree_table::TreeTableHit::Chevron { idx: 0 }
+        );
+    }
+
+    #[test]
+    fn clicking_the_header_still_resolves_to_header_not_chevron() {
+        let table = make_tree_table();
+        let area = Rect::new(0, 0, 30, 10);
+        let layout = tree_table_layout(area, &table);
+        let hit = layout.hit_test(0.0, 0.0, 0, table.table.rows.len());
+        assert_eq!(
+            hit,
+            crate::primitives::tree_table::TreeTableHit::Header { col: 0 }
+        );
+    }
+
+    #[test]
+    fn a_leaf_row_has_no_chevron_entry_and_clicking_it_is_a_row_hit() {
+        let table = make_tree_table();
+        let area = Rect::new(0, 0, 30, 10);
+        let layout = tree_table_layout(area, &table);
+        assert!(!layout.chevrons.iter().any(|(idx, _)| *idx == 1));
+        let hit = layout.hit_test(0.0, 2.0, 0, table.table.rows.len());
+        assert_eq!(
+            hit,
+            crate::primitives::tree_table::TreeTableHit::Row { idx: 1 }
+        );
+    }
+
+    #[test]
+    fn a_collapsed_branch_paints_the_collapsed_chevron() {
+        let table = make_tree_table();
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        let row2 = line(&buf, 3, 20);
+        assert!(
+            row2.contains('▸'),
+            "collapsed branch row should paint the collapsed chevron: {row2:?}"
+        );
+    }
+
+    #[test]
+    fn narrow_rect_never_panics_and_still_paints_the_tree_column() {
+        let table = make_tree_table();
+        // Narrower than the full column set — exercises the same column
+        // squeeze `DataTable::layout` already applies; `TreeTable` doesn't
+        // write any narrow-rect handling of its own.
+        let area = Rect::new(0, 0, 8, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        assert!(layout.table.columns[0].width >= 1.0);
     }
 }
