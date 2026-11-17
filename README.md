@@ -249,6 +249,7 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `SidebarSystem` | Multi-section sidebar: per-section scroll and selection, Tab cycling, scrollbar drag. |
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeController` | A keyboard-navigable tree: selection, expand/collapse, scroll-follow. |
+| `TreeNavCore` | The row-type-agnostic core `TreeController` is built on: selection by path, arrow/page/Home/End movement, scroll-follow and scrollbar drag over any flattened rows. |
 | `FormController` | A form's focus, editing and validation. |
 | `FormDialogController` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
 | `DualModePaletteController` | A command palette that switches between modes. |

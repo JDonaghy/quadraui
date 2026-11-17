@@ -789,6 +789,42 @@ module in `tree_controller.rs` is the direct-use reference.
 
 ---
 
+## `TreeNavCore` — `src/compose/tree_nav.rs`
+
+**Owns:** the row-type-agnostic half of tree navigation — selection by
+`TreePath`, Up/Down/PageUp/PageDown/Home/End movement, the Left/Right
+collapse-else-select-parent / expand-else-select-first-child rule,
+scroll-to-follow, wheel scrolling and scrollbar thumb drag. It knows
+nothing about `TreeView`, rendering or hit-testing: a caller's row type
+implements the `NavRow` trait (`path` / `indent` / `is_expanded`) and the
+core navigates any flattened row slice. `TreeController` is a thin layer
+over one of these plus its own `TreeView` painting, hit-testing and
+inline editing; a second flattened-row controller reuses the same core
+instead of re-deriving the transitions.
+
+**Events:** none — it is a state core, not an event source. Movement
+returns `NavOutcome::{Empty, Unchanged, Selected(path)}` and Left/Right
+returns `HorizontalNav::{Collapse, SelectParent, Expand,
+SelectFirstChild, None}`; the owning controller decides which of *its*
+events (e.g. `TreeControllerEvent::RowSelected`) that becomes.
+
+**Smallest wiring:**
+
+```ignore
+// `rows: Vec<MyRow>` where `impl NavRow for MyRow`.
+if let NavOutcome::Selected(path) = nav.move_selection_by(&rows, 1, viewport_rows) {
+    emit(MyEvent::RowSelected { path });
+}
+let first_visible = nav.scroll_offset();
+```
+
+**Example:** no standalone demo — it is reached through
+`TreeController`, which every tree example drives via `SidebarSystem`
+(`examples/msv_multi_tree.rs`). Its own `#[cfg(test)]` module in
+`tree_nav.rs` is the direct-use reference.
+
+---
+
 ## `WorkspaceController` — `src/compose/workspace.rs`
 
 **Owns:** an **open-N-view-one** set of opaque document ids with
