@@ -237,7 +237,8 @@ pub use toast::{draw_toast_stack, tui_toast_stack_layout};
 pub use toolbar::tui_toolbar_layout;
 #[doc(hidden)]
 pub use toolbar::{
-    draw_toolbar, draw_toolbar_oriented, draw_toolbar_with_options, tui_toolbar_layout_with_options,
+    draw_toolbar, draw_toolbar_oriented, draw_toolbar_with_options, draw_toolbar_with_overflow,
+    tui_toolbar_layout_with_options, tui_toolbar_layout_with_overflow,
 };
 #[doc(hidden)]
 pub use tooltip::{

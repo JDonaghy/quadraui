@@ -142,7 +142,11 @@ impl SidebarPanelLayout {
             if contains(tb, x, y) {
                 return match tlayout.hit_test(x, y) {
                     ToolbarHit::Button(id) => SidebarPanelHit::ToolbarButton(id),
-                    ToolbarHit::Empty => SidebarPanelHit::ToolbarEmpty,
+                    // `SidebarPanel`'s own toolbar slot never opts into
+                    // `ToolbarOverflow::Menu` today, so this arm is
+                    // unreachable in practice; reads the same as `Empty`
+                    // if a future caller ever does.
+                    ToolbarHit::Empty | ToolbarHit::Overflow => SidebarPanelHit::ToolbarEmpty,
                 };
             }
         }
