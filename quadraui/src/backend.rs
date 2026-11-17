@@ -1142,9 +1142,11 @@ pub trait Backend: sealed::Sealed {
     /// doesn't say which regime a backend is in (a pixel backend at `1.0`
     /// DPI scale looks numerically identical to a cell backend otherwise).
     ///
-    /// Default `false`. [`crate::tui::backend::TuiBackend`] overrides this
-    /// to `true`; every pixel backend (GTK, macOS, Win-GUI) keeps the
-    /// default.
+    /// [`crate::tui::backend::TuiBackend`] answers `true`; every pixel
+    /// backend (GTK, macOS, Win-GUI) states `false` explicitly, so the
+    /// `false` default here is the answer for a backend still under
+    /// construction rather than a silent one any shipping backend relies
+    /// on.
     fn cell_grid(&self) -> bool {
         false
     }

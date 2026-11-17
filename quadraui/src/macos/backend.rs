@@ -1652,6 +1652,13 @@ impl Backend for MacBackend {
         self.viewport
     }
 
+    fn cell_grid(&self) -> bool {
+        // Core Graphics draws in points on a continuous surface:
+        // `viewport` is in points, scaled by the screen's backing-scale
+        // factor, not in whole terminal cells.
+        false
+    }
+
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
         // Cleared here (frame start) rather than at `end_frame`, matching

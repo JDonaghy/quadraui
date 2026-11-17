@@ -6365,6 +6365,26 @@ mod tests {
     /// *outside* the menu's item region has a cell to live on. TUI's box
     /// border is one cell, so each edge moves in by one and both
     /// dimensions shrink by two.
+    /// A script-authored widget reads `Backend::cell_grid` to decide
+    /// whether to lay out in whole cells or in sub-cell pixels, and
+    /// `Viewport::scale` cannot tell it apart: a pixel backend at scale
+    /// `1.0` is numerically identical to this one. TUI is the backend
+    /// that answers `true`, at any scale.
+    #[test]
+    fn tui_backend_reports_a_cell_grid_at_every_scale() {
+        let mut backend = TuiBackend::new();
+        assert!(Backend::cell_grid(&backend));
+
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        assert!(Backend::cell_grid(&backend));
+
+        backend.begin_frame(Viewport::new(80.0, 24.0, 2.0));
+        assert!(
+            Backend::cell_grid(&backend),
+            "a cell grid stays a cell grid whatever the viewport's DPI scale says"
+        );
+    }
+
     #[test]
     fn tui_backend_context_menu_viewport_reserves_border_on_all_four_sides() {
         let mut backend = TuiBackend::new();
