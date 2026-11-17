@@ -444,7 +444,7 @@ pub mod paint_surface;
 // ── Primitive ──────────────────────────────────────────────────────────────
 // The `Primitive` trait — one `layout()` + `paint()` pair a widget outside
 // this crate implements to compose with every `PaintSurface` backend through
-// `Backend::draw_primitive`, without a bespoke `draw_*`/`*_layout` pair added
+// `DrawsPrimitives::draw_primitive`, without a bespoke `draw_*`/`*_layout` pair added
 // to the sealed `Backend` trait. Compiled unconditionally, same rationale as
 // `paint_surface` above: a `pub` trait with zero in-crate implementors on a
 // `tui`-only build is not dead code from this crate's own boundary.

@@ -22,9 +22,13 @@
 //!
 //! [`CASES`] covers every `draw_*` method [`quadraui::Backend`] declares.
 //! That claim is not just asserted in prose:
-//! `tests::cases_cover_every_draw_method_on_the_trait` below parses
-//! `backend.rs`'s own source for every `fn draw_*` trait item and fails
-//! if `CASES` and the trait ever disagree, in either direction.
+//! `tests::cases_cover_every_draw_method_on_the_trait` below parses the
+//! `Backend` trait body in `backend.rs`'s own source for every `fn draw_*`
+//! trait item and fails if `CASES` and the trait ever disagree, in either
+//! direction. A `fn draw_*` elsewhere in that file — a generic entry point
+//! that cannot sit on dyn-compatible `Backend`, so no backend overrides it
+//! — is exempt only by being named, with its reason, in
+//! `tests::NON_TRAIT_DRAW_FNS`.
 
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
@@ -2019,17 +2023,47 @@ pub fn run<F: DriverFactory>() -> Vec<CaseOutcome> {
 #[cfg(test)]
 mod tests {
     use super::CASES;
+    use std::collections::BTreeSet;
 
-    /// `CASES` must name *every* `draw_*` method on `Backend`, not a
-    /// hand-picked sample. Parse `backend.rs`'s own source for every `fn draw_*`
-    /// trait item (skipping the doc-comment example inside the "Implementations
-    /// are thin wrappers" blurb, which is indented as prose rather than a real
-    /// trait item) and assert the two lists agree exactly.
-    #[test]
-    fn cases_cover_every_draw_method_on_the_trait() {
-        const BACKEND_SRC: &str = include_str!("../../src/backend.rs");
-        let trait_methods: Vec<&str> = BACKEND_SRC
+    const BACKEND_SRC: &str = include_str!("../../src/backend.rs");
+
+    /// `fn draw_*` declarations in `backend.rs` that live *outside* the
+    /// `Backend` trait body, each exempt from `CASES` for a reason stated
+    /// here. C0 smoke-tests per-backend paint output, so a method only
+    /// belongs in `CASES` when a backend can override it and when every
+    /// registered backend can produce an observable frame from it.
+    ///
+    /// `DrawsPrimitives::draw_primitive` is generic over
+    /// `quadraui::Primitive`, so it cannot sit on `Backend` at all —
+    /// `Backend` is used as `&mut dyn Backend` crate-wide. It is declared
+    /// once on a sibling trait blanket-implemented for every `Backend`,
+    /// which no backend can override, and its body paints only through
+    /// `Backend::paint_surface` — absent on TUI by structural design — so
+    /// there is no observable-on-every-backend frame for C0 to assert.
+    /// `tests/primitive_public_api.rs` covers the method's own contract
+    /// instead, and `src/primitives/list.rs`'s parity tests cover the
+    /// pilot `Primitive` impl's pixel output.
+    const NON_TRAIT_DRAW_FNS: &[&str] = &["draw_primitive"];
+
+    /// The `Backend` trait body's own source lines, from the `pub trait
+    /// Backend:` declaration to its closing brace in column 0.
+    fn backend_trait_body() -> Vec<&'static str> {
+        let mut lines = BACKEND_SRC
             .lines()
+            .skip_while(|line| !line.starts_with("pub trait Backend:"));
+        lines
+            .next()
+            .expect("backend.rs must declare `pub trait Backend:` at column 0");
+        lines.take_while(|line| *line != "}").collect()
+    }
+
+    /// Method names of every `fn draw_*` declaration in `lines`, skipping
+    /// doc-comment prose (the example inside the "Implementations are thin
+    /// wrappers" blurb is indented behind `///` rather than being a real
+    /// item).
+    fn draw_fn_names<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+        lines
+            .into_iter()
             .filter(|line| line.trim_start().starts_with("fn draw_"))
             .map(|line| {
                 line.trim_start()
@@ -2039,7 +2073,16 @@ mod tests {
                     .unwrap()
                     .trim()
             })
-            .collect();
+            .collect()
+    }
+
+    /// `CASES` must name *every* `draw_*` method on `Backend`, not a
+    /// hand-picked sample. Parse the `Backend` trait body in `backend.rs`'s
+    /// own source for every `fn draw_*` trait item and assert the two lists
+    /// agree exactly.
+    #[test]
+    fn cases_cover_every_draw_method_on_the_trait() {
+        let trait_methods: Vec<&str> = draw_fn_names(backend_trait_body());
         assert!(
             trait_methods.len() >= 30,
             "sanity check failed: expected dozens of `fn draw_*` trait methods in backend.rs, \
@@ -2048,8 +2091,7 @@ mod tests {
             trait_methods.len()
         );
 
-        let case_methods: std::collections::BTreeSet<&str> =
-            CASES.iter().map(|c| c.method).collect();
+        let case_methods: BTreeSet<&str> = CASES.iter().map(|c| c.method).collect();
 
         let missing: Vec<&str> = trait_methods
             .iter()
@@ -2072,6 +2114,46 @@ mod tests {
             stale.is_empty(),
             "CASES names method(s) not found on the `Backend` trait today — likely a typo, or \
              a renamed/removed method CASES was not updated for: {stale:?}"
+        );
+    }
+
+    /// Reading only the `Backend` trait body above must not become a way to
+    /// smuggle an unsmoked `draw_*` method into `backend.rs`: every
+    /// `fn draw_*` declared outside that body has to be named in
+    /// [`NON_TRAIT_DRAW_FNS`], with its reason, and every name there has to
+    /// still exist.
+    #[test]
+    fn draw_fns_outside_the_backend_trait_are_declared_exempt() {
+        let in_trait: BTreeSet<&str> = draw_fn_names(backend_trait_body()).into_iter().collect();
+        let outside: BTreeSet<&str> = draw_fn_names(BACKEND_SRC.lines())
+            .into_iter()
+            .filter(|method| !in_trait.contains(method))
+            .collect();
+
+        let undeclared: Vec<&str> = outside
+            .iter()
+            .copied()
+            .filter(|method| !NON_TRAIT_DRAW_FNS.contains(method))
+            .collect();
+        assert!(
+            undeclared.is_empty(),
+            "{} `fn draw_*` declaration(s) in backend.rs sit outside the `Backend` trait body \
+             and are not listed in NON_TRAIT_DRAW_FNS, so neither C0 nor the coverage check \
+             above says anything about them: {undeclared:?} — add a `CASES` entry if a backend \
+             can override it, or list it with its reason",
+            undeclared.len()
+        );
+
+        let stale: Vec<&str> = NON_TRAIT_DRAW_FNS
+            .iter()
+            .copied()
+            .filter(|method| !outside.contains(method))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "NON_TRAIT_DRAW_FNS names method(s) backend.rs no longer declares outside the \
+             `Backend` trait body — renamed, removed, or promoted onto the trait (where it \
+             needs a `CASES` entry instead): {stale:?}"
         );
     }
 }
