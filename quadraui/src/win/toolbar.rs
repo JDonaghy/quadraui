@@ -141,6 +141,15 @@ pub fn draw_toolbar_with_options(
 /// un-clickable (its `Group` children too) while still appearing in
 /// `visible_items`, so a host that skips the resize step never gets a hit
 /// region for a row [`draw_toolbar_with_overflow`] never actually paints.
+///
+/// Known gap: the un-clickable clamp above only applies to
+/// [`ToolbarOrientation::Horizontal`], and `line_height` is substituted
+/// for the toolbar's main-axis length regardless of orientation, so
+/// [`ToolbarOrientation::Vertical`] + [`ToolbarOverflow::Wrap`] gets a
+/// one-row-tall main axis and every item wraps into its own column
+/// instead of filling `rect.height` first — matching
+/// [`crate::gtk::toolbar::gtk_toolbar_layout_with_overflow`]'s own gap,
+/// not yet fixed on either backend.
 pub fn win_toolbar_layout_with_overflow(
     dwrite: &DWrite,
     rect: Rect,
@@ -183,6 +192,11 @@ pub fn win_toolbar_layout_with_overflow(
 /// `priorities` is read only when `options.overflow` is
 /// [`ToolbarOverflow::Menu`] — pass [`ToolbarOverflowPriorities::new`]
 /// for the other two variants.
+///
+/// Always paints with [`ToolbarPaintOptions::default`] — a host cannot
+/// combine [`crate::primitives::toolbar::ToolbarVAlign::Bottom`] with a
+/// non-`Clip` overflow mode here; matches
+/// [`crate::gtk::toolbar::draw_toolbar_with_overflow`].
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar_with_overflow(
     target: &ID2D1RenderTarget,

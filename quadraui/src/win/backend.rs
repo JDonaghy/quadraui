@@ -13846,4 +13846,65 @@ mod tests {
             );
         }
     }
+
+    /// Cross-platform (no `target_os = "windows"` gate): a fresh
+    /// [`WinBackend::new`] has no `dwrite`/`surface`, so
+    /// `toolbar_layout_with_overflow` always takes the no-DWrite
+    /// `NominalTextMeasure` fallback on every `--features win` host,
+    /// Windows included. It must still apply the "rows past `rect.height`
+    /// are un-clickable" clamp `toolbar_layout_with_overflow_via` shares
+    /// with the live-`DWrite` branch — this is the only test in this repo
+    /// that exercises that clamp on a non-Windows host, where
+    /// `win::toolbar`'s own `#[cfg(target_os = "windows")]`-gated tests
+    /// never run at all.
+    #[test]
+    fn win_backend_toolbar_layout_with_overflow_fallback_clamps_rows_past_rect_height() {
+        let backend = WinBackend::new();
+        let action = |id: &str| crate::primitives::toolbar::ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new(id),
+            label: "AAAA".into(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        };
+        let bar = crate::primitives::toolbar::Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![action("a"), action("b"), action("c")],
+            bg: None,
+            focused_index: None,
+        };
+        let options = crate::primitives::toolbar::ToolbarLayoutOptions::new()
+            .with_overflow(crate::primitives::toolbar::ToolbarOverflow::Wrap);
+        let priorities = crate::primitives::toolbar::ToolbarOverflowPriorities::new();
+
+        // "AAAA" at the default `current_char_width` (8.0) measures to
+        // 4*8 + 2*ACTION_H_PAD = 48.0 wide — a 60.0-wide rect fits exactly
+        // one button per row, so the three buttons wrap onto three
+        // separate rows at `current_line_height` (16.0) apart.
+        let rect = Rect::new(0.0, 0.0, 60.0, 16.0);
+        let layout = backend.toolbar_layout_with_overflow(rect, &bar, options, &priorities);
+
+        assert_eq!(
+            layout.visible_items.len(),
+            3,
+            "all three buttons must still be reported, just not all clickable"
+        );
+        assert!(
+            layout.visible_items[0].clickable,
+            "the first row (y=0) starts inside a 16.0-tall rect and must stay clickable"
+        );
+        assert!(
+            !layout.visible_items[1].clickable,
+            "the second row (y=16.0) starts at rect's bottom edge and must be clamped \
+             un-clickable, matching win_toolbar_layout_with_overflow's live-DWrite branch"
+        );
+        assert!(
+            !layout.visible_items[2].clickable,
+            "the third row (y=32.0) is well past rect's bottom edge and must be clamped \
+             un-clickable"
+        );
+    }
 }
