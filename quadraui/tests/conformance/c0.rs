@@ -48,8 +48,9 @@ use quadraui::{
     StatusBarSegment, StyledSpan, StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon,
     TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast,
     ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
-    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
+    ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
+    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 // `Panel` is `#[deprecated]`; imported separately so the allow stays
 // scoped to the one `draw_panel` back-compat case below.
@@ -1629,6 +1630,39 @@ pub const CASES: &[Case] = &[
                 ToolbarPaintOptions {
                     valign: ToolbarVAlign::Bottom,
                 },
+            );
+        },
+    },
+    // The overflow-aware entry point. More items than the viewport's main
+    // axis can hold, so the `ToolbarOverflow::Wrap` arm a backend with its
+    // own overflow rasteriser takes is the one reached; a backend still on
+    // the trait's forwarding default clips instead. Either way the leading
+    // item — the needle — paints, which is what C0 asserts: this entry
+    // point reaches a rasteriser at all.
+    Case {
+        method: "draw_toolbar_with_overflow",
+        needle: Some("c0tbov01"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let buttons: Vec<ToolbarButton> = (1..=12)
+                .map(|n| ToolbarButton::Action {
+                    spec: None,
+                    id: id(&format!("toolbar-overflow-{n}")),
+                    label: format!("c0tbov{n:02}"),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                })
+                .collect();
+            let bar = Toolbar::new(id("toolbar-overflow")).with_buttons(buttons);
+            let _ = b.draw_toolbar_with_overflow(
+                Rect::new(0.0, 0.0, area.width, lh * 3.0),
+                &bar,
+                &InteractionState::new(),
+                ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap),
+                &ToolbarOverflowPriorities::new(),
             );
         },
     },
