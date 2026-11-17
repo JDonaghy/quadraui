@@ -606,20 +606,20 @@ jobs:
         run: python3 tools/test_introduction_matches_readme.py
 
   backend-loc-ratchet:
-    # #2373: the four per-backend directories under `quadraui/src/`
-    # (`tui`, `macos`, `win`, `gtk`) grew by roughly 4.1k lines in three days
-    # while the consolidation epics' shared engines landed *beside* them
-    # instead of replacing code inside them -- "consolidation" quietly added
-    # code instead of removing it. `scripts/backend_loc_ratchet.py` counts
-    # each directory's `.rs` lines and compares against the committed
-    # baseline in `scripts/backend_loc_baseline.json`, the same ratchet shape
-    # as the `comment-lint` job above: it doesn't fail on today's tree, but
-    # fails the instant a directory's count climbs past its baseline by more
-    # than the script's small allowance. A real shrink is expected to lower
-    # the baseline as part of that PR (the script prints the number to
-    # commit); a real growth that needs to cross the allowance raises the
-    # baseline in the same PR instead, so the increase is a visible line in
-    # the diff rather than something this gate papers over.
+    # Keeps the four per-backend directories under `quadraui/src/` (`tui`,
+    # `macos`, `win`, `gtk`) from growing unnoticed while the consolidation
+    # epics' shared engines land beside them instead of replacing code
+    # inside them. `scripts/backend_loc_ratchet.py` counts each directory's
+    # non-test `.rs` lines (everything before a file's first
+    # `#[cfg(test)]`) and compares against the committed baseline in
+    # `scripts/backend_loc_baseline.json`, the same ratchet shape as the
+    # `comment-lint` job above. The gate fails in both directions: growth
+    # past the baseline's small allowance needs a manual baseline bump in
+    # the same PR (a visible line in the diff, not something this gate
+    # papers over); a shrink below the baseline also fails until
+    # `scripts/backend_loc_ratchet.py --write` lowers the committed baseline
+    # to match and that update is committed, so the ratchet only ever
+    # tightens.
     name: Backend line-count ratchet
     needs: bump-shape
     # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.

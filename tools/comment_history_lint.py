@@ -37,7 +37,8 @@ actually changed (diffed against its fork point from develop/main), not a
 repo-wide sweep -- that broader cleanup is the human mechanical pass's job
 (quadraui#1243-#1249), not a single worker's fix round.
 
-Grouping mirrors quadraui#1112's module table:
+Grouping mirrors quadraui#1112's module table, plus a `bindings` group for the
+language-binding crates:
     src         quadraui/src/*.rs (not in a listed subdir below) + both Cargo.toml files (#1243)
     compose     quadraui/src/compose/ (#1244)
     primitives  quadraui/src/primitives/ (#1245)
@@ -45,6 +46,7 @@ Grouping mirrors quadraui#1112's module table:
     gtk         quadraui/src/gtk/ (#1247)
     macos       quadraui/src/macos/ (#1248)
     win         quadraui/src/win/ (#1249)
+    bindings    quadraui-binding-core/, quadraui-ffi/, quadraui-node/, quadraui-py/
     other       everything else this tool scans (examples/, tests/, kubeui*, tools/) —
                 never gated by a threshold; #1112's module table doesn't cover it.
 
@@ -68,6 +70,12 @@ DEFAULT_THRESHOLDS_FILE = Path(__file__).resolve().parent / "comment_history_thr
 # Cargo.toml files.
 SRC_SUBDIR_GROUPS = {"compose", "primitives", "tui", "gtk", "macos", "win"}
 
+# Top-level dirs whose crate is a language-binding surface rather than part
+# of quadraui's own src/ module table -- grouped together as "bindings"
+# since none of them is large enough on its own to earn a dedicated
+# per-module threshold like the groups above.
+BINDINGS_DIRS = {"quadraui-binding-core", "quadraui-ffi", "quadraui-node", "quadraui-py"}
+
 # Only these top-level dirs/files are scanned at all -- this tool measures
 # quadraui#1112's own module table, not the whole repo (kubeui*/examples/
 # tests/tools still get counted into "other" so they're visible, but "other"
@@ -82,6 +90,10 @@ SCAN_ROOTS = [
     "kubeui",
     "kubeui-gtk",
     "quadraui-gallery",
+    "quadraui-binding-core",
+    "quadraui-ffi",
+    "quadraui-node",
+    "quadraui-py",
 ]
 
 COMMENT_MARKER_BY_SUFFIX = {
@@ -166,6 +178,8 @@ def group_for(path: Path, repo_root: Path = REPO_ROOT) -> str:
         if subdir in SRC_SUBDIR_GROUPS and len(parts) > 3:
             return subdir
         return "src"
+    if parts and parts[0] in BINDINGS_DIRS:
+        return "bindings"
     return "other"
 
 

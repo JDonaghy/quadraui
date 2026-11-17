@@ -104,6 +104,17 @@ class GroupForTest(unittest.TestCase):
         path = root / "quadraui" / "examples" / "hello.rs"
         self.assertEqual(lint.group_for(path, repo_root=root), "other")
 
+    def test_bindings_crate_file_is_bindings_group(self):
+        root = Path("/repo")
+        path = root / "quadraui-py" / "src" / "lib.rs"
+        self.assertEqual(lint.group_for(path, repo_root=root), "bindings")
+
+    def test_other_bindings_crates_are_bindings_group(self):
+        root = Path("/repo")
+        for crate in ("quadraui-binding-core", "quadraui-ffi", "quadraui-node"):
+            path = root / crate / "src" / "lib.rs"
+            self.assertEqual(lint.group_for(path, repo_root=root), "bindings")
+
 
 class FixBodyTest(unittest.TestCase):
     def test_leading_issue_tag_is_stripped_and_capitalized(self):
