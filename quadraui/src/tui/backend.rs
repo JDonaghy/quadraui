@@ -3494,8 +3494,8 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_activity_bar_with_style called outside enter_frame_scope"
             );
-            #[allow(deprecated)]
             // `activity_bar_layout` is `#[deprecated]`; this fallback is its own plumbing.
+            #[allow(deprecated)]
             return self.activity_bar_layout(rect, bar);
         };
         crate::tui::draw_activity_bar_with_style(

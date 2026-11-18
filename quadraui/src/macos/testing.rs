@@ -854,7 +854,7 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             use crate::primitives::activity_bar::{ActivityBar, ActivityItem};
-            backend.draw_activity_bar(
+            backend.draw_activity_bar_with_style(
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &ActivityBar {
                     id: WidgetId::new("bar"),
@@ -871,6 +871,7 @@ mod tests {
                     is_keyboard_focused: self.focused,
                 },
                 None,
+                &crate::ActivityBarStyle::default(),
             );
         }
 

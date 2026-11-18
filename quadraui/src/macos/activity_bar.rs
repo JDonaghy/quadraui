@@ -112,7 +112,12 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let regions = std::cell::RefCell::new(Vec::new());
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let r = b.draw_activity_bar(QRect::new(0.0, 0.0, W as f32, H as f32), bar, hovered);
+            let r = b.draw_activity_bar_with_style(
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                bar,
+                hovered,
+                &crate::ActivityBarStyle::default(),
+            );
             *regions.borrow_mut() = r;
         });
         backend.end_frame();
@@ -138,7 +143,12 @@ mod tests {
         backend.begin_frame(Viewport::new(canvas_w as f32, canvas_h as f32, 1.0));
         let regions = std::cell::RefCell::new(Vec::new());
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let r = b.draw_activity_bar(QRect::new(x, y, W as f32, H as f32), bar, hovered);
+            let r = b.draw_activity_bar_with_style(
+                QRect::new(x, y, W as f32, H as f32),
+                bar,
+                hovered,
+                &crate::ActivityBarStyle::default(),
+            );
             *regions.borrow_mut() = r;
         });
         backend.end_frame();
@@ -436,6 +446,10 @@ mod tests {
 
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
+        // Regression-tests `activity_bar_layout` itself against its
+        // `draw_activity_bar_with_style` twin — no `_with_style` layout
+        // seam exists to call instead.
+        #[allow(deprecated)]
         let computed = backend.activity_bar_layout(QRect::new(0.0, 0.0, W as f32, H as f32), &bar);
 
         assert_eq!(painted.len(), computed.len());
@@ -454,7 +468,11 @@ mod tests {
         let bar = sample_bar();
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
+        // Regression-tests `activity_bar_layout` itself — no `_with_style`
+        // layout seam exists to call instead.
+        #[allow(deprecated)]
         let at_origin = backend.activity_bar_layout(QRect::new(0.0, 0.0, W as f32, H as f32), &bar);
+        #[allow(deprecated)]
         let moved = backend.activity_bar_layout(QRect::new(23.0, 41.0, W as f32, H as f32), &bar);
 
         assert_eq!(at_origin.len(), moved.len());
