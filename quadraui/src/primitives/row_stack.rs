@@ -283,8 +283,10 @@ impl RowPaintState {
 ))]
 #[allow(dead_code)]
 pub(crate) mod row_content_paint {
+    use crate::backend::ImagePaintResult;
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::image::Image;
     use crate::types::{Color, Icon, StyledText};
 
     /// Paint a row's optional leading icon glyph (`ListItem::icon` /
@@ -394,51 +396,116 @@ pub(crate) mod row_content_paint {
         );
     }
 
-    /// Paint one `IconGrid` tile's icon (centred, upper band) and label
-    /// (centred, truncated with an ellipsis, lower band) within `tile` —
-    /// the centred/stacked sibling of [`paint_row_icon`]'s left-aligned,
-    /// single-line layout. `ListView`/`Palette` paint a row's icon
-    /// beside its text on one line; `IconGrid` stacks icon above label
-    /// across two bands of the same tile, so this is a distinct shape,
-    /// not a parameterisation of [`paint_row_icon`].
+    /// Interaction-state adornments [`paint_tile_icon_label`] paints on
+    /// top of an `IconGrid` tile's icon/label — selection fill, hover
+    /// tint, and the focus ring, plus the colours/geometry each one
+    /// paints with. Grouped into one struct rather than more positional
+    /// `bool`/`Color` arguments: a future adornment (e.g. a drag-over
+    /// highlight) becomes one new field here instead of another
+    /// positional argument every call site must thread through blind.
+    pub(crate) struct TileHighlight {
+        /// Fills `tile` with [`Self::selected_bg`] — `IconGrid`'s
+        /// selection highlight is a filled tile, unlike a row's
+        /// selection highlight which the row's own background already
+        /// covers before this helper runs.
+        pub selected: bool,
+        /// Fills `tile` with [`Self::hover_bg`] — skipped when
+        /// [`Self::selected`] is also set, so a hovered-and-selected
+        /// tile shows only the (more prominent) selection fill.
+        pub hovered: bool,
+        /// Strokes a focus ring around `tile` in
+        /// [`Self::focus_ring_color`] when [`Self::selected`] is also
+        /// set — `IconGrid` has no separate "this tile has keyboard
+        /// focus but isn't the selection" state (same single-selection
+        /// model [`crate::primitives::icon_grid::IconGrid::has_focus`]'s
+        /// own doc describes), so the ring always coincides with the
+        /// selected tile's fill, reinforcing it as the grid's live
+        /// keyboard target rather than replacing the fill.
+        pub focused: bool,
+        pub selected_bg: Color,
+        pub hover_bg: Color,
+        pub focus_ring_color: Color,
+        /// Corner radius for both the selection/hover fill and the
+        /// focus ring, clamped to half of `tile`'s shorter side the same
+        /// way [`PaintSurface::surface_fill_rounded_rect`]'s own doc
+        /// describes.
+        pub radius: f32,
+        pub ring_width: f32,
+    }
+
+    /// Paint one `IconGrid` tile's icon/thumbnail (centred, upper band)
+    /// and label (centred, word-wrapped to at most 2 lines then
+    /// ellipsized, lower band) within `tile` — the centred/stacked
+    /// sibling of [`paint_row_icon`]'s left-aligned, single-line layout.
+    /// `ListView`/`Palette` paint a row's icon beside its text on one
+    /// line; `IconGrid` stacks icon above label across two bands of the
+    /// same tile, so this is a distinct shape, not a parameterisation of
+    /// [`paint_row_icon`].
     ///
-    /// `selected` fills `tile` with `selected_bg` first (the whole tile,
-    /// not just a text band) — `IconGrid`'s selection highlight is a
-    /// filled tile, unlike a row's selection highlight which the row's
-    /// own background already covers before this helper runs.
+    /// `image`, when `Some`, paints in place of `icon` — scaled to fit
+    /// the icon band via [`Image::layout`] (aspect preserved, the
+    /// default [`crate::primitives::image::ImageFit::Contain`]) — and
+    /// falls back to `icon` when [`PaintSurface::surface_draw_image`]
+    /// reports [`ImagePaintResult::Unsupported`] (e.g. macOS's own
+    /// "no `NSImage` decoder wired up yet" gap — see
+    /// [`PaintSurface::surface_draw_image`]'s doc), so a backend that
+    /// cannot yet decode the thumbnail still shows the icon glyph rather
+    /// than a blank band.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_tile_icon_label(
         surface: &mut dyn PaintSurface,
         tile: Rect,
         icon: Option<&Icon>,
+        image: Option<&Image>,
         nerd_fonts_enabled: bool,
         label: &str,
         fg: Color,
-        selected: bool,
-        selected_bg: Color,
+        highlight: TileHighlight,
     ) {
         if tile.width <= 0.0 || tile.height <= 0.0 {
             return;
         }
-        if selected {
-            surface.surface_fill_rect(tile, selected_bg);
+        let radius = highlight
+            .radius
+            .min(tile.width / 2.0)
+            .min(tile.height / 2.0)
+            .max(0.0);
+        if highlight.selected {
+            surface.surface_fill_rounded_rect(tile, radius, highlight.selected_bg);
+        } else if highlight.hovered {
+            surface.surface_fill_rounded_rect(tile, radius, highlight.hover_bg);
+        }
+        if highlight.selected && highlight.focused {
+            surface.surface_stroke_rounded_rect(
+                tile,
+                radius,
+                highlight.focus_ring_color,
+                highlight.ring_width,
+            );
         }
 
         let icon_band_h = (tile.height * 0.6).max(1.0).min(tile.height);
-        if let Some(icon) = icon {
-            let glyph = if nerd_fonts_enabled {
-                icon.glyph.as_str()
-            } else {
-                icon.fallback.as_str()
-            };
-            let (iw, ih) = surface.surface_measure_text(glyph);
-            let ix = tile.x + ((tile.width - iw) / 2.0).max(0.0);
-            let iy = tile.y + ((icon_band_h - ih) / 2.0).max(0.0);
-            surface.surface_draw_icon_glyph(
-                Rect::new(ix, iy, iw, ih),
-                glyph,
-                icon.color.unwrap_or(fg),
-            );
+        let icon_band = Rect::new(tile.x, tile.y, tile.width, icon_band_h);
+        let painted_image = image.is_some_and(|image| {
+            let fit = image.layout(icon_band);
+            surface.surface_draw_image(fit.bounds, image) == ImagePaintResult::Painted
+        });
+        if !painted_image {
+            if let Some(icon) = icon {
+                let glyph = if nerd_fonts_enabled {
+                    icon.glyph.as_str()
+                } else {
+                    icon.fallback.as_str()
+                };
+                let (iw, ih) = surface.surface_measure_text(glyph);
+                let ix = tile.x + ((tile.width - iw) / 2.0).max(0.0);
+                let iy = tile.y + ((icon_band_h - ih) / 2.0).max(0.0);
+                surface.surface_draw_icon_glyph(
+                    Rect::new(ix, iy, iw, ih),
+                    glyph,
+                    icon.color.unwrap_or(fg),
+                );
+            }
         }
 
         let label_y = tile.y + icon_band_h;
@@ -446,19 +513,29 @@ pub(crate) mod row_content_paint {
         if label_h <= 0.0 || label.is_empty() {
             return;
         }
-        let (fitted, fitted_w) = crate::paint_surface::fit_text_prefix(
-            surface,
-            label,
-            false,
-            (tile.width - 4.0).max(0.0),
-        );
-        if fitted.is_empty() {
+        let line_h = surface.surface_measure_text(label).1.max(1.0);
+        // At most 2 lines, and never more than `label_h` actually has
+        // room for — a short tile still gets the single-line truncation
+        // behaviour this replaced, rather than painting a second line
+        // past the tile's own bottom edge.
+        let max_lines = ((label_h / line_h).floor() as usize).clamp(1, 2);
+        let max_w = (tile.width - 4.0).max(0.0);
+        let lines = crate::primitives::toast::wrap_text_lines(label, max_w, max_lines, &|s| {
+            surface.surface_measure_text(s).0
+        });
+        if lines.is_empty() {
             return;
         }
-        let (_, lh) = surface.surface_measure_text(&fitted);
-        let lx = tile.x + ((tile.width - fitted_w) / 2.0).max(0.0);
-        let ly = label_y + ((label_h - lh) / 2.0).max(0.0);
-        surface.surface_draw_text_run(Rect::new(lx, ly, fitted_w, lh), &fitted, fg);
+        let total_h = line_h * lines.len() as f32;
+        let mut ly = label_y + ((label_h - total_h) / 2.0).max(0.0);
+        for line in &lines {
+            if !line.is_empty() {
+                let (lw, _) = surface.surface_measure_text(line);
+                let lx = tile.x + ((tile.width - lw) / 2.0).max(0.0);
+                surface.surface_draw_text_run(Rect::new(lx, ly, lw, line_h), line, fg);
+            }
+            ly += line_h;
+        }
     }
 
     #[cfg(test)]
@@ -478,6 +555,20 @@ pub(crate) mod row_content_paint {
         struct RecordingSurface {
             text_runs: Vec<(Rect, String, Color)>,
             fills: Vec<(Rect, Color)>,
+            rounded_fills: Vec<(Rect, f32, Color)>,
+            rounded_strokes: Vec<(Rect, f32, Color, f32)>,
+            images: Vec<Rect>,
+            /// What [`PaintSurface::surface_draw_image`] reports — a test
+            /// that wants to exercise the "image painted" path sets this
+            /// to [`ImagePaintResult::Painted`] before calling
+            /// `paint_tile_icon_label`.
+            draw_image_result: ImagePaintResult,
+        }
+
+        impl Default for ImagePaintResult {
+            fn default() -> Self {
+                ImagePaintResult::Unsupported
+            }
         }
 
         impl PaintSurface for RecordingSurface {
@@ -498,8 +589,20 @@ pub(crate) mod row_content_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+                self.rounded_fills.push((rect, radius, color));
+            }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                rect: Rect,
+                radius: f32,
+                color: Color,
+                stroke_width: f32,
+            ) {
+                self.rounded_strokes
+                    .push((rect, radius, color, stroke_width));
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
             }
@@ -513,8 +616,9 @@ pub(crate) mod row_content_paint {
             }
             fn surface_push_clip(&mut self, _rect: Rect) {}
             fn surface_pop_clip(&mut self) {}
-            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
-                ImagePaintResult::Unsupported
+            fn surface_draw_image(&mut self, rect: Rect, _image: &Image) -> ImagePaintResult {
+                self.images.push(rect);
+                self.draw_image_result
             }
         }
 
@@ -637,6 +741,21 @@ pub(crate) mod row_content_paint {
 
         // ── paint_tile_icon_label ────────────────────────────────────
 
+        /// A plain, unselected/unhovered/unfocused [`TileHighlight`] —
+        /// the baseline most tests start from and tweak one field of.
+        fn plain_highlight() -> TileHighlight {
+            TileHighlight {
+                selected: false,
+                hovered: false,
+                focused: false,
+                selected_bg: Color::rgb(9, 9, 9),
+                hover_bg: Color::rgb(5, 5, 5),
+                focus_ring_color: Color::rgb(2, 2, 2),
+                radius: 4.0,
+                ring_width: 2.0,
+            }
+        }
+
         #[test]
         fn paint_tile_icon_label_paints_glyph_then_label() {
             let mut surface = RecordingSurface::default();
@@ -646,19 +765,19 @@ pub(crate) mod row_content_paint {
                 &mut surface,
                 tile,
                 Some(&icon),
+                None,
                 true,
                 "a.txt",
                 Color::rgb(1, 2, 3),
-                false,
-                Color::rgb(9, 9, 9),
+                plain_highlight(),
             );
             assert_eq!(surface.text_runs.len(), 2, "icon glyph plus label");
             assert_eq!(surface.text_runs[0].1, "GLYPH");
             assert_eq!(surface.text_runs[1].1, "a.txt");
             assert_eq!(surface.text_runs[1].2, Color::rgb(1, 2, 3));
             assert!(
-                surface.fills.is_empty(),
-                "an unselected tile must not fill its background"
+                surface.fills.is_empty() && surface.rounded_fills.is_empty(),
+                "an unselected, unhovered tile must not fill its background"
             );
         }
 
@@ -670,31 +789,130 @@ pub(crate) mod row_content_paint {
                 &mut surface,
                 tile,
                 None,
+                None,
                 false,
                 "a.txt",
                 Color::rgb(1, 2, 3),
-                false,
-                Color::rgb(9, 9, 9),
+                plain_highlight(),
             );
             assert_eq!(surface.text_runs.len(), 1);
             assert_eq!(surface.text_runs[0].1, "a.txt");
         }
 
         #[test]
-        fn paint_tile_icon_label_fills_the_whole_tile_when_selected() {
+        fn paint_tile_icon_label_fills_the_whole_tile_rounded_when_selected() {
             let mut surface = RecordingSurface::default();
             let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
             paint_tile_icon_label(
                 &mut surface,
                 tile,
                 None,
+                None,
                 false,
                 "a.txt",
                 Color::rgb(1, 2, 3),
-                true,
-                Color::rgb(9, 9, 9),
+                TileHighlight {
+                    selected: true,
+                    ..plain_highlight()
+                },
             );
-            assert_eq!(surface.fills, vec![(tile, Color::rgb(9, 9, 9))]);
+            assert_eq!(
+                surface.rounded_fills,
+                vec![(tile, 4.0, Color::rgb(9, 9, 9))]
+            );
+            assert!(surface.fills.is_empty(), "selection fill must be rounded");
+        }
+
+        #[test]
+        fn paint_tile_icon_label_tints_a_hovered_unselected_tile() {
+            let mut surface = RecordingSurface::default();
+            let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                None,
+                None,
+                false,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                TileHighlight {
+                    hovered: true,
+                    ..plain_highlight()
+                },
+            );
+            assert_eq!(
+                surface.rounded_fills,
+                vec![(tile, 4.0, Color::rgb(5, 5, 5))]
+            );
+        }
+
+        #[test]
+        fn paint_tile_icon_label_prefers_the_selection_fill_over_hover() {
+            let mut surface = RecordingSurface::default();
+            let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                None,
+                None,
+                false,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                TileHighlight {
+                    selected: true,
+                    hovered: true,
+                    ..plain_highlight()
+                },
+            );
+            assert_eq!(
+                surface.rounded_fills,
+                vec![(tile, 4.0, Color::rgb(9, 9, 9))],
+                "a hovered-and-selected tile shows only the selection fill"
+            );
+        }
+
+        #[test]
+        fn paint_tile_icon_label_strokes_a_focus_ring_only_when_selected_and_focused() {
+            let mut surface = RecordingSurface::default();
+            let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                None,
+                None,
+                false,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                TileHighlight {
+                    selected: true,
+                    focused: true,
+                    ..plain_highlight()
+                },
+            );
+            assert_eq!(
+                surface.rounded_strokes,
+                vec![(tile, 4.0, Color::rgb(2, 2, 2), 2.0)]
+            );
+
+            let mut unfocused = RecordingSurface::default();
+            paint_tile_icon_label(
+                &mut unfocused,
+                tile,
+                None,
+                None,
+                false,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                TileHighlight {
+                    selected: true,
+                    focused: false,
+                    ..plain_highlight()
+                },
+            );
+            assert!(
+                unfocused.rounded_strokes.is_empty(),
+                "selected but unfocused must not paint a focus ring"
+            );
         }
 
         #[test]
@@ -705,15 +923,109 @@ pub(crate) mod row_content_paint {
                 &mut surface,
                 tile,
                 None,
+                None,
                 false,
                 &"x".repeat(50),
                 Color::rgb(1, 2, 3),
-                false,
-                Color::rgb(9, 9, 9),
+                plain_highlight(),
             );
             let (_, text, _) = &surface.text_runs[0];
             assert!(text.ends_with('…'));
             assert!(text.len() < 50);
+        }
+
+        #[test]
+        fn paint_tile_icon_label_wraps_a_long_label_across_two_lines() {
+            let mut surface = RecordingSurface::default();
+            // Tall enough tile for a 2-line label band (icon band
+            // 0.6 * 80 == 48, label band 32 == exactly 2 * the 16-unit
+            // line height the mock measures every string at).
+            let tile = Rect::new(0.0, 0.0, 40.0, 80.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                None,
+                None,
+                false,
+                "one two",
+                Color::rgb(1, 2, 3),
+                plain_highlight(),
+            );
+            assert_eq!(
+                surface.text_runs.len(),
+                2,
+                "a tall-enough tile wraps rather than truncating onto one line"
+            );
+            assert_eq!(surface.text_runs[0].1, "one");
+            assert_eq!(surface.text_runs[1].1, "two");
+        }
+
+        #[test]
+        fn paint_tile_icon_label_paints_a_thumbnail_scaled_to_fit_in_place_of_the_icon() {
+            let mut surface = RecordingSurface::default();
+            surface.draw_image_result = ImagePaintResult::Painted;
+            let icon = Icon::new("GLYPH", "F");
+            let image = Image {
+                id: crate::WidgetId::new("thumb"),
+                source: crate::ImageSource::Bytes(vec![]),
+                intrinsic_size: Some((100, 50)),
+                fit: crate::ImageFit::Contain,
+                fallback_text: String::new(),
+            };
+            let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                Some(&icon),
+                Some(&image),
+                true,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                plain_highlight(),
+            );
+            assert_eq!(
+                surface.images.len(),
+                1,
+                "the thumbnail must be painted once"
+            );
+            // Contain-fit of a 100x50 image into the 80x24 icon band
+            // (80 * 0.6) is width-limited: 80 wide, 40 tall — still
+            // taller than the 24-unit band, so height-limited instead:
+            // scale = 24 / 50 == 0.48, width == 48.
+            assert_eq!(surface.images[0].height, 24.0);
+            assert!(
+                surface.text_runs.iter().all(|(_, t, _)| t != "GLYPH"),
+                "the icon glyph must not paint once a thumbnail painted"
+            );
+        }
+
+        #[test]
+        fn paint_tile_icon_label_falls_back_to_the_icon_when_the_thumbnail_is_unsupported() {
+            let mut surface = RecordingSurface::default();
+            // Default `draw_image_result` is `Unsupported`.
+            let icon = Icon::new("GLYPH", "F");
+            let image = Image {
+                id: crate::WidgetId::new("thumb"),
+                source: crate::ImageSource::Bytes(vec![]),
+                intrinsic_size: Some((100, 50)),
+                fit: crate::ImageFit::Contain,
+                fallback_text: String::new(),
+            };
+            let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                Some(&icon),
+                Some(&image),
+                true,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                plain_highlight(),
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "GLYPH"),
+                "an unsupported thumbnail must fall back to the icon glyph"
+            );
         }
     }
 }
