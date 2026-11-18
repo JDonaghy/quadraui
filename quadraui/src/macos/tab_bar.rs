@@ -157,6 +157,12 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         icons,
         glyphs,
         nerd_fonts_enabled,
+        // `TabChrome::default()` — this rasteriser has no bracket-chrome
+        // support (see `MacBackend::draw_tab_bar_with_chrome_and_glyphs`'s
+        // doc), the same chrome `mac_tab_bar_pixel_layout` already laid
+        // the geometry out with. `focused_index` still reaches the paint
+        // through `TabBarPaintState` below.
+        &TabChrome::default(),
         TabBarPaintState {
             hovered_tab,
             pressed_tab,
