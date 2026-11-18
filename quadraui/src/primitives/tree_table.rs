@@ -23,6 +23,12 @@
 
 use crate::compose::tree_nav::NavRow;
 use crate::event::Rect;
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::primitives::data_table::DataTablePaintState;
 use crate::primitives::data_table::{
     Column, ColumnMeasure, DataTable, DataTableHit, DataTableLayout,
 };
@@ -1023,6 +1029,234 @@ pub(crate) mod native_surface_paint {
     }
 }
 
+// ── Accessibility ────────────────────────────────────────────────────
+
+/// A `TreeTable` reports exactly what its wrapped [`DataTable`] does —
+/// pure delegation, no tree-specific role/state of its own. The private
+/// per-row helpers in `crate::a11y::tree` that would give each row a
+/// `TreeItem` role plus level/expanded state (the way
+/// [`crate::primitives::tree::TreeView`]'s own `A11yPrimitive` impl
+/// does) aren't reachable from this module; richer per-row semantics
+/// are a follow-up there, not a layout or paint concern this type's
+/// [`Primitive`] impl below needs to wait on.
+impl crate::a11y::A11yPrimitive for TreeTable {
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        self.table.a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<crate::a11y::A11yChild> {
+        self.table.a11y_children()
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        self.table.a11y_focus_key()
+    }
+}
+
+// ── `crate::primitive::Primitive` impl ──────────────────────────────
+//
+// Composes `DataTable`'s own layout/paint (via `TreeTable::layout`,
+// which already delegates to `DataTable::layout` for every column but
+// the chevron) and the shared tree cell
+// (`crate::primitives::tree::native_surface_paint::tree_cell`) — no
+// parallel row, column or scrollbar logic of its own, mirroring this
+// module's existing "no `tree_table.rs`" story for TUI (see
+// `crate::tui::data_table::draw_tree_table`'s doc).
+
+/// [`crate::primitive::Primitive::Layout`] for [`TreeTable`] — the
+/// resolved [`TreeTableLayout`] paired with the absolute area it was
+/// laid out into plus the row count/scroll offset
+/// [`TreeTableLayout::hit_test`]'s fixed signature needs but doesn't
+/// itself carry.
+///
+/// `#[non_exhaustive]`: backend-returned, never constructed by a
+/// consumer via struct literal, same convention as [`TreeTableLayout`]
+/// itself.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct TreeTablePrimitiveLayout {
+    /// Absolute area [`TreeTable::layout`] was (indirectly) called
+    /// with — [`Self::hit_test`] subtracts this rect's origin before
+    /// delegating to [`TreeTableLayout::hit_test`].
+    pub area: Rect,
+    /// Row height resolved from the [`crate::primitive::LayoutCtx`]
+    /// [`Primitive::layout`](crate::primitive::Primitive::layout) was
+    /// called with.
+    pub line_height: f32,
+    /// Nerd-Font toggle resolved the same way.
+    pub nerd_fonts_enabled: bool,
+    /// The table-local layout itself.
+    pub layout: TreeTableLayout,
+    /// [`DataTable::scroll_offset`] (via [`TreeTable::table`]) at the
+    /// time [`Primitive::layout`] was called — [`Self::hit_test`] needs
+    /// this to resolve a `y` into an absolute row index.
+    pub scroll_offset: usize,
+    /// `self.table.rows.len()` at the same time, for the same reason.
+    pub total_rows: usize,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl TreeTablePrimitiveLayout {
+    /// Hit-test at an absolute `(x, y)` — subtracts [`Self::area`]'s
+    /// origin before delegating to [`TreeTableLayout::hit_test`].
+    pub fn hit_test(&self, x: f32, y: f32) -> TreeTableHit {
+        self.layout.hit_test(
+            x - self.area.x,
+            y - self.area.y,
+            self.scroll_offset,
+            self.total_rows,
+        )
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl crate::primitive::Primitive for TreeTable {
+    type Layout = TreeTablePrimitiveLayout;
+    type Event = TreeTableEvent;
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        // Same TUI-vs-pixel-backend discriminator `ListView`'s own
+        // `Primitive::layout` uses — see that impl's doc for why
+        // `ctx.line_height` is reliable even when both features are
+        // compiled into the same binary.
+        #[cfg(feature = "tui")]
+        if ctx.line_height <= 1.0 {
+            let area = crate::tui::backend::q_rect_to_ratatui(rect);
+            let layout = crate::tui::tree_table_layout(area, self);
+            return TreeTablePrimitiveLayout {
+                area: rect,
+                line_height: ctx.line_height,
+                nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+                scroll_offset: self.table.scroll_offset,
+                total_rows: self.table.rows.len(),
+                layout,
+            };
+        }
+        // No live text measurer reaches `Primitive::layout` (its
+        // signature carries only `LayoutCtx`'s flat `char_width`), so
+        // column titles and the chevron glyph are both estimated from
+        // it — `char_width` per title glyph (mirrors
+        // `crate::primitives::data_table`'s own `CharWidthMeasure`
+        // fallback) and `line_height * 0.65` for the chevron (mirrors
+        // `crate::primitives::layout_metrics::tree_layout`'s identical
+        // no-live-font estimate). `Self::layout` (this method) supplies
+        // only that measuring glue; the narrow-rect column-dropping
+        // algorithm itself lives entirely in [`TreeTable::layout`].
+        let indent_px = (ctx.line_height * 0.9).round();
+        let header_height = (ctx.line_height * 1.2).round();
+        let style = crate::types::TreeStyle::default();
+        let chevron_w = ctx.line_height * 0.65;
+        let min_tree_col_width = {
+            let max_indent = self.tree.iter().map(|n| n.indent).max().unwrap_or(0);
+            max_indent as f32 * indent_px
+                + if style.show_chevrons { chevron_w } else { 0.0 }
+                + ctx.char_width
+        };
+        let layout = self.layout(
+            rect.width,
+            rect.height,
+            ctx.line_height,
+            header_height,
+            crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH,
+            |col| ColumnMeasure::new(col.title.chars().count() as f32 * ctx.char_width),
+            |node: &TreeTableNode| {
+                if !style.show_chevrons {
+                    return None;
+                }
+                node.is_expanded?;
+                Some((node.indent as f32 * indent_px, chevron_w))
+            },
+            min_tree_col_width,
+        );
+        TreeTablePrimitiveLayout {
+            area: rect,
+            line_height: ctx.line_height,
+            nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+            scroll_offset: self.table.scroll_offset,
+            total_rows: self.table.rows.len(),
+            layout,
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let state = DataTablePaintState::default();
+            native_surface_paint::paint(
+                self,
+                surface,
+                theme,
+                layout.area,
+                layout.line_height,
+                &state,
+                layout.nerd_fonts_enabled,
+            );
+        }
+        // A `tui`-only build has no `PaintSurface` to paint into at all —
+        // `self` reaching the screen on TUI goes through `Self::paint_cells`
+        // instead, which `DrawsPrimitives::draw_primitive`'s default body
+        // calls in place of this method whenever `Backend::cell_buffer`
+        // answers `Some`.
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, _style);
+        }
+    }
+
+    /// Delegates straight to [`crate::tui::draw_tree_table`] — the exact
+    /// function [`crate::tui::backend::TuiBackend::draw_tree_table`]
+    /// itself calls — so painting `TreeTable` through
+    /// [`crate::primitive::Primitive`] on TUI is byte-for-byte identical
+    /// to painting it through `Backend::draw_tree_table` by construction.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        crate::tui::draw_tree_table(
+            buf,
+            area,
+            self,
+            theme,
+            /* hovered_idx */ None,
+            layout.nerd_fonts_enabled,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1269,5 +1503,185 @@ mod tests {
         let layout = tt.layout(2.0, 10.0, 1.0, 1.0, 1.0, measure, |_| None, 5.0);
         assert_eq!(layout.table.columns.len(), 1);
         assert_eq!(layout.table.columns[0].width, 5.0);
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[cfg(test)]
+mod primitive_parity_tests {
+    use super::*;
+    use crate::backend::ImagePaintResult;
+    use crate::event::{Point, Viewport};
+    use crate::primitive::{LayoutCtx, Primitive};
+    use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
+    use crate::style::Style;
+    use crate::theme::Theme;
+    use crate::types::{Color, StyledText, WidgetId};
+    use crate::Image;
+    use crate::PaintSurface;
+
+    /// Records every verb call as a formatted line, in call order — a
+    /// byte-for-byte equal log from two different call paths is strong
+    /// evidence they painted the same thing. Mirrors
+    /// `crate::primitives::list::primitive_parity_tests::LogSurface`.
+    #[derive(Default)]
+    struct LogSurface {
+        calls: Vec<String>,
+    }
+
+    impl PaintSurface for LogSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(300.0, 200.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            16.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 8.0, 14.0)
+        }
+        fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+            self.calls.push(format!("fill_rect {rect:?} {color:?}"));
+        }
+        fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+            self.calls
+                .push(format!("fill_rounded_rect {rect:?} {radius} {color:?}"));
+        }
+        fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+            self.calls
+                .push(format!("stroke_rect {rect:?} {color:?} {stroke_width}"));
+        }
+        fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+            self.calls
+                .push(format!("draw_text_run {rect:?} {text:?} {color:?}"));
+        }
+        fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+            self.calls.push(format!(
+                "draw_line {from:?} {to:?} {color:?} {stroke_width}"
+            ));
+        }
+        fn surface_push_clip(&mut self, rect: Rect) {
+            self.calls.push(format!("push_clip {rect:?}"));
+        }
+        fn surface_pop_clip(&mut self) {
+            self.calls.push("pop_clip".to_string());
+        }
+        fn surface_draw_image(&mut self, rect: Rect, _image: &Image) -> ImagePaintResult {
+            self.calls.push(format!("draw_image {rect:?}"));
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    fn node(path: &[u16], indent: u16, expanded: Option<bool>) -> TreeTableNode {
+        let mut n = TreeTableNode::new(path.to_vec(), indent);
+        n.is_expanded = expanded;
+        n
+    }
+
+    fn sample_tree_table() -> TreeTable {
+        let table = DataTable {
+            id: WidgetId::new("files"),
+            columns: vec![Column {
+                title: "Name".to_string(),
+                width: ColumnWidth::Flex(1.0),
+                align: ColumnAlign::Left,
+            }],
+            rows: vec!["src", "main.rs", "Cargo.toml"]
+                .into_iter()
+                .map(|l| DataRow {
+                    cells: vec![StyledText::plain(l)],
+                    decoration: Default::default(),
+                })
+                .collect(),
+            selected_idx: Some(1),
+            scroll_offset: 0,
+            sort: None,
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+            bordered: false,
+        };
+        let tree = vec![
+            node(&[0], 0, Some(true)),
+            node(&[0, 0], 1, None),
+            node(&[1], 0, None),
+        ];
+        TreeTable { table, tree }
+    }
+
+    /// The acceptance criterion: `TreeTable`'s [`Primitive::layout`] +
+    /// [`Primitive::paint`] must produce the exact same verb log as
+    /// calling [`native_surface_paint::paint`] directly with the
+    /// equivalent arguments.
+    #[test]
+    fn tree_table_primitive_paint_matches_native_surface_paint() {
+        let tt = sample_tree_table();
+        let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
+        let ctx = LayoutCtx {
+            line_height: 16.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: true,
+        };
+        let theme = Theme::default();
+        let style = Style::default();
+
+        let via_primitive_layout = Primitive::layout(&tt, &ctx, rect);
+        let mut via_primitive_surface = LogSurface::default();
+        Primitive::paint(
+            &tt,
+            &via_primitive_layout,
+            &mut via_primitive_surface,
+            &theme,
+            &style,
+        );
+
+        let state = DataTablePaintState::default();
+        let mut direct_surface = LogSurface::default();
+        native_surface_paint::paint(
+            &tt,
+            &mut direct_surface,
+            &theme,
+            rect,
+            ctx.line_height,
+            &state,
+            ctx.nerd_fonts_enabled,
+        );
+
+        assert!(
+            !via_primitive_surface.calls.is_empty(),
+            "the tree table must paint something for this comparison to be meaningful"
+        );
+        assert_eq!(via_primitive_surface.calls, direct_surface.calls);
+    }
+
+    /// [`TreeTablePrimitiveLayout::hit_test`] subtracts the area's
+    /// origin before delegating — a click at the layout's absolute
+    /// origin must resolve to the same hit as `(0, 0)` on the
+    /// table-local [`TreeTableLayout::hit_test`].
+    #[test]
+    fn primitive_layout_hit_test_is_relative_to_area_origin() {
+        let tt = sample_tree_table();
+        let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
+        let ctx = LayoutCtx {
+            line_height: 16.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: true,
+        };
+
+        let layout = Primitive::layout(&tt, &ctx, rect);
+        let local = layout.layout.hit_test(0.0, 0.0, 0, tt.table.rows.len());
+        let absolute = layout.hit_test(rect.x, rect.y);
+        assert_eq!(local, absolute);
     }
 }
