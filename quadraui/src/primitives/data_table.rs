@@ -81,6 +81,15 @@
 //! whose resolved boundaries aren't integers (`Flex`/`Content` widths that
 //! don't divide evenly) the two can disagree by up to one cell.
 
+// Only the `Primitive` impl and its `Layout` type name `Rect` at module
+// scope; the paint helpers below import it inside their own backend-gated
+// modules. Gated to the same backend set those items are.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 use crate::event::Rect;
 use crate::primitives::layout_metrics;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
