@@ -3076,7 +3076,7 @@ pub trait Backend: sealed::Sealed {
     /// passing a default style to the new method.
     #[deprecated(
         since = "0.11.0",
-        note = "use `draw_activity_bar_with_style` (pass `&ActivityBarStyle::default()` for identical behaviour) — issue #2693"
+        note = "use `draw_activity_bar_with_style` (pass `&ActivityBarStyle::default()` for identical behaviour)"
     )]
     fn draw_activity_bar(
         &mut self,
@@ -3112,8 +3112,8 @@ pub trait Backend: sealed::Sealed {
         style: &ActivityBarStyle,
     ) -> Vec<ActivityBarRowHit> {
         let _ = style;
-        #[allow(deprecated)]
         // `draw_activity_bar` is `#[deprecated]`; this default is its own plumbing.
+        #[allow(deprecated)]
         self.draw_activity_bar(rect, bar, hovered_idx)
     }
 
@@ -3262,7 +3262,7 @@ pub trait Backend: sealed::Sealed {
     /// backends still need before their first paint.
     #[deprecated(
         since = "0.11.0",
-        note = "cache the `Vec<ActivityBarRowHit>` `draw_activity_bar_with_style` already returns instead of querying layout separately — issue #2693"
+        note = "cache the `Vec<ActivityBarRowHit>` `draw_activity_bar_with_style` already returns instead of querying layout separately"
     )]
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit>;
 

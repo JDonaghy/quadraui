@@ -3959,8 +3959,8 @@ impl Backend for WinBackend {
         // `hovered_idx` only affects painting, so it's unused on this
         // path.
         let _ = hovered_idx;
-        #[allow(deprecated)]
         // `activity_bar_layout` is `#[deprecated]`; this fallback is its own plumbing.
+        #[allow(deprecated)]
         self.activity_bar_layout(rect, bar)
     }
 
