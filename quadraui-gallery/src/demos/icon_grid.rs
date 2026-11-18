@@ -105,7 +105,11 @@ impl IconGridDemo {
         if lh <= 1.0 {
             (12.0, 2.0)
         } else {
-            (backend.char_width() * 12.0, lh * 3.0)
+            // 5x, matching `icon_grid::default_tile_size`'s own GUI
+            // branch — tall enough that the label band (up to two lines,
+            // capped at half the tile) actually reaches two lines
+            // instead of collapsing to one.
+            (backend.char_width() * 12.0, lh * 5.0)
         }
     }
 
