@@ -1,47 +1,24 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::Spinner`].
+//! Direct2D / DirectWrite rasteriser geometry for [`crate::Spinner`].
 //!
-//! Mirrors `gtk::spinner`'s structure: a Unicode braille animation frame
-//! table — same as TUI and GTK, for visual consistency across backends
-//! — indexed by `spinner.frame_idx`, plus the optional trailing
-//! `label`. [`Spinner::layout`] (the D6 layout API — see that
-//! primitive's module doc) just wraps the measured glyph+label box; the
-//! measurement itself comes from [`DWrite::measure_text`].
+//! Painting is delegated to the shared
+//! [`crate::primitives::spinner::native_surface_paint::paint`] function
+//! — the `Backend`-trait entry point
+//! [`super::backend::WinBackend::draw_spinner`] calls it directly
+//! (`self` is the [`crate::paint_surface::PaintSurface`]), passing
+//! `self.current_theme`. This module carries only
+//! [`win_spinner_layout`], the pure-geometry twin
+//! `WinBackend::spinner_layout`'s no-paint hit-test path needs.
 //!
-//! [`win_spinner_layout`] is pure geometry generic over
-//! [`SpinnerMeasureSource`] — no Direct2D/DirectWrite type in its
-//! signature — so it compiles and runs everywhere, including a plain
-//! `cargo test --features win` on Linux. `super::mod`'s `mod spinner;`
-//! is not whole-module gated; see `backend.rs`'s module docs.
-//!
-//! # Theme
-//!
-//! Takes the live theme as a `&Theme` parameter — the
-//! caller ([`crate::win::WinBackend::draw_spinner`]) passes
-//! `&self.current_theme`, the same field `Backend::set_theme` writes.
-
-#[cfg(target_os = "windows")]
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
+//! [`win_spinner_layout`] is generic over [`SpinnerMeasureSource`] — no
+//! Direct2D/DirectWrite type in its signature — so it compiles and runs
+//! everywhere, including a plain `cargo test --features win` on Linux.
+//! `super::mod`'s `mod spinner;` is not whole-module gated; see
+//! `backend.rs`'s module docs.
 
 #[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::spinner::{Spinner, SpinnerLayout, SpinnerMeasure};
-#[cfg(target_os = "windows")]
-use crate::theme::Theme;
-
-/// Braille animation frames — identical table to `gtk::spinner::FRAMES`
-/// / `tui`'s spinner glyphs, so the same `frame_idx` looks the same
-/// glyph across every backend.
-const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-fn frame_text(spinner: &Spinner) -> String {
-    let glyph = FRAMES[spinner.frame_idx % FRAMES.len()];
-    if spinner.label.is_empty() {
-        glyph.to_string()
-    } else {
-        format!("{glyph} {}", spinner.label)
-    }
-}
+use crate::primitives::spinner::{spinner_text, Spinner, SpinnerLayout, SpinnerMeasure};
 
 /// Width+height text measurement for [`win_spinner_layout`]. A spinner's
 /// hit box height comes from the glyph+label text's own measured height
@@ -61,42 +38,28 @@ impl SpinnerMeasureSource for DWrite {
     }
 }
 
-/// Compute a [`Spinner`]'s layout without painting — the measurer twin of
-/// [`draw_spinner`]. Both measure the identical glyph+label text via the
-/// same [`SpinnerMeasureSource`], so a no-paint hit-test call always
-/// agrees with what the last paint drew.
+/// Compute a [`Spinner`]'s layout without painting — the measurer twin
+/// of [`crate::primitives::spinner::native_surface_paint::paint`]. Both
+/// measure the identical glyph+label text (via [`spinner_text`]), so a
+/// no-paint hit-test call always agrees with what the last paint drew.
 pub fn win_spinner_layout(
     measure: &dyn SpinnerMeasureSource,
     rect: Rect,
     spinner: &Spinner,
 ) -> SpinnerLayout {
-    let text = frame_text(spinner);
+    let text = spinner_text(spinner);
     let (w, h) = measure.measure(&text);
     spinner.layout(rect.x, rect.y, SpinnerMeasure::new(w, h))
 }
 
-/// Draw a [`Spinner`] onto `target`. Returns the layout for host
-/// hit-testing.
-#[cfg(target_os = "windows")]
-pub fn draw_spinner(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    spinner: &Spinner,
-    theme: &Theme,
-) -> SpinnerLayout {
-    let layout = win_spinner_layout(dwrite, rect, spinner);
-    let fg = spinner.accent.unwrap_or(theme.foreground);
-    let text = frame_text(spinner);
-    let _ = dwrite.draw_text(target, &text, layout.bounds, fg);
-    layout
-}
-
-// Tests paint through a real `DWrite`/`HeadlessSurface`.
+// Tests paint through the shared `native_surface_paint::paint` over a
+// real `DWrite`/`HeadlessSurface`, the same shape `win::progress`'s test
+// module uses.
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     use crate::primitives::spinner::SpinnerHit;
+    use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
@@ -107,6 +70,34 @@ mod tests {
             frame_idx,
             accent: None,
         }
+    }
+
+    /// Paint `spinner` via the shared
+    /// [`crate::primitives::spinner::native_surface_paint::paint`]
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s
+    /// headless target — the same adapter
+    /// `WinBackend::draw_spinner` uses in production (there, `self` is
+    /// the surface directly; here it's constructed explicitly to paint
+    /// without a live backend).
+    fn paint(
+        surface: &HeadlessSurface,
+        dwrite: &DWrite,
+        rect: Rect,
+        spinner: &Spinner,
+        theme: &Theme,
+    ) -> SpinnerLayout {
+        surface
+            .paint(|target| {
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
+                crate::primitives::spinner::native_surface_paint::paint(
+                    spinner, &mut raw, theme, rect.x, rect.y,
+                );
+            })
+            .map(|_| win_spinner_layout(dwrite, rect, spinner))
+            .expect("paint spinner")
     }
 
     /// The layout bounds are wide enough to hold glyph + label, and
@@ -146,12 +137,7 @@ mod tests {
         let spinner = spinner(3);
         let rect = Rect::new(0.0, 0.0, 0.0, 0.0);
 
-        let layout = surface
-            .paint(|target| {
-                draw_spinner(target, &dwrite, rect, &spinner, &Theme::default());
-            })
-            .map(|_| win_spinner_layout(&dwrite, rect, &spinner))
-            .expect("paint spinner");
+        let layout = paint(&surface, &dwrite, rect, &spinner, &Theme::default());
 
         assert!(layout.bounds.width > 0.0);
     }
@@ -171,11 +157,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 0.0, 0.0);
 
         let surface = HeadlessSurface::new(200, 20).expect("create surface");
-        surface
-            .paint(|target| {
-                draw_spinner(target, &dwrite, rect, &spinner, &Theme::default());
-            })
-            .expect("paint spinner with accent");
+        paint(&surface, &dwrite, rect, &spinner, &Theme::default());
     }
 
     /// With no `accent` set, the glyph's ink colour tracks the live
@@ -206,11 +188,7 @@ mod tests {
         let most_inked = |theme: &Theme| -> (u8, u8, u8) {
             let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
             let surface = HeadlessSurface::new(220, 24).expect("create surface");
-            surface
-                .paint(|target| {
-                    draw_spinner(target, &dwrite, rect, &spinner, theme);
-                })
-                .expect("paint spinner");
+            paint(&surface, &dwrite, rect, &spinner, theme);
 
             let bg = surface.pixel_at(0, 0);
             let bg = (bg.r, bg.g, bg.b);
