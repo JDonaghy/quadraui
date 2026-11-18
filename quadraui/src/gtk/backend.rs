@@ -2212,17 +2212,9 @@ fn theme_prefers_dark(theme: crate::Theme) -> bool {
 ///
 /// Split out from `run.rs`'s GTK signal wiring so the dedup rule — compare
 /// against the *last dispatched* value, not the GTK default — is
-/// unit-testable without a live display connection. Needed because two
-/// independent producers can observe the same OS flip: `GtkSettings`'
-/// own `notify::gtk-application-prefer-dark-theme` (fired directly by GTK
-/// on every desktop that bridges the setting into its own settings store)
-/// and the best-effort `org.freedesktop.portal.Settings` `SettingChanged`
-/// watch (fired by desktops that only speak the portal, with no GTK-side
-/// bridge). Without this check those two can both fire for one flip and
-/// double up `UiEvent::SystemThemeChanged`, violating the "emits the event
-/// once" contract every other backend's equivalent wiring
-/// (`win::run::dispatch_event`'s `WM_SETTINGCHANGE` arm,
-/// `macos::run`'s `viewDidChangeEffectiveAppearance` override) upholds.
+/// unit-testable without a live display connection. Shared by both of
+/// `setup_system_theme_controller`'s producers; see that function's doc
+/// for why two producers exist and why this dedup matters.
 pub(crate) fn system_theme_change_event(
     last_dispatched: Option<SystemTheme>,
     current: SystemTheme,
