@@ -10,8 +10,8 @@
 use std::rc::Rc;
 
 use quadraui::{
-    render_markdown_to_styled, ActivityBar, Backend, BoardModel, Canvas, Chart, ComboBox,
-    CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView,
+    render_markdown_to_styled, ActivityBar, ActivityBarStyle, Backend, BoardModel, Canvas, Chart,
+    ComboBox, CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView,
     DrawsPrimitives, Editor, FieldKind, FindReplacePanel, FontRole, Form, FormField, IconGrid,
     Image, InteractionState, LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView,
     NaturalSize, NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar,
@@ -1431,8 +1431,8 @@ impl ExtraPaint for ActivityBar {
         self.id
     }
 
-    /// [`quadraui::Backend::draw_activity_bar`] takes a positional
-    /// `hovered_idx: Option<usize>` — a flat index into
+    /// [`quadraui::Backend::draw_activity_bar_with_style`] takes a
+    /// positional `hovered_idx: Option<usize>` — a flat index into
     /// [`quadraui::ActivityBarLayout::visible_items`], not a [`WidgetId`] —
     /// so `interaction.hovered()` is first resolved against a no-paint
     /// [`quadraui::Backend::activity_bar_layout`] call to recover that
@@ -1447,6 +1447,9 @@ impl ExtraPaint for ActivityBar {
         area: Rect,
         interaction: &InteractionState,
     ) -> Vec<(Rect, WidgetId)> {
+        // No replacement seam exists for a no-paint geometry query — see
+        // `quadraui::Backend::activity_bar_layout`'s deprecation note.
+        #[allow(deprecated)]
         let hovered_idx = interaction.hovered().and_then(|hovered_id| {
             backend
                 .activity_bar_layout(area, self)
@@ -1459,7 +1462,7 @@ impl ExtraPaint for ActivityBar {
         // the row's background with (a full-band-width horizontal strip in
         // the fixed-slot layout), not a narrower vertical-strip assumption.
         backend
-            .draw_activity_bar(area, self, hovered_idx)
+            .draw_activity_bar_with_style(area, self, hovered_idx, &ActivityBarStyle::default())
             .into_iter()
             .map(|row| {
                 (

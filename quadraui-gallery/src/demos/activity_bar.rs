@@ -98,6 +98,9 @@ impl Demo for ActivityBarDemo {
         let rect = area;
         let bar = self.bar(variant);
         if variant == 0 {
+            // Deliberately exercises the deprecated positional entry point
+            // (variant 1 below demonstrates its `_with_style` replacement).
+            #[allow(deprecated)]
             let _ = backend.draw_activity_bar(rect, &bar, None);
         } else {
             let _ = backend.draw_activity_bar_with_style(rect, &bar, None, &self.style());
@@ -122,6 +125,9 @@ impl Demo for ActivityBarDemo {
                     return Reaction::Continue;
                 }
                 let bar = self.bar(variant);
+                // No replacement seam exists for a no-paint geometry query —
+                // see `Backend::activity_bar_layout`'s deprecation note.
+                #[allow(deprecated)]
                 let hits = backend.activity_bar_layout(rect, &bar);
                 let rel_y = position.y - rect.y;
                 for hit in &hits {
