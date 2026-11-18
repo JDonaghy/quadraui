@@ -510,9 +510,13 @@ pub fn resolve_grid_tracks(
 /// matching track lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GridAreaSpan {
+    /// First row index the area covers.
     pub row_start: usize,
+    /// Last row index the area covers, inclusive.
     pub row_end: usize,
+    /// First column index the area covers.
     pub col_start: usize,
+    /// Last column index the area covers, inclusive.
     pub col_end: usize,
 }
 
