@@ -311,8 +311,9 @@ pub use render::{
     RenderFrame, RenderRefs,
 };
 pub use scripted::{
-    ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedLayout,
-    ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
+    register_scripted_widget, unregister_scripted_widget, ScriptWidget, ScriptedA11y,
+    ScriptedConstraints, ScriptedExtra, ScriptedInputEvent, ScriptedLayout, ScriptedPaint,
+    ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState, ScriptedWidgetDescriptor,
 };
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{

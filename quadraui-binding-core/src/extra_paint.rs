@@ -112,6 +112,18 @@ pub trait ExtraPaint: std::any::Any {
         self.paint(backend, area);
         Vec::new()
     }
+
+    /// This descriptor's [`crate::scripted::ScriptedExtra`] facet, for an
+    /// extra that is a script-defined widget — `None` by default, correct
+    /// for every hand-built extra above, which has no script-side
+    /// `on_event` for `hit.rs`/`semantic.rs` to forward a resolved region
+    /// click or a focused key press to. Only
+    /// `crate::scripted::ScriptedPrimitive<W>` overrides this, and does so
+    /// generically (no `W` type parameter escapes that one `impl`) — see
+    /// that type's own doc.
+    fn as_scripted(&self) -> Option<&dyn crate::scripted::ScriptedExtra> {
+        None
+    }
 }
 
 /// Recovers the concrete descriptor (`Switch`, `TextInput`, ...) kept alive
