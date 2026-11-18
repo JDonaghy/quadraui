@@ -113,6 +113,47 @@ def test_rating_cannot_go_below_zero_or_above_max_stars():
     assert demo.rating == rating.MAX_STARS
 
 
+def test_a_region_click_calls_on_rate_exactly_once():
+    """`RatingControl.on_event`'s `_rate` call is idempotent (it just sets
+    `props["value"]`), so a duplicate dispatch of the same click wouldn't
+    show up in `demo.rating` -- counting `on_rate` invocations directly is
+    the only way to see a region click reach the widget's own `on_event`
+    more than once for a single `MouseDown`."""
+    rating = _load_rating()
+    calls = []
+    app = App(
+        rating.WIDTH,
+        rating.HEIGHT,
+        view=lambda: rating.RatingControl(id="rating:stars", value=3, on_rate=calls.append),
+        on_event=lambda event: None,
+    )
+    _click(app, _star_x(rating, 4), 0.0)
+    assert calls == [5]
+
+
+def test_a_focused_key_press_calls_on_rate_exactly_once():
+    """Same regression coverage as
+    `test_a_region_click_calls_on_rate_exactly_once`, for the focused-key
+    path instead of the region-click path."""
+    rating = _load_rating()
+    demo = rating.RatingDemo()
+    calls = []
+    app = App(
+        rating.WIDTH,
+        rating.HEIGHT,
+        view=lambda: rating.RatingControl(id="rating:stars", value=demo.rating, on_rate=calls.append),
+        on_event=demo.on_key,
+    )
+    # Focuses the control -- its only tab stop -- without itself calling
+    # `on_rate` (a click lands on star index 2, already the control's
+    # current value, so `_rate` is still invoked once with the same value).
+    _click(app, _star_x(rating, 2), 0.0)
+    calls.clear()
+
+    _key(app, "Right")
+    assert calls == [4]
+
+
 def _locate_text(app, needle):
     """Scans the plain-text `screen()` dump for `needle` and returns the
     `(row, col)` of its first occurrence -- the same technique

@@ -712,6 +712,10 @@ class SelectDescriptor(TypedDict):
     disabled: NotRequired[bool]
     focused: NotRequired[bool]
 
+class ScriptedWidgetDescriptor(TypedDict):
+    """A script-defined widget's per-frame props, interpreted entirely by whatever `ScriptWidget` a binding registered against this leaf's own id -- see `quadraui_binding_core::scripted`'s own doc."""
+    props: NotRequired[Any]
+
 class PasswordDescriptor(TypedDict):
     """`mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode."""
     id: WidgetId
@@ -1546,6 +1550,7 @@ LayoutLeafNode = TypedDict(
         "tree": NotRequired[TreeViewDescriptor],
         "data_table": NotRequired[DataTableDescriptor],
         "tab_bar": NotRequired[TabBarDescriptor],
+        "scripted_widget": NotRequired[ScriptedWidgetDescriptor],
         "status_bar": NotRequired[StatusBarDescriptor],
         "progress": NotRequired[ProgressBarDescriptor],
         "spinner": NotRequired[SpinnerDescriptor],

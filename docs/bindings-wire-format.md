@@ -464,6 +464,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`CheckboxDescriptor`](#wire-checkboxdescriptor)
 - [`SliderDescriptor`](#wire-sliderdescriptor)
 - [`SelectDescriptor`](#wire-selectdescriptor)
+- [`ScriptedWidgetDescriptor`](#wire-scriptedwidgetdescriptor)
 - [`PasswordDescriptor`](#wire-passworddescriptor)
 - [`TextAreaDescriptor`](#wire-textareadescriptor)
 - [`MarkdownDescriptor`](#wire-markdowndescriptor)
@@ -1864,6 +1865,15 @@ Alias for `"Contain" | "Cover" | "Fill" | "None"`.
 | `selected_idx` | `number` | no |  |
 | `disabled` | `boolean` | no |  |
 | `focused` | `boolean` | no |  |
+
+<a id="wire-scriptedwidgetdescriptor"></a>
+#### `ScriptedWidgetDescriptor`
+
+A script-defined widget's per-frame props, interpreted entirely by whatever `ScriptWidget` a binding registered against this leaf's own id -- see `quadraui_binding_core::scripted`'s own doc.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `props` | `unknown` | no |  |
 
 <a id="wire-passworddescriptor"></a>
 #### `PasswordDescriptor`
@@ -3282,6 +3292,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `tree` | `TreeViewDescriptor` | no |  |
 | `data_table` | `DataTableDescriptor` | no |  |
 | `tab_bar` | `TabBarDescriptor` | no |  |
+| `scripted_widget` | `ScriptedWidgetDescriptor` | no |  |
 | `status_bar` | `StatusBarDescriptor` | no |  |
 | `progress` | `ProgressBarDescriptor` | no |  |
 | `spinner` | `SpinnerDescriptor` | no |  |
