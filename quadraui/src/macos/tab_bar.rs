@@ -166,6 +166,7 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         &mut surface,
         theme,
         style,
+        y_offset as f32,
     );
 
     hits
@@ -1081,6 +1082,58 @@ mod tests {
             (r, g, b),
             (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
             "tab bar background should start at rect.x, not the window origin",
+        );
+    }
+
+    /// [`tab_bar_paints_at_rect_x_not_at_window_origin`]'s y-axis twin: a
+    /// strip below a toolbar (`rect.y != 0`) must paint its background at
+    /// `rect.y`, not at the window's own top edge — `draw_tab_bar_icons_with_glyphs`
+    /// bakes `y_offset` into every `Rect` in the layout rather than
+    /// translating the CGContext's CTM (see `shift_layout_y`'s doc), so
+    /// the shared painter's own `(0, 0)`-anchored background fill needs
+    /// that same offset passed in separately as `bar_y`.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
+    fn tab_bar_background_paints_at_rect_y_not_at_window_origin() {
+        const TOOLBAR_H: f32 = 32.0;
+        let canvas_h = TOOLBAR_H as u32 + H;
+        let surface = BitmapSurface::new(W, canvas_h);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let bar = TabBar {
+            id: WidgetId::new("empty"),
+            tabs: vec![],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let mut backend = backend_with_test_fonts();
+        backend.begin_frame(Viewport::new(W as f32, canvas_h as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let _ = b.draw_tab_bar(QRect::new(0.0, TOOLBAR_H, W as f32, H as f32), &bar, None);
+        });
+        backend.end_frame();
+
+        let (_, _, _, a) = surface.pixel(W / 2, 4);
+        assert_eq!(
+            a, 0,
+            "the row above the strip (toolbar area, y=4) must stay untouched by the tab bar fill",
+        );
+
+        let theme = Theme::default();
+        let (r, g, b, _) = surface.pixel(W / 2, TOOLBAR_H as u32 + 4);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "tab bar background should start at rect.y, not the window origin",
+        );
+        let (r, g, b, _) = surface.pixel(W / 2, canvas_h - 1);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "tab bar background should cover down to the bottom of the strip",
         );
     }
 
