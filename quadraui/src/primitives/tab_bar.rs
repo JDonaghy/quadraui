@@ -913,17 +913,24 @@ impl TabBarGlyphs {
 ///
 /// # Stability
 ///
-/// This is the stable return type of `draw_tab_bar` / `tab_bar_layout`
-/// and their icon/chrome twins, not a transitional shape scheduled for
-/// removal. [`TabBarLayout`] — f32, `Rect`/[`TabBarHit`]-based, unit
-/// agnostic — is a parallel addition the `*_layout`-suffixed methods and
-/// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] return, not
-/// a migration target for this one: `vimcode` depends directly on this
-/// struct's exact `f64` field shapes, and two of the four in-tree
-/// rasterisers construct it without ever computing an intermediate
-/// `TabBarLayout`. Both return types coexist; a caller picks whichever
+/// This is the return type of `draw_tab_bar` / `tab_bar_layout` and their
+/// icon/chrome twins, alongside [`TabBarLayout`] — f32,
+/// `Rect`/[`TabBarHit`]-based, unit agnostic — which the `*_layout`-suffixed
+/// methods and [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]
+/// return instead. Both return types coexist; a caller picks whichever
 /// coordinate convention and unit fits — target-surface-absolute `f64`
 /// pairs here, bar-relative `Rect`s there.
+///
+/// Removing this struct in favour of `TabBarLayout` alone needs two things
+/// neither in-repo crate code can do on its own: the sealed acceptance
+/// slice at `tests/acceptance/ms-11/wide_tab_labels.rs` calls `draw_tab_bar`
+/// and reads `.slot_positions` straight off the return value, and a
+/// `Backend` trait signature change can't touch that file; and the
+/// `coord-tui` consumer calls `Backend::tab_bar_layout` /
+/// `tab_bar_layout_with_chrome` and reads `.slot_positions` /
+/// `.close_bounds` / `.correct_scroll_offset` directly in several of its
+/// own click-dispatch paths, so dropping the type would stop that consumer
+/// from compiling against this crate.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TabBarHits {
     /// `[(start_x, end_x)]` per tab index. Tabs before
