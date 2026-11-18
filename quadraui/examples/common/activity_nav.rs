@@ -31,8 +31,9 @@
 //! | Esc / h / ← | Return focus to editor |
 
 use quadraui::{
-    ActivityBar, ActivityBarEvent, ActivityItem, AppLogic, Backend, Color, InteractionState, Key,
-    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    ActivityBar, ActivityBarEvent, ActivityBarStyle, ActivityItem, AppLogic, Backend, Color,
+    InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
+    WidgetId,
 };
 
 /// Item descriptor for the demo bar.
@@ -217,7 +218,12 @@ impl AppLogic for ActivityNavApp {
         // Activity bar: left strip, full height minus status bar.
         let bar_w = lh * 3.0;
         let bar_rect = Rect::new(0.0, 0.0, bar_w, vp.height - lh);
-        let _ = backend.draw_activity_bar(bar_rect, &self.bar(), None);
+        let _ = backend.draw_activity_bar_with_style(
+            bar_rect,
+            &self.bar(),
+            None,
+            &ActivityBarStyle::default(),
+        );
 
         // "Editor" content area (placeholder).
         let editor_rect = Rect::new(bar_w, 0.0, vp.width - bar_w, vp.height - lh);

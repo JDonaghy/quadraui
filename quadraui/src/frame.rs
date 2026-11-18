@@ -739,7 +739,12 @@ impl ScreenLayout {
                     backend.draw_status_bar_interactive(*rect, bar, &interaction);
                 }
                 Surface::ActivityBar { rect, bar, hovered } => {
-                    backend.draw_activity_bar(*rect, bar, *hovered);
+                    backend.draw_activity_bar_with_style(
+                        *rect,
+                        bar,
+                        *hovered,
+                        &crate::ActivityBarStyle::default(),
+                    );
                 }
                 Surface::CommandLine { rect, cmd } => {
                     backend.draw_command_line(*rect, cmd);
@@ -1154,7 +1159,12 @@ impl OwnedContent {
                 backend.draw_status_bar_interactive(rect, bar, &interaction);
             }
             OwnedContent::ActivityBar(bar) => {
-                backend.draw_activity_bar(rect, bar, None);
+                backend.draw_activity_bar_with_style(
+                    rect,
+                    bar,
+                    None,
+                    &crate::ActivityBarStyle::default(),
+                );
             }
             OwnedContent::CommandLine(cmd) => backend.draw_command_line(rect, cmd),
             OwnedContent::Terminal(term) => backend.draw_terminal(rect, term),

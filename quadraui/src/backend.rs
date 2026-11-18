@@ -3065,6 +3065,19 @@ pub trait Backend: sealed::Sealed {
     /// / `hit_regions_do_not_move_when_the_bar_does`, plus the
     /// `activity_click_*_parity` / `activity_hover_*_parity` cross-backend
     /// tests in `tests/cross_backend_parity.rs`.
+    ///
+    /// # Deprecated
+    ///
+    /// Superseded by [`Self::draw_activity_bar_with_style`], which takes
+    /// the same arguments plus an [`ActivityBarStyle`] request —
+    /// `&ActivityBarStyle::default()` reproduces this method's exact
+    /// behaviour. Kept as a required (non-default) method because every
+    /// in-tree backend still implements it directly; callers migrate by
+    /// passing a default style to the new method.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use `draw_activity_bar_with_style` (pass `&ActivityBarStyle::default()` for identical behaviour) — issue #2693"
+    )]
     fn draw_activity_bar(
         &mut self,
         rect: Rect,
@@ -3099,6 +3112,8 @@ pub trait Backend: sealed::Sealed {
         style: &ActivityBarStyle,
     ) -> Vec<ActivityBarRowHit> {
         let _ = style;
+        #[allow(deprecated)]
+        // `draw_activity_bar` is `#[deprecated]`; this default is its own plumbing.
         self.draw_activity_bar(rect, bar, hovered_idx)
     }
 
@@ -3234,6 +3249,21 @@ pub trait Backend: sealed::Sealed {
     /// the same **bar-relative** spans as [`Self::draw_activity_bar`] —
     /// `y_start` / `y_end` measured from `rect.y`, first row at `0.0`.
     /// See that method for the full contract.
+    ///
+    /// # Deprecated
+    ///
+    /// [`ActivityBarStyle`] never changes row geometry (only paint
+    /// colour/icon size), so [`Self::draw_activity_bar_with_style`]'s
+    /// returned `Vec<ActivityBarRowHit>` already *is* this method's
+    /// result — a host that paints every frame (every in-tree caller
+    /// does) should cache that return value for click/hover dispatch
+    /// instead of querying this method separately. Kept as a required
+    /// (non-default) method for the "no live frame yet" fallback a few
+    /// backends still need before their first paint.
+    #[deprecated(
+        since = "0.11.0",
+        note = "cache the `Vec<ActivityBarRowHit>` `draw_activity_bar_with_style` already returns instead of querying layout separately — issue #2693"
+    )]
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit>;
 
     /// Draw a terminal cell grid. No hit-region data is returned;

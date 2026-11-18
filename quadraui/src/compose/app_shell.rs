@@ -1153,8 +1153,8 @@ impl AppShell {
     ///
     /// Per-item zones (one per activity-bar entry, keyed by that panel's
     /// own `WidgetId`) are registered separately in [`Self::render`],
-    /// right after `draw_activity_bar` returns the hit list — this
-    /// function only covers the coarser, one-per-frame chrome regions.
+    /// right after `draw_activity_bar_with_style` returns the hit list —
+    /// this function only covers the coarser, one-per-frame chrome regions.
     fn register_chrome_zones(backend: &mut dyn Backend, layout: &AppShellLayout) {
         backend.register_zone(WidgetId::new("app-shell:window"), layout.window_bounds);
         backend.register_zone(
@@ -1195,10 +1195,11 @@ impl AppShell {
         Self::register_chrome_zones(backend, &layout);
 
         let bar = self.build_activity_bar();
-        let hits = backend.draw_activity_bar(
+        let hits = backend.draw_activity_bar_with_style(
             layout.activity_bar_bounds,
             &bar,
             self.activity_keyboard.hovered_idx(),
+            &crate::ActivityBarStyle::default(),
         );
         // Register each activity-bar item's own zone (its real `WidgetId`,
         // e.g. `panel:git`) *before* `hits` moves into the hover-hit cache

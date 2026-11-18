@@ -3959,6 +3959,8 @@ impl Backend for WinBackend {
         // `hovered_idx` only affects painting, so it's unused on this
         // path.
         let _ = hovered_idx;
+        #[allow(deprecated)]
+        // `activity_bar_layout` is `#[deprecated]`; this fallback is its own plumbing.
         self.activity_bar_layout(rect, bar)
     }
 
@@ -8486,6 +8488,8 @@ mod tests {
         // proves the tracking half of the contract everywhere, while
         // `win::testing`'s headless-surface driver tests prove the paint
         // half for real on Windows.
+        #[allow(deprecated)]
+        // regression-tests `draw_activity_bar` itself, not its `_with_style` twin.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             b.draw_activity_bar(Rect::new(0.0, 0.0, 40.0, 200.0), &bar, None);
         }));
@@ -9200,7 +9204,12 @@ mod tests {
         };
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_activity_bar(Rect::new(0.0, 0.0, W as f32, H as f32), &bar, None);
+        backend.draw_activity_bar_with_style(
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            &bar,
+            None,
+            &crate::ActivityBarStyle::default(),
+        );
         backend.end_frame();
 
         let px = surface.pixel_at(W / 2, H / 2);
@@ -12161,6 +12170,8 @@ mod tests {
         };
         let diff =
             chrome_font_diff_pixel_count(60, 200, "Segoe UI 12", "Courier New 12", |backend| {
+                #[allow(deprecated)]
+                // regression-tests `draw_activity_bar` itself, not its `_with_style` twin.
                 let _ = backend.draw_activity_bar(Rect::new(0.0, 0.0, 60.0, 200.0), &bar, None);
             });
         assert!(
@@ -13259,7 +13270,12 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
         };
-        let _ = backend.draw_activity_bar(rect, &activity_bar, None);
+        let _ = backend.draw_activity_bar_with_style(
+            rect,
+            &activity_bar,
+            None,
+            &crate::ActivityBarStyle::default(),
+        );
 
         // `TabBarHits`/`TabBarLayout` category (nominal-measurer
         // fallback).

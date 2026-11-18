@@ -3422,6 +3422,8 @@ impl Backend for MacBackend {
         )
         .0
     }
+    /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
+    /// that method for the real painting logic.
     fn draw_activity_bar(
         &mut self,
         rect: Rect,
@@ -10837,15 +10839,13 @@ mod tests {
         assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&other));
     }
 
-    /// Regression test for `draw_activity_bar` — the mandatory,
-    /// non-default `Backend` method (see its own comment for why
-    /// `draw_activity_bar_with_style`, which already had equivalent review
-    /// attention, doesn't cover this path: `AppShell::render` and
-    /// `ScreenLayout::draw`'s `Surface::ActivityBar` arm both call this
-    /// method directly, never the styled one).
+    /// Regression test for `draw_activity_bar_with_style` — the method
+    /// every real paint path routes through (`draw_activity_bar` is a
+    /// deprecated shim over it; `AppShell::render` and `ScreenLayout::draw`'s
+    /// `Surface::ActivityBar` arm both call the styled method directly).
     ///
-    /// Verifies that `draw_activity_bar` paints through `chrome_font`,
-    /// never `current_font`/the editor font. Icon extent is pinned to
+    /// Verifies that `draw_activity_bar_with_style` paints through
+    /// `chrome_font`, never `current_font`/the editor font. Icon extent is pinned to
     /// `ActivityBarStyle::resolved_icon_size_px()` regardless of font point
     /// size (see `macos::activity_bar` module doc). This test uses three
     /// probes:
@@ -10855,7 +10855,7 @@ mod tests {
     ///   glyph;
     /// - icon extent is independent of `ui_font`'s size.
     #[test]
-    fn draw_activity_bar_uses_ui_font_not_editor_font() {
+    fn draw_activity_bar_with_style_uses_ui_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
 
         const W: u32 = 200;
@@ -10902,7 +10902,12 @@ mod tests {
                 is_keyboard_focused: false,
             };
             b.enter_frame_scope(surface.context_ptr(), |backend| {
-                backend.draw_activity_bar(Rect::new(0.0, 0.0, W as f32, H as f32), &bar, None);
+                backend.draw_activity_bar_with_style(
+                    Rect::new(0.0, 0.0, W as f32, H as f32),
+                    &bar,
+                    None,
+                    &crate::ActivityBarStyle::default(),
+                );
             });
             b.end_frame();
 
