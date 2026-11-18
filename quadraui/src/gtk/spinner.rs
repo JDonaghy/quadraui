@@ -45,7 +45,9 @@ pub fn draw_spinner(
     let mut surface = super::surface::CairoSurface {
         cr,
         layout: Some(pango_layout),
-        translucent_fill: true,
+        // Inert: `native_surface_paint::paint` only issues a text run for
+        // `Spinner`, never a fill.
+        translucent_fill: false,
     };
     native_surface_paint::paint(spinner, &mut surface, theme, x as f32, y as f32)
 }
@@ -97,5 +99,29 @@ mod tests {
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);
+    }
+
+    /// `draw_spinner` and `gtk_spinner_layout` must agree: the layout
+    /// `draw_spinner` returns from actually painting has to match the
+    /// layout `gtk_spinner_layout` reports without painting, at a
+    /// non-zero origin. This is the no-paint twin contract
+    /// `macos::spinner` documents for its own pair.
+    #[test]
+    fn draw_spinner_agrees_with_gtk_spinner_layout() {
+        let surface = ImageSurface::create(Format::ARgb32, 200, 200).expect("create ImageSurface");
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let theme = Theme::default();
+        let spinner = Spinner {
+            id: WidgetId::new("spin"),
+            label: "Indexing".into(),
+            frame_idx: 2,
+            accent: None,
+        };
+
+        let measured = gtk_spinner_layout(&spinner, &pango_layout, 7.0, 13.0);
+        let painted = draw_spinner(&cr, &pango_layout, 7.0, 13.0, &spinner, &theme);
+
+        assert_eq!(measured, painted);
     }
 }
