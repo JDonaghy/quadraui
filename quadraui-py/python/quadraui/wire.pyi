@@ -950,6 +950,13 @@ class TerminalDescriptor(TypedDict):
 
 CanvasFontRole = Literal['Chrome', 'Editor']
 
+CanvasCursor = Literal['Default', 'Text', 'Pointer', 'Grab', 'Grabbing', 'Crosshair', 'Wait', 'NotAllowed', 'ColResize', 'RowResize']
+
+class CanvasRegion(TypedDict):
+    id: WidgetId
+    rect: Rect
+    cursor: NotRequired[CanvasCursor]
+
 class _DrawOpRect(TypedDict):
     rect: Rect
     color: Color
@@ -1064,6 +1071,8 @@ DrawOp = Union[Literal['PopClip'], _DrawOpDict]
 class CanvasDescriptor(TypedDict):
     id: WidgetId
     ops: List[DrawOp]
+    regions: NotRequired[List[CanvasRegion]]
+    focusable: NotRequired[bool]
 
 DiagnosticSeverity = Literal['Error', 'Warning', 'Information', 'Hint']
 

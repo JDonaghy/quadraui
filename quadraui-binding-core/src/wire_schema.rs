@@ -1740,6 +1740,29 @@ pub fn schema() -> Vec<DefJson> {
         ],
     ));
     let canvas_font_role = b.define(alias("CanvasFontRole", lit(&["Chrome", "Editor"])));
+    let canvas_cursor = b.define(alias(
+        "CanvasCursor",
+        lit(&[
+            "Default",
+            "Text",
+            "Pointer",
+            "Grab",
+            "Grabbing",
+            "Crosshair",
+            "Wait",
+            "NotAllowed",
+            "ColResize",
+            "RowResize",
+        ]),
+    ));
+    let canvas_region = b.define(obj(
+        "CanvasRegion",
+        vec![
+            field("id", re("WidgetId")),
+            field("rect", rect.clone()),
+            field_opt("cursor", canvas_cursor),
+        ],
+    ));
     let draw_op_rect = b.define(obj(
         "_DrawOpRect",
         vec![field("rect", rect.clone()), field("color", color.clone())],
@@ -1881,7 +1904,12 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let canvas_descriptor = b.define(obj(
         "CanvasDescriptor",
-        vec![field("id", re("WidgetId")), field("ops", list(draw_op))],
+        vec![
+            field("id", re("WidgetId")),
+            field("ops", list(draw_op)),
+            field_opt("regions", list(canvas_region)),
+            field_opt("focusable", bool_()),
+        ],
     ));
     let diagnostic_severity = b.define(alias(
         "DiagnosticSeverity",
@@ -3448,7 +3476,7 @@ mod coverage {
         ValidationState, Viewport, Weekday,
     };
 
-    use quadraui::primitives::canvas::CanvasFontRole;
+    use quadraui::primitives::canvas::{CanvasCursor, CanvasFontRole, CanvasRegion};
 
     use crate::hit::HitDetail;
     use crate::layout::{LayoutNode, LeafDescriptor};
@@ -4763,6 +4791,27 @@ mod coverage {
             CanvasFontRole::Editor => {}
         }
     }
+    fn assert_canvas_cursor(c: CanvasCursor) {
+        match c {
+            CanvasCursor::Default => {}
+            CanvasCursor::Text => {}
+            CanvasCursor::Pointer => {}
+            CanvasCursor::Grab => {}
+            CanvasCursor::Grabbing => {}
+            CanvasCursor::Crosshair => {}
+            CanvasCursor::Wait => {}
+            CanvasCursor::NotAllowed => {}
+            CanvasCursor::ColResize => {}
+            CanvasCursor::RowResize => {}
+            // `CanvasCursor` is `#[non_exhaustive]` -- see
+            // `assert_tab_bar_event`'s matching comment.
+            _ => {}
+        }
+    }
+    assert_fields!(
+        assert_canvas_region_fields,
+        CanvasRegion { id, rect, cursor }
+    );
     fn assert_draw_op(op: DrawOp) {
         match op {
             DrawOp::Rect { rect: _, color: _ } => {}

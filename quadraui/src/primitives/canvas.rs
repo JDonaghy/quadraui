@@ -171,7 +171,15 @@ pub struct CanvasRegion {
 /// sub-rect of one already-placed `Canvas`) has no analogue for.
 /// [`Self::to_pointer_shape`] is the only place this maps back to the
 /// real enum.
+///
+/// `#[non_exhaustive]`: [`crate::PointerShape`] is itself
+/// `#[non_exhaustive]` so a new shape stays additive there; mirroring
+/// that here means a later `PointerShape` variant can gain a
+/// `CanvasCursor` counterpart without breaking a downstream exhaustive
+/// `match` on this enum. Per `PRIMITIVE_RULES.md` rule 8, a downstream
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum CanvasCursor {
     Default,
     Text,
@@ -630,12 +638,21 @@ impl CanvasLayout {
     /// Inside/Outside answer when no region matches (including when
     /// `canvas.regions` is empty).
     ///
+    /// `canvas` must be the same descriptor `self` was laid out from
+    /// ([`Canvas::layout`]) — this method has no way to check that, so a
+    /// mismatched `canvas` silently returns a region/bounds answer for
+    /// the wrong widget.
+    ///
     /// Coordinate frame: **ABSOLUTE** — same as [`Self::hit_test`].
     ///
     /// Regions are tested last-declared-first, so an overlapping region
     /// later in [`Canvas::regions`] — painted visually on top, the same
     /// "later ops paint over earlier ones" rule [`Canvas::ops`] follows —
-    /// also wins the hit.
+    /// also wins the hit. A region rect that extends past the canvas's
+    /// own bounds is silently clipped to them: the leading
+    /// `Self::hit_test`-outside check returns `Outside` before any region
+    /// is tested, so no point outside the canvas can ever resolve to a
+    /// region, even one whose declared rect would otherwise cover it.
     pub fn region_hit_test(&self, canvas: &Canvas, x: f32, y: f32) -> CanvasHit {
         if self.hit_test(x, y) == CanvasHit::Outside {
             return CanvasHit::Outside;

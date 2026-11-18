@@ -1023,6 +1023,14 @@ export interface TerminalDescriptor {
 
 export type CanvasFontRole = "Chrome" | "Editor";
 
+export type CanvasCursor = "Default" | "Text" | "Pointer" | "Grab" | "Grabbing" | "Crosshair" | "Wait" | "NotAllowed" | "ColResize" | "RowResize";
+
+export interface CanvasRegion {
+  id: WidgetId;
+  rect: Rect;
+  cursor?: CanvasCursor;
+}
+
 export interface _DrawOpRect {
   rect: Rect;
   color: Color;
@@ -1125,6 +1133,8 @@ export type DrawOp = "PopClip" | _DrawOpDict;
 export interface CanvasDescriptor {
   id: WidgetId;
   ops: DrawOp[];
+  regions?: CanvasRegion[];
+  focusable?: boolean;
 }
 
 export type DiagnosticSeverity = "Error" | "Warning" | "Information" | "Hint";

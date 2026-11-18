@@ -504,6 +504,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`TerminalScrollbarDescriptor`](#wire-terminalscrollbardescriptor)
 - [`TerminalDescriptor`](#wire-terminaldescriptor)
 - [`CanvasFontRole`](#wire-canvasfontrole)
+- [`CanvasCursor`](#wire-canvascursor)
+- [`CanvasRegion`](#wire-canvasregion)
 - [`_DrawOpRect`](#wire-_drawoprect)
 - [`_DrawOpRoundedRect`](#wire-_drawoproundedrect)
 - [`_DrawOpLine`](#wire-_drawopline)
@@ -2241,6 +2243,20 @@ Alias for `"Block" | "Underline" | "Bar"`.
 
 Alias for `"Chrome" | "Editor"`.
 
+<a id="wire-canvascursor"></a>
+#### `CanvasCursor`
+
+Alias for `"Default" | "Text" | "Pointer" | "Grab" | "Grabbing" | "Crosshair" | "Wait" | "NotAllowed" | "ColResize" | "RowResize"`.
+
+<a id="wire-canvasregion"></a>
+#### `CanvasRegion`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `rect` | `Rect` | yes |  |
+| `cursor` | `CanvasCursor` | no |  |
+
 <a id="wire-_drawoprect"></a>
 #### `_DrawOpRect`
 
@@ -2413,6 +2429,8 @@ Alias for `"PopClip" | _DrawOpDict`.
 | --- | --- | --- | --- |
 | `id` | `WidgetId` | yes |  |
 | `ops` | `DrawOp[]` | yes |  |
+| `regions` | `CanvasRegion[]` | no |  |
+| `focusable` | `boolean` | no |  |
 
 <a id="wire-diagnosticseverity"></a>
 #### `DiagnosticSeverity`
