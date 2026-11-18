@@ -745,7 +745,7 @@ pub fn schema() -> Vec<DefJson> {
         "DataTableDescriptor",
         vec![
             field("id", re("WidgetId")),
-            field("columns", list(column_descriptor)),
+            field("columns", list(column_descriptor.clone())),
             field("rows", list(data_row_descriptor.clone())),
             field_opt("selected_idx", nullable(int_())),
             field_opt("scroll_offset", int_()),
@@ -774,6 +774,39 @@ pub fn schema() -> Vec<DefJson> {
         vec![
             field("table", data_table_descriptor.clone()),
             field("tree", list(tree_table_node_descriptor)),
+        ],
+    ));
+
+    // `TreeTableControllerNodeDescriptor` is self-recursive (`children`
+    // nests more of the same shape) -- `re()` is a plain by-name reference
+    // (see `TyJson::Ref`'s own doc), so naming it before `b.define` has
+    // registered it, inside its own field list, is fine: the JSON dump
+    // records the name, and `gen_wire_types.py` only resolves it once every
+    // definition has been collected.
+    let tree_table_controller_node_descriptor = b.define(obj(
+        "TreeTableControllerNodeDescriptor",
+        vec![
+            field("id", str_()),
+            field_opt("cells", list(styled_text.clone())),
+            field_opt("icon", nullable(icon.clone())),
+            field_opt("has_children", bool_()),
+            field_opt(
+                "children",
+                nullable(list(re("TreeTableControllerNodeDescriptor"))),
+            ),
+        ],
+    ));
+    let tree_table_controller_descriptor = b.define(obj(
+        "TreeTableControllerDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("columns", list(column_descriptor.clone())),
+            field_opt("nodes", list(tree_table_controller_node_descriptor)),
+            field_opt("selected_id", nullable(str_())),
+            field_opt("has_focus", bool_()),
+            field_opt("show_scrollbar", bool_()),
+            field_opt("bordered", bool_()),
+            field_opt("folders_first", bool_()),
         ],
     ));
 
@@ -2743,6 +2776,7 @@ pub fn schema() -> Vec<DefJson> {
             "textarea" => textarea_descriptor.clone(),
             "markdown" => markdown_descriptor.clone(),
             "tree_table" => tree_table_descriptor.clone(),
+            "tree_table_controller" => tree_table_controller_descriptor.clone(),
             "icon_grid" => icon_grid_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };

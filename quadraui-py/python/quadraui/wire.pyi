@@ -282,6 +282,23 @@ class TreeTableDescriptor(TypedDict):
     table: DataTableDescriptor
     tree: List[TreeTableNodeDescriptor]
 
+class TreeTableControllerNodeDescriptor(TypedDict):
+    id: str
+    cells: NotRequired[List[StyledText]]
+    icon: NotRequired[Optional[Icon]]
+    has_children: NotRequired[bool]
+    children: NotRequired[Optional[List[TreeTableControllerNodeDescriptor]]]
+
+class TreeTableControllerDescriptor(TypedDict):
+    id: WidgetId
+    columns: NotRequired[List[ColumnDescriptor]]
+    nodes: NotRequired[List[TreeTableControllerNodeDescriptor]]
+    selected_id: NotRequired[Optional[str]]
+    has_focus: NotRequired[bool]
+    show_scrollbar: NotRequired[bool]
+    bordered: NotRequired[bool]
+    folders_first: NotRequired[bool]
+
 class TabItemDescriptor(TypedDict):
     """The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`."""
     label: str
@@ -1623,6 +1640,7 @@ LayoutLeafNode = TypedDict(
         "multi_section_view": NotRequired[MultiSectionViewDescriptor],
         "diff_view": NotRequired[DiffViewDescriptor],
         "tree_table": NotRequired[TreeTableDescriptor],
+        "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
         "activity_bar": NotRequired[ActivityBarDescriptor],
         "toolbar": NotRequired[ToolbarDescriptor],
         "menu_bar": NotRequired[MenuBarDescriptor],
@@ -1683,6 +1701,7 @@ class RenderFrameDict(TypedDict):
     multi_section_view: NotRequired[Optional[MultiSectionViewDescriptor]]
     diff_view: NotRequired[Optional[DiffViewDescriptor]]
     tree_table: NotRequired[Optional[TreeTableDescriptor]]
+    tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
     activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
