@@ -5,11 +5,9 @@
 //! here-adjacent — it needs Pango's own text measurement, including the
 //! italic/icon-font swaps a single `&dyn TextMeasure` call can't express.
 //! Content painting (background, chip, label, icon, close/dirty glyph,
-//! focus ring, scroll chevrons) is the shared
+//! bracket framing, focus ring, scroll chevrons) is the shared
 //! [`crate::primitives::tab_bar::native_surface_paint::paint`] — see that
-//! fn's module doc for the per-backend drift it resolved and what it does
-//! not yet cover ([`TabFrame::Brackets`] framing paints nothing here, same
-//! as before this module stopped owning its own paint loop).
+//! fn's own doc for the per-backend drift it resolved.
 //!
 //! # Focus-visible ring
 //!
@@ -367,8 +365,7 @@ pub fn draw_tab_bar_with_chrome_and_glyphs(
 /// [`draw_tab_bar_icons`] plus an explicit [`TabChrome`] request.
 ///
 /// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar_icons`]
-/// pixel for pixel. `TabFrame::Brackets` framing is not painted — see
-/// this module's own doc.
+/// pixel for pixel.
 #[allow(clippy::too_many_arguments)]
 #[allow(deprecated)]
 pub fn draw_tab_bar_icons_with_chrome(
@@ -537,6 +534,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         icons,
         glyphs,
         nerd_fonts_enabled,
+        chrome,
         state,
         &mut surface,
         theme,
@@ -900,8 +898,9 @@ mod tests {
     /// and `]`) and shift its close-button hit region right of the
     /// leading bracket — while `close_bounds`' own *width* stays exactly
     /// the glyph's, so a click still resolves to `TabClose`, not `Tab`.
-    /// Geometry only — the bracket glyphs themselves are unpainted here
-    /// (see this module's own doc).
+    /// Geometry only — see
+    /// `bracket_chrome_paints_ink_inside_the_active_chip_for_an_empty_label`
+    /// below for the paint assertion.
     #[test]
     #[allow(deprecated)]
     fn bracket_frame_widens_active_tab_and_close_bounds_excludes_the_bracket() {
@@ -1009,6 +1008,85 @@ mod tests {
 
         assert_eq!(chrome_hits.close_bounds.len(), 1);
         assert!(chrome_hits.close_bounds[0].is_some());
+    }
+
+    /// With an empty, non-closable label, the only content a
+    /// bracket-framed active tab can possibly paint is the `[`/`]`
+    /// glyphs themselves. Asserts real Cairo ink (the white
+    /// `tab_active_fg` glyph colour) lands somewhere inside the dark
+    /// active chip fill — proving [`native_surface_paint::paint`]'s
+    /// bracket-framing branch actually rasterises through this
+    /// backend's `TabBarSurface`, not just that layout reserves room
+    /// for it.
+    #[test]
+    #[allow(deprecated)]
+    fn bracket_chrome_paints_ink_inside_the_active_chip_for_an_empty_label() {
+        use crate::primitives::tab_bar::{TabChrome, TabFrame};
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: String::new(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: false,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        };
+
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        let theme = make_theme();
+        let chrome = TabChrome::new(TabFrame::Brackets);
+        let layout;
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let (_, l) = draw_tab_bar_with_chrome(
+                &cr,
+                &pango_layout,
+                0.0,
+                W as f64,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &chrome,
+                &theme,
+                &Style::default(),
+                None,
+            );
+            layout = l;
+        }
+        let mut surface = surface;
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let vt = &layout.visible_tabs[0];
+        let chip_top = pixel::TAB_CHIP_INSET_Y as i32;
+        let chip_bottom = ROW_H - pixel::TAB_CHIP_INSET_Y as i32 - 1;
+        let fg = theme.tab_active_fg;
+        let found_ink =
+            (vt.bounds.x as i32..vt.bounds.x as i32 + vt.bounds.width as i32).any(|x| {
+                (chip_top..=chip_bottom).any(|y| {
+                    let (r, g, b) = pixel(&data, stride, x, y);
+                    let close = |a: u8, b: u8| (a as i32 - b as i32).abs() <= 10;
+                    close(r, fg.r) && close(g, fg.g) && close(b, fg.b)
+                })
+            });
+        assert!(
+            found_ink,
+            "a bracket-framed tab with an empty label and no close button must \
+             still paint its '[' / ']' glyphs in tab_active_fg somewhere inside \
+             the active chip"
+        );
     }
 
     /// The active-tab chip's fill height must equal

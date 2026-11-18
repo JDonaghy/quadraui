@@ -26,11 +26,12 @@
 //! layout-in / paint-out split [`crate::primitives::toolbar::native_surface_paint::paint`]
 //! takes.
 //!
-//! **No backend calls it yet.** `gtk::tab_bar`, `macos::tab_bar` and
-//! `win::tab_bar` each still carry their own full Cairo / Core Graphics /
-//! Direct2D paint loop, and the three copies have already drifted:
+//! **`gtk::tab_bar` paints through it; `macos::tab_bar` and `win::tab_bar`
+//! still carry their own full Core Graphics / Direct2D paint loop**, and
+//! the two remaining copies have already drifted from what this module
+//! paints:
 //!
-//! | Behaviour | GTK | macOS | Windows |
+//! | Behaviour | GTK (through this module) | macOS | Windows |
 //! |---|---|---|---|
 //! | Active-tab background | rounded, y-inset chip (radius 4, 4 px inset) | rounded, y-inset chip (radius 4, 4 px inset) | full-height square rect |
 //! | Active-tab top accent | 1 px, on the chip's inset top edge | 1 px, on the chip's inset top edge | 2 px, on the strip's top edge |
@@ -38,9 +39,8 @@
 //! | Preview-tab label | italic + `tab_preview_*_fg` | upright + `tab_preview_*_fg` | upright, **`tab_preview_*_fg` ignored** |
 //! | [`TabFrame::Brackets`] framing | painted | **not painted** | **not painted** |
 //!
-//! Migrating each backend onto [`native_surface_paint::paint`] is a
-//! separate, per-backend issue — this module only adds the shared
-//! painter itself.
+//! Migrating `macos::tab_bar`/`win::tab_bar` onto
+//! [`native_surface_paint::paint`] is a separate, per-backend issue.
 //!
 //! ## Why each backend still carries its own loop
 //!
@@ -60,9 +60,9 @@
 //!
 //! Unifying the two backends' close-button **hit** geometry so macOS also
 //! resolves through `pixel_tab_bar_layout` remains a separate effort from
-//! wiring each backend onto this paint module — see
-//! [`native_surface_paint`] for what the shared painter does and does
-//! not yet cover (no [`TabFrame::Brackets`] framing).
+//! wiring it onto this paint module — see [`native_surface_paint`] for
+//! what the shared painter paints, including [`TabFrame::Brackets`]
+//! framing.
 //!
 //! # Backend contract
 //!
@@ -1171,7 +1171,10 @@ pub enum TabBarEvent {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{fit_tab_label, tab_icon_at, TabBar, TabBarGlyphs, TabBarLayout, TabIcon};
+    use super::{
+        fit_tab_label, tab_icon_at, TabBar, TabBarGlyphs, TabBarLayout, TabChrome, TabFrame,
+        TabIcon,
+    };
     use crate::backend::PressableVisual;
     use crate::event::{Point, Rect};
     use crate::paint_surface::{PaintSurface, PathVerb};
@@ -1298,8 +1301,13 @@ pub(crate) mod native_surface_paint {
     /// `&[]` is always legal. `glyphs` overrides the close/dirty glyph
     /// (see [`TabBarGlyphs`]); `nerd_fonts_enabled` resolves which half
     /// of an override [`crate::types::Icon`] paints, mirroring
-    /// [`crate::Backend::nerd_fonts_enabled`]. `TabFrame::Brackets`
-    /// framing is not yet painted here — see the module doc.
+    /// [`crate::Backend::nerd_fonts_enabled`]. `chrome.active_frame` ==
+    /// [`TabFrame::Brackets`] wraps the active tab's label (and close/dirty
+    /// glyph, when present) in `[` … `]`, painted in the tab's own `fg`
+    /// colour; [`TabBarLayout`]'s own `vt.bounds`/`close_bounds` already
+    /// reserve the bracket glyphs' width (see
+    /// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]'s doc),
+    /// so this function only has to paint them, not re-measure the slot.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         bar: &TabBar,
@@ -1307,6 +1315,7 @@ pub(crate) mod native_surface_paint {
         icons: &[Option<TabIcon>],
         glyphs: Option<&TabBarGlyphs>,
         nerd_fonts_enabled: bool,
+        chrome: &TabChrome,
         state: TabBarPaintState,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
@@ -1315,6 +1324,8 @@ pub(crate) mod native_surface_paint {
         if layout.bar_width <= 0.0 || layout.bar_height <= 0.0 {
             return;
         }
+
+        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
 
         surface.surface_fill_rect(
             Rect::new(0.0, 0.0, layout.bar_width, layout.bar_height),
@@ -1395,6 +1406,23 @@ pub(crate) mod native_surface_paint {
             };
             let mut cursor_x = bounds.x + tab_pad;
 
+            // Opening bracket, when this tab is active and `chrome`
+            // requests `TabFrame::Brackets` — painted in the tab's own
+            // `fg` colour, immediately before the icon/label content it
+            // encloses. `vt.bounds`/`vt.close_bounds` already reserved
+            // this glyph's width (and the closing one below), so painting
+            // it just advances `cursor_x` by its measured width.
+            let is_bracket = brackets && tab.is_active;
+            if is_bracket {
+                let (bracket_w, _) = surface.surface_measure_text("[");
+                surface.surface_draw_text_run(
+                    Rect::new(cursor_x, text_y, bracket_w, line_height),
+                    "[",
+                    fg,
+                );
+                cursor_x += bracket_w;
+            }
+
             if let Some(icon) = tab_icon_at(icons, vt.tab_idx) {
                 let (icon_w, _) = surface.surface_measure_text(&icon.glyph);
                 surface.surface_draw_icon_glyph(
@@ -1423,6 +1451,25 @@ pub(crate) mod native_surface_paint {
                 false,
                 1.0,
             );
+
+            // Closing bracket for a bracket-framed tab with no close
+            // button — painted right after the label. When a close
+            // button is present, the closing bracket instead paints
+            // right after that glyph, inside the block below, since its
+            // position depends on the glyph's own measured width.
+            if is_bracket && vt.close_bounds.is_none() {
+                let (bracket_w, _) = surface.surface_measure_text("]");
+                surface.surface_draw_text_run(
+                    Rect::new(
+                        cursor_x + label_w.min(label_budget),
+                        text_y,
+                        bracket_w,
+                        line_height,
+                    ),
+                    "]",
+                    fg,
+                );
+            }
 
             if let Some(cb) = vt.close_bounds {
                 let is_close_hovered = state.hovered_close_tab == Some(vt.tab_idx);
@@ -1459,6 +1506,18 @@ pub(crate) mod native_surface_paint {
                     glyph,
                     close_fg,
                 );
+
+                // Closing bracket, right after the close/dirty glyph —
+                // `vt.bounds`' own trailing width already reserved room
+                // for it beyond `cb`.
+                if is_bracket {
+                    let (bracket_w, _) = surface.surface_measure_text("]");
+                    surface.surface_draw_text_run(
+                        Rect::new(glyph_x + glyph_w, text_y, bracket_w, line_height),
+                        "]",
+                        fg,
+                    );
+                }
             }
         }
 
@@ -1619,6 +1678,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 TabBarPaintState::default(),
                 &mut surface,
                 &theme,
@@ -1655,6 +1715,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 state,
                 &mut surface,
                 &theme,
@@ -1691,6 +1752,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 state,
                 &mut surface,
                 &theme,
@@ -1725,6 +1787,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 state,
                 &mut surface,
                 &theme,
@@ -1758,6 +1821,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 TabBarPaintState::default(),
                 &mut surface,
                 &theme,
@@ -1799,6 +1863,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 state,
                 &mut surface,
                 &theme,
@@ -1827,6 +1892,129 @@ pub(crate) mod native_surface_paint {
             );
         }
 
+        /// `chrome.active_frame == TabFrame::Brackets` wraps the active
+        /// tab's label and close glyph in `[` … `]`, each painted as its
+        /// own text run in the tab's own `fg` colour. The inactive tab
+        /// gets no bracket glyphs at all.
+        #[test]
+        fn bracket_chrome_paints_opening_and_closing_glyphs_around_an_active_tab_with_close() {
+            let mut b = bar(vec![tab("a"), tab("b")]);
+            b.tabs[0].is_active = true;
+            let layout = layout_for(&b, 200.0, 0.0, 60.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let chrome = TabChrome::new(TabFrame::Brackets);
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                &chrome,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            let open_brackets = surface
+                .text_runs
+                .iter()
+                .filter(|(_, t, c)| t == "[" && *c == theme.tab_active_fg)
+                .count();
+            let close_brackets = surface
+                .text_runs
+                .iter()
+                .filter(|(_, t, c)| t == "]" && *c == theme.tab_active_fg)
+                .count();
+            assert_eq!(
+                open_brackets, 1,
+                "the active tab must paint exactly one opening bracket; \
+                 text runs were {:?}",
+                surface.text_runs,
+            );
+            assert_eq!(
+                close_brackets, 1,
+                "the active tab must paint exactly one closing bracket; \
+                 text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// Without `TabFrame::Brackets`, no tab paints `[`/`]` glyphs —
+        /// the default chrome used by every other test in this module
+        /// must stay bracket-free.
+        #[test]
+        fn plain_chrome_paints_no_bracket_glyphs() {
+            let mut b = bar(vec![tab("a")]);
+            b.tabs[0].is_active = true;
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                &TabChrome::default(),
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            assert!(
+                !surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t == "[" || t == "]"),
+                "TabFrame::None must not paint any bracket glyph; text runs \
+                 were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// A bracket-framed tab with no close button at all still paints
+        /// its closing bracket, right after the label rather than after a
+        /// close glyph that doesn't exist.
+        #[test]
+        fn bracket_chrome_paints_closing_glyph_after_the_label_when_no_close_button() {
+            let mut b = bar(vec![tab("a")]);
+            b.tabs[0].is_active = true;
+            b.show_tab_close = false;
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            assert!(
+                layout.visible_tabs[0].close_bounds.is_none(),
+                "a bar with no close button must resolve no close_bounds"
+            );
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let chrome = TabChrome::new(TabFrame::Brackets);
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                &chrome,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "]"),
+                "a bracket-framed, non-closable tab must still paint its \
+                 closing bracket; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
         /// When the strip overflows, `layout.scroll_left`/`scroll_right`
         /// each paint a chevron via `surface_draw_path` — the new
         /// scroll-arrow affordance no in-tree pixel backend painted
@@ -1850,6 +2038,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 TabBarPaintState::default(),
                 &mut surface,
                 &theme,
@@ -1894,6 +2083,7 @@ pub(crate) mod native_surface_paint {
                     &[],
                     None,
                     true,
+                    &TabChrome::default(),
                     TabBarPaintState::default(),
                     &mut surface,
                     &theme,
@@ -1927,6 +2117,7 @@ pub(crate) mod native_surface_paint {
                 &icons,
                 None,
                 true,
+                &TabChrome::default(),
                 TabBarPaintState::default(),
                 &mut surface,
                 &theme,
@@ -1961,6 +2152,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 TabBarPaintState::default(),
                 &mut surface,
                 &theme,
@@ -2008,6 +2200,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 TabBarPaintState::default(),
                 &mut surface,
                 &theme,
@@ -2042,6 +2235,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 TabBarPaintState::default(),
                 &mut surface,
                 &theme,
@@ -2090,6 +2284,7 @@ pub(crate) mod native_surface_paint {
                 &[],
                 None,
                 true,
+                &TabChrome::default(),
                 TabBarPaintState::default(),
                 &mut surface,
                 &theme,
