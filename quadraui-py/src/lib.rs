@@ -151,26 +151,24 @@ use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::wheel_row_delta;
 #[cfg(test)]
 use quadraui::AcceleratorScope;
-#[cfg(test)]
 use quadraui::Key;
 #[cfg(test)]
 use quadraui::KeyBinding;
-#[cfg(test)]
 use quadraui::Modifiers;
-#[cfg(test)]
 use quadraui::MouseButton;
 #[cfg(test)]
 use quadraui::NamedKey;
 #[cfg(test)]
 use quadraui::Scrollbar;
 use quadraui::{
-    Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
-    BottomPanelEvent, Completions, ContextMenu, ContextMenuItem, DialogButton, DialogSeverity,
-    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, ImageSource, MessageDialogOptions,
-    Notification, Point, PointerShape, Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult,
-    ShellApp, ShellConfig, ShellContext, Theme, Toast, ToastCorner, Tooltip, UiEvent, UserPayload,
-    WidgetId,
+    A11yChild, A11yInfo, Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout,
+    Backend, BackendCaps, BottomPanelEvent, CanvasHit, Completions, ContextMenu, ContextMenuItem,
+    DialogButton, DialogSeverity, FileDialogOptions, Float, FloatMeasure, GlobalShortcutId,
+    ImageSource, LayoutCtx, MessageDialogOptions, Notification, Point, PointerShape, Reaction,
+    Rect, RgbaImage, RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext, Theme,
+    Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId,
 };
+use quadraui::{CanvasRegion, DrawOp};
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
 // binding is a thin PyO3 leaf over -- see
@@ -202,6 +200,10 @@ use quadraui_binding_core::{
     StyleContext, UpdateInfoWire, WindowCloseHandling,
 };
 use quadraui_binding_core::{decode_layout_dialog, decode_popover, DialogContentSize};
+use quadraui_binding_core::{
+    extra_as, ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedPaint,
+    ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
+};
 use quadraui_binding_core::{validate_style_set_name, StyleOverride};
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`
@@ -1203,6 +1205,103 @@ fn tray_menu(items: Vec<ContextMenuItem>) -> ContextMenu {
     menu_for_surface(WidgetId::new("qui-tray-menu"), items)
 }
 
+impl PyAppLogic {
+    /// Routes a region click or a focused key press to whichever
+    /// registered `ScriptedPrimitive<PyScriptWidget>` it lands on/holds
+    /// focus, by calling straight into its own `hit_test`/`click_region`/
+    /// `key_pressed` rather than through
+    /// `quadraui_binding_core::semantic::semantic_event_for_hit`/
+    /// `focus_scoped_key_event` the way a `Switch`/`TextInput` extra's own
+    /// click/key translation does: those two generic paths recognize only
+    /// a closed, hand-maintained set of concrete `ExtraPaint` types
+    /// (`extra_as::<Switch>`, `extra_as::<Canvas>`, ...) in
+    /// `quadraui-binding-core` itself, so `ScriptedPrimitive<PyScriptWidget>`
+    /// -- a type this crate defines, which that shared crate has never
+    /// heard of -- falls through both to the bare `HitDetail::ExtraBody`
+    /// fallback, with no region id attached. Reusing
+    /// `ScriptedPrimitive::hit_test` (ABSOLUTE point, the same frame as
+    /// the painted `area` recorded in `self.engine.hit_map()`) recovers
+    /// exactly the region id a hand-written `Canvas` descriptor's own
+    /// click already gets for free, with no change to that shared crate.
+    ///
+    /// Reads only this frame's already-painted `hit_map`/
+    /// `focus_manager` -- unaffected by whatever `InteractionEngine::handle`
+    /// does with the same `event` right after this returns, so running
+    /// before it (as `Self::handle` does) or after would answer
+    /// identically; a click/key a script widget consumes here still also
+    /// reaches the registered Python handler through the normal path
+    /// below, same as any other unclaimed event -- harmless, since nothing
+    /// on that generic path recognizes a script widget's id either.
+    fn dispatch_to_script_widget(&self, event: &UiEvent, backend: &mut dyn Backend) -> Reaction {
+        match event {
+            UiEvent::MouseDown {
+                position,
+                button,
+                modifiers,
+                ..
+            } => self.script_widget_click(*position, *button, *modifiers, false),
+            UiEvent::DoubleClick { position, .. } => {
+                self.script_widget_click(*position, MouseButton::Left, Modifiers::default(), true)
+            }
+            UiEvent::KeyPressed { key, .. } => self.script_widget_key(key, backend),
+            _ => Reaction::Continue,
+        }
+    }
+
+    fn script_widget_click(
+        &self,
+        position: Point,
+        button: MouseButton,
+        modifiers: Modifiers,
+        double: bool,
+    ) -> Reaction {
+        let hit_map = self.engine.hit_map();
+        let Some((area, script_widget)) = hit_map.iter().find_map(|hit| match hit {
+            PaintedHit::Extra { area, extra, .. } if area.contains(position) => {
+                extra_as::<ScriptedPrimitive<PyScriptWidget>>(extra).map(|sp| (*area, sp))
+            }
+            _ => None,
+        }) else {
+            return Reaction::Continue;
+        };
+        match script_widget.hit_test(position) {
+            CanvasHit::Region { id: region } => {
+                let local = Point::new(position.x - area.x, position.y - area.y);
+                if script_widget.click_region(region, button, modifiers, local, double) {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
+            }
+            // `CanvasHit` is `#[non_exhaustive]`; `Inside`/`Outside` and
+            // any future variant have no declared region to route an
+            // `on_event` call against -- same posture a plain `Canvas`
+            // leaf's own region-click resolution has for them.
+            _ => Reaction::Continue,
+        }
+    }
+
+    fn script_widget_key(&self, key: &Key, backend: &mut dyn Backend) -> Reaction {
+        let Some(focused) = backend.focus_manager().focused().copied() else {
+            return Reaction::Continue;
+        };
+        let hit_map = self.engine.hit_map();
+        let Some(script_widget) = hit_map.iter().find_map(|hit| match hit {
+            PaintedHit::Extra { id, extra, .. } if *id == focused => {
+                extra_as::<ScriptedPrimitive<PyScriptWidget>>(extra)
+            }
+            _ => None,
+        }) else {
+            return Reaction::Continue;
+        };
+        if script_widget.key_pressed(key.clone()) {
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
+        }
+    }
+}
+
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
@@ -1329,6 +1428,7 @@ impl AppLogic for PyAppLogic {
     /// so a queued action that actually applied something still gets its
     /// repaint even when the handler itself returned `Continue`.
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+        let script_reaction = self.dispatch_to_script_widget(&event, backend);
         let reaction = match self.handler.as_ref() {
             None => Reaction::Continue,
             Some(handler) => {
@@ -1340,6 +1440,7 @@ impl AppLogic for PyAppLogic {
                 self.engine.handle(event, backend, &mut sink)
             }
         };
+        let reaction = reaction.merge(script_reaction);
         let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
@@ -1995,13 +2096,446 @@ fn render_output_from_callback(
             styles,
             diagnostics,
         ) {
-            Ok(output) => Some(output),
+            Ok(mut output) => {
+                apply_pending_script_widgets(py, &mut output, pending_error);
+                Some(output)
+            }
             Err(err) => {
                 record_error(pending_error, decode_error_to_py(err));
                 None
             }
         }
     })
+}
+
+// ─────────────────────────────── Script widgets ────────────────────────
+//
+// `quadraui.app.widget.Widget` (the Python app layer's base class for a
+// script-authored node) can't hand this binding a live callback object
+// through the generic `decode_render_output_with_styles` call above --
+// that decode is a plain data `Deserialize`, and the whole point of a
+// `Widget` is that it is NOT plain data (it has `measure`/`paint`/
+// `on_event`/`a11y` methods a Python object, not a wire dict, carries).
+// `Widget.build()` instead leaves a placeholder (`{"canvas": {"ops": [],
+// "regions": []}}`, decoded above as an ordinary, empty
+// `quadraui::Canvas` extra) at its own wire id, and separately stashes
+// itself (plus props/state/focusable) in `quadraui.app.widget._PENDING`,
+// a plain Python dict `_take_pending` drains right here -- see that
+// module's own doc for why this is a side channel rather than a call
+// back into this `QuiApp`.
+//
+// `apply_pending_script_widgets` walks the just-decoded tree and, at
+// every leaf whose id matches a pending registration, replaces that
+// placeholder `Canvas` with a live
+// `quadraui_binding_core::ScriptedPrimitive<PyScriptWidget>` -- the exact
+// seam `quadraui_binding_core::scripted`'s own module doc describes "a
+// real binding implements this once per host language" for. From here
+// on this binding's `layout`/`paint`/`paint_cells` calls into it exactly
+// like any other `ExtraPaint`; region clicks and focused keys are routed
+// to it separately, by `PyAppLogic::handle` below (see
+// `script_widget_click`/`script_widget_key`'s own doc for why that can't
+// go through the generic `semantic_event_for_hit`/`focus_scoped_key_event`
+// path a hand-written `Canvas` descriptor's own regions already use).
+
+/// One `Widget` registration drained from `quadraui.app.widget._PENDING`
+/// for this frame.
+struct PendingScriptWidget {
+    widget: Py<PyAny>,
+    props: ScriptedProps,
+    state: ScriptedState,
+    focusable: bool,
+}
+
+/// Drains `quadraui.app.widget._take_pending()` into a `{id: ...}` map,
+/// swallowing any import/call failure into an empty map rather than
+/// propagating it -- a raw `QuiApp`/non-app-layer render (no `Widget`
+/// ever built, `quadraui.app` possibly never imported at all) must render
+/// exactly as it always has, not fail because this binding went looking
+/// for a sibling pure-Python module that happens not to be loaded yet.
+fn take_pending_script_widgets(py: Python<'_>) -> HashMap<String, PendingScriptWidget> {
+    let Ok(module) = py.import("quadraui.app.widget") else {
+        return HashMap::new();
+    };
+    let Ok(take) = module.getattr("_take_pending") else {
+        return HashMap::new();
+    };
+    let Ok(result) = take.call0() else {
+        return HashMap::new();
+    };
+    let Ok(dict) = result.cast::<PyDict>() else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for (key, value) in dict.iter() {
+        let (Ok(id), Ok(entry)) = (key.extract::<String>(), value.cast::<PyDict>()) else {
+            continue;
+        };
+        let Some(widget) = entry.get_item("widget").ok().flatten().map(|w| w.unbind()) else {
+            continue;
+        };
+        let props = entry
+            .get_item("props")
+            .ok()
+            .flatten()
+            .and_then(|v| pythonize::depythonize(&v).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let state = entry
+            .get_item("state")
+            .ok()
+            .flatten()
+            .and_then(|v| pythonize::depythonize(&v).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let focusable = entry
+            .get_item("focusable")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(false);
+        out.insert(
+            id,
+            PendingScriptWidget {
+                widget,
+                props,
+                state,
+                focusable,
+            },
+        );
+    }
+    out
+}
+
+/// Drains the pending `Widget` registrations and splices each one into
+/// `output` in place. A no-op (the `Canvas` placeholder is left as-is)
+/// for `RenderOutput::Flat` -- the flat six-slot shape's own `extra` is
+/// keyed by kind name, one per frame (see `RenderFrame::extra`'s own
+/// doc), with no per-id addressing a `Widget` could use, so only
+/// `RenderOutput::Tree` (every `App`-layer render, since `Column`/`Row`/
+/// any node tree always produces one) is walked.
+fn apply_pending_script_widgets(
+    py: Python<'_>,
+    output: &mut RenderOutput,
+    pending_error: &Rc<RefCell<Option<PyErr>>>,
+) {
+    let mut pending = take_pending_script_widgets(py);
+    if pending.is_empty() {
+        return;
+    }
+    if let RenderOutput::Tree(node) = output {
+        apply_pending_script_widgets_node(node, &mut pending, pending_error);
+    }
+}
+
+fn apply_pending_script_widgets_node(
+    node: &mut LayoutNode,
+    pending: &mut HashMap<String, PendingScriptWidget>,
+    pending_error: &Rc<RefCell<Option<PyErr>>>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    match node {
+        LayoutNode::Row(container) | LayoutNode::Column(container) => {
+            for child in &mut container.children {
+                apply_pending_script_widgets_node(&mut child.node, pending, pending_error);
+            }
+        }
+        LayoutNode::Leaf(leaf) => apply_pending_script_widgets_leaf(leaf, pending, pending_error),
+        LayoutNode::Split(split_node) => {
+            apply_pending_script_widgets_node(&mut split_node.first, pending, pending_error);
+            apply_pending_script_widgets_node(&mut split_node.second, pending, pending_error);
+        }
+        LayoutNode::Tabs(tabs_node) => {
+            for entry in &mut tabs_node.entries {
+                apply_pending_script_widgets_node(&mut entry.content, pending, pending_error);
+            }
+        }
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own wire plumbing.
+        LayoutNode::Panel(panel_node) => {
+            apply_pending_script_widgets_node(&mut panel_node.content, pending, pending_error);
+        }
+        LayoutNode::SidebarPanel(sidebar_node) => {
+            apply_pending_script_widgets_node(&mut sidebar_node.content, pending, pending_error);
+        }
+        LayoutNode::SplitTree(split_tree_node) => {
+            for leaf in &mut split_tree_node.leaves {
+                apply_pending_script_widgets_node(leaf, pending, pending_error);
+            }
+        }
+        LayoutNode::Scroll(scroll_node) => {
+            apply_pending_script_widgets_node(&mut scroll_node.content, pending, pending_error);
+        }
+        LayoutNode::Styled(styled_node) => {
+            apply_pending_script_widgets_node(&mut styled_node.node, pending, pending_error);
+        }
+    }
+}
+
+fn apply_pending_script_widgets_leaf(
+    leaf: &mut LayoutLeaf,
+    pending: &mut HashMap<String, PendingScriptWidget>,
+    pending_error: &Rc<RefCell<Option<PyErr>>>,
+) {
+    let Some(entry) = pending.remove(&leaf.id) else {
+        return;
+    };
+    // Only swaps a `Canvas`-shaped placeholder -- a user id collision
+    // with an unrelated leaf (same id, wrong kind) leaves that leaf
+    // untouched rather than clobbering it.
+    if !matches!(leaf.descriptor, LeafDescriptor::Extra(_)) {
+        return;
+    }
+    let script_widget = PyScriptWidget {
+        widget: entry.widget,
+        pending_error: pending_error.clone(),
+    };
+    let primitive = ScriptedPrimitive::new(
+        WidgetId::new(leaf.id.as_str()),
+        script_widget,
+        entry.focusable,
+    );
+    primitive.set_props(entry.props);
+    primitive.set_state(entry.state);
+    leaf.descriptor = LeafDescriptor::Extra(Rc::new(primitive));
+}
+
+/// The `quadraui_binding_core::ScriptWidget` impl this binding wraps
+/// around a live Python object exposing `measure`/`paint`/`on_event`/
+/// `a11y` methods -- the PyO3 side of the seam
+/// `quadraui_binding_core::scripted`'s own module doc describes "a real
+/// binding implements this once per host language" for. Every method
+/// here re-acquires the GIL itself (`ScriptWidget`'s own methods take no
+/// `Python<'_>` -- this trait is shared with a hand-written Rust test
+/// impl in `quadraui-binding-core` that has no GIL to thread through) and
+/// degrades to an empty/no-op answer on a Python-side failure, recording
+/// it into `pending_error` the same way every other Python callback this
+/// binding invokes does -- `ScriptWidget`'s own methods return plain
+/// values, not `Result`, so there is nowhere else for a script's
+/// exception to go.
+struct PyScriptWidget {
+    widget: Py<PyAny>,
+    pending_error: Rc<RefCell<Option<PyErr>>>,
+}
+
+/// `measure`'s wire answer, decoded from whatever dict a script's
+/// `measure` returns -- `quadraui_binding_core::ScriptedSize` itself has
+/// no `Deserialize` (nothing in that crate reads one off a wire; only
+/// this binding does, from a live script call rather than a descriptor),
+/// so this binding supplies its own mirror and converts.
+#[derive(serde::Deserialize, Default)]
+struct ScriptedSizeWire {
+    #[serde(default)]
+    width: f32,
+    #[serde(default)]
+    height: f32,
+}
+
+/// `paint`'s wire answer -- same "no `Deserialize` on the core type"
+/// reasoning as `ScriptedSizeWire`. `ops`/`regions` reuse
+/// `quadraui::DrawOp`/`quadraui::CanvasRegion`'s own `Deserialize`
+/// unchanged -- the same types a plain `Canvas` descriptor's own `ops`/
+/// `regions` already decode through.
+#[derive(serde::Deserialize, Default)]
+struct ScriptedPaintWire {
+    #[serde(default)]
+    ops: Vec<DrawOp>,
+    #[serde(default)]
+    regions: Vec<CanvasRegion>,
+}
+
+/// `a11y`'s wire answer. `A11yChild` (unlike `A11yInfo`) has no
+/// `Deserialize` of its own -- nothing else in the workspace decodes one
+/// off a wire, since every other `A11yPrimitive` impl is hand-written
+/// Rust, not script-backed -- so this mirrors its four fields and
+/// converts recursively via `From` below, rather than adding a
+/// `Deserialize` derive to the shared `quadraui` crate for a shape only
+/// this binding ever decodes.
+#[derive(serde::Deserialize, Default)]
+struct ScriptedA11yWire {
+    #[serde(default)]
+    info: A11yInfo,
+    #[serde(default)]
+    children: Vec<A11yChildWire>,
+}
+
+#[derive(serde::Deserialize)]
+struct A11yChildWire {
+    key: String,
+    #[serde(default)]
+    info: A11yInfo,
+    #[serde(default)]
+    bounds: Option<Rect>,
+    #[serde(default)]
+    children: Vec<A11yChildWire>,
+}
+
+impl From<A11yChildWire> for A11yChild {
+    fn from(wire: A11yChildWire) -> Self {
+        A11yChild {
+            key: wire.key,
+            info: wire.info,
+            bounds: wire.bounds,
+            children: wire.children.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// `ctx` as the plain dict `line_height`/`char_width`/`nerd_fonts_enabled`
+/// fields a script's `measure`/`paint` reads -- built by hand rather than
+/// `pythonize::pythonize` since `quadraui::primitive::LayoutCtx` has no
+/// `Serialize` (nothing else in the workspace sends one across a wire;
+/// every other `Primitive` impl reads it as a plain Rust struct).
+fn layout_ctx_to_py<'py>(py: Python<'py>, ctx: &LayoutCtx) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("line_height", ctx.line_height)?;
+    dict.set_item("char_width", ctx.char_width)?;
+    dict.set_item("nerd_fonts_enabled", ctx.nerd_fonts_enabled)?;
+    Ok(dict)
+}
+
+fn constraints_to_py<'py>(
+    py: Python<'py>,
+    constraints: ScriptedConstraints,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("max_width", constraints.max_width)?;
+    dict.set_item("max_height", constraints.max_height)?;
+    Ok(dict)
+}
+
+impl ScriptWidget for PyScriptWidget {
+    fn measure(&self, ctx: &LayoutCtx, constraints: ScriptedConstraints) -> ScriptedSize {
+        Python::attach(|py| {
+            let outcome: PyResult<ScriptedSize> = (|| {
+                let ctx_dict = layout_ctx_to_py(py, ctx)?;
+                let constraints_dict = constraints_to_py(py, constraints)?;
+                let result =
+                    self.widget
+                        .call_method1(py, "measure", (ctx_dict, constraints_dict))?;
+                let wire: ScriptedSizeWire =
+                    pythonize::depythonize(result.bind(py)).map_err(|err| {
+                        InvalidDescriptorError::new_err(format!("script widget measure(): {err}"))
+                    })?;
+                Ok(ScriptedSize {
+                    width: wire.width,
+                    height: wire.height,
+                })
+            })();
+            match outcome {
+                Ok(size) => size,
+                Err(err) => {
+                    record_error(&self.pending_error, err);
+                    ScriptedSize::default()
+                }
+            }
+        })
+    }
+
+    fn paint(&self, ctx: &LayoutCtx, props: &ScriptedProps, rect: Rect) -> ScriptedPaint {
+        Python::attach(|py| {
+            let outcome: PyResult<ScriptedPaint> = (|| {
+                let ctx_dict = layout_ctx_to_py(py, ctx)?;
+                let props_value = pythonize::pythonize(py, props)
+                    .map_err(|err| InternalError::new_err(format!("script widget props: {err}")))?;
+                let rect_value = pythonize::pythonize(py, &rect)
+                    .map_err(|err| InternalError::new_err(format!("script widget rect: {err}")))?;
+                let result =
+                    self.widget
+                        .call_method1(py, "paint", (ctx_dict, props_value, rect_value))?;
+                let wire: ScriptedPaintWire =
+                    pythonize::depythonize(result.bind(py)).map_err(|err| {
+                        InvalidDescriptorError::new_err(format!("script widget paint(): {err}"))
+                    })?;
+                Ok(ScriptedPaint {
+                    ops: wire.ops,
+                    regions: wire.regions,
+                })
+            })();
+            match outcome {
+                Ok(paint) => paint,
+                Err(err) => {
+                    record_error(&self.pending_error, err);
+                    ScriptedPaint::default()
+                }
+            }
+        })
+    }
+
+    fn on_event(
+        &self,
+        event: &ScriptedInputEvent,
+        props: &ScriptedProps,
+        state: &ScriptedState,
+    ) -> bool {
+        Python::attach(|py| {
+            let outcome: PyResult<bool> = (|| {
+                let dict = PyDict::new(py);
+                match event {
+                    ScriptedInputEvent::Canvas(canvas_event) => {
+                        let value = pythonize::pythonize(py, canvas_event).map_err(|err| {
+                            InternalError::new_err(format!("script widget canvas event: {err}"))
+                        })?;
+                        dict.set_item("Canvas", value)?;
+                    }
+                    ScriptedInputEvent::Key(key) => {
+                        let value = pythonize::pythonize(py, key).map_err(|err| {
+                            InternalError::new_err(format!("script widget key event: {err}"))
+                        })?;
+                        dict.set_item("Key", value)?;
+                    }
+                    // `ScriptedInputEvent` is `#[non_exhaustive]` -- see
+                    // `quadraui_binding_core::scripted::CanvasHit`'s own
+                    // doc for the same posture on its sibling enum. A
+                    // future variant with no dict shape of its own yet
+                    // reports as consumed-nothing rather than failing the
+                    // whole dispatch.
+                    _ => return Ok(false),
+                }
+                let props_value = pythonize::pythonize(py, props)
+                    .map_err(|err| InternalError::new_err(format!("script widget props: {err}")))?;
+                let state_value = pythonize::pythonize(py, state)
+                    .map_err(|err| InternalError::new_err(format!("script widget state: {err}")))?;
+                let result =
+                    self.widget
+                        .call_method1(py, "on_event", (dict, props_value, state_value))?;
+                Ok(result.extract::<bool>(py).unwrap_or(false))
+            })();
+            match outcome {
+                Ok(consumed) => consumed,
+                Err(err) => {
+                    record_error(&self.pending_error, err);
+                    false
+                }
+            }
+        })
+    }
+
+    fn a11y(&self, props: &ScriptedProps) -> Option<ScriptedA11y> {
+        Python::attach(|py| {
+            let outcome: PyResult<Option<ScriptedA11y>> = (|| {
+                let props_value = pythonize::pythonize(py, props)
+                    .map_err(|err| InternalError::new_err(format!("script widget props: {err}")))?;
+                let result = self.widget.call_method1(py, "a11y", (props_value,))?;
+                let bound = result.bind(py);
+                if bound.is_none() {
+                    return Ok(None);
+                }
+                let wire: ScriptedA11yWire = pythonize::depythonize(bound).map_err(|err| {
+                    InvalidDescriptorError::new_err(format!("script widget a11y(): {err}"))
+                })?;
+                Ok(Some(ScriptedA11y {
+                    info: wire.info,
+                    children: wire.children.into_iter().map(Into::into).collect(),
+                }))
+            })();
+            match outcome {
+                Ok(value) => value,
+                Err(err) => {
+                    record_error(&self.pending_error, err);
+                    None
+                }
+            }
+        })
+    }
 }
 
 /// A leaf's own painted `(rows_or_items, viewport_rows)` from the most
