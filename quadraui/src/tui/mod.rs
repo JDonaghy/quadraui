@@ -126,7 +126,7 @@ pub use board::{draw_board, tui_board_layout};
 #[doc(hidden)]
 pub use button::{draw_button, draw_button_interactive, tui_button_layout};
 #[doc(hidden)]
-pub use canvas::{draw_canvas, tui_canvas_layout};
+pub use canvas::{draw_canvas, tui_canvas_layout, tui_canvas_region_hit_test};
 #[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
 #[doc(hidden)]

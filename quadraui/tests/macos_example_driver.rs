@@ -1598,6 +1598,8 @@ impl quadraui::AppLogic for CanvasAlphaProbe {
         let rect = quadraui::Rect::new(0.0, 0.0, 60.0, 60.0);
         let canvas = quadraui::Canvas {
             id: quadraui::WidgetId::new("probe:canvas-alpha"),
+            regions: vec![],
+            focusable: false,
             ops: vec![
                 quadraui::DrawOp::Rect {
                     rect: quadraui::Rect::new(0.0, 0.0, 60.0, 60.0),

@@ -2023,6 +2023,17 @@ name = "gtk_canvas_shapes"
 path = "examples/gtk_canvas_shapes.rs"
 required-features = ["gtk"]
 
+# `Canvas::regions`/`Canvas::focusable` (named hit regions + Tab-to-focus).
+# TUI-only — see `examples/tui_canvas_regions.rs`'s own doc for why there is
+# no `gtk_canvas_regions` pairing. Still needs an explicit `[[example]]`
+# for the same reason as `tui_canvas` above: without one, autodiscovery
+# gives it no `required-features` and it fails `cargo test --features win`
+# (or any build without `tui`) on `quadraui::tui` being configured out.
+[[example]]
+name = "tui_canvas_regions"
+path = "examples/tui_canvas_regions.rs"
+required-features = ["tui"]
+
 # #596 — `WorkspaceController` (open-N-view-one document tabs) mounted
 # inside an `AppShell` panel. Both entries are mandatory (see #595's note
 # above): without an explicit `[[example]]`, `gtk_workspace.rs` gets

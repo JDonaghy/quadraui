@@ -71,6 +71,8 @@ impl CanvasDemo {
         let text_color = Color::rgb(255, 255, 255);
         Canvas {
             id: WidgetId::new(format!("gallery:canvas:gauge:{variant}")),
+            regions: vec![],
+            focusable: false,
             ops: vec![
                 DrawOp::Rect {
                     rect: Rect::new(0.0, 0.0, w, h),

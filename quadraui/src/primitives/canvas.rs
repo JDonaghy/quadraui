@@ -77,6 +77,16 @@
 //! know *which* op a click landed on keeps that mapping itself (it
 //! authored the ops, so it already knows their coordinates) and keys off
 //! [`CanvasHit::Inside`] only to decide whether to bother.
+//!
+//! The one named exception is [`Canvas::regions`]: an app that wants a
+//! handful of clickable/hoverable/focusable sub-areas — not full op-level
+//! hit-testing — declares them once as [`CanvasRegion`]s, and
+//! [`CanvasLayout::region_hit_test`] resolves a click straight to
+//! [`CanvasHit::Region`]'s `id`, no per-op bookkeeping required. A region
+//! plays no part in painting; it is pure hit-test metadata layered on top
+//! of the same `ops` list, resolved through the same
+//! `Backend::canvas_layout`/`draw_canvas` seam every other `Canvas` click
+//! already goes through.
 
 use crate::event::{Point, Rect};
 use crate::primitives::image::Image;
@@ -99,6 +109,8 @@ use serde::{Deserialize, Serialize};
 ///         rect: Rect::new(0.0, 0.0, 10.0, 4.0),
 ///         color: Color::rgb(0, 200, 0),
 ///     }],
+///     regions: vec![],
+///     focusable: false,
 /// };
 ///
 /// let layout = canvas.layout(Rect::new(0.0, 0.0, 10.0, 4.0));
@@ -108,6 +120,90 @@ use serde::{Deserialize, Serialize};
 pub struct Canvas {
     pub id: WidgetId,
     pub ops: Vec<DrawOp>,
+    /// Named, hit-testable sub-areas layered on top of `ops` — see the
+    /// module doc's "What this is not" section for why this is the one
+    /// named exception to "no hit-testing of individual ops". Additive:
+    /// `#[serde(default)]` so JSON authored before this field existed
+    /// still deserializes, as an empty list (no regions, same as today).
+    #[serde(default)]
+    pub regions: Vec<CanvasRegion>,
+    /// Whether this canvas should take part in `AppLogic::tab_stops`
+    /// keyboard-focus cycling. `Canvas` itself never computes a tab-stop
+    /// list — that's on the app, the same "hand-rolled, no `ScreenLayout`
+    /// involvement required" contract every `AppLogic::tab_stops`
+    /// override already has — this field is just the declarative flag an
+    /// app reads back to decide whether to include this canvas's id.
+    /// Additive: `#[serde(default)]` defaults to `false`, matching every
+    /// `Canvas` authored before this field existed (not focusable, same
+    /// as today).
+    #[serde(default)]
+    pub focusable: bool,
+}
+
+/// One named, hit-testable sub-area of a [`Canvas`], declared in
+/// [`Canvas::regions`]. `rect` is LOCAL to the canvas — the same frame
+/// every [`DrawOp`] coordinate already uses (module doc's "Coordinate
+/// frame" section) — and resolved through [`CanvasLayout::region_hit_test`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasRegion {
+    pub id: WidgetId,
+    pub rect: Rect,
+    /// Advisory pointer-hover hint for this region. Nothing in this
+    /// crate's hit-test path calls [`crate::Backend::set_cursor`]
+    /// automatically — an app reads this back (typically on
+    /// `UiEvent::MouseMoved`, after its own
+    /// [`CanvasLayout::region_hit_test`] call) and forwards it itself,
+    /// the same "app drives the backend call" contract
+    /// [`CanvasHit::Inside`] already has for click routing. `None` means
+    /// this region carries no cursor hint at all — additive via
+    /// `#[serde(default)]`, same reasoning as [`Canvas::regions`].
+    #[serde(default)]
+    pub cursor: Option<CanvasCursor>,
+}
+
+/// Serde-friendly mirror of [`crate::PointerShape`] for
+/// [`CanvasRegion::cursor`] — `PointerShape` itself has no
+/// `Serialize`/`Deserialize` derive, and `Canvas`/`DrawOp` are descriptor
+/// types that must round-trip through serde (`PRIMITIVE_RULES.md` rule
+/// 8's descriptor-shape guidance), the same reasoning [`CanvasFontRole`]
+/// already carries just below. Omits [`crate::PointerShape::Resize`]:
+/// that variant names a *window edge*, a concept a canvas region (a
+/// sub-rect of one already-placed `Canvas`) has no analogue for.
+/// [`Self::to_pointer_shape`] is the only place this maps back to the
+/// real enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CanvasCursor {
+    Default,
+    Text,
+    Pointer,
+    Grab,
+    Grabbing,
+    Crosshair,
+    Wait,
+    NotAllowed,
+    ColResize,
+    RowResize,
+}
+
+impl CanvasCursor {
+    /// Map to the real [`crate::PointerShape`] an app passes to
+    /// [`crate::Backend::set_cursor`] — see [`CanvasRegion::cursor`]'s own
+    /// doc for why that call is always the app's to make, never this
+    /// crate's.
+    pub fn to_pointer_shape(self) -> crate::PointerShape {
+        match self {
+            CanvasCursor::Default => crate::PointerShape::Default,
+            CanvasCursor::Text => crate::PointerShape::Text,
+            CanvasCursor::Pointer => crate::PointerShape::Pointer,
+            CanvasCursor::Grab => crate::PointerShape::Grab,
+            CanvasCursor::Grabbing => crate::PointerShape::Grabbing,
+            CanvasCursor::Crosshair => crate::PointerShape::Crosshair,
+            CanvasCursor::Wait => crate::PointerShape::Wait,
+            CanvasCursor::NotAllowed => crate::PointerShape::NotAllowed,
+            CanvasCursor::ColResize => crate::PointerShape::ColResize,
+            CanvasCursor::RowResize => crate::PointerShape::RowResize,
+        }
+    }
 }
 
 /// One drawing instruction. Coordinates are LOCAL to the canvas — see
@@ -481,14 +577,28 @@ pub struct CanvasLayout {
     pub bounds: Rect,
 }
 
-/// Hit-test classification for a click against a [`Canvas`]. `Canvas`
-/// has no sub-regions of its own — see the module doc's "What this is
-/// not" section — so this only answers "inside the canvas's own bounds
-/// at all", the same shape as [`crate::ImageHit`].
+/// Hit-test classification for a click against a [`Canvas`]. Plain
+/// [`CanvasLayout::hit_test`] only ever answers "inside the canvas's own
+/// bounds at all" — the same shape as [`crate::ImageHit`]; a declared
+/// [`Canvas::regions`] hit resolves further, to [`Self::Region`], through
+/// [`CanvasLayout::region_hit_test`] instead (module doc's "What this is
+/// not" section).
+///
+/// `#[non_exhaustive]`: a downstream `match` needs a wildcard arm so a
+/// later variant stays additive, same as [`DrawOp`] — zero in-tree or
+/// downstream (`vimcode`/`coord-tui`) code matches exhaustively on this
+/// type today (every existing call site only ever compares with `==
+/// CanvasHit::Inside`/`Outside`), so this costs nothing in-tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CanvasHit {
     Inside,
     Outside,
+    /// A click/hover landed inside a declared [`CanvasRegion`] — `id` is
+    /// that region's own [`WidgetId`], from [`CanvasLayout::region_hit_test`].
+    Region {
+        id: WidgetId,
+    },
 }
 
 impl Canvas {
@@ -513,6 +623,35 @@ impl CanvasLayout {
         } else {
             CanvasHit::Outside
         }
+    }
+
+    /// Hit-test a click/hover at `(x, y)` against `canvas`'s
+    /// [`Canvas::regions`], falling back to [`Self::hit_test`]'s plain
+    /// Inside/Outside answer when no region matches (including when
+    /// `canvas.regions` is empty).
+    ///
+    /// Coordinate frame: **ABSOLUTE** — same as [`Self::hit_test`].
+    ///
+    /// Regions are tested last-declared-first, so an overlapping region
+    /// later in [`Canvas::regions`] — painted visually on top, the same
+    /// "later ops paint over earlier ones" rule [`Canvas::ops`] follows —
+    /// also wins the hit.
+    pub fn region_hit_test(&self, canvas: &Canvas, x: f32, y: f32) -> CanvasHit {
+        if self.hit_test(x, y) == CanvasHit::Outside {
+            return CanvasHit::Outside;
+        }
+        for region in canvas.regions.iter().rev() {
+            let r = Rect::new(
+                self.bounds.x + region.rect.x,
+                self.bounds.y + region.rect.y,
+                region.rect.width,
+                region.rect.height,
+            );
+            if x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height {
+                return CanvasHit::Region { id: region.id };
+            }
+        }
+        CanvasHit::Inside
     }
 }
 
@@ -886,6 +1025,8 @@ pub(crate) mod native_surface_paint {
             Canvas {
                 id: WidgetId::new("canvas"),
                 ops,
+                regions: vec![],
+                focusable: false,
             }
         }
 
@@ -1226,12 +1367,20 @@ pub(crate) mod native_surface_paint {
 mod tests {
     use super::*;
 
+    /// `Canvas` with no regions, no focusability — the shape every test
+    /// below that only cares about `ops`/bounds needs.
+    fn plain_canvas(ops: Vec<DrawOp>) -> Canvas {
+        Canvas {
+            id: WidgetId::new("c"),
+            ops,
+            regions: vec![],
+            focusable: false,
+        }
+    }
+
     #[test]
     fn layout_returns_bounds_unchanged() {
-        let c = Canvas {
-            id: WidgetId::new("c"),
-            ops: vec![],
-        };
+        let c = plain_canvas(vec![]);
         let bounds = Rect::new(3.0, 4.0, 20.0, 10.0);
         let layout = c.layout(bounds);
         assert_eq!(layout.bounds, bounds);
@@ -1239,20 +1388,14 @@ mod tests {
 
     #[test]
     fn hit_test_inside_bounds_is_inside() {
-        let c = Canvas {
-            id: WidgetId::new("c"),
-            ops: vec![],
-        };
+        let c = plain_canvas(vec![]);
         let layout = c.layout(Rect::new(5.0, 5.0, 10.0, 10.0));
         assert_eq!(layout.hit_test(7.0, 7.0), CanvasHit::Inside);
     }
 
     #[test]
     fn hit_test_outside_bounds_is_outside() {
-        let c = Canvas {
-            id: WidgetId::new("c"),
-            ops: vec![],
-        };
+        let c = plain_canvas(vec![]);
         let layout = c.layout(Rect::new(5.0, 5.0, 10.0, 10.0));
         assert_eq!(layout.hit_test(0.0, 0.0), CanvasHit::Outside);
     }
@@ -1261,13 +1404,117 @@ mod tests {
     fn hit_test_respects_a_non_zero_origin() {
         // LESSONS.md regression shape: (0, 0) is exactly the
         // case where a frame mixup is invisible.
-        let c = Canvas {
-            id: WidgetId::new("c"),
-            ops: vec![],
-        };
+        let c = plain_canvas(vec![]);
         let layout = c.layout(Rect::new(100.0, 200.0, 10.0, 10.0));
         assert_eq!(layout.hit_test(105.0, 205.0), CanvasHit::Inside);
         assert_eq!(layout.hit_test(5.0, 5.0), CanvasHit::Outside);
+    }
+
+    fn region(id: &str, rect: Rect) -> CanvasRegion {
+        CanvasRegion {
+            id: WidgetId::new(id),
+            rect,
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn region_hit_test_resolves_a_click_inside_a_region_to_its_id() {
+        let mut c = plain_canvas(vec![]);
+        c.regions = vec![region("button-a", Rect::new(1.0, 1.0, 3.0, 2.0))];
+        let layout = c.layout(Rect::new(10.0, 20.0, 50.0, 50.0));
+        // Region rect is LOCAL; absolute hit point is bounds origin + 2,1.5.
+        assert_eq!(
+            layout.region_hit_test(&c, 12.0, 21.5),
+            CanvasHit::Region {
+                id: WidgetId::new("button-a")
+            }
+        );
+    }
+
+    #[test]
+    fn region_hit_test_falls_back_to_plain_inside_outside_the_declared_regions() {
+        let mut c = plain_canvas(vec![]);
+        c.regions = vec![region("button-a", Rect::new(1.0, 1.0, 3.0, 2.0))];
+        let layout = c.layout(Rect::new(0.0, 0.0, 50.0, 50.0));
+        // Inside the canvas but outside the one declared region.
+        assert_eq!(layout.region_hit_test(&c, 40.0, 40.0), CanvasHit::Inside);
+        // Outside the canvas entirely.
+        assert_eq!(layout.region_hit_test(&c, -5.0, -5.0), CanvasHit::Outside);
+    }
+
+    #[test]
+    fn region_hit_test_with_no_regions_behaves_like_plain_hit_test() {
+        let c = plain_canvas(vec![]);
+        let layout = c.layout(Rect::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(layout.region_hit_test(&c, 5.0, 5.0), CanvasHit::Inside);
+        assert_eq!(layout.region_hit_test(&c, 50.0, 50.0), CanvasHit::Outside);
+    }
+
+    #[test]
+    fn region_hit_test_prefers_the_last_declared_region_on_overlap() {
+        // Same "later wins" convention `Canvas::ops` paints with —
+        // overlapping regions resolve to whichever was declared last.
+        let mut c = plain_canvas(vec![]);
+        c.regions = vec![
+            region("under", Rect::new(0.0, 0.0, 10.0, 10.0)),
+            region("over", Rect::new(2.0, 2.0, 4.0, 4.0)),
+        ];
+        let layout = c.layout(Rect::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(
+            layout.region_hit_test(&c, 3.0, 3.0),
+            CanvasHit::Region {
+                id: WidgetId::new("over")
+            }
+        );
+        assert_eq!(
+            layout.region_hit_test(&c, 8.0, 8.0),
+            CanvasHit::Region {
+                id: WidgetId::new("under")
+            }
+        );
+    }
+
+    #[test]
+    fn canvas_regions_and_focusable_default_when_absent_from_json() {
+        // Pre-`regions`/`focusable` JSON must still deserialize via
+        // `#[serde(default)]` — the additive-field contract this module
+        // promises for every new `Canvas` field.
+        let json = r#"{"id":"c","ops":[]}"#;
+        let c: Canvas = serde_json::from_str(json).expect("deserialize without new fields");
+        assert_eq!(c.regions, vec![]);
+        assert!(!c.focusable);
+    }
+
+    #[test]
+    fn canvas_region_round_trips_through_serde_including_cursor() {
+        let r = CanvasRegion {
+            id: WidgetId::new("r"),
+            rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+            cursor: Some(CanvasCursor::Pointer),
+        };
+        let json = serde_json::to_string(&r).expect("serialize");
+        let back: CanvasRegion = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn canvas_region_cursor_defaults_to_none_when_absent_from_json() {
+        let json = r#"{"id":"r","rect":{"x":0.0,"y":0.0,"width":1.0,"height":1.0}}"#;
+        let r: CanvasRegion = serde_json::from_str(json).expect("deserialize without cursor");
+        assert_eq!(r.cursor, None);
+    }
+
+    #[test]
+    fn canvas_cursor_maps_to_the_real_pointer_shape() {
+        assert_eq!(
+            CanvasCursor::Pointer.to_pointer_shape(),
+            crate::PointerShape::Pointer
+        );
+        assert_eq!(
+            CanvasCursor::Crosshair.to_pointer_shape(),
+            crate::PointerShape::Crosshair
+        );
     }
 
     #[test]

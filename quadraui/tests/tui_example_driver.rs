@@ -46,6 +46,8 @@ mod appshell_demo;
 mod bottom_panel_demo;
 #[path = "../examples/common/canvas_app.rs"]
 mod canvas_app;
+#[path = "../examples/common/canvas_regions_demo.rs"]
+mod canvas_regions_demo;
 #[path = "../examples/common/canvas_shapes_app.rs"]
 mod canvas_shapes_app;
 #[path = "../examples/common/caret_shape_demo.rs"]
@@ -210,6 +212,7 @@ use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
 use bottom_panel_demo::BottomPanelDemo;
 use canvas_app::CanvasApp;
+use canvas_regions_demo::CanvasRegionsDemo;
 use canvas_shapes_app::CanvasShapesApp;
 use caret_shape_demo::CaretShapeDemo;
 use chart_app::ChartApp;
@@ -9757,6 +9760,133 @@ fn canvas_shapes_demo_escape_exits() {
     let mut driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Escape should exit the canvas shapes demo");
+}
+
+// ─── CanvasRegionsDemo: `Canvas::regions`/`Canvas::focusable` ─────────────
+//
+// `examples/common/canvas_regions_demo.rs`'s module doc names the three
+// things these assertions prove end to end through
+// `Backend::canvas_layout`/`CanvasLayout::region_hit_test`: click-per-
+// region toggling, Tab-to-focus via a hand-rolled `AppLogic::tab_stops`,
+// and a key press reaching the focused canvas. On a 100x10 viewport
+// (`line_height() == 1.0` on TUI) the canvas rect is
+// `Rect::new(1.0, 2.0, 98.0, 3.0)`; region A spans absolute x in
+// `[1, 49)` and region B spans `[51, 99)`, both at `y` in `[2, 5)` — see
+// `CanvasRegionsDemo::canvas` for the exact math. Clicks below land well
+// inside each region, away from the shared boundary.
+
+fn canvas_regions_driver() -> TuiDriver<CanvasRegionsDemo> {
+    TuiDriver::new(CanvasRegionsDemo::new(), 100, 10)
+}
+
+#[test]
+fn canvas_regions_demo_starts_with_both_regions_off() {
+    let driver = canvas_regions_driver();
+    assert!(
+        driver.screen_contains("A:OFF") && driver.screen_contains("B:OFF"),
+        "both regions start untoggled:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("canvas: unfocused"),
+        "nothing has been Tab'd to yet:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_regions_demo_clicking_a_region_toggles_only_that_region() {
+    let mut driver = canvas_regions_driver();
+    driver.click(10.0, 3.0);
+    assert!(
+        driver.screen_contains("A:ON") && driver.screen_contains("B:OFF"),
+        "clicking inside region A must toggle only A:\n{}",
+        driver.screen()
+    );
+
+    driver.click(60.0, 3.0);
+    assert!(
+        driver.screen_contains("A:ON") && driver.screen_contains("B:ON"),
+        "clicking inside region B must toggle only B, leaving A alone:\n{}",
+        driver.screen()
+    );
+
+    // Clicking A again toggles it back off, independent of B.
+    driver.click(10.0, 3.0);
+    assert!(
+        driver.screen_contains("A:OFF") && driver.screen_contains("B:ON"),
+        "clicking A a second time toggles it back off:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_regions_demo_clicking_outside_both_regions_changes_nothing() {
+    let mut driver = canvas_regions_driver();
+    driver.click(50.0, 3.0); // the gap between A and B — `CanvasHit::Inside`.
+    driver.click(50.0, 8.0); // below the canvas entirely — `CanvasHit::Outside`.
+    assert!(
+        driver.screen_contains("A:OFF") && driver.screen_contains("B:OFF"),
+        "neither a gap click nor an outside click should toggle anything:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_regions_demo_tab_focuses_the_canvas() {
+    let mut driver = canvas_regions_driver();
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("canvas: focused"),
+        "Tab must deliver `UiEvent::FocusChanged(Some(canvas_id))`:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_regions_demo_key_without_focus_does_not_reach_the_canvas() {
+    // Before any Tab, `self.focused` is `None`, so Enter/Right must be
+    // ordinary unclaimed key presses — nothing in the canvas changes.
+    let mut driver = canvas_regions_driver();
+    driver.press_named(NamedKey::Right);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("A:OFF") && driver.screen_contains("B:OFF"),
+        "a key press must not reach the canvas until it is focused:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_regions_demo_arrow_and_enter_toggle_the_selected_region_once_focused() {
+    let mut driver = canvas_regions_driver();
+    driver.press_named(NamedKey::Tab); // focus the canvas.
+    assert!(
+        driver.screen_contains(">A:OFF"),
+        "region A is selected by default, marked with a leading '>':\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Right); // move the selection to B.
+    assert!(
+        driver.screen_contains(">B:OFF") && driver.screen_contains(" A:OFF"),
+        "Right must move the keyboard selection from A to B:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Enter); // toggle the now-selected region.
+    assert!(
+        driver.screen_contains(">B:ON") && driver.screen_contains(" A:OFF"),
+        "Enter must toggle B (the selected region), not A:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_regions_demo_q_exits() {
+    let mut driver = canvas_regions_driver();
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the canvas regions demo");
 }
 
 // ─── FloatApp: placement, edge clamping, z-order, focus ───────────────────

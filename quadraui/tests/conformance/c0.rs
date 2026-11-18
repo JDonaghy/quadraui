@@ -1498,6 +1498,8 @@ pub const CASES: &[Case] = &[
                     text: "c0cnvs".to_string(),
                     color: Color::rgb(255, 255, 255),
                 }],
+                regions: vec![],
+                focusable: false,
             };
             let _ = b.draw_canvas(area, &canvas);
         },
