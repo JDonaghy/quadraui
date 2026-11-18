@@ -74,7 +74,7 @@ test("a region click calls onRate exactly once", () => {
 
 test("a focused key press calls onRate exactly once", () => {
   // Regression coverage for the duplicate-dispatch bug a sibling binding
-  // hit (quadraui-py#2677): if `InteractionEngine::handle`'s own generic
+  // hit: if `InteractionEngine::handle`'s own generic
   // `scripted_key_press` forwarding were ever joined by a second,
   // binding-side dispatch of the same key, `onRate` would fire twice for
   // one `Right` press -- invisible in `rating`/`screen()` assertions
@@ -134,7 +134,7 @@ test("a11y reports a slider role and the current value", () => {
   const node = rating.ratingWidgetSpec.a11y({ value: 3, max: 5 }) as {
     info: Record<string, unknown>;
   };
-  assert.equal(node.info.a11y_role, "Slider");
+  assert.equal(node.info.a11y_role, "slider");
   assert.deepEqual(node.info.value_range, { min: 0, max: 5, current: 3 });
   assert.ok(String(node.info.value).includes("3"));
 });

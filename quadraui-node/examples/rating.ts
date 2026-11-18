@@ -134,7 +134,7 @@ const ratingWidgetSpec: WidgetSpec<RatingProps> = {
     const max = props.max ?? MAX_STARS;
     return {
       info: {
-        a11y_role: "Slider",
+        a11y_role: "slider",
         a11y_label: "Rating",
         value: `${props.value} of ${max} stars`,
         value_range: { min: 0.0, max, current: props.value },
