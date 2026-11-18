@@ -303,6 +303,25 @@ export interface TreeTableDescriptor {
   tree: TreeTableNodeDescriptor[];
 }
 
+export interface TreeTableControllerNodeDescriptor {
+  id: string;
+  cells?: StyledText[];
+  icon?: Icon | null;
+  has_children?: boolean;
+  children?: TreeTableControllerNodeDescriptor[] | null;
+}
+
+export interface TreeTableControllerDescriptor {
+  id: WidgetId;
+  columns?: ColumnDescriptor[];
+  nodes?: TreeTableControllerNodeDescriptor[];
+  selected_id?: string | null;
+  has_focus?: boolean;
+  show_scrollbar?: boolean;
+  bordered?: boolean;
+  folders_first?: boolean;
+}
+
 /** The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`. */
 export interface TabItemDescriptor {
   label: string;
@@ -1750,6 +1769,7 @@ export interface LayoutLeafNode {
   multi_section_view?: MultiSectionViewDescriptor;
   diff_view?: DiffViewDescriptor;
   tree_table?: TreeTableDescriptor;
+  tree_table_controller?: TreeTableControllerDescriptor;
   activity_bar?: ActivityBarDescriptor;
   toolbar?: ToolbarDescriptor;
   menu_bar?: MenuBarDescriptor;
@@ -1808,6 +1828,7 @@ export interface RenderFrameDict {
   multi_section_view?: MultiSectionViewDescriptor | null;
   diff_view?: DiffViewDescriptor | null;
   tree_table?: TreeTableDescriptor | null;
+  tree_table_controller?: TreeTableControllerDescriptor | null;
   activity_bar?: ActivityBarDescriptor | null;
   toolbar?: ToolbarDescriptor | null;
   menu_bar?: MenuBarDescriptor | null;

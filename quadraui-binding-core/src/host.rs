@@ -1634,6 +1634,27 @@ pub fn resolve_tree_expansion(widget_state: &WidgetState, tree: &TreeView) -> Tr
     }
 }
 
+// ─── `TreeTableController` node decode — shared by paint-time seeding and ──
+// a host's own `set_children`/sort-override call
+
+/// Converts a host's wire-shaped node list into the
+/// [`quadraui::TreeTableNodeData`] list [`quadraui::TreeTableController::set_children`]/
+/// [`quadraui::TreeTableController::set_nodes`] expect — the same decode
+/// [`crate::extra_paint::TreeTableControllerDescriptor::seed_controller`]
+/// applies to a `"tree_table_controller"` extra's own `nodes` at paint
+/// time, exposed here so a binding's own `set_children`/sort-override call
+/// (answering a `ChildrenRequested`/`SortChanged` the engine already
+/// emitted) can reuse the identical conversion without decoding through a
+/// whole extra descriptor.
+pub fn tree_table_controller_nodes_from_wire(
+    nodes: Vec<crate::extra_paint::TreeTableControllerNode>,
+) -> Vec<quadraui::TreeTableNodeData> {
+    nodes
+        .into_iter()
+        .map(crate::extra_paint::TreeTableControllerNode::into_node_data)
+        .collect()
+}
+
 // ─── Resolving the six fixed slots as a unit, and reading the store back ───
 //
 // Every `resolve_*` function above takes one descriptor and returns the
