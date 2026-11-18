@@ -687,18 +687,15 @@ impl CanvasLayout {
 // polylines `Canvas` targets, and avoids growing `PaintSurface` for a
 // shape `surface_draw_line` already composes.
 //
-// `#[allow(dead_code)]`: see `primitives::panel`'s identical note
-// — only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_canvas` call site plus this module's
-// own `RecordingSurface` tests on every leg that enables one of the
-// three cfg'd features.
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-#[allow(dead_code)]
-pub(crate) mod native_surface_paint {
+// Public and unconditional (not `pub(crate)`, not cfg'd to the pixel
+// backend features): the translation depends only on `PaintSurface`
+// itself, which is always compiled, so any `&mut dyn PaintSurface`
+// implementor outside this crate can replay a `Canvas`-shaped display
+// list through the identical code every built-in `Canvas` leaf already
+// paints through — `quadraui-binding-core`'s `ScriptedPrimitive` is the
+// first such caller, reusing this instead of a second op-to-verb
+// translator for a script's own `DrawOp`/`CanvasRegion` return value.
+pub mod native_surface_paint {
     use super::{
         arc_polyline, bezier_polyline, dash_segments, ellipse_polygon, polygon_fill_spans, Canvas,
         CanvasLayout, DrawOp,
@@ -747,7 +744,7 @@ pub(crate) mod native_surface_paint {
     /// Paint `canvas`'s `ops` onto `surface`, translated into
     /// `layout.bounds`'s own origin. See this module's own doc for why
     /// every pixel backend shares this one implementation.
-    pub(crate) fn paint(canvas: &Canvas, layout: &CanvasLayout, surface: &mut dyn PaintSurface) {
+    pub fn paint(canvas: &Canvas, layout: &CanvasLayout, surface: &mut dyn PaintSurface) {
         let dx = layout.bounds.x;
         let dy = layout.bounds.y;
         // Tracks how many `PushClip`s are currently open so a malformed
