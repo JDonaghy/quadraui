@@ -394,6 +394,73 @@ pub(crate) mod row_content_paint {
         );
     }
 
+    /// Paint one `IconGrid` tile's icon (centred, upper band) and label
+    /// (centred, truncated with an ellipsis, lower band) within `tile` —
+    /// the centred/stacked sibling of [`paint_row_icon`]'s left-aligned,
+    /// single-line layout. `ListView`/`Palette` paint a row's icon
+    /// beside its text on one line; `IconGrid` stacks icon above label
+    /// across two bands of the same tile, so this is a distinct shape,
+    /// not a parameterisation of [`paint_row_icon`].
+    ///
+    /// `selected` fills `tile` with `selected_bg` first (the whole tile,
+    /// not just a text band) — `IconGrid`'s selection highlight is a
+    /// filled tile, unlike a row's selection highlight which the row's
+    /// own background already covers before this helper runs.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_tile_icon_label(
+        surface: &mut dyn PaintSurface,
+        tile: Rect,
+        icon: Option<&Icon>,
+        nerd_fonts_enabled: bool,
+        label: &str,
+        fg: Color,
+        selected: bool,
+        selected_bg: Color,
+    ) {
+        if tile.width <= 0.0 || tile.height <= 0.0 {
+            return;
+        }
+        if selected {
+            surface.surface_fill_rect(tile, selected_bg);
+        }
+
+        let icon_band_h = (tile.height * 0.6).max(1.0).min(tile.height);
+        if let Some(icon) = icon {
+            let glyph = if nerd_fonts_enabled {
+                icon.glyph.as_str()
+            } else {
+                icon.fallback.as_str()
+            };
+            let (iw, ih) = surface.surface_measure_text(glyph);
+            let ix = tile.x + ((tile.width - iw) / 2.0).max(0.0);
+            let iy = tile.y + ((icon_band_h - ih) / 2.0).max(0.0);
+            surface.surface_draw_icon_glyph(
+                Rect::new(ix, iy, iw, ih),
+                glyph,
+                icon.color.unwrap_or(fg),
+            );
+        }
+
+        let label_y = tile.y + icon_band_h;
+        let label_h = (tile.height - icon_band_h).max(0.0);
+        if label_h <= 0.0 || label.is_empty() {
+            return;
+        }
+        let (fitted, fitted_w) = crate::paint_surface::fit_text_prefix(
+            surface,
+            label,
+            false,
+            (tile.width - 4.0).max(0.0),
+        );
+        if fitted.is_empty() {
+            return;
+        }
+        let (_, lh) = surface.surface_measure_text(&fitted);
+        let lx = tile.x + ((tile.width - fitted_w) / 2.0).max(0.0);
+        let ly = label_y + ((label_h - lh) / 2.0).max(0.0);
+        surface.surface_draw_text_run(Rect::new(lx, ly, fitted_w, lh), &fitted, fg);
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -404,11 +471,13 @@ pub(crate) mod row_content_paint {
         /// Minimal `PaintSurface` double: 8-unit-wide chars, 16-unit
         /// lines — matches the mocks every other `native_surface_paint`
         /// test module in this crate uses. Records every
-        /// `surface_draw_text_run` call so a test can assert whether
-        /// [`paint_row_detail`] actually painted.
+        /// `surface_draw_text_run`/`surface_fill_rect` call so a test
+        /// can assert whether [`paint_row_detail`]/[`paint_tile_icon_label`]
+        /// actually painted.
         #[derive(Default)]
         struct RecordingSurface {
             text_runs: Vec<(Rect, String, Color)>,
+            fills: Vec<(Rect, Color)>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -426,7 +495,9 @@ pub(crate) mod row_content_paint {
             fn surface_measure_text(&self, text: &str) -> (f32, f32) {
                 (text.chars().count() as f32 * 8.0, 16.0)
             }
-            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
             fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
@@ -562,6 +633,87 @@ pub(crate) mod row_content_paint {
             // dx = row_rect.x + row_rect.width - detail.width - right_margin
             //    = 0 + 100 - 24 - 4 = 72.
             assert_eq!(rect.x, 72.0);
+        }
+
+        // ── paint_tile_icon_label ────────────────────────────────────
+
+        #[test]
+        fn paint_tile_icon_label_paints_glyph_then_label() {
+            let mut surface = RecordingSurface::default();
+            let icon = Icon::new("GLYPH", "F");
+            let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                Some(&icon),
+                true,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                false,
+                Color::rgb(9, 9, 9),
+            );
+            assert_eq!(surface.text_runs.len(), 2, "icon glyph plus label");
+            assert_eq!(surface.text_runs[0].1, "GLYPH");
+            assert_eq!(surface.text_runs[1].1, "a.txt");
+            assert_eq!(surface.text_runs[1].2, Color::rgb(1, 2, 3));
+            assert!(
+                surface.fills.is_empty(),
+                "an unselected tile must not fill its background"
+            );
+        }
+
+        #[test]
+        fn paint_tile_icon_label_without_an_icon_paints_only_the_label() {
+            let mut surface = RecordingSurface::default();
+            let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                None,
+                false,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                false,
+                Color::rgb(9, 9, 9),
+            );
+            assert_eq!(surface.text_runs.len(), 1);
+            assert_eq!(surface.text_runs[0].1, "a.txt");
+        }
+
+        #[test]
+        fn paint_tile_icon_label_fills_the_whole_tile_when_selected() {
+            let mut surface = RecordingSurface::default();
+            let tile = Rect::new(0.0, 0.0, 80.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                None,
+                false,
+                "a.txt",
+                Color::rgb(1, 2, 3),
+                true,
+                Color::rgb(9, 9, 9),
+            );
+            assert_eq!(surface.fills, vec![(tile, Color::rgb(9, 9, 9))]);
+        }
+
+        #[test]
+        fn paint_tile_icon_label_truncates_an_overlong_label() {
+            let mut surface = RecordingSurface::default();
+            let tile = Rect::new(0.0, 0.0, 40.0, 40.0);
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                None,
+                false,
+                &"x".repeat(50),
+                Color::rgb(1, 2, 3),
+                false,
+                Color::rgb(9, 9, 9),
+            );
+            let (_, text, _) = &surface.text_runs[0];
+            assert!(text.ends_with('…'));
+            assert!(text.len() < 50);
         }
     }
 }

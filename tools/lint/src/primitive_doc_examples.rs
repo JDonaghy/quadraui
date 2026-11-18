@@ -87,6 +87,7 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("find_replace", "FindReplacePanel"),
     ("float", "Float"),
     ("form", "Form"),
+    ("icon_grid", "IconGrid"),
     ("image", "Image"),
     ("list", "ListView"),
     ("menu_bar", "MenuBar"),

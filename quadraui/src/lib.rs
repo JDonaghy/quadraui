@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 52 primitive modules (one each under `src/primitives/`) — widgets,
+//! 53 primitive modules (one each under `src/primitives/`) — widgets,
 //! each declarative + serde-friendly so apps and Lua plugins can
 //! describe UI as data, plus the `layout_metrics` and `row_stack`
 //! shared-math helpers the widget modules reuse. A representative
@@ -117,7 +117,7 @@
 //! `0.11.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 51 primitive modules
+//! `quadraui/docs/decisions/DECISIONS.md`. 52 primitive modules
 //! shipped. The TUI and GTK backends have full feature parity and are
 //! battle-tested by vimcode (5000+ tests). The macOS backend
 //! implements the whole `Backend` trait and is built/tested for real
@@ -611,6 +611,21 @@ pub use primitives::form::{
     FormItemMeasure, FormLayout, FormSpacing, LabelAlign, LabelPosition, RowAlign, ToggleGroupItem,
     ValidationState, VisibleFormField,
 };
+pub use primitives::icon_grid::{
+    icon_grid_move_selection, IconGrid, IconGridEvent, IconGridHit, IconGridItem, IconGridLayout,
+    IconGridNav, VisibleIconGridTile,
+};
+// `IconGrid`'s `Primitive::Layout` — defined on every feature set its
+// `impl Primitive for IconGrid` itself is (see that impl's own `cfg`):
+// the three pixel backends via `native_surface_paint`, plus `tui` via
+// `Primitive::paint_cells`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use primitives::icon_grid::IconGridPrimitiveLayout;
 pub use primitives::image::{Image, ImageFit, ImageHit, ImageLayout, ImageSource};
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
