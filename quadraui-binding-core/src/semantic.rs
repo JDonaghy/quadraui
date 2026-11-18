@@ -1143,6 +1143,7 @@ mod tests {
             area,
             extra: Rc::new(primitive) as Rc<dyn crate::extra_paint::ExtraPaint>,
             chrome_hits: Vec::new(),
+            tree_table_hit: None,
         }
     }
 
