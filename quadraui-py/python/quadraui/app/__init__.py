@@ -43,6 +43,16 @@ dict `App` keys by this component's position in the tree (or its explicit
 state a callback mutates survives to the component's next render exactly
 like a plain app's own instance attributes would.
 
+**Widgets.** Reach for `Component` first -- it covers reusable view +
+state built from the nodes already listed above. When a shape truly can't
+be composed from them (its own hit regions, its own painting, its own
+accessibility), subclass `Widget` (`quadraui.app.widget`) instead: override
+`measure`/`paint`, and `on_event`/`a11y` for interaction/accessibility. It
+degrades to TUI the same way every other primitive does, through the same
+`DrawOp`/`CanvasRegion` display-list vocabulary a plain `Canvas` descriptor
+already paints through. See `quadraui-py/examples/rating.py` for a worked
+example.
+
 **Redraw.** Nothing here schedules one explicitly, because nothing needs
 to: `QuiApp` already repaints once per `step()` whenever a render callback
 is registered (see `QuiApp`'s own module doc), so a callback mutating
@@ -94,11 +104,13 @@ from .nodes import (
     Tree,
 )
 from .runtime import App, key_name
+from .widget import Widget
 
 __all__ = [
     "App",
     "Node",
     "Component",
+    "Widget",
     "key_name",
     "Split",
     "Column",

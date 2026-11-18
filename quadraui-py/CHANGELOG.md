@@ -12,6 +12,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `quadraui.app.widget.Widget`: a base class for a script-authored node
+  with its own `measure`/`paint`/`on_event`/`a11y` -- for a widget that
+  can't be built by composing existing nodes. Builds on the `Canvas`
+  `DrawOp`/`CanvasRegion` display-list vocabulary (`paint` returns the
+  same `{"ops": [...], "regions": [...]}` shape `quadraui.wire.CanvasDescriptor`
+  documents) and routes through `quadraui_binding_core::ScriptedPrimitive`.
+  See `quadraui-py/examples/rating.py` (a 5-star rating control) for a
+  worked example.
 - A `"toolbar"` extra's dict may now set `"overflow"` (`"Clip"`/`"Wrap"`/
   `"Menu"`) and `"overflow_priorities"` (a list of `{"id", "priority"}`
   entries) to opt into `ToolbarOverflow`'s wrap/menu-with-drop-priority
