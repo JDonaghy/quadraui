@@ -760,6 +760,22 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("scroll_px", float_()),
         ],
     ));
+    let tree_table_node_descriptor = b.define(obj(
+        "TreeTableNodeDescriptor",
+        vec![
+            field("path", re("TreePath")),
+            field("indent", int_()),
+            field("is_expanded", nullable(bool_())),
+            field("icon", nullable(icon.clone())),
+        ],
+    ));
+    let tree_table_descriptor = b.define(obj(
+        "TreeTableDescriptor",
+        vec![
+            field("table", data_table_descriptor.clone()),
+            field("tree", list(tree_table_node_descriptor)),
+        ],
+    ));
 
     let tab_item_descriptor = b.define(obj_doc(
         "TabItemDescriptor",
@@ -2633,6 +2649,7 @@ pub fn schema() -> Vec<DefJson> {
             "password" => password_descriptor.clone(),
             "textarea" => textarea_descriptor.clone(),
             "markdown" => markdown_descriptor.clone(),
+            "tree_table" => tree_table_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
