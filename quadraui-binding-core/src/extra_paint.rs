@@ -1367,16 +1367,15 @@ impl ExtraPaint for TreeTable {
     }
 
     /// Whole-area bounds check only, same limitation [`ComboBox::hit_test`]'s
-    /// doc describes: resolving a click to a specific chevron or row needs
-    /// [`quadraui::Backend::tree_table_layout`]'s real column widths, which
-    /// this trait's `hit_test` has no `backend` parameter for. A precise
-    /// chevron-click → [`quadraui::primitives::tree_table::TreeTableEvent::ToggleExpanded`]
-    /// semantic event needs its own `UiEvent` variant and
-    /// `crate::engine`/`crate::semantic` plumbing (mirroring how
-    /// `HitDetail::DataTableHeaderDivider` resolves a real
-    /// `Backend::data_table_layout` at the click site) — not wired yet
-    /// rather than impossible; a raw `MouseDown` with its `"hit"` dict
-    /// still reaches the host today.
+    /// doc describes: this trait's `hit_test` has no `backend` parameter
+    /// to resolve [`quadraui::Backend::tree_table_layout`]'s real column
+    /// widths with. The precise chevron/row/header resolution a click
+    /// actually gets goes through [`crate::hit::PaintedHit::Extra::tree_table_hit`]
+    /// instead — the real [`quadraui::TreeTableLayout`] stashed there at
+    /// paint time, when a `Backend` *is* available — so
+    /// [`crate::hit::hit_test_painted`] only ever falls back to this
+    /// whole-area check for a `TreeTable` extra with no such entry (there
+    /// is currently no such path; see that field's own doc).
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -3133,11 +3132,11 @@ mod tests {
     /// chevron glyph both reach the screen (the chevron via the shared
     /// [`quadraui::primitives::tree_table::native_surface_paint`] this
     /// paints through on GTK/macOS/Win — TUI keeps its own
-    /// [`quadraui::tui::draw_tree_table`] rasteriser). [`TreeTable::hit_test`]
-    /// is coarse (see that impl's own doc for why), so a click anywhere in
-    /// its body still reaches the handler, just as the raw `MouseDown`
-    /// [`ExtraPaint::hit_test`]'s doc says it does today — no
-    /// `ToggleExpanded` semantic event is synthesized yet.
+    /// [`quadraui::tui::draw_tree_table`] rasteriser). A click elsewhere in
+    /// the body still reaches the handler as a raw `MouseDown`, same as
+    /// every other `ExtraBody` hit; a click on the chevron itself resolves
+    /// through [`crate::hit::PaintedHit::Extra::tree_table_hit`] to a real
+    /// [`quadraui::UiEvent::TreeTable`]`(`[`quadraui::TreeTableEvent::ToggleExpanded`]`)`.
     #[test]
     fn tree_table_extra_renders_label_and_chevron_and_passes_through_a_click() {
         let id = WidgetId::new("tt:files");
@@ -3180,17 +3179,47 @@ mod tests {
         let mut driver = single_leaf_driver(id, Rc::new(tree_table));
         assert!(driver.screen_contains("src"), "{}", driver.screen());
         assert!(driver.screen_contains("main.rs"), "{}", driver.screen());
+        assert!(
+            driver.screen_contains("▾"),
+            "the expanded branch row's chevron glyph must reach the screen: {}",
+            driver.screen()
+        );
 
         let area = leaf_area(&driver, id);
-        driver.click(area.x, area.y);
-        let dispatched = &driver.app().sink.borrow().dispatched;
-        assert!(
-            dispatched
-                .iter()
-                .any(|event| matches!(event, UiEvent::MouseDown { .. })),
-            "a click on the table body should still reach the handler as a \
-             raw MouseDown until a chevron-click semantic event exists: \
-             {dispatched:?}"
-        );
+        // Row 0 is the header; "src" (the only expanded branch, indent 0)
+        // paints its chevron at column 0 of row 1 — see
+        // `tui::data_table::tree_table_tests::branch_row_paints_a_chevron_and_the_label_still_appears`.
+        driver.click(area.x, area.y + 1.0);
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|event| matches!(
+                    event,
+                    UiEvent::TreeTable(
+                        ev_id,
+                        quadraui::TreeTableEvent::ToggleExpanded { path, expand: false }
+                    ) if *ev_id == id && path.as_slice() == [0u16]
+                )),
+                "a click on the chevron should resolve to TreeTableEvent::ToggleExpanded: \
+                 {dispatched:?}"
+            );
+        }
+
+        // A click elsewhere in the body (past the chevron/label, still on
+        // the row) has no more specific resolution, so it still reaches
+        // the handler as a raw `MouseDown` — the same `ExtraBody` fallback
+        // every other additive primitive's body click gets.
+        driver.app().sink.borrow_mut().dispatched.clear();
+        driver.click(area.x + 10.0, area.y + 1.0);
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched
+                    .iter()
+                    .any(|event| matches!(event, UiEvent::MouseDown { .. })),
+                "a click on the row body (not the chevron) should still reach the \
+                 handler as a raw MouseDown: {dispatched:?}"
+            );
+        }
     }
 }

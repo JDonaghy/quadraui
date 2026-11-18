@@ -1256,6 +1256,23 @@ impl MacBackend {
         self.current_cg_ptr.get() as CGContextRef
     }
 
+    /// Builds a [`super::surface::CgSurface`] over the current frame's
+    /// `CGContextRef`, painting through [`Self::chrome_font`] — the
+    /// null-context debug assert every chrome-surface painter in this
+    /// file repeats, written once here. `caller` is only for the
+    /// "outside `enter_frame_scope`" panic message.
+    fn chrome_surface(&self, caller: &str) -> super::surface::CgSurface<'_> {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::{caller} called outside enter_frame_scope",
+        );
+        super::surface::CgSurface {
+            ctx,
+            font: Some(&self.chrome_font),
+        }
+    }
+
     // ── Accelerator matching ─────────────────────────────────────────
 
     /// Look up a registered `Global`-scope accelerator for a
@@ -2760,30 +2777,22 @@ impl Backend for MacBackend {
             self.resolved_row_height(self.current_line_height),
         )
     }
-    /// One-line forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
-    /// `TreeTable` is chrome, not editor content, same as
-    /// [`Self::draw_data_table`].
+    /// Forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::paint`]
+    /// through [`Self::chrome_surface`] — `TreeTable` is chrome, not
+    /// editor content, same as [`Self::draw_data_table`].
     fn draw_tree_table(
         &mut self,
         rect: Rect,
         table: &crate::TreeTable,
         hovered_idx: Option<usize>,
     ) -> crate::primitives::tree_table::TreeTableLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tree_table called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.resolved_row_height(self.current_line_height);
-        let mut surface = super::surface::CgSurface {
-            ctx,
-            font: Some(font),
-        };
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let state = crate::primitives::data_table::DataTablePaintState::default()
             .with_hovered_idx(hovered_idx);
+        let mut surface = self.chrome_surface("draw_tree_table");
         crate::primitives::tree_table::native_surface_paint::paint(
             table,
             &mut surface,
@@ -2791,7 +2800,7 @@ impl Backend for MacBackend {
             rect,
             line_height as f32,
             &state,
-            self.nerd_fonts_enabled,
+            nerd_fonts_enabled,
         )
     }
     /// One-line forward to the shared
@@ -2919,17 +2928,12 @@ impl Backend for MacBackend {
         // See `modal_stack.rs`'s "Paint-consistency detection" docs —
         // records that this palette's surface was actually painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_palette called outside enter_frame_scope",
-        );
         // `Palette` is chrome, not editor content — see
         // `draw_data_table`'s comment.
-        let font = &self.chrome_font;
         let theme = self.current_theme;
         let style = self.style();
         let line_height = self.current_line_height;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
             return;
         }
@@ -2943,17 +2947,14 @@ impl Backend for MacBackend {
         // `super::palette::draw_palette`, whose public signature stays
         // additive-only and so cannot take a live `&Style`) so this live
         // backend path honours `Self::set_style` overrides.
-        let mut surface = super::surface::CgSurface {
-            ctx,
-            font: Some(font),
-        };
+        let mut surface = self.chrome_surface("draw_palette");
         crate::primitives::palette::native_surface_paint::paint(
             palette,
             rect,
             &palette_layout,
             rows_h,
             line_height as f32,
-            self.nerd_fonts_enabled,
+            nerd_fonts_enabled,
             &mut surface,
             &theme,
             &style,
@@ -3847,14 +3848,8 @@ impl Backend for MacBackend {
         layout: &TooltipLayout,
         chrome: &crate::TooltipChrome,
     ) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tooltip called outside enter_frame_scope",
-        );
         // `Tooltip` is chrome, not editor content — see
         // `draw_data_table`'s comment.
-        let font = &self.chrome_font;
         let theme = self.current_theme;
         let style = self.style();
         let line_height = self.current_line_height;
@@ -3864,10 +3859,7 @@ impl Backend for MacBackend {
         // signature stays additive-only and so cannot take a live
         // `&Style`) so this live backend path honours `Self::set_style`
         // overrides — see that free function's own doc.
-        let mut surface = super::surface::CgSurface {
-            ctx,
-            font: Some(font),
-        };
+        let mut surface = self.chrome_surface("draw_tooltip");
         crate::primitives::tooltip::native_surface_paint::paint(
             tooltip,
             layout,
@@ -3890,25 +3882,17 @@ impl Backend for MacBackend {
     ) -> Vec<(Rect, WidgetId)> {
         // See draw_palette for why this happens before the CG borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_context_menu called outside enter_frame_scope",
-        );
         // Chrome primitives are drawn through `chrome_font` —
         // `draw_tree`'s comment explains the swap.
-        let font = &self.chrome_font;
         let theme = self.current_theme;
         let style = self.style();
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         // Calls the shared paint directly (rather than through
         // `super::context_menu::draw_context_menu`, whose public
         // signature stays additive-only and so cannot take a live
         // `&Style`) so this live backend path honours `Self::set_style`
         // overrides.
-        let mut surface = super::surface::CgSurface {
-            ctx,
-            font: Some(font),
-        };
+        let mut surface = self.chrome_surface("draw_context_menu");
         // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
         // flag resolves an item's own `ContextMenuItem::icon`.
         crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
@@ -3919,7 +3903,7 @@ impl Backend for MacBackend {
             &theme,
             &style,
             None,
-            self.nerd_fonts_enabled,
+            nerd_fonts_enabled,
         )
     }
     /// [`Self::draw_context_menu`], but honouring an optional
@@ -3934,20 +3918,12 @@ impl Backend for MacBackend {
     ) -> Vec<(Rect, WidgetId)> {
         // See draw_palette for why this happens before the CG borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_context_menu_with_glyphs called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
         let theme = self.current_theme;
         let style = self.style();
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         // Calls the shared paint directly — see `Self::draw_context_menu`'s
         // comment for why.
-        let mut surface = super::surface::CgSurface {
-            ctx,
-            font: Some(font),
-        };
+        let mut surface = self.chrome_surface("draw_context_menu_with_glyphs");
         crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
             menu,
             layout,
@@ -3956,21 +3932,15 @@ impl Backend for MacBackend {
             &theme,
             &style,
             glyphs,
-            self.nerd_fonts_enabled,
+            nerd_fonts_enabled,
         )
     }
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
         // See draw_palette for why this happens before the CG borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_dialog called outside enter_frame_scope",
-        );
         // Chrome primitives are drawn through `chrome_font` —
         // `draw_tree`'s comment explains the swap and why `line_height`
         // stays the editor pitch.
-        let font = &self.chrome_font;
         let theme = self.current_theme;
         let style = self.style();
         let line_height = self.current_line_height;
@@ -3980,10 +3950,7 @@ impl Backend for MacBackend {
         // backend path honours `Self::set_style` overrides — the
         // toolbar-sub-paint step below mirrors that free function's own
         // body exactly.
-        let mut surface = super::surface::CgSurface {
-            ctx,
-            font: Some(font),
-        };
+        let mut surface = self.chrome_surface("draw_dialog");
         let button_rects = crate::primitives::dialog::native_surface_paint::paint(
             dialog,
             layout,
@@ -3995,11 +3962,13 @@ impl Backend for MacBackend {
         if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =
             (layout.input_bounds, dialog.input.as_ref())
         {
-            // SAFETY: ctx is non-null inside the frame scope.
+            // SAFETY: surface.ctx is non-null inside the frame scope.
             unsafe {
                 super::toolbar::draw_toolbar(
-                    ctx,
-                    font,
+                    surface.ctx,
+                    surface
+                        .font
+                        .expect("chrome_surface built with font: Some(_)"),
                     input_b.x as f64,
                     input_b.y as f64,
                     input_b.width as f64,

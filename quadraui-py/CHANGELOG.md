@@ -17,6 +17,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   entries) to opt into `ToolbarOverflow`'s wrap/menu-with-drop-priority
   layouts instead of today's Clip-only behaviour. Both keys are optional;
   a `"toolbar"` dict with neither renders exactly as before.
+- A click on a `"tree_table"` extra's branch-row chevron now resolves to a
+  typed `{"TreeTable": (id, {"ToggleExpanded": {"path", "expand"}})}`
+  event instead of only a raw `MouseDown`; a click elsewhere in the row
+  body still falls back to the raw `MouseDown`.
 
 ### Changed
 

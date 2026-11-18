@@ -1569,6 +1569,35 @@ impl GtkBackend {
         })
     }
 
+    /// Builds a [`super::surface::CairoSurface`] over the current
+    /// frame's `(cr, layout)`, swapping `layout`'s font to
+    /// [`crate::gtk::chrome_font_description`]`(&self.ui_font)` for the
+    /// duration of `paint` and restoring it (and clearing any attributes
+    /// `paint` left behind) afterward. Centralizes the save/swap/restore
+    /// dance every chrome-surface painter in this file needs — `caller`
+    /// is only for the "outside `enter_frame_scope`" panic message.
+    fn with_chrome_surface<R>(
+        &mut self,
+        caller: &str,
+        paint: impl FnOnce(&mut super::surface::CairoSurface<'_>) -> R,
+    ) -> R {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .unwrap_or_else(|| panic!("GtkBackend::{caller} called outside enter_frame_scope"));
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        let mut surface = super::surface::CairoSurface {
+            cr,
+            layout: Some(layout),
+            translucent_fill: true,
+        };
+        let result = paint(&mut surface);
+        layout.set_attributes(None);
+        layout.set_font_description(saved_font.as_ref());
+        result
+    }
+
     // ── Text selection ─────────────────────────────────────────────────────
     //
     // The region registry + active-selection state machine, plus the
@@ -3205,10 +3234,10 @@ impl Backend for GtkBackend {
             &measure,
         )
     }
-    /// One-line forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
-    /// `TreeTable` is chrome, not editor content, same font save/swap/
-    /// restore as [`Self::draw_data_table_with_glyphs`].
+    /// Forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::paint`]
+    /// through [`Self::with_chrome_surface`] — `TreeTable` is chrome,
+    /// not editor content, same as [`Self::draw_data_table_with_glyphs`].
     fn draw_tree_table(
         &mut self,
         rect: QRect,
@@ -3218,30 +3247,19 @@ impl Backend for GtkBackend {
         let lh = self.resolved_row_height(self.current_line_height);
         let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tree_table called outside enter_frame_scope");
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        let mut surface = super::surface::CairoSurface {
-            cr,
-            layout: Some(layout),
-            translucent_fill: true,
-        };
         let state = crate::primitives::data_table::DataTablePaintState::default()
             .with_hovered_idx(hovered_idx);
-        let table_layout = crate::primitives::tree_table::native_surface_paint::paint(
-            table,
-            &mut surface,
-            &theme,
-            rect,
-            lh as f32,
-            &state,
-            nerd_fonts_enabled,
-        );
-        layout.set_font_description(saved_font.as_ref());
-        table_layout
+        self.with_chrome_surface("draw_tree_table", |surface| {
+            crate::primitives::tree_table::native_surface_paint::paint(
+                table,
+                surface,
+                &theme,
+                rect,
+                lh as f32,
+                &state,
+                nerd_fonts_enabled,
+            )
+        })
     }
     /// One-line forward to the shared
     /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
@@ -3373,50 +3391,41 @@ impl Backend for GtkBackend {
         // See `modal_stack.rs`'s "Paint-consistency detection" docs —
         // records that this palette's surface was actually painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_palette called outside enter_frame_scope");
+        let line_height = self.current_line_height;
+        let style = self.style();
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         // The command palette is chrome, not editor content — same
         // save/swap/restore as `Self::draw_tree`, since
         // `crate::gtk::draw_palette` paints directly against whatever
         // font `layout` carries in rather than going through
-        // `PaintSurface`.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        // Calls the shared paint directly (rather than through
-        // `crate::gtk::draw_palette`, whose public signature stays
-        // additive-only and so cannot take a live `&Style`) so this live
-        // backend path honours `Self::set_style` overrides.
-        if rect.width >= 20.0 && rect.height >= self.current_line_height as f32 * 4.0 {
+        // `PaintSurface`. Calls the shared paint directly (rather than
+        // through `crate::gtk::draw_palette`, whose public signature
+        // stays additive-only and so cannot take a live `&Style`) so
+        // this live backend path honours `Self::set_style` overrides.
+        self.with_chrome_surface("draw_palette", |surface| {
+            if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
+                return;
+            }
             let (palette_layout, rows_h) = crate::gtk::gtk_palette_layout(
                 rect.width as f64,
                 rect.height as f64,
                 palette,
-                self.current_line_height,
+                line_height,
             );
             let area = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-            let style = self.style();
-            let nerd_fonts_enabled = self.nerd_fonts_enabled;
-            let mut surface = crate::gtk::surface::CairoSurface {
-                cr,
-                layout: Some(layout),
-                translucent_fill: true,
-            };
             crate::primitives::palette::native_surface_paint::paint(
                 palette,
                 area,
                 &palette_layout,
                 rows_h as f32,
-                self.current_line_height as f32,
+                line_height as f32,
                 nerd_fonts_enabled,
-                &mut surface,
-                &self.current_theme,
+                surface,
+                &theme,
                 &style,
             );
-            layout.set_attributes(None);
-        }
-        layout.set_font_description(saved_font.as_ref());
+        });
     }
 
     fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
@@ -4682,37 +4691,28 @@ impl Backend for GtkBackend {
         chrome: &crate::TooltipChrome,
     ) {
         let style = self.style();
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tooltip called outside enter_frame_scope");
-        // Tooltip text is chrome, not editor content — save the editor
-        // font on the shared layout, paint in `ui_font`, then restore,
-        // matching `Self::draw_tree`'s save/swap/restore.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        // Calls the shared paint directly (rather than through
+        let theme = self.current_theme;
+        let line_height = self.current_line_height as f32;
+        let char_width = self.current_char_width as f32;
+        // Tooltip text is chrome, not editor content — same font
+        // save/swap/restore as `Self::draw_tree`. Calls the shared
+        // paint directly (rather than through
         // `crate::gtk::draw_tooltip_with_chrome`, whose public signature
         // stays additive-only and so cannot take a live `&Style`) so
         // this live backend path honours `Self::set_style` overrides —
         // see `crate::gtk::draw_tooltip_with_chrome`'s own doc.
-        let mut surface = crate::gtk::surface::CairoSurface {
-            cr,
-            layout: Some(pango_layout),
-            translucent_fill: true,
-        };
-        crate::primitives::tooltip::native_surface_paint::paint(
-            tooltip,
-            layout_arg,
-            chrome,
-            self.current_line_height as f32,
-            self.current_char_width as f32,
-            &mut surface,
-            &self.current_theme,
-            &style,
-        );
-        pango_layout.set_attributes(None);
-        pango_layout.set_font_description(saved_font.as_ref());
+        self.with_chrome_surface("draw_tooltip", |surface| {
+            crate::primitives::tooltip::native_surface_paint::paint(
+                tooltip,
+                layout_arg,
+                chrome,
+                line_height,
+                char_width,
+                surface,
+                &theme,
+                &style,
+            );
+        });
         // Register the tooltip's own surface — see the matching
         // comment on `TuiBackend::draw_tooltip`. GTK already painted a
         // full 4-sided box here before TUI did; this just makes
@@ -4731,42 +4731,29 @@ impl Backend for GtkBackend {
     ) -> Vec<(QRect, crate::WidgetId)> {
         // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_context_menu called outside enter_frame_scope");
         // Dropdown items are chrome, not editor content — save/swap/restore like
         // `Self::draw_menu_bar`, so the bar and dropdown agree within a single frame.
-        // Calls the shared paint directly so this live backend path honours
-        // `Self::set_style` overrides.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
         // Calls the shared paint directly (rather than through
         // `crate::gtk::draw_context_menu`, whose public signature stays
         // additive-only and so cannot take a live `&Style`) so this live
         // backend path honours `Self::set_style` overrides.
         let style = self.style();
+        let theme = self.current_theme;
         // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
         // flag resolves an item's own `ContextMenuItem::icon`.
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let mut surface = crate::gtk::surface::CairoSurface {
-            cr,
-            layout: Some(pango_layout),
-            translucent_fill: true,
-        };
-        let hits = crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
-            menu,
-            layout_arg,
-            crate::accelerator::Platform::Linux,
-            &mut surface,
-            &self.current_theme,
-            &style,
-            None,
-            nerd_fonts_enabled,
-        );
-        pango_layout.set_attributes(None);
-        pango_layout.set_font_description(saved_font.as_ref());
-        hits
+        self.with_chrome_surface("draw_context_menu", |surface| {
+            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
+                menu,
+                layout_arg,
+                crate::accelerator::Platform::Linux,
+                surface,
+                &theme,
+                &style,
+                None,
+                nerd_fonts_enabled,
+            )
+        })
     }
 
     /// [`Self::draw_context_menu`] plus an optional
@@ -4781,36 +4768,25 @@ impl Backend for GtkBackend {
     ) -> Vec<(QRect, crate::WidgetId)> {
         // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_context_menu_with_glyphs called outside enter_frame_scope");
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
         // Calls the shared paint directly (rather than through
         // `crate::gtk::draw_context_menu`, whose public signature stays
         // additive-only and so cannot take a live `&Style`) so this live
         // backend path honours `Self::set_style` overrides.
         let style = self.style();
+        let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let mut surface = crate::gtk::surface::CairoSurface {
-            cr,
-            layout: Some(pango_layout),
-            translucent_fill: true,
-        };
-        let hits = crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
-            menu,
-            layout_arg,
-            crate::accelerator::Platform::Linux,
-            &mut surface,
-            &self.current_theme,
-            &style,
-            glyphs,
-            nerd_fonts_enabled,
-        );
-        pango_layout.set_attributes(None);
-        pango_layout.set_font_description(saved_font.as_ref());
-        hits
+        self.with_chrome_surface("draw_context_menu_with_glyphs", |surface| {
+            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
+                menu,
+                layout_arg,
+                crate::accelerator::Platform::Linux,
+                surface,
+                &theme,
+                &style,
+                glyphs,
+                nerd_fonts_enabled,
+            )
+        })
     }
 
     fn draw_dialog(
@@ -4823,50 +4799,41 @@ impl Backend for GtkBackend {
         let line_height = self.current_line_height;
         let theme = self.current_theme;
         let style = self.style();
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_dialog called outside enter_frame_scope");
         // Calls the shared paint directly (rather than through
         // `crate::gtk::draw_dialog`, whose public signature stays
         // additive-only and so cannot take a live `&Style`) so this live
         // backend path honours `Self::set_style` overrides — the
-        // font-swap/toolbar-sub-paint/restore steps below mirror that
-        // free function's own body exactly.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let mut surface = crate::gtk::surface::CairoSurface {
-            cr,
-            layout: Some(pango_layout),
-            translucent_fill: true,
-        };
-        let rects = crate::primitives::dialog::native_surface_paint::paint(
-            dialog,
-            dialog_layout,
-            line_height as f32,
-            &mut surface,
-            &theme,
-            &style,
-        );
-        if let (Some(input_b), Some(crate::primitives::dialog::DialogInput::Toolbar(toolbar))) =
-            (dialog_layout.input_bounds, dialog.input.as_ref())
-        {
-            crate::gtk::toolbar::draw_toolbar(
-                cr,
-                pango_layout,
-                input_b.x as f64,
-                input_b.y as f64,
-                input_b.width as f64,
-                input_b.height as f64,
-                toolbar,
+        // toolbar sub-paint below mirrors that free function's own body
+        // exactly.
+        self.with_chrome_surface("draw_dialog", |surface| {
+            let rects = crate::primitives::dialog::native_surface_paint::paint(
+                dialog,
+                dialog_layout,
+                line_height as f32,
+                surface,
                 &theme,
-                None,
-                None,
+                &style,
             );
-        }
-        pango_layout.set_attributes(None);
-        pango_layout.set_font_description(saved_font.as_ref());
-        rects
+            if let (Some(input_b), Some(crate::primitives::dialog::DialogInput::Toolbar(toolbar))) =
+                (dialog_layout.input_bounds, dialog.input.as_ref())
+            {
+                crate::gtk::toolbar::draw_toolbar(
+                    surface.cr,
+                    surface
+                        .layout
+                        .expect("CairoSurface built with layout: Some(_)"),
+                    input_b.x as f64,
+                    input_b.y as f64,
+                    input_b.width as f64,
+                    input_b.height as f64,
+                    toolbar,
+                    &theme,
+                    None,
+                    None,
+                );
+            }
+            rects
+        })
     }
 
     fn draw_float(

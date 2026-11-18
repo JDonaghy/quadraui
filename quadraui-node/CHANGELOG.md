@@ -23,6 +23,10 @@ fragment step for this package (that mechanism, and
   into `ToolbarOverflow`'s wrap/menu-with-drop-priority layouts instead of
   today's Clip-only behaviour. Both keys are optional; a `"toolbar"`
   object with neither renders exactly as before.
+- A click on a `"tree_table"` extra's branch-row chevron now resolves to a
+  typed `{TreeTable: [id, {ToggleExpanded: {path, expand}}]}` event
+  instead of only a raw `MouseDown`; a click elsewhere in the row body
+  still falls back to the raw `MouseDown`.
 - `App.confirm(title, body, buttons, severity?)` and `App.alert(title,
   body, options?)`: queue an in-canvas dialog through `App.actions`
   (never the direct, mid-dispatch-unsafe `QuiApp.showMessageDialog`) and

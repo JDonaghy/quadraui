@@ -9,7 +9,7 @@ use quadraui::{
     DatePicker, DatePickerEvent, EditOp, FormEvent, Key, ListViewEvent, Modifiers, MouseButton,
     NamedKey, NumberInput, NumberInputEvent, RadioGroup, RadioGroupEvent, StatusBar,
     StatusBarEvent, Switch, SwitchEvent, TabBar, TabBarEvent, TextDisplayEvent, TextInput,
-    TreeEvent, UiEvent, WidgetId,
+    TreeEvent, TreeTable, TreeTableLayout, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -551,6 +551,21 @@ pub fn semantic_event_for_hit(
             let path = tree_row_path(hit_map, id, *row)?;
             Some(UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }))
         }
+        // `TreeTable` is an `Extra`, so the matched `PaintedHit::Extra`
+        // under `id` is looked up directly here rather than through a
+        // `tree_row_path`-style helper -- `extra` and `idx` both already
+        // live in the same hit-map entry [`crate::hit::hit_test_painted`]
+        // resolved this `HitDetail` from.
+        HitDetail::TreeTableChevron { idx } => hit_map.iter().find_map(|hit| match hit {
+            PaintedHit::Extra {
+                id: hit_id, extra, ..
+            } if *hit_id == id => {
+                let tree_table = extra_as::<TreeTable>(extra)?;
+                let event = TreeTableLayout::chevron_toggle(*idx, &tree_table.tree)?;
+                Some(UiEvent::TreeTable(id, event))
+            }
+            _ => None,
+        }),
         HitDetail::ListItem { index } => {
             if double_click {
                 Some(UiEvent::List(

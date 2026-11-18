@@ -272,6 +272,16 @@ class DataTableDescriptor(TypedDict):
     bordered: NotRequired[bool]
     scroll_px: NotRequired[float]
 
+class TreeTableNodeDescriptor(TypedDict):
+    path: TreePath
+    indent: int
+    is_expanded: Optional[bool]
+    icon: Optional[Icon]
+
+class TreeTableDescriptor(TypedDict):
+    table: DataTableDescriptor
+    tree: List[TreeTableNodeDescriptor]
+
 class TabItemDescriptor(TypedDict):
     """The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`."""
     label: str
@@ -1553,6 +1563,7 @@ LayoutLeafNode = TypedDict(
         "minimap": NotRequired[MinimapDescriptor],
         "multi_section_view": NotRequired[MultiSectionViewDescriptor],
         "diff_view": NotRequired[DiffViewDescriptor],
+        "tree_table": NotRequired[TreeTableDescriptor],
         "activity_bar": NotRequired[ActivityBarDescriptor],
         "toolbar": NotRequired[ToolbarDescriptor],
         "menu_bar": NotRequired[MenuBarDescriptor],
@@ -1611,6 +1622,7 @@ class RenderFrameDict(TypedDict):
     minimap: NotRequired[Optional[MinimapDescriptor]]
     multi_section_view: NotRequired[Optional[MultiSectionViewDescriptor]]
     diff_view: NotRequired[Optional[DiffViewDescriptor]]
+    tree_table: NotRequired[Optional[TreeTableDescriptor]]
     activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
@@ -1783,6 +1795,28 @@ class DataTableEvent(TypedDict):
     Scroll: NotRequired[_DataTableScrollPayload]
     ColumnResized: NotRequired[_ColumnResizedPayload]
     SelectionSet: NotRequired[_DataTableSelectionSetPayload]
+
+class _TreeTableIdxPathPayload(TypedDict):
+    idx: int
+    path: TreePath
+
+class _TreeTableSelectionSetPayload(TypedDict):
+    indices: List[int]
+    paths: List[TreePath]
+
+class _TreeTableToggleExpandedPayload(TypedDict):
+    path: TreePath
+    expand: bool
+
+class TreeTableEvent(TypedDict):
+    HeaderClicked: NotRequired[_ColPayload]
+    RowActivated: NotRequired[_TreeTableIdxPathPayload]
+    RowSelected: NotRequired[_TreeTableIdxPathPayload]
+    RowDoubleClicked: NotRequired[_TreeTableIdxPathPayload]
+    Scroll: NotRequired[_DataTableScrollPayload]
+    ColumnResized: NotRequired[_ColumnResizedPayload]
+    SelectionSet: NotRequired[_TreeTableSelectionSetPayload]
+    ToggleExpanded: NotRequired[_TreeTableToggleExpandedPayload]
 
 class _IndexPayload(TypedDict):
     index: int
@@ -2023,6 +2057,10 @@ class _HitDetailDataTableRow(TypedDict):
 class _HitDetailDataTableFooter(TypedDict):
     kind: Literal['data_table_footer']
 
+class _HitDetailTreeTableChevron(TypedDict):
+    kind: Literal['tree_table_chevron']
+    idx: int
+
 class _HitDetailTabBarTab(TypedDict):
     kind: Literal['tab_bar_tab']
     tab: int
@@ -2109,7 +2147,7 @@ class _HitDetailScrollScrollbarTrackAfter(TypedDict):
     kind: Literal['scroll_scrollbar_track_after']
 
 # The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
-HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 class _UiKeyPressedPayload(TypedDict):
     key: Key
@@ -2229,6 +2267,7 @@ class _UiEventDict(TypedDict):
     TextDisplay: NotRequired[Tuple[WidgetId, TextDisplayEvent]]
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]
+    TreeTable: NotRequired[Tuple[WidgetId, TreeTableEvent]]
     Toolbar: NotRequired[Tuple[WidgetId, ToolbarEvent]]
     Canvas: NotRequired[Tuple[WidgetId, CanvasEvent]]
     BackendNative: NotRequired[BackendNativeEvent]
