@@ -408,10 +408,9 @@ pub enum IconGridEvent {
 
 // ── Accessibility ────────────────────────────────────────────────────
 //
-// `IconGrid` is a brand-new primitive (unlike `ListView`/`TreeView`,
-// whose `A11yPrimitive` impls live in `crate::a11y::tree` alongside
-// every other pre-existing row-family widget's) — its impl lives here
-// instead, the same "new primitive owns its own a11y impl" precedent
+// `IconGrid`'s `A11yPrimitive` impl lives here rather than in
+// `crate::a11y::tree` (where `ListView`/`TreeView`'s impls live) — the
+// same "new primitive owns its own a11y impl" precedent
 // `TreeTable::a11y_info`'s doc describes. `A11yRole` has no dedicated
 // grid/grid-cell variant yet, so this reports the closest existing
 // role pair (`List`/`ListItem`), same as `ListView`.
@@ -680,11 +679,10 @@ impl crate::primitive::Primitive for IconGrid {
         }
     }
 
-    /// Paints directly onto the TUI cell buffer — `IconGrid` has no
-    /// pre-existing `crate::tui::draw_icon_grid` to delegate to (it is a
-    /// brand-new primitive, unlike [`crate::ListView`]/[`crate::TreeView`]),
-    /// so this is the primitive's one and only TUI rasteriser, per the
-    /// issue's "no separate `tui/icon_grid.rs`" instruction.
+    /// Paints directly onto the TUI cell buffer — there is no separate
+    /// `crate::tui::draw_icon_grid` module to delegate to, unlike
+    /// [`crate::ListView`]/[`crate::TreeView`]'s own TUI rasterisers;
+    /// this is `IconGrid`'s one and only TUI rasteriser.
     ///
     /// Each tile paints its icon glyph (Nerd Font vs. ASCII fallback per
     /// `nerd_fonts_enabled`) centred on the tile's first row and its
@@ -763,11 +761,15 @@ impl crate::primitive::Primitive for IconGrid {
                         break;
                     }
                     let w = char_cell_width(ch);
-                    set_cell(buf, tx + vcol, ty, ch, fg, row_bg);
+                    if w == 2 {
+                        set_cell_wide(buf, tx + vcol, ty, ch, fg, row_bg);
+                    } else {
+                        set_cell(buf, tx + vcol, ty, ch, fg, row_bg);
+                    }
                     vcol += w;
                 }
-                if ellipsis && vcol < tx + tw {
-                    set_cell(buf, vcol, ty, '…', fg, row_bg);
+                if ellipsis && vcol < tw {
+                    set_cell(buf, tx + vcol, ty, '…', fg, row_bg);
                 }
                 continue;
             }
@@ -1150,6 +1152,32 @@ mod tests {
             assert!(
                 row0.contains("item-0"),
                 "one-row fallback must still show the name on the only row, got {row0:?}"
+            );
+        }
+
+        #[test]
+        fn short_rect_one_row_fallback_truncates_in_the_right_tile() {
+            // Two 10-wide tiles side by side (tx = 0 and tx = 10). The
+            // second tile's label is long enough to need truncation —
+            // the `…` must land inside that tile's own 10-cell span,
+            // not bleed into the first tile's.
+            let mut g = grid(2);
+            g.tile_size = Some((10.0, 2.0));
+            g.items[1].label = StyledText::plain("a-very-long-file-name");
+            let area = Rect::new(0.0, 0.0, 20.0, 1.0);
+            let buf = render(&g, area);
+            let row0: Vec<char> = (0..20)
+                .map(|x| buf.cell((x, 0)).unwrap().symbol().chars().next().unwrap())
+                .collect();
+            let first_tile = &row0[0..10];
+            let second_tile = &row0[10..20];
+            assert!(
+                !first_tile.contains(&'…'),
+                "ellipsis must not bleed into the first tile, got {row0:?}"
+            );
+            assert!(
+                second_tile.contains(&'…'),
+                "ellipsis must land inside the truncating (second) tile, got {row0:?}"
             );
         }
 

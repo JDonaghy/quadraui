@@ -791,6 +791,22 @@ class MessageListDescriptor(TypedDict):
     rows: List[MessageRowDescriptor]
     scroll_top: NotRequired[int]
 
+class IconGridItemDescriptor(TypedDict):
+    id: WidgetId
+    icon: Icon
+    image: NotRequired[Optional[ImageDescriptor]]
+    label: StyledText
+    detail: NotRequired[Optional[StyledText]]
+    decoration: NotRequired[Decoration]
+
+class IconGridDescriptor(TypedDict):
+    id: WidgetId
+    items: List[IconGridItemDescriptor]
+    selected_idx: NotRequired[int]
+    has_focus: NotRequired[bool]
+    scroll_offset: NotRequired[int]
+    tile_size: NotRequired[Optional[Tuple[float, float]]]
+
 Weekday = Literal['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 DateFormat = Literal['Iso8601', 'UsSlash', 'EuSlash']
@@ -1589,6 +1605,7 @@ LayoutLeafNode = TypedDict(
         "password": NotRequired[PasswordDescriptor],
         "textarea": NotRequired[TextAreaDescriptor],
         "markdown": NotRequired[MarkdownDescriptor],
+        "icon_grid": NotRequired[IconGridDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1648,6 +1665,7 @@ class RenderFrameDict(TypedDict):
     password: NotRequired[Optional[PasswordDescriptor]]
     textarea: NotRequired[Optional[TextAreaDescriptor]]
     markdown: NotRequired[Optional[MarkdownDescriptor]]
+    icon_grid: NotRequired[Optional[IconGridDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

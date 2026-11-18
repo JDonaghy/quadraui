@@ -477,6 +477,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`RadioGroupDescriptor`](#wire-radiogroupdescriptor)
 - [`MessageRowDescriptor`](#wire-messagerowdescriptor)
 - [`MessageListDescriptor`](#wire-messagelistdescriptor)
+- [`IconGridItemDescriptor`](#wire-icongriditemdescriptor)
+- [`IconGridDescriptor`](#wire-icongriddescriptor)
 - [`Weekday`](#wire-weekday)
 - [`DateFormat`](#wire-dateformat)
 - [`DateLocale`](#wire-datelocale)
@@ -1998,6 +2000,30 @@ Alias for `"Vertical" | "Horizontal"`.
 | `rows` | `MessageRowDescriptor[]` | yes |  |
 | `scroll_top` | `number` | no |  |
 
+<a id="wire-icongriditemdescriptor"></a>
+#### `IconGridItemDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `icon` | `Icon` | yes |  |
+| `image` | `ImageDescriptor \| null` | no |  |
+| `label` | `StyledText` | yes |  |
+| `detail` | `StyledText \| null` | no |  |
+| `decoration` | `Decoration` | no |  |
+
+<a id="wire-icongriddescriptor"></a>
+#### `IconGridDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `items` | `IconGridItemDescriptor[]` | yes |  |
+| `selected_idx` | `number` | no |  |
+| `has_focus` | `boolean` | no |  |
+| `scroll_offset` | `number` | no |  |
+| `tile_size` | `[number, number] \| null` | no |  |
+
 <a id="wire-weekday"></a>
 #### `Weekday`
 
@@ -3331,6 +3357,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
 | `markdown` | `MarkdownDescriptor` | no |  |
+| `icon_grid` | `IconGridDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3396,6 +3423,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `password` | `PasswordDescriptor \| null` | no |  |
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
 | `markdown` | `MarkdownDescriptor \| null` | no |  |
+| `icon_grid` | `IconGridDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
