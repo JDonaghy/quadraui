@@ -198,6 +198,60 @@ fn rejects_an_unknown_align_value() {
     assert!(err.to_string().contains("align"), "{}", err.to_string());
 }
 
+/// A `"row"`/`"column"` node's `"wrap"` key is a sibling of the `"row"`/
+/// `"column"` key, same as `"justify"`/`"align"`.
+#[test]
+fn round_trips_a_row_nodes_wrap_key() {
+    let value = json!({
+        "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        "wrap": true,
+    });
+    let node = decode(&value).expect("valid row with wrap");
+    let LayoutNode::Row(container) = node else {
+        panic!("expected a row node");
+    };
+    assert!(container.wrap);
+
+    let value = json!({
+        "column": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        "wrap": true,
+    });
+    let node = decode(&value).expect("valid column with wrap");
+    let LayoutNode::Column(container) = node else {
+        panic!("expected a column node");
+    };
+    assert!(container.wrap);
+}
+
+/// Missing `"wrap"` defaults to `false` -- the pre-`wrap` behaviour, every
+/// child laid out on a single line regardless of overflow.
+#[test]
+fn row_with_no_wrap_key_decodes_to_the_default() {
+    let value = json!({
+        "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+    });
+    let node = decode(&value).expect("valid row");
+    let LayoutNode::Row(container) = node else {
+        panic!("expected a row node");
+    };
+    assert!(!container.wrap);
+}
+
+/// A non-bool `"wrap"` value is a decode error naming the key, not a
+/// silent coercion.
+#[test]
+fn rejects_a_non_bool_wrap_value() {
+    let value = json!({
+        "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        "wrap": "yes",
+    });
+    let err = match decode(&value) {
+        Ok(_) => panic!("expected a non-bool wrap value to be rejected"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("wrap"), "{}", err.to_string());
+}
+
 /// A `"split"` node is itself a valid row/column child, so it takes
 /// the same sibling `"size"`/`"min"`/`"max"` keys a leaf child does --
 /// unrelated to (and not rejected alongside) its own `"padding"`/

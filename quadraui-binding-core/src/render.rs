@@ -1541,6 +1541,10 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
 /// axis = height). The one call site each in [`paint_layout`] and
 /// `crate::host::resolve_layout_node` share this so a click always
 /// resolves against the exact geometry just painted.
+///
+/// `container.wrap` delegates the whole resolution to
+/// [`layout_container_rects_wrapped`] instead — see that function's own
+/// doc for the multi-line shape.
 pub fn layout_container_rects(
     backend: &mut dyn Backend,
     area: Rect,
@@ -1550,6 +1554,9 @@ pub fn layout_container_rects(
     let n = container.children.len();
     if n == 0 {
         return Vec::new();
+    }
+    if container.wrap {
+        return layout_container_rects_wrapped(backend, area, container, horizontal);
     }
     let char_width = backend.char_width();
     let line_height = backend.line_height();
@@ -1627,6 +1634,146 @@ pub fn layout_container_rects(
             }
         })
         .collect()
+}
+
+/// [`layout_container_rects`]'s multi-line path for a `wrap: true`
+/// container: greedily packs children onto main-axis lines (a line always
+/// takes at least one child, even one wider than the container on its
+/// own — CSS flex-wrap never drops an item for being too big to fit),
+/// then resolves each line's own main-axis sizes/positions through the
+/// same [`resolve_main_axis_sizes`]/[`justify_starts`] the single-line
+/// path uses — `justify` distributes each *line's* own leftover space,
+/// not the whole container's. Lines stack along the cross axis, each
+/// sized to the tallest (`Row`) / widest (`Column`) child it holds —
+/// [`Align::Stretch`] fills that line's own extent, not the container's,
+/// since a wrapped container's total cross extent is however many lines
+/// it took, not a fixed budget to divide up front. Lines are separated by
+/// the same `spacing.gap` the main axis uses between children — there is
+/// no separate "row gap"/"column gap" wire key.
+///
+/// A child's own [`quadraui::SectionSize`] still governs its *size*
+/// within whichever line it lands on (`Fixed`/`Percent`/`Content` resolve
+/// exactly, `Weight`/`EqualShare` share that line's own leftover space),
+/// but the line-assignment pass bins by each child's natural extent
+/// instead: `Fixed`/`Percent`/`Content` use the same value they go on to
+/// resolve to, while `Weight`/`EqualShare` use [`natural_size`], falling
+/// back to one `main_metric` unit with no cheap measurement — there is no
+/// "leftover space" to bin a `Weight`/`EqualShare` child against before
+/// the lines themselves exist.
+fn layout_container_rects_wrapped(
+    backend: &mut dyn Backend,
+    area: Rect,
+    container: &LayoutContainer,
+    horizontal: bool,
+) -> Vec<Rect> {
+    let n = container.children.len();
+    let char_width = backend.char_width();
+    let line_height = backend.line_height();
+    let (main_metric, cross_metric, quantise_main): (f32, f32, fn(f32, f32) -> f32) = if horizontal
+    {
+        (char_width, line_height, quantise_horizontal)
+    } else {
+        (line_height, char_width, quantise_vertical)
+    };
+    let gap = quantise_main(container.spacing.gap, main_metric);
+    let container_main = if horizontal { area.width } else { area.height };
+
+    // Each child's main-axis spec (same shape the single-line path builds)
+    // plus its own natural cross size, computed once up front and reused
+    // by both the line-assignment pass below and the per-line
+    // `resolve_main_axis_sizes`/`align_cross` calls.
+    let mut specs: Vec<MainAxisSpec> = Vec::with_capacity(n);
+    let mut natural_cross: Vec<Option<f32>> = Vec::with_capacity(n);
+    let mut bin_hints: Vec<f32> = Vec::with_capacity(n);
+    for child in &container.children {
+        let natural = natural_size(backend, &child.node, line_height);
+        let size = match child.size {
+            SectionSize::Fixed(raw) => {
+                SectionSize::Fixed(quantise_main(raw as f32, main_metric).round() as u16)
+            }
+            other => other,
+        };
+        let content = if matches!(size, SectionSize::Content) {
+            natural.main(horizontal).unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let spec = MainAxisSpec {
+            size,
+            min: child.min.map(|v| quantise_main(v, main_metric)),
+            max: child.max.map(|v| quantise_main(v, main_metric)),
+            content,
+        };
+        let hint = match size {
+            SectionSize::Fixed(raw) => raw as f32,
+            SectionSize::Content => spec.content,
+            SectionSize::Percent(p) => p.clamp(0.0, 1.0) * container_main,
+            SectionSize::Weight(_) | SectionSize::EqualShare => {
+                natural.main(horizontal).unwrap_or(main_metric)
+            }
+        };
+        bin_hints.push(apply_min_max(&spec, hint));
+        natural_cross.push(natural.cross(horizontal));
+        specs.push(spec);
+    }
+
+    // Greedy line assignment: a line always holds at least its first
+    // child regardless of overflow.
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    let mut line_main = 0.0_f32;
+    for (i, &hint) in bin_hints.iter().enumerate() {
+        let starts_new_line = match lines.last() {
+            Some(last) if !last.is_empty() => line_main + gap + hint > container_main,
+            _ => true,
+        };
+        if starts_new_line {
+            lines.push(Vec::new());
+            line_main = 0.0;
+        }
+        let current = lines.last_mut().expect("a line was just pushed if empty");
+        if !current.is_empty() {
+            line_main += gap;
+        }
+        current.push(i);
+        line_main += hint;
+    }
+
+    let mut rects = vec![Rect::new(0.0, 0.0, 0.0, 0.0); n];
+    let mut cross_pos = 0.0_f32;
+    for line in &lines {
+        let line_usable_main = (container_main - gap * (line.len() - 1) as f32).max(0.0);
+        let line_specs: Vec<MainAxisSpec> = line.iter().map(|&i| specs[i]).collect();
+        let sizes = resolve_main_axis_sizes(&line_specs, container_main, line_usable_main);
+        let starts = justify_starts(&sizes, container_main, gap, container.justify);
+        let line_cross = line
+            .iter()
+            .map(|&i| natural_cross[i].unwrap_or(cross_metric))
+            .fold(0.0_f32, f32::max);
+        for (local, &i) in line.iter().enumerate() {
+            let (cross_offset, cross_size) =
+                align_cross(line_cross, natural_cross[i], container.align);
+            let main_start = starts[local];
+            let main_size = sizes[local];
+            rects[i] = if horizontal {
+                Rect::new(
+                    area.x + main_start,
+                    area.y + cross_pos + cross_offset,
+                    main_size,
+                    cross_size,
+                )
+            } else {
+                Rect::new(
+                    area.x + cross_pos + cross_offset,
+                    area.y + main_start,
+                    cross_size,
+                    main_size,
+                )
+            };
+        }
+        cross_pos += line_cross + gap;
+    }
+
+    rects
 }
 
 /// Shrinks `area`'s main-axis extent by `gap`, anchored at the same
@@ -2981,6 +3128,7 @@ mod tests {
             spacing: Spacing::default(),
             justify,
             align,
+            wrap: false,
         }
     }
 
@@ -3144,6 +3292,7 @@ mod tests {
             },
             justify: Justify::End,
             align: Align::Stretch,
+            wrap: false,
         };
 
         let end = fixed_with_gap();
@@ -3195,6 +3344,79 @@ mod tests {
             assert_eq!(rects[0].y, height - 1.0);
             assert_eq!(rects[0].height, 1.0);
         }
+    }
+
+    /// A `wrap: true` row flows its children onto a second line once a
+    /// third `SectionSize::Fixed(80)` (10 cells on `TuiBackend`) child no
+    /// longer fits beside the first two inside a 25-cell-wide area, then
+    /// unwraps back onto a single line once the area widens to fit all
+    /// three — the headless acceptance case this feature exists for.
+    #[test]
+    fn wrap_flows_overflowing_children_onto_a_new_line_and_unwraps_when_widened() {
+        let children = || {
+            vec![
+                leaf_child("a", SectionSize::Fixed(80), None, None),
+                leaf_child("b", SectionSize::Fixed(80), None, None),
+                leaf_child("c", SectionSize::Fixed(80), None, None),
+            ]
+        };
+        let wrapping = LayoutContainer {
+            wrap: true,
+            ..row(children(), Justify::Start, Align::Stretch)
+        };
+
+        // 25 cells: the first two 10-cell children fit on one line, the
+        // third does not and wraps onto a second line.
+        let narrow = Rect::new(0.0, 0.0, 25.0, 10.0);
+        let rects = layout_container_rects(&mut tui(), narrow, &wrapping, true);
+        assert_eq!(rects.len(), 3);
+        assert_eq!(rects[0].y, 0.0);
+        assert_eq!(rects[1].y, 0.0);
+        assert_eq!(rects[2].y, 1.0);
+        assert_eq!(rects[0].x, 0.0);
+        assert_eq!(rects[1].x, 10.0);
+        assert_eq!(rects[2].x, 0.0);
+        for rect in &rects {
+            assert_eq!(rect.width, 10.0);
+        }
+
+        // Widened to 30 cells: all three now fit on a single line.
+        let wide = Rect::new(0.0, 0.0, 30.0, 10.0);
+        let rects = layout_container_rects(&mut tui(), wide, &wrapping, true);
+        assert_eq!(rects.len(), 3);
+        assert_eq!(rects[0].y, 0.0);
+        assert_eq!(rects[1].y, 0.0);
+        assert_eq!(rects[2].y, 0.0);
+        assert_eq!(rects[0].x, 0.0);
+        assert_eq!(rects[1].x, 10.0);
+        assert_eq!(rects[2].x, 20.0);
+    }
+
+    /// `wrap: true` on a `Column` still wraps along its own main axis
+    /// (vertical), but the resulting lines stack along the *cross* axis —
+    /// horizontally, since a `Column`'s cross axis is its width. Two
+    /// one-cell-tall `Fixed(16)` children inside a one-cell-tall area
+    /// cannot share a line, so the second lands in a new line placed
+    /// beside (not below) the first.
+    #[test]
+    fn wrap_on_a_column_stacks_new_lines_along_its_horizontal_cross_axis() {
+        let children = vec![
+            leaf_child("a", SectionSize::Fixed(16), None, None),
+            leaf_child("b", SectionSize::Fixed(16), None, None),
+        ];
+        let wrapping = LayoutContainer {
+            wrap: true,
+            ..row(children, Justify::Start, Align::Stretch)
+        };
+        let narrow = Rect::new(0.0, 0.0, 10.0, 1.0);
+        let rects = layout_container_rects(&mut tui(), narrow, &wrapping, false);
+        // Both start at the top of their own line (`y`)...
+        assert_eq!(rects[0].y, 0.0);
+        assert_eq!(rects[1].y, 0.0);
+        // ...but the second's line is offset along `x`, not stacked
+        // underneath the first.
+        assert_eq!(rects[0].x, 0.0);
+        assert!(rects[1].x > rects[0].x);
     }
 
     /// Every one of the additive (`LeafDescriptor::Extra`) leaf kinds
@@ -4237,6 +4459,7 @@ mod tests {
             },
             justify: Justify::default(),
             align: Align::default(),
+            wrap: false,
         });
         let mut tui = tui();
         let content_len = natural_main_length(&mut tui, &content, ScrollAxis::Horizontal, metrics);

@@ -433,30 +433,39 @@ fn builtin_subtle(theme: &Theme) -> StyleOverride {
 /// A [`LayoutNode::Row`]/[`LayoutNode::Column`]'s decoded shape: its child
 /// slots ([`LayoutChild`], each pairing one child node with its own
 /// main-axis size/min/max) paired with the [`Spacing`] (`padding`/`margin`/
-/// `gap`) and the main-axis [`Justify`]/cross-axis [`Align`] the render
-/// callback's `"row"`/`"column"` dict declared alongside them — see
+/// `gap`), the main-axis [`Justify`]/cross-axis [`Align`], and `wrap` the
+/// render callback's `"row"`/`"column"` dict declared alongside them — see
 /// `crate::wire::layout_node_from_value`'s decode for the wire shape.
 /// `spacing`/`justify`/`align` each default to no inset/no gap/`Start`/
-/// `Stretch`, and every child's own size defaults to
-/// [`SectionSize::EqualShare`] with no min/max, so an existing tree with
-/// none of these keys paints the same shares as before they existed:
-/// every child gets the same share of the full container, the way
+/// `Stretch`, `wrap` defaults to `false`, and every child's own size
+/// defaults to [`SectionSize::EqualShare`] with no min/max, so an existing
+/// tree with none of these keys paints the same shares as before they
+/// existed: every child gets the same share of the full container, the way
 /// [`crate::render::split_rects_with_gap`] (this container's own
 /// predecessor) always divided it — down to floating-point tolerance, not
 /// necessarily the identical bit pattern, since the two now reach that
 /// share by different arithmetic (see
 /// `crate::render::layout_container_rects`).
+///
+/// `wrap: true` flows children onto a new line, stacked along the cross
+/// axis, once the next child would overflow the container's main-axis
+/// extent — CSS flexbox's `flex-wrap: wrap`, restricted to a single
+/// direction (no `wrap-reverse`). See
+/// `crate::render::layout_container_rects_wrapped` for the multi-line
+/// resolution; `justify`/`align` still apply, each scoped to the line a
+/// child landed on rather than the container's full extent.
 pub struct LayoutContainer {
     pub children: Vec<LayoutChild>,
     pub spacing: Spacing,
     pub justify: Justify,
     pub align: Align,
+    pub wrap: bool,
 }
 
 impl LayoutContainer {
     /// Builds a container whose every child uses the default
     /// [`LayoutChild::new`] sizing (`EqualShare`, no min/max) and whose
-    /// `justify`/`align` are both their defaults — the equal-share-only
+    /// `justify`/`align`/`wrap` are all their defaults — the equal-share-only
     /// shape every `"row"`/`"column"` node had before per-child sizing
     /// existed. Convenient for a call site that only ever deals in bare
     /// [`LayoutNode`]s (most of this crate's own tests, and any decode
@@ -467,6 +476,7 @@ impl LayoutContainer {
             spacing,
             justify: Justify::default(),
             align: Align::default(),
+            wrap: false,
         }
     }
 }
@@ -1541,6 +1551,7 @@ mod tests {
             spacing: Spacing::default(),
             justify: Justify::default(),
             align: Align::default(),
+            wrap: false,
         });
         let error = validate_unique_leaf_ids("test", &node).unwrap_err();
         assert_eq!(error.code(), "borrow");
