@@ -1675,7 +1675,18 @@ fn layout_container_rects_wrapped(
     } else {
         (line_height, char_width, quantise_vertical)
     };
+    let quantise_cross: fn(f32, f32) -> f32 = if horizontal {
+        quantise_vertical
+    } else {
+        quantise_horizontal
+    };
     let gap = quantise_main(container.spacing.gap, main_metric);
+    // The distance between lines runs along the *cross* axis (vertically
+    // between rows of a wrapped `Row`, horizontally between columns of a
+    // wrapped `Column`), so it is quantised by the cross-axis rule against
+    // the cross metric -- not `quantise_main`/`main_metric`, which govern
+    // the gap *within* a line, between a line's own children.
+    let cross_gap = quantise_cross(container.spacing.gap, cross_metric);
     let container_main = if horizontal { area.width } else { area.height };
 
     // Each child's main-axis spec (same shape the single-line path builds)
@@ -1770,7 +1781,7 @@ fn layout_container_rects_wrapped(
                 )
             };
         }
-        cross_pos += line_cross + gap;
+        cross_pos += line_cross + cross_gap;
     }
 
     rects
@@ -3390,6 +3401,47 @@ mod tests {
         assert_eq!(rects[0].x, 0.0);
         assert_eq!(rects[1].x, 10.0);
         assert_eq!(rects[2].x, 20.0);
+    }
+
+    /// The distance between a wrapped row's lines is a *cross-axis* (here,
+    /// vertical) distance, so it is quantised by `quantise_vertical`
+    /// against `line_height`, not `quantise_horizontal` against
+    /// `char_width` the way the gap *within* each line is — `"gap": 16`
+    /// quantises to `2` cells horizontally (`ceil(16 / 8)`) but only `1`
+    /// cell vertically (`ceil(16 / 16)`) on [`TuiBackend`], so the two
+    /// gaps in this test must differ.
+    #[test]
+    fn wrap_line_gap_is_quantised_by_the_cross_axis_rule_not_the_main_axis_one() {
+        let children = vec![
+            leaf_child("a", SectionSize::Fixed(80), None, None),
+            leaf_child("b", SectionSize::Fixed(80), None, None),
+            leaf_child("c", SectionSize::Fixed(80), None, None),
+        ];
+        let wrapping = LayoutContainer {
+            wrap: true,
+            spacing: Spacing {
+                gap: 16.0,
+                ..Spacing::default()
+            },
+            ..row(children, Justify::Start, Align::Stretch)
+        };
+
+        // 25 cells: `a`/`b` are 10 cells each plus a 2-cell horizontal
+        // gap (22 total) fit; a third 10-cell child would need 34 and
+        // wraps onto a second line.
+        let area = Rect::new(0.0, 0.0, 25.0, 10.0);
+        let rects = layout_container_rects(&mut tui(), area, &wrapping, true);
+        assert_eq!(rects.len(), 3);
+        assert_eq!(rects[0].x, 0.0);
+        assert_eq!(rects[1].x, 12.0, "main-axis gap quantises to 2 cells");
+        assert_eq!(rects[0].y, 0.0);
+        assert_eq!(rects[1].y, 0.0);
+        // The first line is 1 cell tall; the second line starts after it
+        // plus a 1-cell *cross*-axis gap, not the 2-cell main-axis one.
+        assert_eq!(
+            rects[2].y, 2.0,
+            "cross-axis line gap quantises to 1 cell, not the main-axis rule's 2"
+        );
     }
 
     /// `wrap: true` on a `Column` still wraps along its own main axis
