@@ -833,9 +833,12 @@ pub use compose::{
     SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
     StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToastStackAction,
     ToastStackController, ToolbarHoverTracker, TreeController, TreeControllerEvent,
-    TreeHoverTracker, ViewHelp, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
-    PALETTE_CHROME_ROWS,
+    TreeHoverTracker, TreeTableController, TreeTableControllerEvent, TreeTableNodeData, ViewHelp,
+    WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
 };
+// `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
+// alias, not re-exported at the crate root to avoid shadowing any other
+// crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.
 // `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`, `HelpOverlayEvent`,
 // `DualModePaletteEvent`, `FilePickerEvent`, `FolderPickerEvent`,
 // `FormControllerEvent`, `FormDialogEvent` and `ChatControllerEvent` are

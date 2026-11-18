@@ -16,6 +16,9 @@
 //!   [`TreeController`] is a thin layer over; reusable by any flattened row
 //!   source that implements `tree_nav::NavRow`.
 //! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar.
+//! - [`TreeTableController`] — hierarchical model (lazy children,
+//!   sibling-scoped sort) flattened into a `TreeTable`, over the same
+//!   `tree_nav::TreeNavCore` [`TreeController`] uses.
 //! - [`AppShell`] — ActivityBar + sidebar panel container composition.
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
 //! - [`FilePickerController`] — cross-backend file open/save modal.
@@ -96,6 +99,7 @@ pub mod toast_stack;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 pub mod tree_nav;
+pub mod tree_table_controller;
 pub mod workspace;
 
 pub use app_shell::{
@@ -189,5 +193,8 @@ pub use toast_stack::ToastStackEvent;
 pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
 pub use tree_controller::{
     classify_tree_nav_key, Edge, TreeController, TreeControllerEvent, TreeNavKey,
+};
+pub use tree_table_controller::{
+    NodeId, TreeTableController, TreeTableControllerEvent, TreeTableNodeData,
 };
 pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};
