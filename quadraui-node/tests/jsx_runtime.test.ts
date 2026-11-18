@@ -91,11 +91,31 @@ function stubNodeConstructors(): Record<string, (...args: unknown[]) => unknown>
   };
 }
 
-/** `jsx-runtime.ts`'s own `require("./app/nodes.ts")` resolved against {@link stubNodeConstructors}; anything else falls through to real `require`. */
+/**
+ * Fake `../js/app/widget.ts`: `widgetFromIntrinsic` records exactly the
+ * args it was called with, the same shape {@link stubNodeConstructors}'
+ * own stubs record -- real `./app/widget.ts` would `require("../index.ts")`
+ * at load time, pulling in the native addon this test file's own header
+ * doc says most of its cases need none of.
+ */
+function stubWidgetModule(): Record<string, (...args: unknown[]) => unknown> {
+  return {
+    widgetFromIntrinsic: (...args: unknown[]) => ({ __call: "widgetFromIntrinsic", args }),
+  };
+}
+
+/**
+ * `jsx-runtime.ts`'s own `require("./app/nodes.ts")`/`require("./app/widget.ts")`
+ * resolved against {@link stubNodeConstructors}/{@link stubWidgetModule};
+ * anything else falls through to real `require`.
+ */
 function requireShim(stubs: Record<string, unknown>): RequireShim {
   return (id: string) => {
     if (id === "./app/nodes.ts") {
       return stubs;
+    }
+    if (id === "./app/widget.ts") {
+      return stubWidgetModule();
     }
     if (id === "./jsx-runtime" || id === "./jsx-runtime.ts") {
       return loadJsxRuntime();
@@ -230,6 +250,21 @@ test("<button> splits its required label out of the options bag", () => {
   const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
   const result = jsx("button", { label: "Save", variant: "Primary" });
   assert.deepEqual(result.args, ["Save", { variant: "Primary" }]);
+});
+
+test("<widget> forwards its four callbacks and nested props bag to widgetFromIntrinsic", () => {
+  const { runtime } = freshRuntime();
+  const jsx = runtime.jsx as (type: string, props: Record<string, unknown>) => { __call: string; args: unknown[] };
+  const measure = () => ({ width: 1, height: 1 });
+  const paint = () => ({ ops: [] });
+  const onEvent = () => false;
+  const a11y = () => null;
+  const result = jsx("widget", { measure, paint, onEvent, a11y, props: { value: 3 }, id: "rating:stars" });
+  assert.equal(result.__call, "widgetFromIntrinsic");
+  assert.deepEqual(result.args, [
+    { measure, paint, onEvent, a11y, initialState: undefined },
+    { id: "rating:stars", focusable: undefined, props: { value: 3 } },
+  ]);
 });
 
 test("an unknown intrinsic tag throws instead of silently returning something unrenderable", () => {

@@ -53,3 +53,12 @@ fragment step for this package (that mechanism, and
 - `README.md` now documents install (npm vs. from source), build and run
   steps, the CommonJS-vs-ESM `.ts`/`require` constraint the examples and
   tests rely on, and this `CHANGELOG.md` itself.
+- `defineWidget({measure, paint, onEvent, a11y})` (`js/app/widget.ts`) and
+  the `<widget>` JSX intrinsic: script-authored widgets with their own
+  measure/paint/hit-testing/keyboard handling and accessibility, built on
+  `quadraui-binding-core`'s generic `ScriptedPrimitive`/`ScriptWidget`
+  seam. Typed props flow through the same `.d.ts` generation as any other
+  node; local state uses the same keyed-state mechanism `Component` does.
+  `js/testing.ts`'s `Widget.press()` now drives a focused scripted
+  widget's own key handling directly. See `examples/rating.ts` for a
+  runnable 5-star rating control.

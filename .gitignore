@@ -40,3 +40,8 @@ quadraui-node/dist/
 # here as a backstop against a killed run leaving it behind.
 quadraui-node/examples/file_manager_app_jsx.broken_fixture*.tsx
 quadraui-node/tsconfig.jsx.broken_fixture*.json
+
+# `tests/widget.test.ts`'s own broken-prop fixture, same reasoning as the
+# JSX pair just above -- written in-tree so its relative `require`s still
+# resolve, removed in that test's own `finally` block.
+quadraui-node/examples/rating.broken_fixture*.ts

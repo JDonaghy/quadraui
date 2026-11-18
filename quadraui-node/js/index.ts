@@ -493,6 +493,35 @@ function getCurrentCtx(): RenderCtx | null {
 exports.getCurrentCtx = getCurrentCtx;
 
 /**
+ * Wraps `measure`/`paint`/`onEvent`/`a11y` -- plain JS functions, each
+ * called with a single packed argument -- in a script-defined widget and
+ * registers it against `id`, so the very next `"scripted_widget"` leaf
+ * naming that same `id` the current render callback's own return value
+ * decodes into picks it up. Must be called synchronously from inside a
+ * running render/event-handler callback -- see the native binding's own
+ * doc comment (`quadraui-node/src/lib.rs`'s "Script widgets" module
+ * section) for the full contract. `quadraui-node/js/app/widget.ts`'s
+ * `defineWidget` is the ergonomic, typed way to reach this; call it
+ * directly only when bypassing that wrapper entirely (a raw
+ * `QuiApp.setRender` script, say).
+ */
+function registerScriptedWidget(
+  id: string,
+  measure: (packed: unknown) => unknown,
+  paint: (packed: unknown) => unknown,
+  onEvent: (packed: unknown) => unknown,
+  a11y: (packed: unknown) => unknown,
+  focusable: boolean,
+): void {
+  try {
+    native.registerScriptedWidget(id, measure, paint, onEvent, a11y, focusable);
+  } catch (err) {
+    throw toQuadrauiError(err);
+  }
+}
+exports.registerScriptedWidget = registerScriptedWidget;
+
+/**
  * Render-time capabilities a script `render`/`view` callback needs from
  * the live backend painting this frame -- real text measurement
  * (`measureText`/`lineHeight`/`charWidth`), cell-grid-vs-pixel surface

@@ -277,13 +277,15 @@ use serde_json::Value as JsonValue;
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps, BottomPanelEvent, Button,
-    ContextMenuItem, DataTable, DialogButton, FloatMeasure, ImageSource, ListView, Notification,
-    Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar,
-    TextDisplay, Toast, ToastCorner, Tooltip, TreeView, UiEvent, UserPayload, WidgetId,
+    A11yChild, A11yInfo, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
+    BottomPanelEvent, Button, CanvasRegion, ContextMenuItem, DataTable, DialogButton, DrawOp,
+    FloatMeasure, ImageSource, LayoutCtx, ListView, Notification, Point, PointerShape, Reaction,
+    Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar, TextDisplay, Toast, ToastCorner,
+    Tooltip, TreeView, UiEvent, UserPayload, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
+use quadraui_binding_core::register_scripted_widget as core_register_scripted_widget;
 // Exactly the three conditions under which `LiveRunner::Gtk`/`Mac`/`Win`
 // below actually constructs a real runner (`not(feature = "gtk")`/
 // `not(feature = "macos")` excludes the higher-priority native backends the
@@ -318,8 +320,10 @@ use quadraui_binding_core::{
     text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
     update_check_for_update, update_download_and_stage, validate_style_set_name,
     widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
-    DialogContentSize, ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine,
-    OverrideError, RenderOutput, ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling,
+    DialogContentSize, ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail,
+    InteractionEngine, OverrideError, RenderOutput, ScriptWidget, ScriptedA11y,
+    ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
+    ScriptedSize, ScriptedState, ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling,
     SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 #[cfg(test)]
@@ -1038,6 +1042,334 @@ impl Drop for RenderCtxScope {
     }
 }
 
+// ─── Script widgets (`defineWidget`) ────────────────────────────────────
+//
+// `quadraui-node/js/app/widget.ts`'s `defineWidget({measure, paint, onEvent,
+// a11y})` wraps a `ScriptedPrimitive<NodeScriptWidget>` (`quadraui_binding_core::scripted`)
+// around four plain JS callbacks, the same seam `quadraui-py`'s own
+// `quadraui.app.widget.Widget` wraps `PyScriptWidget` around. Unlike that
+// binding, this one leans on the *other* half of the seam
+// `quadraui_binding_core::scripted` offers: `register_scripted_widget`
+// plus a `"scripted_widget"` wire leaf, rather than decoding an empty
+// `Canvas` placeholder and splicing a fresh primitive in after the fact.
+// `js/app/widget.ts`'s `build(resolvedId, ...)` calls
+// [`register_scripted_widget`] (this module's own napi export, aliased
+// above as `core_register_scripted_widget` to avoid colliding with the
+// name) synchronously, from inside the very `render`/`handle` callback
+// this module is already running when that `build` call happens -- so the
+// registration is always in place in `quadraui_binding_core::scripted`'s
+// own thread-local registry before `decode_render_output_with_styles`
+// (called right after the callback returns) reaches that leaf's
+// `"scripted_widget"` decode arm.
+//
+// **Why no `props`/`state` marshaling.** `quadraui-py`'s `PyScriptWidget`
+// converts `ScriptedPrimitive`'s own `props`/`state` fields to/from Python
+// on every call, because a *fresh* Python `Widget` instance is built every
+// `view()` call and needs those values handed back in. `NodeScriptWidget`
+// skips that entirely: `js/app/widget.ts`'s four wrapper closures already
+// close over this frame's `props` (and, for `onEvent`, the same state
+// object `App`'s own component-state keying thread back in next render --
+// see that module's own doc) directly, so the `props`/`state` arguments
+// this trait's methods receive go unused. Nothing ever calls
+// [`ScriptedPrimitive::set_props`]/`set_state` for a Node-registered
+// widget as a result -- harmless, since nothing here ever reads them
+// back either.
+//
+// **Env liveness.** [`ScriptWidget`]'s methods take no `Env` -- they are
+// called from deep inside [`paint_layout`]/[`InteractionEngine::handle`],
+// well after the render/handle callback that registered this frame's
+// widget has already returned. [`ScriptEnvScope`] (mirroring
+// [`RenderCtxScope`] just above) stashes the live `Env` plus this app's
+// `pending_error` cell in [`CURRENT_SCRIPT_ENV`] for the whole span of
+// [`NodeAppLogic::render`]/[`NodeAppLogic::handle`] -- not just the
+// callback's own call, the way [`RenderCtxScope`] is scoped -- since
+// `paint_layout`'s own script-widget calls happen after the callback
+// returns but still within the same `render`.
+
+thread_local! {
+    /// Set by [`ScriptEnvScope::enter`] for the span of one
+    /// [`NodeAppLogic::render`]/[`NodeAppLogic::handle`] call. See the
+    /// module section's own doc; a plain `thread_local!` is correct for
+    /// the same reason [`CURRENT_RENDER_CTX`]'s own doc gives.
+    static CURRENT_SCRIPT_ENV: RefCell<Option<ScriptEnvContext>> = const { RefCell::new(None) };
+}
+
+/// What a [`NodeScriptWidget`] call needs that its own [`ScriptWidget`]
+/// trait methods don't receive as an argument: a live `Env` to call back
+/// into JS with, and this app's `pending_error` cell to record a failure
+/// into.
+#[derive(Clone)]
+struct ScriptEnvContext {
+    env: Env,
+    pending_error: Rc<RefCell<Option<Error>>>,
+}
+
+/// Returns the [`ScriptEnvContext`] [`ScriptEnvScope::enter`] installed for
+/// the currently-running `render`/`handle` call on this thread, or `None`
+/// outside of one -- including a [`register_scripted_widget`] call made
+/// anywhere but synchronously inside a render callback, which is always a
+/// caller mistake (see that function's own doc).
+fn current_script_env() -> Option<ScriptEnvContext> {
+    CURRENT_SCRIPT_ENV.with(|cell| cell.borrow().clone())
+}
+
+/// Installs `env`/`pending_error` into [`CURRENT_SCRIPT_ENV`] for as long
+/// as this guard lives, restoring whatever was there before (always `None`
+/// in practice -- a render/handle call never nests another one on the same
+/// thread).
+struct ScriptEnvScope {
+    previous: Option<ScriptEnvContext>,
+}
+
+impl ScriptEnvScope {
+    fn enter(env: Env, pending_error: Rc<RefCell<Option<Error>>>) -> Self {
+        let previous = CURRENT_SCRIPT_ENV.with(|cell| {
+            cell.borrow_mut()
+                .replace(ScriptEnvContext { env, pending_error })
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for ScriptEnvScope {
+    fn drop(&mut self) {
+        CURRENT_SCRIPT_ENV.with(|cell| *cell.borrow_mut() = self.previous.take());
+    }
+}
+
+/// `measure`'s wire answer, decoded from whatever plain object a script's
+/// `measure` returns -- mirrors `quadraui-py`'s own `ScriptedSizeWire`
+/// (neither [`ScriptedSize`] itself has a `Deserialize`; nothing else in
+/// `quadraui_binding_core` reads one off a wire).
+#[derive(serde::Deserialize, Default)]
+struct ScriptedSizeWire {
+    #[serde(default)]
+    width: f32,
+    #[serde(default)]
+    height: f32,
+}
+
+/// `paint`'s wire answer -- same "no `Deserialize` on the core type"
+/// reasoning as [`ScriptedSizeWire`]. `ops`/`regions` reuse
+/// [`DrawOp`]/[`CanvasRegion`]'s own `Deserialize` unchanged.
+#[derive(serde::Deserialize, Default)]
+struct ScriptedPaintWire {
+    #[serde(default)]
+    ops: Vec<DrawOp>,
+    #[serde(default)]
+    regions: Vec<CanvasRegion>,
+}
+
+/// `a11y`'s wire answer -- mirrors `quadraui-py`'s own `ScriptedA11yWire`.
+#[derive(serde::Deserialize, Default)]
+struct ScriptedA11yWire {
+    #[serde(default)]
+    info: A11yInfo,
+    #[serde(default)]
+    children: Vec<A11yChildWire>,
+}
+
+#[derive(serde::Deserialize)]
+struct A11yChildWire {
+    key: String,
+    #[serde(default)]
+    info: A11yInfo,
+    #[serde(default)]
+    bounds: Option<Rect>,
+    #[serde(default)]
+    children: Vec<A11yChildWire>,
+}
+
+impl From<A11yChildWire> for A11yChild {
+    fn from(wire: A11yChildWire) -> Self {
+        A11yChild {
+            key: wire.key,
+            info: wire.info,
+            bounds: wire.bounds,
+            children: wire.children.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// The [`ScriptWidget`] impl [`register_scripted_widget`] wraps a
+/// `defineWidget` spec's four JS callbacks in -- the napi-rs analog of
+/// `quadraui-py`'s `PyScriptWidget`. See the module section's own doc for
+/// why `props`/`state` go unused, and why each method reaches
+/// [`current_script_env`] rather than taking an `Env` directly.
+struct NodeScriptWidget {
+    measure: NodeCallback,
+    paint: NodeCallback,
+    on_event: NodeCallback,
+    a11y: NodeCallback,
+}
+
+impl NodeScriptWidget {
+    /// Runs `body` with the live `Env` [`ScriptEnvScope`] currently has
+    /// installed, recording any failure (missing `Env`, the JS call
+    /// itself raising, or a malformed return value) into that same
+    /// context's `pending_error` and answering `default` instead -- every
+    /// [`ScriptWidget`] method here returns a plain value, not a
+    /// `Result`, so this is the only place a script failure can go.
+    fn with_env<T>(&self, what: &str, default: T, body: impl FnOnce(Env, &str) -> Result<T>) -> T {
+        let Some(ctx) = current_script_env() else {
+            return default;
+        };
+        match body(ctx.env, what) {
+            Ok(value) => value,
+            Err(err) => {
+                record_error(&ctx.pending_error, err);
+                default
+            }
+        }
+    }
+}
+
+impl ScriptWidget for NodeScriptWidget {
+    fn measure(&self, ctx: &LayoutCtx, constraints: ScriptedConstraints) -> ScriptedSize {
+        self.with_env(
+            "script widget measure",
+            ScriptedSize::default(),
+            |env, what| {
+                let payload = serde_json::json!({
+                    "ctx": {
+                        "lineHeight": ctx.line_height,
+                        "charWidth": ctx.char_width,
+                        "nerdFontsEnabled": ctx.nerd_fonts_enabled,
+                    },
+                    "constraints": {
+                        "maxWidth": constraints.max_width,
+                        "maxHeight": constraints.max_height,
+                    },
+                });
+                let arg = encode_via_json(env, what, &payload)?;
+                let func = self.measure.borrow_back(&env)?;
+                let result = func.call(arg)?;
+                let wire: ScriptedSizeWire = decode_via_json(what, result)?;
+                Ok(ScriptedSize {
+                    width: wire.width,
+                    height: wire.height,
+                })
+            },
+        )
+    }
+
+    fn paint(&self, ctx: &LayoutCtx, _props: &ScriptedProps, rect: Rect) -> ScriptedPaint {
+        self.with_env(
+            "script widget paint",
+            ScriptedPaint::default(),
+            |env, what| {
+                let payload = serde_json::json!({
+                    "ctx": {
+                        "lineHeight": ctx.line_height,
+                        "charWidth": ctx.char_width,
+                        "nerdFontsEnabled": ctx.nerd_fonts_enabled,
+                    },
+                    "rect": {
+                        "x": rect.x,
+                        "y": rect.y,
+                        "width": rect.width,
+                        "height": rect.height,
+                    },
+                });
+                let arg = encode_via_json(env, what, &payload)?;
+                let func = self.paint.borrow_back(&env)?;
+                let result = func.call(arg)?;
+                let wire: ScriptedPaintWire = decode_via_json(what, result)?;
+                Ok(ScriptedPaint {
+                    ops: wire.ops,
+                    regions: wire.regions,
+                })
+            },
+        )
+    }
+
+    fn on_event(
+        &self,
+        event: &ScriptedInputEvent,
+        _props: &ScriptedProps,
+        _state: &ScriptedState,
+    ) -> bool {
+        self.with_env("script widget onEvent", false, |env, what| {
+            let payload = match event {
+                ScriptedInputEvent::Canvas(canvas_event) => {
+                    serde_json::json!({ "Canvas": canvas_event })
+                }
+                ScriptedInputEvent::Key(key) => serde_json::json!({ "Key": key }),
+                // `ScriptedInputEvent` is `#[non_exhaustive]` -- a future
+                // variant with no dict shape of its own yet reports as
+                // consumed-nothing rather than failing the whole dispatch,
+                // same posture as `quadraui-py`'s own `PyScriptWidget::on_event`.
+                _ => return Ok(false),
+            };
+            let arg = encode_via_json(env, what, &payload)?;
+            let func = self.on_event.borrow_back(&env)?;
+            let result = func.call(arg)?;
+            // A non-boolean return (including the common "no explicit
+            // `return`" case) narrows to "consumed nothing" rather than
+            // raising -- the napi-rs analog of `quadraui-py`'s
+            // `result.extract::<bool>(py).unwrap_or(false)`.
+            Ok(to_descriptor_value(result)
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false))
+        })
+    }
+
+    fn a11y(&self, _props: &ScriptedProps) -> Option<ScriptedA11y> {
+        self.with_env("script widget a11y", None, |env, what| {
+            let placeholder = env.to_js_value(&JsonValue::Null)?;
+            let func = self.a11y.borrow_back(&env)?;
+            let result = func.call(placeholder)?;
+            if matches!(result.get_type()?, ValueType::Null | ValueType::Undefined) {
+                return Ok(None);
+            }
+            let wire: ScriptedA11yWire = decode_via_json(what, result)?;
+            Ok(Some(ScriptedA11y {
+                info: wire.info,
+                children: wire.children.into_iter().map(Into::into).collect(),
+            }))
+        })
+    }
+}
+
+/// Wraps `measure`/`paint`/`onEvent`/`a11y` (plain JS functions -- see
+/// `quadraui-node/js/app/widget.ts`'s `defineWidget`) in a fresh
+/// [`NodeScriptWidget`]/[`ScriptedPrimitive`] and registers it against
+/// `id` via [`core_register_scripted_widget`], so the very next
+/// `"scripted_widget"` leaf named `id` that `decode_render_output_with_styles`
+/// decodes (the one `widget.ts`'s own `build(id, ...)` call returns,
+/// always from the same JS call stack right after this one returns) picks
+/// it up. Must be called synchronously from inside a running
+/// `render`/`handle` call -- [`current_script_env`] raises
+/// `InvalidDescriptorError` otherwise, since every [`ScriptWidget`] method
+/// this registers needs that same call's live `Env` to ever call back
+/// into JS at all. See the module section's own doc for the full seam.
+#[napi(js_name = "registerScriptedWidget")]
+pub fn register_scripted_widget(
+    id: String,
+    measure: Function<'_, Unknown<'static>, Unknown<'static>>,
+    paint: Function<'_, Unknown<'static>, Unknown<'static>>,
+    on_event: Function<'_, Unknown<'static>, Unknown<'static>>,
+    a11y: Function<'_, Unknown<'static>, Unknown<'static>>,
+    focusable: bool,
+) -> Result<()> {
+    if current_script_env().is_none() {
+        return Err(invalid_descriptor_error(
+            "registerScriptedWidget: must be called synchronously from inside a render callback \
+             (quadraui-node/js/app/widget.ts's defineWidget does this for you)",
+        ));
+    }
+    let widget = NodeScriptWidget {
+        measure: measure.create_ref()?,
+        paint: paint.create_ref()?,
+        on_event: on_event.create_ref()?,
+        a11y: a11y.create_ref()?,
+    };
+    let primitive = ScriptedPrimitive::new(WidgetId::new(id.as_str()), widget, focusable);
+    core_register_scripted_widget(id, Rc::new(primitive) as Rc<dyn ExtraPaint>);
+    Ok(())
+}
+
 impl AppLogic for NodeAppLogic {
     type AreaId = ();
 
@@ -1086,6 +1418,12 @@ impl AppLogic for NodeAppLogic {
         // every node in the tree resolves against the same palette.
         let theme = backend.theme();
         let styles = StyleContext::new(&self.host.style_sets, &theme);
+        // Installs `env`/`pending_error` into `CURRENT_SCRIPT_ENV` for the
+        // whole rest of this render, not just the callback call below --
+        // `paint_layout` below calls back into any `defineWidget` this
+        // callback registered, well after it has already returned. See
+        // the "Script widgets" module section's own doc.
+        let _script_scope = ScriptEnvScope::enter(env, self.pending_error.clone());
         // Installs a fresh `RenderCtx` over `backend` for the span of the
         // callback call below, so `getCurrentCtx()` (and whatever the
         // `App` wrapper forwards positionally) answers from the live
@@ -1139,6 +1477,13 @@ impl AppLogic for NodeAppLogic {
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let reaction = match (self.handler.as_ref(), self.env.get()) {
             (Some(handler), Some(env)) => {
+                // `InteractionEngine::handle` forwards a resolved region
+                // click or a focused key press straight into a
+                // `ScriptedPrimitive` leaf's own `on_event` -- see the
+                // "Script widgets" module section's own doc for why that
+                // needs a live `Env` installed for this whole call, not
+                // just whatever `handler` itself touches.
+                let _script_scope = ScriptEnvScope::enter(env, self.pending_error.clone());
                 let mut sink = NodeEventSink {
                     handler,
                     env,

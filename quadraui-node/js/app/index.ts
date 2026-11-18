@@ -92,11 +92,13 @@
 const nodes = require("./nodes.ts");
 const { Component } = require("./component.ts");
 const { App, WIRE_VERSION, keyName } = require("./runtime.ts");
+const { defineWidget } = require("./widget.ts");
 
 exports.App = App;
 exports.WIRE_VERSION = WIRE_VERSION;
 exports.keyName = keyName;
 exports.Component = Component;
+exports.defineWidget = defineWidget;
 exports.Split = nodes.Split;
 exports.Column = nodes.Column;
 exports.Row = nodes.Row;
@@ -157,3 +159,15 @@ export type {
 } from "./nodes";
 export type { ComponentState } from "./component";
 export type { AppOptions, HotReloadOptions } from "./runtime";
+export type {
+  WidgetA11yNode,
+  WidgetConstraints,
+  WidgetEvent,
+  WidgetFrameworkOptions,
+  WidgetLayoutCtx,
+  WidgetOptions,
+  WidgetPaint,
+  WidgetRect,
+  WidgetSize,
+  WidgetSpec,
+} from "./widget";
