@@ -2607,35 +2607,22 @@ pub trait Backend: sealed::Sealed {
     /// `rect` and return its layout for hit-testing. Coordinate frame:
     /// **LOCAL**, matching [`Self::draw_data_table`].
     ///
-    /// Given a default body rather than required: TUI overrides it with
-    /// real tree-cell painting (indent + chevron + icon on column 0);
-    /// GTK/macOS/Win-GUI don't yet, so the default
-    /// here paints `table.table` as a plain `DataTable` — same rows and
-    /// columns, no chevron/indent decoration — via [`Self::draw_data_table`],
-    /// with an empty [`TreeTableLayout::chevrons`]. A backend that hasn't
-    /// implemented this still renders every row's label; it just doesn't
-    /// show the tree shape yet.
+    /// Required, no default: TUI paints real tree-cell content (indent +
+    /// chevron + icon on column 0) via [`crate::tui::draw_tree_table`];
+    /// GTK/macOS/Win-GUI each forward one line to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
+    /// the same pixel painter, a different [`crate::paint_surface::PaintSurface`]
+    /// adapter per backend.
     fn draw_tree_table(
         &mut self,
         rect: Rect,
         table: &TreeTable,
         hovered_idx: Option<usize>,
-    ) -> TreeTableLayout {
-        TreeTableLayout {
-            table: self.draw_data_table(rect, &table.table, hovered_idx),
-            chevrons: Vec::new(),
-        }
-    }
+    ) -> TreeTableLayout;
     /// Compute the tree-table layout without painting, mirroring
-    /// [`Self::data_table_layout`]. Same TUI-only-for-now default as
-    /// [`Self::draw_tree_table`]: delegates to [`Self::data_table_layout`]
-    /// with no chevron bounds until a backend overrides it.
-    fn tree_table_layout(&self, rect: Rect, table: &TreeTable) -> TreeTableLayout {
-        TreeTableLayout {
-            table: self.data_table_layout(rect, &table.table),
-            chevrons: Vec::new(),
-        }
-    }
+    /// [`Self::data_table_layout`]. Required, no default — see
+    /// [`Self::draw_tree_table`]'s doc for why.
+    fn tree_table_layout(&self, rect: Rect, table: &TreeTable) -> TreeTableLayout;
     /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when its content fits. Each backend supplies its native row
     /// height; the resolved track + thumb are the same values the

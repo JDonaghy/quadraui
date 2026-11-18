@@ -1075,9 +1075,14 @@ where
     resolved
 }
 
-// The shared paint implementation for **macOS and Windows** rasterisers only —
-// `gtk::data_table::draw_data_table` is not migrated and stays a full, bespoke
-// Cairo + Pango implementation. The contract all three backends hold to:
+// The shared paint implementation [`crate::DataTable`] itself paints on
+// **macOS and Windows** only — `gtk::data_table::draw_data_table` is not
+// migrated and stays a full, bespoke Cairo + Pango implementation. GTK does
+// reach this module, though: [`crate::primitives::tree_table::native_surface_paint`]
+// builds on [`paint_with_layout`]/[`paint_row`]/[`paint_cell`] on every GUI
+// backend, GTK included, since `TreeTable`'s shared painter has no bespoke
+// per-backend twin of its own to prefer instead. The contract all three
+// backends hold to for a plain `DataTable`:
 //
 // * Selection/hover row tints alpha-blend via `surface_fill_rect_alpha`, so
 //   they composite over whatever is already painted underneath.
@@ -1089,7 +1094,11 @@ where
 //   inset); footer text paints flush with the top of its band, in each span's
 //   own `fg` (else `theme.foreground`), bold via `surface_draw_text_run_styled`
 //   — honoured by `D2dSurface`, dropped by `CgSurface`. Body cells never bold.
-#[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
@@ -1113,7 +1122,7 @@ pub(crate) mod native_surface_paint {
     /// shape `mac_data_table_layout`/`win_data_table_layout` pass
     /// (`&CTFont` / `&DWrite`). Only the paint-time header/footer
     /// alignment measurement needs bold-aware widths; layout does not.
-    struct SurfaceTextMeasure<'a>(&'a dyn PaintSurface);
+    pub(crate) struct SurfaceTextMeasure<'a>(pub(crate) &'a dyn PaintSurface);
 
     impl TextMeasure for SurfaceTextMeasure<'_> {
         fn width_of(&self, text: &str) -> f32 {
@@ -1486,7 +1495,52 @@ pub(crate) mod native_surface_paint {
             let measure = SurfaceTextMeasure(&*surface);
             pixel_data_table_layout(table, rect.width, rect.height, line_height, &measure)
         };
+        paint_with_layout(
+            table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            state,
+            glyphs,
+            nerd_fonts_enabled,
+            layout,
+            |surface, ctx, row_y, idx, hovered, striped| {
+                paint_row(surface, ctx, row_y, idx, hovered, striped, None)
+            },
+        )
+    }
 
+    /// [`paint_with_state`]'s header/body/scrollbar/footer skeleton,
+    /// generalised over how a body row paints (`body_row(surface, ctx,
+    /// row_y, abs_idx, hovered_idx, striped)` stands in for [`paint_row`]'s
+    /// own default call) and taking `layout` already resolved rather than
+    /// computing it from `table` — so [`crate::primitives::tree_table`]'s
+    /// `native_surface_paint` can paint column 0 as a tree cell while
+    /// reusing every other line of this function unchanged, and never
+    /// resolves the layout twice when it also needs it for chevron bounds.
+    /// Mirrors [`crate::tui::data_table::draw_data_table_body`]'s identical
+    /// split between TUI and this pixel path.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_layout(
+        table: &DataTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        state: &DataTablePaintState,
+        glyphs: Option<&DataTableGlyphs>,
+        nerd_fonts_enabled: bool,
+        layout: DataTableLayout,
+        mut body_row: impl FnMut(
+            &mut dyn PaintSurface,
+            &TablePaintCtx<'_>,
+            f32,
+            usize,
+            Option<usize>,
+            bool,
+        ),
+    ) -> DataTableLayout {
         if rect.width <= 0.0 || rect.height <= 0.0 {
             return layout;
         }
@@ -1541,14 +1595,13 @@ pub(crate) mod native_surface_paint {
             |_| (line_height, ()),
         );
         for r in rows {
-            paint_row(
+            body_row(
                 surface,
                 &ctx,
                 r.bounds.y,
                 r.idx,
                 state.hovered_idx,
                 state.striped,
-                None,
             );
         }
 

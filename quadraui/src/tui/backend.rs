@@ -5403,6 +5403,27 @@ mod tests {
                 inset_y: 0.0,
             }
         }
+        fn draw_tree_table(
+            &mut self,
+            rect: QRect,
+            table: &crate::TreeTable,
+            hovered_idx: Option<usize>,
+        ) -> crate::primitives::tree_table::TreeTableLayout {
+            crate::primitives::tree_table::TreeTableLayout {
+                table: self.draw_data_table(rect, &table.table, hovered_idx),
+                chevrons: Vec::new(),
+            }
+        }
+        fn tree_table_layout(
+            &self,
+            rect: QRect,
+            table: &crate::TreeTable,
+        ) -> crate::primitives::tree_table::TreeTableLayout {
+            crate::primitives::tree_table::TreeTableLayout {
+                table: self.data_table_layout(rect, &table.table),
+                chevrons: Vec::new(),
+            }
+        }
         fn list_hscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
             None
         }

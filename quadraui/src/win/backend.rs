@@ -3223,6 +3223,69 @@ impl Backend for WinBackend {
         )
     }
 
+    /// One-line forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
+    /// same "surface not attached yet" fallback posture as
+    /// [`Self::draw_data_table`], whose doc explains the `chrome_dwrite`
+    /// preference in full.
+    fn draw_tree_table(
+        &mut self,
+        rect: Rect,
+        table: &crate::TreeTable,
+        hovered_idx: Option<usize>,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let theme = Theme::default();
+            let mut surf = super::surface::D2dSurface {
+                target: &surface.target,
+                dwrite: Some(dwrite),
+            };
+            let state = crate::primitives::data_table::DataTablePaintState::default()
+                .with_hovered_idx(hovered_idx);
+            return crate::primitives::tree_table::native_surface_paint::paint(
+                table,
+                &mut surf,
+                &theme,
+                rect,
+                self.resolved_row_height(self.current_line_height),
+                &state,
+                self.nerd_fonts_enabled,
+            );
+        }
+        let _ = hovered_idx;
+        self.tree_table_layout(rect, table)
+    }
+    /// One-line forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
+    /// mirroring [`Self::data_table_layout`]'s pure-measurement fallback.
+    fn tree_table_layout(
+        &self,
+        rect: Rect,
+        table: &crate::TreeTable,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
+            return crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
+                table,
+                rect.width,
+                rect.height,
+                self.resolved_row_height(self.current_line_height),
+                dwrite,
+            );
+        }
+        crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
+            table,
+            rect.width,
+            rect.height,
+            self.resolved_row_height(self.current_line_height),
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+        )
+    }
+
     /// GTK's twin (`GtkBackend::list_hscrollbar`) builds the
     /// `Scrollbar` directly from `self.current_char_width` rather than
     /// delegating to [`ListView::hscrollbar`] — that primitive method
