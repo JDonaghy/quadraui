@@ -476,6 +476,13 @@ pub(crate) mod row_content_paint {
             surface.surface_fill_rounded_rect(tile, radius, highlight.hover_bg);
         }
         if highlight.selected && highlight.focused {
+            // Stroked centred on `tile`'s own boundary rather than through
+            // `button::native_surface_paint::focus_ring_geometry`'s outset
+            // gap: `IconGrid` tiles are laid out edge-to-edge (no gap
+            // between cells), so an outset ring would bleed half its width
+            // into the neighbouring tile. Centring on the boundary instead
+            // keeps the outer half of the stroke inside this tile's own
+            // cell.
             surface.surface_stroke_rounded_rect(
                 tile,
                 radius,
@@ -484,7 +491,25 @@ pub(crate) mod row_content_paint {
             );
         }
 
-        let icon_band_h = (tile.height * 0.6).max(1.0).min(tile.height);
+        // Reserve the label band first, sized off the label's own
+        // measured line height rather than a fixed fraction of the tile:
+        // a fixed 60/40 icon/label split needs an unrealistically tall
+        // tile before two lines ever fit (`label_h` has to clear
+        // `2 * line_h`), so tiles at the primitive's own default size
+        // would always truncate to one line. The icon band gets whatever
+        // height is left over, which grows for a taller tile instead of
+        // staying pinned to a fraction.
+        let line_h = if label.is_empty() {
+            0.0
+        } else {
+            surface.surface_measure_text(label).1.max(1.0)
+        };
+        let label_h = if line_h > 0.0 {
+            (2.0 * line_h).min(tile.height * 0.5).min(tile.height)
+        } else {
+            0.0
+        };
+        let icon_band_h = (tile.height - label_h).max(1.0).min(tile.height);
         let icon_band = Rect::new(tile.x, tile.y, tile.width, icon_band_h);
         let painted_image = image.is_some_and(|image| {
             let fit = image.layout(icon_band);
@@ -513,13 +538,14 @@ pub(crate) mod row_content_paint {
         if label_h <= 0.0 || label.is_empty() {
             return;
         }
-        let line_h = surface.surface_measure_text(label).1.max(1.0);
         // At most 2 lines, and never more than `label_h` actually has
-        // room for — a short tile still gets the single-line truncation
-        // behaviour this replaced, rather than painting a second line
-        // past the tile's own bottom edge.
+        // room for — a short tile paints a single truncated line rather
+        // than a second line past the tile's own bottom edge.
         let max_lines = ((label_h / line_h).floor() as usize).clamp(1, 2);
         let max_w = (tile.width - 4.0).max(0.0);
+        if max_w <= 0.0 {
+            return;
+        }
         let lines = crate::primitives::toast::wrap_text_lines(label, max_w, max_lines, &|s| {
             surface.surface_measure_text(s).0
         });
@@ -551,7 +577,6 @@ pub(crate) mod row_content_paint {
         /// `surface_draw_text_run`/`surface_fill_rect` call so a test
         /// can assert whether [`paint_row_detail`]/[`paint_tile_icon_label`]
         /// actually painted.
-        #[derive(Default)]
         struct RecordingSurface {
             text_runs: Vec<(Rect, String, Color)>,
             fills: Vec<(Rect, Color)>,
@@ -565,9 +590,16 @@ pub(crate) mod row_content_paint {
             draw_image_result: ImagePaintResult,
         }
 
-        impl Default for ImagePaintResult {
+        impl Default for RecordingSurface {
             fn default() -> Self {
-                ImagePaintResult::Unsupported
+                RecordingSurface {
+                    text_runs: Vec::new(),
+                    fills: Vec::new(),
+                    rounded_fills: Vec::new(),
+                    rounded_strokes: Vec::new(),
+                    images: Vec::new(),
+                    draw_image_result: ImagePaintResult::Unsupported,
+                }
             }
         }
 
@@ -937,9 +969,10 @@ pub(crate) mod row_content_paint {
         #[test]
         fn paint_tile_icon_label_wraps_a_long_label_across_two_lines() {
             let mut surface = RecordingSurface::default();
-            // Tall enough tile for a 2-line label band (icon band
-            // 0.6 * 80 == 48, label band 32 == exactly 2 * the 16-unit
-            // line height the mock measures every string at).
+            // Tall enough tile for a full 2-line label band: label band
+            // is `min(2 * 16, 80 * 0.5) == 32` (the 32-unit cap binds
+            // before the 40-unit half-tile cap), leaving a 48-unit icon
+            // band.
             let tile = Rect::new(0.0, 0.0, 40.0, 80.0);
             paint_tile_icon_label(
                 &mut surface,
@@ -958,6 +991,41 @@ pub(crate) mod row_content_paint {
             );
             assert_eq!(surface.text_runs[0].1, "one");
             assert_eq!(surface.text_runs[1].1, "two");
+        }
+
+        #[test]
+        fn paint_tile_icon_label_wraps_to_two_lines_at_the_icon_grid_default_tile_size() {
+            // `icon_grid::default_tile_size`'s GUI branch asks for
+            // `(char_width * 12.0, line_height * 5.0)` — with this
+            // mock's 8-unit chars and 16-unit lines, that is exactly the
+            // 96x80 tile below. This pins the actual blocking scenario
+            // from the issue: a tile built from the primitive's own
+            // default size (not a tile hand-picked to make the math
+            // work) must still wrap a too-long label onto two lines
+            // rather than ellipsizing to one.
+            let mut surface = RecordingSurface::default();
+            let tile = Rect::new(0.0, 0.0, 96.0, 80.0);
+            // Each word is 80 units wide on its own (fits the 92-unit
+            // budget), but the two together (168 units) do not, so this
+            // wraps rather than fitting on one line like "one two" would
+            // at this tile's width.
+            paint_tile_icon_label(
+                &mut surface,
+                tile,
+                None,
+                None,
+                false,
+                "aaaaaaaaaa bbbbbbbbbb",
+                Color::rgb(1, 2, 3),
+                plain_highlight(),
+            );
+            assert_eq!(
+                surface.text_runs.len(),
+                2,
+                "the primitive's own default GUI tile size must fit a 2-line wrap"
+            );
+            assert_eq!(surface.text_runs[0].1, "aaaaaaaaaa");
+            assert_eq!(surface.text_runs[1].1, "bbbbbbbbbb");
         }
 
         #[test]
@@ -988,11 +1056,15 @@ pub(crate) mod row_content_paint {
                 1,
                 "the thumbnail must be painted once"
             );
-            // Contain-fit of a 100x50 image into the 80x24 icon band
-            // (80 * 0.6) is width-limited: 80 wide, 40 tall — still
-            // taller than the 24-unit band, so height-limited instead:
-            // scale = 24 / 50 == 0.48, width == 48.
-            assert_eq!(surface.images[0].height, 24.0);
+            // "a.txt" reserves a 20-unit label band (2 lines of the
+            // mock's 16-unit line height, capped at half the 40-unit
+            // tile), leaving an 80x20 icon band. Contain-fit of the
+            // 100x50 image into that band is height-limited: scale ==
+            // 20 / 50 == 0.4, so width == 40, height == 20, centred
+            // (x == (80 - 40) / 2 == 20).
+            assert_eq!(surface.images[0].width, 40.0);
+            assert_eq!(surface.images[0].height, 20.0);
+            assert_eq!(surface.images[0].x, 20.0);
             assert!(
                 surface.text_runs.iter().all(|(_, t, _)| t != "GLYPH"),
                 "the icon glyph must not paint once a thumbnail painted"

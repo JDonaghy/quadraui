@@ -484,7 +484,14 @@ fn default_tile_size(ctx: &crate::primitive::LayoutCtx) -> (f32, f32) {
         // viewport, not the tile hint.
         (12.0, 2.0)
     } else {
-        (ctx.char_width * 12.0, ctx.line_height * 3.0)
+        // `row_content_paint::paint_tile_icon_label` reserves its label
+        // band as up to two lines (capped at half the tile), so the
+        // tile needs to clear roughly 4x a *measured* label line height
+        // before a 2-line wrap can ever engage, and a backend's actual
+        // font metrics can run up to ~20% taller than this
+        // `ctx.line_height` chrome metric — 5x keeps that margin on
+        // both sides of the threshold.
+        (ctx.char_width * 12.0, ctx.line_height * 5.0)
     }
 }
 
