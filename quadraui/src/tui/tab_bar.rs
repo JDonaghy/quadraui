@@ -1188,6 +1188,80 @@ mod tests {
     /// `primitives::tab_bar::fit_tab_label` instead of hard-clipped
     /// mid-glyph, and the truncated run never reaches into the close
     /// glyph's cell.
+    /// When tabs scroll, `slot_positions` is indexed by `tab_idx` over the
+    /// *full* `bar.tabs`, not just the visible slice: every tab clipped out
+    /// by the scroll offset keeps the `(0.0, 0.0)` sentinel, and every
+    /// visible tab's slot lands exactly on the span this rasteriser paints.
+    /// Pins the shape `backend::tab_bar_hits_from_layout` now builds (the
+    /// hand-rolled predecessor built a `scroll_offset`-length prefix of
+    /// sentinels instead, which misindexed once `resolved_scroll_offset`
+    /// disagreed with `bar.scroll_offset`).
+    #[test]
+    fn scrolled_tabs_keep_sentinels_for_clipped_indices_and_real_spans_for_visible_ones() {
+        let tabs: Vec<_> = (0..5)
+            .map(|i| TabItem {
+                label: format!("t{i}"),
+                is_active: i == 4,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: false,
+            })
+            .collect();
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs,
+            right_segments: vec![],
+            active_accent: None,
+            // Caller has already scrolled to show tabs 3,4 (each 10 cells
+            // wide fits 2 in a 20-cell bar) with no scroll arrows, so
+            // `resolved_scroll_offset` honours this input verbatim.
+            scroll_offset: 3,
+            show_tab_close: false,
+            compact: false,
+        };
+        let layout = bar.layout(
+            20.0,
+            1.0,
+            0.0,
+            |_| TabMeasure::new(10.0, 0.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.resolved_scroll_offset, 3);
+        assert_eq!(layout.visible_tabs.len(), 2);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        #[allow(deprecated)]
+        let hits = draw_tab_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+        );
+
+        #[allow(deprecated)]
+        {
+            assert_eq!(hits.slot_positions.len(), 5, "indexed over all 5 tabs");
+            for idx in 0..3 {
+                assert_eq!(
+                    hits.slot_positions[idx],
+                    (0.0, 0.0),
+                    "tab {idx} is scrolled out of view and must keep the sentinel"
+                );
+            }
+            assert_eq!(
+                hits.slot_positions[3],
+                (0.0, 10.0),
+                "tab 3 is the first visible slot, painted at the bar's left edge"
+            );
+            assert_eq!(
+                hits.slot_positions[4],
+                (10.0, 20.0),
+                "tab 4 is the second visible slot, painted right after tab 3"
+            );
+        }
+    }
+
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` return
     fn overlong_label_in_a_narrow_fixed_width_tab_ends_in_ellipsis_and_never_overlaps_close_glyph()
