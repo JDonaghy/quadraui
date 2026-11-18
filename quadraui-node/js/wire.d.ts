@@ -845,6 +845,24 @@ export interface MessageListDescriptor {
   scroll_top?: number;
 }
 
+export interface IconGridItemDescriptor {
+  id: WidgetId;
+  icon: Icon;
+  image?: ImageDescriptor | null;
+  label: StyledText;
+  detail?: StyledText | null;
+  decoration?: Decoration;
+}
+
+export interface IconGridDescriptor {
+  id: WidgetId;
+  items: IconGridItemDescriptor[];
+  selected_idx?: number;
+  has_focus?: boolean;
+  scroll_offset?: number;
+  tile_size?: [number, number] | null;
+}
+
 export type Weekday = "Sunday" | "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday";
 
 export type DateFormat = "Iso8601" | "UsSlash" | "EuSlash";
@@ -1712,6 +1730,7 @@ export interface LayoutLeafNode {
   password?: PasswordDescriptor;
   textarea?: TextAreaDescriptor;
   markdown?: MarkdownDescriptor;
+  icon_grid?: IconGridDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1769,6 +1788,7 @@ export interface RenderFrameDict {
   password?: PasswordDescriptor | null;
   textarea?: TextAreaDescriptor | null;
   markdown?: MarkdownDescriptor | null;
+  icon_grid?: IconGridDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

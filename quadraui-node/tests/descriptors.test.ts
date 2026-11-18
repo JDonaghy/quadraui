@@ -948,6 +948,31 @@ test("inline tree leaf message_list renders a row's text", () => {
   assert.ok(app.screenContains("Build succeeded"));
 });
 
+test("inline tree leaf icon_grid renders an item's label", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "icons:1",
+        icon_grid: {
+          id: "icons:1",
+          items: [
+            {
+              id: "file:readme",
+              icon: { glyph: "", fallback: "F" },
+              label: { spans: [{ text: "README.md", fg: null, bg: null }] },
+            },
+          ],
+          selected_idx: 0,
+          has_focus: true,
+        },
+      },
+    ],
+  }));
+
+  assert.ok(app.screenContains("README.md"));
+});
+
 test("inline tree leaf board renders a column title", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({

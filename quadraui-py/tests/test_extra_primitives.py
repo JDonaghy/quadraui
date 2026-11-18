@@ -574,6 +574,26 @@ def test_insert_extra_date_picker_renders_header():
     assert app.screen_contains("2024-03")
 
 
+def test_insert_extra_icon_grid_renders_item_label():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "icon_grid",
+        {
+            "id": "icons:1",
+            "items": [
+                {
+                    "id": "file:readme",
+                    "icon": {"glyph": "", "fallback": "F"},
+                    "label": {"spans": [{"text": "README.md", "fg": None, "bg": None}]},
+                },
+            ],
+            "selected_idx": 0,
+            "has_focus": True,
+        },
+    )
+    assert app.screen_contains("README.md")
+
+
 def test_number_input_stepper_click_increments_and_decrements_the_value():
     # `NumberInput::layout` needs no backend metrics (its stepper column
     # is a fixed width), so -- unlike `RadioGroup`/`ComboBox`/`DatePicker`

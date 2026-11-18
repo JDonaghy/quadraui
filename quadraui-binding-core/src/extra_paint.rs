@@ -11,13 +11,13 @@ use std::rc::Rc;
 
 use quadraui::{
     render_markdown_to_styled, ActivityBar, Backend, BoardModel, Canvas, Chart, ComboBox,
-    CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor,
-    FieldKind, FindReplacePanel, FontRole, Form, FormField, Image, InteractionState, LabelPosition,
-    MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize, NumberInput, NumberInputHit,
-    Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis,
-    ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit,
-    Terminal, TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar,
-    ToolbarButton, TreeTable, WidgetId,
+    CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView,
+    DrawsPrimitives, Editor, FieldKind, FindReplacePanel, FontRole, Form, FormField, IconGrid,
+    Image, InteractionState, LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView,
+    NaturalSize, NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar,
+    RadioGroup, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StatusBar,
+    StatusBarHit, StyledText, Switch, SwitchHit, Terminal, TextDisplay, TextDisplayLine, TextField,
+    TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -1279,6 +1279,35 @@ impl ExtraPaint for Chart {
     }
 }
 
+impl ExtraPaint for IconGrid {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        // `IconGrid` is a `quadraui::Primitive`, not a dedicated
+        // `Backend::draw_icon_grid` method — `DrawsPrimitives::
+        // draw_primitive` resolves its layout and paints it (GUI through
+        // `PaintSurface`, TUI through the cell buffer) on whichever
+        // backend this runs on, with no per-backend wiring needed here.
+        backend.draw_primitive(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// Whole-area bounds check, same limitation [`DatePicker`]'s own
+    /// `hit_test` documents: resolving a click to a specific tile needs
+    /// the resolved [`quadraui::IconGridLayout`] this trait's `hit_test`
+    /// has no parameter for — not wired yet rather than impossible.
+    /// Arrow-key navigation still works once focused via
+    /// [`ExtraPaint::tab_stop`].
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
 impl ExtraPaint for MessageList {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_message_list(area, self);
@@ -2044,6 +2073,7 @@ extra_primitives! {
     "password" => PasswordInput,
     "textarea" => TextArea,
     "markdown" => Markdown,
+    "icon_grid" => IconGrid,
 }
 
 #[cfg(test)]

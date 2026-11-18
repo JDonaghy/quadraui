@@ -1522,6 +1522,28 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("scroll_top", int_()),
         ],
     ));
+    let icon_grid_item_descriptor = b.define(obj(
+        "IconGridItemDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("icon", icon.clone()),
+            field_opt("image", nullable(image_descriptor.clone())),
+            field("label", styled_text.clone()),
+            field_opt("detail", nullable(styled_text.clone())),
+            field_opt("decoration", decoration.clone()),
+        ],
+    ));
+    let icon_grid_descriptor = b.define(obj(
+        "IconGridDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("items", list(icon_grid_item_descriptor)),
+            field_opt("selected_idx", int_()),
+            field_opt("has_focus", bool_()),
+            field_opt("scroll_offset", int_()),
+            field_opt("tile_size", nullable(tup(vec![float_(), float_()]))),
+        ],
+    ));
     let weekday = b.define(alias(
         "Weekday",
         lit(&[
@@ -2677,6 +2699,7 @@ pub fn schema() -> Vec<DefJson> {
             "textarea" => textarea_descriptor.clone(),
             "markdown" => markdown_descriptor.clone(),
             "tree_table" => tree_table_descriptor.clone(),
+            "icon_grid" => icon_grid_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3581,20 +3604,21 @@ mod coverage {
         EditorCursorShape as CursorShape, EditorLine, EditorSelection,
         EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan, EmptyBody, FieldKind,
         FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField, FormSpacing,
-        FrHitRegion, GitLineStatus, HeaderAction, Icon, Image, ImageFit, ImageSource, InlineInput,
-        Key, KeyBinding, LabelAlign, LabelPosition, ListItem, ListView, ListViewEvent, MenuBar,
-        MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine, MinimapSpan, Modifiers,
-        MouseButton, MsvAxis, MultiSectionView, NamedKey, NumberInput, Palette, PaletteEvent,
-        PaletteItem, PaletteMode, PalettePreview, Panel, PanelAction, PipelineStage, PipelineView,
-        Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption, Rect, RowAlign, ScrollAxis,
-        ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section, SectionAux, SectionBody,
-        SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, SortDirection, SpellMark,
-        Spinner, StageStatus, StatusBar, StatusBarEvent, StatusBarSegment, StyledSpan, StyledText,
-        Switch, SystemTheme, TabBar, TabBarEvent, TabBarSegment, TabItem, Terminal, TerminalCell,
-        TerminalCursorShape, TerminalEvent, TerminalScrollbar, TextDisplay, TextDisplayEvent,
-        TextDisplayLine, TextInput, TimeOfDay, ToggleGroupItem, Toolbar, ToolbarButton,
-        ToolbarEvent, TreeEvent, TreeRow, TreeRowEditState, TreeStyle, TreeTableEvent, TreeView,
-        UiEvent, ValidationState, Viewport, Weekday,
+        FrHitRegion, GitLineStatus, HeaderAction, Icon, IconGrid, IconGridItem, Image, ImageFit,
+        ImageSource, InlineInput, Key, KeyBinding, LabelAlign, LabelPosition, ListItem, ListView,
+        ListViewEvent, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine,
+        MinimapSpan, Modifiers, MouseButton, MsvAxis, MultiSectionView, NamedKey, NumberInput,
+        Palette, PaletteEvent, PaletteItem, PaletteMode, PalettePreview, Panel, PanelAction,
+        PipelineStage, PipelineView, Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption,
+        Rect, RowAlign, ScrollAxis, ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section,
+        SectionAux, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel,
+        SortDirection, SpellMark, Spinner, StageStatus, StatusBar, StatusBarEvent,
+        StatusBarSegment, StyledSpan, StyledText, Switch, SystemTheme, TabBar, TabBarEvent,
+        TabBarSegment, TabItem, Terminal, TerminalCell, TerminalCursorShape, TerminalEvent,
+        TerminalScrollbar, TextDisplay, TextDisplayEvent, TextDisplayLine, TextInput, TimeOfDay,
+        ToggleGroupItem, Toolbar, ToolbarButton, ToolbarEvent, TreeEvent, TreeRow,
+        TreeRowEditState, TreeStyle, TreeTableEvent, TreeView, UiEvent, ValidationState, Viewport,
+        Weekday,
     };
 
     use quadraui::primitives::canvas::{CanvasCursor, CanvasFontRole, CanvasRegion};
@@ -4678,6 +4702,28 @@ mod coverage {
             id,
             rows,
             scroll_top
+        }
+    );
+    assert_fields!(
+        assert_icon_grid_item_fields,
+        IconGridItem {
+            id,
+            icon,
+            image,
+            label,
+            detail,
+            decoration
+        }
+    );
+    assert_fields!(
+        assert_icon_grid_fields,
+        IconGrid {
+            id,
+            items,
+            selected_idx,
+            has_focus,
+            scroll_offset,
+            tile_size
         }
     );
     fn assert_weekday(w: Weekday) {
