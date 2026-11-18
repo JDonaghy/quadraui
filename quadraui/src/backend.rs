@@ -1096,6 +1096,11 @@ mod menu_style_tests {
 
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
 ///
+/// A new widget should implement [`crate::Primitive`] and reach every
+/// backend through [`DrawsPrimitives::draw_primitive`], not add a new
+/// `draw_*`/`*_layout` pair here — `tests/backend_method_ratchet.rs`
+/// enforces that this trait's method count only ever shrinks.
+///
 /// # Sealed — no implementations outside this crate
 ///
 /// `Backend` cannot be implemented downstream: it requires the private
