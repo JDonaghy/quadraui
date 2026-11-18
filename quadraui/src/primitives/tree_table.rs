@@ -448,8 +448,7 @@ pub(crate) mod native_surface_paint {
     use crate::primitives::data_table::native_surface_paint::{
         paint_cell, paint_row, paint_with_layout, SurfaceTextMeasure, TablePaintCtx,
     };
-    use crate::primitives::data_table::{ColumnAlign, ColumnMeasure, DataTablePaintState};
-    use crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH;
+    use crate::primitives::data_table::{ColumnAlign, DataTablePaintState};
     use crate::primitives::layout_metrics::TextMeasure;
     use crate::primitives::tree::native_surface_paint::tree_cell::paint_tree_cell;
     use crate::primitives::tree::tree_chevron_glyph;
@@ -464,66 +463,14 @@ pub(crate) mod native_surface_paint {
         (line_height * 0.9).round()
     }
 
-    /// `(start, width)` of `node`'s chevron glyph, relative to column 0's
-    /// left edge — [`TreeTable::layout`]'s `measure_chevron` callback for
-    /// a pixel backend. `None` for a leaf or a hidden chevron.
-    /// `row_padding_x` is `0.0`: column 0 has no more left inset than any
-    /// other [`crate::DataTable`] column (see [`paint_cell`]'s own
-    /// zero-padding convention).
-    fn chevron_measure(
-        measure: &dyn TextMeasure,
-        style: &TreeStyle,
-        indent_px: f32,
-        node: &TreeTableNode,
-    ) -> Option<(f32, f32)> {
-        if !style.show_chevrons {
-            return None;
-        }
-        let expanded = node.is_expanded?;
-        let glyph = tree_chevron_glyph(style, expanded);
-        let glyph_w = measure.width_of(&glyph);
-        // [`paint_tree_cell`] paints the glyph at `indent * indent_px`
-        // (no `row_padding_x` here — see this fn's own doc), so the hit
-        // region must start there too, not at `chevron_end_x`'s trailing
-        // 4px gap past the glyph.
-        Some((node.indent as f32 * indent_px, glyph_w))
-    }
-
-    /// [`TreeTable::layout`]'s `min_tree_col_width` floor: the deepest
-    /// indent across every row in `tree`, plus one chevron glyph
-    /// (whichever of expanded/collapsed measures wider) and at least one
-    /// label character. The pixel counterpart of
-    /// [`crate::tui::data_table::tree_column_floor_width`]'s cell-count
-    /// version.
-    fn tree_column_floor_width(
-        measure: &dyn TextMeasure,
-        style: &TreeStyle,
-        tree: &[TreeTableNode],
-        indent_px: f32,
-    ) -> f32 {
-        let chevron_w = if style.show_chevrons {
-            let expanded_w = measure.width_of(&tree_chevron_glyph(style, true));
-            let collapsed_w = measure.width_of(&tree_chevron_glyph(style, false));
-            expanded_w.max(collapsed_w)
-        } else {
-            0.0
-        };
-        let max_indent = tree.iter().map(|n| n.indent).max().unwrap_or(0);
-        let one_char = measure.width_of("0");
-        max_indent as f32 * indent_px + chevron_w + one_char
-    }
-
     /// Resolve the layout [`paint`] paints `table` at, without touching a
-    /// buffer — the pixel counterpart of
-    /// [`crate::tui::data_table::tree_table_layout`]: column headers and
-    /// the chevron glyph are measured through `measure` (real glyph
-    /// metrics when a live font/context is available, else a
-    /// character-count estimate) rather than a hardcoded character count,
-    /// same as
-    /// [`crate::primitives::layout_metrics::pixel_data_table_layout`] does
-    /// for a plain [`crate::DataTable`] — so a backend with no live paint
-    /// frame (e.g. hit-testing between frames) can resolve this layout
-    /// without a [`PaintSurface`].
+    /// buffer. Thin forwarding wrapper over
+    /// [`crate::primitives::layout_metrics::pixel_tree_table_layout`] (the
+    /// pixel counterpart of [`crate::tui::data_table::tree_table_layout`],
+    /// and the shared home for this measuring glue — see that fn's own
+    /// doc) kept at this path so every GUI backend's existing
+    /// `native_surface_paint::pixel_tree_table_layout` call site needs no
+    /// change.
     pub(crate) fn pixel_tree_table_layout(
         table: &TreeTable,
         w: f32,
@@ -531,19 +478,12 @@ pub(crate) mod native_surface_paint {
         line_height: f32,
         measure: &dyn TextMeasure,
     ) -> TreeTableLayout {
-        let style = TreeStyle::default();
-        let ipx = indent_px(line_height);
-        let floor = tree_column_floor_width(measure, &style, &table.tree, ipx);
-        let header_height = (line_height * 1.2).round();
-        table.layout(
+        crate::primitives::layout_metrics::pixel_tree_table_layout(
+            table,
             w,
             h,
             line_height,
-            header_height,
-            DATA_TABLE_SCROLLBAR_WIDTH,
-            |col| ColumnMeasure::new(measure.width_of(&col.title)),
-            |node| chevron_measure(measure, &style, ipx, node),
-            floor,
+            measure,
         )
     }
 
@@ -1151,38 +1091,18 @@ impl crate::primitive::Primitive for TreeTable {
         // No live text measurer reaches `Primitive::layout` (its
         // signature carries only `LayoutCtx`'s flat `char_width`), so
         // column titles and the chevron glyph are both estimated from
-        // it — `char_width` per title glyph (mirrors
-        // `crate::primitives::data_table`'s own `CharWidthMeasure`
-        // fallback) and `line_height * 0.65` for the chevron (mirrors
-        // `crate::primitives::layout_metrics::tree_layout`'s identical
-        // no-live-font estimate). `Self::layout` (this method) supplies
-        // only that measuring glue; the narrow-rect column-dropping
-        // algorithm itself lives entirely in [`TreeTable::layout`].
-        let indent_px = (ctx.line_height * 0.9).round();
-        let header_height = (ctx.line_height * 1.2).round();
-        let style = crate::types::TreeStyle::default();
-        let chevron_w = ctx.line_height * 0.65;
-        let min_tree_col_width = {
-            let max_indent = self.tree.iter().map(|n| n.indent).max().unwrap_or(0);
-            max_indent as f32 * indent_px
-                + if style.show_chevrons { chevron_w } else { 0.0 }
-                + ctx.char_width
-        };
-        let layout = self.layout(
+        // it — the same no-live-font fallback
+        // [`crate::primitives::layout_metrics::pixel_tree_table_layout`]
+        // already applies for any pixel backend with no live glyph
+        // measurer reachable. `Self::layout` (this method) contributes
+        // no layout math of its own beyond resolving that one measurer.
+        let measure = crate::primitives::layout_metrics::CharWidthMeasure(ctx.char_width);
+        let layout = crate::primitives::layout_metrics::pixel_tree_table_layout(
+            self,
             rect.width,
             rect.height,
             ctx.line_height,
-            header_height,
-            crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH,
-            |col| ColumnMeasure::new(col.title.chars().count() as f32 * ctx.char_width),
-            |node: &TreeTableNode| {
-                if !style.show_chevrons {
-                    return None;
-                }
-                node.is_expanded?;
-                Some((node.indent as f32 * indent_px, chevron_w))
-            },
-            min_tree_col_width,
+            &measure,
         );
         TreeTablePrimitiveLayout {
             area: rect,
@@ -1684,6 +1604,23 @@ mod primitive_parity_tests {
             "the tree table must paint something for this comparison to be meaningful"
         );
         assert_eq!(via_primitive_surface.calls, direct_surface.calls);
+
+        // Not just the same paint verbs: the exact geometry `Primitive::layout`
+        // resolved (and handed to a caller to hit-test against) must equal
+        // what the shared pixel resolver returns for this surface's own
+        // metrics — catches a `Primitive::layout` that estimated a glyph
+        // width (e.g. the chevron) differently than the measurer `paint`
+        // actually used, even though both still painted identical verbs.
+        let resolver_layout = crate::primitives::layout_metrics::pixel_tree_table_layout(
+            &tt,
+            rect.width,
+            rect.height,
+            ctx.line_height,
+            &crate::primitives::data_table::native_surface_paint::SurfaceTextMeasure(
+                &LogSurface::default(),
+            ),
+        );
+        assert_eq!(via_primitive_layout.layout, resolver_layout);
     }
 
     /// [`TreeTablePrimitiveLayout::hit_test`] subtracts the area's

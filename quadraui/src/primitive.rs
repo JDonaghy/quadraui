@@ -234,9 +234,8 @@ pub trait Primitive: A11yPrimitive {
     /// to call this with.
     ///
     /// Default: no-op — correct for a `Primitive` implementor with no
-    /// TUI story at all (every built-in primitive except [`crate::ListView`],
-    /// [`crate::TreeView`], [`crate::DataTable`] and [`crate::TreeTable`],
-    /// which all override it); such an implementor painted through
+    /// TUI story at all (every built-in primitive that has a TUI
+    /// rasteriser overrides it); such an implementor painted through
     /// [`crate::backend::DrawsPrimitives::draw_primitive`] on TUI still
     /// gets a real, hit-testable [`Self::Layout`] back, just no pixels
     /// on screen, the same "resolve layout, maybe paint" contract that
