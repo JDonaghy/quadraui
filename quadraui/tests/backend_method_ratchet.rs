@@ -13,8 +13,10 @@
 //!    point of a ratchet.
 //! 2. [`primitives_dir_types_skip_bespoke_backend_methods`] finds every
 //!    `impl Primitive for X` under `src/primitives/` and asserts `Backend`
-//!    carries no bespoke `draw_<x>`/`<x>_layout` pair for `X`, except the
-//!    pre-existing legacy pairs this test grandfathers explicitly.
+//!    carries no bespoke `draw_<stem>`/`<stem>_layout` pair for any
+//!    leading-word stem of `X`'s name (`ListView` -> `list_view` or
+//!    `list`), except the pre-existing legacy pairs this test grandfathers
+//!    explicitly.
 
 use std::path::{Path, PathBuf};
 
@@ -144,9 +146,10 @@ fn primitive_impl_type_names(file: &syn::File) -> Vec<String> {
 }
 
 /// Lowercase ASCII `snake_case` of a `PascalCase`/`camelCase` identifier —
-/// `ListView` -> `list_view`, matching the convention every built-in
-/// primitive's own `draw_*` method name already follows (`draw_tree` for
-/// `TreeView`, `draw_data_table` for `DataTable`, …).
+/// `ListView` -> `list_view`. `Backend`'s bespoke methods are not always
+/// named after this *full* form (`draw_list`/`list_layout` for `ListView`,
+/// `draw_tree`/`tree_layout` for `TreeView`); [`candidate_stems`] below
+/// derives the shorter leading-word forms those methods actually use.
 fn to_snake_case(ident: &str) -> String {
     let mut out = String::new();
     for (i, ch) in ident.chars().enumerate() {
@@ -162,6 +165,56 @@ fn to_snake_case(ident: &str) -> String {
     out
 }
 
+/// Leading-word prefixes of a `snake_case` identifier, longest first —
+/// `list_view` -> `["list_view", "list"]`, `data_table` -> `["data_table",
+/// "data"]`, `swatch` -> `["swatch"]`. A bespoke `Backend` method is named
+/// after one of these stems, not necessarily the type's full snake_case
+/// name, so every candidate below is checked against each stem.
+fn candidate_stems(snake: &str) -> Vec<String> {
+    let words: Vec<&str> = snake.split('_').collect();
+    (1..=words.len())
+        .rev()
+        .map(|n| words[..n].join("_"))
+        .collect()
+}
+
+/// Whether `method` is a `Backend` method shaped like a bespoke
+/// `draw_<stem>`, `<stem>_layout`, or `draw_<stem>_with_*` state variant
+/// (e.g. `draw_list_with_state`) for any leading-word stem of `type_name`.
+fn bespoke_method_for_type(method: &str, type_name: &str) -> bool {
+    let snake = to_snake_case(type_name);
+    candidate_stems(&snake).iter().any(|stem| {
+        *method == format!("draw_{stem}")
+            || *method == format!("{stem}_layout")
+            || method.starts_with(&format!("draw_{stem}_with"))
+    })
+}
+
+/// For every `type_name` in `primitive_type_names`, find `Backend` methods
+/// in `backend_methods` that match a bespoke `draw_*`/`*_layout` shape for
+/// one of its stems and are not exempted by `known`. Returns
+/// `(type_name, method)` for each violation — pulled out of the test body
+/// so it can be driven with synthetic inputs in the `tests` module below.
+fn find_bespoke_violations<'a>(
+    primitive_type_names: &'a [String],
+    backend_methods: &'a [String],
+    known: &std::collections::HashSet<(&str, &str)>,
+) -> Vec<(&'a str, &'a str)> {
+    let mut violations = Vec::new();
+    for type_name in primitive_type_names {
+        for method in backend_methods {
+            if !bespoke_method_for_type(method, type_name) {
+                continue;
+            }
+            if known.contains(&(type_name.as_str(), method.as_str())) {
+                continue;
+            }
+            violations.push((type_name.as_str(), method.as_str()));
+        }
+    }
+    violations
+}
+
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
@@ -169,7 +222,9 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
         .collect();
     entries.sort();
     for path in entries {
-        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             out.push(path);
         }
     }
@@ -208,26 +263,26 @@ fn primitives_dir_types_skip_bespoke_backend_methods() {
         .copied()
         .collect();
 
-    let mut violations = Vec::new();
-    for (type_name, path) in &primitive_types {
-        let snake = to_snake_case(type_name);
-        let draw_name = format!("draw_{snake}");
-        let layout_name = format!("{snake}_layout");
-        for method in &backend_methods {
-            let matches_shape = *method == draw_name || *method == layout_name;
-            if !matches_shape {
-                continue;
-            }
-            if known.contains(&(type_name.as_str(), method.as_str())) {
-                continue;
-            }
-            violations.push(format!(
-                "`{type_name}` (impl Primitive in {}) has a bespoke `Backend::{method}` that is \
-                 not in KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS",
-                path.display()
-            ));
-        }
-    }
+    let type_names: Vec<String> = primitive_types
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    let violating = find_bespoke_violations(&type_names, &backend_methods, &known);
+
+    let violations: Vec<String> = violating
+        .iter()
+        .map(|(type_name, method)| {
+            let path = primitive_types
+                .iter()
+                .find(|(name, _)| name == type_name)
+                .map(|(_, p)| p.display().to_string())
+                .unwrap_or_default();
+            format!(
+                "`{type_name}` (impl Primitive in {path}) has a bespoke `Backend::{method}` that \
+                 is not in KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS"
+            )
+        })
+        .collect();
 
     assert!(
         violations.is_empty(),
@@ -242,8 +297,7 @@ fn primitives_dir_types_skip_bespoke_backend_methods() {
     );
 }
 
-#[cfg(test)]
-mod self_test {
+mod tests {
     use super::*;
 
     #[test]
@@ -252,6 +306,76 @@ mod self_test {
         assert_eq!(to_snake_case("TreeView"), "tree_view");
         assert_eq!(to_snake_case("DataTable"), "data_table");
         assert_eq!(to_snake_case("Swatch"), "swatch");
+    }
+
+    #[test]
+    fn candidate_stems_orders_longest_first() {
+        assert_eq!(candidate_stems("list_view"), vec!["list_view", "list"]);
+        assert_eq!(candidate_stems("data_table"), vec!["data_table", "data"]);
+        assert_eq!(candidate_stems("swatch"), vec!["swatch"]);
+    }
+
+    #[test]
+    fn bespoke_method_for_type_matches_a_leading_word_stem() {
+        // `FooView`'s bespoke `draw_foo`/`foo_layout` should be caught even
+        // though the type's full snake_case form is `foo_view` — this
+        // mirrors ListView's real `draw_list`/`list_layout` pair, which is
+        // named after the `list` stem, not the full `list_view` name.
+        assert!(bespoke_method_for_type("draw_foo", "FooView"));
+        assert!(bespoke_method_for_type("foo_layout", "FooView"));
+        assert!(bespoke_method_for_type("draw_foo_with_state", "FooView"));
+        assert!(!bespoke_method_for_type("draw_bar", "FooView"));
+        assert!(!bespoke_method_for_type("foo_view_char_width", "FooView"));
+    }
+
+    #[test]
+    fn find_bespoke_violations_catches_a_non_grandfathered_pair() {
+        let types = vec!["FooView".to_string()];
+        let methods = vec![
+            "draw_foo".to_string(),
+            "foo_layout".to_string(),
+            "unrelated_method".to_string(),
+        ];
+        let known = std::collections::HashSet::new();
+
+        let violations = find_bespoke_violations(&types, &methods, &known);
+
+        assert_eq!(
+            violations,
+            vec![("FooView", "draw_foo"), ("FooView", "foo_layout")]
+        );
+    }
+
+    #[test]
+    fn find_bespoke_violations_grandfathers_a_known_pair() {
+        let types = vec!["FooView".to_string()];
+        let methods = vec!["draw_foo".to_string(), "foo_layout".to_string()];
+        let known: std::collections::HashSet<(&str, &str)> =
+            [("FooView", "draw_foo"), ("FooView", "foo_layout")]
+                .into_iter()
+                .collect();
+
+        let violations = find_bespoke_violations(&types, &methods, &known);
+
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn find_bespoke_violations_would_catch_the_real_list_view_pair_if_ungrandfathered() {
+        // Mirrors ListView's actual `Backend` methods: without the
+        // grandfather entries, this is exactly the shape the ratchet must
+        // flag for any *new* `Primitive` implementor.
+        let types = vec!["ListView".to_string()];
+        let methods = vec![
+            "draw_list".to_string(),
+            "list_layout".to_string(),
+            "draw_list_with_state".to_string(),
+        ];
+        let known = std::collections::HashSet::new();
+
+        let violations = find_bespoke_violations(&types, &methods, &known);
+
+        assert_eq!(violations.len(), 3);
     }
 
     #[test]
