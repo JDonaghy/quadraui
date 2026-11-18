@@ -661,6 +661,10 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_DataPointClickedPayload`](#wire-_datapointclickedpayload)
 - [`_LegendClickedPayload`](#wire-_legendclickedpayload)
 - [`ChartEvent`](#wire-chartevent)
+- [`_CanvasRegionClickedPayload`](#wire-_canvasregionclickedpayload)
+- [`_CanvasRegionDoubleClickedPayload`](#wire-_canvasregiondoubleclickedpayload)
+- [`_CanvasRegionHoveredPayload`](#wire-_canvasregionhoveredpayload)
+- [`CanvasEvent`](#wire-canvasevent)
 - [`_ToolbarButtonClickedPayload`](#wire-_toolbarbuttonclickedpayload)
 - [`_ToolbarGroupSelectedPayload`](#wire-_toolbargroupselectedpayload)
 - [`_ToolbarFieldChangedPayload`](#wire-_toolbarfieldchangedpayload)
@@ -714,6 +718,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailTreeScrollbarThumb`](#wire-_hitdetailtreescrollbarthumb)
 - [`_HitDetailTreeScrollbarTrackAfter`](#wire-_hitdetailtreescrollbartrackafter)
 - [`_HitDetailExtraBody`](#wire-_hitdetailextrabody)
+- [`_HitDetailCanvasRegion`](#wire-_hitdetailcanvasregion)
 - [`_HitDetailExtraChrome`](#wire-_hitdetailextrachrome)
 - [`_HitDetailScrollBody`](#wire-_hitdetailscrollbody)
 - [`_HitDetailScrollScrollbarTrackBefore`](#wire-_hitdetailscrollscrollbartrackbefore)
@@ -3765,6 +3770,44 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `DataPointClicked` | `_DataPointClickedPayload` |  |
 | `LegendClicked` | `_LegendClickedPayload` |  |
 
+<a id="wire-_canvasregionclickedpayload"></a>
+#### `_CanvasRegionClickedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `region` | `WidgetId` | yes |  |
+| `button` | `MouseButton` | yes |  |
+| `modifiers` | `Modifiers` | yes |  |
+| `x` | `number` | yes |  |
+| `y` | `number` | yes |  |
+
+<a id="wire-_canvasregiondoubleclickedpayload"></a>
+#### `_CanvasRegionDoubleClickedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `region` | `WidgetId` | yes |  |
+| `x` | `number` | yes |  |
+| `y` | `number` | yes |  |
+
+<a id="wire-_canvasregionhoveredpayload"></a>
+#### `_CanvasRegionHoveredPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `region` | `string \| null` | yes |  |
+
+<a id="wire-canvasevent"></a>
+#### `CanvasEvent`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `RegionClicked` | `_CanvasRegionClickedPayload` |  |
+| `RegionDoubleClicked` | `_CanvasRegionDoubleClickedPayload` |  |
+| `RegionHovered` | `_CanvasRegionHoveredPayload` |  |
+
 <a id="wire-_toolbarbuttonclickedpayload"></a>
 #### `_ToolbarButtonClickedPayload`
 
@@ -4203,6 +4246,14 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `kind` | `"extra_body"` | yes |  |
 
+<a id="wire-_hitdetailcanvasregion"></a>
+#### `_HitDetailCanvasRegion`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"canvas_region"` | yes |  |
+| `region` | `WidgetId` | yes |  |
+
 <a id="wire-_hitdetailextrachrome"></a>
 #### `_HitDetailExtraChrome`
 
@@ -4244,7 +4295,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`
@@ -4440,6 +4491,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |
 | `Toolbar` | `[WidgetId, ToolbarEvent]` |  |
+| `Canvas` | `[WidgetId, CanvasEvent]` |  |
 | `BackendNative` | `BackendNativeEvent` |  |
 | `User` | `unknown` |  |
 

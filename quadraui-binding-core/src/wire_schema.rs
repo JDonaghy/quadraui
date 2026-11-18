@@ -2987,6 +2987,38 @@ pub fn schema() -> Vec<DefJson> {
         vec![],
     ));
 
+    let canvas_region_clicked_payload = b.define(obj(
+        "_CanvasRegionClickedPayload",
+        vec![
+            field("region", re("WidgetId")),
+            field("button", re("MouseButton")),
+            field("modifiers", modifiers.clone()),
+            field("x", float_()),
+            field("y", float_()),
+        ],
+    ));
+    let canvas_region_double_clicked_payload = b.define(obj(
+        "_CanvasRegionDoubleClickedPayload",
+        vec![
+            field("region", re("WidgetId")),
+            field("x", float_()),
+            field("y", float_()),
+        ],
+    ));
+    let canvas_region_hovered_payload = b.define(obj(
+        "_CanvasRegionHoveredPayload",
+        vec![field("region", nullable(str_()))],
+    ));
+    b.define(flat(
+        "CanvasEvent",
+        &[
+            ("RegionClicked", canvas_region_clicked_payload),
+            ("RegionDoubleClicked", canvas_region_double_clicked_payload),
+            ("RegionHovered", canvas_region_hovered_payload),
+        ],
+        vec![],
+    ));
+
     let toolbar_button_clicked_payload = b.define(obj(
         "_ToolbarButtonClickedPayload",
         vec![field("id", re("WidgetId")), field("is_active", bool_())],
@@ -3205,6 +3237,7 @@ pub fn schema() -> Vec<DefJson> {
             &[],
         ),
         ("_HitDetailExtraBody", "extra_body", &[]),
+        ("_HitDetailCanvasRegion", "canvas_region", &[]),
         ("_HitDetailExtraChrome", "extra_chrome", &[]),
         ("_HitDetailScrollBody", "scroll_body", &[]),
         (
@@ -3231,6 +3264,9 @@ pub fn schema() -> Vec<DefJson> {
         }
         if *kind == "sidebar_panel_toolbar_button" || *kind == "extra_chrome" {
             fields.push(field("bar", re("WidgetId")));
+        }
+        if *kind == "canvas_region" {
+            fields.push(field("region", re("WidgetId")));
         }
         hit_detail_members.push(b.define(obj(name, fields)));
     }
@@ -3393,6 +3429,7 @@ pub fn schema() -> Vec<DefJson> {
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
             ("Toolbar", tup(vec![re("WidgetId"), re("ToolbarEvent")])),
+            ("Canvas", tup(vec![re("WidgetId"), re("CanvasEvent")])),
             ("BackendNative", backend_native_event),
             ("User", any_()),
         ],
@@ -3452,9 +3489,9 @@ mod coverage {
         Accelerator, AcceleratorScope, ActivityBar, ActivityBarEvent, ActivityItem,
         BackendNativeEvent, Badge, BadgeStatus, BoardCard, BoardColumn, BoardModel, Button,
         ButtonIconPosition, ButtonMask, ButtonRowItem, ButtonSpec, ButtonVariant, CalendarDate,
-        Canvas, CardBadge, Chart, ChartEvent, ChartKind, Color, Column, ColumnAlign, ColumnWidth,
-        ComboBox, CommandCenter, CommandLine, ContextMenuItem, ControlWidth, DataRow, DataTable,
-        DataTableEvent, DateFormat, DateLocale, DatePicker, Decoration, DiagnosticMark,
+        Canvas, CanvasEvent, CardBadge, Chart, ChartEvent, ChartKind, Color, Column, ColumnAlign,
+        ColumnWidth, ComboBox, CommandCenter, CommandLine, ContextMenuItem, ControlWidth, DataRow,
+        DataTable, DataTableEvent, DateFormat, DateLocale, DatePicker, Decoration, DiagnosticMark,
         DiagnosticSeverity, DiffEditability, DiffHunk, DiffLine, DiffMode, DiffPane, DiffRow,
         DiffRowKind, DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos as CursorPos,
         EditorCursorShape as CursorShape, EditorLine, EditorSelection,
@@ -3572,6 +3609,7 @@ mod coverage {
             UiEvent::Chart(_, _) => {}
             UiEvent::DataTable(_, _) => {}
             UiEvent::Toolbar(_, _) => {}
+            UiEvent::Canvas(_, _) => {}
             UiEvent::BackendNative(_) => {}
             // `User` carries an opaque `Arc<dyn Any>` -- deliberately
             // typed `Any`/`unknown` in the schema (see `UserPayload`'s own
@@ -3767,6 +3805,24 @@ mod coverage {
         }
     }
 
+    fn assert_canvas_event(e: CanvasEvent) {
+        match e {
+            CanvasEvent::RegionClicked {
+                region: _,
+                button: _,
+                modifiers: _,
+                x: _,
+                y: _,
+            } => {}
+            CanvasEvent::RegionDoubleClicked {
+                region: _,
+                x: _,
+                y: _,
+            } => {}
+            CanvasEvent::RegionHovered { region: _ } => {}
+        }
+    }
+
     fn assert_toolbar_event(e: ToolbarEvent) {
         match e {
             ToolbarEvent::ButtonClicked {
@@ -3811,6 +3867,7 @@ mod coverage {
             HitDetail::TreeScrollbarThumb => {}
             HitDetail::TreeScrollbarTrackAfter => {}
             HitDetail::ExtraBody => {}
+            HitDetail::CanvasRegion { region: _ } => {}
             HitDetail::ExtraChrome { bar: _ } => {}
             HitDetail::ScrollBody => {}
             HitDetail::ScrollScrollbarTrackBefore => {}

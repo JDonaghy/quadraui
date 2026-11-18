@@ -21,13 +21,13 @@ use quadraui::compose::{
 use quadraui::primitives::form::focus_order;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
-    wheel_row_delta, Backend, CompletionItemMeasure, Completions, CompletionsHit,
+    wheel_row_delta, Backend, CanvasEvent, CompletionItemMeasure, Completions, CompletionsHit,
     CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog,
     EditOp, Float, FloatLayout, FloatMeasure, Form, FormEvent, InteractionState, Key, MenuBar,
-    MessageDialogButton, Modifiers, NamedKey, Point, Rect, RichTextPopup, RichTextPopupHit,
-    RichTextPopupLayout, RichTextPopupMeasure, ScrollAxis, ScrollViewEvent, TabBarEvent,
-    TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout,
-    Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, UiEvent, WidgetId,
+    MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, Rect, RichTextPopup,
+    RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, ScrollAxis, ScrollViewEvent,
+    TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay,
+    ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -231,6 +231,10 @@ impl LayoutContent {
                     UiEvent::MouseDown { modifiers, .. } => *modifiers,
                     _ => Modifiers::default(),
                 };
+                let button = match event {
+                    UiEvent::MouseDown { button, .. } => *button,
+                    _ => MouseButton::default(),
+                };
                 let (id, detail, is_focusable) = {
                     let hits = self.hits.borrow();
                     let (id, detail) = hit_test_painted(&hits, position)?;
@@ -260,6 +264,7 @@ impl LayoutContent {
                 let semantic = semantic_event_for_hit(
                     id,
                     &detail,
+                    button,
                     modifiers,
                     double_click,
                     &self.hits.borrow(),
@@ -3151,6 +3156,21 @@ impl InteractionEngine {
                                 &UiEvent::MouseLeft { widget: old_id },
                                 Some(&old_detail),
                             ));
+                        // A `Canvas` region just stopped being hovered —
+                        // dispatched alongside (never instead of) the
+                        // generic `MouseLeft` just above, mirroring
+                        // `CanvasEvent::RegionHovered`'s own "`None` means
+                        // no region, including having left the canvas
+                        // entirely" doc.
+                        if matches!(old_detail, HitDetail::CanvasRegion { .. }) {
+                            hover_reaction = hover_reaction.merge(sink.dispatch(
+                                &UiEvent::Canvas(
+                                    old_id,
+                                    CanvasEvent::RegionHovered { region: None },
+                                ),
+                                None,
+                            ));
+                        }
                     }
                     if matches!(hover_reaction, Reaction::Exit) {
                         return hover_reaction;
@@ -3160,6 +3180,19 @@ impl InteractionEngine {
                             &UiEvent::MouseEntered { widget: *new_id },
                             Some(new_detail),
                         ));
+                        // The counterpart entering arm: a `Canvas` region
+                        // just started being hovered.
+                        if let HitDetail::CanvasRegion { region } = new_detail {
+                            hover_reaction = hover_reaction.merge(sink.dispatch(
+                                &UiEvent::Canvas(
+                                    *new_id,
+                                    CanvasEvent::RegionHovered {
+                                        region: Some(region.as_str().to_string()),
+                                    },
+                                ),
+                                None,
+                            ));
+                        }
                     }
                     *self.hover.borrow_mut() = hit_now;
                     if matches!(hover_reaction, Reaction::Exit) {
@@ -3553,11 +3586,15 @@ impl InteractionEngine {
         let mut button_clicked_reaction = Reaction::Continue;
         if let Some((id, detail)) = &hit {
             let modifiers_and_double_click = match &event {
-                UiEvent::MouseDown { modifiers, .. } => Some((*modifiers, false)),
-                UiEvent::DoubleClick { .. } => Some((Modifiers::default(), true)),
+                UiEvent::MouseDown {
+                    modifiers, button, ..
+                } => Some((*modifiers, false, *button)),
+                UiEvent::DoubleClick { .. } => {
+                    Some((Modifiers::default(), true, MouseButton::default()))
+                }
                 _ => None,
             };
-            if let Some((modifiers, double_click)) = modifiers_and_double_click {
+            if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
                 // A non-double click landing on ANY extra's body — not just
                 // `TextInput`/`NumberInput` — gets `HitDetail::ExtraBody`
                 // (`hit_test_painted`'s own `Extra` arm doesn't distinguish
@@ -3595,6 +3632,7 @@ impl InteractionEngine {
                         } else if let Some(semantic) = semantic_event_for_hit(
                             *id,
                             detail,
+                            button,
                             modifiers,
                             double_click,
                             &self.hit_map.borrow(),
@@ -3775,6 +3813,7 @@ impl InteractionEngine {
                 } else if let Some(semantic) = semantic_event_for_hit(
                     *id,
                     detail,
+                    button,
                     modifiers,
                     double_click,
                     &self.hit_map.borrow(),

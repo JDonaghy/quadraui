@@ -1850,6 +1850,26 @@ class ChartEvent(TypedDict):
     DataPointClicked: NotRequired[_DataPointClickedPayload]
     LegendClicked: NotRequired[_LegendClickedPayload]
 
+class _CanvasRegionClickedPayload(TypedDict):
+    region: WidgetId
+    button: MouseButton
+    modifiers: Modifiers
+    x: float
+    y: float
+
+class _CanvasRegionDoubleClickedPayload(TypedDict):
+    region: WidgetId
+    x: float
+    y: float
+
+class _CanvasRegionHoveredPayload(TypedDict):
+    region: Optional[str]
+
+class CanvasEvent(TypedDict):
+    RegionClicked: NotRequired[_CanvasRegionClickedPayload]
+    RegionDoubleClicked: NotRequired[_CanvasRegionDoubleClickedPayload]
+    RegionHovered: NotRequired[_CanvasRegionHoveredPayload]
+
 class _ToolbarButtonClickedPayload(TypedDict):
     id: WidgetId
     is_active: bool
@@ -2068,6 +2088,10 @@ class _HitDetailTreeScrollbarTrackAfter(TypedDict):
 class _HitDetailExtraBody(TypedDict):
     kind: Literal['extra_body']
 
+class _HitDetailCanvasRegion(TypedDict):
+    kind: Literal['canvas_region']
+    region: WidgetId
+
 class _HitDetailExtraChrome(TypedDict):
     kind: Literal['extra_chrome']
     bar: WidgetId
@@ -2085,7 +2109,7 @@ class _HitDetailScrollScrollbarTrackAfter(TypedDict):
     kind: Literal['scroll_scrollbar_track_after']
 
 # The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
-HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 class _UiKeyPressedPayload(TypedDict):
     key: Key
@@ -2206,6 +2230,7 @@ class _UiEventDict(TypedDict):
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]
     Toolbar: NotRequired[Tuple[WidgetId, ToolbarEvent]]
+    Canvas: NotRequired[Tuple[WidgetId, CanvasEvent]]
     BackendNative: NotRequired[BackendNativeEvent]
     User: NotRequired[Any]
     hit: NotRequired[HitDetail]  # The hit-tested sub-region a pointer landed on, when the binding attached one (never present on `User`).
