@@ -2,7 +2,7 @@
 //!
 //! Every other primitive in this crate is a closed shape — an app that
 //! wants a diagram, a custom gauge, a sparkline with bespoke decoration,
-//! or any pixel the 51 other shipped primitive modules don't already
+//! or any pixel the 52 other shipped primitive modules don't already
 //! draw has no way to put it on screen. `Canvas` is the escape hatch: a
 //! declarative list of [`DrawOp`]s (rect, rounded rect, line, path,
 //! text run, image, push/pop clip) that every backend paints through

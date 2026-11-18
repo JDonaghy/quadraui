@@ -464,6 +464,17 @@ impl crate::a11y::A11yPrimitive for IconGrid {
 /// [`IconGrid::tile_size`] is `None`. TUI (`ctx.line_height <= 1.0`)
 /// gets a cell-quantised size; every pixel backend gets a size scaled
 /// off its own chrome metrics.
+///
+/// Gated on the same feature set as the
+/// [`crate::primitive::Primitive`] impl below, its only caller: a
+/// zero-backend build compiles the descriptor and its layout/nav math
+/// but has no renderer to resolve a default tile size for.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 fn default_tile_size(ctx: &crate::primitive::LayoutCtx) -> (f32, f32) {
     if ctx.line_height <= 1.0 {
         // TUI: 12 cells wide (enough for a short filename plus margin),
@@ -945,6 +956,12 @@ mod tests {
         assert_eq!(layout.hit_test(5.0, 50.0), IconGridHit::Empty);
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn primitive_layout_hit_test_is_area_relative() {
         let g = grid(20);
