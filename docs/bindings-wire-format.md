@@ -403,6 +403,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`DataTableDescriptor`](#wire-datatabledescriptor)
 - [`TreeTableNodeDescriptor`](#wire-treetablenodedescriptor)
 - [`TreeTableDescriptor`](#wire-treetabledescriptor)
+- [`TreeTableControllerNodeDescriptor`](#wire-treetablecontrollernodedescriptor)
+- [`TreeTableControllerDescriptor`](#wire-treetablecontrollerdescriptor)
 - [`TabItemDescriptor`](#wire-tabitemdescriptor)
 - [`TabBarSegmentDescriptor`](#wire-tabbarsegmentdescriptor)
 - [`TabBarDescriptor`](#wire-tabbardescriptor)
@@ -1228,6 +1230,31 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `table` | `DataTableDescriptor` | yes |  |
 | `tree` | `TreeTableNodeDescriptor[]` | yes |  |
+
+<a id="wire-treetablecontrollernodedescriptor"></a>
+#### `TreeTableControllerNodeDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | yes |  |
+| `cells` | `StyledText[]` | no |  |
+| `icon` | `Icon \| null` | no |  |
+| `has_children` | `boolean` | no |  |
+| `children` | `TreeTableControllerNodeDescriptor[] \| null` | no |  |
+
+<a id="wire-treetablecontrollerdescriptor"></a>
+#### `TreeTableControllerDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `columns` | `ColumnDescriptor[]` | no |  |
+| `nodes` | `TreeTableControllerNodeDescriptor[]` | no |  |
+| `selected_id` | `string \| null` | no |  |
+| `has_focus` | `boolean` | no |  |
+| `show_scrollbar` | `boolean` | no |  |
+| `bordered` | `boolean` | no |  |
+| `folders_first` | `boolean` | no |  |
 
 <a id="wire-tabitemdescriptor"></a>
 #### `TabItemDescriptor`
@@ -3408,6 +3435,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `multi_section_view` | `MultiSectionViewDescriptor` | no |  |
 | `diff_view` | `DiffViewDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
+| `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
 | `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
@@ -3474,6 +3502,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `multi_section_view` | `MultiSectionViewDescriptor \| null` | no |  |
 | `diff_view` | `DiffViewDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
+| `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
 | `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
