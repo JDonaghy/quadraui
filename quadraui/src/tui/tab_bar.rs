@@ -223,6 +223,15 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         set_cell(buf, x, area.y, ' ', bar_bg, bar_bg);
     }
 
+    // Hit geometry comes straight from the shared `TabBarLayout` via the
+    // same `tab_bar_hits_from_layout`/`shift_tab_bar_hits` pair the
+    // no-paint `TuiBackend::tab_bar_layout_icons` twin (`backend.rs`)
+    // already uses — this loop only overrides `available_cols` with the
+    // tab-content width below and keeps `correct_scroll_offset` as the
+    // caller's input (TUI's char-based fit needs no correction).
+    let mut hits = crate::backend::tab_bar_hits_from_layout(layout, bar);
+    crate::backend::shift_tab_bar_hits(&mut hits, area.x as f64);
+
     // Tab-content width (engine feedback): bar minus reserved right area.
     let reserved: u16 = bar.right_segments.iter().map(|s| s.width_cells).sum();
     let tab_content_width = if area.width >= reserved {
@@ -232,13 +241,11 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     };
 
     // ── Right-aligned segments (from layout) ───────────────────────────
-    let mut right_segment_bounds: Vec<(f64, f64)> = Vec::with_capacity(bar.right_segments.len());
     for vs in &layout.visible_segments {
         let seg = &bar.right_segments[vs.segment_idx];
         let fg = if seg.is_active { btn_fg_active } else { btn_fg };
         let bx = area.x + vs.bounds.x.round() as u16;
         let seg_end = bx + seg.width_cells;
-        right_segment_bounds.push((bx as f64, seg_end as f64));
         let mut cx = bx;
         for ch in seg.text.chars() {
             if cx >= seg_end {
@@ -268,22 +275,9 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     let preview_inactive_fg = ratatui_color(theme.tab_preview_inactive_fg);
     let separator = ratatui_color(theme.separator);
 
-    let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
-    let mut close_bounds: Vec<Option<(f64, f64)>> = Vec::with_capacity(bar.tabs.len());
-    for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
-        slot_positions.push((0.0, 0.0));
-        close_bounds.push(None);
-    }
     for vt in &layout.visible_tabs {
         let tab = &bar.tabs[vt.tab_idx];
         let tab_x = area.x + vt.bounds.x.round() as u16;
-        let tab_w = vt.bounds.width.round() as u16;
-        slot_positions.push((tab_x as f64, (tab_x + tab_w) as f64));
-        // Layout carries close_bounds in primitive (cell) coords; offset by area.x.
-        close_bounds.push(vt.close_bounds.map(|cb| {
-            let cx = area.x as f64 + cb.x as f64;
-            (cx, cx + cb.width as f64)
-        }));
 
         let (fg, bg) = match (tab.is_active, tab.is_preview) {
             (true, true) => (preview_active_fg, active_bg),
@@ -498,14 +492,10 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         }
     }
 
-    TabBarHits {
-        slot_positions,
-        close_bounds,
-        right_segment_bounds,
-        available_cols: tab_content_width,
-        // TUI's char-based fit is exact; no correction needed.
-        correct_scroll_offset: bar.scroll_offset,
-    }
+    hits.available_cols = tab_content_width;
+    // TUI's char-based fit is exact; no correction needed.
+    hits.correct_scroll_offset = bar.scroll_offset;
+    hits
 }
 
 #[cfg(test)]
