@@ -72,9 +72,11 @@ pub(crate) fn frame_glyph(frame_idx: usize) -> char {
 /// measurer and [`native_surface_paint::paint`] both call, instead of
 /// each carrying its own byte-for-byte-identical copy.
 ///
-/// Gated with [`FRAMES`], for the same reason.
+/// Gated on the pixel-backend rasteriser features, matching
+/// `native_surface_paint`'s own gate: TUI paints the glyph and label into
+/// separate cells (`tui::spinner`) and never builds this combined string,
+/// so a `tui`-only build has no caller for it.
 #[cfg(any(
-    feature = "tui",
     feature = "gtk",
     feature = "win",
     all(feature = "macos", target_os = "macos")

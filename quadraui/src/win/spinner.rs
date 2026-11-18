@@ -5,9 +5,10 @@
 //! — the `Backend`-trait entry point
 //! [`super::backend::WinBackend::draw_spinner`] calls it directly
 //! (`self` is the [`crate::paint_surface::PaintSurface`]), passing
-//! `self.current_theme`. This module carries only
-//! [`win_spinner_layout`], the pure-geometry twin
-//! `WinBackend::spinner_layout`'s no-paint hit-test path needs.
+//! `self.current_theme`. This module carries [`win_spinner_layout`], the
+//! pure-geometry twin `WinBackend::spinner_layout`'s no-paint hit-test
+//! path needs, plus the [`SpinnerMeasureSource`] measurement seam (and
+//! its `DWrite` impl) that `win_spinner_layout` is generic over.
 //!
 //! [`win_spinner_layout`] is generic over [`SpinnerMeasureSource`] — no
 //! Direct2D/DirectWrite type in its signature — so it compiles and runs
@@ -41,7 +42,11 @@ impl SpinnerMeasureSource for DWrite {
 /// Compute a [`Spinner`]'s layout without painting — the measurer twin
 /// of [`crate::primitives::spinner::native_surface_paint::paint`]. Both
 /// measure the identical glyph+label text (via [`spinner_text`]), so a
-/// no-paint hit-test call always agrees with what the last paint drew.
+/// no-paint hit-test call agrees with what the last paint drew as long
+/// as the measurement itself succeeds; [`SpinnerMeasureSource::measure`]
+/// and `WinBackend::surface_measure_text` degrade to different fallbacks
+/// on a measurement failure (`(0.0, 0.0)` vs. a nominal char-width
+/// estimate), the same divergence the other migrated primitives carry.
 pub fn win_spinner_layout(
     measure: &dyn SpinnerMeasureSource,
     rect: Rect,

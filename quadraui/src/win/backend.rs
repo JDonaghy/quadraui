@@ -5611,13 +5611,12 @@ impl Backend for WinBackend {
     /// Paint via the shared
     /// [`crate::primitives::spinner::native_surface_paint::paint`] once
     /// a surface and a text handle are attached — mirrors
-    /// [`Self::draw_progress`]. `self` is the
-    /// [`crate::paint_surface::PaintSurface`] (`impl PaintSurface for
-    /// WinBackend`'s `surface_measure_text`/`surface_draw_text_run`
-    /// already prefer `chrome_dwrite` over `dwrite`, the same swap
-    /// [`Self::draw_palette`] documents for chrome text), so this no
-    /// longer resolves the handle itself. See
-    /// [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// [`Self::draw_progress`]. `self`'s
+    /// [`crate::paint_surface::PaintSurface`] impl (`surface_measure_text`
+    /// / `surface_draw_text_run`) already prefers `chrome_dwrite` over
+    /// `dwrite`, the same swap [`Self::draw_palette`] documents for
+    /// chrome text, so the handle resolution happens inside that impl.
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
     /// yet" fallback posture.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
