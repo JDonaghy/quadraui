@@ -2760,6 +2760,57 @@ impl Backend for MacBackend {
             self.resolved_row_height(self.current_line_height),
         )
     }
+    /// One-line forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
+    /// `TreeTable` is chrome, not editor content, same as
+    /// [`Self::draw_data_table`].
+    fn draw_tree_table(
+        &mut self,
+        rect: Rect,
+        table: &crate::TreeTable,
+        hovered_idx: Option<usize>,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tree_table called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.resolved_row_height(self.current_line_height);
+        let mut surface = super::surface::CgSurface {
+            ctx,
+            font: Some(font),
+        };
+        let state = crate::primitives::data_table::DataTablePaintState::default()
+            .with_hovered_idx(hovered_idx);
+        crate::primitives::tree_table::native_surface_paint::paint(
+            table,
+            &mut surface,
+            &theme,
+            rect,
+            line_height,
+            &state,
+            self.nerd_fonts_enabled,
+        )
+    }
+    /// One-line forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
+    /// mirroring [`Self::data_table_layout`].
+    fn tree_table_layout(
+        &self,
+        rect: Rect,
+        table: &crate::TreeTable,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        let font = &self.chrome_font;
+        crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
+            table,
+            rect.width,
+            rect.height,
+            self.resolved_row_height(self.current_line_height),
+            font,
+        )
+    }
     fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
         // `ListView::h_scroll` and `max_content_width` are in character columns,
         // but macOS works in pixels.  Convert with `current_char_width` so the

@@ -1165,6 +1165,22 @@ impl crate::Backend for RecordingBackend {
     fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
         unimplemented!("RecordingBackend has no DataTable layout algorithm")
     }
+    fn draw_tree_table(
+        &mut self,
+        _r: Rect,
+        _t: &crate::TreeTable,
+        _h: Option<usize>,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        self.record("draw_tree_table");
+        unimplemented!("RecordingBackend has no TreeTable layout algorithm")
+    }
+    fn tree_table_layout(
+        &self,
+        _r: Rect,
+        _t: &crate::TreeTable,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        unimplemented!("RecordingBackend has no TreeTable layout algorithm")
+    }
     fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
         None
     }

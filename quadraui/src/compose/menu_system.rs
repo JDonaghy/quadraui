@@ -1073,6 +1073,21 @@ mod tests {
         fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
             unimplemented!()
         }
+        fn draw_tree_table(
+            &mut self,
+            _r: Rect,
+            _t: &crate::TreeTable,
+            _h: Option<usize>,
+        ) -> crate::primitives::tree_table::TreeTableLayout {
+            unimplemented!()
+        }
+        fn tree_table_layout(
+            &self,
+            _r: Rect,
+            _t: &crate::TreeTable,
+        ) -> crate::primitives::tree_table::TreeTableLayout {
+            unimplemented!()
+        }
         fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
             None
         }

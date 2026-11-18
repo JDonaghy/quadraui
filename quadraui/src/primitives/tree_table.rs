@@ -420,6 +420,598 @@ impl TreeTableEvent {
     }
 }
 
+// Shared GUI (GTK/macOS/Win) paint implementation. A `TreeTable` paints
+// exactly as `DataTable` does —
+// `data_table::native_surface_paint::paint_with_layout`'s shared
+// header/body/scrollbar/footer skeleton — with column 0 of every row
+// replaced by the shared tree cell
+// (`tree::native_surface_paint::tree_cell::paint_tree_cell`) followed by
+// its label through the same `paint_cell` every other column uses. No
+// parallel row, column or scrollbar logic of its own, mirroring
+// `tui::data_table`'s identical "no `tree_table.rs`" story for TUI.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{TreeTable, TreeTableLayout, TreeTableNode};
+    use crate::event::Rect;
+    use crate::paint_surface::PaintSurface;
+    use crate::primitives::data_table::native_surface_paint::{
+        paint_cell, paint_row, paint_with_layout, SurfaceTextMeasure, TablePaintCtx,
+    };
+    use crate::primitives::data_table::{ColumnAlign, ColumnMeasure, DataTablePaintState};
+    use crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH;
+    use crate::primitives::layout_metrics::TextMeasure;
+    use crate::primitives::tree::native_surface_paint::tree_cell::paint_tree_cell;
+    use crate::primitives::tree::{chevron_end_x, tree_chevron_glyph};
+    use crate::theme::Theme;
+    use crate::types::{Decoration, TreeStyle};
+
+    /// Pixel width of one tree indent level — the same
+    /// `(line_height * 0.9).round()` formula
+    /// [`crate::primitives::tree::native_surface_paint::paint_with_scroll_px`]
+    /// uses for `TreeView`'s own indent.
+    fn indent_px(line_height: f32) -> f32 {
+        (line_height * 0.9).round()
+    }
+
+    /// `(start, width)` of `node`'s chevron glyph, relative to column 0's
+    /// left edge — [`TreeTable::layout`]'s `measure_chevron` callback for
+    /// a pixel backend. `None` for a leaf or a hidden chevron.
+    /// `row_padding_x` is `0.0`: column 0 has no more left inset than any
+    /// other [`crate::DataTable`] column (see [`paint_cell`]'s own
+    /// zero-padding convention).
+    fn chevron_measure(
+        measure: &dyn TextMeasure,
+        style: &TreeStyle,
+        indent_px: f32,
+        node: &TreeTableNode,
+    ) -> Option<(f32, f32)> {
+        if !style.show_chevrons {
+            return None;
+        }
+        let expanded = node.is_expanded?;
+        let glyph = tree_chevron_glyph(style, expanded);
+        let glyph_w = measure.width_of(&glyph);
+        let end = chevron_end_x(0.0, node.indent, indent_px, glyph_w);
+        Some((end - glyph_w, glyph_w))
+    }
+
+    /// [`TreeTable::layout`]'s `min_tree_col_width` floor: the deepest
+    /// indent across every row in `tree`, plus one chevron glyph
+    /// (whichever of expanded/collapsed measures wider) and at least one
+    /// label character. The pixel counterpart of
+    /// [`crate::tui::data_table::tree_column_floor_width`]'s cell-count
+    /// version.
+    fn tree_column_floor_width(
+        measure: &dyn TextMeasure,
+        style: &TreeStyle,
+        tree: &[TreeTableNode],
+        indent_px: f32,
+    ) -> f32 {
+        let chevron_w = if style.show_chevrons {
+            let expanded_w = measure.width_of(&tree_chevron_glyph(style, true));
+            let collapsed_w = measure.width_of(&tree_chevron_glyph(style, false));
+            expanded_w.max(collapsed_w)
+        } else {
+            0.0
+        };
+        let max_indent = tree.iter().map(|n| n.indent).max().unwrap_or(0);
+        let one_char = measure.width_of("0");
+        max_indent as f32 * indent_px + chevron_w + one_char
+    }
+
+    /// Resolve the layout [`paint`] paints `table` at, without touching a
+    /// buffer — the pixel counterpart of
+    /// [`crate::tui::data_table::tree_table_layout`]: column headers and
+    /// the chevron glyph are measured through `measure` (real glyph
+    /// metrics when a live font/context is available, else a
+    /// character-count estimate) rather than a hardcoded character count,
+    /// same as
+    /// [`crate::primitives::layout_metrics::pixel_data_table_layout`] does
+    /// for a plain [`crate::DataTable`] — so a backend with no live paint
+    /// frame (e.g. hit-testing between frames) can resolve this layout
+    /// without a [`PaintSurface`].
+    pub(crate) fn pixel_tree_table_layout(
+        table: &TreeTable,
+        w: f32,
+        h: f32,
+        line_height: f32,
+        measure: &dyn TextMeasure,
+    ) -> TreeTableLayout {
+        let style = TreeStyle::default();
+        let ipx = indent_px(line_height);
+        let floor = tree_column_floor_width(measure, &style, &table.tree, ipx);
+        let header_height = (line_height * 1.2).round();
+        table.layout(
+            w,
+            h,
+            line_height,
+            header_height,
+            DATA_TABLE_SCROLLBAR_WIDTH,
+            |col| ColumnMeasure::new(measure.width_of(&col.title)),
+            |node| chevron_measure(measure, &style, ipx, node),
+            floor,
+        )
+    }
+
+    /// Paint a [`TreeTable`] into `rect` on `surface` and return the
+    /// resolved [`TreeTableLayout`] — the entry point every GUI backend's
+    /// `draw_tree_table` goes through. Identical to
+    /// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]
+    /// except column 0 of every row with a `table.tree` entry is painted
+    /// as indent + chevron + icon via [`paint_tree_cell`], followed by its
+    /// label through the same [`paint_cell`] every other column uses —
+    /// rows past `table.tree`'s length paint as a plain [`crate::DataTable`]
+    /// row. No sort-glyph override (unlike `DataTable`'s own
+    /// `paint_with_state`), mirroring [`crate::tui::draw_tree_table`] not
+    /// taking one either.
+    pub(crate) fn paint(
+        table: &TreeTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        state: &DataTablePaintState,
+        nerd_fonts_enabled: bool,
+    ) -> TreeTableLayout {
+        let style = TreeStyle::default();
+        let ipx = indent_px(line_height);
+        let leaf_gap = line_height * 0.8;
+        let tt_layout = {
+            let measure = SurfaceTextMeasure(&*surface);
+            pixel_tree_table_layout(table, rect.width, rect.height, line_height, &measure)
+        };
+        let dt_layout = paint_with_layout(
+            &table.table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            state,
+            None,
+            nerd_fonts_enabled,
+            tt_layout.table.clone(),
+            |surface, ctx, row_y, idx, hovered, striped| match table.tree.get(idx) {
+                Some(node) => paint_tree_table_row(
+                    surface,
+                    ctx,
+                    row_y,
+                    idx,
+                    node,
+                    hovered,
+                    &style,
+                    ipx,
+                    leaf_gap,
+                    nerd_fonts_enabled,
+                ),
+                None => paint_row(surface, ctx, row_y, idx, hovered, striped, None),
+            },
+        );
+        TreeTableLayout {
+            table: dt_layout,
+            chevrons: tt_layout.chevrons,
+        }
+    }
+
+    /// Paint one `TreeTable` body row: [`paint_row`]'s selection/hover tint
+    /// (zebra striping isn't offered — mirrors
+    /// [`crate::tui::data_table::draw_tree_table_row`] never taking a
+    /// `striped` argument) and every column but 0 exactly as [`paint_cell`]
+    /// already paints it, with column 0 painted as indent + chevron + icon
+    /// via [`paint_tree_cell`], followed by its label through the same
+    /// [`paint_cell`] every other column uses — offset past the tree-cell
+    /// prefix rather than re-implementing text painting.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_tree_table_row(
+        surface: &mut dyn PaintSurface,
+        ctx: &TablePaintCtx<'_>,
+        row_y: f32,
+        abs_idx: usize,
+        node: &TreeTableNode,
+        hovered_idx: Option<usize>,
+        style: &TreeStyle,
+        indent_px: f32,
+        leaf_gap: f32,
+        nerd_fonts_enabled: bool,
+    ) {
+        let mut hook = |surface: &mut dyn PaintSurface, col_idx: usize, cell_rect: Rect| -> bool {
+            if col_idx != 0 {
+                return false;
+            }
+            let row = &ctx.table.rows[abs_idx];
+            let is_muted = row.decoration == Decoration::Muted;
+            let fg = if is_muted {
+                ctx.theme.muted_fg
+            } else {
+                ctx.theme.foreground
+            };
+            let chevron_glyph = node
+                .is_expanded
+                .filter(|_| style.show_chevrons)
+                .map(|expanded| tree_chevron_glyph(style, expanded));
+            let cell = paint_tree_cell(
+                surface,
+                cell_rect,
+                0.0,
+                node.indent,
+                indent_px,
+                node.is_expanded,
+                chevron_glyph.as_deref(),
+                leaf_gap,
+                node.icon.as_ref(),
+                nerd_fonts_enabled,
+                fg,
+            );
+            let align = ctx
+                .table
+                .columns
+                .first()
+                .map(|c| c.align)
+                .unwrap_or(ColumnAlign::Left);
+            paint_cell(
+                surface,
+                ctx.theme,
+                row.cells.first(),
+                cell.label_rect,
+                align,
+                is_muted,
+            );
+            true
+        };
+        paint_row(
+            surface,
+            ctx,
+            row_y,
+            abs_idx,
+            hovered_idx,
+            false,
+            Some(&mut hook),
+        );
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::primitives::data_table::{Column, ColumnWidth, DataRow, DataTable};
+        use crate::types::{Color, Icon, StyledText, WidgetId};
+        use crate::Image;
+
+        /// The default expanded chevron paints as the sharper codicon
+        /// glyph on every GUI backend (see [`tree_chevron_glyph`]'s doc) —
+        /// a `char`, not a `&str`, so tests compare against its owned
+        /// `String` form.
+        fn chevron_down() -> String {
+            crate::codicon::CHEVRON_DOWN.to_string()
+        }
+        fn chevron_right() -> String {
+            crate::codicon::CHEVRON_RIGHT.to_string()
+        }
+
+        /// Records every surface verb this module's paint uses — mirrors
+        /// [`crate::primitives::data_table::native_surface_paint`]'s own
+        /// identical test double, so this test runs on any host without
+        /// Core Graphics/Direct2D/Pango.
+        #[derive(Default)]
+        struct RecordingSurface {
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> crate::Viewport {
+                crate::Viewport::new(300.0, 200.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_fill_rect_alpha(&mut self, _rect: Rect, _color: Color, _alpha: f32) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn node(path: &[u16], indent: u16, expanded: Option<bool>) -> TreeTableNode {
+            let mut n = TreeTableNode::new(path.to_vec(), indent);
+            n.is_expanded = expanded;
+            n
+        }
+
+        fn table(labels: &[&str]) -> DataTable {
+            DataTable {
+                id: WidgetId::new("tt"),
+                columns: vec![Column {
+                    title: "Name".into(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                }],
+                rows: labels
+                    .iter()
+                    .map(|l| DataRow {
+                        cells: vec![StyledText::plain(*l)],
+                        decoration: Default::default(),
+                    })
+                    .collect(),
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: true,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+                bordered: false,
+            }
+        }
+
+        /// A branch row paints its chevron glyph, then the label offset
+        /// past it — the same ordering [`crate::tui::draw_tree_table`]
+        /// paints, just through [`PaintSurface`] instead of a `Buffer`.
+        #[test]
+        fn branch_row_paints_chevron_then_label_offset_past_it() {
+            let tt = TreeTable {
+                table: table(&["src"]),
+                tree: vec![node(&[0], 0, Some(true))],
+            };
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            let state = DataTablePaintState::default();
+            paint(
+                &tt,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                16.0,
+                &state,
+                false,
+            );
+            // The default codicon expanded chevron paints as its own text
+            // run, and "src" paints as a separate run strictly to its right.
+            let chevron = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| *t == chevron_down())
+                .expect("branch row must paint its chevron glyph");
+            let label = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "src")
+                .expect("branch row must still paint its label");
+            assert!(
+                label.0.x > chevron.0.x,
+                "label must start right of the chevron, got label.x={} chevron.x={}",
+                label.0.x,
+                chevron.0.x
+            );
+        }
+
+        /// A leaf row (`is_expanded: None`) paints no chevron at all, but
+        /// still paints its label.
+        #[test]
+        fn leaf_row_paints_no_chevron_but_still_paints_label() {
+            let tt = TreeTable {
+                table: table(&["main.rs"]),
+                tree: vec![node(&[0], 0, None)],
+            };
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            let state = DataTablePaintState::default();
+            paint(
+                &tt,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                16.0,
+                &state,
+                false,
+            );
+            assert!(
+                !surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| *t == chevron_down() || *t == chevron_right()),
+                "a leaf row must not paint a chevron glyph"
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "main.rs"),
+                "a leaf row must still paint its label"
+            );
+        }
+
+        /// Deeper indent pushes the chevron (and therefore the label)
+        /// further right — the same monotonic-with-depth contract
+        /// [`crate::primitives::tree::native_surface_paint::tree_cell`]'s
+        /// own tests assert for `TreeView`.
+        #[test]
+        fn deeper_indent_shifts_the_chevron_right() {
+            let shallow = TreeTable {
+                table: table(&["a"]),
+                tree: vec![node(&[0], 0, Some(true))],
+            };
+            let deep = TreeTable {
+                table: table(&["a"]),
+                tree: vec![node(&[0], 2, Some(true))],
+            };
+            let chevron_x = |tt: &TreeTable| -> f32 {
+                let mut surface = RecordingSurface::default();
+                let theme = Theme::default();
+                let state = DataTablePaintState::default();
+                paint(
+                    tt,
+                    &mut surface,
+                    &theme,
+                    Rect::new(0.0, 0.0, 200.0, 100.0),
+                    16.0,
+                    &state,
+                    false,
+                );
+                surface
+                    .text_runs
+                    .iter()
+                    .find(|(_, t, _)| *t == chevron_down())
+                    .expect("branch row must paint its chevron glyph")
+                    .0
+                    .x
+            };
+            assert!(chevron_x(&deep) > chevron_x(&shallow));
+        }
+
+        /// A row past `tree`'s length falls through to a plain
+        /// [`paint_row`] body row — same "degrade without panicking"
+        /// contract [`TreeTable::layout`] already has, exercised here at
+        /// the paint layer: the label still paints even with no tree
+        /// metadata to drive a chevron.
+        #[test]
+        fn row_missing_a_tree_entry_still_paints_its_label() {
+            let mut t = table(&["a", "b"]);
+            t.rows[1].cells = vec![StyledText::plain("orphan")];
+            let tt = TreeTable {
+                table: t,
+                tree: vec![node(&[0], 0, Some(true))], // shorter than `table.rows`
+            };
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            let state = DataTablePaintState::default();
+            paint(
+                &tt,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                16.0,
+                &state,
+                false,
+            );
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "orphan"));
+        }
+
+        /// An icon paints between the chevron and the label.
+        #[test]
+        fn icon_paints_between_chevron_and_label() {
+            let mut tree_node = node(&[0], 0, Some(true));
+            tree_node.icon = Some(Icon::new("f", "f"));
+            let tt = TreeTable {
+                table: table(&["main.rs"]),
+                tree: vec![tree_node],
+            };
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            let state = DataTablePaintState::default();
+            paint(
+                &tt,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                16.0,
+                &state,
+                false,
+            );
+            let chevron_x = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| *t == chevron_down())
+                .expect("branch row must paint its chevron glyph")
+                .0
+                .x;
+            let icon_x = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "f")
+                .expect("icon must paint")
+                .0
+                .x;
+            let label_x = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "main.rs")
+                .expect("label must still paint")
+                .0
+                .x;
+            assert!(chevron_x < icon_x && icon_x < label_x);
+        }
+
+        /// [`pixel_tree_table_layout`]'s narrow-rect floor still applies
+        /// through the pixel entry point: a `Flex` tree column crowded by
+        /// several `FixedCells` columns at a narrow viewport drops the
+        /// rightmost columns rather than starving column 0, mirroring
+        /// [`super::super::tests::narrow_rect_drops_rightmost_columns_before_starving_the_tree_column`]
+        /// at the primitive layer.
+        #[test]
+        fn pixel_layout_applies_the_narrow_rect_floor() {
+            let mut t = table(&["row0"]);
+            t.columns = vec![
+                Column {
+                    title: "Name".into(),
+                    width: ColumnWidth::Flex(3.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "Modified".into(),
+                    width: ColumnWidth::FixedCells(14.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "Size".into(),
+                    width: ColumnWidth::FixedCells(10.0),
+                    align: ColumnAlign::Right,
+                },
+            ];
+            t.rows[0].cells = vec![
+                StyledText::plain("row0"),
+                StyledText::plain("—"),
+                StyledText::plain("—"),
+            ];
+            let tt = TreeTable {
+                table: t,
+                tree: vec![node(&[0], 0, None)],
+            };
+            let surface = RecordingSurface::default();
+            let layout =
+                pixel_tree_table_layout(&tt, 2000.0, 10.0, 16.0, &SurfaceTextMeasure(&surface));
+            assert_eq!(
+                layout.table.columns.len(),
+                3,
+                "a generous viewport is wide enough for every column at this font size"
+            );
+
+            let narrow_layout =
+                pixel_tree_table_layout(&tt, 20.0, 10.0, 16.0, &SurfaceTextMeasure(&surface));
+            assert!(
+                narrow_layout.table.columns.len() < 3,
+                "a narrow viewport must drop a rightmost column rather than \
+                 starve column 0 below its floor"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

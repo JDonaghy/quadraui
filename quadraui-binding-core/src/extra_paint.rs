@@ -17,7 +17,7 @@ use quadraui::{
     Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis,
     ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit,
     Terminal, TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar,
-    ToolbarButton, WidgetId,
+    ToolbarButton, TreeTable, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -1357,6 +1357,31 @@ impl ExtraPaint for DiffView {
     }
 }
 
+impl ExtraPaint for TreeTable {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_tree_table(area, self, None);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.table.id
+    }
+
+    /// Whole-area bounds check only, same limitation [`ComboBox::hit_test`]'s
+    /// doc describes: resolving a click to a specific chevron or row needs
+    /// [`quadraui::Backend::tree_table_layout`]'s real column widths, which
+    /// this trait's `hit_test` has no `backend` parameter for. A precise
+    /// chevron-click → [`quadraui::primitives::tree_table::TreeTableEvent::ToggleExpanded`]
+    /// semantic event needs its own `UiEvent` variant and
+    /// `crate::engine`/`crate::semantic` plumbing (mirroring how
+    /// `HitDetail::DataTableHeaderDivider` resolves a real
+    /// `Backend::data_table_layout` at the click site) — not wired yet
+    /// rather than impossible; a raw `MouseDown` with its `"hit"` dict
+    /// still reaches the host today.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+}
+
 impl ExtraPaint for ActivityBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         self.paint_chrome(backend, area, &InteractionState::default());
@@ -1988,6 +2013,7 @@ extra_primitives! {
     "minimap" => Minimap,
     "multi_section_view" => MultiSectionView,
     "diff_view" => DiffView,
+    "tree_table" => TreeTable,
     "activity_bar" => ActivityBar,
     "toolbar" => ToolbarWithOverflow,
     "menu_bar" => MenuBar,
@@ -3099,6 +3125,72 @@ mod tests {
                     if *ev_id == id && value == "hi there\nfriend"
             )),
             "pasting \" there\\nfriend\" should keep its newline: {dispatched:?}"
+        );
+    }
+
+    /// `"tree_table" => TreeTable` renders through the same additive-leaf
+    /// path as every other registered extra: a branch row's label and
+    /// chevron glyph both reach the screen (the chevron via the shared
+    /// [`quadraui::primitives::tree_table::native_surface_paint`] this
+    /// paints through on GTK/macOS/Win — TUI keeps its own
+    /// [`quadraui::tui::draw_tree_table`] rasteriser). [`TreeTable::hit_test`]
+    /// is coarse (see that impl's own doc for why), so a click anywhere in
+    /// its body still reaches the handler, just as the raw `MouseDown`
+    /// [`ExtraPaint::hit_test`]'s doc says it does today — no
+    /// `ToggleExpanded` semantic event is synthesized yet.
+    #[test]
+    fn tree_table_extra_renders_label_and_chevron_and_passes_through_a_click() {
+        let id = WidgetId::new("tt:files");
+        let table = quadraui::DataTable {
+            id,
+            columns: vec![quadraui::Column {
+                title: "Name".to_string(),
+                width: Default::default(),
+                align: Default::default(),
+            }],
+            rows: vec![
+                quadraui::DataRow {
+                    cells: vec![quadraui::StyledText::plain("src")],
+                    decoration: Default::default(),
+                },
+                quadraui::DataRow {
+                    cells: vec![quadraui::StyledText::plain("main.rs")],
+                    decoration: Default::default(),
+                },
+            ],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+            bordered: false,
+        };
+        let tree_table = TreeTable {
+            table,
+            tree: vec![
+                quadraui::TreeTableNode::new(vec![0], 0).with_expanded(true),
+                quadraui::TreeTableNode::new(vec![0, 0], 1),
+            ],
+        };
+
+        let mut driver = single_leaf_driver(id, Rc::new(tree_table));
+        assert!(driver.screen_contains("src"), "{}", driver.screen());
+        assert!(driver.screen_contains("main.rs"), "{}", driver.screen());
+
+        let area = leaf_area(&driver, id);
+        driver.click(area.x, area.y);
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched
+                .iter()
+                .any(|event| matches!(event, UiEvent::MouseDown { .. })),
+            "a click on the table body should still reach the handler as a \
+             raw MouseDown until a chevron-click semantic event exists: \
+             {dispatched:?}"
         );
     }
 }

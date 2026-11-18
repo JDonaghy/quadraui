@@ -3205,6 +3205,66 @@ impl Backend for GtkBackend {
             &measure,
         )
     }
+    /// One-line forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
+    /// `TreeTable` is chrome, not editor content, same font save/swap/
+    /// restore as [`Self::draw_data_table_with_glyphs`].
+    fn draw_tree_table(
+        &mut self,
+        rect: QRect,
+        table: &crate::TreeTable,
+        hovered_idx: Option<usize>,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        let lh = self.resolved_row_height(self.current_line_height);
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_tree_table called outside enter_frame_scope");
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        let mut surface = super::surface::CairoSurface {
+            cr,
+            layout: Some(layout),
+            translucent_fill: true,
+        };
+        let state = crate::primitives::data_table::DataTablePaintState::default()
+            .with_hovered_idx(hovered_idx);
+        let table_layout = crate::primitives::tree_table::native_surface_paint::paint(
+            table,
+            &mut surface,
+            &theme,
+            rect,
+            lh as f32,
+            &state,
+            nerd_fonts_enabled,
+        );
+        layout.set_font_description(saved_font.as_ref());
+        table_layout
+    }
+    /// One-line forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
+    /// mirroring [`Self::data_table_layout`].
+    fn tree_table_layout(
+        &self,
+        rect: QRect,
+        table: &crate::TreeTable,
+    ) -> crate::primitives::tree_table::TreeTableLayout {
+        let char_w = self.current_char_width as f32;
+        let pango_layout = self.chrome_measure_layout();
+        let measure = PangoTextMeasure {
+            layout: &pango_layout,
+            char_w,
+        };
+        crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
+            table,
+            rect.width,
+            rect.height,
+            self.resolved_row_height(self.current_line_height) as f32,
+            &measure,
+        )
+    }
 
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
         // `ListView::h_scroll` and `max_content_width` are in character columns,
