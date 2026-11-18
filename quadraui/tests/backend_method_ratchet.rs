@@ -103,10 +103,29 @@ fn backend_trait_method_count_may_only_shrink() {
 /// migration — not something this ratchet forces. A *new* `Primitive`
 /// implementor gets no such exemption: it should reach every backend
 /// through `draw_primitive` alone.
+///
+/// `DataTable`, `TreeView` and `TreeTable` extend that same pilot
+/// (quadraui#2607): each gained a `Primitive` impl that routes `paint`
+/// through its existing `native_surface_paint` helper, but kept its
+/// pre-existing bespoke `Backend` methods for the same reason `ListView`
+/// did — every existing caller already goes through those, and ripping
+/// them out is its own migration.
 const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("ListView", "draw_list"),
     ("ListView", "draw_list_with_state"),
     ("ListView", "list_layout"),
+    ("DataTable", "draw_data_table"),
+    ("DataTable", "draw_data_table_with_state"),
+    ("DataTable", "draw_data_table_with_glyphs"),
+    ("DataTable", "data_table_layout"),
+    ("TreeView", "draw_tree"),
+    ("TreeView", "draw_tree_with_state"),
+    ("TreeView", "tree_layout"),
+    ("TreeTable", "draw_tree"),
+    ("TreeTable", "draw_tree_with_state"),
+    ("TreeTable", "draw_tree_table"),
+    ("TreeTable", "tree_table_layout"),
+    ("TreeTable", "tree_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
