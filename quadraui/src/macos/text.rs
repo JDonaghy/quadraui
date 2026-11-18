@@ -1063,8 +1063,8 @@ mod tests {
 
         let base = font(); // Menlo — doesn't cover PUA itself
         let with_fallback = font_with_fallback(&base, &[nerd_family.as_str()]);
-        // Mirrors `activity_bar::draw_activity_bar_with_style`'s
-        // `font.clone_with_font_size(style.resolved_icon_size_px())`.
+        // Mirrors `MacBackend::draw_activity_bar_with_style`'s
+        // `chrome_font.clone_with_font_size(style.resolved_icon_size_px())`.
         let icon_size_px = crate::ActivityBarStyle::default().resolved_icon_size_px() as f64;
         let icon_sized = with_fallback.clone_with_font_size(icon_size_px);
 
