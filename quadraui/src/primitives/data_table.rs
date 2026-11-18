@@ -2361,34 +2361,6 @@ impl DataTablePrimitiveLayout {
     }
 }
 
-/// Approximates every glyph as `char_w` wide — [`Primitive::layout`]'s
-/// no-live-font fallback for [`layout_metrics::pixel_data_table_layout`]'s
-/// column-title measurement, since [`crate::primitive::LayoutCtx`]
-/// carries only a flat `char_width`, not a live
-/// [`layout_metrics::TextMeasure`]. Backend-free, like
-/// `crate::compose::form_controller::CharWidthMeasure`'s identical
-/// estimate for the same reason — not gated to any pixel-backend
-/// feature.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-struct CharWidthMeasure(f32);
-
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-impl layout_metrics::TextMeasure for CharWidthMeasure {
-    fn width_of(&self, text: &str) -> f32 {
-        text.chars().count() as f32 * self.0
-    }
-}
-
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -2417,7 +2389,7 @@ impl crate::primitive::Primitive for DataTable {
                 layout,
             };
         }
-        let measure = CharWidthMeasure(ctx.char_width);
+        let measure = layout_metrics::CharWidthMeasure(ctx.char_width);
         let layout = layout_metrics::pixel_data_table_layout(
             self,
             rect.width,
@@ -3947,6 +3919,20 @@ mod primitive_parity_tests {
             "the table must paint something for this comparison to be meaningful"
         );
         assert_eq!(via_primitive_surface.calls, direct_surface.calls);
+
+        // Not just the same paint verbs: the exact geometry `Primitive::layout`
+        // resolved (and handed to a caller to hit-test against) must equal
+        // what the shared pixel resolver returns for this surface's own
+        // metrics, so a glyph-width estimate that drifted from what `paint`
+        // actually measured can't hide behind an unchanged paint-verb log.
+        let resolver_layout = layout_metrics::pixel_data_table_layout(
+            &table,
+            rect.width,
+            rect.height,
+            ctx.line_height,
+            &native_surface_paint::SurfaceTextMeasure(&LogSurface::default()),
+        );
+        assert_eq!(via_primitive_layout.layout, resolver_layout);
     }
 
     /// [`DataTablePrimitiveLayout::hit_test`] subtracts the area's

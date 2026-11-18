@@ -6256,6 +6256,93 @@ mod tests {
         }
     }
 
+    /// A small branch-plus-leaf tree — the TUI-side twin of
+    /// `crate::primitives::tree::primitive_parity_tests::sample_tree`,
+    /// used by the `Primitive` TUI parity tests below.
+    fn sample_tree_view() -> TreeView {
+        fn row(path: &[u16], indent: u16, label: &str, expanded: Option<bool>) -> crate::TreeRow {
+            crate::TreeRow {
+                path: path.to_vec(),
+                indent,
+                icon: None,
+                text: StyledText::plain(label),
+                badge: None,
+                is_expanded: expanded,
+                decoration: crate::Decoration::Normal,
+                edit: None,
+            }
+        }
+        TreeView {
+            id: WidgetId::new("test:tree-primitive-pilot"),
+            rows: vec![
+                row(&[0], 0, "src", Some(true)),
+                row(&[0, 0], 1, "main.rs", None),
+                row(&[1], 0, "Cargo.toml", None),
+            ],
+            selection_mode: crate::SelectionMode::Single,
+            selected_path: Some(vec![0, 0]),
+            scroll_offset: 0,
+            style: crate::TreeStyle::default(),
+            has_focus: true,
+        }
+    }
+
+    /// A small table — the TUI-side twin of
+    /// `crate::primitives::data_table::primitive_parity_tests::sample_table`,
+    /// used by the `Primitive` TUI parity tests below.
+    fn sample_data_table() -> crate::DataTable {
+        crate::DataTable {
+            id: WidgetId::new("test:data-table-primitive-pilot"),
+            columns: vec![
+                crate::Column {
+                    title: "Name".to_string(),
+                    width: crate::ColumnWidth::Flex(2.0),
+                    align: crate::ColumnAlign::Left,
+                },
+                crate::Column {
+                    title: "Age".to_string(),
+                    width: crate::ColumnWidth::FixedCells(5.0),
+                    align: crate::ColumnAlign::Right,
+                },
+            ],
+            rows: (0..4)
+                .map(|i| crate::DataRow {
+                    cells: vec![
+                        StyledText::plain(format!("pod-{i}")),
+                        StyledText::plain("3d"),
+                    ],
+                    decoration: crate::Decoration::Normal,
+                })
+                .collect(),
+            selected_idx: Some(1),
+            scroll_offset: 0,
+            sort: None,
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+            bordered: true,
+        }
+    }
+
+    /// A [`crate::TreeTable`] wrapping [`sample_data_table`] with one
+    /// branch (row 0) and one leaf below it, parallel to its rows — the
+    /// TUI-side twin of
+    /// `crate::primitives::tree_table::primitive_parity_tests::sample_tree_table`.
+    fn sample_tree_table() -> crate::TreeTable {
+        use crate::primitives::tree_table::TreeTableNode;
+        let table = sample_data_table();
+        let tree = vec![
+            TreeTableNode::new(vec![0], 0).with_expanded(true),
+            TreeTableNode::new(vec![0, 0], 1),
+            TreeTableNode::new(vec![1], 0),
+            TreeTableNode::new(vec![2], 0),
+        ];
+        crate::TreeTable { table, tree }
+    }
+
     #[test]
     fn paint_overlays_records_through_mock_backend() {
         let mut mock = MockBackend::new();
@@ -8416,6 +8503,256 @@ mod tests {
             no_paint_layout.hit_test(0.0, 0.0),
             "Primitive::layout's absolute hit_test must agree with \
              TuiBackend::list_layout's local one at the same point"
+        );
+    }
+
+    /// `TreeView` painted through `crate::primitive::Primitive` (via
+    /// [`DrawsPrimitives::draw_primitive`]'s default body, which calls
+    /// [`Backend::cell_buffer`] then `Primitive::paint_cells`) must match
+    /// `TuiBackend::draw_tree`'s own output byte-for-byte — the same TUI
+    /// parity story [`list_primitive_paint_cells_matches_draw_list`]
+    /// proves for `ListView`. Routed through `&mut dyn Backend`, the
+    /// shape every `compose::*` controller's `render` is handed.
+    #[test]
+    fn tree_view_primitive_paint_cells_matches_draw_tree() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let tree = sample_tree_view();
+        let rect = QRect::new(2.0, 1.0, 24.0, 6.0);
+
+        let mut via_primitive_backend = TuiBackend::new();
+        let mut via_primitive_terminal =
+            Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
+        via_primitive_terminal
+            .draw(|frame| {
+                via_primitive_backend.enter_frame_scope(frame, |b| {
+                    let b: &mut dyn Backend = b;
+                    b.draw_primitive(rect, &tree);
+                });
+            })
+            .expect("draw");
+
+        let mut via_draw_tree_backend = TuiBackend::new();
+        let mut via_draw_tree_terminal =
+            Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
+        via_draw_tree_terminal
+            .draw(|frame| {
+                via_draw_tree_backend.enter_frame_scope(frame, |b| {
+                    b.draw_tree(rect, &tree);
+                });
+            })
+            .expect("draw");
+
+        assert_eq!(
+            via_primitive_terminal.backend().buffer(),
+            via_draw_tree_terminal.backend().buffer(),
+            "TreeView painted through Primitive::paint_cells must match \
+             TuiBackend::draw_tree byte-for-byte"
+        );
+        let screen = screen_text(via_primitive_terminal.backend().buffer());
+        assert!(
+            screen.contains("src") && screen.contains("main.rs"),
+            "sanity: the tree actually painted its rows, got: {screen}"
+        );
+    }
+
+    /// [`DrawsPrimitives::draw_primitive`]'s returned
+    /// [`crate::TreeViewPrimitiveLayout`] must hit-test against the same
+    /// absolute area it was just painted into, resolving to the same row
+    /// [`TuiBackend::tree_layout`] does for a click at that row's
+    /// position — the tree twin of
+    /// [`list_primitive_draw_primitive_layout_hit_tests_correctly`].
+    #[test]
+    fn tree_view_primitive_draw_primitive_layout_hit_tests_correctly() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let tree = sample_tree_view();
+        let rect = QRect::new(2.0, 1.0, 20.0, 5.0);
+
+        let mut backend = TuiBackend::new();
+        let mut captured = None;
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    let b: &mut dyn Backend = b;
+                    captured = Some(b.draw_primitive(rect, &tree));
+                });
+            })
+            .expect("draw");
+        let primitive_layout = captured.expect("draw_primitive ran inside the frame scope");
+
+        let no_paint_layout = backend.tree_layout(rect, &tree);
+        assert_eq!(
+            primitive_layout.hit_test(rect.x, rect.y),
+            no_paint_layout.hit_test(0.0, 0.0),
+            "Primitive::layout's absolute hit_test must agree with \
+             TuiBackend::tree_layout's local one at the same point"
+        );
+    }
+
+    /// `DataTable` painted through `crate::primitive::Primitive` must
+    /// match `TuiBackend::draw_data_table`'s own output byte-for-byte —
+    /// same TUI parity story as [`tree_view_primitive_paint_cells_matches_draw_tree`].
+    #[test]
+    fn data_table_primitive_paint_cells_matches_draw_data_table() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let table = sample_data_table();
+        let rect = QRect::new(2.0, 1.0, 30.0, 6.0);
+
+        let mut via_primitive_backend = TuiBackend::new();
+        let mut via_primitive_terminal =
+            Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
+        via_primitive_terminal
+            .draw(|frame| {
+                via_primitive_backend.enter_frame_scope(frame, |b| {
+                    let b: &mut dyn Backend = b;
+                    b.draw_primitive(rect, &table);
+                });
+            })
+            .expect("draw");
+
+        let mut via_draw_backend = TuiBackend::new();
+        let mut via_draw_terminal = Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
+        via_draw_terminal
+            .draw(|frame| {
+                via_draw_backend.enter_frame_scope(frame, |b| {
+                    b.draw_data_table(rect, &table, None);
+                });
+            })
+            .expect("draw");
+
+        assert_eq!(
+            via_primitive_terminal.backend().buffer(),
+            via_draw_terminal.backend().buffer(),
+            "DataTable painted through Primitive::paint_cells must match \
+             TuiBackend::draw_data_table byte-for-byte"
+        );
+        let screen = screen_text(via_primitive_terminal.backend().buffer());
+        assert!(
+            screen.contains("Name") && screen.contains("pod-0"),
+            "sanity: the table actually painted its header/rows, got: {screen}"
+        );
+    }
+
+    /// [`DrawsPrimitives::draw_primitive`]'s returned
+    /// [`crate::DataTablePrimitiveLayout`] must hit-test against the same
+    /// absolute area it was just painted into, resolving to the same hit
+    /// [`TuiBackend::data_table_layout`] does for a click at that point.
+    #[test]
+    fn data_table_primitive_draw_primitive_layout_hit_tests_correctly() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let table = sample_data_table();
+        let rect = QRect::new(2.0, 1.0, 30.0, 5.0);
+
+        let mut backend = TuiBackend::new();
+        let mut captured = None;
+        let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    let b: &mut dyn Backend = b;
+                    captured = Some(b.draw_primitive(rect, &table));
+                });
+            })
+            .expect("draw");
+        let primitive_layout = captured.expect("draw_primitive ran inside the frame scope");
+
+        let no_paint_layout = backend.data_table_layout(rect, &table);
+        assert_eq!(
+            primitive_layout.hit_test(rect.x, rect.y),
+            no_paint_layout.hit_test(0.0, 0.0, table.scroll_offset, table.rows.len()),
+            "Primitive::layout's absolute hit_test must agree with \
+             TuiBackend::data_table_layout's local one at the same point"
+        );
+    }
+
+    /// `TreeTable` painted through `crate::primitive::Primitive` must
+    /// match `TuiBackend::draw_tree_table`'s own output byte-for-byte —
+    /// same TUI parity story as the plain `DataTable`/`TreeView` cases
+    /// above.
+    #[test]
+    fn tree_table_primitive_paint_cells_matches_draw_tree_table() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let tt = sample_tree_table();
+        let rect = QRect::new(2.0, 1.0, 30.0, 6.0);
+
+        let mut via_primitive_backend = TuiBackend::new();
+        let mut via_primitive_terminal =
+            Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
+        via_primitive_terminal
+            .draw(|frame| {
+                via_primitive_backend.enter_frame_scope(frame, |b| {
+                    let b: &mut dyn Backend = b;
+                    b.draw_primitive(rect, &tt);
+                });
+            })
+            .expect("draw");
+
+        let mut via_draw_backend = TuiBackend::new();
+        let mut via_draw_terminal = Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
+        via_draw_terminal
+            .draw(|frame| {
+                via_draw_backend.enter_frame_scope(frame, |b| {
+                    b.draw_tree_table(rect, &tt, None);
+                });
+            })
+            .expect("draw");
+
+        assert_eq!(
+            via_primitive_terminal.backend().buffer(),
+            via_draw_terminal.backend().buffer(),
+            "TreeTable painted through Primitive::paint_cells must match \
+             TuiBackend::draw_tree_table byte-for-byte"
+        );
+        let screen = screen_text(via_primitive_terminal.backend().buffer());
+        assert!(
+            screen.contains("Name") && screen.contains("pod-0"),
+            "sanity: the tree table actually painted its header/rows, got: {screen}"
+        );
+    }
+
+    /// [`DrawsPrimitives::draw_primitive`]'s returned
+    /// [`crate::primitives::tree_table::TreeTablePrimitiveLayout`] must
+    /// hit-test against the same absolute area it was just painted into,
+    /// resolving to the same hit [`TuiBackend::tree_table_layout`] does
+    /// for a click at that point — including the chevron, the one hit
+    /// region a plain `DataTable` doesn't have.
+    #[test]
+    fn tree_table_primitive_draw_primitive_layout_hit_tests_correctly() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let tt = sample_tree_table();
+        let rect = QRect::new(2.0, 1.0, 30.0, 5.0);
+
+        let mut backend = TuiBackend::new();
+        let mut captured = None;
+        let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    let b: &mut dyn Backend = b;
+                    captured = Some(b.draw_primitive(rect, &tt));
+                });
+            })
+            .expect("draw");
+        let primitive_layout = captured.expect("draw_primitive ran inside the frame scope");
+
+        let no_paint_layout = backend.tree_table_layout(rect, &tt);
+        assert_eq!(
+            primitive_layout.hit_test(rect.x, rect.y),
+            no_paint_layout.hit_test(0.0, 0.0, tt.table.scroll_offset, tt.table.rows.len()),
+            "Primitive::layout's absolute hit_test must agree with \
+             TuiBackend::tree_table_layout's local one at the same point"
         );
     }
 

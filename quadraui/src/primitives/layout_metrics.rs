@@ -49,7 +49,8 @@ use crate::primitives::tab_bar::{
 };
 use crate::primitives::toast::{ToastMeasure, ToastOverlay, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
-use crate::types::Decoration;
+use crate::primitives::tree_table::{TreeTable, TreeTableLayout, TreeTableNode};
+use crate::types::{Decoration, TreeStyle};
 use crate::WidgetId;
 
 /// Backend-supplied text measurement. Implemented per-backend over
@@ -60,6 +61,33 @@ use crate::WidgetId;
 pub trait TextMeasure {
     /// Width, in pixels/DIPs, of `text` rendered in the current UI font.
     fn width_of(&self, text: &str) -> f32;
+}
+
+/// Approximates every glyph as `char_w` wide — the
+/// [`crate::primitive::Primitive::layout`] no-live-font fallback for any
+/// [`TextMeasure`] consumer here, since [`crate::primitive::LayoutCtx`]
+/// carries only a flat `char_width`, not a live [`TextMeasure`]. Needs no
+/// backend to evaluate — gated to the same feature set as its only
+/// callers ([`crate::DataTable`]'s and [`crate::TreeTable`]'s `Primitive`
+/// impls), not to any particular pixel-backend feature.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) struct CharWidthMeasure(pub f32);
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl TextMeasure for CharWidthMeasure {
+    fn width_of(&self, text: &str) -> f32 {
+        text.chars().count() as f32 * self.0
+    }
 }
 
 /// Pixel/DIP-unit layout constants: logical pixels for `gtk`/`macos`,
@@ -1053,6 +1081,124 @@ pub fn pixel_data_table_layout(
         header_height,
         pixel::DATA_TABLE_SCROLLBAR_WIDTH,
         |col| ColumnMeasure::new(measure.width_of(&col.title)),
+    )
+}
+
+// ── TreeTable ────────────────────────────────────────────────────────
+
+/// Pixel width of one tree indent level inside a [`TreeTable`]'s column
+/// 0 — the same `(line_height * 0.9).round()` formula [`tree_layout`]
+/// uses for a plain [`TreeView`].
+fn tree_table_indent_px(line_height: f32) -> f32 {
+    (line_height * 0.9).round()
+}
+
+/// Pixel width of `expanded`'s chevron glyph: the real glyph
+/// configured on `style` measured through `measure` when a live
+/// glyph substitution exists for this build (GTK/win/macos), else the
+/// same `line_height * 0.65` estimate [`tree_layout`] falls back to.
+fn tree_table_chevron_width(
+    measure: &dyn TextMeasure,
+    style: &TreeStyle,
+    line_height: f32,
+    expanded: bool,
+) -> f32 {
+    // Each parameter is a real call site in exactly one of the two arms
+    // below (which `#[cfg]` are mutually exclusive on a given build) —
+    // this blanket read keeps every parameter named, not `_`-prefixed,
+    // regardless of which arm compiles.
+    let _ = (measure, style, line_height, expanded);
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    {
+        measure.width_of(&crate::primitives::tree::tree_chevron_glyph(
+            style, expanded,
+        ))
+    }
+    #[cfg(not(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )))]
+    {
+        let _ = (measure, style);
+        line_height * 0.65
+    }
+}
+
+/// `(start, width)` of `node`'s chevron glyph, relative to column 0's
+/// left edge — [`TreeTable::layout`]'s `measure_chevron` callback.
+/// `None` for a leaf or a hidden chevron. `row_padding_x` is `0.0`:
+/// column 0 has no more left inset than any other [`DataTable`] column.
+fn tree_table_chevron_measure(
+    measure: &dyn TextMeasure,
+    style: &TreeStyle,
+    indent_px: f32,
+    line_height: f32,
+    node: &TreeTableNode,
+) -> Option<(f32, f32)> {
+    if !style.show_chevrons {
+        return None;
+    }
+    let expanded = node.is_expanded?;
+    let glyph_w = tree_table_chevron_width(measure, style, line_height, expanded);
+    Some((node.indent as f32 * indent_px, glyph_w))
+}
+
+/// [`TreeTable::layout`]'s `min_tree_col_width` floor: the deepest
+/// indent across every row in `tree`, plus one chevron glyph (whichever
+/// of expanded/collapsed measures wider) and at least one label
+/// character.
+fn tree_table_floor_width(
+    measure: &dyn TextMeasure,
+    style: &TreeStyle,
+    tree: &[TreeTableNode],
+    indent_px: f32,
+    line_height: f32,
+) -> f32 {
+    let chevron_w = if style.show_chevrons {
+        let expanded_w = tree_table_chevron_width(measure, style, line_height, true);
+        let collapsed_w = tree_table_chevron_width(measure, style, line_height, false);
+        expanded_w.max(collapsed_w)
+    } else {
+        0.0
+    };
+    let max_indent = tree.iter().map(|n| n.indent).max().unwrap_or(0);
+    let one_char = measure.width_of("0");
+    max_indent as f32 * indent_px + chevron_w + one_char
+}
+
+/// Resolve the layout any pixel backend paints `table` at, without
+/// touching a buffer — the twin of [`pixel_data_table_layout`]: column
+/// headers and the chevron glyph are measured through `measure` (real
+/// glyph metrics when a live font/context is available, else a
+/// character-count estimate) rather than a hardcoded character count —
+/// so a backend with no live paint frame (e.g. hit-testing between
+/// frames, or [`crate::primitive::Primitive::layout`]'s no-`PaintSurface`
+/// path) can resolve this layout without one.
+pub fn pixel_tree_table_layout(
+    table: &TreeTable,
+    w: f32,
+    h: f32,
+    line_height: f32,
+    measure: &dyn TextMeasure,
+) -> TreeTableLayout {
+    let style = TreeStyle::default();
+    let indent_px = tree_table_indent_px(line_height);
+    let header_height = (line_height * 1.2).round();
+    let floor = tree_table_floor_width(measure, &style, &table.tree, indent_px, line_height);
+    table.layout(
+        w,
+        h,
+        line_height,
+        header_height,
+        pixel::DATA_TABLE_SCROLLBAR_WIDTH,
+        |col| ColumnMeasure::new(measure.width_of(&col.title)),
+        |node| tree_table_chevron_measure(measure, &style, indent_px, line_height, node),
+        floor,
     )
 }
 
