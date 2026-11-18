@@ -3376,6 +3376,36 @@ impl Backend for MacBackend {
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit> {
+        self.draw_activity_bar_with_style(
+            rect,
+            bar,
+            hovered_idx,
+            &crate::ActivityBarStyle::default(),
+        )
+    }
+
+    /// Paint via the shared
+    /// [`crate::primitives::activity_bar::native_surface_paint::paint`].
+    ///
+    /// Uses the backend's `chrome_font` for icon rendering — apps that
+    /// want Nerd-Font icons install a glyph-bearing font via
+    /// [`Self::set_current_font`] in `setup()` — but **not** at that
+    /// font's own size. The icon glyph always paints at
+    /// [`crate::ActivityBarStyle::resolved_icon_size_px`] via
+    /// [`core_text::font::CTFont::clone_with_font_size`] on `chrome_font`
+    /// — a same-family, same-fallback clone at a fixed size. `size` in
+    /// `clone_with_font_size` is Core Text points, which on macOS are
+    /// already device-independent pixels 1:1 (unlike GTK's Pango /
+    /// Win-GUI's DirectWrite, both of which apply the legacy 96/72 dpi
+    /// point-to-pixel ratio), so `resolved_icon_size_px()` is used here
+    /// without conversion.
+    fn draw_activity_bar_with_style(
+        &mut self,
+        rect: Rect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
+        style: &crate::ActivityBarStyle,
+    ) -> Vec<ActivityBarRowHit> {
         // Track keyboard focus so `run::dispatch_event` can redirect the
         // next `KeyPressed` into this bar — same contract
         // `GtkBackend::draw_activity_bar` implements.
@@ -3385,79 +3415,41 @@ impl Backend for MacBackend {
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
-            "MacBackend::draw_activity_bar called outside enter_frame_scope",
-        );
-        // Chrome primitives are drawn through `chrome_font` —
-        // `draw_tree`'s comment explains the swap. This is the mandatory,
-        // non-default method real hosts reach. It painted its icon glyph
-        // through `current_font` (the editor font) until fixed to use
-        // `chrome_font`, matching every other chrome primitive's swap.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        // SAFETY: ctx non-null inside frame scope. `super::activity_bar`'s
-        // rasteriser is bar-relative by contract — it always
-        // paints into `(0, 0, width, height)` and returns bar-relative hit
-        // spans — so the CTM translate below is what actually places the
-        // ink at `rect`'s absolute origin, matching
-        // `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x, rect.y)`.
-        // The returned `ActivityBarRowHit`s are untouched by the
-        // translate — they stay bar-relative, per contract.
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, rect.y as f64);
-            let hits = super::activity_bar::draw_activity_bar(
-                ctx,
-                font,
-                rect.width as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                hovered_idx,
-                self.nerd_fonts_enabled,
-            );
-            CGContextRestoreGState(ctx);
-            hits
-        }
-    }
-
-    fn draw_activity_bar_with_style(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-        style: &crate::ActivityBarStyle,
-    ) -> Vec<ActivityBarRowHit> {
-        // Track keyboard focus — same contract as `draw_activity_bar` above.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
             "MacBackend::draw_activity_bar_with_style called outside enter_frame_scope",
         );
-        // Chrome primitives are drawn through `chrome_font` —
-        // `draw_tree`'s comment explains the swap. This method also paints
-        // its icon glyph through `chrome_font`, matching `draw_activity_bar`
-        // above and every other chrome primitive.
-        let font = &self.chrome_font;
+        let layout = bar.layout(
+            rect.width,
+            rect.height,
+            super::activity_bar::ACTIVITY_ROW_PX as f32,
+        );
+        let icon_font = self
+            .chrome_font
+            .clone_with_font_size(style.resolved_icon_size_px() as f64);
         let theme = self.current_theme;
-        // SAFETY: ctx non-null inside frame scope. See `draw_activity_bar`
-        // above for why the CTM translate is what makes this bar-relative
-        // rasteriser paint at `rect`'s absolute origin.
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        // SAFETY: ctx non-null inside frame scope. The shared painter is
+        // bar-relative by contract — it paints into `(0, 0, width, height)`
+        // and returns bar-relative hit spans — so the CTM translate below
+        // is what actually places the ink at `rect`'s absolute origin,
+        // matching `GtkBackend::draw_activity_bar`'s
+        // `cr.translate(rect.x, rect.y)`. The returned
+        // `ActivityBarRowHit`s are untouched by the translate — they stay
+        // bar-relative, per contract.
         unsafe {
             CGContextSaveGState(ctx);
             CGContextTranslateCTM(ctx, rect.x as f64, rect.y as f64);
-            let hits = super::activity_bar::draw_activity_bar_with_style(
+            let mut surface = super::surface::CgSurface {
                 ctx,
-                font,
-                rect.width as f64,
-                rect.height as f64,
+                font: Some(&icon_font),
+            };
+            let hits = crate::primitives::activity_bar::native_surface_paint::paint(
                 bar,
+                &layout,
                 style,
+                &mut surface,
                 &theme,
                 hovered_idx,
-                self.nerd_fonts_enabled,
+                nerd_fonts_enabled,
             );
             CGContextRestoreGState(ctx);
             hits
@@ -4661,20 +4653,16 @@ impl Backend for MacBackend {
             rect.height as f64,
         )
     }
+    /// Paint via the shared
+    /// [`crate::primitives::spinner::native_surface_paint::paint`].
+    /// `Spinner` is chrome, not editor content — see `draw_data_table`'s
+    /// comment — so `self` (whose [`crate::paint_surface::PaintSurface`]
+    /// impl measures/draws through `chrome_font`) is the right surface.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_spinner called outside enter_frame_scope",
-        );
-        // `Spinner` is chrome, not editor content — see
-        // `draw_data_table`'s comment.
-        let font = &self.chrome_font;
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::spinner::draw_spinner(ctx, font, rect.x as f64, rect.y as f64, spinner, &theme)
-        }
+        crate::primitives::spinner::native_surface_paint::paint(
+            spinner, self, &theme, rect.x, rect.y,
+        )
     }
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         // No-paint twin of `draw_spinner` — must agree with what that

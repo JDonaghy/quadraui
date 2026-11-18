@@ -1,20 +1,21 @@
-//! macOS rasteriser for [`crate::Spinner`].
+//! macOS layout twin for [`crate::Spinner`].
 //!
-//! Paints a Unicode braille animation glyph + optional label. Same
-//! frame table as TUI and GTK for visual consistency.
+//! Content painting lives in `MacBackend::draw_spinner`, which paints
+//! through the shared
+//! [`crate::primitives::spinner::native_surface_paint::paint`] (`self` is
+//! the [`crate::paint_surface::PaintSurface`] — see `MacBackend`'s own
+//! impl of that trait). This module keeps only the no-paint layout twin
+//! ([`mac_spinner_layout`]), which `MacBackend::spinner_layout` calls
+//! directly via a plain [`core_text::font::CTFont`] measure rather than
+//! constructing a full `PaintSurface`.
 
-use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
-use crate::primitives::spinner::{Spinner, SpinnerLayout, SpinnerMeasure};
-use crate::theme::Theme;
-use crate::types::Color;
-
-const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+use super::text::measure_text;
+use crate::primitives::spinner::{frame_glyph, Spinner, SpinnerLayout, SpinnerMeasure};
 
 fn spinner_text(spinner: &Spinner) -> String {
-    let glyph = FRAMES[spinner.frame_idx % FRAMES.len()];
+    let glyph = frame_glyph(spinner.frame_idx);
     if spinner.label.is_empty() {
         glyph.to_string()
     } else {
@@ -30,36 +31,6 @@ pub fn mac_spinner_layout(spinner: &Spinner, font: &CTFont, x: f64, y: f64) -> S
         x as f32,
         y as f32,
         SpinnerMeasure::new(tw.max(0.0) as f32, th.max(0.0) as f32),
-    )
-}
-
-/// Draw a [`Spinner`] onto `ctx`. Returns the layout for hit-testing.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-pub unsafe fn draw_spinner(
-    ctx: CGContextRef,
-    font: &CTFont,
-    x: f64,
-    y: f64,
-    spinner: &Spinner,
-    theme: &Theme,
-) -> SpinnerLayout {
-    let layout = mac_spinner_layout(spinner, font, x, y);
-    let text = spinner_text(spinner);
-    let fg = spinner.accent.unwrap_or(theme.foreground);
-    draw_text(ctx, font, &text, x, y, color_to_cg(fg));
-    layout
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
     )
 }
 

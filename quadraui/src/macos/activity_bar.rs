@@ -1,64 +1,28 @@
-//! macOS rasteriser for [`crate::ActivityBar`].
+//! macOS layout twin for [`crate::ActivityBar`].
 //!
-//! Vertical strip of icon rows. Layout (row positions, top-vs-bottom
-//! placement) is the shared [`crate::primitives::activity_bar::ActivityBar::layout`]
-//! (matching `gtk::activity_bar` / `win::activity_bar`). Content painting uses the
-//! shared [`crate::primitives::activity_bar::native_surface_paint::paint`] — see
-//! that fn's module doc for details.
-//!
-//! Uses the backend's active `CTFont` for icon rendering — apps that
-//! want Nerd-Font icons install a glyph-bearing font via
-//! [`super::MacBackend::set_current_font`] in `setup()` — but **not**
-//! at that font's own size. The icon glyph always paints at
-//! [`crate::ActivityBarStyle::resolved_icon_size_px`] (defaulting to
-//! [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`],
-//! VS-Code parity), via [`core_text::font::CTFont::clone_with_font_size`]
-//! on whatever font the caller passed in — a same-family, same-fallback
-//! clone at a fixed size. `size` in `clone_with_font_size` is Core Text
-//! points, which on macOS are already device-independent pixels 1:1 (unlike
-//! GTK's Pango / Win-GUI's DirectWrite, both of which apply the legacy 96/72
-//! dpi point-to-pixel ratio — see `crate::gtk::activity_bar::activity_bar_icon_font`'s
-//! doc), so `resolved_icon_size_px()` is used here without conversion.
-//!
-//! Returns per-row [`ActivityBarRowHit`]s so callers can route clicks
-//! and query tooltips against the same frame's painted positions.
-//!
-//! # Coordinate space
-//!
-//! Spans are **bar-relative**, matching the [`crate::Backend::draw_activity_bar`]
-//! contract: this function paints into `(0, 0, width, height)` and is never
-//! handed the bar's origin at all, so it *cannot* fold the origin in.
-//!
-//! Painting into `(0, 0, width, height)` only lands at the bar's *actual*
-//! screen position if the caller separately places the CGContext's origin there
-//! first. `MacBackend::draw_activity_bar[_with_style]` wraps this module's
-//! calls in `CGContextTranslateCTM(ctx, rect.x, rect.y)` (save/translate/restore),
-//! mirroring `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x, rect.y)` —
-//! this module itself needed no change, since bar-relative paint is exactly
-//! what a translated context wants.
+//! Content painting lives in `MacBackend::draw_activity_bar_with_style`,
+//! which paints through the shared
+//! [`crate::primitives::activity_bar::native_surface_paint::paint`] — see
+//! that fn's module doc for details. This module keeps only the no-paint
+//! layout twin ([`mac_activity_bar_layout`]) and the row-height constant
+//! both share.
 
-use core_graphics::sys::CGContextRef;
-use core_text::font::CTFont;
-
-use crate::primitives::activity_bar::{
-    native_surface_paint, ActivityBar, ActivityBarRowHit, ActivityBarStyle,
-};
-use crate::theme::Theme;
+use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit};
 
 /// Fixed row height in points. Matches `crate::gtk::activity_bar::ACTIVITY_ROW_PX`
 /// (= the vimcode native-button height baked into the GTK CSS).
 pub const ACTIVITY_ROW_PX: f64 = 48.0;
 
-/// Compute the per-row hit spans [`draw_activity_bar`] would produce for
-/// `bar` in a `width` × `height` strip, without painting.
+/// Compute the per-row hit spans `MacBackend::draw_activity_bar` would
+/// produce for `bar` in a `width` × `height` strip, without painting.
 ///
 /// No-paint twin backing [`crate::Backend::activity_bar_layout`]. Spans
 /// are **bar-relative** — `y_start` / `y_end` measured from the top edge
 /// of the bar, first row at `0.0` — exactly as the trait requires.
 /// Delegates to the shared [`crate::primitives::activity_bar::ActivityBar::layout`] —
-/// same call `draw_activity_bar` makes internally, so the two cannot
-/// drift apart, and `visible_items` order matches `gtk::activity_bar` /
-/// `win::activity_bar` (bottom-pinned items first).
+/// same call `draw_activity_bar_with_style` makes internally, so the two
+/// cannot drift apart, and `visible_items` order matches
+/// `gtk::activity_bar` / `win::activity_bar` (bottom-pinned items first).
 pub fn mac_activity_bar_layout(
     width: f64,
     height: f64,
@@ -84,99 +48,6 @@ pub fn mac_activity_bar_layout(
         .collect()
 }
 
-/// Paint `bar` into `(0, 0, width, height)` on `ctx`.
-///
-/// Equivalent to [`draw_activity_bar_with_style`] with
-/// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
-/// function for the full behaviour.
-///
-/// `nerd_fonts_enabled` picks which half of each item's [`crate::Icon`]
-/// paints — `glyph` when `true`, `fallback` when `false`.
-/// Unlike GTK's hardcoded "Symbols Nerd Font", macOS paints with whatever
-/// font `set_current_font` installed (see this module's header), so a
-/// caller that hasn't installed a glyph-bearing font should pass `false`
-/// — a wrong `false` shows a plain-but-correct glyph, a wrong `true` shows
-/// tofu.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_activity_bar(
-    ctx: CGContextRef,
-    font: &CTFont,
-    width: f64,
-    height: f64,
-    bar: &ActivityBar,
-    theme: &Theme,
-    hovered_idx: Option<usize>,
-    nerd_fonts_enabled: bool,
-) -> Vec<ActivityBarRowHit> {
-    draw_activity_bar_with_style(
-        ctx,
-        font,
-        width,
-        height,
-        bar,
-        &ActivityBarStyle::default(),
-        theme,
-        hovered_idx,
-        nerd_fonts_enabled,
-    )
-}
-
-/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request.
-/// `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
-/// pixel for pixel.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_activity_bar_with_style(
-    ctx: CGContextRef,
-    font: &CTFont,
-    width: f64,
-    height: f64,
-    bar: &ActivityBar,
-    style: &ActivityBarStyle,
-    theme: &Theme,
-    hovered_idx: Option<usize>,
-    nerd_fonts_enabled: bool,
-) -> Vec<ActivityBarRowHit> {
-    CGContextSaveGState(ctx);
-
-    let layout = bar.layout(width as f32, height as f32, ACTIVITY_ROW_PX as f32);
-    // Paint the icon glyph at a fixed, VS-Code-parity size,
-    // independent of whatever size `font` itself carries — see this
-    // module's doc for why `clone_with_font_size` needs no pt/px
-    // conversion on macOS the way GTK/Win-GUI do.
-    let icon_font = font.clone_with_font_size(style.resolved_icon_size_px() as f64);
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(&icon_font),
-    };
-    let regions = native_surface_paint::paint(
-        bar,
-        &layout,
-        style,
-        &mut surface,
-        theme,
-        hovered_idx,
-        nerd_fonts_enabled,
-    );
-
-    CGContextRestoreGState(ctx);
-    regions
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::headless::BitmapSurface;
@@ -188,6 +59,7 @@ mod tests {
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
     use crate::Backend;
+    use core_text::font::CTFont;
 
     const W: u32 = 48;
     const H: u32 = 240; // 5 rows × 48px
