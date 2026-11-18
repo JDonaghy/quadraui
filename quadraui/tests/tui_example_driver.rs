@@ -11734,6 +11734,50 @@ fn grid_tiles_tile_into_two_rows_of_three_columns_with_no_hardcoded_coordinates(
     assert_eq!(cpu.x, network.x, "column 0 should line up:\n{screen}");
     assert_eq!(memory.x, requests.x, "column 1 should line up:\n{screen}");
     assert_eq!(disk.x, errors.x, "column 2 should line up:\n{screen}");
+
+    // All three columns are an equal-weight `GridTrack::Weight(1.0)`, so
+    // the pitch between adjacent column left edges should match within a
+    // cell (TUI snaps fractional column widths to whole cells, so a
+    // 100-wide viewport split three ways can be off by one) — catches a
+    // track-math regression that a plain left-to-right ordering
+    // assertion would not.
+    let pitch_a = memory.x - cpu.x;
+    let pitch_b = disk.x - memory.x;
+    assert!(
+        (pitch_a - pitch_b).abs() <= 1.0,
+        "equal-weight columns should have near-equal pitch (got {pitch_a} vs {pitch_b}):\n{screen}"
+    );
+}
+
+#[test]
+fn grid_pressing_left_at_col0_and_up_at_row0_do_not_wrap() {
+    // The focused tile starts at index 0 (row 0, col 0): `Left`/`Up`
+    // there must clamp in place, not wrap to the opposite edge.
+    let mut driver = TuiDriver::new(GridApp::new(), 100, 24);
+    driver.press_named(NamedKey::Left);
+    driver.press_named(NamedKey::Up);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Activated CPU 42%"),
+        "Left/Up at the top-left tile should clamp, not wrap, leaving CPU focused:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn grid_pressing_right_at_last_column_does_not_wrap_to_next_row() {
+    // Index 2 (row 0, col 2, the last column) must clamp `Right` in
+    // place rather than wrapping into row 1's first column.
+    let mut driver = TuiDriver::new(GridApp::new(), 100, 24);
+    driver.press_named(NamedKey::Right);
+    driver.press_named(NamedKey::Right);
+    driver.press_named(NamedKey::Right);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Activated Disk 78%"),
+        "Right should clamp at the last column, not wrap to the next row:\n{}",
+        driver.screen()
+    );
 }
 
 #[test]

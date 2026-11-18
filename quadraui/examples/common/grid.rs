@@ -1,14 +1,14 @@
 //! Backend-agnostic app code for the grid layout example
 //! ([`tui_grid`] / [`gtk_grid`]).
 //!
-//! [`GridApp`] demonstrates [`quadraui::layout::resolve_grid_tracks`] (and
-//! its [`quadraui::layout::GridTrack`] vocabulary — `Fixed`/`Percent`/
-//! `Weight`/`Content`) by tiling six metric cards into a 2-row-by-3-column
-//! dashboard: every row and column here is an equal-weight
-//! `GridTrack::Weight(1.0)` track, so the six [`Button`] tiles always
-//! split the available body evenly, regardless of viewport size — the
-//! same track-resolution math a caller wanting a `Fixed` sidebar column
-//! or a `Percent` header row would reach for instead.
+//! [`GridApp`] demonstrates [`quadraui::layout::resolve_grid_tracks`] by
+//! tiling six metric cards into a 2-row-by-3-column dashboard: every row
+//! and column here is an equal-weight [`quadraui::layout::GridTrack`]
+//! `Weight(1.0)` track, so the six [`Button`] tiles always split the
+//! available body evenly, regardless of viewport size. `GridTrack` also
+//! has `Fixed`/`Percent`/`Content` variants (not shown here) for a caller
+//! wanting, say, a `Fixed` sidebar column or a `Percent` header row
+//! instead.
 //!
 //! Controls:
 //! - arrow keys    move focus between tiles (2-D, row/column aware)
@@ -136,6 +136,10 @@ impl AppLogic for GridApp {
         let body = Self::body_rect(backend);
         for (index, cell) in Self::cells(body).into_iter().enumerate() {
             let rect = Self::inset(cell, lh);
+            // `render(&self, ...)` can't stash the returned `ButtonLayout`
+            // for `handle`'s `MouseDown` arm to reuse, so that arm
+            // recomputes it via `backend.button_layout` instead — same
+            // snapped rect, just derived twice.
             let _ = backend.draw_button(rect, &self.tile(index));
         }
     }
@@ -157,17 +161,21 @@ impl AppLogic for GridApp {
             } => {
                 if !self.focused.is_multiple_of(COLS) {
                     self.focused -= 1;
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
                 }
-                Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Right),
                 ..
             } => {
-                if self.focused % COLS < COLS - 1 {
+                if self.focused % COLS != COLS - 1 {
                     self.focused += 1;
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
                 }
-                Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Up),
@@ -175,8 +183,10 @@ impl AppLogic for GridApp {
             } => {
                 if self.focused >= COLS {
                     self.focused -= COLS;
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
                 }
-                Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Down),
@@ -184,8 +194,10 @@ impl AppLogic for GridApp {
             } => {
                 if self.focused + COLS < ROWS * COLS {
                     self.focused += COLS;
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
                 }
-                Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Enter),
@@ -200,7 +212,11 @@ impl AppLogic for GridApp {
                 let lh = backend.line_height();
                 for (index, cell) in Self::cells(body).into_iter().enumerate() {
                     let rect = Self::inset(cell, lh);
-                    let layout = self.tile(index).layout(rect);
+                    // Hit-test against the backend's own snapped layout (not
+                    // the raw fractional `rect`) so the clickable region is
+                    // bit-identical to what `render` actually painted via
+                    // `draw_button`.
+                    let layout = backend.button_layout(rect, &self.tile(index));
                     if layout.hit_test(position) == ButtonHit::Body {
                         self.focused = index;
                         self.activate_focused();
