@@ -2904,13 +2904,47 @@ pub fn schema() -> Vec<DefJson> {
     b.define(flat(
         "DataTableEvent",
         &[
-            ("HeaderClicked", col_payload),
+            ("HeaderClicked", col_payload.clone()),
             ("RowActivated", idx_payload.clone()),
             ("RowSelected", idx_payload.clone()),
             ("RowDoubleClicked", idx_payload),
+            ("Scroll", data_table_scroll_payload.clone()),
+            ("ColumnResized", column_resized_payload.clone()),
+            ("SelectionSet", data_table_selection_set_payload),
+        ],
+        vec![],
+    ));
+
+    // ── `TreeTableEvent` -- `DataTableEvent`'s shapes, plus `path`
+    // alongside every `idx` (matching `TreeView::rows[idx].path`) and
+    // `ToggleExpanded` for the chevron/Left-Right interaction
+    // `DataTable` has no counterpart for.
+    let tree_table_idx_path_payload = b.define(obj(
+        "_TreeTableIdxPathPayload",
+        vec![field("idx", int_()), field("path", re("TreePath"))],
+    ));
+    let tree_table_selection_set_payload = b.define(obj(
+        "_TreeTableSelectionSetPayload",
+        vec![
+            field("indices", list(int_())),
+            field("paths", list(re("TreePath"))),
+        ],
+    ));
+    let tree_table_toggle_expanded_payload = b.define(obj(
+        "_TreeTableToggleExpandedPayload",
+        vec![field("path", re("TreePath")), field("expand", bool_())],
+    ));
+    b.define(flat(
+        "TreeTableEvent",
+        &[
+            ("HeaderClicked", col_payload),
+            ("RowActivated", tree_table_idx_path_payload.clone()),
+            ("RowSelected", tree_table_idx_path_payload.clone()),
+            ("RowDoubleClicked", tree_table_idx_path_payload),
             ("Scroll", data_table_scroll_payload),
             ("ColumnResized", column_resized_payload),
-            ("SelectionSet", data_table_selection_set_payload),
+            ("SelectionSet", tree_table_selection_set_payload),
+            ("ToggleExpanded", tree_table_toggle_expanded_payload),
         ],
         vec![],
     ));
@@ -3198,6 +3232,11 @@ pub fn schema() -> Vec<DefJson> {
         ),
         ("_HitDetailDataTableRow", "data_table_row", &[("row", int_)]),
         ("_HitDetailDataTableFooter", "data_table_footer", &[]),
+        (
+            "_HitDetailTreeTableChevron",
+            "tree_table_chevron",
+            &[("idx", int_)],
+        ),
         ("_HitDetailTabBarTab", "tab_bar_tab", &[("tab", int_)]),
         (
             "_HitDetailTabBarTabClose",
@@ -3445,6 +3484,7 @@ pub fn schema() -> Vec<DefJson> {
             ("TextDisplay", tup(vec![re("WidgetId"), re("TextDisplayEvent")])),
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
+            ("TreeTable", tup(vec![re("WidgetId"), re("TreeTableEvent")])),
             ("Toolbar", tup(vec![re("WidgetId"), re("ToolbarEvent")])),
             ("Canvas", tup(vec![re("WidgetId"), re("CanvasEvent")])),
             ("BackendNative", backend_native_event),
@@ -3526,8 +3566,8 @@ mod coverage {
         Switch, SystemTheme, TabBar, TabBarEvent, TabBarSegment, TabItem, Terminal, TerminalCell,
         TerminalCursorShape, TerminalEvent, TerminalScrollbar, TextDisplay, TextDisplayEvent,
         TextDisplayLine, TextInput, TimeOfDay, ToggleGroupItem, Toolbar, ToolbarButton,
-        ToolbarEvent, TreeEvent, TreeRow, TreeRowEditState, TreeStyle, TreeView, UiEvent,
-        ValidationState, Viewport, Weekday,
+        ToolbarEvent, TreeEvent, TreeRow, TreeRowEditState, TreeStyle, TreeTableEvent, TreeView,
+        UiEvent, ValidationState, Viewport, Weekday,
     };
 
     use quadraui::primitives::canvas::{CanvasCursor, CanvasFontRole, CanvasRegion};
@@ -3625,6 +3665,7 @@ mod coverage {
             UiEvent::TextDisplay(_, _) => {}
             UiEvent::Chart(_, _) => {}
             UiEvent::DataTable(_, _) => {}
+            UiEvent::TreeTable(_, _) => {}
             UiEvent::Toolbar(_, _) => {}
             UiEvent::Canvas(_, _) => {}
             UiEvent::BackendNative(_) => {}
@@ -3741,6 +3782,25 @@ mod coverage {
             } => {}
             DataTableEvent::ColumnResized { col: _, width: _ } => {}
             DataTableEvent::SelectionSet { indices: _ } => {}
+        }
+    }
+
+    fn assert_tree_table_event(e: TreeTableEvent) {
+        match e {
+            TreeTableEvent::HeaderClicked { col: _ } => {}
+            TreeTableEvent::RowActivated { idx: _, path: _ } => {}
+            TreeTableEvent::RowSelected { idx: _, path: _ } => {}
+            TreeTableEvent::RowDoubleClicked { idx: _, path: _ } => {}
+            TreeTableEvent::Scroll {
+                delta: _,
+                modifiers: _,
+            } => {}
+            TreeTableEvent::ColumnResized { col: _, width: _ } => {}
+            TreeTableEvent::SelectionSet {
+                indices: _,
+                paths: _,
+            } => {}
+            TreeTableEvent::ToggleExpanded { path: _, expand: _ } => {}
         }
     }
 
@@ -3864,6 +3924,7 @@ mod coverage {
             HitDetail::DataTableHeaderDivider { col: _ } => {}
             HitDetail::DataTableRow { row: _ } => {}
             HitDetail::DataTableFooter => {}
+            HitDetail::TreeTableChevron { idx: _ } => {}
             HitDetail::TabBarTab { tab: _ } => {}
             HitDetail::TabBarTabClose { tab: _ } => {}
             HitDetail::TabBarScrollLeft => {}

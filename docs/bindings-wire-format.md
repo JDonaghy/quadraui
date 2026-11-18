@@ -400,6 +400,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ColumnDescriptor`](#wire-columndescriptor)
 - [`DataRowDescriptor`](#wire-datarowdescriptor)
 - [`DataTableDescriptor`](#wire-datatabledescriptor)
+- [`TreeTableNodeDescriptor`](#wire-treetablenodedescriptor)
+- [`TreeTableDescriptor`](#wire-treetabledescriptor)
 - [`TabItemDescriptor`](#wire-tabitemdescriptor)
 - [`TabBarSegmentDescriptor`](#wire-tabbarsegmentdescriptor)
 - [`TabBarDescriptor`](#wire-tabbardescriptor)
@@ -645,6 +647,10 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ColumnResizedPayload`](#wire-_columnresizedpayload)
 - [`_DataTableSelectionSetPayload`](#wire-_datatableselectionsetpayload)
 - [`DataTableEvent`](#wire-datatableevent)
+- [`_TreeTableIdxPathPayload`](#wire-_treetableidxpathpayload)
+- [`_TreeTableSelectionSetPayload`](#wire-_treetableselectionsetpayload)
+- [`_TreeTableToggleExpandedPayload`](#wire-_treetabletoggleexpandedpayload)
+- [`TreeTableEvent`](#wire-treetableevent)
 - [`_IndexPayload`](#wire-_indexpayload)
 - [`_IdPayload`](#wire-_idpayload)
 - [`TabBarEvent`](#wire-tabbarevent)
@@ -698,6 +704,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailDataTableHeaderDivider`](#wire-_hitdetaildatatableheaderdivider)
 - [`_HitDetailDataTableRow`](#wire-_hitdetaildatatablerow)
 - [`_HitDetailDataTableFooter`](#wire-_hitdetaildatatablefooter)
+- [`_HitDetailTreeTableChevron`](#wire-_hitdetailtreetablechevron)
 - [`_HitDetailTabBarTab`](#wire-_hitdetailtabbartab)
 - [`_HitDetailTabBarTabClose`](#wire-_hitdetailtabbartabclose)
 - [`_HitDetailTabBarScrollLeft`](#wire-_hitdetailtabbarscrollleft)
@@ -1192,6 +1199,24 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `footer` | `DataRowDescriptor \| null` | no |  |
 | `bordered` | `boolean` | no |  |
 | `scroll_px` | `number` | no |  |
+
+<a id="wire-treetablenodedescriptor"></a>
+#### `TreeTableNodeDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `TreePath` | yes |  |
+| `indent` | `number` | yes |  |
+| `is_expanded` | `boolean \| null` | yes |  |
+| `icon` | `Icon \| null` | yes |  |
+
+<a id="wire-treetabledescriptor"></a>
+#### `TreeTableDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `table` | `DataTableDescriptor` | yes |  |
+| `tree` | `TreeTableNodeDescriptor[]` | yes |  |
 
 <a id="wire-tabitemdescriptor"></a>
 #### `TabItemDescriptor`
@@ -3274,6 +3299,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `minimap` | `MinimapDescriptor` | no |  |
 | `multi_section_view` | `MultiSectionViewDescriptor` | no |  |
 | `diff_view` | `DiffViewDescriptor` | no |  |
+| `tree_table` | `TreeTableDescriptor` | no |  |
 | `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
@@ -3338,6 +3364,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `minimap` | `MinimapDescriptor \| null` | no |  |
 | `multi_section_view` | `MultiSectionViewDescriptor \| null` | no |  |
 | `diff_view` | `DiffViewDescriptor \| null` | no |  |
+| `tree_table` | `TreeTableDescriptor \| null` | no |  |
 | `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
@@ -3627,6 +3654,46 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `Scroll` | `_DataTableScrollPayload` |  |
 | `ColumnResized` | `_ColumnResizedPayload` |  |
 | `SelectionSet` | `_DataTableSelectionSetPayload` |  |
+
+<a id="wire-_treetableidxpathpayload"></a>
+#### `_TreeTableIdxPathPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `idx` | `number` | yes |  |
+| `path` | `TreePath` | yes |  |
+
+<a id="wire-_treetableselectionsetpayload"></a>
+#### `_TreeTableSelectionSetPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `indices` | `number[]` | yes |  |
+| `paths` | `TreePath[]` | yes |  |
+
+<a id="wire-_treetabletoggleexpandedpayload"></a>
+#### `_TreeTableToggleExpandedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `TreePath` | yes |  |
+| `expand` | `boolean` | yes |  |
+
+<a id="wire-treetableevent"></a>
+#### `TreeTableEvent`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `HeaderClicked` | `_ColPayload` |  |
+| `RowActivated` | `_TreeTableIdxPathPayload` |  |
+| `RowSelected` | `_TreeTableIdxPathPayload` |  |
+| `RowDoubleClicked` | `_TreeTableIdxPathPayload` |  |
+| `Scroll` | `_DataTableScrollPayload` |  |
+| `ColumnResized` | `_ColumnResizedPayload` |  |
+| `SelectionSet` | `_TreeTableSelectionSetPayload` |  |
+| `ToggleExpanded` | `_TreeTableToggleExpandedPayload` |  |
 
 <a id="wire-_indexpayload"></a>
 #### `_IndexPayload`
@@ -4101,6 +4168,14 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `kind` | `"data_table_footer"` | yes |  |
 
+<a id="wire-_hitdetailtreetablechevron"></a>
+#### `_HitDetailTreeTableChevron`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"tree_table_chevron"` | yes |  |
+| `idx` | `number` | yes |  |
+
 <a id="wire-_hitdetailtabbartab"></a>
 #### `_HitDetailTabBarTab`
 
@@ -4295,7 +4370,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`
@@ -4490,6 +4565,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `TextDisplay` | `[WidgetId, TextDisplayEvent]` |  |
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |
+| `TreeTable` | `[WidgetId, TreeTableEvent]` |  |
 | `Toolbar` | `[WidgetId, ToolbarEvent]` |  |
 | `Canvas` | `[WidgetId, CanvasEvent]` |  |
 | `BackendNative` | `BackendNativeEvent` |  |

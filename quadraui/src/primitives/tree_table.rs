@@ -446,7 +446,7 @@ pub(crate) mod native_surface_paint {
     use crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH;
     use crate::primitives::layout_metrics::TextMeasure;
     use crate::primitives::tree::native_surface_paint::tree_cell::paint_tree_cell;
-    use crate::primitives::tree::{chevron_end_x, tree_chevron_glyph};
+    use crate::primitives::tree::tree_chevron_glyph;
     use crate::theme::Theme;
     use crate::types::{Decoration, TreeStyle};
 
@@ -476,8 +476,11 @@ pub(crate) mod native_surface_paint {
         let expanded = node.is_expanded?;
         let glyph = tree_chevron_glyph(style, expanded);
         let glyph_w = measure.width_of(&glyph);
-        let end = chevron_end_x(0.0, node.indent, indent_px, glyph_w);
-        Some((end - glyph_w, glyph_w))
+        // [`paint_tree_cell`] paints the glyph at `indent * indent_px`
+        // (no `row_padding_x` here — see this fn's own doc), so the hit
+        // region must start there too, not at `chevron_end_x`'s trailing
+        // 4px gap past the glyph.
+        Some((node.indent as f32 * indent_px, glyph_w))
     }
 
     /// [`TreeTable::layout`]'s `min_tree_col_width` floor: the deepest
@@ -784,7 +787,7 @@ pub(crate) mod native_surface_paint {
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
-            paint(
+            let layout = paint(
                 &tt,
                 &mut surface,
                 &theme,
@@ -810,6 +813,14 @@ pub(crate) mod native_surface_paint {
                 "label must start right of the chevron, got label.x={} chevron.x={}",
                 label.0.x,
                 chevron.0.x
+            );
+            // The hit-test bounds `TreeTable::layout` resolves must land
+            // exactly on the glyph that was actually painted, not a few
+            // pixels to either side.
+            assert_eq!(layout.chevrons.len(), 1);
+            assert_eq!(
+                layout.chevrons[0].1.x, chevron.0.x,
+                "chevron hit bounds must start where the glyph was painted"
             );
         }
 

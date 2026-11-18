@@ -123,6 +123,7 @@ use crate::types::{Modifiers, WidgetId};
 use crate::{
     ActivityBarEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent, PaletteEvent,
     StatusBarEvent, TabBarEvent, TerminalEvent, TextDisplayEvent, ToolbarEvent, TreeEvent,
+    TreeTableEvent,
 };
 
 // ─── Supporting types ───────────────────────────────────────────────────────
@@ -1225,6 +1226,33 @@ pub enum UiEvent {
     TextDisplay(WidgetId, TextDisplayEvent),
     Chart(WidgetId, ChartEvent),
     DataTable(WidgetId, DataTableEvent),
+    /// A [`crate::TreeTable`] chevron/row/header/column interaction — see
+    /// [`TreeTableEvent`]'s own variants, in particular
+    /// [`TreeTableEvent::ToggleExpanded`] for the branch-expand chevron
+    /// click [`DataTableEvent`] has no counterpart for. Built by
+    /// [`crate::TreeTableLayout::hit_test`] +
+    /// [`crate::TreeTableLayout::chevron_toggle`], the same pure
+    /// layout/hit-test API every pixel backend's `tree_table_layout`
+    /// already returns — so a binding resolves this without duplicating
+    /// chevron-bounds math.
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
+    /// exhaustive consumer match would need a wildcard arm to survive.
+    /// Blast-radius grep:
+    ///
+    /// ```text
+    /// $ grep -rn 'UiEvent::TreeTable\|TreeTableEvent' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both; neither consumer references
+    /// TreeTable today)
+    /// ```
+    /// Zero hits means neither consumer's `match`es need a new arm; both
+    /// top-level `UiEvent` dispatches in each consumer already end in a
+    /// wildcard `_ =>` arm regardless. Adding `TreeTable` compiles clean
+    /// with no consumer changes required.
+    TreeTable(WidgetId, TreeTableEvent),
     /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
     /// Enter/Space while keyboard-focused — the id is the toolbar's own,
     /// matching every other chrome-bar variant above (`StatusBar`,

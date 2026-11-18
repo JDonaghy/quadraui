@@ -12,11 +12,11 @@ use serde::{Deserialize, Deserializer};
 use quadraui::{
     Backend, Button, DataTable, FontRole, InteractionState, ListView, Rect, ScrollAxis, ScrollView,
     Scrollbar, SectionSize, Split, SplitDirection, SplitHit, SplitLayout, Style, TabBar, TabChrome,
-    TextDisplay, TextDisplayLayout, TextRegion, Theme, TreeView, WidgetId,
+    TextDisplay, TextDisplayLayout, TextRegion, Theme, TreeTable, TreeView, WidgetId,
 };
 
-use crate::extra_paint::ExtraPaint;
-use crate::hit::{PaintedHit, ScrollChildHit};
+use crate::extra_paint::{extra_as, ExtraPaint};
+use crate::hit::{PaintedHit, ScrollChildHit, TreeTableHitState};
 use crate::layout::{
     align_cross, apply_min_max, justify_starts, quantise_horizontal, quantise_vertical,
     resolve_main_axis_sizes, Align, LayoutChild, LayoutContainer, LayoutLeaf, LayoutNode,
@@ -268,15 +268,39 @@ pub fn draw_bands(
         if let Some(extra) = refs.extra.get(kind) {
             if let Some(rect) = band(3.0) {
                 let interaction = chrome_interaction(extra.id());
-                let chrome_hits = extra.paint_chrome(backend, rect, &interaction);
+                let (chrome_hits, tree_table_hit) = paint_extra(backend, extra, rect, &interaction);
                 hits.push(PaintedHit::Extra {
                     id: extra.id(),
                     area: rect,
                     extra: Rc::clone(extra),
                     chrome_hits,
+                    tree_table_hit,
                 });
             }
         }
+    }
+}
+
+/// Paints one additive primitive and returns the `(chrome_hits,
+/// tree_table_hit)` pair its [`PaintedHit::Extra`] entry carries. A
+/// [`TreeTable`] paints through [`Backend::draw_tree_table`] directly
+/// (not the generic [`ExtraPaint::paint_chrome`], whose `Vec<(Rect,
+/// WidgetId)>` return shape has no room for the resolved layout) so its
+/// chevron can be hit-tested precisely later without a live `Backend` —
+/// see [`PaintedHit::Extra::tree_table_hit`]'s own doc.
+fn paint_extra(
+    backend: &mut dyn Backend,
+    extra: &Rc<dyn ExtraPaint>,
+    area: Rect,
+    interaction: &InteractionState,
+) -> (Vec<(Rect, WidgetId)>, Option<TreeTableHitState>) {
+    if let Some(tree_table) = extra_as::<TreeTable>(extra) {
+        let layout = backend.draw_tree_table(area, tree_table, None);
+        let scroll_offset = tree_table.table.scroll_offset;
+        let total_rows = tree_table.table.rows.len();
+        (Vec::new(), Some((layout, scroll_offset, total_rows)))
+    } else {
+        (extra.paint_chrome(backend, area, interaction), None)
     }
 }
 
@@ -1990,12 +2014,13 @@ pub fn paint_leaf(
         }
         LeafDescriptor::Extra(extra) => {
             let interaction = chrome_interaction(id);
-            let chrome_hits = extra.paint_chrome(backend, area, &interaction);
+            let (chrome_hits, tree_table_hit) = paint_extra(backend, extra, area, &interaction);
             hits.push(PaintedHit::Extra {
                 id,
                 area,
                 extra: Rc::clone(extra),
                 chrome_hits,
+                tree_table_hit,
             });
         }
     }

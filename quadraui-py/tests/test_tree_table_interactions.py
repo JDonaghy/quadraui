@@ -7,10 +7,13 @@ are reachable through the same pure `TreeTable::layout`/`TreeTableLayout`
 API the Rust side tests against -- no new pymethod needed, since
 `EXTRA_PRIMITIVE_KINDS`'s generic registration already covers it.
 
-`TreeTable::hit_test` (the `ExtraPaint` impl) is coarse -- a click anywhere
-in the body still reaches the handler as a raw `MouseDown`, since a
-chevron-click `ToggleExpanded` semantic event isn't wired yet (see
-`extra_paint.rs`'s `TreeTable::hit_test` doc).
+A click on a branch row's chevron resolves to a typed
+`TreeTableEvent::ToggleExpanded` (via the paint-time layout
+`quadraui-binding-core` stores on the hit map -- see `hit.rs`'s
+`PaintedHit::Extra::tree_table_hit`); a click anywhere else in the row body
+has no more specific resolution and still reaches the handler as a raw
+`MouseDown`, the same `ExtraBody` fallback every other additive primitive's
+body click gets.
 
 Run against a built wheel/extension, e.g.:
 
@@ -72,6 +75,25 @@ def test_tree_table_as_a_row_leaf_coexists_with_a_fixed_slot():
     assert app.screen_contains("src")
 
 
+def test_click_on_the_chevron_emits_toggle_expanded():
+    app = QuiApp(40, 10)
+    app.set_render(lambda: {"tree_table": _tree_table_dict()})
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    # Row 0 ("src", indent 0, the only expanded branch) sits just below the
+    # one-row header, at viewport y == 1.0; its chevron paints at column 0.
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 0.0, "y": 1.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert {"TreeTable": ("files", {"ToggleExpanded": {"path": [0], "expand": False}})} in (
+        received
+    ), received
+
+
 def test_click_on_the_table_body_reaches_the_handler_as_a_raw_mouse_down():
     app = QuiApp(40, 10)
     app.set_render(lambda: {"tree_table": _tree_table_dict()})
@@ -79,11 +101,12 @@ def test_click_on_the_table_body_reaches_the_handler_as_a_raw_mouse_down():
 
     received = []
     app.set_handler(lambda event: received.append(event))
-    # Row 0 ("src", the expanded branch) sits just below the one-row
-    # header, at viewport y == 1.0.
+    # Past the chevron and label, still on "src"'s row (viewport y == 1.0):
+    # no more specific hit resolution, so it reaches the handler raw.
     app.push_event(
         {"MouseDown": {"button": "Left", "position": {"x": 2.0, "y": 1.0}, "modifiers": {}}}
     )
     app.run(1)
 
     assert any("MouseDown" in event for event in received), received
+    assert not any("TreeTable" in event for event in received), received

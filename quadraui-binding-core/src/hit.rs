@@ -16,6 +16,11 @@ use quadraui::{
 
 use crate::extra_paint::{extra_as, ExtraPaint};
 
+/// `(layout, scroll_offset, total_rows)` — the state [`PaintedHit::Extra::
+/// tree_table_hit`] stashes at paint time so a later click can resolve a
+/// chevron hit without a live `Backend`; see that field's own doc for why.
+pub(crate) type TreeTableHitState = (quadraui::TreeTableLayout, usize, usize);
+
 /// One primitive this app painted during the current frame: its id and the
 /// hit-testable layout its backend `draw_*` call returned (or, for
 /// `Backend::draw_tree`/`draw_list`, which paint without returning one, the
@@ -228,6 +233,20 @@ pub enum PaintedHit {
         /// resolves to the *child's* id rather than just "landed somewhere
         /// on the bar".
         chrome_hits: Vec<(Rect, WidgetId)>,
+        /// `Some((layout, scroll_offset, total_rows))` when `extra`
+        /// downcasts to a [`quadraui::TreeTable`] — the real
+        /// [`quadraui::TreeTableLayout`] resolved via
+        /// `Backend::draw_tree_table` at paint time, plus the two extra
+        /// pieces of state [`quadraui::TreeTableLayout::hit_test`] needs
+        /// (`TreeTable::table.scroll_offset`, `TreeTable::table.rows.len()`).
+        /// Stashed here — the same reason [`PaintedHit::DataTable`] carries
+        /// its own `layout` rather than recomputing one — because
+        /// [`hit_test_painted`] has no live `Backend` to call
+        /// `tree_table_layout` with at click time, and
+        /// [`ExtraPaint::hit_test`]'s `bool`-only signature has no way to
+        /// distinguish a chevron click from the rest of the row. `None`
+        /// for every other extra.
+        tree_table_hit: Option<TreeTableHitState>,
     },
     /// A [`crate::layout::LayoutNode::Scroll`]'s own viewport, in the
     /// ABSOLUTE frame (matching [`Self::Split`]) — `viewport` already
@@ -451,6 +470,19 @@ pub enum HitDetail {
         row: usize,
     },
     DataTableFooter,
+    /// Landed on a [`quadraui::TreeTable`]'s row expand/collapse chevron —
+    /// `idx` is the absolute row index into [`quadraui::TreeTable::tree`],
+    /// matching [`quadraui::TreeTableHit::Chevron`]'s own field. Resolved
+    /// from [`PaintedHit::Extra::tree_table_hit`], the real
+    /// [`quadraui::TreeTableLayout`] a `TreeTable` extra was painted with
+    /// this frame — the `Extra` counterpart of [`Self::TreeChevron`]'s own
+    /// fixed-slot `Tree` resolution. Every other `TreeTable` region (row,
+    /// header, header divider, footer) still resolves to the generic
+    /// [`Self::ExtraBody`]; only the chevron needed its own detail to
+    /// synthesize [`quadraui::TreeTableEvent::ToggleExpanded`].
+    TreeTableChevron {
+        idx: usize,
+    },
     TabBarTab {
         tab: usize,
     },
@@ -761,6 +793,7 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 area,
                 extra,
                 chrome_hits,
+                tree_table_hit,
             } => {
                 if let Some((_, action)) = chrome_hits.iter().find(|(r, _)| r.contains(point)) {
                     return Some((*action, HitDetail::ExtraChrome { bar: *id }));
@@ -778,6 +811,20 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                         // `CanvasHit` is `#[non_exhaustive]` -- see
                         // `quadraui::CanvasHit`'s own doc.
                         _ => {}
+                    }
+                } else if let Some((layout, scroll_offset, total_rows)) = tree_table_hit {
+                    if area.contains(point) {
+                        match layout.hit_test(
+                            point.x - area.x,
+                            point.y - area.y,
+                            *scroll_offset,
+                            *total_rows,
+                        ) {
+                            quadraui::TreeTableHit::Chevron { idx } => {
+                                return Some((*id, HitDetail::TreeTableChevron { idx }));
+                            }
+                            _ => return Some((*id, HitDetail::ExtraBody)),
+                        }
                     }
                 } else if extra.hit_test(*area, point) {
                     return Some((*id, HitDetail::ExtraBody));
@@ -1293,6 +1340,7 @@ mod tests {
             area: Rect::new(0.0, 0.0, 20.0, 20.0),
             extra,
             chrome_hits: vec![(Rect::new(0.0, 15.0, 5.0, 1.0), WidgetId::new("button"))],
+            tree_table_hit: None,
         }];
         clip_hits_to_viewport(&mut hits, 0, viewport);
 

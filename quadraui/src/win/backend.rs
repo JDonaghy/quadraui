@@ -1848,6 +1848,31 @@ impl WinBackend {
             let _ = rects;
         }
     }
+
+    /// Builds a [`crate::paint_surface::PaintSurface`] from the live
+    /// `self.surface`/`self.dwrite` (preferring `self.chrome_dwrite`)
+    /// and runs `paint` with it, or returns `None` when no surface is
+    /// attached yet. A trait object rather than the concrete
+    /// [`super::surface::D2dSurface`] since that type is itself
+    /// `#[cfg(target_os = "windows")]`-gated and this signature must
+    /// type-check on every host.
+    fn with_chrome_surface<R>(
+        &self,
+        paint: impl FnOnce(&mut dyn crate::paint_surface::PaintSurface) -> R,
+    ) -> Option<R> {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let mut surf = super::surface::D2dSurface {
+                target: &surface.target,
+                dwrite: Some(dwrite),
+            };
+            return Some(paint(&mut surf));
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = &paint;
+        None
+    }
 }
 
 /// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries
@@ -3223,39 +3248,32 @@ impl Backend for WinBackend {
         )
     }
 
-    /// One-line forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
-    /// same "surface not attached yet" fallback posture as
-    /// [`Self::draw_data_table`], whose doc explains the `chrome_dwrite`
-    /// preference in full.
+    /// Forward to the shared
+    /// [`crate::primitives::tree_table::native_surface_paint::paint`]
+    /// through [`Self::with_chrome_surface`].
     fn draw_tree_table(
         &mut self,
         rect: Rect,
         table: &crate::TreeTable,
         hovered_idx: Option<usize>,
     ) -> crate::primitives::tree_table::TreeTableLayout {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let theme = Theme::default();
-            let mut surf = super::surface::D2dSurface {
-                target: &surface.target,
-                dwrite: Some(dwrite),
-            };
-            let state = crate::primitives::data_table::DataTablePaintState::default()
-                .with_hovered_idx(hovered_idx);
-            return crate::primitives::tree_table::native_surface_paint::paint(
+        let theme = self.current_theme;
+        let line_height = self.resolved_row_height(self.current_line_height);
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let state = crate::primitives::data_table::DataTablePaintState::default()
+            .with_hovered_idx(hovered_idx);
+        self.with_chrome_surface(|surf| {
+            crate::primitives::tree_table::native_surface_paint::paint(
                 table,
-                &mut surf,
+                surf,
                 &theme,
                 rect,
-                self.resolved_row_height(self.current_line_height),
+                line_height,
                 &state,
-                self.nerd_fonts_enabled,
-            );
-        }
-        let _ = hovered_idx;
-        self.tree_table_layout(rect, table)
+                nerd_fonts_enabled,
+            )
+        })
+        .unwrap_or_else(|| self.tree_table_layout(rect, table))
     }
     /// One-line forward to the shared
     /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
@@ -3469,54 +3487,36 @@ impl Backend for WinBackend {
     /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
     /// "surface not attached yet" fallback posture.
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            // `Palette` is chrome by the `crate::font_role` module's
-            // default (not `EditorClassPrimitive`-listed) — prefer
-            // `chrome_dwrite`, falling back to the editor `dwrite`
-            // handle, same "degrade, don't panic" convention as
-            // `Self::surface_draw_text_run_with_role`. `win::palette`
-            // builds its own adapter from whichever handle is passed in
-            // here rather than reaching `WinBackend`'s own
-            // [`PaintSurface`] impl.
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let line_height = self.current_line_height;
+        // `Palette` is chrome — `with_chrome_surface` degrades to a
+        // no-op `None` when no surface is attached yet.
+        let line_height = self.current_line_height;
+        let theme = crate::theme::Theme::default();
+        let style = self.style();
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        self.with_chrome_surface(|surf| {
             if rect.width < 20.0 || rect.height < line_height * 4.0 {
                 return;
             }
-            let theme = crate::theme::Theme::default();
-            let style = self.style();
             let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
                 rect.width,
                 rect.height,
                 palette,
                 line_height,
             );
-            // Calls the shared paint directly (rather than
-            // through `super::palette::draw_palette`, whose public
-            // signature stays additive-only and so cannot take a live
-            // `&Style`) so this live backend path honours
-            // `Self::set_style` overrides.
-            let mut surf = super::surface::D2dSurface {
-                target: &surface.target,
-                dwrite: Some(dwrite),
-            };
+            // Calls the shared paint directly so this live backend
+            // path honours `Self::set_style` overrides.
             crate::primitives::palette::native_surface_paint::paint(
                 palette,
                 rect,
                 &palette_layout,
                 rows_h,
                 line_height,
-                self.nerd_fonts_enabled,
-                &mut surf,
+                nerd_fonts_enabled,
+                surf,
                 &theme,
                 &style,
             );
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, palette);
+        });
     }
 
     /// Pure geometry — needs no live surface, unlike
@@ -4452,44 +4452,31 @@ impl Backend for WinBackend {
         layout: &TooltipLayout,
         chrome: &TooltipChrome,
     ) {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            // Tooltip text is chrome, not `EditorClassPrimitive`-listed —
-            // same `chrome_dwrite`-preferring swap as `Self::draw_palette`.
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            // Calls the shared paint directly (rather than through
-            // `super::tooltip::draw_tooltip_with_chrome`, whose public
-            // signature stays additive-only and so cannot take a live
-            // `&Style`) so this live backend path honours
-            // `Self::set_style` overrides — see that free function's own
-            // doc. `Theme::default()` matches what this module's own
-            // doc documents ("`WinBackend` does not yet carry a live
-            // `Theme`").
-            let theme = crate::theme::Theme::default();
-            let style = self.style();
-            let mut surf = super::surface::D2dSurface {
-                target: &surface.target,
-                dwrite: Some(dwrite),
-            };
+        // Tooltip text is chrome. `Theme::default()` matches what this
+        // module's own doc documents ("`WinBackend` does not yet carry
+        // a live `Theme`").
+        let theme = crate::theme::Theme::default();
+        let style = self.style();
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        let painted = self.with_chrome_surface(|surf| {
             crate::primitives::tooltip::native_surface_paint::paint(
                 tooltip,
                 layout,
                 chrome,
-                self.current_line_height,
-                self.current_char_width,
-                &mut surf,
+                line_height,
+                char_width,
+                surf,
                 &theme,
                 &style,
             );
+        });
+        if painted.is_some() {
             // See `overlay_bounds_this_frame`'s own doc: a later
             // `draw_focus_ring` call this same frame must not stroke over
             // this tooltip.
             self.overlay_bounds_this_frame.push(layout.bounds);
-            return;
         }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (tooltip, layout, chrome);
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::context_menu`
@@ -4509,42 +4496,33 @@ impl Backend for WinBackend {
         menu: &ContextMenu,
         layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)> {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let style = self.style();
-            // Calls the shared paint directly (rather than
-            // through `super::context_menu::draw_context_menu`, whose
-            // public signature stays additive-only and so cannot take a
-            // live `&Style`) so this live backend path honours
-            // `Self::set_style` overrides.
-            let mut surf = super::surface::D2dSurface {
-                target: &surface.target,
-                dwrite: Some(dwrite),
-            };
-            // `None` keeps `paint_with_glyphs`'s check/arrow defaults;
-            // the flag resolves an item's own `ContextMenuItem::icon`.
-            return crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
+        let style = self.style();
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
+        // flag resolves an item's own `ContextMenuItem::icon`.
+        self.with_chrome_surface(|surf| {
+            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
                 menu,
                 layout,
                 crate::accelerator::Platform::Windows,
-                &mut surf,
-                &self.current_theme,
+                surf,
+                &theme,
                 &style,
                 None,
-                self.nerd_fonts_enabled,
-            );
-        }
-        // `layout` is already fully resolved — the hit-rect list is a pure
-        // extraction from it, no text measurement involved, so this doesn't
-        // need a surface/DWrite at all. Painting is skipped; only the hit
-        // rects are returned.
-        layout
-            .visible_items
-            .iter()
-            .filter(|vis| vis.clickable)
-            .filter_map(|vis| menu.items[vis.item_idx].id.map(|id| (vis.bounds, id)))
-            .collect()
+                nerd_fonts_enabled,
+            )
+        })
+        // `layout` is already fully resolved, so a pure extraction from
+        // it needs no surface/DWrite at all when none is attached yet.
+        .unwrap_or_else(|| {
+            layout
+                .visible_items
+                .iter()
+                .filter(|vis| vis.clickable)
+                .filter_map(|vis| menu.items[vis.item_idx].id.map(|id| (vis.bounds, id)))
+                .collect()
+        })
     }
 
     /// [`Self::draw_context_menu`], but honouring an optional
@@ -4557,28 +4535,22 @@ impl Backend for WinBackend {
         layout: &ContextMenuLayout,
         glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
     ) -> Vec<(Rect, WidgetId)> {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let style = self.style();
-            let mut surf = super::surface::D2dSurface {
-                target: &surface.target,
-                dwrite: Some(dwrite),
-            };
-            return crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
+        let style = self.style();
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        self.with_chrome_surface(|surf| {
+            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
                 menu,
                 layout,
                 crate::accelerator::Platform::Windows,
-                &mut surf,
-                &self.current_theme,
+                surf,
+                &theme,
                 &style,
                 glyphs,
-                self.nerd_fonts_enabled,
-            );
-        }
-        #[cfg(not(target_os = "windows"))]
-        let _ = glyphs;
-        self.draw_context_menu(menu, layout)
+                nerd_fonts_enabled,
+            )
+        })
+        .unwrap_or_else(|| self.draw_context_menu(menu, layout))
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::dialog` once a
