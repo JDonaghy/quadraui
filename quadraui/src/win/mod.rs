@@ -391,9 +391,6 @@ pub use services::WinPlatformServices;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use sidebar_panel::win_sidebar_panel_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use spinner::draw_spinner;
 #[doc(hidden)]
 pub use spinner::win_spinner_layout;
 #[cfg(target_os = "windows")]

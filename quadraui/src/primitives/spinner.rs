@@ -66,6 +66,28 @@ pub(crate) fn frame_glyph(frame_idx: usize) -> char {
     FRAMES[frame_idx % FRAMES.len()]
 }
 
+/// The exact text a backend measures and paints for `spinner`: the
+/// current animation glyph alone, or `"{glyph} {label}"` when
+/// [`Spinner::label`] is non-empty. The one shared builder every backend
+/// measurer and [`native_surface_paint::paint`] both call, instead of
+/// each carrying its own byte-for-byte-identical copy.
+///
+/// Gated with [`FRAMES`], for the same reason.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn spinner_text(spinner: &Spinner) -> String {
+    let glyph = frame_glyph(spinner.frame_idx);
+    if spinner.label.is_empty() {
+        glyph.to_string()
+    } else {
+        format!("{glyph} {}", spinner.label)
+    }
+}
+
 /// Declarative description of an indeterminate spinner.
 ///
 /// # Examples
@@ -162,13 +184,12 @@ impl Spinner {
 }
 
 // `paint` is the shared [`crate::paint_surface::PaintSurface`]
-// implementation of spinner painting (glyph + optional label), the
-// single rasteriser behind GTK/macOS/Win's three independent (but
-// visually identical) `draw_spinner` copies. Those backends still
-// carry their own paint path today — adopting this one is a follow-on
-// issue — but this module is where a future adopter's `draw_spinner`
-// forwards to, the same way `button`/`progress` already route their
-// backends through `native_surface_paint::paint`.
+// implementation of spinner painting (glyph + optional label). `win`
+// routes its `draw_spinner` through this directly
+// (`win::backend::WinBackend::draw_spinner`); GTK and macOS still carry
+// their own independent (but visually identical) paint path — adopting
+// this one for those is a follow-on issue — the same shape
+// `button`/`progress` already route every backend through.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -176,24 +197,10 @@ impl Spinner {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{frame_glyph, Spinner, SpinnerLayout, SpinnerMeasure};
+    use super::{spinner_text, Spinner, SpinnerLayout, SpinnerMeasure};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
-
-    /// The exact text a backend measures and paints for `spinner`: the
-    /// current animation glyph alone, or `"{glyph} {label}"` when
-    /// [`Spinner::label`] is non-empty. Every pixel backend built this
-    /// string independently (`spinner_text`/`frame_text`, byte-for-byte
-    /// identical) before routing through this shared painter.
-    fn spinner_text(spinner: &Spinner) -> String {
-        let glyph = frame_glyph(spinner.frame_idx);
-        if spinner.label.is_empty() {
-            glyph.to_string()
-        } else {
-            format!("{glyph} {}", spinner.label)
-        }
-    }
 
     /// Paint `spinner` at `(x, y)` on `surface`, returning
     /// [`SpinnerLayout`] for host hit-testing — same contract as every

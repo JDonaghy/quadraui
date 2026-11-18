@@ -5608,23 +5608,23 @@ impl Backend for WinBackend {
         )
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture. Passes `&self.current_theme` —
-    /// the same field `Backend::set_theme` writes — so the glyph's fg
-    /// colour tracks the live theme, not `Theme::default()`.
+    /// Paint via the shared
+    /// [`crate::primitives::spinner::native_surface_paint::paint`] once
+    /// a surface and a text handle are attached — mirrors
+    /// [`Self::draw_progress`]. `self` is the
+    /// [`crate::paint_surface::PaintSurface`] (`impl PaintSurface for
+    /// WinBackend`'s `surface_measure_text`/`surface_draw_text_run`
+    /// already prefer `chrome_dwrite` over `dwrite`, the same swap
+    /// [`Self::draw_palette`] documents for chrome text), so this no
+    /// longer resolves the handle itself. See
+    /// [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// yet" fallback posture.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            // The spinner's label (e.g. "Indexing…") is chrome, not
-            // `EditorClassPrimitive`-listed — same `chrome_dwrite`-
-            // preferring swap as `Self::draw_palette`.
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::spinner::draw_spinner(
-                &surface.target,
-                dwrite,
-                rect,
-                spinner,
-                &self.current_theme,
+        if self.surface.is_some() && (self.chrome_dwrite.is_some() || self.dwrite.is_some()) {
+            let theme = self.current_theme;
+            return crate::primitives::spinner::native_surface_paint::paint(
+                spinner, self, &theme, rect.x, rect.y,
             );
         }
         // No surface/DWrite yet — compute the real layout via the same
@@ -11283,8 +11283,11 @@ mod tests {
         );
     }
 
-    /// Same "builds its own adapter from the passed `dwrite`" shape as
-    /// `draw_palette` above.
+    /// Spinner paints through `surface_draw_text_run` (plain `self`, not
+    /// a per-call adapter), so this is fixed purely by `impl PaintSurface
+    /// for WinBackend`'s inverted default — the same shape as
+    /// `win_backend_draw_panel_paints_title_in_the_chrome_fonts_size`
+    /// above, unlike `draw_palette`'s own per-call adapter.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_spinner_paints_label_in_the_chrome_fonts_size() {
@@ -11311,8 +11314,8 @@ mod tests {
         );
     }
 
-    /// `Backend::set_theme` must reach `super::spinner::draw_spinner`, not
-    /// just be stored and ignored. A spinner's glyph is text (no solid-fill
+    /// `Backend::set_theme` must reach `Self::draw_spinner`'s shared
+    /// painter, not just be stored and ignored. A spinner's glyph is text (no solid-fill
     /// region to probe pixel-exact like `set_theme_reaches_the_rasterisers`
     /// does for the terminal divider), so this finds the most-inked pixel
     /// (max colour distance from an unpainted background sample) and checks
