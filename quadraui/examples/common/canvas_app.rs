@@ -56,6 +56,8 @@ impl CanvasApp {
         let text_color = Color::rgb(255, 255, 255);
         Canvas {
             id: WidgetId::new("gauge"),
+            regions: vec![],
+            focusable: false,
             ops: vec![
                 DrawOp::Rect {
                     rect: Rect::new(0.0, 0.0, w, h),

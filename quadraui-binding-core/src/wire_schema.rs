@@ -4843,7 +4843,15 @@ mod coverage {
             _ => {}
         }
     }
-    assert_fields!(assert_canvas_fields, Canvas { id, ops });
+    assert_fields!(
+        assert_canvas_fields,
+        Canvas {
+            id,
+            ops,
+            regions,
+            focusable
+        }
+    );
     fn assert_diagnostic_severity(s: DiagnosticSeverity) {
         match s {
             DiagnosticSeverity::Error => {}

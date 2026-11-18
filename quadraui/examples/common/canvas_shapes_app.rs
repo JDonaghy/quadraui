@@ -166,6 +166,8 @@ impl CanvasShapesApp {
         Canvas {
             id: WidgetId::new("canvas_shapes"),
             ops,
+            regions: vec![],
+            focusable: false,
         }
     }
 

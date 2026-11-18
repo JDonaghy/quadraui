@@ -1787,9 +1787,10 @@ impl ExtraPaint for Canvas {
     }
 
     /// Matches [`quadraui::CanvasLayout::hit_test`]'s own "inside these
-    /// bounds at all" answer (see [`quadraui::CanvasHit`]'s doc) — `Canvas`
-    /// has no sub-regions of its own, so there is nothing finer to resolve
-    /// here.
+    /// bounds at all" answer (see [`quadraui::CanvasHit`]'s doc) — this
+    /// boolean `ExtraPaint` seam has no way to surface a
+    /// [`quadraui::CanvasRegion`] id, so it deliberately stays this
+    /// coarse rather than resolving further.
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }

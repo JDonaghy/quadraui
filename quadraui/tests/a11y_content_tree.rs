@@ -980,6 +980,8 @@ fn canvas_with_no_app_label_is_unlabelled() {
     let canvas = Canvas {
         id: "sparkline".into(),
         ops: Vec::new(),
+        regions: Vec::new(),
+        focusable: false,
     };
 
     let mut scenario = A11yScenario::new();

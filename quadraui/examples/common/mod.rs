@@ -57,6 +57,13 @@
 //!   toggles nerd fonts to flip between the bundled codicon glyph and
 //!   each icon's plain-text fallback. Used by `tui_codicon_tree` /
 //!   `gtk_codicon_tree`.
+//! - [`CanvasRegionsDemo`] (in [`canvas_regions_demo`]) — one `Canvas`
+//!   with two named `CanvasRegion`s: click-per-region toggling, a
+//!   hover cursor read back from `CanvasRegion::cursor`, and
+//!   `Canvas::focusable` driving a hand-rolled single-entry
+//!   `AppLogic::tab_stops` so Tab focuses the canvas and a subsequent
+//!   key press reaches it. TUI-only (`tui_canvas_regions`) — see the
+//!   module's own doc for why.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -74,6 +81,7 @@ pub mod appshell_demo;
 pub mod board_app;
 pub mod bottom_panel_demo;
 pub mod canvas_app;
+pub mod canvas_regions_demo;
 pub mod canvas_shapes_app;
 pub mod caret_shape_demo;
 pub mod chart_app;
@@ -161,6 +169,7 @@ pub use activity_style_demo::ActivityStyleDemo;
 pub use ai_transcript::AiTranscript;
 pub use board_app::BoardApp;
 pub use canvas_app::CanvasApp;
+pub use canvas_regions_demo::CanvasRegionsDemo;
 pub use canvas_shapes_app::CanvasShapesApp;
 pub use caret_shape_demo::CaretShapeDemo;
 pub use chart_app::ChartApp;

@@ -2095,6 +2095,8 @@ mod tests {
             canvas: Canvas {
                 id: WidgetId::new("sketch"),
                 ops: Vec::new(),
+                regions: Vec::new(),
+                focusable: false,
             },
         }
     }

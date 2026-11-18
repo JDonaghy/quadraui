@@ -54,7 +54,7 @@ use super::{draw_styled_text, qc, set_cell};
 use crate::event::{Point, Rect};
 use crate::primitives::canvas::{
     arc_polyline, bezier_polyline, dash_segments, ellipse_polygon, polygon_fill_spans, Canvas,
-    CanvasLayout, DrawOp,
+    CanvasHit, CanvasLayout, DrawOp,
 };
 use crate::theme::Theme;
 use crate::types::{Color, Decoration, StyledText};
@@ -80,6 +80,42 @@ pub fn tui_canvas_layout(canvas: &Canvas, area: RRect) -> CanvasLayout {
         area.width as f32,
         area.height as f32,
     ))
+}
+
+/// Cell-quantised hit-test for [`Canvas::regions`] on TUI: each region's
+/// LOCAL `rect` rounds outward to whole cells via the exact same
+/// [`CellClip::push`] math [`DrawOp::PushClip`] already rounds through
+/// (module doc), rather than a second copy of that floor/ceil-outward
+/// convention — so a region's clickable/hoverable box always covers
+/// every cell its fractional rect touches instead of leaving a sub-cell
+/// gap a terminal grid has no way to resolve.
+///
+/// Coordinate frame: **ABSOLUTE** screen cells — `(x, y)` is the same
+/// frame every `Backend::draw_*`/mouse-event rect on TUI already uses,
+/// matching [`CanvasLayout::hit_test`]'s own frame.
+///
+/// Regions are tested last-declared-first, same "later wins" convention
+/// [`CanvasLayout::region_hit_test`] uses on every other backend.
+pub fn tui_canvas_region_hit_test(canvas: &Canvas, area: RRect, x: f32, y: f32) -> CanvasHit {
+    let layout = tui_canvas_layout(canvas, area);
+    if layout.hit_test(x, y) == CanvasHit::Outside {
+        return CanvasHit::Outside;
+    }
+    let outer = CellClip::from_rrect(area);
+    let cell_x = x.floor() as i32;
+    let cell_y = y.floor() as i32;
+    for region in canvas.regions.iter().rev() {
+        let abs_rect = Rect::new(
+            area.x as f32 + region.rect.x,
+            area.y as f32 + region.rect.y,
+            region.rect.width,
+            region.rect.height,
+        );
+        if outer.push(abs_rect).contains_cell(cell_x, cell_y) {
+            return CanvasHit::Region { id: region.id };
+        }
+    }
+    CanvasHit::Inside
 }
 
 /// Axis-aligned clip in whole cells, local to a `Canvas` (`0..cols`,
@@ -675,7 +711,7 @@ pub(crate) fn draw_canvas_kitty_images(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::canvas::CanvasHit;
+    use crate::primitives::canvas::CanvasRegion;
     use crate::primitives::image::{Image, ImageFit, ImageSource};
     use crate::types::WidgetId;
 
@@ -683,6 +719,8 @@ mod tests {
         Canvas {
             id: WidgetId::new("canvas"),
             ops,
+            regions: Vec::new(),
+            focusable: false,
         }
     }
 
@@ -883,6 +921,105 @@ mod tests {
         let layout = draw_canvas(&mut buf, area, &c, &Theme::default());
         assert_eq!(layout.hit_test(5.0, 5.0), CanvasHit::Inside);
         assert_eq!(layout.hit_test(0.0, 0.0), CanvasHit::Outside);
+    }
+
+    fn region(id: &str, rect: Rect) -> CanvasRegion {
+        CanvasRegion {
+            id: WidgetId::new(id),
+            rect,
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn tui_canvas_region_hit_test_resolves_a_click_inside_a_region_to_its_id() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut c = canvas(vec![]);
+        c.regions = vec![region("btn", Rect::new(1.0, 1.0, 3.0, 2.0))];
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 2.0, 1.5),
+            CanvasHit::Region {
+                id: WidgetId::new("btn")
+            }
+        );
+    }
+
+    #[test]
+    fn tui_canvas_region_hit_test_quantises_a_fractional_region_outward_to_whole_cells() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut c = canvas(vec![]);
+        // LOCAL rect spans x in [1.4, 3.2) -- the same floor/ceil-outward
+        // rounding `CellClip::push` uses for `PushClip` widens this to
+        // cells 1, 2, 3, so a click at the very start of cell 1 and the
+        // very end of cell 3 both resolve to the region, not just a
+        // fractional interior a terminal grid can't address.
+        c.regions = vec![region("btn", Rect::new(1.4, 1.0, 1.8, 1.0))];
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 1.0, 1.5),
+            CanvasHit::Region {
+                id: WidgetId::new("btn")
+            }
+        );
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 3.9, 1.5),
+            CanvasHit::Region {
+                id: WidgetId::new("btn")
+            }
+        );
+    }
+
+    #[test]
+    fn tui_canvas_region_hit_test_falls_back_to_plain_inside_outside_the_declared_regions() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut c = canvas(vec![]);
+        c.regions = vec![region("btn", Rect::new(1.0, 1.0, 2.0, 2.0))];
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 8.0, 8.0),
+            CanvasHit::Inside
+        );
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 50.0, 50.0),
+            CanvasHit::Outside
+        );
+    }
+
+    #[test]
+    fn tui_canvas_region_hit_test_respects_a_nonzero_area_origin() {
+        let area = RRect::new(5, 6, 10, 10);
+        let mut c = canvas(vec![]);
+        c.regions = vec![region("btn", Rect::new(1.0, 1.0, 2.0, 2.0))];
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 6.0, 7.0),
+            CanvasHit::Region {
+                id: WidgetId::new("btn")
+            }
+        );
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 0.0, 0.0),
+            CanvasHit::Outside
+        );
+    }
+
+    #[test]
+    fn tui_canvas_region_hit_test_prefers_the_last_declared_region_on_overlap() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut c = canvas(vec![]);
+        c.regions = vec![
+            region("under", Rect::new(0.0, 0.0, 10.0, 10.0)),
+            region("over", Rect::new(2.0, 2.0, 4.0, 4.0)),
+        ];
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 3.0, 3.0),
+            CanvasHit::Region {
+                id: WidgetId::new("over")
+            }
+        );
+        assert_eq!(
+            tui_canvas_region_hit_test(&c, area, 8.0, 8.0),
+            CanvasHit::Region {
+                id: WidgetId::new("under")
+            }
+        );
     }
 
     /// Non-zero-origin regression guard (see `LESSONS.md`).

@@ -555,7 +555,7 @@ pub use primitives::button::{
     Button, ButtonEvent, ButtonHit, ButtonIconPosition, ButtonLayout, ButtonMetrics, ButtonSpec,
     ButtonVariant,
 };
-pub use primitives::canvas::{Canvas, CanvasHit, CanvasLayout, DrawOp};
+pub use primitives::canvas::{Canvas, CanvasCursor, CanvasHit, CanvasLayout, CanvasRegion, DrawOp};
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
 };
