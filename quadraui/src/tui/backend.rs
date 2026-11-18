@@ -3457,35 +3457,19 @@ impl Backend for TuiBackend {
         layout
     }
 
+    /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
+    /// that method for the real painting logic.
     fn draw_activity_bar(
         &mut self,
         rect: QRect,
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<crate::ActivityBarRowHit> {
-        // Track keyboard focus: if this bar declares `is_keyboard_focused`,
-        // record its id so `apply_dispatch` can convert incoming `KeyPressed`
-        // events to `UiEvent::ActivityBar(id, KeyPressed { … })`.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_activity_bar called outside enter_frame_scope"
-            );
-            return self.activity_bar_layout(rect, bar);
-        };
-        crate::tui::draw_activity_bar(
-            frame.buffer_mut(),
-            area,
+        self.draw_activity_bar_with_style(
+            rect,
             bar,
-            &theme,
             hovered_idx,
-            nerd_fonts,
+            &crate::ActivityBarStyle::default(),
         )
     }
 
@@ -3510,6 +3494,8 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_activity_bar_with_style called outside enter_frame_scope"
             );
+            #[allow(deprecated)]
+            // `activity_bar_layout` is `#[deprecated]`; this fallback is its own plumbing.
             return self.activity_bar_layout(rect, bar);
         };
         crate::tui::draw_activity_bar_with_style(

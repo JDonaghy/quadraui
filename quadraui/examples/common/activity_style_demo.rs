@@ -141,6 +141,9 @@ impl AppLogic for ActivityStyleDemo {
                 {
                     return Reaction::Continue;
                 }
+                // No replacement seam exists for a no-paint geometry query —
+                // see `Backend::activity_bar_layout`'s deprecation note.
+                #[allow(deprecated)]
                 let hits = backend.activity_bar_layout(bar_rect, &self.bar());
                 let rel_y = position.y - bar_rect.y;
                 for hit in &hits {

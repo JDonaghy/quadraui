@@ -3859,34 +3859,20 @@ impl Backend for GtkBackend {
         resolved_layout
     }
 
+    /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
+    /// that method for the real painting logic.
     fn draw_activity_bar(
         &mut self,
         rect: QRect,
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<crate::ActivityBarRowHit> {
-        // Track keyboard focus so the GTK runner's key handler can
-        // redirect KeyPressed events to this bar.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_activity_bar called outside enter_frame_scope");
-        cr.save().ok();
-        cr.translate(rect.x as f64, rect.y as f64);
-        let hits = crate::gtk::draw_activity_bar(
-            cr,
-            layout,
-            rect.width as f64,
-            rect.height as f64,
+        self.draw_activity_bar_with_style(
+            rect,
             bar,
-            &self.current_theme,
             hovered_idx,
-            self.nerd_fonts_enabled,
-        );
-        cr.restore().ok();
-        hits
+            &crate::ActivityBarStyle::default(),
+        )
     }
 
     fn draw_activity_bar_with_style(

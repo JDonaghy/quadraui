@@ -955,6 +955,10 @@ pub const CASES: &[Case] = &[
             b.draw_settings_chrome(area, "c0sett", "", "search…", false);
         },
     },
+    // `draw_activity_bar` is `#[deprecated]` (use `draw_activity_bar_with_style`
+    // instead); kept as a required `Backend` method, so this row is the only
+    // automated proof the shim still reaches a rasteriser. `#[allow(deprecated)]`
+    // stays scoped to the one call in this closure.
     Case {
         method: "draw_activity_bar",
         // TUI paints only the icon's *first* character while GTK paints the
@@ -980,6 +984,7 @@ pub const CASES: &[Case] = &[
                 selection_bg: None,
                 is_keyboard_focused: false,
             };
+            #[allow(deprecated)]
             let _ = b.draw_activity_bar(Rect::new(0.0, 0.0, lh * 3.0, area.height), &bar, None);
         },
     },
