@@ -825,6 +825,58 @@ let first_visible = nav.scroll_offset();
 
 ---
 
+## `TreeTableController` — `src/compose/tree_table_controller.rs`
+
+**Owns:** one keyboard-navigable `TreeTable` driven from a *hierarchical*
+model instead of an app-maintained flattened row list. It holds
+`TreeTableNodeData` nodes keyed by a stable `NodeId`, the expanded set
+and the current sort column, and flattens them into a `TreeTable` on
+demand (`flatten`, also what `render` paints). Three things an app on
+raw `TreeTable` has to hand-roll come with it: expand/collapse
+re-flattening, **sibling-scoped** column sort (`header_clicked` sorts
+each loaded level's children among themselves, recursively, so the
+hierarchy survives a sort), and **lazy child loading** — a node built
+with `TreeTableNodeData::lazy_branch` emits `ChildrenRequested` once on
+first expand and shows a dim `…` placeholder row until `set_children`
+answers. Navigation, selection and scroll-to-follow are not
+reimplemented: they go through `TreeNavCore`, the same core
+`TreeController` uses, with this controller translating between the
+stable `NodeId` and the positional `TreePath` the core tracks.
+
+**Events (`TreeTableControllerEvent`):** `RowSelected { id }`,
+`RowActivated { id }`, `ToggleExpand { id, expand }`,
+`ChildrenRequested { id }`, `SortChanged { col, ascending }`,
+`Consumed`, `Ignored`.
+
+**Smallest wiring:**
+
+```ignore
+let mut tree = TreeTableController::new("files");
+tree.set_nodes(vec![
+    TreeTableNodeData::branch("src", cells("src"), vec![
+        TreeTableNodeData::leaf("src/main.rs", cells("main.rs")),
+    ]),
+    TreeTableNodeData::lazy_branch("remote", cells("remote")),
+]);
+tree.render(backend, rect, columns.clone());
+match tree.handle(&event, backend, rect, columns) {
+    // Fetch on demand, then hand the children back to the controller.
+    TreeTableControllerEvent::ChildrenRequested { id } => {
+        let children = load(&id);
+        tree.set_children(&id, children);
+    }
+    TreeTableControllerEvent::RowActivated { id } => open(&id),
+    _ => {}
+}
+```
+
+**Example:** `quadraui-gallery/src/demos/tree_table.rs` — the gallery's
+file-tree demo drives expand/collapse, a header-click sort and the lazy
+`remote/` branch through this controller. Its own `#[cfg(test)]` module
+in `tree_table_controller.rs` is the direct-use reference.
+
+---
+
 ## `WorkspaceController` — `src/compose/workspace.rs`
 
 **Owns:** an **open-N-view-one** set of opaque document ids with
