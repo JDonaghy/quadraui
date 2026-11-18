@@ -469,6 +469,7 @@ export interface LayoutRowNode {
   gap?: number;
   justify?: "start" | "center" | "end" | "space_between";
   align?: "start" | "center" | "end" | "stretch";
+  wrap?: boolean;
   wire_version?: number;
   style?: StyleValue;
   class?: ClassValue;
@@ -484,6 +485,7 @@ export interface LayoutColumnNode {
   gap?: number;
   justify?: "start" | "center" | "end" | "space_between";
   align?: "start" | "center" | "end" | "stretch";
+  wrap?: boolean;
   wire_version?: number;
   style?: StyleValue;
   class?: ClassValue;

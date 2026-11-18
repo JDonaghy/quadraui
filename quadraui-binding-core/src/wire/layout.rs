@@ -79,8 +79,12 @@ pub const LAYOUT_NODE_KEYS: [&str; 8] = [
 // that test instead of silently drifting into a false "unknown key"
 // warning (or a strict-mode app's new hard rejection) the first time a real
 // app sends it.
-const ROW_SHAPE_KEYS: [&str; 6] = ["row", "padding", "margin", "gap", "justify", "align"];
-const COLUMN_SHAPE_KEYS: [&str; 6] = ["column", "padding", "margin", "gap", "justify", "align"];
+const ROW_SHAPE_KEYS: [&str; 7] = [
+    "row", "padding", "margin", "gap", "justify", "align", "wrap",
+];
+const COLUMN_SHAPE_KEYS: [&str; 7] = [
+    "column", "padding", "margin", "gap", "justify", "align", "wrap",
+];
 const SPLIT_SHAPE_KEYS: [&str; 4] = ["split", "padding", "margin", "gap"];
 const TABS_SHAPE_KEYS: [&str; 3] = ["tabs", "padding", "margin"];
 const PANEL_SHAPE_KEYS: [&str; 3] = ["panel", "padding", "margin"];
@@ -134,11 +138,13 @@ fn layout_node_from_value_inner(
         let spacing = spacing_from_value(what, value, "\"row\"", true)?;
         let justify = justify_from_value(what, value, "\"row\"")?;
         let align = align_from_value(what, value, "\"row\"")?;
+        let wrap = wrap_from_value(what, value, "\"row\"")?;
         return Ok(LayoutNode::Row(LayoutContainer {
             children,
             spacing,
             justify,
             align,
+            wrap,
         }));
     }
     if let Some(v) = obj_get(value, "column") {
@@ -147,11 +153,13 @@ fn layout_node_from_value_inner(
         let spacing = spacing_from_value(what, value, "\"column\"", true)?;
         let justify = justify_from_value(what, value, "\"column\"")?;
         let align = align_from_value(what, value, "\"column\"")?;
+        let wrap = wrap_from_value(what, value, "\"column\"")?;
         return Ok(LayoutNode::Column(LayoutContainer {
             children,
             spacing,
             justify,
             align,
+            wrap,
         }));
     }
     if let Some(v) = obj_get(value, "split") {
@@ -428,6 +436,14 @@ fn align_from_value(what: &str, value: &Value, label: &str) -> Result<Align, Dec
             }
         }
     }
+}
+
+/// Decodes a `"row"`/`"column"` node's optional `"wrap"` key. Missing
+/// defaults to `false` — the pre-`wrap` behaviour, every child laid out on
+/// a single line regardless of overflow.
+fn wrap_from_value(what: &str, value: &Value, label: &str) -> Result<bool, DecodeError> {
+    let context = format!("{what} › {label}");
+    Ok(opt_bool(value, "wrap", &context)?.unwrap_or(false))
 }
 
 /// Decodes a layout node's optional `"padding"`/`"margin"`/`"gap"` spacing

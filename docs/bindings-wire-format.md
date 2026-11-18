@@ -1480,6 +1480,7 @@ Alias for `string | string[]`.
 | `gap` | `number` | no |  |
 | `justify` | `"start" \| "center" \| "end" \| "space_between"` | no |  |
 | `align` | `"start" \| "center" \| "end" \| "stretch"` | no |  |
+| `wrap` | `boolean` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
@@ -1498,6 +1499,7 @@ Alias for `string | string[]`.
 | `gap` | `number` | no |  |
 | `justify` | `"start" \| "center" \| "end" \| "space_between"` | no |  |
 | `align` | `"start" \| "center" \| "end" \| "stretch"` | no |  |
+| `wrap` | `boolean` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
