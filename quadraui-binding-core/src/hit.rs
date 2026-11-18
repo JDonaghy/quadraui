@@ -1448,6 +1448,7 @@ mod tests {
             area,
             extra: Rc::new(primitive) as Rc<dyn ExtraPaint>,
             chrome_hits: Vec::new(),
+            tree_table_hit: None,
         }];
 
         assert_eq!(
