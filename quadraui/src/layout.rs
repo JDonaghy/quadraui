@@ -36,6 +36,8 @@
 //! scrollable range of variable-size items — which is what the rest of
 //! this module provides.
 
+use std::collections::BTreeMap;
+
 use crate::event::{Point, Rect};
 use serde::{Deserialize, Serialize};
 
@@ -356,6 +358,213 @@ pub fn visible_range_walk(
     out
 }
 
+// ── Grid track sizing ────────────────────────────────────────────────────
+
+/// One column or row track's sizing strategy for [`resolve_grid_tracks`].
+///
+/// Generalises `quadraui::SectionSize`'s `Fixed`/`Percent`/`Weight`/`Content`
+/// vocabulary (single-axis, one dimension of sections) to a 2D grid: columns
+/// and rows each resolve independently, through the same
+/// Fixed+Content → Percent → Weight pass order `resolve_main_axis_sizes`
+/// uses for a `LayoutContainer`'s children. No `min`/`max` clamp and no
+/// `EqualShare` variant yet — a grid track adds them if a consumer needs
+/// them, same as `SectionSize` did.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum GridTrack {
+    /// Exact size in the container's native units (cells / pixels).
+    Fixed(f32),
+    /// Share of the *original* container extent along this axis,
+    /// `0.0..=1.0`. Allocated against the container's full extent, not
+    /// the post-`Fixed` remainder. On total overflow, every `Percent`
+    /// track on that axis scales down proportionally.
+    Percent(f32),
+    /// Proportional weight (CSS `fr` unit). Shares whatever remains
+    /// after every `Fixed`/`Content`/`Percent` track on the same axis
+    /// claimed its size. A weight `<= 0.0` is treated as zero.
+    Weight(f32),
+    /// Exact natural-content size the caller already measured (e.g. a
+    /// column's widest cell). Resolved exactly, in the same pass as
+    /// `Fixed`.
+    Content(f32),
+}
+
+/// Three-pass single-axis track resolution shared by [`resolve_grid_tracks`]'s
+/// column pass and row pass.
+///
+/// Pass 1 resolves every `Fixed`/`Content` track exactly. Pass 2 resolves
+/// every `Percent` track against `container_extent` (the axis's full
+/// extent, before any track consumed part of it); if the percentages
+/// overflow what's left after pass 1, every `Percent` track scales down
+/// proportionally. Pass 3 splits whatever remains across every `Weight`
+/// track by weight ratio; with no `Weight` track, the remainder goes
+/// unused. Same pass order as
+/// `quadraui_binding_core::layout::resolve_main_axis_sizes`, without that
+/// function's `min`/`max` clamp (no such concept on a `GridTrack` today)
+/// or its separately-reserved `usable_main` (a grid track has no gap
+/// parameter yet — a caller wanting a gutter shrinks the container or
+/// inserts a `Fixed` spacer track).
+fn resolve_track_sizes(tracks: &[GridTrack], container_extent: f32) -> Vec<f32> {
+    let n = tracks.len();
+    let mut out = vec![0.0_f32; n];
+    let mut done = vec![false; n];
+    let mut consumed = 0.0_f32;
+
+    // Pass 1: Fixed + Content.
+    for (i, track) in tracks.iter().enumerate() {
+        let raw = match track {
+            GridTrack::Fixed(v) | GridTrack::Content(v) => *v,
+            GridTrack::Percent(_) | GridTrack::Weight(_) => continue,
+        };
+        let v = raw.max(0.0);
+        out[i] = v;
+        consumed += v;
+        done[i] = true;
+    }
+
+    // Pass 2: Percent, against the original container_extent.
+    let mut percent_indices = Vec::new();
+    let mut percent_raw = Vec::new();
+    for (i, track) in tracks.iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        if let GridTrack::Percent(p) = track {
+            percent_indices.push(i);
+            percent_raw.push(p.clamp(0.0, 1.0) * container_extent);
+        }
+    }
+    let percent_total: f32 = percent_raw.iter().sum();
+    let percent_budget = (container_extent - consumed).max(0.0);
+    let percent_scale = if percent_total > percent_budget && percent_total > 0.0 {
+        percent_budget / percent_total
+    } else {
+        1.0
+    };
+    for (k, &i) in percent_indices.iter().enumerate() {
+        let v = (percent_raw[k] * percent_scale).max(0.0);
+        out[i] = v;
+        consumed += v;
+        done[i] = true;
+    }
+
+    // Pass 3: Weight shares whatever remains.
+    let remainder = (container_extent - consumed).max(0.0);
+    let mut weight_indices = Vec::new();
+    let mut weights = Vec::new();
+    for (i, track) in tracks.iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        if let GridTrack::Weight(w) = track {
+            weight_indices.push(i);
+            weights.push(w.max(0.0));
+        }
+    }
+    let weight_sum: f32 = weights.iter().sum();
+    if !weight_indices.is_empty() && weight_sum > 0.0 {
+        for (k, &i) in weight_indices.iter().enumerate() {
+            out[i] = remainder * (weights[k] / weight_sum);
+        }
+    }
+
+    out
+}
+
+/// Resolves `columns` and `rows` against `container` into a 2D grid of
+/// cell [`Rect`]s, indexed `[row][col]` (row-major, matching how a
+/// [`resolve_grid_areas`] template string is read).
+///
+/// Each axis resolves independently through [`resolve_track_sizes`]'s
+/// three-pass order (columns against `container.width`, rows against
+/// `container.height`); cells are then placed by walking column widths
+/// left-to-right and row heights top-to-bottom from `container`'s
+/// origin. No gap between tracks — a caller wanting a gutter shrinks
+/// `container` or inserts a `Fixed` spacer track into `columns`/`rows`.
+pub fn resolve_grid_tracks(
+    columns: &[GridTrack],
+    rows: &[GridTrack],
+    container: Rect,
+) -> Vec<Vec<Rect>> {
+    let col_sizes = resolve_track_sizes(columns, container.width);
+    let row_sizes = resolve_track_sizes(rows, container.height);
+
+    let mut row_y = container.y;
+    let mut grid = Vec::with_capacity(row_sizes.len());
+    for &row_h in &row_sizes {
+        let mut col_x = container.x;
+        let mut row_cells = Vec::with_capacity(col_sizes.len());
+        for &col_w in &col_sizes {
+            row_cells.push(Rect::new(col_x, row_y, col_w, row_h));
+            col_x += col_w;
+        }
+        grid.push(row_cells);
+        row_y += row_h;
+    }
+    grid
+}
+
+/// Inclusive row/col index range an area name spans within a
+/// `grid-template-areas`-style template, as resolved by
+/// [`resolve_grid_areas`]. Indexes into the same `columns`/`rows` axes
+/// (and the `[row][col]` grid) [`resolve_grid_tracks`] produces for the
+/// matching track lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridAreaSpan {
+    pub row_start: usize,
+    pub row_end: usize,
+    pub col_start: usize,
+    pub col_end: usize,
+}
+
+/// Resolves a CSS-style `grid-template-areas` template — one `&str` per
+/// row, each a whitespace-separated list of area names, with `"."`
+/// opting a cell out of every area — into a map from area name to the
+/// [`GridAreaSpan`] of cells it spans.
+///
+/// A name repeated across more than one row/column folds into a single
+/// bounding span. CSS requires the cells a name occupies form a solid
+/// rectangle; this helper doesn't validate that — a non-rectangular
+/// template just resolves to its bounding box, same as if the gaps
+/// inside it were filled.
+pub fn resolve_grid_areas(template: &[&str]) -> BTreeMap<String, GridAreaSpan> {
+    let mut spans: BTreeMap<String, GridAreaSpan> = BTreeMap::new();
+    for (row, line) in template.iter().enumerate() {
+        for (col, name) in line.split_whitespace().enumerate() {
+            if name == "." {
+                continue;
+            }
+            spans
+                .entry(name.to_string())
+                .and_modify(|s| {
+                    s.row_start = s.row_start.min(row);
+                    s.row_end = s.row_end.max(row);
+                    s.col_start = s.col_start.min(col);
+                    s.col_end = s.col_end.max(col);
+                })
+                .or_insert(GridAreaSpan {
+                    row_start: row,
+                    row_end: row,
+                    col_start: col,
+                    col_end: col,
+                });
+        }
+    }
+    spans
+}
+
+/// Unions the cell [`Rect`]s a [`GridAreaSpan`] covers in `cells` (the
+/// `[row][col]` grid [`resolve_grid_tracks`] returned) into the single
+/// `Rect` that area occupies. `None` if `span` indexes outside `cells`.
+pub fn grid_area_rect(cells: &[Vec<Rect>], span: GridAreaSpan) -> Option<Rect> {
+    let top_left = cells.get(span.row_start)?.get(span.col_start)?;
+    let bottom_right = cells.get(span.row_end)?.get(span.col_end)?;
+    let x = top_left.x;
+    let y = top_left.y;
+    let width = (bottom_right.x + bottom_right.width) - x;
+    let height = (bottom_right.y + bottom_right.height) - y;
+    Some(Rect::new(x, y, width, height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,5 +761,178 @@ mod tests {
         assert_eq!(items[1].bounds.y, 5.0);
         assert_eq!(items[2].bounds.y, 20.0);
         assert_eq!(items[2].bounds.height, 8.0);
+    }
+
+    // ── Grid track sizing ───────────────────────────────────────────
+
+    const GRID_CONTAINER: Rect = Rect::new(0.0, 0.0, 100.0, 60.0);
+
+    #[test]
+    fn grid_tracks_fixed_and_content_resolve_exactly() {
+        let cols = [GridTrack::Fixed(20.0), GridTrack::Content(30.0)];
+        let rows = [GridTrack::Fixed(10.0), GridTrack::Content(50.0)];
+        let grid = resolve_grid_tracks(&cols, &rows, GRID_CONTAINER);
+
+        assert_eq!(grid.len(), 2);
+        assert_eq!(grid[0].len(), 2);
+        assert_eq!(grid[0][0], Rect::new(0.0, 0.0, 20.0, 10.0));
+        assert_eq!(grid[0][1], Rect::new(20.0, 0.0, 30.0, 10.0));
+        assert_eq!(grid[1][0], Rect::new(0.0, 10.0, 20.0, 50.0));
+        assert_eq!(grid[1][1], Rect::new(20.0, 10.0, 30.0, 50.0));
+    }
+
+    #[test]
+    fn grid_tracks_percent_is_against_the_original_container() {
+        let cols = [GridTrack::Fixed(20.0), GridTrack::Percent(0.5)];
+        let rows = [GridTrack::Percent(1.0)];
+        let grid = resolve_grid_tracks(&cols, &rows, GRID_CONTAINER);
+
+        // 0.5 * 100.0 (the full container width) == 50.0, independent of
+        // the 20.0 the Fixed column already consumed.
+        assert_eq!(grid[0][1].width, 50.0);
+        assert_eq!(grid[0][0].height, 60.0);
+    }
+
+    #[test]
+    fn grid_tracks_percent_overflow_scales_down_proportionally() {
+        // Two 0.6 Percent columns overflow the container; both scale
+        // down by the same factor rather than one starving the other.
+        let cols = [GridTrack::Percent(0.6), GridTrack::Percent(0.6)];
+        let rows = [GridTrack::Fixed(10.0)];
+        let grid = resolve_grid_tracks(&cols, &rows, GRID_CONTAINER);
+
+        assert_eq!(grid[0][0].width, grid[0][1].width);
+        assert!((grid[0][0].width + grid[0][1].width - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn grid_tracks_weight_shares_the_remainder() {
+        let cols = [
+            GridTrack::Fixed(20.0),
+            GridTrack::Weight(1.0),
+            GridTrack::Weight(3.0),
+        ];
+        let rows = [GridTrack::Fixed(10.0)];
+        let grid = resolve_grid_tracks(&cols, &rows, GRID_CONTAINER);
+
+        // Remainder after the Fixed(20.0) column is 80.0, split 1:3.
+        assert_eq!(grid[0][1].width, 20.0);
+        assert_eq!(grid[0][2].width, 60.0);
+    }
+
+    #[test]
+    fn grid_tracks_weight_with_no_weighted_track_leaves_remainder_unused() {
+        let cols = [GridTrack::Fixed(20.0)];
+        let rows = [GridTrack::Fixed(10.0)];
+        let grid = resolve_grid_tracks(&cols, &rows, GRID_CONTAINER);
+
+        assert_eq!(grid.len(), 1);
+        assert_eq!(grid[0].len(), 1);
+        assert_eq!(grid[0][0], Rect::new(0.0, 0.0, 20.0, 10.0));
+    }
+
+    #[test]
+    fn grid_track_serde_round_trips() {
+        for track in [
+            GridTrack::Fixed(1.0),
+            GridTrack::Percent(0.5),
+            GridTrack::Weight(2.0),
+            GridTrack::Content(3.0),
+        ] {
+            let json = serde_json::to_string(&track).unwrap();
+            let back: GridTrack = serde_json::from_str(&json).unwrap();
+            assert_eq!(track, back);
+        }
+    }
+
+    #[test]
+    fn grid_areas_resolve_named_spans_and_skip_dots() {
+        let template = ["header header", "sidebar content", "sidebar footer"];
+        let areas = resolve_grid_areas(&template);
+
+        assert_eq!(
+            areas["header"],
+            GridAreaSpan {
+                row_start: 0,
+                row_end: 0,
+                col_start: 0,
+                col_end: 1,
+            }
+        );
+        assert_eq!(
+            areas["sidebar"],
+            GridAreaSpan {
+                row_start: 1,
+                row_end: 2,
+                col_start: 0,
+                col_end: 0,
+            }
+        );
+        assert_eq!(
+            areas["content"],
+            GridAreaSpan {
+                row_start: 1,
+                row_end: 1,
+                col_start: 1,
+                col_end: 1,
+            }
+        );
+        assert_eq!(
+            areas["footer"],
+            GridAreaSpan {
+                row_start: 2,
+                row_end: 2,
+                col_start: 1,
+                col_end: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn grid_areas_dot_opts_a_cell_out_of_every_area() {
+        let template = [". content", ". content"];
+        let areas = resolve_grid_areas(&template);
+
+        assert_eq!(areas.len(), 1);
+        assert_eq!(
+            areas["content"],
+            GridAreaSpan {
+                row_start: 0,
+                row_end: 1,
+                col_start: 1,
+                col_end: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn grid_area_rect_unions_the_spanned_cells() {
+        let cols = [GridTrack::Fixed(20.0), GridTrack::Fixed(30.0)];
+        let rows = [GridTrack::Fixed(10.0), GridTrack::Fixed(15.0)];
+        let grid = resolve_grid_tracks(&cols, &rows, GRID_CONTAINER);
+
+        let span = GridAreaSpan {
+            row_start: 0,
+            row_end: 1,
+            col_start: 0,
+            col_end: 1,
+        };
+        let rect = grid_area_rect(&grid, span).unwrap();
+        assert_eq!(rect, Rect::new(0.0, 0.0, 50.0, 25.0));
+    }
+
+    #[test]
+    fn grid_area_rect_out_of_bounds_span_is_none() {
+        let cols = [GridTrack::Fixed(20.0)];
+        let rows = [GridTrack::Fixed(10.0)];
+        let grid = resolve_grid_tracks(&cols, &rows, GRID_CONTAINER);
+
+        let span = GridAreaSpan {
+            row_start: 0,
+            row_end: 5,
+            col_start: 0,
+            col_end: 0,
+        };
+        assert!(grid_area_rect(&grid, span).is_none());
     }
 }
