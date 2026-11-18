@@ -754,6 +754,11 @@ export interface SelectDescriptor {
   focused?: boolean;
 }
 
+/** A script-defined widget's per-frame props, interpreted entirely by whatever `ScriptWidget` a binding registered against this leaf's own id -- see `quadraui_binding_core::scripted`'s own doc. */
+export interface ScriptedWidgetDescriptor {
+  props?: unknown;
+}
+
 /** `mask_char` must decode to exactly one Unicode scalar value -- the Rust side holds it as a `char`, so a multi-character string here fails to decode. */
 export interface PasswordDescriptor {
   id: WidgetId;
@@ -1668,6 +1673,7 @@ export interface LayoutLeafNode {
   tree?: TreeViewDescriptor;
   data_table?: DataTableDescriptor;
   tab_bar?: TabBarDescriptor;
+  scripted_widget?: ScriptedWidgetDescriptor;
   status_bar?: StatusBarDescriptor;
   progress?: ProgressBarDescriptor;
   spinner?: SpinnerDescriptor;

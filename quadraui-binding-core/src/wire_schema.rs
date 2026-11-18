@@ -3601,6 +3601,7 @@ mod coverage {
 
     use crate::hit::HitDetail;
     use crate::layout::{LayoutNode, LeafDescriptor};
+    use crate::scripted::ScriptedWidgetDescriptor;
 
     fn assert_ui_event(e: UiEvent) {
         match e {
@@ -4789,6 +4790,17 @@ mod coverage {
         }
     }
     assert_fields!(assert_card_badge_fields, CardBadge { label, status });
+    // `ScriptedWidgetDescriptor` is the one `*Descriptor` type in this
+    // module actually backed by a real `#[derive(Deserialize)]` struct
+    // (`crate::scripted::ScriptedWidgetDescriptor`) rather than a schema
+    // literal with no Rust type behind it -- see `schema()`'s own
+    // `scripted_widget_descriptor` definition. This guard is what keeps a
+    // future field added there from drifting out of sync with the schema
+    // silently.
+    assert_fields!(
+        assert_scripted_widget_descriptor_fields,
+        ScriptedWidgetDescriptor { props }
+    );
     assert_fields!(
         assert_board_card_fields,
         BoardCard {

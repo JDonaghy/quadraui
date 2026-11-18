@@ -151,10 +151,13 @@ use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::wheel_row_delta;
 #[cfg(test)]
 use quadraui::AcceleratorScope;
+#[cfg(test)]
 use quadraui::Key;
 #[cfg(test)]
 use quadraui::KeyBinding;
+#[cfg(test)]
 use quadraui::Modifiers;
+#[cfg(test)]
 use quadraui::MouseButton;
 #[cfg(test)]
 use quadraui::NamedKey;
@@ -162,7 +165,7 @@ use quadraui::NamedKey;
 use quadraui::Scrollbar;
 use quadraui::{
     A11yChild, A11yInfo, Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout,
-    Backend, BackendCaps, BottomPanelEvent, CanvasHit, Completions, ContextMenu, ContextMenuItem,
+    Backend, BackendCaps, BottomPanelEvent, Completions, ContextMenu, ContextMenuItem,
     DialogButton, DialogSeverity, FileDialogOptions, Float, FloatMeasure, GlobalShortcutId,
     ImageSource, LayoutCtx, MessageDialogOptions, Notification, Point, PointerShape, Reaction,
     Rect, RgbaImage, RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext, Theme,
@@ -200,11 +203,11 @@ use quadraui_binding_core::{
     StyleContext, UpdateInfoWire, WindowCloseHandling,
 };
 use quadraui_binding_core::{decode_layout_dialog, decode_popover, DialogContentSize};
+use quadraui_binding_core::{validate_style_set_name, StyleOverride};
 use quadraui_binding_core::{
-    extra_as, ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedPaint,
+    ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedPaint,
     ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
 };
-use quadraui_binding_core::{validate_style_set_name, StyleOverride};
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`
 /// and `QuiApp::run_native`) between a [`QuiApp`] and every [`QuiAppWaker`]
@@ -1205,141 +1208,6 @@ fn tray_menu(items: Vec<ContextMenuItem>) -> ContextMenu {
     menu_for_surface(WidgetId::new("qui-tray-menu"), items)
 }
 
-impl PyAppLogic {
-    /// Routes a region click or a focused key press to whichever
-    /// registered `ScriptedPrimitive<PyScriptWidget>` it lands on/holds
-    /// focus, by calling straight into its own `hit_test`/`click_region`/
-    /// `key_pressed` rather than through
-    /// `quadraui_binding_core::semantic::semantic_event_for_hit`/
-    /// `focus_scoped_key_event` the way a `Switch`/`TextInput` extra's own
-    /// click/key translation does: those two generic paths recognize only
-    /// a closed, hand-maintained set of concrete `ExtraPaint` types
-    /// (`extra_as::<Switch>`, `extra_as::<Canvas>`, ...) in
-    /// `quadraui-binding-core` itself, so `ScriptedPrimitive<PyScriptWidget>`
-    /// -- a type this crate defines, which that shared crate has never
-    /// heard of -- falls through both to the bare `HitDetail::ExtraBody`
-    /// fallback, with no region id attached. Reusing
-    /// `ScriptedPrimitive::hit_test` (ABSOLUTE point, the same frame as
-    /// the painted `area` recorded in `self.engine.hit_map()`) recovers
-    /// exactly the region id a hand-written `Canvas` descriptor's own
-    /// click already gets for free, with no change to that shared crate.
-    ///
-    /// Reads only this frame's already-painted `hit_map`/
-    /// `focus_manager` -- unaffected by whatever `InteractionEngine::handle`
-    /// does with the same `event` right after this returns, so running
-    /// before it (as `Self::handle` does) or after would answer
-    /// identically *for hit-map/focus staleness* -- but not for claim/modal
-    /// precedence, which is why this consults `backend.modal_stack_handle`
-    /// itself before ever touching the hit map below. A message/form/
-    /// layout dialog, an open context menu, a menu-bar dropdown, or a
-    /// completions popover all push their bounds onto that same
-    /// `quadraui::ModalStack` (see `InteractionEngine::open_message_dialog`
-    /// and friends), so a click that lands inside one of those -- or any
-    /// key while one holds focus -- bails out here before reaching a
-    /// script widget underneath, the same precedence
-    /// `InteractionEngine::dispatch_overlays` already gives every built-in
-    /// modal surface. Without this, `App.confirm`/`App.alert` -- which
-    /// open a message dialog without moving keyboard focus -- would leak
-    /// both the dialog's own button click and any typed key through to
-    /// whatever script widget fills the viewport behind it.
-    fn dispatch_to_script_widget(&self, event: &UiEvent, backend: &mut dyn Backend) -> Reaction {
-        match event {
-            UiEvent::MouseDown {
-                position,
-                button,
-                modifiers,
-                ..
-            } => {
-                if backend
-                    .modal_stack_handle()
-                    .borrow()
-                    .hit_test(*position)
-                    .is_some()
-                {
-                    return Reaction::Continue;
-                }
-                self.script_widget_click(*position, *button, *modifiers, false)
-            }
-            UiEvent::DoubleClick { position, .. } => {
-                if backend
-                    .modal_stack_handle()
-                    .borrow()
-                    .hit_test(*position)
-                    .is_some()
-                {
-                    return Reaction::Continue;
-                }
-                self.script_widget_click(*position, MouseButton::Left, Modifiers::default(), true)
-            }
-            UiEvent::KeyPressed { key, .. } => {
-                if backend
-                    .modal_stack_handle()
-                    .borrow()
-                    .top_focusable()
-                    .is_some()
-                {
-                    return Reaction::Continue;
-                }
-                self.script_widget_key(key, backend)
-            }
-            _ => Reaction::Continue,
-        }
-    }
-
-    fn script_widget_click(
-        &self,
-        position: Point,
-        button: MouseButton,
-        modifiers: Modifiers,
-        double: bool,
-    ) -> Reaction {
-        let hit_map = self.engine.hit_map();
-        let Some((area, script_widget)) = hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra { area, extra, .. } if area.contains(position) => {
-                extra_as::<ScriptedPrimitive<PyScriptWidget>>(extra).map(|sp| (*area, sp))
-            }
-            _ => None,
-        }) else {
-            return Reaction::Continue;
-        };
-        match script_widget.hit_test(position) {
-            CanvasHit::Region { id: region } => {
-                let local = Point::new(position.x - area.x, position.y - area.y);
-                if script_widget.click_region(region, button, modifiers, local, double) {
-                    Reaction::Redraw
-                } else {
-                    Reaction::Continue
-                }
-            }
-            // `CanvasHit` is `#[non_exhaustive]`; `Inside`/`Outside` and
-            // any future variant have no declared region to route an
-            // `on_event` call against -- same posture a plain `Canvas`
-            // leaf's own region-click resolution has for them.
-            _ => Reaction::Continue,
-        }
-    }
-
-    fn script_widget_key(&self, key: &Key, backend: &mut dyn Backend) -> Reaction {
-        let Some(focused) = backend.focus_manager().focused().copied() else {
-            return Reaction::Continue;
-        };
-        let hit_map = self.engine.hit_map();
-        let Some(script_widget) = hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra { id, extra, .. } if *id == focused => {
-                extra_as::<ScriptedPrimitive<PyScriptWidget>>(extra)
-            }
-            _ => None,
-        }) else {
-            return Reaction::Continue;
-        };
-        if script_widget.key_pressed(key.clone()) {
-            Reaction::Redraw
-        } else {
-            Reaction::Continue
-        }
-    }
-}
-
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
@@ -1456,7 +1324,14 @@ impl AppLogic for PyAppLogic {
     /// [`PyEventSink`] and forwards everything else to the engine, which
     /// owns the full `event -> hit -> semantic` orchestration (menu-bar/
     /// context-menu routing, divider/scrollbar drag, click-to-focus,
-    /// focus-scoped key/paste routing, and semantic event substitution).
+    /// focus-scoped key/paste routing, and semantic event substitution --
+    /// including a resolved region click or a focused key press reaching a
+    /// `ScriptedPrimitive<PyScriptWidget>` leaf's own `on_event`, via
+    /// `InteractionEngine::handle`'s generic `scripted_region_click`/
+    /// `scripted_key_press` forwarding, with the same modal-stack
+    /// precedence `dispatch_overlays` already gives every built-in modal
+    /// surface). `App.__init__` always calls `set_handler`, so this is
+    /// `None` only for a `PyAppLogic` built outside that wrapper.
     ///
     /// Drains [`QuiAppActions`]'s deferred queue via
     /// [`flush_deferred_actions`] right after dispatch, against this same
@@ -1466,7 +1341,6 @@ impl AppLogic for PyAppLogic {
     /// so a queued action that actually applied something still gets its
     /// repaint even when the handler itself returned `Continue`.
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        let script_reaction = self.dispatch_to_script_widget(&event, backend);
         let reaction = match self.handler.as_ref() {
             None => Reaction::Continue,
             Some(handler) => {
@@ -1478,7 +1352,6 @@ impl AppLogic for PyAppLogic {
                 self.engine.handle(event, backend, &mut sink)
             }
         };
-        let reaction = reaction.merge(script_reaction);
         let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
