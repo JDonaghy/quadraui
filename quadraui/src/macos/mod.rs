@@ -162,7 +162,7 @@ pub(crate) mod tray;
 // covered by semver, free to move or disappear without a version bump
 // (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 #[doc(hidden)]
-pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, mac_activity_bar_layout};
+pub use activity_bar::mac_activity_bar_layout;
 pub use backend::MacBackend;
 #[doc(hidden)]
 pub use board::mac_board_layout;
@@ -216,7 +216,7 @@ pub use services::MacPlatformServices;
 #[doc(hidden)]
 pub use sidebar_panel::mac_sidebar_panel_layout;
 #[doc(hidden)]
-pub use spinner::{draw_spinner, mac_spinner_layout};
+pub use spinner::mac_spinner_layout;
 #[doc(hidden)]
 pub use split::mac_split_layout;
 #[doc(hidden)]

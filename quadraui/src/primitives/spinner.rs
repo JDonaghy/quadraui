@@ -188,9 +188,10 @@ impl Spinner {
 // `paint` is the shared [`crate::paint_surface::PaintSurface`]
 // implementation of spinner painting (glyph + optional label). `win`
 // routes its `draw_spinner` through this directly
-// (`win::backend::WinBackend::draw_spinner`); GTK and macOS still carry
-// their own independent (but visually identical) paint path — adopting
-// this one for those is a follow-on issue — the same shape
+// (`win::backend::WinBackend::draw_spinner`), and so does
+// `MacBackend::draw_spinner` (`self` is the surface); GTK still carries
+// its own independent (but visually identical) paint path — adopting
+// this one for GTK is a follow-on issue — the same shape
 // `button`/`progress` already route every backend through.
 #[cfg(any(
     feature = "gtk",
