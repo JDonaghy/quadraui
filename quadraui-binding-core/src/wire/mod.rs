@@ -209,8 +209,8 @@ mod tests {
         );
     }
 
-    /// A node dict naming a kind this decoder has never heard of (`"grid"`,
-    /// neither a [`LAYOUT_NODE_KEYS`] container nor a
+    /// A node dict naming a kind this decoder has never heard of
+    /// (`"carousel"`, neither a [`LAYOUT_NODE_KEYS`] container nor a
     /// [`crate::layout::LEAF_KIND_KEYS`]/[`EXTRA_PRIMITIVE_KINDS`] leaf) is
     /// an [`DecodeError::UnknownVariant`] naming both the key and the path
     /// it was found at, under the default (warn) [`DecodeDiagnostics`]
@@ -218,37 +218,37 @@ mod tests {
     /// whole tree or nested inside a container's children.
     #[test]
     fn an_unknown_node_kind_is_rejected_at_the_top_level_and_nested() {
-        let top_level = err(decode(&json!({"grid": {}})));
+        let top_level = err(decode(&json!({"carousel": {}})));
         assert!(
             matches!(top_level, DecodeError::UnknownVariant { .. }),
             "{top_level:?}"
         );
-        assert!(top_level.to_string().contains("grid"), "{top_level}");
+        assert!(top_level.to_string().contains("carousel"), "{top_level}");
         assert_eq!(top_level.path(), "test");
 
         let nested = err(decode(&json!({
-            "row": [{"id": "a", "grid": {}}],
+            "row": [{"id": "a", "carousel": {}}],
         })));
         assert!(
             matches!(nested, DecodeError::UnknownVariant { .. }),
             "{nested:?}"
         );
-        assert!(nested.to_string().contains("grid"), "{nested}");
+        assert!(nested.to_string().contains("carousel"), "{nested}");
         assert!(nested.path().contains("children[0]"), "{}", nested.path());
     }
 
     /// The same unknown-kind rejection, exercised through
     /// [`decode_render_output`] -- the entry point a binding's render
     /// callback actually returns into. Without [`is_layout_tree`]'s own
-    /// [`unknown_node_kind_key`] check, a lone `"grid"` key matches
+    /// [`unknown_node_kind_key`] check, a lone `"carousel"` key matches
     /// neither flat-vs-tree sniff and falls through to the flat
     /// [`RenderFrame`] shape, decoding as an empty, silently blank frame
     /// (every slot `None`) instead of raising.
     #[test]
     fn decode_render_output_rejects_an_unknown_top_level_node_kind() {
-        let err = err(decode_render_output("render", json!({"grid": {}})));
+        let err = err(decode_render_output("render", json!({"carousel": {}})));
         assert!(matches!(err, DecodeError::UnknownVariant { .. }), "{err:?}");
-        assert!(err.to_string().contains("grid"), "{err}");
+        assert!(err.to_string().contains("carousel"), "{err}");
         assert_eq!(err.path(), "render");
     }
 

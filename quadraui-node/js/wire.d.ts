@@ -494,6 +494,44 @@ export interface LayoutColumnNode {
   max?: number;
 }
 
+export interface _GridTrackFixed {
+  Fixed: number;
+}
+
+export interface _GridTrackPercent {
+  Percent: number;
+}
+
+export interface _GridTrackWeight {
+  Weight: number;
+}
+
+export interface _GridTrackContent {
+  Content: number;
+}
+
+/** One column or row track of a "grid" node: an exact size, a share of the axis, a proportional weight (CSS `fr`), or an already-measured natural content size. */
+export type GridTrack = _GridTrackFixed | _GridTrackPercent | _GridTrackWeight | _GridTrackContent;
+
+/** A "grid" node's two track lists plus its row-major cells (left to right within a row, then top to bottom). More cells than `columns x rows` is a decode error; fewer leaves the trailing cells empty. */
+export interface LayoutGridPayload {
+  columns: GridTrack[];
+  rows: GridTrack[];
+  cells: LayoutNode[];
+}
+
+export interface LayoutGridNode {
+  grid: LayoutGridPayload;
+  padding?: PaddingValue;
+  margin?: number;
+  wire_version?: number;
+  style?: StyleValue;
+  class?: ClassValue;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
+}
+
 export interface LayoutSplitPayload {
   id: string;
   orientation: "horizontal" | "vertical";
@@ -1739,7 +1777,7 @@ export interface LayoutLeafNode {
 }
 
 /** One node of a render callback's returned layout tree. */
-export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode;
+export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutGridNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode;
 
 /** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed. */
 export interface RenderFrameDict {

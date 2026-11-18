@@ -49,8 +49,8 @@ use crate::engine::InteractionEngine;
 use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::layout::{
-    quantise_horizontal, quantise_vertical, LayoutLeaf, LayoutNode, LayoutTabs, LeafDescriptor,
-    StyleSets,
+    grid_cell_rects, quantise_horizontal, quantise_vertical, LayoutLeaf, LayoutNode, LayoutTabs,
+    LeafDescriptor, StyleSets,
 };
 use crate::render::{
     apply_split_gap, data_table_viewport_rows, layout_container_rects, list_viewport_rows,
@@ -1803,6 +1803,12 @@ pub fn resolve_layout_node(
             let rects = layout_container_rects(backend, inner, container, false);
             for (child, rect) in container.children.iter_mut().zip(rects) {
                 resolve_layout_node(widget_state, backend, rect, &mut child.node);
+            }
+        }
+        LayoutNode::Grid(grid) => {
+            let rects = grid_cell_rects(grid, area, backend.char_width(), backend.line_height());
+            for (child, rect) in grid.children.iter_mut().zip(rects) {
+                resolve_layout_node(widget_state, backend, rect, child);
             }
         }
         LayoutNode::Leaf(LayoutLeaf {

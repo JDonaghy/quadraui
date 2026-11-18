@@ -1064,6 +1064,50 @@ pub fn schema() -> Vec<DefJson> {
         ]
         .concat(),
     ));
+    // `quadraui::layout::GridTrack`'s own serde representation -- the
+    // object-wrapper vocabulary a `"grid"` node's `"columns"`/`"rows"`
+    // entries take, deliberately spelled like `SectionSize`'s above
+    // (`{"Fixed": n}`, ...) rather than inventing a second one for the
+    // same concept. Unlike `SectionSize`, every variant carries a payload,
+    // so there is no bare-string arm.
+    let grid_track_fixed = b.define(obj("_GridTrackFixed", vec![field("Fixed", float_())]));
+    let grid_track_percent = b.define(obj("_GridTrackPercent", vec![field("Percent", float_())]));
+    let grid_track_weight = b.define(obj("_GridTrackWeight", vec![field("Weight", float_())]));
+    let grid_track_content = b.define(obj("_GridTrackContent", vec![field("Content", float_())]));
+    let grid_track = b.define(union_of_doc(
+        "GridTrack",
+        vec![
+            grid_track_fixed,
+            grid_track_percent,
+            grid_track_weight,
+            grid_track_content,
+        ],
+        "One column or row track of a \"grid\" node: an exact size, a share of the axis, a proportional weight (CSS `fr`), or an already-measured natural content size.",
+    ));
+    let layout_grid_payload = b.define(obj_doc(
+        "LayoutGridPayload",
+        vec![
+            field("columns", list(grid_track.clone())),
+            field("rows", list(grid_track)),
+            field("cells", list(layout_node.clone())),
+        ],
+        "A \"grid\" node's two track lists plus its row-major cells (left to right within a row, then top to bottom). More cells than `columns x rows` is a decode error; fewer leaves the trailing cells empty.",
+    ));
+    let layout_grid_node = b.define(obj(
+        "LayoutGridNode",
+        [
+            vec![
+                field("grid", layout_grid_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                wire_version_field.clone(),
+                field_opt("style", style_value.clone()),
+                field_opt("class", class_value.clone()),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
+    ));
     let layout_split_payload = b.define(obj(
         "LayoutSplitPayload",
         vec![
@@ -2725,6 +2769,7 @@ pub fn schema() -> Vec<DefJson> {
         vec![
             layout_row_node,
             layout_column_node,
+            layout_grid_node,
             layout_split_node,
             layout_tabs_node,
             layout_panel_node,
@@ -4022,6 +4067,7 @@ mod coverage {
         match n {
             LayoutNode::Row(_) => {}
             LayoutNode::Column(_) => {}
+            LayoutNode::Grid(_) => {}
             LayoutNode::Leaf(_) => {}
             LayoutNode::Split(_) => {}
             LayoutNode::Tabs(_) => {}
@@ -4030,6 +4076,15 @@ mod coverage {
             LayoutNode::SplitTree(_) => {}
             LayoutNode::Scroll(_) => {}
             LayoutNode::Styled(_) => {}
+        }
+    }
+
+    fn assert_grid_track(t: quadraui::layout::GridTrack) {
+        match t {
+            quadraui::layout::GridTrack::Fixed(_) => {}
+            quadraui::layout::GridTrack::Percent(_) => {}
+            quadraui::layout::GridTrack::Weight(_) => {}
+            quadraui::layout::GridTrack::Content(_) => {}
         }
     }
 

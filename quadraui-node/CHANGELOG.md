@@ -18,6 +18,16 @@ fragment step for this package (that mechanism, and
 
 ### Added
 
+- A `"grid"` layout node: `{grid: {columns: [...], rows: [...], cells:
+  [...]}}` lays its cells out row-major across two independent track
+  lists, each track one of `{Fixed: px}`/`{Percent: 0.0-1.0}`/`{Weight:
+  fr}`/`{Content: px}` (`GridTrack` in `wire.d.ts`), resolved through the
+  same `Fixed`/`Content` -> `Percent` -> `Weight` pass order a row/column
+  child's `size` key already uses. Takes the usual `padding`/`margin`
+  siblings (no `gap`: a grid's tracks carry no gutter). More `cells` than
+  `columns x rows` has room for is a decode error rather than a silently
+  dropped tile. `wire.d.ts` carries the generated
+  `GridTrack`/`LayoutGridPayload`/`LayoutGridNode` types.
 - A `"toolbar"` extra's object may now set `overflow` (`"Clip"`/`"Wrap"`/
   `"Menu"`) and `overflow_priorities` (a `{id, priority}[]` list) to opt
   into `ToolbarOverflow`'s wrap/menu-with-drop-priority layouts instead of

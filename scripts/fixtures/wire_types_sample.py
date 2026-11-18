@@ -9,7 +9,9 @@ with:
 Builds a tree + split + data_table layout tree, and matches on a tree-row
 click the same way `quadraui-py/examples/file_manager.py`'s own handler
 does -- the two acceptance scenarios from the "generated .pyi / TypeScript
-types" issue. `build_editor`/`draw_cursor_line` additionally construct an
+types" issue. `build_grid` constructs a `"grid"` node with its own
+`GridTrack` column/row lists. `build_editor`/`draw_cursor_line`
+additionally construct an
 `EditorDescriptor` (whose stub references `Dict`) and a `DrawOp::Line`
 (whose `from` field renders as a functional `TypedDict` instead of a
 class), so a regression in either generator path shows up here. This
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
         DataTableDescriptor,
         DrawOp,
         EditorDescriptor,
+        GridTrack,
         LayoutNode,
         StyledText,
         TreeRowDescriptor,
@@ -105,6 +108,16 @@ def draw_cursor_line(x0: float, y0: float, x1: float, y1: float) -> "DrawOp":
             "color": {"r": 255, "g": 255, "b": 255, "a": 255},
             "stroke_width": 1.0,
         }
+    }
+
+
+def build_grid() -> "LayoutNode":
+    """A 1x2 dashboard grid: two equal-weight columns, one row."""
+    columns: list["GridTrack"] = [{"Weight": 1.0}, {"Weight": 1.0}]
+    rows: list["GridTrack"] = [{"Percent": 1.0}]
+    return {
+        "grid": {"columns": columns, "rows": rows, "cells": [build_tree(), build_table()]},
+        "padding": 1.0,
     }
 
 

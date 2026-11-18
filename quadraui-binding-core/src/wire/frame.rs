@@ -34,7 +34,7 @@ pub enum RenderOutput {
 /// [`RenderFrame`]'s flat shape never does — see `docs/bindings-wire-format.md`'s
 /// own `{"id": "c", "button": {...}}` example), or an [`unknown_node_kind_key`]
 /// (a dict attempting some node kind this decoder doesn't recognize at
-/// all, e.g. `{"grid": {...}}`), is parsed as a layout tree; any other
+/// all, e.g. `{"carousel": {...}}`), is parsed as a layout tree; any other
 /// `dict` is parsed as the flat per-slot shape, so a render callback
 /// written against the flat shape keeps working unchanged. Without the
 /// `"id"` check, a render callback returning a bare top-level leaf would
@@ -69,7 +69,7 @@ pub(super) fn all_node_kind_keys() -> Vec<&'static str> {
 /// `value`'s first key that is neither `"id"`, a [`UNIVERSAL_NODE_SIBLING_KEYS`]
 /// sibling, nor one of [`all_node_kind_keys`] -- the dict's own attempt at
 /// naming a node kind this decoder doesn't recognize at all (e.g.
-/// `"grid"`). `None` when `value` isn't an object, when it carries a
+/// `"carousel"`). `None` when `value` isn't an object, when it carries a
 /// recognized kind key already (that kind's own descriptor failing is a
 /// separate, later error, not this one), or when every key present is
 /// universal and no kind was attempted at all (a dict missing its
