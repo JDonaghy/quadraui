@@ -1303,6 +1303,27 @@ mod tests {
         }
     }
 
+    /// `TreeTable`'s `A11yPrimitive` impl is pure delegation to the
+    /// wrapped `DataTable` — every method must answer exactly what
+    /// calling it on `self.table` directly would.
+    #[test]
+    fn a11y_primitive_delegates_to_the_wrapped_data_table() {
+        use crate::a11y::A11yPrimitive;
+
+        let mut dt = table(3);
+        dt.selected_idx = Some(1);
+        let tree: Vec<TreeTableNode> = (0..3).map(|i| node(&[i as u16], 0, None)).collect();
+        let tt = TreeTable {
+            table: dt.clone(),
+            tree,
+        };
+
+        assert_eq!(tt.a11y_info(), dt.a11y_info());
+        assert_eq!(tt.a11y_children(), dt.a11y_children());
+        assert_eq!(tt.a11y_focus_key(), dt.a11y_focus_key());
+        assert_eq!(tt.a11y_focus_key(), Some("row.1".to_string()));
+    }
+
     /// A `TreeTable` with every row at indent 0 and all leaves lays out
     /// identically to the equivalent `DataTable`, modulo column 0's
     /// content offset — here, with a `measure_chevron` that always
