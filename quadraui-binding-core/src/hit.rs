@@ -826,6 +826,21 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                             _ => return Some((*id, HitDetail::ExtraBody)),
                         }
                     }
+                } else if let Some(scripted) = extra.as_scripted() {
+                    // Mirrors the `Canvas` arm above exactly -- a
+                    // script-defined widget's own declared regions
+                    // (`ScriptWidget::paint`'s returned `ScriptedPaint::regions`)
+                    // resolve through the identical `CanvasHit` vocabulary,
+                    // via `crate::scripted::ScriptedExtra::scripted_hit_test`
+                    // rather than a `Canvas` this crate can downcast to.
+                    match scripted.scripted_hit_test(point) {
+                        CanvasHit::Region { id: region } => {
+                            return Some((*id, HitDetail::CanvasRegion { region }));
+                        }
+                        CanvasHit::Inside => return Some((*id, HitDetail::ExtraBody)),
+                        CanvasHit::Outside => {}
+                        _ => {}
+                    }
                 } else if extra.hit_test(*area, point) {
                     return Some((*id, HitDetail::ExtraBody));
                 }
@@ -1348,5 +1363,105 @@ mod tests {
             panic!("still an Extra hit");
         };
         assert!(chrome_hits.is_empty());
+    }
+
+    /// A `ScriptWidget` built directly in Rust test code (mirroring
+    /// `crate::scripted`'s own `Swatch` test widget): one region covering
+    /// its right half — the minimum needed to prove `hit_test_painted`'s
+    /// `Extra` arm resolves a `crate::scripted::ScriptedExtra`-exposing
+    /// extra's declared region exactly the way it already does for a
+    /// hand-written `quadraui::Canvas`.
+    struct HalfRegionWidget;
+
+    impl crate::scripted::ScriptWidget for HalfRegionWidget {
+        fn measure(
+            &self,
+            _ctx: &quadraui::primitive::LayoutCtx,
+            constraints: crate::scripted::ScriptedConstraints,
+        ) -> crate::scripted::ScriptedSize {
+            crate::scripted::ScriptedSize {
+                width: constraints.max_width.unwrap_or(10.0),
+                height: constraints.max_height.unwrap_or(4.0),
+            }
+        }
+
+        fn paint(
+            &self,
+            _ctx: &quadraui::primitive::LayoutCtx,
+            _props: &crate::scripted::ScriptedProps,
+            rect: Rect,
+        ) -> crate::scripted::ScriptedPaint {
+            crate::scripted::ScriptedPaint {
+                ops: Vec::new(),
+                regions: vec![quadraui::CanvasRegion {
+                    id: WidgetId::new("widget:region"),
+                    rect: Rect::new(rect.width / 2.0, 0.0, rect.width / 2.0, rect.height),
+                    cursor: None,
+                }],
+            }
+        }
+
+        fn on_event(
+            &self,
+            _event: &crate::scripted::ScriptedInputEvent,
+            _props: &crate::scripted::ScriptedProps,
+            _state: &crate::scripted::ScriptedState,
+        ) -> bool {
+            false
+        }
+    }
+
+    /// A point inside a script-defined widget's declared region resolves
+    /// to [`HitDetail::CanvasRegion`] (the same detail a hand-written
+    /// `Canvas` leaf's own region already resolves to); a point inside
+    /// the widget's body but outside every declared region resolves to
+    /// the coarser [`HitDetail::ExtraBody`] instead — mirroring
+    /// [`quadraui::CanvasHit::Inside`]'s own fallback.
+    #[test]
+    fn hit_test_painted_resolves_a_scripted_widgets_declared_region() {
+        use quadraui::primitive::{LayoutCtx, Primitive};
+
+        let area = Rect::new(0.0, 0.0, 10.0, 4.0);
+        let primitive = crate::scripted::ScriptedPrimitive::new(
+            WidgetId::new("widget"),
+            HalfRegionWidget,
+            true,
+        );
+        // Populates the paint cache `ScriptedExtra::scripted_hit_test`
+        // reads from — a fresh `ScriptedPrimitive` reports `Outside`
+        // everywhere until its first paint, same as a `Canvas` with no
+        // `CanvasLayout` resolved yet. Paints straight through
+        // `Primitive::paint_cells`, the same seam `crate::scripted`'s own
+        // tests use, rather than standing up a whole `Backend`.
+        let ctx = LayoutCtx {
+            line_height: 1.0,
+            char_width: 1.0,
+            nerd_fonts_enabled: false,
+        };
+        let layout = Primitive::layout(&primitive, &ctx, area);
+        let cell_area = ratatui::layout::Rect::new(0, 0, 10, 4);
+        let mut buf = ratatui::buffer::Buffer::empty(cell_area);
+        primitive.paint_cells(&layout, &mut buf, &quadraui::Theme::default());
+
+        let hits = vec![PaintedHit::Extra {
+            id: WidgetId::new("widget"),
+            area,
+            extra: Rc::new(primitive) as Rc<dyn ExtraPaint>,
+            chrome_hits: Vec::new(),
+        }];
+
+        assert_eq!(
+            hit_test_painted(&hits, Point { x: 8.0, y: 2.0 }),
+            Some((
+                WidgetId::new("widget"),
+                HitDetail::CanvasRegion {
+                    region: WidgetId::new("widget:region")
+                }
+            ))
+        );
+        assert_eq!(
+            hit_test_painted(&hits, Point { x: 1.0, y: 2.0 }),
+            Some((WidgetId::new("widget"), HitDetail::ExtraBody))
+        );
     }
 }

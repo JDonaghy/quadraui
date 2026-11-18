@@ -47,7 +47,8 @@ use crate::host::{
 use crate::layout::LayoutNode;
 use crate::render::paint_layout;
 use crate::semantic::{
-    button_clicked_event, focus_scoped_key_event, number_input_click_event, semantic_event_for_hit,
+    button_clicked_event, focus_scoped_key_event, number_input_click_event, scripted_key_press,
+    scripted_region_click, semantic_event_for_hit,
 };
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
@@ -2733,6 +2734,17 @@ impl InteractionEngine {
         // through this function the event takes.
         let mut tooltip_dismissed = false;
 
+        // Set when a resolved `HitDetail::CanvasRegion` click or a focused
+        // key press reaches a script-defined widget's own `on_event` (via
+        // `scripted_region_click`/`scripted_key_press`) and it reports the
+        // event as consumed — merged into the final `Reaction` below, the
+        // same way `tooltip_dismissed` is, so the widget's own repainted
+        // state shows even when `sink.dispatch` itself leaves `event`
+        // unhandled (nothing in this crate's own dispatch recognizes a
+        // script-defined widget's id, so it never claims the event on the
+        // widget's behalf).
+        let mut scripted_reaction = Reaction::Continue;
+
         // A `MouseUp` always ends an armed divider/scrollbar drag, even
         // when the menu-bar/context-menu routing just below reports the
         // same event `Consumed` (e.g. a dropdown-item click, or the
@@ -3348,6 +3360,18 @@ impl InteractionEngine {
                 } else {
                     false
                 };
+                // Generic counterpart of the per-kind arms
+                // `focus_scoped_key_event` below has for `Switch`/
+                // `TextInput`/... — forwards straight to the focused
+                // leaf's own `ScriptedExtra::scripted_key_pressed` when it
+                // has one, since that function's `UiEvent`-only return has
+                // no room for the `bool` a script's own `on_event` answers
+                // with. A no-op (`false`) for every other focused leaf.
+                // Computed before `event` is reassigned below, since `key`
+                // still borrows it here.
+                if scripted_key_press(&self.hit_map.borrow(), focused, key) {
+                    scripted_reaction = Reaction::Redraw;
+                }
                 event = focus_scoped_key_event(
                     focused,
                     key,
@@ -3819,6 +3843,28 @@ impl InteractionEngine {
                     &self.hit_map.borrow(),
                     event_position(&event).unwrap_or_default(),
                 ) {
+                    // Generic counterpart of the `ButtonBody`/`SplitDivider`/...
+                    // arms above: a `CanvasRegion` hit also reaches the
+                    // matched leaf's own `ScriptedExtra::scripted_click_region`,
+                    // when it has one, since `semantic_event_for_hit`'s own
+                    // `CanvasRegion` arm only builds the `UiEvent::Canvas`
+                    // an app's own handler sees -- a plain `Canvas`
+                    // descriptor has no `on_event` of its own for anything
+                    // to call, so this is a no-op (`false`) for one of
+                    // those, same as for every other hit kind.
+                    if let HitDetail::CanvasRegion { region } = detail {
+                        if scripted_region_click(
+                            &self.hit_map.borrow(),
+                            *id,
+                            *region,
+                            button,
+                            modifiers,
+                            double_click,
+                            event_position(&event).unwrap_or_default(),
+                        ) {
+                            scripted_reaction = Reaction::Redraw;
+                        }
+                    }
                     event = semantic;
                     attach_hit = false;
                 }
@@ -3896,6 +3942,7 @@ impl InteractionEngine {
             .merge(button_clicked_reaction)
             .merge(event_reaction)
             .merge(persisted_state)
+            .merge(scripted_reaction)
     }
 }
 
@@ -9854,6 +9901,218 @@ mod tests {
             "every keystroke after click-to-focus must land even though has_focus is \
              never echoed back: {:?}",
             driver.app().sink.borrow().dispatched
+        );
+    }
+
+    // ─── Scripted-widget generic region-click/focused-key forwarding ───
+    //
+    // Exercises the seam `crate::scripted::ScriptedExtra` adds: a
+    // `ScriptWidget` built directly in Rust test code (mirroring
+    // `crate::scripted`'s own `Swatch` test widget — no real binding
+    // callback object anywhere in scope), spliced into a decoded leaf and
+    // driven through a real `InteractionEngine::handle`, proving a
+    // resolved region click and a focused key press both reach the
+    // script's own `on_event` generically, with no `W`-specific code in
+    // `hit.rs`/`semantic.rs`/`engine.rs`.
+
+    /// Records every call [`ScriptWidget::on_event`] receives into `log`,
+    /// so a test can assert exactly what reached it. One region (its own
+    /// right half, same shape `crate::scripted`'s own `Swatch` test
+    /// widget uses) — everything else is the minimum `ScriptWidget` needs
+    /// to paint/measure at all.
+    struct RecordingScriptWidget {
+        log: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl crate::scripted::ScriptWidget for RecordingScriptWidget {
+        fn measure(
+            &self,
+            _ctx: &quadraui::primitive::LayoutCtx,
+            constraints: crate::scripted::ScriptedConstraints,
+        ) -> crate::scripted::ScriptedSize {
+            crate::scripted::ScriptedSize {
+                width: constraints.max_width.unwrap_or(10.0),
+                height: constraints.max_height.unwrap_or(4.0),
+            }
+        }
+
+        fn paint(
+            &self,
+            _ctx: &quadraui::primitive::LayoutCtx,
+            _props: &crate::scripted::ScriptedProps,
+            rect: Rect,
+        ) -> crate::scripted::ScriptedPaint {
+            crate::scripted::ScriptedPaint {
+                ops: Vec::new(),
+                regions: vec![quadraui::CanvasRegion {
+                    id: WidgetId::new("widget:region"),
+                    rect: Rect::new(rect.width / 2.0, 0.0, rect.width / 2.0, rect.height),
+                    cursor: None,
+                }],
+            }
+        }
+
+        fn on_event(
+            &self,
+            event: &crate::scripted::ScriptedInputEvent,
+            _props: &crate::scripted::ScriptedProps,
+            _state: &crate::scripted::ScriptedState,
+        ) -> bool {
+            match event {
+                crate::scripted::ScriptedInputEvent::Canvas(
+                    quadraui::CanvasEvent::RegionClicked { .. },
+                ) => {
+                    self.log.borrow_mut().push("clicked");
+                    true
+                }
+                crate::scripted::ScriptedInputEvent::Key(_) => {
+                    self.log.borrow_mut().push("key");
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
+    /// An [`AppLogic`] hosting exactly one `"widget"` leaf wrapping a
+    /// [`crate::scripted::ScriptedPrimitive<RecordingScriptWidget>`] —
+    /// built directly (never through `crate::scripted::register_scripted_widget`'s
+    /// own wire-decode seam), the same way a binding's own render pass
+    /// would splice one in after a `"scripted_widget"` leaf decode.
+    struct ScriptedWidgetLogic {
+        primitive: Rc<crate::scripted::ScriptedPrimitive<RecordingScriptWidget>>,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ScriptedWidgetLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Leaf(LayoutLeaf {
+                id: "widget".to_string(),
+                descriptor: LeafDescriptor::Extra(
+                    self.primitive.clone() as Rc<dyn crate::extra_paint::ExtraPaint>
+                ),
+                scroll_px: None,
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// A `MouseDown` landing on the scripted widget's declared region
+    /// resolves (through `hit.rs`'s now-generic `CanvasHit::Region`
+    /// handling) to `HitDetail::CanvasRegion`, and
+    /// `crate::semantic::scripted_region_click`'s forwarding (called from
+    /// `InteractionEngine::handle` itself) reaches the widget's own
+    /// `on_event` — proving the whole `hit.rs` → `semantic.rs` →
+    /// `engine.rs` chain, not just one link of it in isolation. A focused
+    /// `KeyPressed` afterward proves the same for
+    /// `crate::semantic::scripted_key_press`.
+    #[test]
+    fn scripted_widget_region_click_and_focused_key_both_forward_to_its_own_on_event() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let primitive = Rc::new(crate::scripted::ScriptedPrimitive::new(
+            WidgetId::new("widget"),
+            RecordingScriptWidget { log: log.clone() },
+            true,
+        ));
+        let logic = ScriptedWidgetLogic {
+            primitive,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 10, 4);
+        driver.render();
+
+        // `RecordingScriptWidget::paint`'s region covers the right half
+        // of a 10x4 TUI viewport: x in [5, 10), y in [0, 4).
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            position: Point::new(8.0, 2.0),
+        });
+        assert_eq!(
+            log.borrow().as_slice(),
+            ["clicked"],
+            "a region click must reach the script's own on_event exactly once"
+        );
+
+        // The `MouseDown` above already click-to-focused the widget
+        // (`InteractionEngine::handle`'s own `is_focusable` check, since
+        // `ScriptedPrimitive::tab_stop` reports the `focusable: true` it
+        // was built with) — so this `KeyPressed` reaches it with no
+        // further focus bookkeeping needed.
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert_eq!(
+                backend.focus_manager().focused().copied(),
+                Some(WidgetId::new("widget")),
+                "the click above must have already focused the widget"
+            );
+        }
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        assert_eq!(
+            log.borrow().as_slice(),
+            ["clicked", "key"],
+            "a key press while focused must also reach the script's own on_event"
+        );
+    }
+
+    /// A `MouseDown` landing OUTSIDE the scripted widget's declared
+    /// region (but still inside its own body) resolves to
+    /// `HitDetail::ExtraBody`, never `CanvasRegion` — so
+    /// `scripted_region_click` is never called at all, and the script's
+    /// `on_event` sees nothing, mirroring a real `Canvas` leaf's own
+    /// "outside every declared region" posture.
+    #[test]
+    fn a_click_outside_every_declared_region_never_reaches_on_event() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let primitive = Rc::new(crate::scripted::ScriptedPrimitive::new(
+            WidgetId::new("widget"),
+            RecordingScriptWidget { log: log.clone() },
+            true,
+        ));
+        let logic = ScriptedWidgetLogic {
+            primitive,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 10, 4);
+        driver.render();
+
+        // The left half (x in [0, 5)) is inside the widget's own body but
+        // outside its one declared region.
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            position: Point::new(1.0, 2.0),
+        });
+        assert!(
+            log.borrow().is_empty(),
+            "a click outside every declared region must never reach on_event: {:?}",
+            log.borrow()
         );
     }
 

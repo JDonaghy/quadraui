@@ -40,16 +40,39 @@
 //! [`crate::render::RenderFrame::extra`] already paints/hit-tests through
 //! generically — [`crate::extra_paint`]'s own module doc: "no enum
 //! variant, no central match arm". That covers paint and whole-area click
-//! routing for free; nothing in `render.rs`/`engine.rs` needs to change.
-//! Resolving a click to a *specific* [`quadraui::CanvasRegion`] (rather
-//! than "hit this widget at all") goes through
-//! [`ScriptedPrimitive::hit_test`]/[`ScriptedPrimitive::click_region`]
-//! directly — the same scope a real `Canvas` leaf's
-//! own `HitDetail::CanvasRegion` plumbing needed its own dedicated
-//! `hit.rs`/`semantic.rs` change for, left to a follow-up issue rather than
-//! bundled into this one.
+//! routing for free; nothing in `render.rs` needs to change. Resolving a
+//! click to a *specific* [`quadraui::CanvasRegion`] (rather than "hit this
+//! widget at all") goes through [`ScriptedPrimitive::hit_test`]/
+//! [`ScriptedPrimitive::click_region`] directly, reached generically (no
+//! `W: ScriptWidget` type parameter in `hit.rs`/`semantic.rs`/`engine.rs`
+//! itself) through the object-safe [`ScriptedExtra`] facet below —
+//! [`crate::extra_paint::ExtraPaint::as_scripted`] is this type's one
+//! `None`-by-default extension point, the same shape
+//! [`crate::extra_paint::ExtraPaint::hit_test`]/`tab_stop` already use for
+//! "most extras don't need this".
+//!
+//! # Splicing into a decoded tree without a `Deserialize` impl
+//!
+//! A real [`ScriptWidget`] wraps a live host-language callback object —
+//! there is no sensible `Deserialize` for that, so a `"scripted_widget"`
+//! layout-tree leaf can't decode one from scratch the way every other
+//! [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] leaf does.
+//! [`register_scripted_widget`] is the side channel instead: a binding
+//! builds its [`ScriptedPrimitive<W>`] once (wrapping its own live
+//! callback object), registers it against the leaf id its decoded tree
+//! will name, then calls [`crate::wire::decode_render_output_with_styles`]/
+//! [`crate::wire::decode_layout_node_with_styles`] as usual.
+//! `crate::wire::leaf::layout_leaf_from_value`'s own `"scripted_widget"`
+//! arm looks the registration back up by the leaf's id, applies that
+//! frame's `"props"` onto it, and splices the SAME `Rc` into the decoded
+//! tree — never a fresh instance, so a binding's own `extra_as::<ScriptedPrimitive<W>>`
+//! downcast (for whatever it still needs direct access to beyond the
+//! generic [`ScriptedExtra`] facet) recovers the exact object it
+//! registered.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use quadraui::primitive::{LayoutCtx, Primitive};
@@ -61,6 +84,129 @@ use quadraui::{
 };
 
 use crate::extra_paint::ExtraPaint;
+
+// ─── The scripted-widget registry ──────────────────────────────────────────
+//
+// A side channel from a binding's own callback-object wrapping (see module
+// doc, "Splicing into a decoded tree without a `Deserialize` impl") to
+// `crate::wire::leaf::layout_leaf_from_value`'s `"scripted_widget"` decode
+// arm. `thread_local!`, not a `static`-plus-`Mutex` the way
+// `crate::services`'s own id-keyed registries are: a `Rc<dyn ExtraPaint>`
+// is neither `Send` nor `Sync` (every `ScriptedPrimitive<W>` holds its
+// callback object and caches behind plain `RefCell`s, never a `Mutex`), and
+// a binding's render pass — the only code that ever registers or looks one
+// of these up — runs on a single OS thread in every binding today (the
+// GTK/TUI event loop's own thread; a Python render callback runs under the
+// GIL, which already serializes it onto whichever thread called in).
+thread_local! {
+    static SCRIPTED_WIDGETS: RefCell<HashMap<String, Rc<dyn ExtraPaint>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Registers (replacing any previous registration under the same `id`)
+/// `extra` — typically a freshly built `Rc<ScriptedPrimitive<W>>` coerced
+/// to `Rc<dyn ExtraPaint>` — against `id`, for
+/// `crate::wire::leaf::layout_leaf_from_value` to splice into a
+/// `"scripted_widget"` leaf naming that same `id` the next time (and every
+/// subsequent time, until [`unregister_scripted_widget`] or another
+/// [`register_scripted_widget`] call replaces it) a tree containing one is
+/// decoded. Call this on the same thread the decode itself runs on — see
+/// this module's "The scripted-widget registry" doc above.
+pub fn register_scripted_widget(id: impl Into<String>, extra: Rc<dyn ExtraPaint>) {
+    SCRIPTED_WIDGETS.with(|registry| {
+        registry.borrow_mut().insert(id.into(), extra);
+    });
+}
+
+/// Drops `id`'s registration, if any — a binding calls this once the
+/// script-authored widget it wraps is torn down, so a later
+/// `"scripted_widget"` leaf that (incorrectly) still names `id` fails
+/// decode with a clear "not registered" [`crate::DecodeError`] instead of
+/// resurrecting a stale, logically-dead widget.
+pub fn unregister_scripted_widget(id: &str) {
+    SCRIPTED_WIDGETS.with(|registry| {
+        registry.borrow_mut().remove(id);
+    });
+}
+
+/// Looks up `id`'s registration without consuming it — called once per
+/// decode of a `"scripted_widget"` leaf naming `id`,
+/// by `crate::wire::leaf::layout_leaf_from_value`.
+pub(crate) fn lookup_scripted_widget(id: &str) -> Option<Rc<dyn ExtraPaint>> {
+    SCRIPTED_WIDGETS.with(|registry| registry.borrow().get(id).cloned())
+}
+
+/// The wire shape a `"scripted_widget"` layout-tree leaf's own descriptor
+/// dict carries: just this frame's `"props"`, defaulting to `Value::Null`
+/// when absent (so a bare `{}` descriptor, for a widget with no props of
+/// its own, decodes cleanly) — no `measure`/`paint`/`on_event`/`a11y`
+/// shape of its own, since those live on the [`ScriptWidget`] object a
+/// binding already registered against this leaf's id via
+/// [`register_scripted_widget`] before the tree containing it was decoded
+/// (see this module's own doc, "Splicing into a decoded tree without a
+/// `Deserialize` impl").
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ScriptedWidgetDescriptor {
+    #[serde(default)]
+    pub props: ScriptedProps,
+}
+
+/// Object-safe facet of a [`ScriptedPrimitive<W>`] the generic engine calls
+/// without ever naming `W` — [`crate::extra_paint::ExtraPaint::as_scripted`]
+/// is the one `None`-by-default extension point every other
+/// [`crate::extra_paint::ExtraPaint`] impl leaves alone, the same shape
+/// that trait's `hit_test`/`tab_stop` already use for "most extras don't
+/// need this". `hit.rs`'s region resolution and `semantic.rs`'s
+/// `scripted_region_click`/`scripted_key_press` are the two call sites —
+/// see each of their own docs.
+pub trait ScriptedExtra {
+    /// Replaces this frame's script-side props — the `"scripted_widget"`
+    /// leaf decode's own counterpart of [`ScriptedPrimitive::set_props`],
+    /// called through this facet since the decode site has no `W` in
+    /// scope to call the inherent method directly.
+    fn set_scripted_props(&self, props: ScriptedProps);
+
+    /// Same contract as [`ScriptedPrimitive::hit_test`].
+    fn scripted_hit_test(&self, point: Point) -> CanvasHit;
+
+    /// Same contract as [`ScriptedPrimitive::click_region`].
+    fn scripted_click_region(
+        &self,
+        region: WidgetId,
+        button: MouseButton,
+        modifiers: Modifiers,
+        local: Point,
+        double: bool,
+    ) -> bool;
+
+    /// Same contract as [`ScriptedPrimitive::key_pressed`].
+    fn scripted_key_pressed(&self, key: Key) -> bool;
+}
+
+impl<W: ScriptWidget + 'static> ScriptedExtra for ScriptedPrimitive<W> {
+    fn set_scripted_props(&self, props: ScriptedProps) {
+        self.set_props(props);
+    }
+
+    fn scripted_hit_test(&self, point: Point) -> CanvasHit {
+        self.hit_test(point)
+    }
+
+    fn scripted_click_region(
+        &self,
+        region: WidgetId,
+        button: MouseButton,
+        modifiers: Modifiers,
+        local: Point,
+        double: bool,
+    ) -> bool {
+        self.click_region(region, button, modifiers, local, double)
+    }
+
+    fn scripted_key_pressed(&self, key: Key) -> bool {
+        self.key_pressed(key)
+    }
+}
 
 /// Script-side widget-definition data, round-tripped unchanged through
 /// every [`ScriptWidget`] callback that takes it. `serde_json::Value`
@@ -258,6 +404,14 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
     /// call does that, and only on a cache miss (module doc, "Caching").
     pub fn set_props(&self, props: ScriptedProps) {
         *self.props.borrow_mut() = props;
+    }
+
+    /// The props last set via [`Self::set_props`] (`Value::Null` until the
+    /// first call) — read back by a host that needs to confirm what a
+    /// wire decode applied, e.g. `crate::wire::leaf::layout_leaf_from_value`'s
+    /// own `"scripted_widget"` arm (see its `#[cfg(test)]` coverage).
+    pub fn props(&self) -> ScriptedProps {
+        self.props.borrow().clone()
     }
 
     /// Updates the widget state [`ScriptWidget::on_event`] reads back.
@@ -539,6 +693,13 @@ impl<W: ScriptWidget + 'static> ExtraPaint for ScriptedPrimitive<W> {
         };
         let size = self.resolve_natural_size(&ctx);
         NaturalSize::new(Some(size.width), Some(size.height))
+    }
+
+    /// Exposes the [`ScriptedExtra`] facet — see that trait's own doc for
+    /// why `hit.rs`/`semantic.rs` go through this rather than a
+    /// `W`-generic downcast.
+    fn as_scripted(&self) -> Option<&dyn ScriptedExtra> {
+        Some(self)
     }
 }
 

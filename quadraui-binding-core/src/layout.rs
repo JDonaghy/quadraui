@@ -1080,22 +1080,33 @@ pub enum LeafDescriptor {
     DataTable(DataTable),
     TabBar(TabBar),
     /// Any additive primitive kind registered in a binding's own
-    /// `EXTRA_PRIMITIVES` decode table. Unlike the six variants above, a
-    /// new additive kind never adds a new `LeafDescriptor` variant — it
-    /// routes through this one.
+    /// `EXTRA_PRIMITIVES` decode table, or a `"scripted_widget"` leaf
+    /// spliced in from `crate::scripted::register_scripted_widget`'s own
+    /// registry (see that function's doc). Unlike the six variants above,
+    /// neither ever adds a new `LeafDescriptor` variant — both route
+    /// through this one.
     Extra(Rc<dyn ExtraPaint>),
 }
 
-/// The descriptor keys a layout tree leaf dict may carry, one per
-/// [`LeafDescriptor`] variant — the same names [`crate::render::RenderFrame`]'s
-/// own flat-slot `Deserialize` impl uses for its slots.
-pub const LEAF_KIND_KEYS: [&str; 6] = [
+/// The descriptor keys a layout tree leaf dict may carry — the six names
+/// [`crate::render::RenderFrame`]'s own flat-slot `Deserialize` impl uses
+/// for its slots, each mapping to its own [`LeafDescriptor`] variant, plus
+/// `"scripted_widget"` (see [`LeafDescriptor::Extra`]'s own doc), which
+/// maps to [`LeafDescriptor::Extra`] like every
+/// [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] kind does — unlike those,
+/// though, `"scripted_widget"` can't be decoded through that same
+/// `extra_primitives!` table (no `Deserialize` impl exists, or ever will,
+/// for a live script callback object), so it is listed here instead,
+/// handled by its own arm in `crate::wire::leaf::layout_leaf_from_value`'s
+/// per-key loop.
+pub const LEAF_KIND_KEYS: [&str; 7] = [
     "button",
     "text_display",
     "list",
     "tree",
     "data_table",
     "tab_bar",
+    "scripted_widget",
 ];
 
 /// Builds the [`DecodeError::Borrow`] [`validate_unique_leaf_ids`]'s walk

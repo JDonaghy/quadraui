@@ -32,6 +32,15 @@
 //! ([`frame`]), and `run_shell`'s own config dict ([`shell`]). Every path
 //! reachable today as `quadraui_binding_core::wire::X` still resolves,
 //! through this module's own re-exports below.
+//!
+//! [`leaf`]'s dispatch includes one kind with no `Deserialize` shape of
+//! its own: a `"scripted_widget"` leaf carries only an id and this frame's
+//! JSON props, and is spliced in from whatever live
+//! [`crate::scripted::ScriptedPrimitive<W>`] a binding already registered
+//! against that id via [`crate::scripted::register_scripted_widget`] —
+//! see that function's own doc, and `crate::scripted`'s module doc
+//! ("Splicing into a decoded tree without a `Deserialize` impl"), for the
+//! full contract.
 
 use serde::Deserializer;
 

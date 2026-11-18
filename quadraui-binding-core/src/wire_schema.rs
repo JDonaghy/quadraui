@@ -1391,6 +1391,17 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("focused", bool_()),
         ],
     ));
+    // `"scripted_widget"` carries no `measure`/`paint`/`on_event` shape of
+    // its own -- the live widget behind it is a registered
+    // `crate::scripted::ScriptedPrimitive<W>`, not anything this schema's
+    // `Deserialize`-backed vocabulary can type beyond "some JSON value a
+    // binding's own script runtime interprets". See
+    // `crate::scripted`'s module doc.
+    let scripted_widget_descriptor = b.define(obj_doc(
+        "ScriptedWidgetDescriptor",
+        vec![field_opt("props", any_())],
+        "A script-defined widget's per-frame props, interpreted entirely by whatever `ScriptWidget` a binding registered against this leaf's own id -- see `quadraui_binding_core::scripted`'s own doc.",
+    ));
     let password_descriptor = b.define(obj_doc(
         "PasswordDescriptor",
         vec![
@@ -2600,9 +2611,23 @@ pub fn schema() -> Vec<DefJson> {
             "tree" => tree_view_descriptor.clone(),
             "data_table" => data_table_descriptor.clone(),
             "tab_bar" => tab_bar_descriptor.clone(),
+            "scripted_widget" => scripted_widget_descriptor.clone(),
             other => unreachable!("LEAF_KIND_KEYS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(key, ty.clone()));
+        // `"scripted_widget"` is a `LayoutLeafNode`-only kind -- the flat
+        // `RenderFrameDict` shape has no per-id addressing a registered
+        // `ScriptedPrimitive<W>` could use (same reasoning
+        // `crate::wire::leaf`'s own module doc gives for why that decode
+        // path is tree-only), and `render_frame_from_value`'s own
+        // `known_keys` list (`crate::wire::frame`) never names it, so a
+        // flat frame carrying this key is reported as unrecognised rather
+        // than decoded. Skipped here too, so the generated
+        // `RenderFrameDict` schema doesn't advertise a field that never
+        // actually populates.
+        if key == "scripted_widget" {
+            continue;
+        }
         render_frame_fields.push(field_opt(key, nullable(ty)));
     }
     leaf_fields.push(field_opt("status_bar", status_bar_descriptor.clone()));
