@@ -217,11 +217,17 @@ pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 pub use status_bar::draw_status_bar;
 #[doc(hidden)]
 pub use switch::{draw_switch, tui_switch_layout};
+// The cell-measure constants live with the primitive, next to the shared
+// cell-grid painter that reads them; `tui::` re-exports them under the
+// names apps already build their `TabMeasure`s against.
+#[doc(hidden)]
+pub use crate::primitives::tab_bar::{
+    TAB_CLOSE_CHAR, TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
+};
 #[doc(hidden)]
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome,
-    draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome, TAB_CLOSE_CHAR,
-    TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
+    draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome,
 };
 #[doc(hidden)]
 pub use terminal::{draw_terminal, draw_terminal_divider};
@@ -261,7 +267,14 @@ pub fn ratatui_color(c: Color) -> RatatuiColor {
 /// Set a single buffer cell, clearing modifier and underline_color so the
 /// rasterisers don't leave stale style bits from prior frames. Mirrors
 /// `vimcode::tui_main::set_cell`.
-fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: RatatuiColor) {
+pub(crate) fn set_cell(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    ch: char,
+    fg: RatatuiColor,
+    bg: RatatuiColor,
+) {
     let area = buf.area;
     if x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height {
         // ratatui ≥ 0.30 debug_asserts when a single-byte ASCII control character is
@@ -278,7 +291,14 @@ fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: Ra
 /// resetting the trailing cell so ratatui's diff algorithm doesn't emit a
 /// stray character on top of the wide glyph's second column. Mirrors
 /// `vimcode::tui_main::set_cell_wide`.
-fn set_cell_wide(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: RatatuiColor) {
+pub(crate) fn set_cell_wide(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    ch: char,
+    fg: RatatuiColor,
+    bg: RatatuiColor,
+) {
     let area = buf.area;
     if x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height {
         let mut s = String::with_capacity(4);
@@ -353,9 +373,9 @@ fn draw_styled_text(
 }
 
 /// Set a buffer cell with explicit modifier + optional underline colour.
-/// Used by [`tab_bar::draw_tab_bar`] for the active-tab accent underline.
+/// Used by `primitives::tab_bar`'s `cell_paint` for the accent underline.
 #[allow(clippy::too_many_arguments)]
-fn set_cell_styled(
+pub(crate) fn set_cell_styled(
     buf: &mut Buffer,
     x: u16,
     y: u16,
@@ -377,12 +397,12 @@ fn set_cell_styled(
 
 /// [`set_cell_wide`] + [`set_cell_styled`] combined: a 2-cell-wide
 /// character carrying an explicit modifier + optional underline colour.
-/// Used by [`tab_bar::draw_tab_bar`] so a double-width glyph in the
+/// Used by the same painter so a double-width glyph in the
 /// filename portion of an active tab's label still gets the accent
 /// underline / preview-italic modifier that [`set_cell_styled`] applies
 /// to narrow glyphs.
 #[allow(clippy::too_many_arguments)]
-fn set_cell_wide_styled(
+pub(crate) fn set_cell_wide_styled(
     buf: &mut Buffer,
     x: u16,
     y: u16,

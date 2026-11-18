@@ -7823,7 +7823,7 @@ mod tests {
             "overridden tab close glyph should reach the screen, got: {tab_screen}"
         );
         assert!(
-            !tab_screen.contains(crate::tui::tab_bar::TAB_CLOSE_CHAR),
+            !tab_screen.contains(crate::tui::TAB_CLOSE_CHAR),
             "default tab close glyph should not leak through the override, got: {tab_screen}"
         );
 

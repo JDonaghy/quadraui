@@ -14,6 +14,17 @@
 //! The primitive defines declarative state + events; backends resolve clicks
 //! through [`crate::backend::tab_bar_hits_from_layout`].
 //!
+//! # Two painters, one primitive
+//!
+//! This module holds both of the primitive's rasterisers: the pixel one
+//! ([`native_surface_paint::paint`], written against
+//! [`crate::paint_surface::PaintSurface`]) and the cell-grid one
+//! (`cell_paint::paint`, which `crate::tui` re-exports as its
+//! `draw_tab_bar*` entry points). Neither resolves geometry — both paint
+//! an already-resolved [`TabBarLayout`] verbatim — and keeping them
+//! adjacent is what makes a divergence between terminal and pixel tab bars
+//! a single-file diff.
+//!
 //! # `PaintSurface` migration status — painter lands, backends pending
 //!
 //! This module now has a shared [`native_surface_paint::paint`], the same
@@ -515,6 +526,43 @@ impl TabBar {
 // pixels for GTK / Win-GUI / macOS). The primitive is unit-agnostic: the
 // caller supplies measurements and the same unit comes back in the
 // returned `Rect`s.
+
+/// Close-button glyph the cell-grid rasteriser (`cell_paint::paint`,
+/// re-exported as `crate::tui::TAB_CLOSE_CHAR`) paints on each tab.
+/// `×` (U+00D7 MULTIPLICATION SIGN) — narrower than
+/// `✕` and present in every monospaced terminal font we've encountered.
+pub const TAB_CLOSE_CHAR: char = '×';
+
+/// Cell width reserved per tab for the close-button + trailing
+/// separator. Apps that build a [`TabMeasure`] for cell-grid tab-bar
+/// layout pass this as the `close_width` so the layout reserves the
+/// right amount of trailing space.
+pub const TAB_CLOSE_COLS: u16 = 2;
+
+/// Separator glyph painted between adjacent tab labels that have no
+/// close button to provide their own visual boundary (`show_tab_close:
+/// false`, or a non-closable tab). Light vertical box-drawing rule —
+/// renders in every monospaced terminal font and reads as a distinct
+/// item boundary rather than running labels together.
+pub const TAB_SEPARATOR_CHAR: char = '│';
+
+/// Cell width reserved after a tab with no close button, for
+/// [`TAB_SEPARATOR_CHAR`]. Apps that build a [`TabMeasure`] for a tab
+/// with `close_width: 0.0` should add this to the tab's measured width so
+/// the rasteriser has a cell to paint the separator into — with one
+/// exception: a bracket-framed active tab (see [`TabChrome`]) also
+/// measures `close_width: 0.0`, but its final column is the closing `]`,
+/// not a separator, so it must not add this constant.
+///
+/// The rasteriser paints the separator right after the label (plus any
+/// close glyph), not necessarily at the tab's last column — if the
+/// measurer reserves more trailing width than this constant, the extra
+/// slack lands as blank space between the separator and the next tab.
+/// Every no-close tab gets one, including the last visible tab, so a bar
+/// with no right segments ends on a trailing rule rather than a blank
+/// edge; that's deliberate, matching how a close-button bar always ends
+/// on its last `×`/`●` glyph rather than blank space.
+pub const TAB_SEPARATOR_COLS: u16 = 1;
 
 /// Per-tab measurement supplied by the backend's layout caller.
 ///
@@ -2305,6 +2353,418 @@ pub(crate) mod native_surface_paint {
                 label_run.0,
             );
         }
+    }
+}
+
+// Shared cell-grid paint implementation — the whole-cell counterpart to
+// [`native_surface_paint`], which paints the same primitive onto a pixel
+// canvas through [`crate::paint_surface::PaintSurface`]. Both live in this
+// module so a change to one is reviewed next to the other instead of
+// drifting in a backend directory.
+//
+// Takes `&mut ratatui::buffer::Buffer` directly rather than a
+// quadraui-local cell-surface abstraction, for the reason
+// [`crate::primitive::Primitive::paint_cells`] documents at length: a
+// terminal rasteriser picks individual glyphs (`×`, `│`, `[`, `]`) and
+// reckons in `char_cell_width` columns, neither of which a pixel-shaped
+// `PaintSurface` verb can express, so the cell path gets its own entry
+// point instead of a lying `PaintSurface` impl.
+//
+// `pub` rather than `pub(crate)` because [`paint`] *is*
+// `crate::tui::draw_tab_bar_icons_with_chrome_and_glyphs` — the `tui`
+// module re-exports it under that name rather than wrapping it in a
+// forwarder that would have to be kept in step with this signature.
+// `#[doc(hidden)]` keeps the painter itself off the documented surface,
+// the same way every `crate::tui::draw_*` rasteriser re-export is hidden.
+#[cfg(feature = "tui")]
+#[doc(hidden)]
+pub mod cell_paint {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+
+    #[allow(deprecated)]
+    use super::TabBarHits;
+    use super::{
+        fit_tab_label, tab_icon_at, tab_icon_cols, TabBar, TabBarGlyphs, TabBarLayout, TabChrome,
+        TabFrame, TabIcon, TAB_CLOSE_CHAR, TAB_SEPARATOR_CHAR,
+    };
+    use crate::text_util::char_cell_width;
+    use crate::theme::Theme;
+    use crate::tui::{
+        ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wide_styled,
+    };
+    use crate::types::Icon;
+
+    /// Resolve a [`TabBarGlyphs`] slot (the close or dirty override) to the
+    /// single `char` this rasteriser paints, falling back to `default` when
+    /// the slot is unset. Shared so the close-glyph and dirty-glyph
+    /// branches below don't repeat the same `Option` chain.
+    fn tab_glyph_char(icon: Option<&Icon>, nerd_fonts_enabled: bool, default: char) -> char {
+        icon.map(|icon| icon.resolve(nerd_fonts_enabled))
+            .and_then(|s| s.chars().next())
+            .unwrap_or(default)
+    }
+
+    /// Paint `bar` into `area` on `buf` from the already-resolved `layout`,
+    /// and return its hit geometry.
+    ///
+    /// Per D6 this consumes a pre-computed [`TabBarLayout`] (built by the
+    /// caller via [`TabBar::layout`] with its native cell-width measurer)
+    /// and paints the resolved `visible_tabs` + `visible_segments`
+    /// verbatim — it never recomputes widths. The returned
+    /// `TabBarHits::available_cols` carries the tab-content width in cells
+    /// so the caller can adjust the scroll offset for the next frame.
+    ///
+    /// # Visual contract
+    ///
+    /// - **Bar background:** filled with `theme.tab_bar_bg`.
+    /// - **Active tab:** `tab_active_fg` + `tab_active_bg`. When
+    ///   [`TabBar::active_accent`] is `Some`, the filename portion (chars
+    ///   after the last `": "` in `tab.label`) gets a
+    ///   [`Modifier::UNDERLINED`] with that accent colour.
+    /// - **Dirty tab:** the close cell shows `●` in `theme.foreground`
+    ///   instead of `×`.
+    /// - **Preview tab:** `*_preview_*_fg` and [`Modifier::ITALIC`]; combines
+    ///   with the underline accent when active.
+    /// - **Right segments:** painted in `tab_inactive_fg` (or
+    ///   `seg.is_active`'s `tab_active_fg`). Double-width glyphs (per
+    ///   `unicode-width`) use the wide-cell helpers.
+    /// - **Tab labels:** measured and painted in display columns, not
+    ///   `char`s — a double-width glyph (per `unicode-width`) occupies two
+    ///   columns and advances the cursor by 2, mirroring the right-segment
+    ///   loop. The measure side (`TuiBackend::draw_tab_bar` /
+    ///   `tab_bar_layout` in `crate::tui::backend`) must agree, or a tab is
+    ///   measured narrower than it paints.
+    /// - **Icons:** `icons` is a sidecar slice parallel to `bar.tabs` (see
+    ///   [`crate::Backend::draw_tab_bar_icons`]), resolved through
+    ///   [`tab_icon_at`] / [`tab_icon_cols`] so a short slice means "no
+    ///   icon" rather than a panic. A decorated tab paints its glyph at the
+    ///   tab's leading edge in [`TabIcon::color`] — independent of the tab's
+    ///   active/inactive foreground, so the icon keeps its identity colour
+    ///   on an inactive tab — followed by a 1-column gap before the label.
+    ///   That reservation is [`tab_icon_cols`], exactly what the measure
+    ///   side adds to the tab's measured width, so paint and measurement
+    ///   cannot drift. Passing `&[]` paints no icons at all.
+    /// - **Chrome:** when `chrome.active_frame` is [`TabFrame::Brackets`],
+    ///   the active tab's full content — icon, label, and close glyph — is
+    ///   enclosed in literal `[` / `]` glyphs; the caller's measurer must
+    ///   have already reserved those columns in `layout`. See
+    ///   [`TabChrome::focused_index`] for the keyboard-focus reverse-video
+    ///   treatment.
+    /// - **Glyph overrides:** `glyphs: None` paints the default `×`/`●`
+    ///   marks. `Some` overrides only the marks it sets;
+    ///   `nerd_fonts_enabled` selects which half of each override [`Icon`]
+    ///   — `glyph` or `fallback` — is resolved (see
+    ///   [`crate::Backend::nerd_fonts_enabled`]), and is ignored when
+    ///   `glyphs` does not set the mark being drawn.
+    ///
+    /// Downstream: vimcode's `tab_hit_width` (`src/render.rs`) is
+    /// deliberately pinned on a `.chars().count()` measure because it must
+    /// agree with what this rasteriser paints; its own doc comment names a
+    /// `display_width` measure here as the unblocker for switching. coord-tui
+    /// consumes the same tab bar and should be checked for the equivalent
+    /// assumption.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits`
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint(
+        buf: &mut Buffer,
+        area: Rect,
+        bar: &TabBar,
+        icons: &[Option<TabIcon>],
+        chrome: &TabChrome,
+        layout: &TabBarLayout,
+        theme: &Theme,
+        glyphs: Option<&TabBarGlyphs>,
+        nerd_fonts_enabled: bool,
+    ) -> TabBarHits {
+        if area.width == 0 || area.height == 0 {
+            return TabBarHits::default();
+        }
+
+        let bar_bg = ratatui_color(theme.tab_bar_bg);
+        let btn_fg = ratatui_color(theme.tab_inactive_fg);
+        let btn_fg_active = ratatui_color(theme.tab_active_fg);
+        let foreground = ratatui_color(theme.foreground);
+
+        // Fill bar background.
+        for x in area.x..area.x + area.width {
+            set_cell(buf, x, area.y, ' ', bar_bg, bar_bg);
+        }
+
+        // Hit geometry comes straight from the shared `TabBarLayout` via the
+        // same `tab_bar_hits_from_layout`/`shift_tab_bar_hits` pair the
+        // no-paint `TuiBackend::tab_bar_layout_icons` twin
+        // (`crate::tui::backend`) already uses — this function only
+        // overrides `available_cols` with the tab-content width below and
+        // keeps `correct_scroll_offset` as the caller's input (a cell-grid
+        // char-based fit needs no correction).
+        let mut hits = crate::backend::tab_bar_hits_from_layout(layout, bar);
+        crate::backend::shift_tab_bar_hits(&mut hits, area.x as f64);
+
+        // Tab-content width (engine feedback): bar minus reserved right area.
+        let reserved: u16 = bar.right_segments.iter().map(|s| s.width_cells).sum();
+        let tab_content_width = if area.width >= reserved {
+            (area.width - reserved) as usize
+        } else {
+            area.width as usize
+        };
+
+        // ── Right-aligned segments (from layout) ───────────────────────────
+        for vs in &layout.visible_segments {
+            let seg = &bar.right_segments[vs.segment_idx];
+            let fg = if seg.is_active { btn_fg_active } else { btn_fg };
+            let bx = area.x + vs.bounds.x.round() as u16;
+            let seg_end = bx + seg.width_cells;
+            let mut cx = bx;
+            for ch in seg.text.chars() {
+                if cx >= seg_end {
+                    break;
+                }
+                let w = char_cell_width(ch);
+                if w == 2 {
+                    if cx + 1 < seg_end + 1 {
+                        set_cell_wide(buf, cx, area.y, ch, fg, bar_bg);
+                        cx += 2;
+                    } else {
+                        cx += 1;
+                    }
+                } else {
+                    set_cell(buf, cx, area.y, ch, fg, bar_bg);
+                    cx += 1;
+                }
+            }
+        }
+
+        // ── Tabs (from layout) ─────────────────────────────────────────────
+        let accent = bar.active_accent.map(ratatui_color);
+        let active_fg = ratatui_color(theme.tab_active_fg);
+        let active_bg = ratatui_color(theme.tab_active_bg);
+        let preview_active_fg = ratatui_color(theme.tab_preview_active_fg);
+        let inactive_fg = ratatui_color(theme.tab_inactive_fg);
+        let preview_inactive_fg = ratatui_color(theme.tab_preview_inactive_fg);
+        let separator = ratatui_color(theme.separator);
+
+        for vt in &layout.visible_tabs {
+            let tab = &bar.tabs[vt.tab_idx];
+            let tab_x = area.x + vt.bounds.x.round() as u16;
+
+            let (fg, bg) = match (tab.is_active, tab.is_preview) {
+                (true, true) => (preview_active_fg, active_bg),
+                (true, false) => (active_fg, active_bg),
+                (false, true) => (preview_inactive_fg, bar_bg),
+                (false, false) => (inactive_fg, bar_bg),
+            };
+
+            // Keyboard-focus treatment: swap fg/bg — reverse video — across
+            // this tab's whole slot (icon, label, close/dirty glyph, bracket
+            // framing, and the trailing separator/blank cell) when
+            // `chrome.focused_index` names it. The caller composes this with
+            // its own focus-visible state (see [`TabChrome::focused_index`]'s
+            // doc): a click-suppressed focus passes `None` here, so no swap
+            // happens and the tab paints exactly as it would unfocused.
+            // `base_bg` keeps the tab's own pre-swap background available so
+            // a glyph painted in a colour other than `fg` (the close/dirty
+            // mark, the icon) can swap against it the same way the label
+            // does, rather than keeping its own hue unswapped on an
+            // already-inverted background.
+            let is_focused = chrome.focused_index == Some(vt.tab_idx);
+            let base_bg = bg;
+            let (fg, bg) = if is_focused { (bg, fg) } else { (fg, bg) };
+            let swap_against = |glyph_fg: ratatui::style::Color, base: ratatui::style::Color| {
+                if is_focused {
+                    (base, glyph_fg)
+                } else {
+                    (glyph_fg, base)
+                }
+            };
+            let swap_against_base =
+                |glyph_fg: ratatui::style::Color| swap_against(glyph_fg, base_bg);
+
+            // When chrome requests bracket framing, the active tab's
+            // full content — icon, label, close glyph — is enclosed in `[` /
+            // `]`. `lead` shifts every subsequent paint position right by one
+            // column to make room for the opening bracket; the closing
+            // bracket is painted after the close glyph (or after the label,
+            // for a bar with no close button) below.
+            let bracket_active = matches!(chrome.active_frame, TabFrame::Brackets) && tab.is_active;
+            let lead: u16 = if bracket_active { 1 } else { 0 };
+            if bracket_active {
+                set_cell(buf, tab_x, area.y, '[', fg, bg);
+            }
+
+            // Icon glyph, if this tab has one — painted before the label in
+            // its own colour, independent of the tab's active/inactive fg.
+            // `tab_icon_cols` (glyph width + 1-column gap) is exactly what
+            // the measure side added to this tab's measured width, so the
+            // label loop below can start right after it without re-deriving
+            // the reservation.
+            let icon_cols = tab_icon_cols(icons, vt.tab_idx);
+            if let Some(icon) = tab_icon_at(icons, vt.tab_idx) {
+                let (icon_fg, icon_bg) = swap_against_base(ratatui_color(icon.color));
+                let icon_end = tab_x + lead + icon_cols;
+                let mut cx = tab_x + lead;
+                for ch in icon.glyph.chars() {
+                    if cx >= icon_end {
+                        break;
+                    }
+                    let w = char_cell_width(ch);
+                    if w == 2 {
+                        set_cell_wide(buf, cx, area.y, ch, icon_fg, icon_bg);
+                        cx += 2;
+                    } else {
+                        set_cell(buf, cx, area.y, ch, icon_fg, icon_bg);
+                        cx += 1;
+                    }
+                }
+            }
+
+            let mut modifier = Modifier::empty();
+            if tab.is_preview {
+                modifier |= Modifier::ITALIC;
+            }
+            if tab.is_active && accent.is_some() {
+                modifier |= Modifier::UNDERLINED;
+            }
+            let prefix_mod = if tab.is_preview {
+                Modifier::ITALIC
+            } else {
+                Modifier::empty()
+            };
+
+            // Layout carries total tab width; close_bounds (when present)
+            // covers the close-glyph cells (already positioned before any
+            // trailing chrome via `TabMeasure::trailing_width`). Label
+            // occupies the cells between the leading bracket (if any) and
+            // close_bounds.x.
+            let tab_width = vt.bounds.width.round() as u16;
+            // A bracket-framed tab with no close button still reserves its
+            // last column for the closing bracket; `close_bounds` is `None`
+            // in that case (no close button), so it isn't already excluded
+            // from `tab_width` the way the close region is.
+            let trailing_bracket_no_close: u16 = if bracket_active && vt.close_bounds.is_none() {
+                1
+            } else {
+                0
+            };
+            let label_end = match vt.close_bounds {
+                Some(cb) => area.x + cb.x.round() as u16,
+                None => tab_x + tab_width - trailing_bracket_no_close,
+            };
+            let tab_end = tab_x + tab_width;
+
+            // The label's cell budget is whatever sits between the leading
+            // bracket/icon slot and `label_end` (the close glyph, trailing
+            // bracket, or tab edge). A label that doesn't fit is
+            // ellipsis-truncated through the shared [`fit_tab_label`] rather
+            // than hard-clipped mid-glyph — the same `…`-costs-one-cell
+            // convention `truncate_with_ellipsis` uses everywhere else in
+            // the crate.
+            let leading_slot = (lead + icon_cols) as f32;
+            let trailing_slot = (tab_end.saturating_sub(label_end)) as f32;
+            let fitted_label = fit_tab_label(
+                &tab.label,
+                tab_width as f32,
+                leading_slot,
+                trailing_slot,
+                |s| crate::text_util::display_width(s) as f32,
+            );
+
+            // Filename (after the last ": ") carries the underline accent.
+            // Computed off the fitted label so an ellipsis-truncated cut
+            // before the ": " boundary falls back to treating the whole
+            // visible text as "filename" rather than indexing stale offsets
+            // from the untruncated original.
+            let prefix_len = fitted_label.rfind(": ").map(|p| p + 2).unwrap_or(0);
+
+            // Stride by display width, not by `char`: a double-width
+            // glyph (CJK, many emoji) must land in two columns, mirroring the
+            // right-segment loop above. The measure side computes
+            // `label_end`'s budget with the same `display_width` function, so
+            // the two sides agree.
+            let mut x = tab_x + lead + icon_cols;
+            for (ci, ch) in fitted_label.chars().enumerate() {
+                if x >= label_end {
+                    break;
+                }
+                let in_filename = ci >= prefix_len;
+                let cell_mod = if in_filename { modifier } else { prefix_mod };
+                let ul = if in_filename && tab.is_active {
+                    accent
+                } else {
+                    None
+                };
+                let w = char_cell_width(ch);
+                if w == 2 {
+                    if x + 1 < label_end + 1 {
+                        set_cell_wide_styled(buf, x, area.y, ch, fg, bg, cell_mod, ul);
+                        x += 2;
+                    } else {
+                        // Not enough budget left for the glyph's second column
+                        // — skip rather than paint half of a wide char.
+                        x += 1;
+                    }
+                } else {
+                    set_cell_styled(buf, x, area.y, ch, fg, bg, cell_mod, ul);
+                    x += 1;
+                }
+            }
+
+            // Close glyph: ● for dirty, × otherwise (or the app-supplied
+            // override from `glyphs`).
+            if vt.close_bounds.is_some() && x < tab_end {
+                let (close_ch, close_fg) = if tab.is_dirty {
+                    let ch = tab_glyph_char(
+                        glyphs.and_then(TabBarGlyphs::dirty_glyph),
+                        nerd_fonts_enabled,
+                        '●',
+                    );
+                    (ch, foreground)
+                } else {
+                    let ch = tab_glyph_char(
+                        glyphs.and_then(TabBarGlyphs::close_glyph),
+                        nerd_fonts_enabled,
+                        TAB_CLOSE_CHAR,
+                    );
+                    let fg = if tab.is_active { active_fg } else { separator };
+                    (ch, fg)
+                };
+                let (close_fg, close_bg) = swap_against_base(close_fg);
+                set_cell(buf, x, area.y, close_ch, close_fg, close_bg);
+                x += 1;
+            }
+            // The closing bracket lands right after the close glyph
+            // (or right after the label, for a bracket-framed tab with no
+            // close button) — taking the place of the plain trailing
+            // separator cell a non-bracket tab paints here.
+            if bracket_active {
+                if x < tab_end {
+                    set_cell(buf, x, area.y, ']', fg, bg);
+                }
+            } else if x < tab_end {
+                if vt.close_bounds.is_none() {
+                    // No close button reserved for this tab — the measurer
+                    // reserved this cell as a separator column instead, so
+                    // paint a visible rule rather than blank space;
+                    // otherwise adjacent labels read as one run of text with
+                    // only bold-vs-not telling them apart.
+                    let (sep_fg, sep_bg) = swap_against(separator, bar_bg);
+                    set_cell(buf, x, area.y, TAB_SEPARATOR_CHAR, sep_fg, sep_bg);
+                } else {
+                    // Trailing separator space (within tab bounds, normally
+                    // bar bg; tracks the already-swapped `bg` instead when
+                    // focused, so a focused tab's reverse-video band reaches
+                    // its right edge rather than stopping one column short).
+                    let trailing_bg = if is_focused { bg } else { bar_bg };
+                    set_cell(buf, x, area.y, ' ', trailing_bg, trailing_bg);
+                }
+            }
+        }
+
+        hits.available_cols = tab_content_width;
+        // A cell-grid char-based fit is exact; no correction needed.
+        hits.correct_scroll_offset = bar.scroll_offset;
+        hits
     }
 }
 
