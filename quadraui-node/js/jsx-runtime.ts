@@ -130,9 +130,14 @@ const nodeConstructors = require("./app/nodes.ts") as {
  * `./app/widget`'s own `widgetFromIntrinsic` -- the `widget` intrinsic's
  * adapter calls straight into it rather than duplicating `defineWidget`'s
  * own registration logic; see that module's own header doc, "The JSX
- * intrinsic".
+ * intrinsic". Loaded lazily, from inside the `widget` entry of
+ * `INTRINSICS` below rather than at this module's top level like
+ * `nodeConstructors` above: `./app/widget` itself `require`s `../index.ts`,
+ * the native addon, and merely importing this JSX runtime must not drag
+ * that in for a consumer who never reaches for `<widget>` -- `require`
+ * caches the module, so this costs nothing beyond the first call.
  */
-const widgetModule = require("./app/widget.ts") as {
+type WidgetModule = {
   widgetFromIntrinsic(
     spec: {
       measure(ctx: WidgetLayoutCtx, props: Record<string, unknown>, constraints: WidgetConstraints): WidgetSize;
@@ -144,6 +149,10 @@ const widgetModule = require("./app/widget.ts") as {
     options: { id?: string; focusable?: boolean; props?: Record<string, unknown> },
   ): ComponentLike;
 };
+
+function widgetModule(): WidgetModule {
+  return require("./app/widget.ts") as WidgetModule;
+}
 
 // --- intrinsic element props (the `tsc`-checked half) ----------------------
 
@@ -428,7 +437,7 @@ const INTRINSICS: Record<IntrinsicTag, IntrinsicBuilder> = {
   widget: (props) => {
     const { measure, paint, onEvent, a11y, initialState, props: domainProps, id, focusable } =
       props as unknown as WidgetProps;
-    return widgetModule.widgetFromIntrinsic(
+    return widgetModule().widgetFromIntrinsic(
       { measure, paint, onEvent, a11y, initialState },
       { id, focusable, props: domainProps },
     );

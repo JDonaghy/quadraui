@@ -1340,10 +1340,11 @@ impl ScriptWidget for NodeScriptWidget {
 /// decodes (the one `widget.ts`'s own `build(id, ...)` call returns,
 /// always from the same JS call stack right after this one returns) picks
 /// it up. Must be called synchronously from inside a running
-/// `render`/`handle` call -- [`current_script_env`] raises
-/// `InvalidDescriptorError` otherwise, since every [`ScriptWidget`] method
-/// this registers needs that same call's live `Env` to ever call back
-/// into JS at all. See the module section's own doc for the full seam.
+/// `render`/`handle` call -- this function raises `InvalidDescriptorError`
+/// otherwise (when [`current_script_env`] answers `None`), since every
+/// [`ScriptWidget`] method this registers needs that same call's live
+/// `Env` to ever call back into JS at all. See the module section's own
+/// doc for the full seam.
 #[napi(js_name = "registerScriptedWidget")]
 pub fn register_scripted_widget(
     id: String,
@@ -5621,6 +5622,40 @@ mod tests {
         assert_eq!(
             serde_json::to_value(BottomPanelEvent::Resized(8.0)).unwrap(),
             serde_json::json!({"Resized": 8.0})
+        );
+    }
+
+    /// [`ScriptedA11yWire`] decodes a `defineWidget` `a11y` return value
+    /// using the exact shape `quadraui-node/examples/rating.ts`'s own
+    /// `ratingWidgetSpec.a11y` emits, pinning `A11yRole`'s
+    /// `#[serde(rename_all = "snake_case")]` contract (`"slider"`, not
+    /// JS/PascalCase `"Slider"`) at the one boundary that actually runs
+    /// this decoder -- [`NodeScriptWidget::a11y`] -- rather than only
+    /// through a JS-side assertion that never crosses it.
+    #[test]
+    fn scripted_a11y_wire_decodes_the_rating_example_shape() {
+        let value = serde_json::json!({
+            "info": {
+                "a11y_role": "slider",
+                "a11y_label": "Rating",
+                "value": "3 of 5 stars",
+                "value_range": { "min": 0.0, "max": 5, "current": 3 },
+            },
+            "children": [],
+        });
+        let wire: ScriptedA11yWire =
+            serde_json::from_value(value).expect("the rating example's own a11y shape must decode");
+        assert_eq!(wire.info.a11y_role, Some(quadraui::A11yRole::Slider));
+        assert_eq!(wire.info.a11y_label, Some("Rating".to_string()));
+
+        let pascal_case = serde_json::json!({
+            "info": { "a11y_role": "Slider" },
+            "children": [],
+        });
+        assert!(
+            serde_json::from_value::<ScriptedA11yWire>(pascal_case).is_err(),
+            "A11yRole is snake_case-only -- a PascalCase token like JS-flavoured \"Slider\" \
+             must fail to decode rather than silently answering no role"
         );
     }
 
