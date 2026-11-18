@@ -471,6 +471,42 @@ impl<'de> Deserialize<'de> for UserPayload {
     }
 }
 
+/// Events a [`crate::Canvas`] with declared [`crate::CanvasRegion`]s emits,
+/// carried by [`UiEvent::Canvas`]. A plain `Canvas` with an empty
+/// [`crate::Canvas::regions`] list never produces one of these — a click or
+/// hover against it resolves to a bare [`crate::CanvasHit::Inside`]/
+/// [`Outside`][crate::CanvasHit::Outside], which a binding threads through
+/// as the generic extra-body hit it already reports for any other additive
+/// primitive with no typed click event of its own.
+///
+/// `region` on [`Self::RegionClicked`]/[`Self::RegionDoubleClicked`] is the
+/// matched [`crate::CanvasRegion::id`] — resolved by
+/// [`crate::CanvasLayout::region_hit_test`], never built directly against a
+/// raw click. `x`/`y` are in the canvas's own LOCAL frame (same as every
+/// [`crate::DrawOp`] coordinate — see [`crate::Canvas`]'s own module doc,
+/// "Coordinate frame"), not the backend's absolute frame a `MouseDown`'s own
+/// `position` carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CanvasEvent {
+    /// A declared region was clicked (any mouse button — see `button`).
+    RegionClicked {
+        region: WidgetId,
+        button: MouseButton,
+        modifiers: Modifiers,
+        x: f32,
+        y: f32,
+    },
+    /// A declared region was double-clicked. No `button`/`modifiers` field
+    /// — mirrors [`UiEvent::DoubleClick`] itself, which carries neither.
+    RegionDoubleClicked { region: WidgetId, x: f32, y: f32 },
+    /// The hovered region changed, including to/from no region at all.
+    /// `None` means the pointer is over the canvas's own body but outside
+    /// every declared region, or has left the canvas entirely — the same
+    /// "stopped hovering" signal [`UiEvent::MouseLeft`] already carries at
+    /// whole-widget granularity, one level finer here.
+    RegionHovered { region: Option<String> },
+}
+
 // ─── The main event enum ────────────────────────────────────────────────────
 
 /// Everything a user (or platform) can do that an app might care about.
@@ -1211,6 +1247,32 @@ pub enum UiEvent {
     /// own doc above records), so this compiles clean with no consumer
     /// changes required.
     Toolbar(WidgetId, ToolbarEvent),
+    /// A [`crate::Canvas`]'s declared [`crate::CanvasRegion`] was clicked,
+    /// double-clicked, or gained/lost pointer hover — the id is the
+    /// canvas's own, matching every other primitive-specific variant above;
+    /// which region (if any) is carried in the [`CanvasEvent`] payload. Only
+    /// ever built against a hit resolved through
+    /// [`crate::CanvasLayout::region_hit_test`] — see [`CanvasEvent`]'s own
+    /// doc for when a `Canvas` click produces none of these at all.
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
+    /// exhaustive consumer match would need a wildcard arm to survive.
+    /// Blast-radius grep (per CLAUDE.md's mandatory rule 1):
+    ///
+    /// ```text
+    /// $ grep -rn 'UiEvent::Canvas\b' ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both; mechanically guaranteed for a
+    /// brand-new symbol no code outside this change can reference yet)
+    /// ```
+    /// The real question for a *new enum variant* is whether either
+    /// consumer's existing `match`es over `UiEvent` are exhaustive (no
+    /// wildcard arm). Both top-level `UiEvent` dispatches are large
+    /// multi-hundred-line matches that already end in a wildcard `_ =>` arm
+    /// (same precedent [`Self::Toolbar`]'s own doc above records), so this
+    /// compiles clean with no consumer changes required.
+    Canvas(WidgetId, CanvasEvent),
 
     // ── Escape hatch ───────────────────────────────────────────────────
     /// Backend-specific event the crate couldn't normalise. Apps ignore

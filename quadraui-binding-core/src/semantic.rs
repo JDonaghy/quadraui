@@ -5,10 +5,11 @@
 //! payload itself.
 
 use quadraui::{
-    ActivityBar, ActivityBarEvent, ComboBox, ComboBoxEvent, DataTableEvent, DatePicker,
-    DatePickerEvent, EditOp, FormEvent, Key, ListViewEvent, Modifiers, NamedKey, NumberInput,
-    NumberInputEvent, RadioGroup, RadioGroupEvent, StatusBar, StatusBarEvent, Switch, SwitchEvent,
-    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
+    ActivityBar, ActivityBarEvent, CanvasEvent, ComboBox, ComboBoxEvent, DataTableEvent,
+    DatePicker, DatePickerEvent, EditOp, FormEvent, Key, ListViewEvent, Modifiers, MouseButton,
+    NamedKey, NumberInput, NumberInputEvent, RadioGroup, RadioGroupEvent, StatusBar,
+    StatusBarEvent, Switch, SwitchEvent, TabBar, TabBarEvent, TextDisplayEvent, TextInput,
+    TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -505,11 +506,19 @@ pub fn button_clicked_event(id: WidgetId) -> UiEvent {
 /// click behavior still falls through to the raw `MouseDown`. `point` is
 /// the absolute click position the caller already has (every caller is a
 /// `MouseDown`/`DoubleClick` branch, so it's always available) — only
-/// [`HitDetail::ExtraBody`]'s [`Slider`] arm uses it, to map a click to a
-/// track position rather than a fixed step.
+/// [`HitDetail::ExtraBody`]'s [`Slider`] arm and [`HitDetail::CanvasRegion`]'s
+/// own arm use it, the latter to translate it into the canvas's own LOCAL
+/// frame for [`quadraui::CanvasEvent`]'s `x`/`y` fields. `button` is the
+/// pressed mouse button the caller's raw `MouseDown` carried — a
+/// `DoubleClick` has no `button` field of its own, so every caller passes
+/// [`MouseButton::Left`] for one (matching `modifiers`' own
+/// `Modifiers::default()` fallback there); only
+/// [`HitDetail::CanvasRegion`]'s non-double-click arm reads it, for
+/// [`quadraui::CanvasEvent::RegionClicked`]'s own `button` field.
 pub fn semantic_event_for_hit(
     id: WidgetId,
     detail: &HitDetail,
+    button: MouseButton,
     modifiers: Modifiers,
     double_click: bool,
     hit_map: &[PaintedHit],
@@ -610,6 +619,41 @@ pub fn semantic_event_for_hit(
                     value,
                 } = switch.click()?;
                 Some(UiEvent::Form(id, FormEvent::ToggleChanged { id, value }))
+            }
+            _ => None,
+        }),
+        // Translates the absolute `point` into the canvas's own LOCAL frame
+        // (looked up from the matched `PaintedHit::Extra`'s own `area`,
+        // the same "every `DrawOp`/`CanvasRegion::rect` coordinate" frame
+        // `quadraui::Canvas`'s module doc describes) for
+        // `CanvasEvent::RegionClicked`/`RegionDoubleClicked`'s own `x`/`y`
+        // fields — a region's own rect is authored in that frame, so this
+        // lets an app compare the two without re-deriving the canvas's
+        // absolute paint position itself.
+        HitDetail::CanvasRegion { region } => hit_map.iter().find_map(|hit| match hit {
+            PaintedHit::Extra {
+                id: hit_id, area, ..
+            } if *hit_id == id => {
+                let x = point.x - area.x;
+                let y = point.y - area.y;
+                Some(UiEvent::Canvas(
+                    id,
+                    if double_click {
+                        CanvasEvent::RegionDoubleClicked {
+                            region: *region,
+                            x,
+                            y,
+                        }
+                    } else {
+                        CanvasEvent::RegionClicked {
+                            region: *region,
+                            button,
+                            modifiers,
+                            x,
+                            y,
+                        }
+                    },
+                ))
             }
             _ => None,
         }),

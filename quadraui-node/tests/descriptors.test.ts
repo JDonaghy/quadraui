@@ -1198,6 +1198,118 @@ test("inline tree leaf canvas routes the hit without focusing", () => {
   assert.equal(received[0].MouseDown.widget, "canvas:sparkline");
 });
 
+function canvasWithRegionRender() {
+  // A single `canvas` leaf with one declared region covering the whole
+  // first cell row -- built from a plain object, exercising
+  // `Canvas::regions`'/`CanvasRegion`'s own serde-default decode path the
+  // same way every other inline leaf above is built.
+  return {
+    row: [
+      {
+        id: "canvas:regions",
+        canvas: {
+          id: "canvas:regions",
+          ops: [],
+          regions: [
+            {
+              id: "region:a",
+              rect: { x: 0.0, y: 0.0, width: 10.0, height: 1.0 },
+            },
+          ],
+          focusable: false,
+        },
+      },
+    ],
+  };
+}
+
+test("canvas region click emits a typed RegionClicked event", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(canvasWithRegionRender);
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} },
+  });
+  app.run(1);
+
+  assert.equal(received.length, 1, JSON.stringify(received));
+  const [widgetId, canvasEvent] = received[0].Canvas;
+  assert.equal(widgetId, "canvas:regions");
+  assert.deepEqual(canvasEvent, {
+    RegionClicked: {
+      region: "region:a",
+      button: "Left",
+      modifiers: { shift: false, ctrl: false, alt: false, cmd: false },
+      x: 1.0,
+      y: 0.0,
+    },
+  });
+});
+
+test("canvas region double-click emits a typed RegionDoubleClicked event", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(canvasWithRegionRender);
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({ DoubleClick: { position: { x: 1.0, y: 0.0 } } });
+  app.run(1);
+
+  assert.equal(received.length, 1, JSON.stringify(received));
+  const [widgetId, canvasEvent] = received[0].Canvas;
+  assert.equal(widgetId, "canvas:regions");
+  assert.deepEqual(canvasEvent, {
+    RegionDoubleClicked: { region: "region:a", x: 1.0, y: 0.0 },
+  });
+});
+
+test("canvas region hover emits RegionHovered alongside MouseEntered/MouseLeft", () => {
+  // Mirrors the generic `MouseEntered`/`MouseLeft` hover bookkeeping every
+  // other extra already gets, plus the region-specific
+  // `Canvas`/`RegionHovered` translation layered alongside it.
+  const app = new QuiApp(40, 20);
+  app.setRender(canvasWithRegionRender);
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.pushEvent({ MouseMoved: { position: { x: 1.0, y: 0.0 }, buttons: {} } });
+  app.run(1);
+  assert.equal(received.length, 3, JSON.stringify(received));
+  assert.deepEqual(received[0], {
+    MouseEntered: { widget: "canvas:regions" },
+    hit: { kind: "canvas_region", region: "region:a" },
+  });
+  const [widgetId, canvasEvent] = received[1].Canvas;
+  assert.equal(widgetId, "canvas:regions");
+  assert.deepEqual(canvasEvent, { RegionHovered: { region: "region:a" } });
+
+  received.length = 0;
+  // (30, 10) is still inside the canvas's own bounds but outside the
+  // declared region, so this also synthesizes a generic `MouseEntered`
+  // for the canvas's `extra_body` right behind the region-leaving pair
+  // below -- four events in total, not three.
+  app.pushEvent({ MouseMoved: { position: { x: 30.0, y: 10.0 }, buttons: {} } });
+  app.run(1);
+  assert.equal(received.length, 4, JSON.stringify(received));
+  assert.deepEqual(received[0], {
+    MouseLeft: { widget: "canvas:regions" },
+    hit: { kind: "canvas_region", region: "region:a" },
+  });
+  const [leftWidgetId, leftCanvasEvent] = received[1].Canvas;
+  assert.equal(leftWidgetId, "canvas:regions");
+  assert.deepEqual(leftCanvasEvent, { RegionHovered: { region: null } });
+  assert.deepEqual(received[2], {
+    MouseEntered: { widget: "canvas:regions" },
+    hit: { kind: "extra_body" },
+  });
+});
+
 test("clearExtra on an empty or unknown kind returns false, not an error", () => {
   const app = new QuiApp(40, 20);
   assert.equal(app.clearExtra("progress"), false);

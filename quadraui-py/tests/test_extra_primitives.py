@@ -2641,6 +2641,119 @@ def test_inline_tree_leaf_canvas_routes_the_hit_without_focusing():
     assert event["MouseDown"]["widget"] == "canvas:sparkline"
 
 
+def _canvas_with_region_render():
+    """A single `canvas` leaf with one declared region covering the whole
+    first cell row -- built from a plain dict, exercising
+    `Canvas::regions`'/`CanvasRegion`'s own serde-default decode path the
+    same way every other inline leaf in this module is built."""
+    return {
+        "row": [
+            {
+                "id": "canvas:regions",
+                "canvas": {
+                    "id": "canvas:regions",
+                    "ops": [],
+                    "regions": [
+                        {
+                            "id": "region:a",
+                            "rect": {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "width": 10.0,
+                                "height": 1.0,
+                            },
+                        },
+                    ],
+                    "focusable": False,
+                },
+            },
+        ]
+    }
+
+
+def test_canvas_region_click_emits_a_typed_region_clicked_event():
+    app = QuiApp(40, 20)
+    app.set_render(_canvas_with_region_render)
+    app.screen()
+
+    event = _click(app, 1.0, 0.0)
+
+    widget_id, canvas_event = event["Canvas"]
+    assert widget_id == "canvas:regions"
+    assert canvas_event == {
+        "RegionClicked": {
+            "region": "region:a",
+            "button": "Left",
+            "modifiers": {"shift": False, "ctrl": False, "alt": False, "cmd": False},
+            "x": 1.0,
+            "y": 0.0,
+        }
+    }
+
+
+def test_canvas_region_double_click_emits_a_typed_region_double_clicked_event():
+    app = QuiApp(40, 20)
+    app.set_render(_canvas_with_region_render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event({"DoubleClick": {"position": {"x": 1.0, "y": 0.0}}})
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, canvas_event = received[0]["Canvas"]
+    assert widget_id == "canvas:regions"
+    assert canvas_event == {
+        "RegionDoubleClicked": {"region": "region:a", "x": 1.0, "y": 0.0}
+    }
+
+
+def test_canvas_region_hover_emits_region_hovered_alongside_mouse_entered_and_left():
+    # Mirrors the generic `MouseEntered`/`MouseLeft` hover bookkeeping every
+    # other extra already gets, plus the region-specific
+    # `Canvas`/`RegionHovered` translation layered alongside it.
+    app = QuiApp(40, 20)
+    app.set_render(_canvas_with_region_render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.push_event({"MouseMoved": {"position": {"x": 1.0, "y": 0.0}, "buttons": {}}})
+    app.run(1)
+    assert len(received) == 3
+    assert received[0] == {
+        "MouseEntered": {"widget": "canvas:regions"},
+        "hit": {"kind": "canvas_region", "region": "region:a"},
+    }
+    widget_id, canvas_event = received[1]["Canvas"]
+    assert widget_id == "canvas:regions"
+    assert canvas_event == {"RegionHovered": {"region": "region:a"}}
+
+    received.clear()
+    # (30, 10) is still inside the canvas's own bounds but outside the
+    # declared region, so this also synthesizes a generic `MouseEntered`
+    # for the canvas's `extra_body` right behind the region-leaving pair
+    # below -- four events in total, not three.
+    app.push_event(
+        {"MouseMoved": {"position": {"x": 30.0, "y": 10.0}, "buttons": {}}}
+    )
+    app.run(1)
+    assert len(received) == 4
+    assert received[0] == {
+        "MouseLeft": {"widget": "canvas:regions"},
+        "hit": {"kind": "canvas_region", "region": "region:a"},
+    }
+    widget_id, canvas_event = received[1]["Canvas"]
+    assert widget_id == "canvas:regions"
+    assert canvas_event == {"RegionHovered": {"region": None}}
+    assert received[2] == {
+        "MouseEntered": {"widget": "canvas:regions"},
+        "hit": {"kind": "extra_body"},
+    }
+
+
 def _click(app, x, y):
     """Dispatches a left `MouseDown` at `(x, y)` and runs one step, returning
     the single event the registered handler captured.

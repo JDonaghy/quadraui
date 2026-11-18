@@ -7,14 +7,14 @@
 use std::rc::Rc;
 
 use quadraui::{
-    ButtonHit, ButtonLayout, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, PanelHit,
-    PanelLayout, Point, PressZone, Rect, ScrollAxis, Scrollbar, SidebarPanelHit,
-    SidebarPanelLayout, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout,
-    TextDisplayHit, TextDisplayLayout, Toolbar, TreePath, TreeRowEditState, TreeViewHit,
-    TreeViewLayout, UiEvent, WidgetId,
+    ButtonHit, ButtonLayout, Canvas, CanvasHit, DataTableHit, DataTableLayout, ListViewHit,
+    ListViewLayout, PanelHit, PanelLayout, Point, PressZone, Rect, ScrollAxis, Scrollbar,
+    SidebarPanelHit, SidebarPanelLayout, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit,
+    TabBarLayout, TextDisplayHit, TextDisplayLayout, Toolbar, TreePath, TreeRowEditState,
+    TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
-use crate::extra_paint::ExtraPaint;
+use crate::extra_paint::{extra_as, ExtraPaint};
 
 /// One primitive this app painted during the current frame: its id and the
 /// hit-testable layout its backend `draw_*` call returned (or, for
@@ -516,6 +516,18 @@ pub enum HitDetail {
     /// Per-kind sub-region detail (e.g. which combo-box row) is a later,
     /// separate extension of this variant.
     ExtraBody,
+    /// Landed on a declared [`quadraui::CanvasRegion`] of a
+    /// [`quadraui::Canvas`] — `region` is that region's own
+    /// [`WidgetId`] (`CanvasRegion::id`), resolved
+    /// through [`quadraui::CanvasLayout::region_hit_test`] ahead of
+    /// [`Self::ExtraBody`]'s coarser "landed somewhere on the canvas"
+    /// answer, the same disambiguation [`Self::SidebarPanelToolbarButton`]
+    /// does for a chrome bar's own clickable children. A `Canvas` with no
+    /// matching region (including one with an empty `regions` list) still
+    /// falls back to `ExtraBody`.
+    CanvasRegion {
+        region: WidgetId,
+    },
     /// Landed on one of a chrome-bar extra's clickable children
     /// (`Toolbar`'s button, `StatusBar`'s segment, `ActivityBar`'s item).
     /// [`hit_test_painted`] returns the CHILD's own id alongside this
@@ -753,7 +765,21 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 if let Some((_, action)) = chrome_hits.iter().find(|(r, _)| r.contains(point)) {
                     return Some((*action, HitDetail::ExtraChrome { bar: *id }));
                 }
-                if extra.hit_test(*area, point) {
+                if let Some(canvas) = extra_as::<Canvas>(extra) {
+                    match canvas
+                        .layout(*area)
+                        .region_hit_test(canvas, point.x, point.y)
+                    {
+                        CanvasHit::Region { id: region } => {
+                            return Some((*id, HitDetail::CanvasRegion { region }));
+                        }
+                        CanvasHit::Inside => return Some((*id, HitDetail::ExtraBody)),
+                        CanvasHit::Outside => {}
+                        // `CanvasHit` is `#[non_exhaustive]` -- see
+                        // `quadraui::CanvasHit`'s own doc.
+                        _ => {}
+                    }
+                } else if extra.hit_test(*area, point) {
                     return Some((*id, HitDetail::ExtraBody));
                 }
             }

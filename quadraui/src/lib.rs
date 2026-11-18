@@ -768,8 +768,9 @@ pub use backend::{
 // service-seam shape as `Clipboard`/`SecretStore` above; see `update`'s
 // module doc.
 pub use event::{
-    mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
-    MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, UserPayload, Viewport,
+    mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask,
+    CanvasEvent, Key, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, UserPayload,
+    Viewport,
 };
 pub use update::{StagedUpdate, UpdateFeed, UpdateInfo, UpdateInfoBuilder, UpdateService};
 // `PlatformServices::on_battery`/`thermal_state`/`begin_power_save_block`/

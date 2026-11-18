@@ -1790,9 +1790,19 @@ impl ExtraPaint for Canvas {
     /// bounds at all" answer (see [`quadraui::CanvasHit`]'s doc) — this
     /// boolean `ExtraPaint` seam has no way to surface a
     /// [`quadraui::CanvasRegion`] id, so it deliberately stays this
-    /// coarse rather than resolving further.
+    /// coarse rather than resolving further. [`crate::hit::hit_test_painted`]
+    /// downcasts the `PaintedHit::Extra` entry back to `Canvas` itself to
+    /// resolve a region hit instead of calling this method.
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
+    }
+
+    /// Mirrors [`quadraui::Canvas::focusable`] — the descriptor's own
+    /// declarative flag decides whether this canvas joins the tab-stop
+    /// list, the same "app sets the flag, this trait just reads it back"
+    /// contract [`quadraui::Canvas::focusable`]'s own doc describes.
+    fn tab_stop(&self) -> bool {
+        self.focusable
     }
 }
 
