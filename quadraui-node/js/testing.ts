@@ -592,8 +592,28 @@ class Widget {
     this.harness.focus(this.id);
   }
 
-  /** Presses a key *at this widget*: the focus-scoped shape a real backend delivers to a focused widget. */
+  /**
+   * Presses a key *at this widget*: the focus-scoped shape a real backend
+   * delivers to a focused `tree`/`list`/.../`status_bar` (`EVENT_SCOPES`).
+   * A `defineWidget` script widget (role `"scripted_widget"`) has no such
+   * scoped shape -- `InteractionEngine::handle` resolves it by focus
+   * alone, the same plain top-level `KeyPressed` every unclaimed key
+   * already is (`quadraui_binding_core::engine`'s own
+   * `scripted_key_press` forwarding) -- so this sends that instead;
+   * focus this widget first -- a real click (`harness.clickAt`/`clickText`,
+   * or an app click helper built on either) resolved against its own
+   * declared region, the way a user actually would, since `.focus()`'s own
+   * directly-dispatched `FocusChanged` only notifies the engine's side
+   * effects (scrolling the new focus into view) without itself moving a
+   * real backend's focus the way the click-to-focus path does -- or the
+   * key lands wherever focus actually is, the same caveat
+   * `harness.press(key)` itself already carries.
+   */
   press(key: string, mods: Modifiers = {}): void {
+    if (this.role === "scripted_widget") {
+      this.harness.press(key, mods);
+      return;
+    }
     const scope = EVENT_SCOPES[this.role];
     if (scope === undefined || this.id === null) {
       throw new TypeError(`a ${JSON.stringify(this.role)} widget takes no focus-scoped keys`);

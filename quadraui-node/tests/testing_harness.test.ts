@@ -358,3 +358,27 @@ test("a plain QuiApp is driven through the same API", () => {
 test("wrapping a plain QuiApp without its render is refused", () => {
   assert.throws(() => new Harness(new QuiApp(10, 3)), /render/);
 });
+
+// --- a `defineWidget` script widget ---------------------------------------
+
+test("find(role: scripted_widget).press() sends the plain unscoped key a focused script widget actually receives", () => {
+  // `../examples/rating.ts`'s `RatingControl` -- a real `defineWidget`
+  // widget, not a stub, since `press`'s own special case
+  // (`../js/testing.ts`) is specifically about how a `scripted_widget`
+  // role differs from every `EVENT_SCOPES` role already covered above.
+  const rating = require("../examples/rating.ts");
+  const demo = new rating.RatingDemo();
+  const h = harness(demo.app);
+
+  const widget = h.find({ role: "scripted_widget" });
+  assert.equal(widget.id, "rating:stars");
+
+  // Clicking star index 2 focuses the control (its only tab stop)
+  // without changing the rating (index 2 is already the current value,
+  // 3) -- `.focus()`'s own `FocusChanged` dispatch only notifies the
+  // engine's side effects, not a real backend's own focus state; see
+  // `press`'s own doc (`../js/testing.ts`) for why a click is needed here.
+  h.clickText("★", 2);
+  widget.press("Right");
+  assert.equal(demo.rating, 4);
+});

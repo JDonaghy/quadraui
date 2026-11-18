@@ -85,6 +85,7 @@ import type {
   TextDisplayOptions,
   TreeOptions,
 } from "./app/nodes";
+import type { WidgetA11yNode, WidgetConstraints, WidgetEvent, WidgetLayoutCtx, WidgetPaint, WidgetRect, WidgetSize } from "./app/widget";
 import type {
   ColumnDescriptor,
   DataRowDescriptor,
@@ -123,6 +124,25 @@ const nodeConstructors = require("./app/nodes.ts") as {
   Select(choices: string[], options?: SelectOptions): QuiNode;
   Password(value: string, options?: PasswordOptions): QuiNode;
   TextArea(value: string, options?: TextAreaOptions): QuiNode;
+};
+
+/**
+ * `./app/widget`'s own `widgetFromIntrinsic` -- the `widget` intrinsic's
+ * adapter calls straight into it rather than duplicating `defineWidget`'s
+ * own registration logic; see that module's own header doc, "The JSX
+ * intrinsic".
+ */
+const widgetModule = require("./app/widget.ts") as {
+  widgetFromIntrinsic(
+    spec: {
+      measure(ctx: WidgetLayoutCtx, props: Record<string, unknown>, constraints: WidgetConstraints): WidgetSize;
+      paint(ctx: WidgetLayoutCtx, props: Record<string, unknown>, rect: WidgetRect): WidgetPaint;
+      onEvent?(event: WidgetEvent, props: Record<string, unknown>, state: Record<string, unknown>): boolean;
+      a11y?(props: Record<string, unknown>): WidgetA11yNode | null | undefined;
+      initialState?(props: Record<string, unknown>): Record<string, unknown>;
+    },
+    options: { id?: string; focusable?: boolean; props?: Record<string, unknown> },
+  ): ComponentLike;
 };
 
 // --- intrinsic element props (the `tsc`-checked half) ----------------------
@@ -217,6 +237,27 @@ export interface TextAreaProps extends TextAreaOptions {
 }
 
 /**
+ * An ad hoc script-authored widget with no named `./app/widget`'s
+ * `defineWidget` component of its own -- `measure`/`paint` are required
+ * (mirroring `WidgetSpec`'s own required methods); `onEvent`/`a11y`/
+ * `initialState` default the same way `WidgetSpec`'s own optional methods
+ * do. `props` is this widget's own domain props, passed to
+ * `measure`/`paint`/`onEvent`/`a11y` as a single nested bag -- there is no
+ * `spec`'s own prop shape to flatten the way `defineWidget`'s returned
+ * factory flattens its own `options` into (see that function's own doc).
+ */
+export interface WidgetProps<P = Record<string, unknown>, S = Record<string, unknown>> {
+  measure(ctx: WidgetLayoutCtx, props: P, constraints: WidgetConstraints): WidgetSize;
+  paint(ctx: WidgetLayoutCtx, props: P, rect: WidgetRect): WidgetPaint;
+  onEvent?(event: WidgetEvent, props: P, state: S): boolean;
+  a11y?(props: P): WidgetA11yNode | null | undefined;
+  initialState?(props: P): S;
+  props?: P;
+  id?: string;
+  focusable?: boolean;
+}
+
+/**
  * A local, exported `JSX` namespace -- not `declare global`. TS's automatic
  * JSX transform looks for a `JSX` export on the `jsxImportSource` module
  * before falling back to the ambient global one, so this is enough for
@@ -245,6 +286,7 @@ export namespace JSX {
     select: SelectProps;
     password: PasswordProps;
     textarea: TextAreaProps;
+    widget: WidgetProps;
   }
   /** What any JSX expression (`<Foo/>`) evaluates to -- `createElement`'s own return type. */
   export type Element = Renderable;
@@ -382,6 +424,14 @@ const INTRINSICS: Record<IntrinsicTag, IntrinsicBuilder> = {
   textarea: (props) => {
     const { value, ...options } = props as unknown as TextAreaProps;
     return nodeConstructors.TextArea(value, options);
+  },
+  widget: (props) => {
+    const { measure, paint, onEvent, a11y, initialState, props: domainProps, id, focusable } =
+      props as unknown as WidgetProps;
+    return widgetModule.widgetFromIntrinsic(
+      { measure, paint, onEvent, a11y, initialState },
+      { id, focusable, props: domainProps },
+    );
   },
 };
 

@@ -161,6 +161,21 @@ export declare function installCrashHandler(cfg: unknown): void;
 export declare function getCurrentCtx(): RenderCtx | null;
 
 /**
+ * Registers a script-defined widget's four callbacks against `id` -- see
+ * `index.ts`'s own doc comment for the full contract.
+ * `quadraui-node/js/app/widget.ts`'s `defineWidget` is the ergonomic,
+ * typed way to reach this.
+ */
+export declare function registerScriptedWidget(
+  id: string,
+  measure: (packed: unknown) => unknown,
+  paint: (packed: unknown) => unknown,
+  onEvent: (packed: unknown) => unknown,
+  a11y: (packed: unknown) => unknown,
+  focusable: boolean,
+): void;
+
+/**
  * Render-time capabilities a script `render`/`view` callback needs from
  * the live backend painting this frame -- real text measurement
  * (`measureText`/`lineHeight`/`charWidth`), cell-grid-vs-pixel surface
