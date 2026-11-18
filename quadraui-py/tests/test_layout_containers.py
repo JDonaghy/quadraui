@@ -1,5 +1,5 @@
 """Black-box coverage for the container/layout primitives bound to Python:
-`Panel`, `SidebarPanel`, `SplitTree` and `Scroll`, each a `LayoutNode`
+`Panel`, `SidebarPanel`, `SplitTree`, `Scroll` and `Grid`, each a `LayoutNode`
 variant exactly like the pre-existing `row`/`column`/`split`/`tabs` --
 constructed from a plain Python dict behind a `set_render` callback and
 recursively holding any other `LayoutNode` as content/children.
@@ -26,6 +26,11 @@ binding work:
   `"padding"`/`"margin"`/`"gap"` use (quantised against whichever axis the
   split's own `"orientation"` actually bounds -- width for `"horizontal"`,
   height for `"vertical"`), rather than a backend-native one.
+- a `"grid"` node's `"columns"`/`"rows"` track lists and row-major
+  `"cells"`, including a `{"Fixed": px}` track read as the same portable
+  surface-native-pixel measurement spacing keys use, and its two
+  rejections (more cells than the tracks have room for, and a `"gap"`
+  key, which grid tracks have no gutter for).
 - a `"row"`/`"column"` node's optional `"padding"`/`"gap"`/`"margin"`
   spacing keys, siblings of the `"row"`/`"column"` key in the same node
   dict, are honoured by the shared layout pass.
@@ -395,6 +400,102 @@ def test_row_with_no_spacing_keys_still_decodes_the_legacy_array_shape():
 
     app.set_render(render)
     assert app.screen().splitlines()[0][0] == "L"
+
+
+def test_grid_lays_four_cells_out_row_major_across_two_columns_and_two_rows():
+    # A `"grid"` node's `"cells"` fill its `columns` x `rows` tracks
+    # row-major: left to right within a row, then top to bottom. Two
+    # equal-`Weight` columns split a 20-cell screen in half, two
+    # equal-`Weight` rows split 4 lines in half, so the four leaves land
+    # one per quadrant.
+    app = QuiApp(20, 4)
+
+    def render():
+        return {
+            "grid": {
+                "columns": [{"Weight": 1.0}, {"Weight": 1.0}],
+                "rows": [{"Weight": 1.0}, {"Weight": 1.0}],
+                "cells": [
+                    _text("text:nw", "NW"),
+                    _text("text:ne", "NE"),
+                    _text("text:sw", "SW"),
+                    _text("text:se", "SE"),
+                ],
+            }
+        }
+
+    app.set_render(render)
+    lines = app.screen().splitlines()
+    top = "".join(lines[:2])
+    bottom = "".join(lines[2:])
+    assert "NW" in top and "NE" in top, lines
+    assert "SW" in bottom and "SE" in bottom, lines
+    # The second column starts right of the first: the row-major cell
+    # order maps to left/right, not to paint order.
+    assert lines[0].index("NW") < lines[0].index("NE"), lines[0]
+
+
+def test_grid_fixed_track_is_a_portable_pixel_measurement_on_tui():
+    # A `{"Fixed": px}` track is in the same surface-native-pixel unit
+    # `"padding"`/`"margin"` use, so on a cell-grid backend it converts
+    # into whole cells via `ceil(px / nominal_cell_px)`: a 16px first
+    # column is `ceil(16 / 8) == 2` cells wide, leaving the `Weight`
+    # column everything right of it.
+    app = QuiApp(20, 1)
+
+    def render():
+        return {
+            "grid": {
+                "columns": [{"Fixed": 16.0}, {"Weight": 1.0}],
+                "rows": [{"Weight": 1.0}],
+                "cells": [_text("text:a", "A"), _text("text:b", "B")],
+            }
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("A") == 0, line
+    assert line.index("B") == 2, line
+
+
+def test_grid_rejects_more_cells_than_its_tracks_have_room_for():
+    # The overflow cell has nowhere to paint, so it is a decode error
+    # rather than a silently dropped tile.
+    app = QuiApp(10, 4)
+
+    def render():
+        return {
+            "grid": {
+                "columns": [{"Weight": 1.0}],
+                "rows": [{"Weight": 1.0}],
+                "cells": [_text("text:a", "A"), _text("text:b", "B")],
+            }
+        }
+
+    app.set_render(render)
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
+
+
+def test_grid_rejects_a_gap_key_it_does_not_support():
+    # Grid tracks carry no gutter of their own, so `"gap"` is a decode
+    # error naming the key rather than a silent no-op -- same treatment a
+    # `"panel"`/`"tabs"`/`"scroll"` node gives it.
+    app = QuiApp(10, 4)
+
+    def render():
+        return {
+            "grid": {
+                "columns": [{"Weight": 1.0}],
+                "rows": [{"Weight": 1.0}],
+                "cells": [_text("text:a", "A")],
+            },
+            "gap": 8,
+        }
+
+    app.set_render(render)
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
 
 
 def test_panel_padding_and_margin_inset_the_whole_panel_on_tui():
