@@ -27,6 +27,7 @@ use crate::demos::float::FloatDemo;
 use crate::demos::focus::FocusDemo;
 use crate::demos::form::FormDemo;
 use crate::demos::help_overlay::HelpOverlayDemo;
+use crate::demos::icon_grid::IconGridDemo;
 use crate::demos::image::ImageDemo;
 use crate::demos::indicators::IndicatorsDemo;
 use crate::demos::markdown::MarkdownDemo;
@@ -118,6 +119,7 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         Box::new(ImageDemo::new()),
         Box::new(SearchPanelDemo::new()),
         Box::new(MessageListDemo::new()),
+        Box::new(IconGridDemo::new()),
     ];
     // Spawns a real PTY (quadraui::terminal_engine) — only registered
     // when the `terminal` feature is enabled, so a plain `tui`/`gtk`

@@ -23,6 +23,7 @@ pub mod float;
 pub mod focus;
 pub mod form;
 pub mod help_overlay;
+pub mod icon_grid;
 pub mod image;
 pub mod indicators;
 pub mod markdown;

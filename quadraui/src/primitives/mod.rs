@@ -28,6 +28,7 @@ pub mod editor;
 pub mod find_replace;
 pub mod float;
 pub mod form;
+pub mod icon_grid;
 pub mod image;
 pub mod layout_metrics;
 pub mod list;
