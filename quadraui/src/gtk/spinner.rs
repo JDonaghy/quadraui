@@ -1,17 +1,18 @@
 //! GTK rasteriser for [`crate::Spinner`].
 //!
-//! Paints a Unicode animation glyph + label using Pango text layout.
-//! Same braille frame table as TUI for visual consistency across
-//! backends.
+//! Layout-only queries go through [`gtk_spinner_layout`]; painting
+//! goes through [`crate::primitives::spinner::native_surface_paint::paint`]
+//! via a [`super::surface::CairoSurface`] — the glyph table and the
+//! glyph+label text are shared with every other `native_surface_paint`
+//! adopter, not duplicated here.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::set_source;
-use crate::primitives::spinner::{Spinner, SpinnerLayout, SpinnerMeasure};
+use crate::primitives::spinner::{
+    native_surface_paint, spinner_text, Spinner, SpinnerLayout, SpinnerMeasure,
+};
 use crate::theme::Theme;
-
-const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Compute the GTK pixel-unit layout for a [`Spinner`] without painting.
 pub fn gtk_spinner_layout(
@@ -20,12 +21,7 @@ pub fn gtk_spinner_layout(
     x: f64,
     y: f64,
 ) -> SpinnerLayout {
-    let glyph = FRAMES[spinner.frame_idx % FRAMES.len()];
-    let text = if spinner.label.is_empty() {
-        glyph.to_string()
-    } else {
-        format!("{glyph} {}", spinner.label)
-    };
+    let text = spinner_text(spinner);
     pango_layout.set_text(&text);
     pango_layout.set_attributes(None);
     let (pw, ph) = pango_layout.pixel_size();
@@ -46,23 +42,12 @@ pub fn draw_spinner(
     spinner: &Spinner,
     theme: &Theme,
 ) -> SpinnerLayout {
-    let layout = gtk_spinner_layout(spinner, pango_layout, x, y);
-
-    let glyph = FRAMES[spinner.frame_idx % FRAMES.len()];
-    let text = if spinner.label.is_empty() {
-        glyph.to_string()
-    } else {
-        format!("{glyph} {}", spinner.label)
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
     };
-    pango_layout.set_text(&text);
-    pango_layout.set_attributes(None);
-
-    let fg = spinner.accent.unwrap_or(theme.foreground);
-    set_source(cr, fg);
-    cr.move_to(x, y);
-    super::painted_text::show_layout(cr, pango_layout);
-
-    layout
+    native_surface_paint::paint(spinner, &mut surface, theme, x as f32, y as f32)
 }
 
 #[cfg(test)]
