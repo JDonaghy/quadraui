@@ -583,11 +583,11 @@ fn tab_icons_demo_toggling_the_sidecar_shifts_labels_by_the_reservation() {
     );
 }
 
-/// A click on the *trailing* end of a decorated tab — past where an
-/// icon-blind layout would have put that tab's slot — still routes to the
-/// tab the user saw. Three upstream icon reservations have pushed tab 2's
-/// slot right, so a rasteriser that painted glyphs without widening the
-/// slots would leave tab 0 active.
+/// A click on the *trailing* end of a decorated tab's slot — past its
+/// close button, in the tab-outer-gap padding before the next tab would
+/// start — still routes to the tab the user saw. Three upstream icon
+/// reservations have pushed tab 2's slot right, so a rasteriser that
+/// painted glyphs without widening the slots would leave tab 0 active.
 #[test]
 fn tab_icons_demo_click_past_a_decorated_tab_label_activates_that_tab() {
     let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
@@ -614,12 +614,12 @@ fn tab_icons_demo_click_past_a_decorated_tab_label_activates_that_tab() {
         "tab 0 starts active and tab 2 inactive, so their fills differ",
     );
 
-    // Just past the label's trailing edge — the close-glyph end of tab 2's
-    // slot, derived from painted geometry rather than hardcoded.
-    driver.click(
-        readme.x + readme.width + 4.0,
-        readme.y + readme.height / 2.0,
-    );
+    // Past tab 2's close box but still inside its slot — the tab's own
+    // trailing padding, derived from painted geometry (not a hardcoded
+    // offset from the label) so it stays correct however wide the icon
+    // reservation or close hit region is.
+    let (x, y) = tab_icons_initial_slot_tail(&driver, 2);
+    driver.click(x, y);
 
     let main_after = bg_at(&driver, &main);
     let readme_after = bg_at(&driver, &readme);
@@ -638,17 +638,19 @@ fn tab_icons_demo_pressing_q_exits() {
     assert!(driver.exited(), "'q' should make the demo exit");
 }
 
-/// Close-glyph center for tab `tab_idx` in `TabIconsDemo`'s initial
-/// layout (all three `tab_icons_demo::LABELS` open, tab 0 active).
-/// `MacDriver` has no `tab_close_center` helper of its own (unlike
-/// `TuiDriver`/`GtkDriver`, which cache a `TabBarLayout` per paint), so
-/// this resolves the same geometry `TabIconsDemo::handle` does: build the
-/// identical `TabBar` + icon sidecar and run them through
-/// `Backend::tab_bar_layout_icons`, the no-paint twin of the call
-/// `TabIconsDemo::render` paints with. `rect.x` is `0.0`, so the returned
-/// bounds are already in the surface coordinates `MacDriver::click` takes.
+/// [`crate::TabBarHits`] for `TabIconsDemo`'s initial layout (all three
+/// `tab_icons_demo::LABELS` open, tab 0 active). `MacDriver` has no
+/// `tab_close_center` helper of its own (unlike `TuiDriver`/`GtkDriver`,
+/// which cache a `TabBarLayout` per paint), so this resolves the same
+/// geometry `TabIconsDemo::handle` does: build the identical `TabBar` +
+/// icon sidecar and run them through `Backend::tab_bar_layout_icons`,
+/// the no-paint twin of the call `TabIconsDemo::render` paints with.
+/// `rect.x` is `0.0`, so the returned bounds are already in the surface
+/// coordinates `MacDriver::click` takes. Shared by
+/// [`tab_icons_initial_close_center`] and [`tab_icons_initial_slot_tail`],
+/// which each read a different span out of the same hits.
 #[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits`
-fn tab_icons_initial_close_center(driver: &MacDriver<TabIconsDemo>, tab_idx: usize) -> (f32, f32) {
+fn tab_icons_initial_hits(driver: &MacDriver<TabIconsDemo>) -> quadraui::TabBarHits {
     let viewport = driver.backend().viewport();
     let lh = driver.backend().line_height();
     let bar = quadraui::TabBar {
@@ -669,13 +671,44 @@ fn tab_icons_initial_close_center(driver: &MacDriver<TabIconsDemo>, tab_idx: usi
         compact: false,
     };
     let icons = TabIconsDemo::new().icons();
-    let hits = driver.backend().tab_bar_layout_icons(
+    driver.backend().tab_bar_layout_icons(
         quadraui::Rect::new(0.0, 0.0, viewport.width, lh),
         &bar,
         &icons,
-    );
+    )
+}
+
+/// Close-glyph center for tab `tab_idx` in `TabIconsDemo`'s initial
+/// layout — see [`tab_icons_initial_hits`].
+#[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits`
+fn tab_icons_initial_close_center(driver: &MacDriver<TabIconsDemo>, tab_idx: usize) -> (f32, f32) {
+    let lh = driver.backend().line_height();
+    let hits = tab_icons_initial_hits(driver);
     let (start, end) = hits.close_bounds[tab_idx].expect("every tab in this demo is closable");
     (((start + end) / 2.0) as f32, lh / 2.0)
+}
+
+/// A point inside tab `tab_idx`'s painted slot that is past its close
+/// hit region — the tab's own trailing padding, flush against the next
+/// tab's leading edge (or the bar's own right edge, for the last tab) —
+/// for [`TabIconsDemo`]'s initial layout. See [`tab_icons_initial_hits`].
+#[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits`
+fn tab_icons_initial_slot_tail(driver: &MacDriver<TabIconsDemo>, tab_idx: usize) -> (f32, f32) {
+    let lh = driver.backend().line_height();
+    let hits = tab_icons_initial_hits(driver);
+    let (_, slot_end) = hits.slot_positions[tab_idx];
+    let close_end = hits.close_bounds[tab_idx]
+        .expect("every tab in this demo is closable")
+        .1;
+    assert!(
+        close_end < slot_end,
+        "tab {tab_idx}'s slot must have trailing padding past its close \
+         region for this point to exist (close ends {close_end}, slot ends {slot_end})",
+    );
+    (
+        (((close_end + slot_end) / 2.0).clamp(close_end, slot_end)) as f32,
+        lh / 2.0,
+    )
 }
 
 #[test]
