@@ -81,6 +81,7 @@
 //! whose resolved boundaries aren't integers (`Flex`/`Content` widths that
 //! don't divide evenly) the two can disagree by up to one cell.
 
+use crate::event::Rect;
 use crate::primitives::layout_metrics;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -2283,6 +2284,205 @@ pub(crate) mod native_surface_paint {
     }
 }
 
+// ── `crate::primitive::Primitive` impl ──────────────────────────────
+//
+// Mirrors `crate::primitives::list::ListView`'s pilot impl (see that
+// type's own "Primitive pilot" section): `paint`'s pixel-backend branch
+// needs `native_surface_paint`; `paint_cells` needs
+// `crate::tui::draw_data_table`/`ratatui` — gated to whichever of those
+// a build actually has, same as those modules themselves.
+
+/// [`crate::primitive::Primitive::Layout`] for [`DataTable`] — the
+/// resolved [`DataTableLayout`] paired with the absolute area it was
+/// laid out into plus the row count/scroll offset
+/// [`DataTableLayout::hit_test`]'s fixed signature needs but doesn't
+/// itself carry (see that method's own `scroll_offset`/`total_rows`
+/// parameters).
+///
+/// `#[non_exhaustive]`: backend-returned, never constructed by a
+/// consumer via struct literal, same convention as [`DataTableLayout`]
+/// itself.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct DataTablePrimitiveLayout {
+    /// Absolute area [`DataTable::layout`] was (indirectly) called
+    /// with — [`Self::hit_test`] subtracts this rect's origin before
+    /// delegating to [`DataTableLayout::hit_test`], whose own `x`/`y`
+    /// are relative to it.
+    pub area: Rect,
+    /// Row height resolved from the [`crate::primitive::LayoutCtx`]
+    /// [`Primitive::layout`](crate::primitive::Primitive::layout) was
+    /// called with.
+    pub line_height: f32,
+    /// Nerd-Font toggle resolved the same way.
+    pub nerd_fonts_enabled: bool,
+    /// The table-local layout itself.
+    pub layout: DataTableLayout,
+    /// [`DataTable::scroll_offset`] at the time [`Primitive::layout`]
+    /// was called — [`Self::hit_test`] needs this to resolve a `y` into
+    /// an absolute row index, since [`DataTableLayout`] itself carries
+    /// no row count or scroll position.
+    pub scroll_offset: usize,
+    /// `self.rows.len()` at the same time, for the same reason.
+    pub total_rows: usize,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl DataTablePrimitiveLayout {
+    /// Hit-test at an absolute `(x, y)` — subtracts [`Self::area`]'s
+    /// origin before delegating to [`DataTableLayout::hit_test`].
+    pub fn hit_test(&self, x: f32, y: f32) -> DataTableHit {
+        self.layout.hit_test(
+            x - self.area.x,
+            y - self.area.y,
+            self.scroll_offset,
+            self.total_rows,
+        )
+    }
+}
+
+/// Approximates every glyph as `char_w` wide — [`Primitive::layout`]'s
+/// no-live-font fallback for [`layout_metrics::pixel_data_table_layout`]'s
+/// column-title measurement, since [`crate::primitive::LayoutCtx`]
+/// carries only a flat `char_width`, not a live
+/// [`layout_metrics::TextMeasure`]. Backend-free, like
+/// `crate::compose::form_controller::CharWidthMeasure`'s identical
+/// estimate for the same reason — not gated to any pixel-backend
+/// feature.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+struct CharWidthMeasure(f32);
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl layout_metrics::TextMeasure for CharWidthMeasure {
+    fn width_of(&self, text: &str) -> f32 {
+        text.chars().count() as f32 * self.0
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl crate::primitive::Primitive for DataTable {
+    type Layout = DataTablePrimitiveLayout;
+    type Event = DataTableEvent;
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        // Same TUI-vs-pixel-backend discriminator `ListView`'s own
+        // `Primitive::layout` uses — see that impl's doc for why
+        // `ctx.line_height` is reliable even when both features are
+        // compiled into the same binary.
+        #[cfg(feature = "tui")]
+        if ctx.line_height <= 1.0 {
+            let area = crate::tui::backend::q_rect_to_ratatui(rect);
+            let layout = crate::tui::data_table_layout(area, self);
+            return DataTablePrimitiveLayout {
+                area: rect,
+                line_height: ctx.line_height,
+                nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+                scroll_offset: self.scroll_offset,
+                total_rows: self.rows.len(),
+                layout,
+            };
+        }
+        let measure = CharWidthMeasure(ctx.char_width);
+        let layout = layout_metrics::pixel_data_table_layout(
+            self,
+            rect.width,
+            rect.height,
+            ctx.line_height,
+            &measure,
+        );
+        DataTablePrimitiveLayout {
+            area: rect,
+            line_height: ctx.line_height,
+            nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+            scroll_offset: self.scroll_offset,
+            total_rows: self.rows.len(),
+            layout,
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let state = DataTablePaintState::default();
+            native_surface_paint::paint_with_state(
+                self,
+                surface,
+                theme,
+                layout.area,
+                layout.line_height,
+                &state,
+                /* glyphs */ None,
+                layout.nerd_fonts_enabled,
+            );
+        }
+        // A `tui`-only build has no `PaintSurface` to paint into at all —
+        // `self` reaching the screen on TUI goes through `Self::paint_cells`
+        // instead, which `DrawsPrimitives::draw_primitive`'s default body
+        // calls in place of this method whenever `Backend::cell_buffer`
+        // answers `Some`.
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, _style);
+        }
+    }
+
+    /// Delegates straight to [`crate::tui::draw_data_table`] — the exact
+    /// function [`crate::tui::backend::TuiBackend::draw_data_table`]
+    /// itself calls — so painting `DataTable` through
+    /// [`crate::primitive::Primitive`] on TUI is byte-for-byte identical
+    /// to painting it through `Backend::draw_data_table` by construction.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        crate::tui::draw_data_table(buf, area, self, theme, /* hovered_idx */ None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3581,5 +3781,182 @@ mod tests {
             None,
             "right border column is not the last column"
         );
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[cfg(test)]
+mod primitive_parity_tests {
+    use super::*;
+    use crate::backend::ImagePaintResult;
+    use crate::event::{Point, Viewport};
+    use crate::primitive::{LayoutCtx, Primitive};
+    use crate::style::Style;
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Image;
+    use crate::PaintSurface;
+
+    /// Records every verb call as a formatted line, in call order — a
+    /// byte-for-byte equal log from two different call paths is strong
+    /// evidence they painted the same thing. Mirrors
+    /// `crate::primitives::list::primitive_parity_tests::LogSurface`.
+    #[derive(Default)]
+    struct LogSurface {
+        calls: Vec<String>,
+    }
+
+    impl PaintSurface for LogSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(300.0, 200.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            16.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 8.0, 14.0)
+        }
+        fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+            self.calls.push(format!("fill_rect {rect:?} {color:?}"));
+        }
+        fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+            self.calls
+                .push(format!("fill_rounded_rect {rect:?} {radius} {color:?}"));
+        }
+        fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+            self.calls
+                .push(format!("stroke_rect {rect:?} {color:?} {stroke_width}"));
+        }
+        fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+            self.calls
+                .push(format!("draw_text_run {rect:?} {text:?} {color:?}"));
+        }
+        fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+            self.calls.push(format!(
+                "draw_line {from:?} {to:?} {color:?} {stroke_width}"
+            ));
+        }
+        fn surface_push_clip(&mut self, rect: Rect) {
+            self.calls.push(format!("push_clip {rect:?}"));
+        }
+        fn surface_pop_clip(&mut self) {
+            self.calls.push("pop_clip".to_string());
+        }
+        fn surface_draw_image(&mut self, rect: Rect, _image: &Image) -> ImagePaintResult {
+            self.calls.push(format!("draw_image {rect:?}"));
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    fn sample_table() -> DataTable {
+        DataTable {
+            id: WidgetId::new("pods"),
+            columns: vec![
+                Column {
+                    title: "Name".to_string(),
+                    width: ColumnWidth::Flex(2.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "Age".to_string(),
+                    width: ColumnWidth::FixedCells(5.0),
+                    align: ColumnAlign::Right,
+                },
+            ],
+            rows: (0..5)
+                .map(|i| DataRow {
+                    cells: vec![
+                        StyledText::plain(format!("pod-{i}")),
+                        StyledText::plain("3d"),
+                    ],
+                    decoration: Decoration::default(),
+                })
+                .collect(),
+            selected_idx: Some(2),
+            scroll_offset: 0,
+            sort: Some((0, SortDirection::Ascending)),
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+            bordered: false,
+        }
+    }
+
+    /// The acceptance criterion: `DataTable`'s [`Primitive::layout`] +
+    /// [`Primitive::paint`] must produce the exact same verb log as
+    /// calling [`native_surface_paint::paint_with_state`] directly with
+    /// the equivalent arguments.
+    #[test]
+    fn data_table_primitive_paint_matches_native_surface_paint() {
+        let table = sample_table();
+        let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
+        let ctx = LayoutCtx {
+            line_height: 16.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: true,
+        };
+        let theme = Theme::default();
+        let style = Style::default();
+
+        let via_primitive_layout = Primitive::layout(&table, &ctx, rect);
+        let mut via_primitive_surface = LogSurface::default();
+        Primitive::paint(
+            &table,
+            &via_primitive_layout,
+            &mut via_primitive_surface,
+            &theme,
+            &style,
+        );
+
+        let state = DataTablePaintState::default();
+        let mut direct_surface = LogSurface::default();
+        native_surface_paint::paint_with_state(
+            &table,
+            &mut direct_surface,
+            &theme,
+            rect,
+            ctx.line_height,
+            &state,
+            None,
+            ctx.nerd_fonts_enabled,
+        );
+
+        assert!(
+            !via_primitive_surface.calls.is_empty(),
+            "the table must paint something for this comparison to be meaningful"
+        );
+        assert_eq!(via_primitive_surface.calls, direct_surface.calls);
+    }
+
+    /// [`DataTablePrimitiveLayout::hit_test`] subtracts the area's
+    /// origin before delegating — a click at the layout's absolute
+    /// origin must resolve to the same hit as `(0, 0)` on the
+    /// table-local [`DataTableLayout::hit_test`].
+    #[test]
+    fn primitive_layout_hit_test_is_relative_to_area_origin() {
+        let table = sample_table();
+        let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
+        let ctx = LayoutCtx {
+            line_height: 16.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: true,
+        };
+
+        let layout = Primitive::layout(&table, &ctx, rect);
+        let local = layout.layout.hit_test(0.0, 0.0, 0, table.rows.len());
+        let absolute = layout.hit_test(rect.x, rect.y);
+        assert_eq!(local, absolute);
     }
 }

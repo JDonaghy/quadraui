@@ -233,14 +233,14 @@ pub trait Primitive: A11yPrimitive {
     /// outside a `tui`-enabled build can construct a `ratatui::buffer::Buffer`
     /// to call this with.
     ///
-    /// Default: no-op — correct for the common case of a `Primitive`
-    /// implementor with no TUI story at all (every built-in primitive
-    /// except [`crate::ListView`]'s pilot today); such an implementor
-    /// painted through [`crate::backend::DrawsPrimitives::draw_primitive`]
-    /// on TUI still gets a real, hit-testable [`Self::Layout`] back, just
-    /// no pixels on screen, the same "resolve layout, maybe paint"
-    /// contract that default already has for a `PaintSurface`-less
-    /// backend.
+    /// Default: no-op — correct for a `Primitive` implementor with no
+    /// TUI story at all (every built-in primitive except [`crate::ListView`],
+    /// [`crate::TreeView`], [`crate::DataTable`] and [`crate::TreeTable`],
+    /// which all override it); such an implementor painted through
+    /// [`crate::backend::DrawsPrimitives::draw_primitive`] on TUI still
+    /// gets a real, hit-testable [`Self::Layout`] back, just no pixels
+    /// on screen, the same "resolve layout, maybe paint" contract that
+    /// default already has for a `PaintSurface`-less backend.
     #[cfg(feature = "tui")]
     fn paint_cells(&self, layout: &Self::Layout, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let _ = (layout, buf, theme);
