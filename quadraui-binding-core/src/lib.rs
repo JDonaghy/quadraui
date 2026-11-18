@@ -22,6 +22,7 @@ pub mod hit;
 pub mod host;
 pub mod layout;
 pub mod render;
+pub mod scripted;
 pub mod semantic;
 pub mod services;
 pub mod text_input;
@@ -308,6 +309,10 @@ pub use render::{
 pub use render::{
     data_table_viewport_rows, list_viewport_rows, split_rects_with_gap, tree_viewport_rows,
     RenderFrame, RenderRefs,
+};
+pub use scripted::{
+    ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedLayout,
+    ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
 };
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{

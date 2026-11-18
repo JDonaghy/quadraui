@@ -38,6 +38,13 @@ win = ["quadraui/win"]
 # unconditionally: this crate's render/paint path drives `quadraui::Backend`
 # directly and has no language-specific feature of its own to gate it behind.
 quadraui = { path = "../quadraui", features = ["tui"] }
+# `ScriptedPrimitive::paint_cells` (`scripted.rs`) names
+# `ratatui::buffer::Buffer` by type, the exact signature
+# `quadraui::primitive::Primitive::paint_cells` takes — same version as
+# `quadraui/Cargo.toml`'s own `ratatui` so Cargo's workspace-wide resolver
+# unifies both into one dependency graph entry; a mismatched version would
+# make the two crates' `Buffer` types distinct and fail to type-check.
+ratatui = "0.30"
 serde = { version = "1.0", features = ["derive"] }
 # The decode medium for every entry point in `wire.rs` (via `wire::materialize`,
 # a `serde_json::Value`-producing `Visitor` with two deltas from `Value`'s own
