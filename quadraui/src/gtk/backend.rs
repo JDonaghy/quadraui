@@ -58,8 +58,8 @@ use crate::types::{Color, WidgetId};
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, Form,
     GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
-    Rect as QRect, ResizeEdge, Split, StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame,
-    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
+    Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, TabBar, TabBarLayout, TabChrome,
+    TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
 // `AcceleratorScope`/`KeyBinding` are only used by `#[cfg(test)]`
 // code below — they're gated to avoid unused import warnings.
@@ -2204,6 +2204,47 @@ fn theme_prefers_dark(theme: crate::Theme) -> bool {
     let bg = theme.background;
     let luma = (bg.r as u32 * 299 + bg.g as u32 * 587 + bg.b as u32 * 114) / 1000;
     luma < 128
+}
+
+/// Decide whether a freshly-read [`SystemTheme`] differs from the last one
+/// actually dispatched, returning the [`UiEvent::SystemThemeChanged`] to
+/// emit (or `None` when nothing actually changed).
+///
+/// Split out from `run.rs`'s GTK signal wiring so the dedup rule — compare
+/// against the *last dispatched* value, not the GTK default — is
+/// unit-testable without a live display connection. Needed because two
+/// independent producers can observe the same OS flip: `GtkSettings`'
+/// own `notify::gtk-application-prefer-dark-theme` (fired directly by GTK
+/// on every desktop that bridges the setting into its own settings store)
+/// and the best-effort `org.freedesktop.portal.Settings` `SettingChanged`
+/// watch (fired by desktops that only speak the portal, with no GTK-side
+/// bridge). Without this check those two can both fire for one flip and
+/// double up `UiEvent::SystemThemeChanged`, violating the "emits the event
+/// once" contract every other backend's equivalent wiring
+/// (`win::run::dispatch_event`'s `WM_SETTINGCHANGE` arm,
+/// `macos::run`'s `viewDidChangeEffectiveAppearance` override) upholds.
+pub(crate) fn system_theme_change_event(
+    last_dispatched: Option<SystemTheme>,
+    current: SystemTheme,
+) -> Option<UiEvent> {
+    if last_dispatched == Some(current) {
+        None
+    } else {
+        Some(UiEvent::SystemThemeChanged(current))
+    }
+}
+
+/// Map the `org.freedesktop.portal.Settings` `"color-scheme"` key's raw
+/// `u32` payload (portal spec: `0` = no preference, `1` = prefer dark,
+/// `2` = prefer light) to the dark/light bool [`SystemTheme::dark`] wants.
+/// `None` for any other value — the portal spec reserves no meaning for
+/// it, and a backend that doesn't recognise the value shouldn't guess.
+pub(crate) fn portal_color_scheme_dark(value: u32) -> Option<bool> {
+    match value {
+        0 | 2 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
 }
 
 /// Whether rects `a` and `b` share any area — used by
@@ -13950,6 +13991,71 @@ mod tests {
         // (its own doc comment) — this pins that the derived dark/light
         // read agrees with that claim.
         assert!(theme_prefers_dark(crate::Theme::default()));
+    }
+
+    // ── System theme change mapping ─────────────────────────────────────
+
+    fn sample_system_theme(dark: bool) -> SystemTheme {
+        SystemTheme {
+            dark,
+            accent: None,
+            high_contrast: false,
+            reduce_motion: false,
+        }
+    }
+
+    #[test]
+    fn system_theme_change_event_fires_on_first_read_with_no_baseline() {
+        let current = sample_system_theme(true);
+        assert_eq!(
+            system_theme_change_event(None, current),
+            Some(UiEvent::SystemThemeChanged(current))
+        );
+    }
+
+    #[test]
+    fn system_theme_change_event_fires_when_the_theme_actually_differs() {
+        let previous = sample_system_theme(false);
+        let current = sample_system_theme(true);
+        assert_eq!(
+            system_theme_change_event(Some(previous), current),
+            Some(UiEvent::SystemThemeChanged(current))
+        );
+    }
+
+    #[test]
+    fn system_theme_change_event_is_none_when_unchanged() {
+        let theme = sample_system_theme(true);
+        assert_eq!(system_theme_change_event(Some(theme), theme), None);
+    }
+
+    #[test]
+    fn system_theme_change_event_dedupes_a_second_producer_reporting_the_same_flip() {
+        // `GtkSettings`' own notify and the portal watch can both observe
+        // one OS flip; the second producer's read must not re-fire.
+        let before = sample_system_theme(false);
+        let after = sample_system_theme(true);
+        assert_eq!(
+            system_theme_change_event(Some(before), after),
+            Some(UiEvent::SystemThemeChanged(after))
+        );
+        assert_eq!(system_theme_change_event(Some(after), after), None);
+    }
+
+    #[test]
+    fn portal_color_scheme_dark_maps_prefer_dark() {
+        assert_eq!(portal_color_scheme_dark(1), Some(true));
+    }
+
+    #[test]
+    fn portal_color_scheme_dark_maps_no_preference_and_prefer_light_to_light() {
+        assert_eq!(portal_color_scheme_dark(0), Some(false));
+        assert_eq!(portal_color_scheme_dark(2), Some(false));
+    }
+
+    #[test]
+    fn portal_color_scheme_dark_rejects_an_out_of_range_value() {
+        assert_eq!(portal_color_scheme_dark(99), None);
     }
 
     // ── Caret blink ──────────────────────────────────────────────────────

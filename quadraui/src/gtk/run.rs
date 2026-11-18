@@ -167,7 +167,7 @@ use crate::runtime::{self, ReactionSink, RESIZE_SETTLE};
 // module — keeps working unchanged after the type moved to
 // `crate::runtime`.
 pub(crate) use crate::runtime::EventOutcome;
-use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, UiEvent};
+use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, SystemTheme, UiEvent};
 
 /// Default window size, in DIPs. Matches the `ApplicationWindow`
 /// builder's `default_width`/`default_height` below. Also used to seed
@@ -1052,6 +1052,7 @@ fn activate<A: AppLogic + 'static>(
     setup_scroll_controller(&da, &window, &app, &backend, &pump_depth, &cursor_pos);
     setup_resize_controller(&da, &window, &app, &backend, &pump_depth);
     setup_hidpi_controller(&da, &window, &app, &backend, &pump_depth);
+    setup_system_theme_controller(&da, &window, &app, &backend, &pump_depth);
     setup_file_drop_controller(&da, &window, &app, &backend, &pump_depth);
     setup_close_request(&window, &da, &app, &backend, &pump_depth, &events_handle);
     setup_event_drain(&da, &window, &app, &backend, &pump_depth, &events_handle);
@@ -1652,6 +1653,159 @@ fn setup_hidpi_controller<A: AppLogic + 'static>(
         };
         apply_event_outcome(outcome, &backend.borrow(), &da_for_dpi, &window_for_dpi);
     });
+}
+
+/// Wires the OS light/dark theme flip to [`UiEvent::SystemThemeChanged`].
+///
+/// Two independent producers feed the same dedup cell (`last_theme`):
+///
+/// 1. `gtk4::Settings`' own `notify::gtk-application-prefer-dark-theme` —
+///    fires directly from GTK on every desktop that bridges the OS
+///    preference into its own settings store (GNOME's GSettings schema,
+///    chiefly), with no D-Bus round trip needed.
+/// 2. [`setup_portal_theme_watcher`] — a best-effort watch on the
+///    `org.freedesktop.portal.Settings` `SettingChanged` signal, for
+///    desktops that only speak the xdg-desktop-portal colour-scheme
+///    preference with no GTK-side bridge.
+///
+/// Either can fire alone for a given flip, or both (duplicate) for the
+/// same one; [`crate::gtk::backend::system_theme_change_event`] (shared by
+/// both) folds that down to exactly one dispatch per actual change.
+///
+/// Mirrors [`setup_hidpi_controller`]'s shape, including the
+/// `gtk4::is_initialized_main_thread()` guard — load-bearing for this
+/// crate's own `GtkBackend` unit tests, which construct one with no
+/// display connection at all.
+fn setup_system_theme_controller<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
+    if !gtk4::is_initialized_main_thread() {
+        return;
+    }
+    let settings = gtk4::Settings::for_display(&gtk4::prelude::WidgetExt::display(window));
+
+    // Shared between both producers — see this function's doc.
+    let last_theme: Rc<Cell<Option<SystemTheme>>> = Rc::new(Cell::new(None));
+
+    // Best-effort; `None` on any host with no session bus or no portal
+    // `Settings` object running (headless CI, a desktop with no
+    // xdg-desktop-portal backend installed) — the primary `GtkSettings`
+    // notify below still covers those hosts on its own.
+    let portal_subscription =
+        setup_portal_theme_watcher(da, window, app, backend, pump_depth, &last_theme);
+
+    let backend = backend.clone();
+    let app = app.clone();
+    let da = da.clone();
+    let window = window.clone();
+    let pump_depth = pump_depth.clone();
+    settings.connect_gtk_application_prefer_dark_theme_notify(move |_settings| {
+        // Captured only to keep `setup_portal_theme_watcher`'s
+        // `SignalSubscription` alive for as long as this closure (and thus
+        // `settings`, the process-wide default/display `Settings`
+        // singleton) is — see `setup_system_theme_controller`'s doc.
+        // Never read otherwise.
+        let _portal_subscription_keep_alive = &portal_subscription;
+
+        if pump_depth.is_pumping() {
+            return;
+        }
+        let Ok(current) = backend.borrow().services().system_theme() else {
+            return;
+        };
+        let Some(event) = crate::gtk::backend::system_theme_change_event(last_theme.get(), current)
+        else {
+            return;
+        };
+        last_theme.set(Some(current));
+        let Some(outcome) = try_dispatch(&backend, &app, event) else {
+            return;
+        };
+        apply_event_outcome(outcome, &backend.borrow(), &da, &window);
+    });
+}
+
+/// Best-effort watch on the `org.freedesktop.portal.Settings`
+/// `SettingChanged` signal's `org.freedesktop.appearance` / `color-scheme`
+/// key — see [`setup_system_theme_controller`]'s doc for why this exists
+/// alongside the `GtkSettings` notify rather than instead of it.
+///
+/// Returns `None` (no-op) when the session bus or the portal `Settings`
+/// object isn't reachable — a missing portal is the common case on a
+/// headless host and on desktops that don't ship one at all, not an
+/// error. The returned subscription must be kept alive by the caller
+/// (dropping it unsubscribes immediately, per
+/// [`gtk4::gio::SignalSubscription`]'s own doc).
+fn setup_portal_theme_watcher<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+    last_theme: &Rc<Cell<Option<SystemTheme>>>,
+) -> Option<gtk4::gio::SignalSubscription> {
+    let connection =
+        gtk4::gio::bus_get_sync(gtk4::gio::BusType::Session, gtk4::gio::Cancellable::NONE).ok()?;
+    let backend = backend.clone();
+    let app = app.clone();
+    let da = da.clone();
+    let window = window.clone();
+    let pump_depth = pump_depth.clone();
+    let last_theme = last_theme.clone();
+    Some(connection.subscribe_to_signal(
+        None,
+        Some("org.freedesktop.portal.Settings"),
+        Some("SettingChanged"),
+        Some("/org/freedesktop/portal/desktop"),
+        None,
+        gtk4::gio::DBusSignalFlags::NONE,
+        move |signal| {
+            if pump_depth.is_pumping() {
+                return;
+            }
+            // `SettingChanged`'s payload is `(namespace: s, key: s, value: v)`
+            // per the portal spec; anything else (a malformed/future-shaped
+            // signal) is silently ignored rather than panicking.
+            let Some((namespace, key, value)) =
+                signal.parameters.get::<(String, String, glib::Variant)>()
+            else {
+                return;
+            };
+            if namespace != "org.freedesktop.appearance" || key != "color-scheme" {
+                return;
+            }
+            let Some(raw) = value.get::<u32>() else {
+                return;
+            };
+            let Some(dark) = crate::gtk::backend::portal_color_scheme_dark(raw) else {
+                return;
+            };
+            // Re-read the rest of the snapshot (`accent`/`high_contrast`/
+            // `reduce_motion`) from `GtkSettings` — only `dark` travels in
+            // this signal — and override it with the portal's own value,
+            // which may be ahead of whatever `GtkSettings` itself reports
+            // on a desktop with no GTK-side settings bridge (exactly the
+            // gap this watcher covers).
+            let Ok(mut current) = backend.borrow().services().system_theme() else {
+                return;
+            };
+            current.dark = dark;
+            let Some(event) =
+                crate::gtk::backend::system_theme_change_event(last_theme.get(), current)
+            else {
+                return;
+            };
+            last_theme.set(Some(current));
+            let Some(outcome) = try_dispatch(&backend, &app, event) else {
+                return;
+            };
+            apply_event_outcome(outcome, &backend.borrow(), &da, &window);
+        },
+    ))
 }
 
 /// Installs the recurring `glib::timeout_add_local` that drives
