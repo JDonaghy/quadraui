@@ -1292,12 +1292,15 @@ pub(crate) mod native_surface_paint {
     ///
     /// `layout` (a [`TabBarLayout`]) is bar-relative, not surface-absolute
     /// — see [`TabBarLayout::tab_center`]'s own doc. This function paints
-    /// every rect verbatim against that bar-relative origin, including the
-    /// `(0, 0)`-anchored background fill. A caller whose bar does not
-    /// start at the surface's own origin (e.g. a tab strip below a
-    /// toolbar) must first translate `surface` to the bar's own top-left
-    /// corner — `PaintSurface` has no offset argument on any `surface_*`
-    /// method, so this function cannot do that translation itself.
+    /// every rect verbatim against that bar-relative origin. A caller
+    /// whose bar does not start at the surface's own origin (e.g. a tab
+    /// strip below a toolbar) must either translate `surface` to the
+    /// bar's own top-left corner before calling (`PaintSurface` has no
+    /// offset argument on any `surface_*` method, so this function cannot
+    /// do that translation itself), or — if it instead bakes the offset
+    /// into every `Rect` in `layout` directly, as `macos::tab_bar` does —
+    /// pass that same y offset as `bar_y` so the one rect this function
+    /// derives itself, the background fill, lands in the same place.
     ///
     /// # Visual contract
     ///
@@ -1349,6 +1352,10 @@ pub(crate) mod native_surface_paint {
     /// reserve the bracket glyphs' width (see
     /// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]'s doc),
     /// so this function only has to paint them, not re-measure the slot.
+    /// `bar_y` is the y this function's own background fill starts at —
+    /// `0.0` for a caller that translates `surface` to the bar's origin,
+    /// or the same offset already baked into `layout`'s own rects
+    /// otherwise (see "Coordinate space" above).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         bar: &TabBar,
@@ -1361,6 +1368,7 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         style: &Style,
+        bar_y: f32,
     ) {
         if layout.bar_width <= 0.0 || layout.bar_height <= 0.0 {
             return;
@@ -1369,7 +1377,7 @@ pub(crate) mod native_surface_paint {
         let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
 
         surface.surface_fill_rect(
-            Rect::new(0.0, 0.0, layout.bar_width, layout.bar_height),
+            Rect::new(0.0, bar_y, layout.bar_width, layout.bar_height),
             theme.tab_bar_bg,
         );
 
@@ -1731,6 +1739,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             assert!(
@@ -1768,6 +1777,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             let expected = theme.list_hover_bg(theme.tab_bar_bg);
@@ -1805,6 +1815,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             let expected = theme.list_pressed_bg(theme.tab_bar_bg);
@@ -1840,6 +1851,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             assert!(
@@ -1874,6 +1886,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             let dirty = crate::codicon::DIRTY.to_string();
@@ -1916,6 +1929,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             let close = crate::codicon::CLOSE.to_string();
@@ -2091,6 +2105,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             assert_eq!(
@@ -2136,6 +2151,7 @@ pub(crate) mod native_surface_paint {
                     &mut surface,
                     &theme,
                     &Style::default(),
+                    0.0,
                 );
 
                 assert!(surface.fills.is_empty());
@@ -2170,6 +2186,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &style,
+                0.0,
             );
 
             let tab_x = layout.visible_tabs[0].bounds.x;
@@ -2205,6 +2222,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             let cb = layout.visible_tabs[0]
@@ -2253,6 +2271,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             // The bar's 20.0 row height against `RecordingSurface`'s
@@ -2293,6 +2312,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             let cb = layout.visible_tabs[0]
@@ -2342,6 +2362,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &style,
+                0.0,
             );
 
             let tab_x = layout.visible_tabs[0].bounds.x;
