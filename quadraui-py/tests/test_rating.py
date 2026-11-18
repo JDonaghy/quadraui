@@ -17,6 +17,8 @@ Run against a built wheel/extension, e.g.:
 import importlib.util
 import pathlib
 
+from quadraui.app import App
+
 _EXAMPLE_PATH = pathlib.Path(__file__).resolve().parent.parent / "examples" / "rating.py"
 
 
@@ -109,6 +111,84 @@ def test_rating_cannot_go_below_zero_or_above_max_stars():
     for _ in range(10):
         _key(app, "Right")
     assert demo.rating == rating.MAX_STARS
+
+
+def _locate_text(app, needle):
+    """Scans the plain-text `screen()` dump for `needle` and returns the
+    `(row, col)` of its first occurrence -- the same technique
+    `test_app_layer.py`'s own `_locate_text` uses for a confirm dialog's
+    button label."""
+    for row, line in enumerate(app.screen().splitlines()):
+        col = line.find(needle)
+        if col != -1:
+            return row, col
+    raise AssertionError(f"{needle!r} not found on screen")
+
+
+def test_a_confirm_dialog_claims_a_click_on_its_own_button_over_the_widget_behind_it():
+    """`App.confirm` opens a message dialog without moving keyboard focus
+    (`open_message_dialog` deliberately leaves focus alone -- see its own
+    doc), so with a `Widget` filling the whole viewport behind it (this
+    demo's shape), a click on the dialog's own button must resolve the
+    dialog and must not also be delivered to the widget underneath as a
+    `RegionClicked`. `dispatch_to_script_widget` checks
+    `backend.modal_stack_handle()` before touching the widget's hit map
+    for exactly this -- without it, this click would both resolve the
+    dialog *and* rate the star under the button's screen position."""
+    rating = _load_rating()
+    demo = rating.RatingDemo()
+    app = App(40, 20, view=demo.view, on_event=demo.on_key)
+    before = demo.rating
+
+    resolved = []
+    app.confirm(
+        "Discard?",
+        "Discard changes?",
+        [{"id": "ok", "label": "OK", "is_default": True}],
+        on_resolve=resolved.append,
+    )
+    app.step()
+    assert app.screen_contains("OK")
+
+    row, col = _locate_text(app, "OK")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row}, "modifiers": {}}}
+    )
+    app.step()
+
+    assert resolved == ["ok"]
+    assert demo.rating == before
+
+
+def test_a_confirm_dialog_claims_a_key_over_a_focused_widget_behind_it():
+    """A click that focuses the widget (its only tab stop) before the
+    dialog opens must not leave that focus reachable by keyboard while
+    the dialog is open: `backend.modal_stack_handle().top_focusable()`
+    being set bails `dispatch_to_script_widget` out of the key path the
+    same way the click path above is bailed out of."""
+    rating = _load_rating()
+    demo = rating.RatingDemo()
+    app = App(40, 20, view=demo.view, on_event=demo.on_key)
+
+    star_width = 40 / rating.MAX_STARS
+    _click(app, star_width * 4 + star_width / 2, 0.0)
+    assert demo.rating == 5
+
+    resolved = []
+    app.confirm(
+        "Discard?",
+        "Discard changes?",
+        [{"id": "ok", "label": "OK", "is_default": True}],
+        on_resolve=resolved.append,
+    )
+    app.step()
+
+    _key(app, "Left")
+    assert demo.rating == 5
+
+    app.push_event({"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}})
+    app.step()
+    assert resolved == ["ok"]
 
 
 def test_a11y_reports_a_slider_role_and_the_current_value():

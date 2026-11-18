@@ -1228,10 +1228,20 @@ impl PyAppLogic {
     /// `focus_manager` -- unaffected by whatever `InteractionEngine::handle`
     /// does with the same `event` right after this returns, so running
     /// before it (as `Self::handle` does) or after would answer
-    /// identically; a click/key a script widget consumes here still also
-    /// reaches the registered Python handler through the normal path
-    /// below, same as any other unclaimed event -- harmless, since nothing
-    /// on that generic path recognizes a script widget's id either.
+    /// identically *for hit-map/focus staleness* -- but not for claim/modal
+    /// precedence, which is why this consults `backend.modal_stack_handle`
+    /// itself before ever touching the hit map below. A message/form/
+    /// layout dialog, an open context menu, a menu-bar dropdown, or a
+    /// completions popover all push their bounds onto that same
+    /// `quadraui::ModalStack` (see `InteractionEngine::open_message_dialog`
+    /// and friends), so a click that lands inside one of those -- or any
+    /// key while one holds focus -- bails out here before reaching a
+    /// script widget underneath, the same precedence
+    /// `InteractionEngine::dispatch_overlays` already gives every built-in
+    /// modal surface. Without this, `App.confirm`/`App.alert` -- which
+    /// open a message dialog without moving keyboard focus -- would leak
+    /// both the dialog's own button click and any typed key through to
+    /// whatever script widget fills the viewport behind it.
     fn dispatch_to_script_widget(&self, event: &UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
             UiEvent::MouseDown {
@@ -1239,11 +1249,39 @@ impl PyAppLogic {
                 button,
                 modifiers,
                 ..
-            } => self.script_widget_click(*position, *button, *modifiers, false),
+            } => {
+                if backend
+                    .modal_stack_handle()
+                    .borrow()
+                    .hit_test(*position)
+                    .is_some()
+                {
+                    return Reaction::Continue;
+                }
+                self.script_widget_click(*position, *button, *modifiers, false)
+            }
             UiEvent::DoubleClick { position, .. } => {
+                if backend
+                    .modal_stack_handle()
+                    .borrow()
+                    .hit_test(*position)
+                    .is_some()
+                {
+                    return Reaction::Continue;
+                }
                 self.script_widget_click(*position, MouseButton::Left, Modifiers::default(), true)
             }
-            UiEvent::KeyPressed { key, .. } => self.script_widget_key(key, backend),
+            UiEvent::KeyPressed { key, .. } => {
+                if backend
+                    .modal_stack_handle()
+                    .borrow()
+                    .top_focusable()
+                    .is_some()
+                {
+                    return Reaction::Continue;
+                }
+                self.script_widget_key(key, backend)
+            }
             _ => Reaction::Continue,
         }
     }
