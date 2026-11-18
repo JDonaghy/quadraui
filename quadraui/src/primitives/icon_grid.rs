@@ -502,13 +502,25 @@ pub(crate) mod native_surface_paint {
     use crate::Rect;
 
     /// Paint an [`IconGrid`]'s visible tiles — background, each tile's
-    /// centred icon/label (selection highlight behind the selected
-    /// tile) — onto `surface` at `area`.
+    /// centred icon/thumbnail/label (rounded selection highlight, hover
+    /// tint, and focus ring, via
+    /// [`row_content_paint::paint_tile_icon_label`]) — onto `surface` at
+    /// `area`.
     ///
     /// `grid_layout` must be the same [`IconGridLayout`] the caller uses
     /// for hit-testing, so paint and hit-test can never disagree —
     /// mirrors [`crate::primitives::list::native_surface_paint::paint`]'s
     /// own `list_layout` contract.
+    ///
+    /// `hovered_idx` — index into `grid.items` to tint via
+    /// [`Theme::list_hover_bg`], mirroring
+    /// [`crate::primitives::list::native_surface_paint::paint`]'s own
+    /// `hovered_idx` parameter: `None` from every caller today (`IconGrid`
+    /// has no dedicated `Backend::draw_icon_grid` method with its own
+    /// mouse-hover tracking to source a real index from — see this
+    /// module's own doc, "No new Backend methods"), reserved for a
+    /// future caller that does.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         grid: &IconGrid,
         area: Rect,
@@ -516,7 +528,8 @@ pub(crate) mod native_surface_paint {
         nerd_fonts_enabled: bool,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
-        _style: &Style,
+        style: &Style,
+        hovered_idx: Option<usize>,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -533,16 +546,26 @@ pub(crate) mod native_surface_paint {
                 tile.bounds.height,
             );
             let selected = tile.item_idx == grid.selected_idx && grid.has_focus;
+            let hovered = !selected && Some(tile.item_idx) == hovered_idx;
             let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
             row_content_paint::paint_tile_icon_label(
                 surface,
                 tile_area,
                 Some(&item.icon),
+                item.image.as_ref(),
                 nerd_fonts_enabled,
                 &label,
                 theme.surface_fg,
-                selected,
-                theme.selected_bg,
+                row_content_paint::TileHighlight {
+                    selected,
+                    hovered,
+                    focused: grid.has_focus,
+                    selected_bg: theme.selected_bg,
+                    hover_bg: theme.list_hover_bg(theme.background),
+                    focus_ring_color: theme.focus_ring_color(),
+                    radius: style.corner_radius,
+                    ring_width: style.focus_ring_width,
+                },
             );
         }
 
@@ -662,6 +685,7 @@ impl crate::primitive::Primitive for IconGrid {
                 surface,
                 theme,
                 style,
+                /* hovered_idx */ None,
             );
         }
         // A `tui`-only build has no `PaintSurface` to paint into at all

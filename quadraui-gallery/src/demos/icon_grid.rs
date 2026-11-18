@@ -8,16 +8,22 @@
 //! one column count; Home/End jump to the first/last item; Page Up/Page
 //! Down move by one viewport's worth of rows; Enter activates the
 //! selected tile. A single click selects the tile under the pointer.
+//!
+//! `logo.png`'s tile carries [`IconGridItem::image`] — the same
+//! `quadra_logo.png` asset `image.rs`'s own demo paints — so a GUI
+//! capture of this demo shows a real thumbnail, scaled to fit, next to
+//! every other tile's plain icon glyph.
 
 use quadraui::{
     icon_grid_move_selection, Backend, BackendCaps, Color, DrawsPrimitives, Icon, IconGrid,
-    IconGridHit, IconGridItem, IconGridNav, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
+    IconGridHit, IconGridItem, IconGridNav, Image, ImageFit, ImageSource, Key, MouseButton,
+    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("icon_grid.rs");
+const LOGO_PNG: &[u8] = include_bytes!("../../assets/quadra_logo.png");
 
 /// `Style`'s chrome-metric `token`, floored at the chrome line height on
 /// a pixel backend — never shrunk below it — or the plain chrome line
@@ -60,7 +66,21 @@ impl IconGridDemo {
             .map(|(name, codicon, fallback)| IconGridItem {
                 id: WidgetId::new(format!("gallery:icon-grid:{name}")),
                 icon: Icon::codicon(codicon, *fallback).unwrap_or_else(|| Icon::new("", *fallback)),
-                image: None,
+                // `logo.png` carries a real thumbnail — every other
+                // item paints its codicon glyph instead, same as a
+                // Finder icon view mixing a handful of real image
+                // thumbnails in with plain file-type icons.
+                image: if *name == "logo.png" {
+                    Some(Image {
+                        id: WidgetId::new(format!("gallery:icon-grid:{name}:thumb")),
+                        source: ImageSource::Bytes(LOGO_PNG.to_vec()),
+                        intrinsic_size: Some((24, 24)),
+                        fit: ImageFit::Contain,
+                        fallback_text: "[Q]".into(),
+                    })
+                } else {
+                    None
+                },
                 label: StyledText::plain(*name),
                 detail: None,
                 decoration: Default::default(),
