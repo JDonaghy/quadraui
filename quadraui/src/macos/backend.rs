@@ -2789,7 +2789,7 @@ impl Backend for MacBackend {
             &mut surface,
             &theme,
             rect,
-            line_height,
+            line_height as f32,
             &state,
             self.nerd_fonts_enabled,
         )
@@ -2807,7 +2807,7 @@ impl Backend for MacBackend {
             table,
             rect.width,
             rect.height,
-            self.resolved_row_height(self.current_line_height),
+            self.resolved_row_height(self.current_line_height) as f32,
             font,
         )
     }
