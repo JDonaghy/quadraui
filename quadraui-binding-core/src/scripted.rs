@@ -25,10 +25,13 @@
 //! per frame per cache key. [`quadraui::primitive::Primitive::layout`]
 //! caches `measure`'s answer keyed on `(ctx, rect)`;
 //! [`quadraui::primitive::Primitive::paint`]/`paint_cells` cache `paint`'s
-//! answer keyed on `(props, rect, theme)` — both skip the script call
-//! entirely when a later frame's key matches the cached one.
-//! [`ScriptedPrimitive::call_count`] reports the running total, for a test
-//! to assert a repeated frame with an unchanged key made no further calls.
+//! answer keyed on `(props, rect, theme)`; [`crate::extra_paint::ExtraPaint::natural_size`]
+//! caches `measure`'s unconstrained answer keyed on `ctx` alone (it runs
+//! once per layout/paint pass, before any rect exists to key on) — all
+//! three skip the script call entirely when a later frame's key matches
+//! the cached one. [`ScriptedPrimitive::call_count`] reports the running
+//! total, for a test to assert a repeated frame with an unchanged key made
+//! no further calls.
 //!
 //! # Why no central engine/render dispatch hook
 //!
@@ -222,6 +225,7 @@ pub struct ScriptedPrimitive<W: ScriptWidget> {
     state: RefCell<ScriptedState>,
     measure_cache: RefCell<Option<(MeasureCacheKey, ScriptedSize)>>,
     paint_cache: RefCell<Option<PaintCacheEntry>>,
+    natural_size_cache: RefCell<Option<(LayoutCtx, ScriptedSize)>>,
     a11y_cache: RefCell<Option<(ScriptedProps, Option<ScriptedA11y>)>>,
     /// Total number of calls made into [`Self::widget`] across
     /// `measure`/`paint`/`on_event`/`a11y` — see module doc "Caching".
@@ -243,6 +247,7 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
             state: RefCell::new(serde_json::Value::Null),
             measure_cache: RefCell::new(None),
             paint_cache: RefCell::new(None),
+            natural_size_cache: RefCell::new(None),
             a11y_cache: RefCell::new(None),
             call_count: AtomicU64::new(0),
         }
@@ -366,6 +371,30 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
         self.record_call();
         let size = self.widget.measure(ctx, constraints);
         *self.measure_cache.borrow_mut() = Some((key, size));
+        size
+    }
+
+    /// [`ExtraPaint::natural_size`]'s answer for `ctx`, calling
+    /// [`ScriptWidget::measure`] only on a cache miss. Keyed on `ctx` alone
+    /// (no `rect` — [`ExtraPaint::natural_size`] has none, since it runs
+    /// before any rect is resolved) because `measure` itself takes only
+    /// `(ctx, constraints)`, and `constraints` is always
+    /// [`ScriptedConstraints::default`] (unconstrained) here, so `ctx` is
+    /// the whole key. This is a *separate* cache from
+    /// [`Self::measure_cache`]/[`Self::resolve_size`]'s `(ctx, rect)` key,
+    /// since `crate::render::layout_container_rects` calls
+    /// [`ExtraPaint::natural_size`] once per layout/paint pass for every
+    /// `SectionSize::Content` child — once per frame, the same budget as
+    /// `paint` — so this answer must be cached exactly like `paint`'s is.
+    fn resolve_natural_size(&self, ctx: &LayoutCtx) -> ScriptedSize {
+        if let Some((cached_ctx, cached_size)) = self.natural_size_cache.borrow().as_ref() {
+            if *cached_ctx == *ctx {
+                return *cached_size;
+            }
+        }
+        self.record_call();
+        let size = self.widget.measure(ctx, ScriptedConstraints::default());
+        *self.natural_size_cache.borrow_mut() = Some((*ctx, size));
         size
     }
 
@@ -494,21 +523,21 @@ impl<W: ScriptWidget + 'static> ExtraPaint for ScriptedPrimitive<W> {
         self.focusable
     }
 
-    /// Calls [`ScriptWidget::measure`] directly with no size constraint on
-    /// either axis — unlike [`Primitive::layout`], not routed through
-    /// [`Self::resolve_size`]'s per-frame `(ctx, rect)` cache, since there
-    /// is no real `rect` here to key on (`crate::render::layout_container_rects`
-    /// calls this once, before any rect is resolved, to decide how much
-    /// space to give this leaf in the first place) and, unlike a per-frame
-    /// paint, this is not called every frame.
+    /// Calls [`ScriptWidget::measure`] with no size constraint on either
+    /// axis, through [`Self::resolve_natural_size`]'s `ctx`-keyed cache —
+    /// unlike [`Primitive::layout`]'s `(ctx, rect)` key, there is no real
+    /// `rect` here (`crate::render::layout_container_rects` calls this
+    /// before any rect is resolved, to decide how much space to give this
+    /// leaf in the first place), but it is still called once per
+    /// layout/paint pass, so an unchanged `ctx` must not re-enter the
+    /// script.
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
         let ctx = LayoutCtx {
             line_height: backend.line_height(),
             char_width: backend.char_width(),
             nerd_fonts_enabled: backend.nerd_fonts_enabled(),
         };
-        self.record_call();
-        let size = self.widget.measure(&ctx, ScriptedConstraints::default());
+        let size = self.resolve_natural_size(&ctx);
         NaturalSize::new(Some(size.width), Some(size.height))
     }
 }
@@ -718,9 +747,12 @@ mod tests {
 
     #[test]
     fn unchanged_props_make_zero_script_calls_on_a_second_frame() {
+        use quadraui::tui::TuiBackend;
+
         let primitive = swatch();
         let rect = Rect::new(0.0, 0.0, 10.0, 4.0);
         let mut surface = RecordingSurface::default();
+        let mut backend = TuiBackend::new();
 
         let layout = primitive.layout(&ctx(), rect);
         Primitive::paint(
@@ -731,6 +763,7 @@ mod tests {
             &Style::default(),
         );
         let _ = primitive.a11y_info();
+        let _ = ExtraPaint::natural_size(&primitive, &mut backend);
         let after_first_frame = primitive.call_count();
         assert!(after_first_frame > 0, "first frame should call the script");
 
@@ -744,6 +777,7 @@ mod tests {
             &Style::default(),
         );
         let _ = primitive.a11y_info();
+        let _ = ExtraPaint::natural_size(&primitive, &mut backend);
 
         assert_eq!(
             primitive.call_count(),
