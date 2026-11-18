@@ -199,10 +199,19 @@ impl AppLogic for CanvasRegionsDemo {
     }
 
     fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
-        // One tab stop: the canvas itself. No `ScreenLayout` involved —
-        // unlike `focus_demo.rs`'s multi-widget order, there is nothing
-        // to derive here beyond the one rect `render` already cached.
-        vec![(self.canvas_id(), *self.cached_canvas_rect.borrow())]
+        // One tab stop: the canvas itself, gated on `Canvas::focusable` —
+        // the same flag `render`/`canvas()` set on the descriptor, read
+        // back here rather than hardcoded, so flipping it actually
+        // changes whether Tab reaches the canvas. No `ScreenLayout`
+        // involved — unlike `focus_demo.rs`'s multi-widget order, there
+        // is nothing to derive here beyond the one rect `render` already
+        // cached.
+        let rect = *self.cached_canvas_rect.borrow();
+        if self.canvas(rect).focusable {
+            vec![(self.canvas_id(), rect)]
+        } else {
+            vec![]
+        }
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -269,7 +278,8 @@ impl AppLogic for CanvasRegionsDemo {
                 let shape = match layout.region_hit_test(&canvas, position.x, position.y) {
                     CanvasHit::Region { id } => self
                         .region_index(id)
-                        .and_then(|idx| canvas.regions[idx].cursor)
+                        .and_then(|idx| canvas.regions.get(idx))
+                        .and_then(|region| region.cursor)
                         .map(CanvasCursor::to_pointer_shape)
                         .unwrap_or(PointerShape::Default),
                     _ => PointerShape::Default,
