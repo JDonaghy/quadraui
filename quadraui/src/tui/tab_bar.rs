@@ -226,9 +226,9 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     // Hit geometry comes straight from the shared `TabBarLayout` via the
     // same `tab_bar_hits_from_layout`/`shift_tab_bar_hits` pair the
     // no-paint `TuiBackend::tab_bar_layout_icons` twin (`backend.rs`)
-    // already uses — this loop only overrides `available_cols` with the
-    // tab-content width below and keeps `correct_scroll_offset` as the
-    // caller's input (TUI's char-based fit needs no correction).
+    // already uses — this function only overrides `available_cols` with
+    // the tab-content width below and keeps `correct_scroll_offset` as
+    // the caller's input (TUI's char-based fit needs no correction).
     let mut hits = crate::backend::tab_bar_hits_from_layout(layout, bar);
     crate::backend::shift_tab_bar_hits(&mut hits, area.x as f64);
 
