@@ -1672,10 +1672,11 @@ fn setup_hidpi_controller<A: AppLogic + 'static>(
 /// same one; [`crate::gtk::backend::system_theme_change_event`] (shared by
 /// both) folds that down to exactly one dispatch per actual change.
 ///
-/// Mirrors [`setup_hidpi_controller`]'s shape, including the
-/// `gtk4::is_initialized_main_thread()` guard — load-bearing for this
-/// crate's own `GtkBackend` unit tests, which construct one with no
-/// display connection at all.
+/// The `gtk4::is_initialized_main_thread()` guard below is the same
+/// defensive check `gtk/backend.rs` and `gtk/services.rs` use before
+/// touching display-bound GTK state; this function is only ever called
+/// from `activate`, where GTK is already initialised, so it's a no-op
+/// in practice.
 fn setup_system_theme_controller<A: AppLogic + 'static>(
     da: &DrawingArea,
     window: &ApplicationWindow,
@@ -1714,7 +1715,14 @@ fn setup_system_theme_controller<A: AppLogic + 'static>(
         if pump_depth.is_pumping() {
             return;
         }
-        let Ok(current) = backend.borrow().services().system_theme() else {
+        // `try_borrow`, not `borrow`: degrade instead of panicking on a
+        // double borrow, the same re-entrancy backstop every other
+        // recurring source in this module uses (see `setup_caret_blink`).
+        let Some(current) = backend
+            .try_borrow()
+            .ok()
+            .and_then(|b| b.services().system_theme().ok())
+        else {
             return;
         };
         let Some(event) = crate::gtk::backend::system_theme_change_event(last_theme.get(), current)
@@ -1789,8 +1797,13 @@ fn setup_portal_theme_watcher<A: AppLogic + 'static>(
             // this signal — and override it with the portal's own value,
             // which may be ahead of whatever `GtkSettings` itself reports
             // on a desktop with no GTK-side settings bridge (exactly the
-            // gap this watcher covers).
-            let Ok(mut current) = backend.borrow().services().system_theme() else {
+            // gap this watcher covers). `try_borrow`, not `borrow` — see
+            // `setup_system_theme_controller`'s matching comment.
+            let Some(mut current) = backend
+                .try_borrow()
+                .ok()
+                .and_then(|b| b.services().system_theme().ok())
+            else {
                 return;
             };
             current.dark = dark;
