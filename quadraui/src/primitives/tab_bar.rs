@@ -1978,6 +1978,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             let open_brackets = surface
@@ -2026,6 +2027,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             assert!(
@@ -2067,6 +2069,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
             );
 
             assert!(
