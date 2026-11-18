@@ -1,6 +1,6 @@
-// Black-box coverage for the `"scroll"` `LayoutNode` variant through the
-// published JS surface -- the Node counterpart of
-// `quadraui-py/tests/test_layout_containers.py`'s own `scroll` tests.
+// Black-box coverage for the `"scroll"` and `"grid"` `LayoutNode`
+// variants through the published JS surface -- the Node counterpart of
+// `quadraui-py/tests/test_layout_containers.py`'s own tests for them.
 //
 // An uncontrolled scroll position actually moving is driven by two
 // separate code paths: `InteractionEngine::handle`'s own wheel/key
@@ -140,6 +140,53 @@ test("scroll with a controlled offset pins it from the very first paint", () => 
     "a controlled offset must pin the very first paint, not clamp to 0 for lack of a prior hit",
   );
   assert.ok(app.screenContains("Item15"));
+});
+
+test("grid lays its cells out row-major across two columns and two rows", () => {
+  // A `"grid"` node's `cells` fill its `columns` x `rows` tracks
+  // row-major: left to right within a row, then top to bottom. Two
+  // equal-`Weight` columns split the width in half and two equal-`Weight`
+  // rows split the height, so the four leaves land one per quadrant --
+  // the Node counterpart of `quadraui-py`'s own grid test.
+  const app = new QuiApp(40, 4);
+  app.setRender(() => ({
+    grid: {
+      columns: [{ Weight: 1.0 }, { Weight: 1.0 }],
+      rows: [{ Weight: 1.0 }, { Weight: 1.0 }],
+      cells: [
+        { id: "l:nw", button: { id: "l:nw", label: "NW" } },
+        { id: "l:ne", button: { id: "l:ne", label: "NE" } },
+        { id: "l:sw", button: { id: "l:sw", label: "SW" } },
+        { id: "l:se", button: { id: "l:se", label: "SE" } },
+      ],
+    },
+  }));
+
+  const lines = app.screen().split("\n");
+  const top = lines.slice(0, 2).join("");
+  const bottom = lines.slice(2).join("");
+  assert.ok(top.includes("NW") && top.includes("NE"), app.screen());
+  assert.ok(bottom.includes("SW") && bottom.includes("SE"), app.screen());
+  const nwLine = lines.find((line: string) => line.includes("NW")) ?? "";
+  assert.ok(nwLine.indexOf("NW") < nwLine.indexOf("NE"), nwLine);
+});
+
+test("grid rejects more cells than its tracks have room for", () => {
+  // The overflow cell has nowhere to paint, so it is a decode error
+  // rather than a silently dropped tile.
+  const app = new QuiApp(20, 4);
+  app.setRender(() => ({
+    grid: {
+      columns: [{ Weight: 1.0 }],
+      rows: [{ Weight: 1.0 }],
+      cells: [
+        { id: "l:a", button: { id: "l:a", label: "A" } },
+        { id: "l:b", button: { id: "l:b", label: "B" } },
+      ],
+    },
+  }));
+
+  assert.throws(() => app.screen(), /cells/);
 });
 
 test("Scroll node helper builds the expected wire shape and omits defaults", () => {
