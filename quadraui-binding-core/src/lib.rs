@@ -298,6 +298,7 @@ pub use host::{
     WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
     SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
+pub use layout::{grid_cell_rects, LayoutGrid};
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree};
 pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};

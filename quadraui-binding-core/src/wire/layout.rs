@@ -1,6 +1,6 @@
-//! Decodes the eight [`LAYOUT_NODE_KEYS`] container node kinds a layout
-//! tree may hold — `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/
-//! `"sidebar_panel"`/`"split_tree"`/`"scroll"` — plus the `"style"`/
+//! Decodes the nine [`LAYOUT_NODE_KEYS`] container node kinds a layout
+//! tree may hold — `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/
+//! `"panel"`/`"sidebar_panel"`/`"split_tree"`/`"scroll"` — plus the `"style"`/
 //! `"class"` wrapping and `"padding"`/`"margin"`/`"gap"`/`"justify"`/
 //! `"align"` siblings every node dict may carry regardless of its own
 //! kind. A dict matching none of these falls through to
@@ -15,8 +15,10 @@ use quadraui::{
     TabBarSegment, TabItem, WidgetId,
 };
 
+use quadraui::layout::GridTrack;
+
 use crate::layout::{
-    Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutNode, LayoutPanel,
+    Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutGrid, LayoutNode, LayoutPanel,
     LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutStyled, LayoutTabEntry,
     LayoutTabs, Spacing,
 };
@@ -53,13 +55,14 @@ fn split_direction(context: &str, orientation: &str) -> Result<SplitDirection, D
 // ─── Layout tree decode ─────────────────────────────────────────────────────
 
 /// The dispatch keys [`crate::wire::decode_layout_node`] checks, in check
-/// order — a `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/
+/// order — a `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/`"panel"`/
 /// `"sidebar_panel"`/`"split_tree"`/`"scroll"` node, else a leaf. Shared
 /// with [`super::frame::is_layout_tree`]'s flat-vs-tree sniff so the two
 /// can't drift onto different key lists.
-pub const LAYOUT_NODE_KEYS: [&str; 8] = [
+pub const LAYOUT_NODE_KEYS: [&str; 9] = [
     "row",
     "column",
+    "grid",
     "split",
     "tabs",
     "panel",
@@ -85,6 +88,7 @@ const ROW_SHAPE_KEYS: [&str; 7] = [
 const COLUMN_SHAPE_KEYS: [&str; 7] = [
     "column", "padding", "margin", "gap", "justify", "align", "wrap",
 ];
+const GRID_SHAPE_KEYS: [&str; 3] = ["grid", "padding", "margin"];
 const SPLIT_SHAPE_KEYS: [&str; 4] = ["split", "padding", "margin", "gap"];
 const TABS_SHAPE_KEYS: [&str; 3] = ["tabs", "padding", "margin"];
 const PANEL_SHAPE_KEYS: [&str; 3] = ["panel", "padding", "margin"];
@@ -161,6 +165,18 @@ fn layout_node_from_value_inner(
             align,
             wrap,
         }));
+    }
+    if let Some(v) = obj_get(value, "grid") {
+        check_node_sibling_keys(diagnostics, what, "\"grid\"", value, &GRID_SHAPE_KEYS)?;
+        let spacing = spacing_from_value(what, value, "\"grid\"", false)?;
+        let grid_value = must_be_dict(what, v, "grid")?;
+        return Ok(LayoutNode::Grid(layout_grid_from_value(
+            what,
+            grid_value,
+            spacing,
+            styles,
+            diagnostics,
+        )?));
     }
     if let Some(v) = obj_get(value, "split") {
         check_node_sibling_keys(diagnostics, what, "\"split\"", value, &SPLIT_SHAPE_KEYS)?;
@@ -718,6 +734,109 @@ fn scroll_axis_from_value(context: &str, value: &Value) -> Result<ScrollAxis, De
             }
         }
     }
+}
+
+/// Decodes one `"columns"`/`"rows"` track list entry:
+/// `{"Fixed": n}`/`{"Percent": p}`/`{"Weight": w}`/`{"Content": n}` —
+/// [`GridTrack`]'s own serde representation, deliberately the same object-
+/// wrapper vocabulary a row/column child's `"size"` key already uses for
+/// [`quadraui::SectionSize`] (see [`child_size_from_value`]) rather than a
+/// second spelling of the same concept. `{"Percent": p}` is range-checked
+/// to `0.0..=1.0` for the same reason it is there: `{"Percent": 25}`
+/// meaning "25 percent" is a plausible typo, and silently reading it as
+/// `2500%` would paint a single track over the whole axis.
+fn grid_track_from_value(
+    value: &Value,
+    context: &str,
+    axis: &str,
+) -> Result<GridTrack, DecodeError> {
+    let track = serde_json::from_value::<GridTrack>(value.clone())
+        .map_err(|err| DecodeError::borrow(context, format!("\"{axis}\": {err}")))?;
+    if let GridTrack::Percent(p) = track {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(DecodeError::borrow(
+                context,
+                format!("\"{axis}\": {{\"Percent\": ..}} must be between 0.0 and 1.0, got {p}"),
+            ));
+        }
+    }
+    Ok(track)
+}
+
+/// Decodes a `"grid"` node's `"columns"` or `"rows"` key: a required list
+/// of [`grid_track_from_value`] entries, one per track along that axis.
+fn grid_tracks_from_value(
+    value: &Value,
+    axis: &str,
+    context: &str,
+) -> Result<Vec<GridTrack>, DecodeError> {
+    required_list(value, axis, context)?
+        .iter()
+        .map(|track| grid_track_from_value(track, context, axis))
+        .collect()
+}
+
+/// Decodes a `"grid"` node: `{"columns", "rows", "cells"}`, where
+/// `"columns"`/`"rows"` are the two independent track lists (see
+/// [`grid_tracks_from_value`]) and `"cells"` is the row-major list of
+/// child nodes filling the grid — left to right within a row, then top to
+/// bottom — each recursively decoded by [`layout_node_from_value`].
+///
+/// More cells than the tracks describe (`columns.len() * rows.len()`) is a
+/// decode error naming both counts: the overflow has nowhere to paint, and
+/// silently dropping it would read as "my last tile vanished" with nothing
+/// pointing at the cause. Fewer is accepted — the trailing cells stay
+/// empty, which is how a dashboard with a ragged last row is written.
+///
+/// `spacing` is the node's own `"padding"`/`"margin"` siblings, already
+/// decoded by [`spacing_from_value`] in the caller (`"gap"` is rejected
+/// there: grid tracks carry no gutter, so a caller wanting one pads the
+/// cell's own child or inserts a `Fixed` spacer track).
+fn layout_grid_from_value(
+    what: &str,
+    value: &Value,
+    spacing: Spacing,
+    styles: StyleContext<'_>,
+    diagnostics: &DecodeDiagnostics,
+) -> Result<LayoutGrid, DecodeError> {
+    let context = format!("{what} › grid");
+    check_unknown_keys(
+        diagnostics,
+        &context,
+        "grid",
+        value,
+        &["columns", "rows", "cells"],
+    )?;
+    let columns = grid_tracks_from_value(value, "columns", &context)?;
+    let rows = grid_tracks_from_value(value, "rows", &context)?;
+    let cells = required_list(value, "cells", &context)?;
+    let capacity = columns.len() * rows.len();
+    if cells.len() > capacity {
+        return Err(DecodeError::borrow(
+            &context,
+            format!(
+                "\"cells\" has {} entries but {} columns x {} rows leaves room for {capacity}",
+                cells.len(),
+                columns.len(),
+                rows.len()
+            ),
+        ));
+    }
+    let children = cells
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| {
+            let cell_context = format!("{context} › cells[{index}]");
+            let cell = must_be_dict(&context, cell, &format!("cells[{index}]"))?;
+            layout_node_from_value(&cell_context, cell, styles, diagnostics)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(LayoutGrid {
+        columns,
+        rows,
+        children,
+        spacing,
+    })
 }
 
 /// Decodes a `"scroll"` node: `{"id", "axis", "offset", "content"}`.

@@ -683,6 +683,132 @@ fn scroll_rejects_a_gap_key_it_does_not_support() {
     assert!(error.to_string().contains("gap"), "{}", error.to_string());
 }
 
+/// A `"grid"` node round-trips both track lists and its row-major
+/// `"cells"`, recursively decoding each cell as a full layout node.
+#[test]
+fn round_trips_a_grid_node() {
+    let value = json!({
+        "grid": {
+            "columns": [{"Weight": 1.0}, {"Fixed": 24.0}],
+            "rows": [{"Percent": 0.5}, {"Content": 16.0}],
+            "cells": [
+                {"id": "a", "button": {"id": "a", "label": "A"}},
+                {"id": "b", "button": {"id": "b", "label": "B"}},
+                {"id": "c", "button": {"id": "c", "label": "C"}},
+            ],
+        }
+    });
+    let node = decode(&value).expect("valid grid");
+    let LayoutNode::Grid(grid) = node else {
+        panic!("expected a grid node");
+    };
+    assert_eq!(
+        grid.columns,
+        vec![GridTrack::Weight(1.0), GridTrack::Fixed(24.0)]
+    );
+    assert_eq!(
+        grid.rows,
+        vec![GridTrack::Percent(0.5), GridTrack::Content(16.0)]
+    );
+    // Three cells in a 2x2 grid: the trailing cell stays empty.
+    assert_eq!(grid.children.len(), 3);
+    assert!(grid
+        .children
+        .iter()
+        .all(|c| matches!(c, LayoutNode::Leaf(_))));
+}
+
+/// A `"grid"` node's `"padding"`/`"margin"` keys decode the same way a
+/// `"scroll"` node's do; `"gap"` is rejected, since grid tracks carry no
+/// gutter of their own.
+#[test]
+fn round_trips_a_grid_node_s_padding_and_margin_and_rejects_gap() {
+    let spaced = json!({
+        "grid": {
+            "columns": [{"Weight": 1.0}],
+            "rows": [{"Weight": 1.0}],
+            "cells": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        },
+        "padding": 12,
+        "margin": 4,
+    });
+    let node = decode(&spaced).expect("valid grid with spacing");
+    let LayoutNode::Grid(grid) = node else {
+        panic!("expected a grid node");
+    };
+    assert_eq!(grid.spacing.padding, EdgeInsets::uniform(12.0));
+    assert_eq!(grid.spacing.margin, 4.0);
+    assert_eq!(grid.spacing.gap, 0.0);
+
+    let gapped = json!({
+        "grid": {
+            "columns": [{"Weight": 1.0}],
+            "rows": [{"Weight": 1.0}],
+            "cells": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        },
+        "gap": 8,
+    });
+    let error = err(decode(&gapped));
+    assert!(error.to_string().contains("gap"), "{}", error.to_string());
+}
+
+/// More `"cells"` than `columns x rows` has room for is a decode error
+/// naming both counts -- the overflow has nowhere to paint, and dropping
+/// it silently would read as "my last tile vanished".
+#[test]
+fn grid_rejects_more_cells_than_its_tracks_have_room_for() {
+    let value = json!({
+        "grid": {
+            "columns": [{"Weight": 1.0}, {"Weight": 1.0}],
+            "rows": [{"Weight": 1.0}],
+            "cells": [
+                {"id": "a", "button": {"id": "a", "label": "A"}},
+                {"id": "b", "button": {"id": "b", "label": "B"}},
+                {"id": "c", "button": {"id": "c", "label": "C"}},
+            ],
+        }
+    });
+    let error = err(decode(&value));
+    let text = error.to_string();
+    assert!(text.contains("cells"), "{text}");
+    assert!(text.contains('3'), "{text}");
+    assert!(text.contains('2'), "{text}");
+}
+
+/// A `{"Percent": p}` track outside `0.0..=1.0` is a decode error, the
+/// same range check a row/column child's own `"size"` key applies -- so
+/// `{"Percent": 25}` meaning "25 percent" is caught instead of painting
+/// one track over the whole axis.
+#[test]
+fn grid_rejects_an_out_of_range_percent_track() {
+    let value = json!({
+        "grid": {
+            "columns": [{"Percent": 25}],
+            "rows": [{"Weight": 1.0}],
+            "cells": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        }
+    });
+    let error = err(decode(&value));
+    let text = error.to_string();
+    assert!(text.contains("columns"), "{text}");
+    assert!(text.contains("Percent"), "{text}");
+}
+
+/// A `"grid"` node with no `"columns"`/`"rows"`/`"cells"` key names the
+/// missing one rather than decoding to an empty grid that paints nothing.
+#[test]
+fn grid_requires_its_columns_rows_and_cells_keys() {
+    for missing in ["columns", "rows", "cells"] {
+        let mut grid = serde_json::Map::new();
+        grid.insert("columns".into(), json!([{"Weight": 1.0}]));
+        grid.insert("rows".into(), json!([{"Weight": 1.0}]));
+        grid.insert("cells".into(), json!([]));
+        grid.remove(missing);
+        let error = err(decode(&json!({"grid": grid})));
+        assert!(error.to_string().contains(missing), "{error}");
+    }
+}
+
 /// An unrecognized `"axis"` value is a decode error naming the
 /// accepted ones, not a silent fall-back to vertical.
 #[test]
@@ -804,6 +930,7 @@ fn node_shape_key_constants_match_the_wire_schema_field_list() {
     let cases: &[(&str, &[&str])] = &[
         ("LayoutRowNode", &ROW_SHAPE_KEYS),
         ("LayoutColumnNode", &COLUMN_SHAPE_KEYS),
+        ("LayoutGridNode", &GRID_SHAPE_KEYS),
         ("LayoutSplitNode", &SPLIT_SHAPE_KEYS),
         ("LayoutTabsNode", &TABS_SHAPE_KEYS),
         ("LayoutPanelNode", &PANEL_SHAPE_KEYS),

@@ -12,6 +12,16 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- A `"grid"` layout node: `{"grid": {"columns": [...], "rows": [...],
+  "cells": [...]}}` lays its cells out row-major across two independent
+  track lists, each track one of `{"Fixed": px}`/`{"Percent": 0.0-1.0}`/
+  `{"Weight": fr}`/`{"Content": px}` (`quadraui.wire.GridTrack`), resolved
+  through the same `Fixed`/`Content` -> `Percent` -> `Weight` pass order a
+  row/column child's `"size"` key already uses. Takes the usual
+  `"padding"`/`"margin"` siblings (no `"gap"`: a grid's tracks carry no
+  gutter). More `"cells"` than `columns x rows` has room for is a decode
+  error rather than a silently dropped tile. `wire.pyi` carries the
+  generated `GridTrack`/`LayoutGridPayload`/`LayoutGridNode` types.
 - `quadraui.app.widget.Widget`: a base class for a script-authored node
   with its own `measure`/`paint`/`on_event`/`a11y` -- for a widget that
   can't be built by composing existing nodes. Builds on the `Canvas`

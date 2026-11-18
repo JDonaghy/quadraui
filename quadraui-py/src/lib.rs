@@ -2150,6 +2150,11 @@ fn apply_pending_script_widgets_node(
                 apply_pending_script_widgets_node(&mut child.node, pending, pending_error);
             }
         }
+        LayoutNode::Grid(grid_node) => {
+            for child in &mut grid_node.children {
+                apply_pending_script_widgets_node(child, pending, pending_error);
+            }
+        }
         LayoutNode::Leaf(leaf) => apply_pending_script_widgets_leaf(leaf, pending, pending_error),
         LayoutNode::Split(split_node) => {
             apply_pending_script_widgets_node(&mut split_node.first, pending, pending_error);
@@ -2537,6 +2542,11 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
         LayoutNode::Row(container) | LayoutNode::Column(container) => {
             for child in &mut container.children {
                 resolve_layout_node_state(engine, &mut child.node);
+            }
+        }
+        LayoutNode::Grid(grid_node) => {
+            for child in &mut grid_node.children {
+                resolve_layout_node_state(engine, child);
             }
         }
         LayoutNode::Leaf(leaf) => resolve_layout_leaf_state(engine, leaf),

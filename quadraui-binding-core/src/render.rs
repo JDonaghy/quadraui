@@ -18,9 +18,9 @@ use quadraui::{
 use crate::extra_paint::{extra_as, ExtraPaint};
 use crate::hit::{PaintedHit, ScrollChildHit, TreeTableHitState};
 use crate::layout::{
-    align_cross, apply_min_max, justify_starts, quantise_horizontal, quantise_vertical,
-    resolve_main_axis_sizes, Align, LayoutChild, LayoutContainer, LayoutLeaf, LayoutNode,
-    LayoutScroll, LayoutStyled, LeafDescriptor, MainAxisSpec,
+    align_cross, apply_min_max, grid_cell_rects, justify_starts, quantise_horizontal,
+    quantise_vertical, resolve_main_axis_sizes, Align, LayoutChild, LayoutContainer, LayoutLeaf,
+    LayoutNode, LayoutScroll, LayoutStyled, LeafDescriptor, MainAxisSpec,
 };
 
 /// Owned decode of a render callback's returned descriptor set — one
@@ -420,9 +420,12 @@ fn text_display_region(
 /// dividers via `Backend::draw_split_tree` and recurses into each resolved
 /// leaf rect. All four record a [`PaintedHit`] for their own chrome
 /// (divider / title bar / action button / toolbar button), same as `Split`,
-/// so a later pointer event can resolve against it. Per-child flex weights
-/// on `Row`/`Column` are a follow-up; every `Row`/`Column` child gets the
-/// same share for now.
+/// so a later pointer event can resolve against it. A `Grid` resolves its
+/// `columns`/`rows` tracks into cell rects via
+/// [`crate::layout::grid_cell_rects`] and recurses into each with the
+/// matching row-major child; it paints no chrome of its own, so it records
+/// no hit. Per-child flex weights on `Row`/`Column` are a follow-up; every
+/// `Row`/`Column` child gets the same share for now.
 pub fn paint_layout(
     backend: &mut dyn Backend,
     area: Rect,
@@ -447,6 +450,12 @@ pub fn paint_layout(
             let rects = layout_container_rects(backend, area, container, false);
             for (child, rect) in container.children.iter().zip(rects) {
                 paint_layout(backend, rect, &child.node, hits, chrome_interaction);
+            }
+        }
+        LayoutNode::Grid(grid) => {
+            let rects = grid_cell_rects(grid, area, backend.char_width(), backend.line_height());
+            for (child, rect) in grid.children.iter().zip(rects) {
+                paint_layout(backend, rect, child, hits, chrome_interaction);
             }
         }
         LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits, chrome_interaction),
@@ -2058,6 +2067,11 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
         LayoutNode::Row(container) | LayoutNode::Column(container) => {
             for child in &container.children {
                 collect_leaf_tooltips(&child.node, out);
+            }
+        }
+        LayoutNode::Grid(grid) => {
+            for child in &grid.children {
+                collect_leaf_tooltips(child, out);
             }
         }
         LayoutNode::Leaf(leaf) => {
@@ -4533,5 +4547,90 @@ mod tests {
         assert_eq!(slots[0].len, 500.0);
         assert_eq!(slots[1].len, 500.0);
         assert_eq!(slots[1].start, 520.0);
+    }
+    /// Minimal [`quadraui::AppLogic`] that decodes a `"grid"` wire node
+    /// dict and paints it -- the end-to-end path a Python/TypeScript
+    /// render callback returning that dict actually takes
+    /// (`decode_layout_node` -> [`paint_layout`]), rather than a
+    /// hand-built [`LayoutNode::Grid`].
+    struct GridWireLogic {
+        engine: crate::engine::InteractionEngine,
+    }
+
+    impl quadraui::AppLogic for GridWireLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let value = serde_json::json!({
+                "grid": {
+                    "columns": [{"Weight": 1.0}, {"Weight": 1.0}],
+                    "rows": [{"Weight": 1.0}, {"Weight": 1.0}],
+                    "cells": [
+                        {"id": "nw", "button": {"id": "nw", "label": "Northwest"}},
+                        {"id": "ne", "button": {"id": "ne", "label": "Northeast"}},
+                        {"id": "sw", "button": {"id": "sw", "label": "Southwest"}},
+                        {"id": "se", "button": {"id": "se", "label": "Southeast"}},
+                    ],
+                }
+            });
+            let node = crate::wire::decode_layout_node("render", value)
+                .expect("the grid dict should decode");
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(
+            &mut self,
+            _event: quadraui::UiEvent,
+            _backend: &mut dyn Backend,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+    }
+
+    /// A `"grid"` wire node's four cells tile into two equal columns and
+    /// two equal rows: each cell's label lands in its own quadrant, the
+    /// two rows share one column pitch, and the two columns share one row
+    /// pitch. Asserted relatively (pitch equality and ordering), never
+    /// against hardcoded cell coordinates, so it survives a viewport or
+    /// button-chrome change while still failing on a track-math
+    /// regression.
+    #[test]
+    fn a_grid_wire_node_tiles_its_cells_into_equal_columns_and_rows() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = GridWireLogic {
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 60, 10);
+        driver.render();
+
+        let nw = driver.find("Northwest").expect("Northwest should paint");
+        let ne = driver.find("Northeast").expect("Northeast should paint");
+        let sw = driver.find("Southwest").expect("Southwest should paint");
+        let se = driver.find("Southeast").expect("Southeast should paint");
+
+        assert!(
+            nw.0 < ne.0,
+            "the first cell of a row sits left of the second"
+        );
+        assert!(sw.0 < se.0, "and so does the second row's");
+        assert!(nw.1 < sw.1, "the first row sits above the second");
+        assert!(ne.1 < se.1, "for both columns");
+        assert_eq!(
+            ne.0 - nw.0,
+            se.0 - sw.0,
+            "both rows share the same column pitch -- equal `Weight` columns"
+        );
+        assert_eq!(
+            sw.1 - nw.1,
+            se.1 - ne.1,
+            "both columns share the same row pitch -- equal `Weight` rows"
+        );
     }
 }

@@ -1,6 +1,6 @@
 //! The retained layout-tree descriptor model a binding's render callback
-//! decodes into: `LayoutNode` and its `Row`/`Column`/`Leaf`/`Split`/`Tabs`/
-//! `Panel`/`SidebarPanel`/`SplitTree` shapes, each paired with the
+//! decodes into: `LayoutNode` and its `Row`/`Column`/`Grid`/`Leaf`/`Split`/
+//! `Tabs`/`Panel`/`SidebarPanel`/`SplitTree` shapes, each paired with the
 //! `quadraui` descriptor(s) it carries. A binding owns decoding its own
 //! wire format (a Python `dict`, a JS object, ...) into these types; this
 //! module owns what the decoded shape looks like and how it paints
@@ -18,6 +18,8 @@ use quadraui::{
     SplitTree, Style, TabBar, TextDisplay, Theme, TreeView,
 };
 
+use quadraui::layout::{resolve_grid_tracks, GridTrack};
+
 use crate::extra_paint::ExtraPaint;
 use crate::DecodeError;
 
@@ -29,11 +31,14 @@ use crate::DecodeError;
 /// `SidebarPanel` holding one chrome descriptor plus a single content
 /// subtree, a `SplitTree` holding an arbitrarily nested divider tree of
 /// content subtrees, a `Scroll` holding one content subtree painted at
-/// its own natural size and offset inside a clipped viewport, or a `Styled`
-/// wrapper applying a [`StyleOverride`] to one wrapped subtree.
+/// its own natural size and offset inside a clipped viewport, a `Grid`
+/// holding one child subtree per cell of a two-dimensional column/row
+/// track grid, or a `Styled` wrapper applying a [`StyleOverride`] to one
+/// wrapped subtree.
 pub enum LayoutNode {
     Row(LayoutContainer),
     Column(LayoutContainer),
+    Grid(LayoutGrid),
     Leaf(LayoutLeaf),
     Split(LayoutSplit),
     Tabs(LayoutTabs),
@@ -506,6 +511,80 @@ impl LayoutChild {
             max: None,
         }
     }
+}
+
+/// A [`LayoutNode::Grid`]'s decoded shape: two independent track lists —
+/// `columns` along the horizontal axis, `rows` along the vertical one —
+/// plus one child subtree per cell, in row-major order (left to right
+/// within a row, then top to bottom), and this node's own
+/// `padding`/`margin` inset.
+///
+/// Geometry is [`quadraui::layout::resolve_grid_tracks`]'s, never
+/// reimplemented here: both axes resolve through the same
+/// `Fixed`/`Content` → `Percent` → `Weight` pass order a `Row`/`Column`
+/// child's [`SectionSize`] resolves under, so a two-dimensional dashboard
+/// is one node instead of a hand-nested row-of-columns whose cells only
+/// line up by accident. There is no `gap` key (a grid's own tracks carry
+/// no gutter — a caller wanting one adds `padding` to the cell's own
+/// child, or a `Fixed` spacer track), and no id: a grid holds no
+/// interaction state of its own, exactly like `Row`/`Column`.
+///
+/// `children` never exceeds `columns.len() * rows.len()` — a binding's
+/// decode rejects an over-full grid rather than silently dropping the
+/// overflow. Fewer children than cells is fine: the trailing cells paint
+/// nothing.
+pub struct LayoutGrid {
+    pub columns: Vec<GridTrack>,
+    pub rows: Vec<GridTrack>,
+    pub children: Vec<LayoutNode>,
+    pub spacing: Spacing,
+}
+
+/// Quantises every `Fixed`/`Content` track in `tracks` from the portable
+/// surface-native-pixel unit the wire carries them in into `metric`'s own
+/// native unit, the same conversion [`Spacing`]'s fields and a
+/// [`LayoutChild`]'s `min`/`max` go through before layout. `Percent` and
+/// `Weight` are unitless ratios and pass through untouched.
+fn native_tracks(
+    tracks: &[GridTrack],
+    metric: f32,
+    quantise: fn(f32, f32) -> f32,
+) -> Vec<GridTrack> {
+    tracks
+        .iter()
+        .map(|track| match *track {
+            GridTrack::Fixed(v) => GridTrack::Fixed(quantise(v, metric)),
+            GridTrack::Content(v) => GridTrack::Content(quantise(v, metric)),
+            GridTrack::Percent(p) => GridTrack::Percent(p),
+            GridTrack::Weight(w) => GridTrack::Weight(w),
+        })
+        .collect()
+}
+
+/// Resolves `grid`'s cell rects inside `area`, flattened row-major so the
+/// result zips straight against [`LayoutGrid::children`]: insets `area` by
+/// the node's own `padding`/`margin`, quantises both track lists into the
+/// backend's native units via [`native_tracks`], then defers to
+/// [`quadraui::layout::resolve_grid_tracks`].
+///
+/// Shared by [`crate::render::paint_layout`] and
+/// [`crate::host::resolve_layout_node`] so the rect a nested `Tree`/
+/// `List`/`DataTable` leaf is *resolved* against is the identical rect it
+/// is later *painted* into — the two drifting is what hands such a leaf a
+/// first-frame viewport that disagrees with its own paint.
+pub fn grid_cell_rects(
+    grid: &LayoutGrid,
+    area: Rect,
+    char_width: f32,
+    line_height: f32,
+) -> Vec<Rect> {
+    let inner = grid.spacing.inset(area, char_width, line_height);
+    let columns = native_tracks(&grid.columns, char_width, quantise_horizontal);
+    let rows = native_tracks(&grid.rows, line_height, quantise_vertical);
+    resolve_grid_tracks(&columns, &rows, inner)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// A [`LayoutContainer`]'s main-axis distribution of any leftover space
@@ -1144,6 +1223,13 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
                 }
                 Ok(())
             }
+            LayoutNode::Grid(grid) => {
+                for (index, child) in grid.children.iter().enumerate() {
+                    let context = format!("{what} › cells[{index}]");
+                    walk(&context, child, seen)?;
+                }
+                Ok(())
+            }
             LayoutNode::Leaf(leaf) => {
                 if !seen.insert(leaf.id.clone()) {
                     return Err(duplicate_leaf_id_error(what, "leaf", &leaf.id));
@@ -1275,6 +1361,82 @@ mod tests {
         let insets = EdgeInsets::uniform(12.0);
         let inset = insets.inset(rect, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
         assert_eq!(inset, Rect::new(2.0, 1.0, 76.0, 22.0));
+    }
+
+    fn grid(columns: Vec<GridTrack>, rows: Vec<GridTrack>, spacing: Spacing) -> LayoutGrid {
+        LayoutGrid {
+            columns,
+            rows,
+            children: Vec::new(),
+            spacing,
+        }
+    }
+
+    #[test]
+    fn grid_cell_rects_are_flattened_row_major() {
+        let g = grid(
+            vec![GridTrack::Weight(1.0), GridTrack::Weight(1.0)],
+            vec![GridTrack::Weight(1.0), GridTrack::Weight(1.0)],
+            Spacing::default(),
+        );
+        let cells = grid_cell_rects(
+            &g,
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            TUI_CHAR_WIDTH,
+            TUI_LINE_HEIGHT,
+        );
+        assert_eq!(
+            cells,
+            vec![
+                Rect::new(0.0, 0.0, 40.0, 12.0),
+                Rect::new(40.0, 0.0, 40.0, 12.0),
+                Rect::new(0.0, 12.0, 40.0, 12.0),
+                Rect::new(40.0, 12.0, 40.0, 12.0),
+            ],
+            "cells read left-to-right within a row, then top-to-bottom"
+        );
+    }
+
+    #[test]
+    fn grid_cell_rects_quantise_a_fixed_track_against_its_own_axis_metric() {
+        let g = grid(
+            vec![GridTrack::Fixed(16.0), GridTrack::Weight(1.0)],
+            vec![GridTrack::Fixed(16.0), GridTrack::Weight(1.0)],
+            Spacing::default(),
+        );
+        let cells = grid_cell_rects(
+            &g,
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            TUI_CHAR_WIDTH,
+            TUI_LINE_HEIGHT,
+        );
+        // On a cell-grid backend a `Fixed` track is in the same portable
+        // surface-native-pixel unit `padding`/`margin` use: 16px is
+        // `ceil(16 / 8) = 2` cells wide and `ceil(16 / 16) = 1` cell tall.
+        assert_eq!(cells[0], Rect::new(0.0, 0.0, 2.0, 1.0));
+        // The `Weight` tracks take whatever the `Fixed` ones left.
+        assert_eq!(cells[3], Rect::new(2.0, 1.0, 78.0, 23.0));
+    }
+
+    #[test]
+    fn grid_cell_rects_inset_by_the_node_s_own_padding_first() {
+        let g = grid(
+            vec![GridTrack::Weight(1.0)],
+            vec![GridTrack::Weight(1.0)],
+            Spacing {
+                padding: EdgeInsets::uniform(8.0),
+                margin: 0.0,
+                gap: 0.0,
+            },
+        );
+        let cells = grid_cell_rects(
+            &g,
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            TUI_CHAR_WIDTH,
+            TUI_LINE_HEIGHT,
+        );
+        // 8px padding is one cell horizontally, one row vertically.
+        assert_eq!(cells, vec![Rect::new(1.0, 1.0, 78.0, 22.0)]);
     }
 
     fn spec(size: SectionSize) -> MainAxisSpec {

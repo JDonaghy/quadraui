@@ -1,4 +1,4 @@
-"""Negative counterpart of `scripts/fixtures/wire_types_sample.py`: the same two
+"""Negative counterpart of `scripts/fixtures/wire_types_sample.py`: the same
 shapes, each with one key misspelled. `scripts/check_wire_types.sh` asserts
 `mypy --strict` reports an error against this file -- proof that the
 generated `quadraui.wire` stub actually catches a typo instead of quietly
@@ -16,6 +16,17 @@ if TYPE_CHECKING:
 def bad_misspelled_layout_key() -> "LayoutNode":
     # `"colum"` is not a `LayoutNode` union member's key.
     return {"colum": [{"id": "x", "button": {"id": "x", "label": "x"}}]}
+
+
+def bad_misspelled_grid_track_variant() -> "LayoutNode":
+    # `"Weigth"` is not a `GridTrack` union member's key.
+    return {
+        "grid": {
+            "columns": [{"Weigth": 1.0}],
+            "rows": [{"Weight": 1.0}],
+            "cells": [{"id": "x", "button": {"id": "x", "label": "x"}}],
+        }
+    }
 
 
 def bad_misspelled_descriptor_field() -> "TreeViewDescriptor":

@@ -14,6 +14,7 @@ import type {
   ColumnDescriptor,
   DataRowDescriptor,
   DataTableDescriptor,
+  GridTrack,
   LayoutNode,
   StyledText,
   TreeRowDescriptor,
@@ -59,6 +60,16 @@ function buildTable(): LayoutNode {
   return { id: "demo:table", data_table: table };
 }
 
+// A 1x2 dashboard grid: two equal-weight columns, one row.
+function buildGrid(): LayoutNode {
+  const columns: GridTrack[] = [{ Weight: 1.0 }, { Weight: 1.0 }];
+  const rows: GridTrack[] = [{ Percent: 1.0 }];
+  return {
+    grid: { columns, rows, cells: [buildTree(), buildTable()] },
+    padding: 1.0,
+  };
+}
+
 function buildLayout(): LayoutNode {
   return {
     split: {
@@ -95,4 +106,4 @@ function handle(event: UiEvent): string | undefined {
   return undefined;
 }
 
-export { buildLayout, handle };
+export { buildGrid, buildLayout, handle };

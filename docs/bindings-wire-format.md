@@ -29,6 +29,7 @@ of these keys, naming the node's kind:
 | --- | --- | --- |
 | `"row"` | `LayoutRowNode` | A list of child nodes laid out horizontally. |
 | `"column"` | `LayoutColumnNode` | A list of child nodes laid out vertically. |
+| `"grid"` | `LayoutGridNode` | Two independent `columns`/`rows` track lists, filled row-major by `cells`. |
 | `"split"` | `LayoutSplitNode` | Two children (`first`/`second`) either side of a draggable divider. |
 | `"tabs"` | `LayoutTabsNode` | A tab strip, each tab's `content` itself a `LayoutNode`. |
 | `"panel"` | `LayoutPanelNode` | Deprecated chrome wrapper around one child -- prefer `"sidebar_panel"`. |
@@ -37,8 +38,8 @@ of these keys, naming the node's kind:
 | `"scroll"` | `LayoutScrollNode` | A scrollable viewport around one content child, built on `ScrollView`. |
 | `"leaf"` | `LayoutLeafNode` | A primitive widget -- see *Leaf kinds* below. |
 
-A `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/`"sidebar_panel"`/
-`"split_tree"`/`"scroll"` node also accepts the sizing keys `"size"`,
+A `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/`"panel"`/
+`"sidebar_panel"`/`"split_tree"`/`"scroll"` node also accepts the sizing keys `"size"`,
 `"min"`, `"max"` when it's itself a `"row"`/`"column"` child, and the
 chrome keys `"padding"`, `"margin"`, `"gap"` where that node kind supports
 them -- see each node's own field table in the generated reference for
@@ -432,6 +433,13 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ClassValue`](#wire-classvalue)
 - [`LayoutRowNode`](#wire-layoutrownode)
 - [`LayoutColumnNode`](#wire-layoutcolumnnode)
+- [`_GridTrackFixed`](#wire-_gridtrackfixed)
+- [`_GridTrackPercent`](#wire-_gridtrackpercent)
+- [`_GridTrackWeight`](#wire-_gridtrackweight)
+- [`_GridTrackContent`](#wire-_gridtrackcontent)
+- [`GridTrack`](#wire-gridtrack)
+- [`LayoutGridPayload`](#wire-layoutgridpayload)
+- [`LayoutGridNode`](#wire-layoutgridnode)
 - [`LayoutSplitPayload`](#wire-layoutsplitpayload)
 - [`LayoutSplitNode`](#wire-layoutsplitnode)
 - [`LayoutTabEntryNode`](#wire-layouttabentrynode)
@@ -1503,6 +1511,67 @@ Alias for `string | string[]`.
 | `justify` | `"start" \| "center" \| "end" \| "space_between"` | no |  |
 | `align` | `"start" \| "center" \| "end" \| "stretch"` | no |  |
 | `wrap` | `boolean` | no |  |
+| `wire_version` | `number` | no |  |
+| `style` | `StyleValue` | no |  |
+| `class` | `ClassValue` | no |  |
+| `size` | `SectionSize` | no |  |
+| `min` | `number` | no |  |
+| `max` | `number` | no |  |
+
+<a id="wire-_gridtrackfixed"></a>
+#### `_GridTrackFixed`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Fixed` | `number` | yes |  |
+
+<a id="wire-_gridtrackpercent"></a>
+#### `_GridTrackPercent`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Percent` | `number` | yes |  |
+
+<a id="wire-_gridtrackweight"></a>
+#### `_GridTrackWeight`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Weight` | `number` | yes |  |
+
+<a id="wire-_gridtrackcontent"></a>
+#### `_GridTrackContent`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Content` | `number` | yes |  |
+
+<a id="wire-gridtrack"></a>
+#### `GridTrack`
+
+One column or row track of a "grid" node: an exact size, a share of the axis, a proportional weight (CSS `fr`), or an already-measured natural content size.
+
+Alias for `_GridTrackFixed | _GridTrackPercent | _GridTrackWeight | _GridTrackContent`.
+
+<a id="wire-layoutgridpayload"></a>
+#### `LayoutGridPayload`
+
+A "grid" node's two track lists plus its row-major cells (left to right within a row, then top to bottom). More cells than `columns x rows` is a decode error; fewer leaves the trailing cells empty.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `columns` | `GridTrack[]` | yes |  |
+| `rows` | `GridTrack[]` | yes |  |
+| `cells` | `LayoutNode[]` | yes |  |
+
+<a id="wire-layoutgridnode"></a>
+#### `LayoutGridNode`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `grid` | `LayoutGridPayload` | yes |  |
+| `padding` | `PaddingValue` | no |  |
+| `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
@@ -3369,7 +3438,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 
 One node of a render callback's returned layout tree.
 
-Alias for `LayoutRowNode | LayoutColumnNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode`.
+Alias for `LayoutRowNode | LayoutColumnNode | LayoutGridNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode`.
 
 <a id="wire-renderframedict"></a>
 #### `RenderFrameDict`

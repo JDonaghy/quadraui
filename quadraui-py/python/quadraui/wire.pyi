@@ -457,6 +457,42 @@ LayoutColumnNode = TypedDict(
     },
 )
 
+class _GridTrackFixed(TypedDict):
+    Fixed: float
+
+class _GridTrackPercent(TypedDict):
+    Percent: float
+
+class _GridTrackWeight(TypedDict):
+    Weight: float
+
+class _GridTrackContent(TypedDict):
+    Content: float
+
+# One column or row track of a "grid" node: an exact size, a share of the axis, a proportional weight (CSS `fr`), or an already-measured natural content size.
+GridTrack = Union[_GridTrackFixed, _GridTrackPercent, _GridTrackWeight, _GridTrackContent]
+
+class LayoutGridPayload(TypedDict):
+    """A "grid" node's two track lists plus its row-major cells (left to right within a row, then top to bottom). More cells than `columns x rows` is a decode error; fewer leaves the trailing cells empty."""
+    columns: List[GridTrack]
+    rows: List[GridTrack]
+    cells: List[LayoutNode]
+
+LayoutGridNode = TypedDict(
+    "LayoutGridNode",
+    {
+        "grid": LayoutGridPayload,
+        "padding": NotRequired[PaddingValue],
+        "margin": NotRequired[float],
+        "wire_version": NotRequired[int],
+        "style": NotRequired[StyleValue],
+        "class": NotRequired[ClassValue],
+        "size": NotRequired[SectionSize],
+        "min": NotRequired[float],
+        "max": NotRequired[float],
+    },
+)
+
 class LayoutSplitPayload(TypedDict):
     id: str
     orientation: Literal['horizontal', 'vertical']
@@ -1616,7 +1652,7 @@ LayoutLeafNode = TypedDict(
 """One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed."""
 
 # One node of a render callback's returned layout tree.
-LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutSplitNode, LayoutTabsNode, LayoutPanelNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutScrollNode, LayoutLeafNode]
+LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutGridNode, LayoutSplitNode, LayoutTabsNode, LayoutPanelNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutScrollNode, LayoutLeafNode]
 
 class RenderFrameDict(TypedDict):
     """The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed."""
