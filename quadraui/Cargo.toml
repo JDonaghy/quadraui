@@ -1630,6 +1630,16 @@ path = "examples/gtk_pipeline.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_grid"
+path = "examples/tui_grid.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_grid"
+path = "examples/gtk_grid.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_sidebar_panel"
 path = "examples/tui_sidebar_panel.rs"
 required-features = ["tui"]

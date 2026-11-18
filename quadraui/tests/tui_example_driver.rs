@@ -122,6 +122,8 @@ mod form_visibility;
 mod frame_demo;
 #[path = "../examples/common/full_chrome_demo.rs"]
 mod full_chrome_demo;
+#[path = "../examples/common/grid.rs"]
+mod grid;
 #[path = "../examples/common/help_layer_demo.rs"]
 mod help_layer_demo;
 #[path = "../examples/common/hit_map_recover_demo.rs"]
@@ -245,6 +247,7 @@ use form_spacing::FormSpacingApp;
 use form_visibility::FormVisibilityApp;
 use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
+use grid::GridApp;
 use help_layer_demo::HelpLayerDemo;
 use hit_map_recover_demo::HitMapRecoverDemo;
 use hscroll_editor::HScrollEditor;
@@ -11663,4 +11666,120 @@ fn form_spacing_row_align_end_pushes_the_button_row_to_the_padded_right_edge() {
         "Cancel should still sit to the left of OK:\n{}",
         driver.screen()
     );
+}
+
+// ─── GridApp: 2x3 dashboard via resolve_grid_tracks ─────────────────────────
+
+#[test]
+fn grid_initial_screen_paints_all_six_tiles_and_hint() {
+    let driver = TuiDriver::new(GridApp::new(), 100, 24);
+    let screen = driver.screen();
+    for label in [
+        "CPU 42%",
+        "Memory 61%",
+        "Disk 78%",
+        "Network 12%",
+        "Requests 230/s",
+        "Errors 3",
+    ] {
+        assert!(driver.screen_contains(label), "tile:\n{screen}");
+    }
+    assert!(driver.screen_contains("Enter=activate"), "hint:\n{screen}");
+}
+
+#[test]
+fn grid_tiles_tile_into_two_rows_of_three_columns_with_no_hardcoded_coordinates() {
+    // Every assertion below is relative to another tile's own painted
+    // position — never a literal row/column number — so this proves the
+    // `resolve_grid_tracks` arrangement itself, not a coincidence of one
+    // particular viewport size.
+    let driver = TuiDriver::new(GridApp::new(), 100, 24);
+    let screen = driver.screen();
+    let bounds = |needle: &str| {
+        driver
+            .find_bounds(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not painted:\n{screen}"))
+    };
+
+    let cpu = bounds("CPU 42%");
+    let memory = bounds("Memory 61%");
+    let disk = bounds("Disk 78%");
+    let network = bounds("Network 12%");
+    let requests = bounds("Requests 230/s");
+    let errors = bounds("Errors 3");
+
+    // Row 0 (CPU/Memory/Disk) shares one y, left-to-right in that order;
+    // row 1 (Network/Requests/Errors) shares a different, lower y, in
+    // the same left-to-right order.
+    assert_eq!(cpu.y, memory.y, "row 0 should share one y:\n{screen}");
+    assert_eq!(memory.y, disk.y, "row 0 should share one y:\n{screen}");
+    assert_eq!(network.y, requests.y, "row 1 should share one y:\n{screen}");
+    assert_eq!(requests.y, errors.y, "row 1 should share one y:\n{screen}");
+    assert!(
+        cpu.y < network.y,
+        "row 0 should paint above row 1:\n{screen}"
+    );
+    assert!(
+        cpu.x < memory.x && memory.x < disk.x,
+        "row 0 should run left-to-right CPU, Memory, Disk:\n{screen}"
+    );
+    assert!(
+        network.x < requests.x && requests.x < errors.x,
+        "row 1 should run left-to-right Network, Requests, Errors:\n{screen}"
+    );
+
+    // Each column's left edge lines up across both rows — the whole
+    // point of `resolve_grid_tracks` resolving columns independently of
+    // rows.
+    assert_eq!(cpu.x, network.x, "column 0 should line up:\n{screen}");
+    assert_eq!(memory.x, requests.x, "column 1 should line up:\n{screen}");
+    assert_eq!(disk.x, errors.x, "column 2 should line up:\n{screen}");
+}
+
+#[test]
+fn grid_pressing_right_then_enter_activates_the_second_tile() {
+    let mut driver = TuiDriver::new(GridApp::new(), 100, 24);
+    driver.press_named(NamedKey::Right);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Activated Memory 61%"),
+        "Right then Enter should activate the Memory tile:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn grid_pressing_down_then_enter_activates_the_fourth_tile() {
+    let mut driver = TuiDriver::new(GridApp::new(), 100, 24);
+    driver.press_named(NamedKey::Down);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Activated Network 12%"),
+        "Down then Enter should activate the Network tile (row 1, same column):\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn grid_clicking_a_tile_focuses_and_activates_it() {
+    let mut driver = TuiDriver::new(GridApp::new(), 100, 24);
+    let before = driver.screen();
+    let (x, y) = driver
+        .find("Errors 3")
+        .unwrap_or_else(|| panic!("Errors tile not painted:\n{before}"));
+    driver.click(x, y);
+    let after = driver.screen();
+    assert_ne!(before, after, "clicking a tile should change the screen");
+    assert!(
+        after.contains("Activated Errors 3"),
+        "clicking the Errors tile should activate it:\n{after}"
+    );
+}
+
+#[test]
+fn grid_pressing_q_exits() {
+    let mut driver = TuiDriver::new(GridApp::new(), 100, 24);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should make the app exit");
 }

@@ -64,6 +64,10 @@
 //!   `AppLogic::tab_stops` so Tab focuses the canvas and a subsequent
 //!   key press reaches it. TUI-only (`tui_canvas_regions`) — see the
 //!   module's own doc for why.
+//! - [`GridApp`] (in [`grid`]) — six `Button` tiles laid out into a
+//!   2-row-by-3-column dashboard via `quadraui::layout::resolve_grid_tracks`,
+//!   with 2-D arrow-key focus movement and click-to-activate. Used by
+//!   `tui_grid` / `gtk_grid`.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -114,6 +118,7 @@ pub mod form_spacing;
 pub mod form_visibility;
 pub mod frame_demo;
 pub mod full_chrome_demo;
+pub mod grid;
 pub mod help_layer_demo;
 pub mod hit_map_recover_demo;
 pub mod hscroll_editor;
@@ -201,6 +206,7 @@ pub use form_scroll::FormScrollApp;
 pub use form_spacing::FormSpacingApp;
 pub use form_visibility::FormVisibilityApp;
 pub use frame_demo::FrameDemo;
+pub use grid::GridApp;
 pub use help_layer_demo::HelpLayerDemo;
 pub use hit_map_recover_demo::HitMapRecoverDemo;
 pub use hscroll_editor::HScrollEditor;
