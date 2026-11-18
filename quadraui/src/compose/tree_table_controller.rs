@@ -53,9 +53,13 @@ use crate::compose::tree_nav::{
     Edge, HorizontalDir, HorizontalNav, NavOutcome, NavRow, TreeNavCore,
 };
 use crate::primitives::data_table::{Column, DataRow, DataTable, SortDirection};
-use crate::primitives::tree_table::{TreeTable, TreeTableHit, TreeTableNode};
+use crate::primitives::row_stack::vscrollbar_thumb;
+use crate::primitives::scrollbar::PressZone;
+use crate::primitives::tree_table::{TreeTable, TreeTableHit, TreeTableLayout, TreeTableNode};
 use crate::types::{Decoration, Icon, StyledText, TreePath};
-use crate::{Backend, Key, Modifiers, MouseButton, Point, Rect, UiEvent, WidgetId};
+use crate::{
+    Backend, ButtonMask, Key, Modifiers, MouseButton, Point, Rect, Scrollbar, UiEvent, WidgetId,
+};
 
 /// A node's stable identity in [`TreeTableController`]'s hierarchical
 /// model — an app-chosen key (file path, database id, …) that never
@@ -244,9 +248,13 @@ pub struct TreeTableController {
     selected_id: Option<NodeId>,
     sort: Option<(usize, bool)>,
     folders_first: bool,
-    /// Selection, scroll position and (for a future scrollbar-drag
-    /// consumer) drag state — the row-agnostic core shared with
-    /// [`crate::compose::TreeController`]; see [`crate::compose::tree_nav`].
+    /// Selection, scroll position and scrollbar-drag state — the
+    /// row-agnostic core shared with [`crate::compose::TreeController`];
+    /// see [`crate::compose::tree_nav`]. [`Self::handle`] drives its
+    /// `begin_scrollbar_drag`/`drag_to`/`end_scrollbar_drag` trio from a
+    /// scrollbar track built in [`Self::scrollbar`], the same way
+    /// [`crate::compose::TreeController`] drives it from
+    /// [`crate::Backend::tree_vscrollbar`].
     nav: TreeNavCore,
     has_focus: bool,
     show_scrollbar: bool,
@@ -440,15 +448,28 @@ impl TreeTableController {
                 self.double_click(backend, rect, *position, columns)
             }
 
+            UiEvent::MouseMoved {
+                position,
+                buttons: ButtonMask { left: true, .. },
+            } => self.drag_to(position.y),
+
+            UiEvent::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.nav.end_scrollbar_drag();
+                TreeTableControllerEvent::Consumed
+            }
+
             UiEvent::Scroll { delta, .. } => {
-                let vr = self.viewport_rows(backend, rect, columns);
-                let row_height = backend.line_height();
+                let layout = self.layout(backend, rect, columns);
+                let row_height = layout.table.row_height;
                 let rows = self.flatten_rows();
                 self.nav.scroll_by_wheel(
                     backend.wheel_delta_rows(delta.y, row_height),
                     row_height,
                     rows.len(),
-                    vr,
+                    layout.table.visible_rows,
                 );
                 TreeTableControllerEvent::Consumed
             }
@@ -468,7 +489,7 @@ impl TreeTableController {
         delta: isize,
         viewport_rows: usize,
     ) -> TreeTableControllerEvent {
-        let rows = self.flatten_rows();
+        let rows = self.navigable_rows();
         self.sync_nav_selection(&rows);
         match self.nav.move_selection_by(&rows, delta, viewport_rows) {
             NavOutcome::Empty => TreeTableControllerEvent::Ignored,
@@ -482,7 +503,7 @@ impl TreeTableController {
         edge: Edge,
         viewport_rows: usize,
     ) -> TreeTableControllerEvent {
-        let rows = self.flatten_rows();
+        let rows = self.navigable_rows();
         self.sync_nav_selection(&rows);
         match self.nav.move_selection_to_edge(&rows, edge, viewport_rows) {
             NavOutcome::Empty => TreeTableControllerEvent::Ignored,
@@ -502,7 +523,7 @@ impl TreeTableController {
     /// handler. [`TreeTableControllerEvent::Ignored`] when nothing is
     /// selected or the selection is a leaf.
     pub fn toggle_expand_selected(&mut self) -> TreeTableControllerEvent {
-        let rows = self.flatten_rows();
+        let rows = self.navigable_rows();
         self.sync_nav_selection(&rows);
         let Some(path) = self.nav.toggle_expand(&rows) else {
             return TreeTableControllerEvent::Ignored;
@@ -520,7 +541,7 @@ impl TreeTableController {
     /// Left/Right counterpart documents, applied against this
     /// controller's own id-keyed model instead of re-derived.
     pub fn handle_horizontal(&mut self, dir: HorizontalDir) -> TreeTableControllerEvent {
-        let rows = self.flatten_rows();
+        let rows = self.navigable_rows();
         self.sync_nav_selection(&rows);
         match self.nav.horizontal_nav(&rows, dir) {
             HorizontalNav::Collapse(path) => match Self::id_for_path(&rows, &path) {
@@ -719,6 +740,11 @@ impl TreeTableController {
         if !rect.contains(position) {
             return TreeTableControllerEvent::Ignored;
         }
+        if let Some(sb) = self.scrollbar(backend, rect, columns.clone()) {
+            if sb.track.contains(position) {
+                return self.click_scrollbar(backend, rect, &sb, position.y, columns);
+            }
+        }
         let table = self.flatten(columns);
         let layout = backend.tree_table_layout(rect, &table);
         let scroll_offset = table.table.scroll_offset;
@@ -824,10 +850,127 @@ impl TreeTableController {
     }
 
     fn viewport_rows(&self, backend: &dyn Backend, rect: Rect, columns: Vec<Column>) -> usize {
+        self.layout(backend, rect, columns).table.visible_rows
+    }
+
+    /// The resolved [`TreeTableLayout`] for the current model at `rect` —
+    /// the single call site [`Self::viewport_rows`], the `Scroll` arm of
+    /// [`Self::handle`] and [`Self::scrollbar`] all share, so the row
+    /// pitch each of them reasons about is the real painted
+    /// `DataTableLayout::row_height`, never [`Backend::line_height`] (see
+    /// [`crate::compose::TreeController`]'s identical `tree_scroll_row_height`
+    /// rule). `scroll_offset` is zeroed first since none of the three
+    /// callers need it reflected in `visible_rows`/`row_height`, matching
+    /// this method's own pre-existing behaviour.
+    fn layout(&self, backend: &dyn Backend, rect: Rect, columns: Vec<Column>) -> TreeTableLayout {
         let mut table = self.flatten(columns);
         table.table.scroll_offset = 0;
-        let layout = backend.tree_table_layout(rect, &table);
-        layout.table.visible_rows
+        backend.tree_table_layout(rect, &table)
+    }
+
+    /// The vertical scrollbar's track/thumb geometry, or `None` when it
+    /// is hidden ([`Self::set_show_scrollbar`]`(false)`) or every row
+    /// already fits in the viewport — the same "no scrollbar painted, so
+    /// none to hit-test or drag" condition [`crate::tui::draw_data_table`]'s
+    /// own vertical-scrollbar arm checks before painting one. Built from
+    /// [`crate::DataTableLayout`]'s own resolved fields (never a new
+    /// `Backend` method): the track sits in the rightmost
+    /// `scrollbar_width` of the viewport, spanning exactly the body band
+    /// (`visible_rows * row_height`, excluding the header and footer),
+    /// matching where [`crate::tui::draw_tree_table`] actually paints it.
+    fn scrollbar(
+        &self,
+        backend: &dyn Backend,
+        rect: Rect,
+        columns: Vec<Column>,
+    ) -> Option<Scrollbar> {
+        if !self.show_scrollbar {
+            return None;
+        }
+        let layout = self.layout(backend, rect, columns);
+        let dt = &layout.table;
+        let total_rows = self.flatten_rows().len();
+        if dt.scrollbar_width <= 0.0 || total_rows <= dt.visible_rows {
+            return None;
+        }
+        let track = Rect::new(
+            rect.x + dt.viewport_width - dt.inset_x - dt.scrollbar_width,
+            rect.y + dt.inset_y + dt.header_height,
+            dt.scrollbar_width,
+            dt.visible_rows as f32 * dt.row_height,
+        );
+        Some(vscrollbar_thumb(
+            self.id,
+            track,
+            self.nav.scroll_offset(),
+            None,
+            total_rows,
+            dt.row_height,
+            dt.visible_rows as f32,
+        ))
+    }
+
+    /// A press on `sb`'s track, outside the already-handled
+    /// [`Self::click`] early return — mirrors
+    /// [`crate::compose::TreeController::click_scrollbar`]: a thumb press
+    /// starts a drag via [`crate::compose::tree_nav::TreeNavCore::begin_scrollbar_drag`],
+    /// a track press before/after the thumb pages by a viewport.
+    fn click_scrollbar(
+        &mut self,
+        backend: &mut dyn Backend,
+        rect: Rect,
+        sb: &Scrollbar,
+        y: f32,
+        columns: Vec<Column>,
+    ) -> TreeTableControllerEvent {
+        let viewport_rows = self.viewport_rows(backend, rect, columns);
+        let total_rows = self.flatten_rows().len();
+        let max_offset = total_rows.saturating_sub(viewport_rows);
+        if max_offset == 0 {
+            return TreeTableControllerEvent::Ignored;
+        }
+        match sb.press_zone(y) {
+            PressZone::Thumb => {
+                self.nav
+                    .begin_scrollbar_drag(y, sb.travel(), max_offset as f32);
+                TreeTableControllerEvent::Consumed
+            }
+            PressZone::Before => {
+                self.page_scroll(-(viewport_rows as isize), viewport_rows);
+                TreeTableControllerEvent::Consumed
+            }
+            PressZone::After => {
+                self.page_scroll(viewport_rows as isize, viewport_rows);
+                TreeTableControllerEvent::Consumed
+            }
+        }
+    }
+
+    /// [`UiEvent::MouseMoved`] while the left button is held — advances an
+    /// in-progress scrollbar drag started by [`Self::click_scrollbar`].
+    /// A no-op (returns [`TreeTableControllerEvent::Ignored`]) when no
+    /// drag is active, matching [`crate::compose::TreeController::drag_to`].
+    fn drag_to(&mut self, y: f32) -> TreeTableControllerEvent {
+        match self.nav.drag_to(y) {
+            Some(_) => TreeTableControllerEvent::Consumed,
+            None => TreeTableControllerEvent::Ignored,
+        }
+    }
+
+    /// [`Self::flatten_rows`] with the synthetic "…" lazy-load placeholder
+    /// filtered out — what every keyboard navigation entry point
+    /// ([`Self::move_selection_by`], [`Self::move_selection_to_edge`],
+    /// [`Self::toggle_expand_selected`], [`Self::handle_horizontal`]) feeds
+    /// [`crate::compose::tree_nav::TreeNavCore`], so Down/Right/Home/End
+    /// skip over a pending lazy branch's placeholder row exactly like a
+    /// mouse click on it already does ([`Self::click`]/[`Self::double_click`]
+    /// both guard `!row.loading`), instead of selecting or activating a
+    /// row with no real [`NodeId`] behind it.
+    fn navigable_rows(&self) -> Vec<FlatRow> {
+        self.flatten_rows()
+            .into_iter()
+            .filter(|r| !r.loading)
+            .collect()
     }
 }
 
@@ -1209,5 +1352,180 @@ mod tests {
             labels(&c.flatten(columns())),
             vec!["src", "main.rs", "lib.rs"]
         );
+    }
+
+    // ── Keyboard navigation never lands on the lazy-load placeholder ──
+
+    #[test]
+    fn moving_down_from_an_unanswered_lazy_branch_skips_its_placeholder_row() {
+        let mut c = controller(vec![lazy("remote", "remote/"), leaf("local", "local")]);
+        c.set_selected_id(Some("remote".to_string()));
+        // Expanding fires `ChildrenRequested` and leaves the "…" placeholder
+        // as `remote`'s only visible child until `set_children` answers it.
+        assert_eq!(
+            c.set_expanded("remote".to_string(), true),
+            TreeTableControllerEvent::ChildrenRequested {
+                id: "remote".to_string()
+            }
+        );
+        assert_eq!(labels(&c.flatten(columns())), vec!["remote/", "…", "local"]);
+
+        // Down from `remote` must land on the real `local` sibling, never
+        // on the synthetic placeholder row in between.
+        let ev = c.move_selection_by(1, 10);
+        assert_eq!(
+            ev,
+            TreeTableControllerEvent::RowSelected { id: "local".into() }
+        );
+        assert_eq!(c.selected_id(), Some(&"local".to_string()));
+    }
+
+    #[test]
+    fn move_to_end_on_an_unanswered_lazy_branch_stops_before_the_placeholder() {
+        let mut c = controller(vec![lazy("remote", "remote/")]);
+        c.set_expanded("remote".to_string(), true);
+        c.set_selected_id(Some("remote".to_string()));
+        // No real row after the placeholder, so End resolves back to
+        // `remote` itself rather than the synthetic "…" row: `remote` is
+        // already the last *navigable* row.
+        assert_eq!(
+            c.move_selection_to_edge(Edge::End, 10),
+            TreeTableControllerEvent::RowSelected {
+                id: "remote".into()
+            }
+        );
+        assert_eq!(c.selected_id(), Some(&"remote".to_string()));
+    }
+
+    #[test]
+    fn right_arrow_on_an_expanded_lazy_branch_never_selects_the_placeholder() {
+        let mut c = controller(vec![lazy("remote", "remote/")]);
+        c.set_expanded("remote".to_string(), true);
+        c.set_selected_id(Some("remote".to_string()));
+        // "Select first child" would otherwise resolve to the placeholder's
+        // path; with no real child yet, there is nothing to select.
+        assert_eq!(
+            c.handle_horizontal(HorizontalDir::Right),
+            TreeTableControllerEvent::Ignored
+        );
+        assert_eq!(c.selected_id(), Some(&"remote".to_string()));
+    }
+
+    // ── `handle` — scrollbar drag + wheel scroll ──────────────────────
+
+    #[cfg(feature = "tui")]
+    mod handle_tests {
+        use super::*;
+        use crate::tui::TuiBackend;
+        use crate::{ButtonMask, MouseButton, Point};
+
+        fn many_leaves(n: usize) -> Vec<TreeTableNodeData> {
+            (0..n)
+                .map(|i| leaf(&i.to_string(), &i.to_string()))
+                .collect()
+        }
+
+        fn mouse_down(x: f32, y: f32) -> UiEvent {
+            UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(x, y),
+                modifiers: Modifiers::default(),
+            }
+        }
+
+        fn mouse_moved(x: f32, y: f32) -> UiEvent {
+            UiEvent::MouseMoved {
+                position: Point::new(x, y),
+                buttons: ButtonMask {
+                    left: true,
+                    ..Default::default()
+                },
+            }
+        }
+
+        fn mouse_up(x: f32, y: f32) -> UiEvent {
+            UiEvent::MouseUp {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(x, y),
+            }
+        }
+
+        /// 20 rows in a 6-row-tall rect (1 header + 5 visible body rows) —
+        /// enough overflow for `TreeTableController::scrollbar` to paint a
+        /// track, on TUI's `row_height == header_height == scrollbar_width
+        /// == 1.0`: track = `Rect(19, 1, 1, 5)`, thumb `len == 1.25`
+        /// starting at the track's top (`fit_thumb`'s own math — see that
+        /// function's doc).
+        #[test]
+        fn dragging_the_scrollbar_thumb_moves_the_scroll_offset() {
+            let mut c = controller(many_leaves(20));
+            let mut backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 20.0, 6.0);
+
+            // Press inside the thumb (track y in [1, 6), thumb spans
+            // [1, 2.25)).
+            let ev = c.handle(&mouse_down(19.5, 1.5), &mut backend, rect, columns());
+            assert_eq!(ev, TreeTableControllerEvent::Consumed);
+            assert_eq!(c.scroll_offset(), 0, "a thumb press alone doesn't scroll");
+
+            // Drag to the bottom of the track's travel — clamps to the max
+            // offset (20 total - 5 visible == 15).
+            let ev = c.handle(&mouse_moved(19.5, 5.25), &mut backend, rect, columns());
+            assert_eq!(ev, TreeTableControllerEvent::Consumed);
+            assert_eq!(c.scroll_offset(), 15);
+
+            c.handle(&mouse_up(19.5, 5.25), &mut backend, rect, columns());
+            // Once released, a further `MouseMoved` with the button held
+            // (a stray event after release) has no active drag to advance.
+            let ev = c.handle(&mouse_moved(19.5, 1.5), &mut backend, rect, columns());
+            assert_eq!(ev, TreeTableControllerEvent::Ignored);
+            assert_eq!(c.scroll_offset(), 15);
+        }
+
+        #[test]
+        fn clicking_the_track_above_the_thumb_pages_up() {
+            let mut c = controller(many_leaves(20));
+            let mut backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 20.0, 6.0);
+            c.set_scroll_offset(10);
+
+            // Thumb for a scroll offset of 10 sits well below the track's
+            // top (`thumb_start == 2.5` of a `3.75`-long travel); clicking
+            // at the very top (`y == 1.0`) lands "Before" it.
+            let ev = c.handle(&mouse_down(19.5, 1.0), &mut backend, rect, columns());
+            assert_eq!(ev, TreeTableControllerEvent::Consumed);
+            assert_eq!(c.scroll_offset(), 5, "page up by the 5 visible rows");
+        }
+
+        #[test]
+        fn wheel_scroll_advances_the_offset_by_the_real_row_pitch() {
+            let mut c = controller(many_leaves(20));
+            let mut backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 20.0, 6.0);
+
+            // Negative `delta.y` scrolls content *down* (increases the
+            // offset) per `ScrollDelta`'s own sign convention.
+            let ev = c.handle(
+                &UiEvent::Scroll {
+                    widget: None,
+                    delta: crate::ScrollDelta::new(0.0, -3.0),
+                    position: Point::new(0.0, 0.0),
+                },
+                &mut backend,
+                rect,
+                columns(),
+            );
+            assert_eq!(ev, TreeTableControllerEvent::Consumed);
+            // TUI's `row_height == line_height == 1.0`, so this doesn't by
+            // itself distinguish the two — the regression this guards is
+            // `handle`'s `Scroll` arm reading `DataTableLayout::row_height`
+            // (via `TreeTableController::layout`) rather than
+            // `Backend::line_height` directly, matching
+            // `TreeController::handle`'s identical `tree_scroll_row_height`
+            // rule.
+            assert_eq!(c.scroll_offset(), 3);
+        }
     }
 }
