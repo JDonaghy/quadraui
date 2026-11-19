@@ -1258,7 +1258,10 @@ pub enum UiEvent {
     /// by [`crate::a11y::route_action`] for an assistive-technology
     /// `Click` against a `cell.{row}.{col}` node; a mouse-driven click
     /// produces the identical event through a host's own
-    /// `CellGridPrimitiveLayout::hit_test`.
+    /// `CellGridPrimitiveLayout::hit_test`. Also carries
+    /// [`CellGridEvent::CellsRequested`], which a host builds directly
+    /// from [`crate::CellGrid::cells_requested`] once per frame rather
+    /// than from any particular `UiEvent` — see that method's doc.
     ///
     /// ## Downstream impact (CLAUDE.md rule 8)
     ///
