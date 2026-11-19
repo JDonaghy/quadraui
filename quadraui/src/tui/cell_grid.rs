@@ -2,10 +2,18 @@
 //!
 //! Paints the column-letter header strip, the row-number gutter, body
 //! cells clipped to their column width with a trailing ellipsis, a
-//! frozen-pane divider where the frozen rows/columns meet the scrolled
+//! frozen-pane boundary where the frozen rows/columns meet the scrolled
 //! body, the cursor cell highlighted, and the selection range tinted.
 //! Cell text never wraps — one line per row, same cell-granular
 //! convention as [`crate::tui::draw_data_table`].
+//!
+//! The frozen-column boundary reserves its last column's right-edge
+//! cell for a `│` glyph, the same way [`crate::tui::data_table`]
+//! reserves a column's right-edge cell for its separator. The
+//! frozen-row boundary has no spare row to reserve — TUI's
+//! architectural row height is a single line — so it is expressed as
+//! [`Modifier::UNDERLINED`] on that row's already-painted glyphs
+//! instead of a glyph that would overwrite them.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -89,17 +97,20 @@ fn span_bounds(area_len: u16, area_origin: u16, span: &ResolvedSpan) -> Option<(
     (x1 > x0).then_some((area_origin + x0, x1 - x0))
 }
 
-/// Apply `modifier` to one already-painted cell — [`set_cell`]/
+/// OR `modifier` into one already-painted cell — [`set_cell`]/
 /// [`set_cell_wide`] always reset it to [`Modifier::empty`], so bold/
 /// italic/underline from a [`crate::primitives::cell_grid::CellStyle`]
 /// or a header's bold title is a second pass over the same coordinate.
+/// OR-ing rather than assigning means a later pass (the frozen-row
+/// boundary's [`Modifier::UNDERLINED`]) layers onto an earlier one
+/// (a cell style's bold) instead of replacing it.
 fn apply_modifier(buf: &mut Buffer, x: u16, y: u16, modifier: Modifier) {
     if modifier.is_empty() {
         return;
     }
     let area = buf.area;
     if x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height {
-        buf[(x, y)].modifier = modifier;
+        buf[(x, y)].modifier |= modifier;
     }
 }
 
@@ -164,6 +175,24 @@ fn fill_band(
     }
 }
 
+/// Width the column at `layout.cols[col_idx]` may paint text into: one
+/// less than its screen width when it is the last frozen column before
+/// a scrolled region, reserving that column's right-edge cell for the
+/// frozen-column boundary glyph — the same reservation
+/// [`crate::tui::data_table`]'s `usable_width` makes for its separator
+/// column, so an exactly-filling or overflowing value never loses its
+/// last glyph (or its `…`) to the divider painted over it.
+fn frozen_col_usable_width(layout: &CellGridLayout, col_idx: usize, cw: u16) -> u16 {
+    let is_last_frozen = layout.frozen_cols > 0
+        && layout.frozen_cols < layout.cols.len()
+        && col_idx + 1 == layout.frozen_cols;
+    if is_last_frozen {
+        cw.saturating_sub(1)
+    } else {
+        cw
+    }
+}
+
 /// Overlay one divider glyph at `(x, y)`, keeping whatever background
 /// was already painted there (read back from the buffer) rather than
 /// flattening it to a fixed colour — so the frozen-pane divider reads as
@@ -220,13 +249,14 @@ pub fn draw_cell_grid(
     // ── Column headers ───────────────────────────────────────────────
     if col_header_h > 0 {
         let y = area.y;
-        for col in &layout.cols {
+        for (ci, col) in layout.cols.iter().enumerate() {
             if let Some((cx, cw)) = span_bounds(area.width, area.x, col) {
                 fill_band(buf, cx, y, cw, col_header_h, fg, header_bg);
+                let usable = frozen_col_usable_width(&layout, ci, cw);
                 paint_text(
                     buf,
                     cx,
-                    cw,
+                    usable,
                     y,
                     &grid.col_label(col.index),
                     fg,
@@ -299,15 +329,19 @@ pub fn draw_cell_grid(
                         modifier |= Modifier::UNDERLINED;
                     }
                     let align = cell.style.effective_align(&cell.text);
+                    let usable = frozen_col_usable_width(&layout, ci, cw);
                     paint_text(
-                        buf, cx, cw, ry, &cell.text, cell_fg, cell_bg, align, modifier,
+                        buf, cx, usable, ry, &cell.text, cell_fg, cell_bg, align, modifier,
                     );
                 }
             }
         }
     }
 
-    // ── Frozen-pane dividers ─────────────────────────────────────────
+    // ── Frozen-pane boundaries ───────────────────────────────────────
+    // Column axis: the last frozen column already reserved its
+    // right-edge cell above (`frozen_col_usable_width`), so the glyph
+    // lands in a cell no text was ever painted into.
     if layout.frozen_cols > 0 && layout.frozen_cols < layout.cols.len() {
         if let Some((cx, cw)) =
             span_bounds(area.width, area.x, &layout.cols[layout.frozen_cols - 1])
@@ -318,13 +352,17 @@ pub fn draw_cell_grid(
             }
         }
     }
+    // Row axis: there is no spare row to reserve (TUI rows are a
+    // single line), so the boundary is an underline over the row's
+    // already-painted glyphs rather than a glyph that would replace
+    // them.
     if layout.frozen_rows > 0 && layout.frozen_rows < layout.rows.len() {
         if let Some((ry, rh)) =
             span_bounds(area.height, area.y, &layout.rows[layout.frozen_rows - 1])
         {
             let div_y = ry + rh.saturating_sub(1);
             for x in area.x..area.x.saturating_add(area.width) {
-                overlay_divider(buf, x, div_y, '─', sep_fg);
+                apply_modifier(buf, x, div_y, Modifier::UNDERLINED);
             }
         }
     }
@@ -534,12 +572,56 @@ mod tests {
 
         let div_x = layout.cols[0].start.round() as u16 + layout.cols[0].size.round() as u16 - 1;
         let div_y = layout.rows[0].start.round() as u16 + layout.rows[0].size.round() as u16 - 1;
-        // Away from `(div_x, div_y)` itself, where the row divider
-        // paints after (and so visually wins over) the column divider.
+        // Away from `(div_x, div_y)` itself.
         let body_y = layout.rows.last().unwrap().start.round() as u16;
         let body_x = layout.cols.last().unwrap().start.round() as u16;
         assert_eq!(buf[(div_x, body_y)].symbol(), "│");
-        assert_eq!(buf[(body_x, div_y)].symbol(), "─");
+        // The row boundary is an underline over the frozen row's own
+        // glyph, not a glyph that replaces it — the cell's text must
+        // survive.
+        assert_eq!(buf[(body_x, div_y)].symbol(), "R");
+        assert!(
+            buf[(body_x, div_y)].modifier.contains(Modifier::UNDERLINED),
+            "the frozen-row boundary is expressed as underline, not an overwritten glyph"
+        );
+    }
+
+    #[test]
+    fn frozen_column_cell_exactly_filling_its_usable_width_keeps_its_last_glyph_and_divider() {
+        // Acceptance: a frozen cell whose text exactly fills the column's
+        // *usable* width (the column width minus the reserved divider
+        // cell) must not lose its last glyph to the divider, mirroring
+        // `data_table::body_cell_exactly_filling_column_still_gets_a_separator`.
+        let mut grid = grid();
+        let area = Rect::new(0, 0, 40, 10);
+
+        // Learn the frozen column's screen geometry first — it doesn't
+        // depend on cell text, only on sheet shape/sizing.
+        let probe = tui_cell_grid_layout(area, &grid);
+        let (cx, cw) =
+            span_bounds(area.width, area.x, &probe.cols[0]).expect("frozen column 0 is visible");
+        let (ry, _) =
+            span_bounds(area.height, area.y, &probe.rows[0]).expect("frozen row 0 is visible");
+        let usable = (cw - 1) as usize;
+        grid.cells[0][0] = cell_at(&"X".repeat(usable));
+
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        draw_cell_grid(&mut buf, area, &grid, &theme);
+
+        for i in 0..usable {
+            assert_eq!(
+                buf[(cx + i as u16, ry)].symbol(),
+                "X",
+                "glyph {i} of the exactly-filling frozen cell must survive"
+            );
+        }
+        let div_x = cx + cw - 1;
+        assert_eq!(
+            buf[(div_x, ry)].symbol(),
+            "│",
+            "the reserved cell still carries the frozen-column divider"
+        );
     }
 
     #[test]
