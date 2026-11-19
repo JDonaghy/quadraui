@@ -25,7 +25,7 @@ use quadraui::{
 };
 
 use crate::extra_paint::{extra_as, Markdown};
-use crate::hit::{hit_test_painted, HitDetail, PaintedHit};
+use crate::hit::{hit_test_painted, loaded_row_path, HitDetail, PaintedHit};
 use crate::wire::DragRole;
 
 /// A divider drag in progress: armed by the binding's own event handler on a
@@ -214,16 +214,20 @@ pub fn find_data_table_layout(
     })
 }
 
-/// The [`TreePath`] of the row at visual index `row` within the `Tree` hit
-/// painted under id `id` this frame, or `None` if that tree isn't in the
-/// current hit map (e.g. the frame that produced this hit test is stale).
+/// The [`TreePath`] of the row at ABSOLUTE index `row` within the `Tree`
+/// hit painted under id `id` this frame, or `None` if that tree isn't in
+/// the current hit map (e.g. the frame that produced this hit test is
+/// stale) or `row` is a windowed tree's not-yet-loaded position — see
+/// [`crate::hit::loaded_row_path`], which this delegates the
+/// loaded-slice-relative lookup to.
 pub fn tree_row_path(hit_map: &[PaintedHit], id: WidgetId, row: usize) -> Option<TreePath> {
     hit_map.iter().find_map(|hit| match hit {
         PaintedHit::Tree {
             id: hit_id,
             row_paths,
+            loaded_rows,
             ..
-        } if *hit_id == id => row_paths.get(row).cloned().flatten(),
+        } if *hit_id == id => loaded_row_path(row_paths, *loaded_rows, row).cloned(),
         _ => None,
     })
 }
@@ -248,10 +252,9 @@ pub struct ScrollbarDrag {
 /// for the `max_offset` clamp and `scroll_offset` as the value to move
 /// from). `total_rows` comes straight off [`PaintedHit::Tree::total_rows`]
 /// rather than `row_paths.len()`: on a windowed tree the two can differ
-/// (`row_paths` only ever spans the bounded `Vec`
-/// `crate::render::windowed_vec` actually materialises, while
-/// `total_rows` is the collection's real, possibly much larger, extent),
-/// and a scrollbar drag needs the real one.
+/// (`row_paths` only ever spans the loaded slice, while `total_rows` is the
+/// collection's real, possibly much larger, extent), and a scrollbar drag
+/// needs the real one.
 pub fn tree_scroll_state(
     hit_map: &[PaintedHit],
     id: WidgetId,

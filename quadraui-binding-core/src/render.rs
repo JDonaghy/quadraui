@@ -12,13 +12,14 @@ use serde::{Deserialize, Deserializer};
 
 use quadraui::{
     Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState, ListItem,
-    ListView, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
-    SplitHit, SplitLayout, Style, StyledText, TabBar, TabChrome, TextDisplay, TextDisplayLayout,
-    TextDisplayLine, TextRegion, Theme, TreePath, TreeRow, TreeTable, TreeView, WidgetId,
+    ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize,
+    Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar, TabChrome,
+    TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme, TreePath,
+    TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
 use crate::extra_paint::{extra_as, ExtraPaint};
-use crate::hit::{PaintedHit, ScrollChildHit, TreeTableHitState};
+use crate::hit::{LoadedRows, PaintedHit, ScrollChildHit, TreeTableHitState};
 use crate::layout::{
     align_cross, apply_min_max, grid_cell_rects, justify_starts, quantise_horizontal,
     quantise_vertical, resolve_main_axis_sizes, Align, LayoutChild, LayoutContainer, LayoutLeaf,
@@ -209,6 +210,11 @@ pub fn draw_bands(
                 total_items: list.items.len(),
                 scroll_offset: list.scroll_offset,
                 viewport_rows,
+                // The flat six-slot path carries no `ItemsWindow`: the
+                // only decode that records one is a layout-tree leaf's
+                // (`crate::wire::decode_leaf`), so every slot painted here
+                // holds its whole collection.
+                loaded_rows: None,
             });
         }
     }
@@ -222,7 +228,7 @@ pub fn draw_bands(
                 area: content_rect,
                 clip: content_rect,
                 layout,
-                row_paths: tree.rows.iter().map(|row| Some(row.path.clone())).collect(),
+                row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
                 scrollbar,
                 scroll_offset: tree.scroll_offset,
                 total_rows: tree.rows.len(),
@@ -231,6 +237,8 @@ pub fn draw_bands(
                     .rows
                     .iter()
                     .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
+                // See the `List` slot above.
+                loaded_rows: None,
             });
         }
     }
@@ -249,6 +257,8 @@ pub fn draw_bands(
                 total_rows: data_table.rows.len(),
                 selected_idx: data_table.selected_idx,
                 viewport_rows,
+                // See the `List` slot above.
+                loaded_rows: None,
             });
         }
     }
@@ -357,6 +367,10 @@ fn draw_text_display_hit(
         body_offset,
         total_lines: td.lines.len(),
         viewport_lines,
+        // Overwritten by `paint_leaf_windowed` for a windowed leaf; `None`
+        // is right for every other caller (`draw_bands`, an unwindowed
+        // layout-tree leaf).
+        loaded_rows: None,
     }
 }
 
@@ -449,14 +463,13 @@ pub fn paint_layout(
 /// total}` from `windows` — an id-keyed map built from
 /// [`crate::wire::DecodeDiagnostics::items_windows`] against the same
 /// decode that produced `node`. Honoring it means [`paint_leaf_windowed`]
-/// pads that leaf's painted payload out to its real `total` before handing
-/// it to the backend, so the backend's own scrollbar/extent arithmetic
-/// (always `len()`-driven) reflects the collection's real size rather than
-/// however many rows this frame's payload actually carries, and a scroll
-/// position past the loaded slice lands on an empty placeholder row at its
-/// own absolute position instead of nothing. [`paint_layout`] itself is
-/// this function with an empty `windows` map, so a caller that never
-/// decodes an `"items_window"` key paints exactly as before.
+/// paints that leaf from the band of its collection the viewport actually
+/// shows (see [`WindowedBand`]), reports the collection's real extent on
+/// the leaf's own [`PaintedHit`] rather than the painted band's length, and
+/// leaves an empty placeholder at every band position the app hasn't
+/// supplied a row for yet. [`paint_layout`] itself is this function with an
+/// empty `windows` map, so a caller that never decodes an `"items_window"`
+/// key paints exactly as before.
 pub fn paint_layout_windowed(
     backend: &mut dyn Backend,
     area: Rect,
@@ -2106,22 +2119,27 @@ pub struct RowsRequestedEvent {
 /// `TreeView::rows.len()`, `DataTable::rows.len()`, or
 /// `TextDisplay::lines.len()`), and `scroll_offset`/`viewport_rows`.
 ///
-/// `viewport_rows` must come from [`list_viewport_rows`]/
-/// [`tree_viewport_rows`]/[`data_table_viewport_rows`] (the viewport's true
-/// row capacity at a *zero* scroll offset), not straight off this leaf's
-/// own `PaintedHit::*.viewport_rows` field: for `PaintedHit::DataTable` in
-/// particular, that field is `DataTableLayout::visible_rows` at the
-/// table's ACTUAL painted offset, which degrades toward zero near the end
-/// of the table — exactly when more rows are needed — and would starve
-/// this function's margin into a near-empty request.
+/// `viewport_rows` is the viewport's true row capacity. A windowed leaf's
+/// own `PaintedHit::*.viewport_rows` field is that capacity directly —
+/// its band is painted from offset `0` (see [`WindowedLeaf`]), so even
+/// `PaintedHit::DataTable`'s `DataTableLayout::visible_rows` is measured
+/// against a band that starts at the first visible row rather than
+/// degrading toward zero near the end of the collection. For an
+/// UNWINDOWED leaf, whose descriptor is painted at its real offset, that
+/// same field does degrade near the end, so a caller passing one must use
+/// [`list_viewport_rows`]/[`tree_viewport_rows`]/[`data_table_viewport_rows`]
+/// (the capacity at a *zero* offset) instead, or the margin below starves
+/// into a near-empty request.
 ///
 /// `scroll_offset` is **absolute**: an index into the widget's full
 /// `window.total` collection, not the loaded payload alone — the same
 /// value [`paint_layout_windowed`] leaves on this leaf's `PaintedHit` this
-/// frame (e.g. `PaintedHit::DataTable::scroll_offset`) once a leaf's
-/// `ItemsWindow` is in play, because [`windowed_vec`] pads the painted
-/// payload out to `window.total` before handing it to the backend, so the
-/// descriptor's own `scroll_offset` field already indexes that full span.
+/// frame (e.g. `PaintedHit::DataTable::scroll_offset`), which is absolute
+/// whether or not a window is in play. [`crate::InteractionEngine::handle`]
+/// is what pairs the two in production: it reads this leaf's
+/// [`crate::hit::LoadedRows`] off the hit the last frame painted and calls
+/// this with the absolute offset the scroll input it just handled resolved
+/// to.
 ///
 /// Returns `None` once the loaded slice `[window.start, window.start +
 /// loaded_len)` already covers the visible range `[scroll_offset,
@@ -2159,92 +2177,207 @@ pub fn rows_requested_for_window(
     Some(RowsRequestedEvent { id, start, count })
 }
 
-/// How far past the absolute `scroll_offset` [`windowed_vec`] still
-/// materialises a placeholder, when `window.total` alone would otherwise
-/// demand padding out to a possibly adversarial size (see that function's
-/// own doc). Far larger than any real terminal/GUI viewport (a few dozen
-/// to a few hundred rows), so no real viewport is ever starved by this
-/// bound — its only job is capping how much of a stale or huge
-/// `window.total` gets materialised before the app's next frame narrows
-/// the gap between `scroll_offset` and the loaded slice.
-const WINDOWED_VIEWPORT_PAD_ROWS: usize = 4096;
+/// Rows a windowed leaf's band materialises beyond its viewport's own
+/// measured capacity (see [`windowed_band_rows`]) — a small margin so a
+/// partially-visible last row, a title/header row the capacity probe
+/// resolves differently, or a backend's own sub-row pixel shift always
+/// still has a row to land on.
+const WINDOWED_BAND_PAD_ROWS: usize = 8;
 
-/// Splices `loaded` — this frame's payload, covering the half-open range
-/// `[window.start, window.start + loaded.len())` of the collection's real
-/// `window.total` size — into a `Vec` long enough to paint correctly,
-/// filling every other index up to that length with
+/// The contiguous slice of a windowed collection that one frame actually
+/// materialises for painting: `len` rows starting at absolute index
+/// `start`, which is the row painted at the very top of the viewport.
+///
+/// Virtualisation exists to make a large collection cheap, so the band is
+/// sized off the viewport — NOT off `ItemsWindow::total`, which is both
+/// unbounded (a wire field: a `"total": 10000000000` payload would attempt
+/// a multi-hundred-GB allocation, and Rust aborts on allocation failure)
+/// and, at a 100,000-row scale, far more per-frame allocation and cloning
+/// than painting a few dozen visible rows can justify. The collection's
+/// real extent reaches the scrollbar arithmetic and the keyboard navigation
+/// through [`crate::hit::PaintedHit`]'s own `total_rows`/`total_items`/
+/// `total_lines` + [`crate::hit::LoadedRows`] fields instead, never through
+/// the materialised `Vec`'s own `len()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowedBand {
+    start: usize,
+    len: usize,
+}
+
+/// How many rows a leaf painted into `area` needs materialised: an upper
+/// bound on the viewport's own row capacity (`area.height` over
+/// [`Backend::line_height`], which is what every `*_viewport_rows` probe
+/// resolves against) plus [`WINDOWED_BAND_PAD_ROWS`].
+fn windowed_band_rows(backend: &mut dyn Backend, area: Rect) -> usize {
+    band_rows_for(area.height, backend.line_height())
+}
+
+/// [`windowed_band_rows`]'s own arithmetic, over plain numbers.
+fn band_rows_for(height: f32, line_height: f32) -> usize {
+    let rows = if line_height > 0.0 {
+        (height.max(0.0) / line_height).ceil() as usize
+    } else {
+        0
+    };
+    rows.saturating_add(WINDOWED_BAND_PAD_ROWS)
+}
+
+/// The band `band_rows` rows wide that paints a windowed collection
+/// scrolled to absolute `scroll_offset`.
+///
+/// `start` is `scroll_offset` clamped into `[0, real_total)` — the same
+/// clamp every primitive's own layout applies to a descriptor's
+/// `scroll_offset` (`ListViewLayout::resolved_scroll_offset`'s own doc),
+/// so a band near the end of the collection paints the same short tail an
+/// unwindowed one does. `real_total` widens past `window.total` when a
+/// stale or malformed total understates `window.start + loaded_len`, so a
+/// bad total never truncates real loaded data.
+fn windowed_band(
+    window: ItemsWindow,
+    loaded_len: usize,
+    scroll_offset: usize,
+    band_rows: usize,
+) -> WindowedBand {
+    let real_total = window.total.max(window.start.saturating_add(loaded_len));
+    let start = scroll_offset.min(real_total.saturating_sub(1));
+    let len = band_rows.max(1).min(real_total.saturating_sub(start));
+    WindowedBand { start, len }
+}
+
+/// Everything painting one windowed leaf needs that its descriptor can't
+/// carry: which band to materialise, and the absolute geometry its
+/// [`crate::hit::PaintedHit`] must report in place of the band-relative
+/// values the backend sees.
+///
+/// A windowed leaf is painted from a descriptor whose `items`/`rows`/
+/// `lines` is only [`Self::band`] (see [`WindowedBand`]'s own doc for why),
+/// so its own `scroll_offset` is rewritten to `0` and every index the
+/// backend's returned layout reports is band-relative. [`shift_list_layout`]/
+/// [`shift_tree_layout`]/[`shift_text_display_layout`] shift those indices
+/// back by `band.start` before they reach a hit, so nothing downstream of
+/// paint ever sees a band-relative index.
+#[derive(Debug, Clone, Copy)]
+struct WindowedLeaf {
+    band: WindowedBand,
+    /// The absolute row index the band's own row `0` sits at — what the
+    /// leaf's hit reports as its `scroll_offset`.
+    scroll_offset: usize,
+    /// `LayoutLeaf::scroll_px` rebased onto the band: the sub-row pixel
+    /// remainder of the absolute pixel offset, so a pixel-smooth backend
+    /// still paints a partially-clipped first row.
+    scroll_px: Option<f32>,
+    /// The collection's real extent — `ItemsWindow::total`, widened to
+    /// cover the loaded slice when a stale total understates it.
+    total: usize,
+    loaded: LoadedRows,
+}
+
+/// Resolves a windowed leaf's band and absolute geometry, from `window`,
+/// the loaded payload's own length, the descriptor's own `scroll_offset`,
+/// and the leaf's optional pixel-precise `scroll_px`.
+///
+/// `scroll_px`, when set, is the authority on where the leaf is scrolled to
+/// (it is what every backend's own layout resolves its first visible row
+/// from, ignoring `scroll_offset`), so the absolute row index comes from
+/// `scroll_px / line_height` in that case and only the sub-row remainder is
+/// handed on to the backend.
+fn windowed_leaf(
+    window: ItemsWindow,
+    loaded_len: usize,
+    descriptor_offset: usize,
+    scroll_px: Option<f32>,
+    line_height: f32,
+    band_rows: usize,
+) -> WindowedLeaf {
+    let (scroll_offset, scroll_px) = match scroll_px {
+        Some(px) if line_height > 0.0 => {
+            let rows = (px / line_height).floor().max(0.0);
+            (rows as usize, Some(px - rows * line_height))
+        }
+        other => (descriptor_offset, other),
+    };
+    let band = windowed_band(window, loaded_len, scroll_offset, band_rows);
+    WindowedLeaf {
+        band,
+        scroll_offset: band.start,
+        scroll_px,
+        total: window.total.max(window.start.saturating_add(loaded_len)),
+        loaded: LoadedRows {
+            start: window.start,
+            len: loaded_len,
+        },
+    }
+}
+
+/// Materialises `band` out of `loaded` — this frame's payload, covering the
+/// half-open absolute range `[window.start, window.start + loaded.len())` —
+/// filling every band position the payload has no row for with
 /// `placeholder(absolute_index)`.
 ///
 /// Every one of `ListView::items`/`TreeView::rows`/`DataTable::rows`/
 /// `TextDisplay::lines` needs this same shape before it reaches a
 /// `Backend::draw_*` call: each backend's own paint loop indexes straight
 /// into the `Vec` at whatever row its layout decides is visible, so a
-/// scroll position past the loaded slice needs an empty placeholder row to
-/// land on instead of indexing off the end.
+/// position past the loaded slice needs an empty placeholder row to land on
+/// instead of indexing off the end.
 ///
-/// The returned `Vec`'s length is **not** `window.total` — materialising a
-/// placeholder for every one of a 100,000-row (or adversarial
-/// multi-billion-row) `window.total` on every frame is exactly the cost
-/// virtualisation exists to avoid, and `Vec::with_capacity` on an
-/// attacker-controlled `total` risks an allocation failure abort. Instead
-/// the length is bounded to whichever is larger: `window.start +
-/// loaded.len()` (so real loaded data is never truncated), or
-/// `scroll_offset + `[`WINDOWED_VIEWPORT_PAD_ROWS`] (so the caller's own
-/// absolute `scroll_offset` — already resolved before this is called, see
-/// [`windowed_list`]/[`windowed_tree`]/[`windowed_data_table`]/
-/// [`windowed_text_display`]'s own doc — always lands inside the returned
-/// `Vec`, with room for a real viewport past it) — then clamped to
-/// `window.total` itself when that's the smaller (and widened past it only
-/// when `window.total` understates `window.start + loaded.len()`, so a
-/// stale or malformed total never truncates real loaded data either). A
-/// caller that needs the collection's true extent (a scrollbar's thumb
-/// size, Home/End navigation) must read `window.total` directly rather
-/// than this `Vec`'s own `len()` — see [`paint_leaf_windowed`]'s own doc
-/// for where that total is threaded through instead.
+/// The returned `Vec` is exactly `band.len` long — a viewport's worth (see
+/// [`WindowedBand`]'s own doc), never `window.total` — so the band's row
+/// `0` is the collection's row `band.start`, not its row `0`. A caller
+/// needs the collection's true extent (a scrollbar's thumb size, Home/End
+/// navigation, the next `RowsRequestedEvent`) read off
+/// [`WindowedLeaf::total`]/[`WindowedLeaf::loaded`] rather than this
+/// `Vec`'s own `len()`.
 fn windowed_vec<T: Clone>(
     loaded: &[T],
     window: ItemsWindow,
-    scroll_offset: usize,
+    band: WindowedBand,
     mut placeholder: impl FnMut(usize) -> T,
 ) -> Vec<T> {
-    let loaded_end = window.start.saturating_add(loaded.len());
-    let real_total = window.total.max(loaded_end);
-    let needed = loaded_end.max(scroll_offset.saturating_add(WINDOWED_VIEWPORT_PAD_ROWS));
-    let total = real_total.min(needed);
-    let mut out = Vec::with_capacity(total);
-    for i in 0..window.start.min(total) {
-        out.push(placeholder(i));
-    }
-    let take = loaded.len().min(total.saturating_sub(out.len()));
-    out.extend_from_slice(&loaded[..take]);
-    for i in out.len()..total {
-        out.push(placeholder(i));
+    let mut out = Vec::with_capacity(band.len);
+    for i in 0..band.len {
+        let absolute = band.start.saturating_add(i);
+        match absolute
+            .checked_sub(window.start)
+            .and_then(|loaded_idx| loaded.get(loaded_idx))
+        {
+            Some(row) => out.push(row.clone()),
+            None => out.push(placeholder(absolute)),
+        }
     }
     out
 }
 
 /// [`windowed_vec`] for a [`DataTable`]'s own `rows` — an empty-`cells`
-/// [`DataRow`] at every index outside the loaded slice. Safe because every
-/// cell read goes through `Vec::get` (see `DataTableLayout`'s own paint
-/// code), never a direct index, so a short `cells` paints as blank columns
-/// rather than panicking.
-fn windowed_data_table(table: &DataTable, window: ItemsWindow) -> DataTable {
-    let scroll_offset = table.scroll_offset;
-    let rows = windowed_vec(&table.rows, window, scroll_offset, |_| DataRow {
+/// [`DataRow`] at every band position outside the loaded slice. Safe
+/// because every cell read goes through `Vec::get` (see `DataTableLayout`'s
+/// own paint code), never a direct index, so a short `cells` paints as
+/// blank columns rather than panicking.
+///
+/// `selected_idx` is rebased onto the band and dropped outright when the
+/// selected row isn't in it — a selection outside the painted band has no
+/// row to highlight.
+fn windowed_data_table(table: &DataTable, window: ItemsWindow, leaf: WindowedLeaf) -> DataTable {
+    let rows = windowed_vec(&table.rows, window, leaf.band, |_| DataRow {
         cells: Vec::new(),
         decoration: Decoration::default(),
     });
     DataTable {
         rows,
+        scroll_offset: 0,
+        selected_idx: band_relative(table.selected_idx, leaf.band),
         ..table.clone()
     }
 }
 
 /// [`windowed_vec`] for a [`ListView`]'s own `items` — an empty-text
-/// [`ListItem`] at every index outside the loaded slice.
-fn windowed_list(list: &ListView, window: ItemsWindow) -> ListView {
-    let scroll_offset = list.scroll_offset;
-    let items = windowed_vec(&list.items, window, scroll_offset, |_| ListItem {
+/// [`ListItem`] at every band position outside the loaded slice.
+///
+/// `ListView::selected_idx` is a plain `usize` with no "nothing selected"
+/// value, so a selection outside the band is rebased to `band.len` — one
+/// past the last materialised row, an index no painted row ever matches.
+fn windowed_list(list: &ListView, window: ItemsWindow, leaf: WindowedLeaf) -> ListView {
+    let items = windowed_vec(&list.items, window, leaf.band, |_| ListItem {
         text: StyledText::plain(""),
         icon: None,
         detail: None,
@@ -2252,13 +2385,16 @@ fn windowed_list(list: &ListView, window: ItemsWindow) -> ListView {
     });
     ListView {
         items,
+        scroll_offset: 0,
+        selected_idx: band_relative(Some(list.selected_idx), leaf.band).unwrap_or(leaf.band.len),
         ..list.clone()
     }
 }
 
 /// [`windowed_vec`] for a [`TreeView`]'s own `rows` — an empty-text leaf
-/// [`TreeRow`] at every index outside the loaded slice, each carrying a
-/// synthetic single-level path built from its own absolute index.
+/// [`TreeRow`] at every band position outside the loaded slice, each
+/// carrying a synthetic single-level path built from its own absolute
+/// index.
 ///
 /// That path is **not** a stable identity: `TreePath` is an app-chosen
 /// `Vec<u16>` (`quadraui::types::TreePath`) with no value range reserved
@@ -2270,11 +2406,14 @@ fn windowed_list(list: &ListView, window: ItemsWindow) -> ListView {
 /// collided path is harmless (nothing compares two placeholders' paths
 /// against each other), but [`paint_leaf_windowed`] must never let one of
 /// these synthetic paths escape into [`crate::hit::PaintedHit::Tree::row_paths`]
-/// as if it identified a real row — see that field's own doc for how it
-/// stays `None` at a placeholder's position instead.
-fn windowed_tree(tree: &TreeView, window: ItemsWindow) -> TreeView {
-    let scroll_offset = tree.scroll_offset;
-    let rows = windowed_vec(&tree.rows, window, scroll_offset, |idx| TreeRow {
+/// as if it identified a real row — see that field's own doc for how only
+/// the loaded slice's own paths are recorded instead.
+///
+/// `selected_path` needs no rebasing: it is matched by value against the
+/// band's own rows, so a selection outside the band simply matches
+/// nothing.
+fn windowed_tree(tree: &TreeView, window: ItemsWindow, leaf: WindowedLeaf) -> TreeView {
+    let rows = windowed_vec(&tree.rows, window, leaf.band, |idx| TreeRow {
         path: vec![u16::try_from(idx).unwrap_or(u16::MAX)] as TreePath,
         indent: 0,
         icon: None,
@@ -2286,23 +2425,111 @@ fn windowed_tree(tree: &TreeView, window: ItemsWindow) -> TreeView {
     });
     TreeView {
         rows,
+        scroll_offset: 0,
         ..tree.clone()
     }
 }
 
 /// [`windowed_vec`] for a [`TextDisplay`]'s own `lines` — an empty-spans
-/// [`TextDisplayLine`] at every index outside the loaded slice.
-fn windowed_text_display(td: &TextDisplay, window: ItemsWindow) -> TextDisplay {
-    let scroll_offset = td.scroll_offset;
-    let lines = windowed_vec(&td.lines, window, scroll_offset, |_| TextDisplayLine {
+/// [`TextDisplayLine`] at every band position outside the loaded slice.
+///
+/// `auto_scroll` is left exactly as the app set it: the band a windowed
+/// display paints with it set is the collection's own tail (see
+/// [`windowed_text_display_band`]), so "keep the last line visible"
+/// resolves against the real last line rather than the band's.
+fn windowed_text_display(td: &TextDisplay, window: ItemsWindow, leaf: WindowedLeaf) -> TextDisplay {
+    let lines = windowed_vec(&td.lines, window, leaf.band, |_| TextDisplayLine {
         spans: Vec::new(),
         decoration: Decoration::default(),
         timestamp: None,
     });
     TextDisplay {
         lines,
+        scroll_offset: 0,
         ..td.clone()
     }
+}
+
+/// [`windowed_leaf`] for a [`TextDisplay`], which has one scroll input
+/// neither of the other three kinds does: [`TextDisplay::auto_scroll`]
+/// pins the viewport to the collection's last line regardless of
+/// `scroll_offset`. The band is therefore anchored at the tail — the last
+/// `band_rows` rows of the real extent — so the primitive's own
+/// "last line visible" resolution lands on the collection's final line and
+/// the rows requested next are the tail's, not row `0`'s.
+fn windowed_text_display_band(
+    td: &TextDisplay,
+    window: ItemsWindow,
+    scroll_px: Option<f32>,
+    line_height: f32,
+    band_rows: usize,
+) -> WindowedLeaf {
+    let loaded_len = td.lines.len();
+    if !td.auto_scroll {
+        return windowed_leaf(
+            window,
+            loaded_len,
+            td.scroll_offset,
+            scroll_px,
+            line_height,
+            band_rows,
+        );
+    }
+    let real_total = window.total.max(window.start.saturating_add(loaded_len));
+    let tail_start = real_total.saturating_sub(band_rows.max(1));
+    windowed_leaf(window, loaded_len, tail_start, None, line_height, band_rows)
+}
+
+/// `idx` rebased from an absolute collection index onto `band`, or `None`
+/// when it isn't inside the band at all.
+fn band_relative(idx: Option<usize>, band: WindowedBand) -> Option<usize> {
+    idx?.checked_sub(band.start).filter(|rel| *rel < band.len)
+}
+
+/// Shifts every row index [`Backend::list_layout`] resolved against a
+/// windowed list's band back into the collection's own absolute indexing,
+/// so a hit test or a selection read downstream of paint never sees a
+/// band-relative index — see [`WindowedLeaf`]'s own doc.
+fn shift_list_layout(layout: &mut ListViewLayout, by: usize) {
+    for item in &mut layout.visible_items {
+        item.item_idx = item.item_idx.saturating_add(by);
+    }
+    for (_, hit) in &mut layout.hit_regions {
+        if let ListViewHit::Item(idx) = hit {
+            *idx = idx.saturating_add(by);
+        }
+    }
+    layout.resolved_scroll_offset = layout.resolved_scroll_offset.saturating_add(by);
+}
+
+/// [`shift_list_layout`] for a windowed tree's [`Backend::tree_layout`].
+fn shift_tree_layout(layout: &mut TreeViewLayout, by: usize) {
+    for row in &mut layout.visible_rows {
+        row.row_idx = row.row_idx.saturating_add(by);
+    }
+    for (_, hit) in &mut layout.hit_regions {
+        match hit {
+            TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
+                *idx = idx.saturating_add(by);
+            }
+            TreeViewHit::Empty => {}
+        }
+    }
+    layout.resolved_scroll_offset = layout.resolved_scroll_offset.saturating_add(by);
+}
+
+/// [`shift_list_layout`] for a windowed display's
+/// [`Backend::text_display_layout`].
+fn shift_text_display_layout(layout: &mut TextDisplayLayout, by: usize) {
+    for line in &mut layout.visible_lines {
+        line.line_idx = line.line_idx.saturating_add(by);
+    }
+    for (_, hit) in &mut layout.hit_regions {
+        if let TextDisplayHit::Line(idx) = hit {
+            *idx = idx.saturating_add(by);
+        }
+    }
+    layout.resolved_scroll_offset = layout.resolved_scroll_offset.saturating_add(by);
 }
 
 /// Paints `tree` into `area`, reserving a right-hand gutter for its
@@ -2339,8 +2566,8 @@ pub fn draw_tree_with_scrollbar(
 /// continuous position [`crate::primitives::TreeController`]'s own
 /// scrollbar does (`px / line_height`, not quantised to a whole row).
 ///
-/// [`draw_tree_with_scrollbar_and_state_windowed`] with `total_override:
-/// None` — a tree with no [`ItemsWindow`] in play sizes its scrollbar off
+/// [`draw_tree_with_scrollbar_and_state_windowed`] with `extent: None` — a
+/// tree with no [`ItemsWindow`] in play sizes its scrollbar off
 /// `tree.rows.len()` exactly as this always has.
 pub fn draw_tree_with_scrollbar_and_state(
     backend: &mut dyn Backend,
@@ -2351,35 +2578,48 @@ pub fn draw_tree_with_scrollbar_and_state(
     draw_tree_with_scrollbar_and_state_windowed(backend, area, tree, scroll_px, None)
 }
 
+/// A windowed tree's real scrollbar geometry, which its painted descriptor
+/// can no longer carry: `total_rows` is the collection's own extent
+/// (`ItemsWindow::total`) rather than the band's length, and
+/// `scroll_offset` is the band's own absolute start rather than the `0` the
+/// band-relative descriptor paints from — see [`WindowedBand`]'s own doc
+/// for why the painted `rows` is only a band.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowedTreeExtent {
+    pub total_rows: usize,
+    pub scroll_offset: usize,
+}
+
 /// [`draw_tree_with_scrollbar_and_state`], plus an optional
-/// `total_override` — [`paint_leaf_windowed`] passes a windowed tree's own
-/// real `ItemsWindow::total` here, every other caller passes `None`.
+/// [`WindowedTreeExtent`] — [`paint_leaf_windowed`] passes a windowed
+/// tree's own real total and absolute offset here, every other caller
+/// passes `None`.
 ///
-/// This is the hook a windowed tree's scrollbar needs: [`windowed_tree`]'s
-/// own `Vec` is deliberately bounded well below `window.total` (see
-/// [`windowed_vec`]'s own doc), so sizing the thumb off `tree.rows.len()`
-/// the way an unwindowed tree always has would shrink it back down to the
-/// bounded `Vec`'s length instead of the collection's real size —
-/// `total_override` lets the thumb and "does this even need a scrollbar"
-/// check below both use the real total instead.
+/// This is the hook a windowed tree's scrollbar needs: a windowed tree's
+/// painted `rows` is only the band it actually shows (see
+/// [`WindowedBand`]'s own doc), so sizing the thumb off `tree.rows.len()`
+/// and positioning it off `tree.scroll_offset` the way an unwindowed tree
+/// always has would shrink the thumb to a viewport's worth and pin it to
+/// the top — `extent` lets the thumb, its position, and the "does this
+/// even need a scrollbar" check below all use the collection's real
+/// numbers instead.
 ///
 /// On a backend that paints its own scrollbar overlay inside `draw_tree`
-/// ([`Backend::tree_paints_own_scrollbar`] — GTK, macOS, Win),
-/// `total_override` has no effect: [`Backend::tree_vscrollbar`] still
-/// sizes its own thumb off `tree.rows.len()` internally, so a windowed
-/// tree's thumb on those backends reflects the bounded painted `Vec`, not
-/// the real total, until `Backend` grows its own windowed-extent hook —
-/// tracked as a per-backend follow-up, not fixed here (TUI, the backend
-/// this module's own tests exercise, takes the explicit-gutter branch
-/// below and is unaffected).
+/// ([`Backend::tree_paints_own_scrollbar`] — GTK, macOS, Win), `extent`
+/// has no effect: [`Backend::tree_vscrollbar`] still sizes its own thumb
+/// off `tree.rows.len()` internally, so a windowed tree's thumb on those
+/// backends reflects the painted band, not the real total, until `Backend`
+/// grows its own windowed-extent hook — tracked as a per-backend
+/// follow-up, not fixed here (TUI, the backend this module's own tests
+/// exercise, takes the explicit-gutter branch below and is unaffected).
 pub fn draw_tree_with_scrollbar_and_state_windowed(
     backend: &mut dyn Backend,
     area: Rect,
     tree: &TreeView,
     scroll_px: Option<f32>,
-    total_override: Option<usize>,
+    extent: Option<WindowedTreeExtent>,
 ) -> (Rect, Option<Scrollbar>, usize) {
-    let total_rows = total_override.unwrap_or(tree.rows.len());
+    let total_rows = extent.map_or(tree.rows.len(), |extent| extent.total_rows);
     let state = quadraui::TreePaintState::default().with_scroll_px(scroll_px);
     if backend.tree_paints_own_scrollbar() {
         backend.draw_tree_with_state(area, tree, &state, false);
@@ -2407,8 +2647,12 @@ pub fn draw_tree_with_scrollbar_and_state_windowed(
         area.height,
     );
     let line_height = backend.line_height();
-    let thumb_offset = match scroll_px {
-        Some(px) if line_height > 0.0 => px / line_height,
+    let thumb_offset = match (extent, scroll_px) {
+        // A windowed tree's absolute offset is whole rows (its band starts
+        // at a row boundary and the sub-row remainder is what reaches the
+        // backend), so the pixel-precise branch below has nothing to add.
+        (Some(extent), _) => extent.scroll_offset as f32,
+        (None, Some(px)) if line_height > 0.0 => px / line_height,
         _ => tree.scroll_offset as f32,
     };
     let scrollbar = Scrollbar::vertical(
@@ -2502,12 +2746,14 @@ pub fn paint_leaf(
     );
 }
 
-/// [`paint_leaf`], additionally padding this leaf's `List`/`Tree`/
-/// `DataTable`/`TextDisplay` payload out to its real `window.total` before
-/// painting, when `windows` (keyed by this leaf's own `id`) has an entry
-/// for it — see [`windowed_vec`]'s own doc for why. A leaf with no entry in
-/// `windows` (every leaf, on a tree decoded without any `"items_window"`
-/// key) paints `leaf.descriptor` verbatim, identically to [`paint_leaf`].
+/// [`paint_leaf`], additionally painting this leaf's `List`/`Tree`/
+/// `DataTable`/`TextDisplay` from the band of its collection the viewport
+/// actually shows, when `windows` (keyed by this leaf's own `id`) has an
+/// entry for it — see [`WindowedBand`]'s own doc for why only a band is
+/// ever materialised, and [`WindowedLeaf`]'s for how the collection's real
+/// extent reaches the hit instead. A leaf with no entry in `windows` (every
+/// leaf, on a tree decoded without any `"items_window"` key) paints
+/// `leaf.descriptor` verbatim, identically to [`paint_leaf`].
 pub fn paint_leaf_windowed(
     backend: &mut dyn Backend,
     area: Rect,
@@ -2524,84 +2770,123 @@ pub fn paint_leaf_windowed(
             hits.push(PaintedHit::Button { id, layout });
         }
         LeafDescriptor::TextDisplay(text_display) => {
-            let painted: Cow<TextDisplay> = match window {
-                Some(w) => Cow::Owned(windowed_text_display(text_display, w)),
-                None => Cow::Borrowed(text_display),
+            let windowed = window.map(|w| {
+                windowed_text_display_band(
+                    text_display,
+                    w,
+                    leaf.scroll_px,
+                    backend.line_height(),
+                    windowed_band_rows(backend, area),
+                )
+            });
+            let painted: Cow<TextDisplay> = match (window, windowed) {
+                (Some(w), Some(windowed)) => {
+                    Cow::Owned(windowed_text_display(text_display, w, windowed))
+                }
+                _ => Cow::Borrowed(text_display),
             };
             let mut hit = draw_text_display_hit(backend, id, area, painted.as_ref());
-            // `draw_text_display_hit` always reports `td.lines.len()` —
-            // correct for an unwindowed leaf, but [`windowed_text_display`]'s
-            // own `Vec` is deliberately bounded well below `window.total`
-            // (see [`windowed_vec`]'s own doc), so the real total has to be
-            // threaded in here instead of trusting that `len()`.
-            if let (Some(w), PaintedHit::TextDisplay { total_lines, .. }) = (window, &mut hit) {
-                *total_lines = w.total;
+            // `draw_text_display_hit` reports `td.lines.len()` and a
+            // layout resolved against the painted descriptor — both correct
+            // for an unwindowed leaf, but a windowed one only ever paints
+            // its own band (see [`WindowedBand`]'s doc), so the real total
+            // and the band's absolute offset are threaded in here instead.
+            if let (
+                Some(windowed),
+                PaintedHit::TextDisplay {
+                    layout,
+                    total_lines,
+                    loaded_rows,
+                    ..
+                },
+            ) = (windowed, &mut hit)
+            {
+                shift_text_display_layout(layout, windowed.band.start);
+                *total_lines = windowed.total;
+                *loaded_rows = Some(windowed.loaded);
             }
             hits.push(hit);
         }
         LeafDescriptor::List(list) => {
-            let painted: Cow<ListView> = match window {
-                Some(w) => Cow::Owned(windowed_list(list, w)),
-                None => Cow::Borrowed(list),
+            let windowed = window.map(|w| {
+                windowed_leaf(
+                    w,
+                    list.items.len(),
+                    list.scroll_offset,
+                    leaf.scroll_px,
+                    backend.line_height(),
+                    windowed_band_rows(backend, area),
+                )
+            });
+            let painted: Cow<ListView> = match (window, windowed) {
+                (Some(w), Some(windowed)) => Cow::Owned(windowed_list(list, w, windowed)),
+                _ => Cow::Borrowed(list),
             };
-            let list = painted.as_ref();
-            let state = quadraui::ListPaintState::default().with_scroll_px(leaf.scroll_px);
-            backend.draw_list_with_state(area, list, &state, false);
-            let layout = backend.list_layout(area, list);
-            let viewport_rows = list_viewport_rows(backend, area, list);
-            // `window.total`, not `list.items.len()` — see the `TextDisplay`
-            // arm above for why a windowed `Vec`'s own length doesn't track
-            // the real total.
-            let total_items = window.map_or(list.items.len(), |w| w.total);
+            let scroll_px = windowed.map_or(leaf.scroll_px, |windowed| windowed.scroll_px);
+            let painted_list = painted.as_ref();
+            let state = quadraui::ListPaintState::default().with_scroll_px(scroll_px);
+            backend.draw_list_with_state(area, painted_list, &state, false);
+            let mut layout = backend.list_layout(area, painted_list);
+            let viewport_rows = list_viewport_rows(backend, area, painted_list);
+            // The collection's own numbers, not the painted band's — see
+            // [`WindowedLeaf`]'s own doc.
+            if let Some(windowed) = windowed {
+                shift_list_layout(&mut layout, windowed.band.start);
+            }
             hits.push(PaintedHit::List {
                 id,
                 area,
                 clip: area,
                 layout,
                 selected_idx: list.selected_idx,
-                total_items,
-                scroll_offset: list.scroll_offset,
+                total_items: windowed.map_or(painted_list.items.len(), |windowed| windowed.total),
+                scroll_offset: windowed.map_or(painted_list.scroll_offset, |windowed| {
+                    windowed.scroll_offset
+                }),
                 viewport_rows,
+                loaded_rows: windowed.map(|windowed| windowed.loaded),
             });
         }
         LeafDescriptor::Tree(tree) => {
-            // The ORIGINAL (unwindowed) row count — the length of the real
-            // loaded slice this frame's payload carries, needed below to
-            // tell a real loaded row's position in the padded `Vec` apart
-            // from a placeholder's once `tree` is shadowed by the padded
-            // version.
-            let loaded_len = tree.rows.len();
-            let painted: Cow<TreeView> = match window {
-                Some(w) => Cow::Owned(windowed_tree(tree, w)),
-                None => Cow::Borrowed(tree),
+            let windowed = window.map(|w| {
+                windowed_leaf(
+                    w,
+                    tree.rows.len(),
+                    tree.scroll_offset,
+                    leaf.scroll_px,
+                    backend.line_height(),
+                    windowed_band_rows(backend, area),
+                )
+            });
+            let painted: Cow<TreeView> = match (window, windowed) {
+                (Some(w), Some(windowed)) => Cow::Owned(windowed_tree(tree, w, windowed)),
+                _ => Cow::Borrowed(tree),
             };
-            let tree = painted.as_ref();
-            let total_override = window.map(|w| w.total);
+            let painted_tree = painted.as_ref();
+            let scroll_px = windowed.map_or(leaf.scroll_px, |windowed| windowed.scroll_px);
             let (content_rect, scrollbar, viewport_rows) =
                 draw_tree_with_scrollbar_and_state_windowed(
                     backend,
                     area,
-                    tree,
-                    leaf.scroll_px,
-                    total_override,
+                    painted_tree,
+                    scroll_px,
+                    windowed.map(|windowed| WindowedTreeExtent {
+                        total_rows: windowed.total,
+                        scroll_offset: windowed.scroll_offset,
+                    }),
                 );
-            let layout = backend.tree_layout(content_rect, tree);
-            let total_rows = total_override.unwrap_or(tree.rows.len());
-            // `row_paths[i]` is `Some(path)` only at a position this frame
-            // actually loaded (`[window.start, window.start + loaded_len)`)
-            // — a placeholder's own synthetic path (see [`windowed_tree`]'s
+            let mut layout = backend.tree_layout(content_rect, painted_tree);
+            if let Some(windowed) = windowed {
+                shift_tree_layout(&mut layout, windowed.band.start);
+            }
+            // Only the rows this frame actually loaded, in visual order —
+            // a placeholder's own synthetic path (see [`windowed_tree`]'s
             // own doc for why it can collide with a real row's path) never
             // escapes into this field, so a path-keyed lookup downstream
-            // can't resolve a click or a cursor to the wrong row.
-            let row_paths: Vec<Option<TreePath>> = match window {
-                Some(w) => (0..tree.rows.len())
-                    .map(|i| {
-                        (i >= w.start && i < w.start.saturating_add(loaded_len))
-                            .then(|| tree.rows[i].path.clone())
-                    })
-                    .collect(),
-                None => tree.rows.iter().map(|row| Some(row.path.clone())).collect(),
-            };
+            // can't resolve a click or a cursor to the wrong row. Taken
+            // from the ORIGINAL descriptor, not the painted band, since the
+            // loaded slice and the band only partly overlap.
+            let row_paths: Vec<TreePath> = tree.rows.iter().map(|row| row.path.clone()).collect();
             hits.push(PaintedHit::Tree {
                 id,
                 area: content_rect,
@@ -2609,36 +2894,57 @@ pub fn paint_leaf_windowed(
                 layout,
                 row_paths,
                 scrollbar,
-                scroll_offset: tree.scroll_offset,
-                total_rows,
+                scroll_offset: windowed.map_or(painted_tree.scroll_offset, |windowed| {
+                    windowed.scroll_offset
+                }),
+                total_rows: windowed.map_or(painted_tree.rows.len(), |windowed| windowed.total),
                 viewport_rows,
                 editing: tree
                     .rows
                     .iter()
                     .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
+                loaded_rows: windowed.map(|windowed| windowed.loaded),
             });
         }
         LeafDescriptor::DataTable(data_table) => {
-            let painted: Cow<DataTable> = match window {
-                Some(w) => Cow::Owned(windowed_data_table(data_table, w)),
-                None => Cow::Borrowed(data_table),
+            let windowed = window.map(|w| {
+                windowed_leaf(
+                    w,
+                    data_table.rows.len(),
+                    data_table.scroll_offset,
+                    leaf.scroll_px,
+                    backend.line_height(),
+                    windowed_band_rows(backend, area),
+                )
+            });
+            let painted: Cow<DataTable> = match (window, windowed) {
+                (Some(w), Some(windowed)) => {
+                    Cow::Owned(windowed_data_table(data_table, w, windowed))
+                }
+                _ => Cow::Borrowed(data_table),
             };
-            let data_table = painted.as_ref();
-            let state = quadraui::DataTablePaintState::default().with_scroll_px(leaf.scroll_px);
-            let layout = backend.draw_data_table_with_state(area, data_table, &state);
+            let painted_table = painted.as_ref();
+            let scroll_px = windowed.map_or(leaf.scroll_px, |windowed| windowed.scroll_px);
+            let state = quadraui::DataTablePaintState::default().with_scroll_px(scroll_px);
+            // `DataTableLayout` carries no row indices of its own — a row
+            // hit resolves through `DataTableLayout::hit_test`'s own
+            // `scroll_offset`/`total_rows` arguments, which a caller reads
+            // off this hit's absolute fields — so unlike the `List`/`Tree`/
+            // `TextDisplay` arms there is no layout index to shift back.
+            let layout = backend.draw_data_table_with_state(area, painted_table, &state);
             let viewport_rows = layout.visible_rows;
-            // `window.total`, not `data_table.rows.len()` — see the `List`
-            // arm above for why.
-            let total_rows = window.map_or(data_table.rows.len(), |w| w.total);
             hits.push(PaintedHit::DataTable {
                 id,
                 area,
                 clip: area,
                 layout,
-                scroll_offset: data_table.scroll_offset,
-                total_rows,
+                scroll_offset: windowed.map_or(painted_table.scroll_offset, |windowed| {
+                    windowed.scroll_offset
+                }),
+                total_rows: windowed.map_or(painted_table.rows.len(), |windowed| windowed.total),
                 selected_idx: data_table.selected_idx,
                 viewport_rows,
+                loaded_rows: windowed.map(|windowed| windowed.loaded),
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {
@@ -2668,6 +2974,9 @@ pub fn paint_leaf_windowed(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
     use super::*;
     use crate::layout::{EdgeInsets, Spacing, StyleOverride};
     use quadraui::{Decoration, StyledSpan, TextDisplayLine};
@@ -5180,9 +5489,76 @@ mod tests {
         );
     }
 
+    /// The app-side state the windowed-leaf driver tests below share: the
+    /// `start` of the slice the "app" currently has loaded, and every
+    /// [`RowsRequestedEvent`] the engine has asked it for.
+    ///
+    /// Shared by `Rc` with [`WindowedRequestSink`], which is what actually
+    /// answers a request — a real binding's own handler mutates its app
+    /// state from inside `EventSink::dispatch_rows_requested` the same way,
+    /// so the next frame renders the newly requested slice.
+    #[derive(Clone)]
+    struct WindowedHarness {
+        window_start: Rc<Cell<usize>>,
+        requests: Rc<RefCell<Vec<RowsRequestedEvent>>>,
+    }
+
+    impl WindowedHarness {
+        fn new(window_start: usize) -> Self {
+            Self {
+                window_start: Rc::new(Cell::new(window_start)),
+                requests: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+
+        fn sink(&self) -> WindowedRequestSink {
+            WindowedRequestSink {
+                harness: self.clone(),
+            }
+        }
+
+        /// The one request the engine made, panicking if it made none or
+        /// more than one — "scrolling past the loaded slice emits exactly
+        /// one `RowsRequested`" is the acceptance bar, so a duplicate is a
+        /// failure, not noise.
+        fn only_request(&self) -> RowsRequestedEvent {
+            let requests = self.requests.borrow();
+            assert_eq!(
+                requests.len(),
+                1,
+                "a scroll past the loaded slice must emit exactly one \
+                 RowsRequested: {requests:?}"
+            );
+            requests[0].clone()
+        }
+    }
+
+    /// Stands in for a binding's own event callback: ignores every
+    /// `UiEvent`, and answers a [`RowsRequestedEvent`] by moving the app's
+    /// loaded window to the rows the engine asked for.
+    struct WindowedRequestSink {
+        harness: WindowedHarness,
+    }
+
+    impl crate::engine::EventSink for WindowedRequestSink {
+        fn dispatch(
+            &mut self,
+            _event: &quadraui::UiEvent,
+            _hit_detail: Option<&crate::hit::HitDetail>,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+
+        fn dispatch_rows_requested(&mut self, event: RowsRequestedEvent) -> quadraui::Reaction {
+            self.harness.window_start.set(event.start);
+            self.harness.requests.borrow_mut().push(event);
+            quadraui::Reaction::Redraw
+        }
+    }
+
     /// A `data_table` leaf whose `items_window` says its 50 `rows` are only
-    /// a slice of a 100,000-row total: [`paint_layout_windowed`] pads the
-    /// painted payload out to the full total, so the scrollbar extent
+    /// a slice of a 100,000-row total: [`paint_layout_windowed`] threads the
+    /// real total through to the leaf's own hit, so the scrollbar extent
     /// ([`PaintedHit::DataTable::total_rows`]) reflects `100_000`, not the
     /// 50 rows this frame's payload actually carries. A real keyboard
     /// scroll (`End`, dispatched through the exact same
@@ -5254,19 +5630,8 @@ mod tests {
             "the first loaded row is the window's own start, not row 0"
         );
 
-        struct NoopSink;
-        impl crate::engine::EventSink for NoopSink {
-            fn dispatch(
-                &mut self,
-                _event: &quadraui::UiEvent,
-                _hit_detail: Option<&crate::hit::HitDetail>,
-            ) -> quadraui::Reaction {
-                quadraui::Reaction::Continue
-            }
-        }
-
         struct WindowedTableLogic {
-            window_start: std::cell::Cell<usize>,
+            harness: WindowedHarness,
             engine: crate::engine::InteractionEngine,
         }
 
@@ -5276,7 +5641,7 @@ mod tests {
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let value = leaf_value(self.window_start.get());
+                let value = leaf_value(self.harness.window_start.get());
                 let diagnostics = crate::wire::DecodeDiagnostics::warn();
                 let sets = crate::layout::StyleSets::new();
                 let theme = Theme::default();
@@ -5316,7 +5681,7 @@ mod tests {
                 event: quadraui::UiEvent,
                 backend: &mut dyn Backend,
             ) -> quadraui::Reaction {
-                self.engine.handle(event, backend, &mut NoopSink)
+                self.engine.handle(event, backend, &mut self.harness.sink())
             }
         }
 
@@ -5338,8 +5703,9 @@ mod tests {
                 .expect("the data_table should have painted a hit")
         }
 
+        let harness = WindowedHarness::new(WINDOW_START);
         let logic = WindowedTableLogic {
-            window_start: std::cell::Cell::new(WINDOW_START),
+            harness: harness.clone(),
             engine: crate::engine::InteractionEngine::new(),
         };
         let mut driver = TuiDriver::new(logic, 20, 5);
@@ -5366,8 +5732,7 @@ mod tests {
         // `crate::host::apply_data_table_nav_key` (unmodified production
         // code, reached through `InteractionEngine::handle`) clamps against
         // `total_rows` read straight off this frame's own
-        // `PaintedHit::DataTable` -- `TOTAL` thanks to the padding above,
-        // not the 50 loaded rows.
+        // `PaintedHit::DataTable` -- `TOTAL`, not the 50 loaded rows.
         driver.dispatch(quadraui::UiEvent::KeyPressed {
             key: Key::Named(NamedKey::End),
             modifiers: Modifiers::default(),
@@ -5384,21 +5749,11 @@ mod tests {
              viewport_rows={viewport_rows}"
         );
 
-        let window = ItemsWindow {
-            start: WINDOW_START,
-            total: TOTAL,
-        };
-        let request = rows_requested_for_window(
-            WidgetId::new("table"),
-            window,
-            WINDOW_LEN,
-            scroll_offset,
-            viewport_rows,
-        )
-        .expect(
-            "scrolling to the bottom of a 100k-row collection whose loaded \
-             slice sits near the top must request more rows",
-        );
+        // The ENGINE asked the app for the rows that scroll brought into
+        // view, through `EventSink::dispatch_rows_requested` -- nothing in
+        // this test computes the request itself.
+        let request = harness.only_request();
+        assert_eq!(request.id, WidgetId::new("table"));
         assert!(
             request.count < WINDOW_LEN * 10,
             "a bounded request must stay a small multiple of the viewport, \
@@ -5410,31 +5765,52 @@ mod tests {
             "the requested window must reach the very end of the collection"
         );
 
-        // End-to-end: the app answers the request with a freshly windowed
-        // payload starting exactly at `request.start`, and the next frame
-        // actually renders the right absolute content at the row actually
-        // scrolled to.
-        driver.app_mut().window_start.set(request.start);
+        // End-to-end: the harness answered the request from inside
+        // `dispatch_rows_requested` (the way a real app's handler does),
+        // so the next frame renders the right absolute content at the row
+        // actually scrolled to.
+        assert_eq!(
+            harness.window_start.get(),
+            request.start,
+            "answering the request moves the app's own loaded window"
+        );
         driver.render();
 
         let (scroll_offset_after, total_rows_after, _) = painted_data_table(&driver);
         assert_eq!(total_rows_after, TOTAL);
-        let new_value = leaf_value(request.start);
-        let new_table = decode_table(&new_value);
+        let new_table = decode_table(&leaf_value(request.start));
         assert_eq!(
             row_text(&new_table, scroll_offset_after - request.start),
             format!("row-{scroll_offset_after}"),
             "the row actually scrolled to must render its own absolute content \
              after the window update, not stale or wrong-offset content"
         );
+        assert!(
+            driver.screen_contains(&format!("row-{scroll_offset_after}")),
+            "the requested rows must actually paint at the scrolled-to \
+             position:\n{}",
+            driver.screen()
+        );
+
+        // Re-dispatching the same key at the same position asks for
+        // nothing further: the answered window now covers the viewport.
+        driver.dispatch(quadraui::UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::End),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        assert_eq!(
+            harness.requests.borrow().len(),
+            1,
+            "a covered viewport must never re-request a slice it already has"
+        );
     }
 
     /// [`windowed_data_table_scrollbar_extent_and_real_scroll_request_more_rows`],
-    /// for a `list` leaf instead of a `data_table` one — the same
-    /// `items_window` padding, scrollbar-extent, and real-`End`-key
-    /// `rows_requested_for_window` round trip, driven through
-    /// `crate::host::apply_list_nav_key` (unmodified production code)
-    /// instead of `apply_data_table_nav_key`.
+    /// for a `list` leaf instead of a `data_table` one — the same windowed
+    /// paint, scrollbar extent, and real-`End`-key `RowsRequested` round
+    /// trip, driven through `crate::host::apply_list_nav_key` (unmodified
+    /// production code) instead of `apply_data_table_nav_key`.
     #[test]
     fn windowed_list_scrollbar_extent_and_real_scroll_request_more_rows() {
         use quadraui::tui::testing::TuiDriver;
@@ -5463,19 +5839,8 @@ mod tests {
             })
         }
 
-        struct NoopSink;
-        impl crate::engine::EventSink for NoopSink {
-            fn dispatch(
-                &mut self,
-                _event: &quadraui::UiEvent,
-                _hit_detail: Option<&crate::hit::HitDetail>,
-            ) -> quadraui::Reaction {
-                quadraui::Reaction::Continue
-            }
-        }
-
         struct WindowedListLogic {
-            window_start: std::cell::Cell<usize>,
+            harness: WindowedHarness,
             engine: crate::engine::InteractionEngine,
         }
 
@@ -5485,7 +5850,7 @@ mod tests {
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let value = leaf_value(self.window_start.get());
+                let value = leaf_value(self.harness.window_start.get());
                 let diagnostics = crate::wire::DecodeDiagnostics::warn();
                 let sets = crate::layout::StyleSets::new();
                 let theme = Theme::default();
@@ -5520,7 +5885,7 @@ mod tests {
                 event: quadraui::UiEvent,
                 backend: &mut dyn Backend,
             ) -> quadraui::Reaction {
-                self.engine.handle(event, backend, &mut NoopSink)
+                self.engine.handle(event, backend, &mut self.harness.sink())
             }
         }
 
@@ -5542,8 +5907,9 @@ mod tests {
                 .expect("the list should have painted a hit")
         }
 
+        let harness = WindowedHarness::new(WINDOW_START);
         let logic = WindowedListLogic {
-            window_start: std::cell::Cell::new(WINDOW_START),
+            harness: harness.clone(),
             engine: crate::engine::InteractionEngine::new(),
         };
         let mut driver = TuiDriver::new(logic, 20, 5);
@@ -5580,61 +5946,43 @@ mod tests {
              collection, not just the loaded window"
         );
 
-        let window = ItemsWindow {
-            start: WINDOW_START,
-            total: TOTAL,
-        };
-        let request = rows_requested_for_window(
-            WidgetId::new("list"),
-            window,
-            WINDOW_LEN,
-            scroll_offset,
-            viewport_rows,
-        )
-        .expect(
-            "scrolling to the bottom of a 100k-item collection whose loaded \
-             slice sits near the top must request more items",
-        );
+        // The ENGINE asked the app for the items that scroll brought into
+        // view -- see the `data_table` test above.
+        let request = harness.only_request();
+        assert_eq!(request.id, WidgetId::new("list"));
         assert!(
             request.start + request.count >= TOTAL,
             "the requested window must reach the very end of the collection"
         );
+        assert_eq!(harness.window_start.get(), request.start);
 
-        driver.app_mut().window_start.set(request.start);
         driver.render();
 
         let (scroll_offset_after, total_items_after, _) = painted_list(&driver);
         assert_eq!(total_items_after, TOTAL);
-        let new_value = leaf_value(request.start);
-        let node = crate::wire::decode_layout_node("test", &new_value)
-            .expect("a list leaf with items_window must decode");
-        let LayoutNode::Leaf(leaf) = node else {
-            panic!("expected a leaf node");
-        };
-        let LeafDescriptor::List(new_list) = leaf.descriptor else {
-            panic!("expected a List descriptor");
-        };
-        let row = scroll_offset_after - request.start;
-        assert_eq!(
-            new_list.items[row].text.spans[0].text,
-            format!("row-{scroll_offset_after}"),
-            "the item actually scrolled to must render its own absolute \
-             content after the window update"
+        assert!(
+            driver.screen_contains(&format!("row-{scroll_offset_after}")),
+            "the requested items must actually paint at the scrolled-to \
+             position:\n{}",
+            driver.screen()
         );
     }
 
     /// A `tree` leaf whose `items_window` says its 50 `rows` are only a
     /// slice of a 100,000-row total: [`paint_layout_windowed`] threads the
     /// real total through to the scrollbar (`PaintedHit::Tree::total_rows`),
-    /// not the loaded slice's own length, and a real `End` keypress —
-    /// routed through [`crate::host::apply_tree_nav_key_windowed`]/
-    /// [`crate::host::resolve_tree_cursor_windowed`], the absolute-index
-    /// counterpart of `apply_tree_nav_key`/`resolve_tree_cursor` a windowed
-    /// tree needs (see those functions' own doc for why: a placeholder
-    /// row's path has no identity stable across a window update) — scrolls
-    /// all the way to the bottom of the full collection and produces
-    /// exactly one [`rows_requested_for_window`] request whose answer
-    /// paints at the right absolute position.
+    /// not the loaded slice's own length, and a real `End` keypress scrolls
+    /// all the way to the bottom of the full collection.
+    ///
+    /// Driven entirely through production code — `InteractionEngine::handle`
+    /// for the key (which routes a windowed tree to
+    /// [`crate::host::apply_tree_nav_key_windowed`] itself, the
+    /// absolute-index counterpart `apply_tree_nav_key` can't stand in for
+    /// because a placeholder row's path has no identity stable across a
+    /// window update) and [`crate::host::resolve_layout_node_windowed`]
+    /// for the resolve that paints the moved cursor. The request reaching
+    /// the app comes from the engine's own
+    /// `EventSink::dispatch_rows_requested` call, not from this test.
     #[test]
     fn windowed_tree_scrollbar_extent_and_real_scroll_request_more_rows() {
         use quadraui::tui::testing::TuiDriver;
@@ -5683,19 +6031,8 @@ mod tests {
             })
         }
 
-        struct NoopSink;
-        impl crate::engine::EventSink for NoopSink {
-            fn dispatch(
-                &mut self,
-                _event: &quadraui::UiEvent,
-                _hit_detail: Option<&crate::hit::HitDetail>,
-            ) -> quadraui::Reaction {
-                quadraui::Reaction::Continue
-            }
-        }
-
         struct WindowedTreeLogic {
-            window_start: std::cell::Cell<usize>,
+            harness: WindowedHarness,
             engine: crate::engine::InteractionEngine,
         }
 
@@ -5705,7 +6042,7 @@ mod tests {
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let value = leaf_value(self.window_start.get());
+                let value = leaf_value(self.harness.window_start.get());
                 let diagnostics = crate::wire::DecodeDiagnostics::warn();
                 let sets = crate::layout::StyleSets::new();
                 let theme = Theme::default();
@@ -5717,22 +6054,15 @@ mod tests {
                 )
                 .expect("a tree leaf with items_window must decode");
                 let windows = diagnostics.items_windows();
-                let window = *windows
-                    .get("tree")
-                    .expect("the tree leaf's own items_window must decode");
-                let LayoutNode::Leaf(leaf) = &mut node else {
-                    panic!("expected a leaf node");
-                };
-                let LeafDescriptor::Tree(tree) = &mut leaf.descriptor else {
-                    panic!("expected a Tree descriptor");
-                };
-                tree.id = WidgetId::new("tree");
-                let viewport_rows = tree_viewport_rows(backend, area, tree);
-                *tree = crate::host::resolve_tree_cursor_windowed(
+                // The windowed resolve a binding's own render loop makes
+                // before `paint_layout_windowed` -- unmodified production
+                // code, with no hand-poked cursor state.
+                crate::host::resolve_layout_node_windowed(
                     self.engine.widget_state(),
-                    tree,
-                    window,
-                    viewport_rows,
+                    backend,
+                    area,
+                    &mut node,
+                    &windows,
                 );
                 let mut hits = Vec::new();
                 paint_layout_windowed(
@@ -5751,23 +6081,7 @@ mod tests {
                 event: quadraui::UiEvent,
                 backend: &mut dyn Backend,
             ) -> quadraui::Reaction {
-                if let quadraui::UiEvent::KeyPressed { key, .. } = &event {
-                    if let Some((total_rows, viewport_rows)) =
-                        crate::hit::tree_total_rows_and_viewport(
-                            &self.engine.hit_map(),
-                            WidgetId::new("tree"),
-                        )
-                    {
-                        crate::host::apply_tree_nav_key_windowed(
-                            self.engine.widget_state(),
-                            WidgetId::new("tree"),
-                            total_rows,
-                            viewport_rows,
-                            key,
-                        );
-                    }
-                }
-                self.engine.handle(event, backend, &mut NoopSink)
+                self.engine.handle(event, backend, &mut self.harness.sink())
             }
         }
 
@@ -5789,8 +6103,9 @@ mod tests {
                 .expect("the tree should have painted a hit")
         }
 
+        let harness = WindowedHarness::new(WINDOW_START);
         let logic = WindowedTreeLogic {
-            window_start: std::cell::Cell::new(WINDOW_START),
+            harness: harness.clone(),
             engine: crate::engine::InteractionEngine::new(),
         };
         let mut driver = TuiDriver::new(logic, 20, 5);
@@ -5827,63 +6142,83 @@ mod tests {
              collection, not just the loaded window"
         );
 
-        let window = ItemsWindow {
-            start: WINDOW_START,
-            total: TOTAL,
-        };
-        let request = rows_requested_for_window(
-            WidgetId::new("tree"),
-            window,
-            WINDOW_LEN,
-            scroll_offset,
-            viewport_rows,
-        )
-        .expect(
-            "scrolling to the bottom of a 100k-row tree whose loaded slice \
-             sits near the top must request more rows",
-        );
+        // The ENGINE asked the app for the rows that keypress brought
+        // into view, through `EventSink::dispatch_rows_requested`.
+        let request = harness.only_request();
+        assert_eq!(request.id, WidgetId::new("tree"));
         assert!(
             request.start + request.count >= TOTAL,
             "the requested window must reach the very end of the collection"
         );
+        assert!(
+            request.count < WINDOW_LEN * 10,
+            "a bounded request must stay a small multiple of the viewport, \
+             nowhere near the widget's own {TOTAL}-row total -- got {}",
+            request.count
+        );
+        assert_eq!(harness.window_start.get(), request.start);
 
-        // End-to-end: the app answers the request with a freshly windowed
-        // payload starting exactly at `request.start`, and the next frame
-        // actually renders the right absolute content at the row actually
-        // scrolled to.
-        driver.app_mut().window_start.set(request.start);
+        // End-to-end: the harness answered the request from inside
+        // `dispatch_rows_requested` (the way a real app's handler does),
+        // so the next frame renders the right absolute content at the row
+        // actually scrolled to.
         driver.render();
 
         let (scroll_offset_after, total_rows_after, _) = painted_tree(&driver);
         assert_eq!(total_rows_after, TOTAL);
-        let new_value = leaf_value(request.start);
-        let node = crate::wire::decode_layout_node("test", &new_value)
-            .expect("a tree leaf with items_window must decode");
-        let LayoutNode::Leaf(leaf) = node else {
-            panic!("expected a leaf node");
-        };
-        let LeafDescriptor::Tree(new_tree) = leaf.descriptor else {
-            panic!("expected a Tree descriptor");
-        };
-        let row = scroll_offset_after - request.start;
+        assert!(
+            scroll_offset_after + viewport_rows >= TOTAL,
+            "the absolute scroll position must survive the window update"
+        );
+        assert!(
+            driver.screen_contains(&format!("row-{scroll_offset_after}")),
+            "the requested rows must actually paint at the scrolled-to \
+             position:\n{}",
+            driver.screen()
+        );
+
+        // `Home` goes back to the very first row, which this window no
+        // longer holds -- so the engine asks for row 0's slice too.
+        driver.dispatch(quadraui::UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Home),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        driver.render();
         assert_eq!(
-            new_tree.rows[row].text.spans[0].text,
-            format!("row-{scroll_offset_after}"),
-            "the row actually scrolled to must render its own absolute \
-             content after the window update"
+            harness.requests.borrow().len(),
+            2,
+            "Home at the far end of a windowed tree must request the head \
+             of the collection"
+        );
+        assert_eq!(
+            harness.requests.borrow()[1].start,
+            0,
+            "Home's request must start at the collection's own first row"
+        );
+        let (scroll_offset_home, _, _) = painted_tree(&driver);
+        assert_eq!(
+            scroll_offset_home, 0,
+            "Home must scroll a windowed tree back to its first row"
+        );
+        assert!(
+            driver.screen_contains("row-0"),
+            "the head of the collection must paint after Home:\n{}",
+            driver.screen()
         );
     }
 
-    /// A `text_display` leaf shares the exact same `items_window` padding
-    /// path every other windowed kind goes through
-    /// ([`paint_leaf_windowed`]'s `LeafDescriptor::TextDisplay` arm calls
-    /// the same [`windowed_text_display`]/[`windowed_vec`] every other kind
-    /// does), so its own `PaintedHit::TextDisplay::total_lines` reflects
+    /// A `text_display` leaf shares the exact same windowed paint path
+    /// every other windowed kind goes through ([`paint_leaf_windowed`]'s
+    /// `LeafDescriptor::TextDisplay` arm calls the same
+    /// [`windowed_text_display`]/[`windowed_vec`] every other kind does),
+    /// so its own `PaintedHit::TextDisplay::total_lines` reflects
     /// `window.total` rather than the 10 lines this frame's payload
     /// actually carries — no keyboard-nav-key story to exercise here
     /// (`TextDisplay` has none, controlled or not), so this only covers the
-    /// paint-time extent, not a scroll-driven `rows_requested_for_window`
-    /// round trip.
+    /// paint-time extent; a windowed display's own wheel scroll reaches the
+    /// same `RowsRequested` dispatch every other kind does, through
+    /// `TextDisplayEvent::Scrolled`.
     #[test]
     fn windowed_text_display_total_lines_reflects_window_total() {
         use quadraui::tui::testing::TuiDriver;
@@ -5963,51 +6298,89 @@ mod tests {
         driver.render();
     }
 
-    /// [`windowed_vec`]'s own documented shape: the loaded slice lands
-    /// verbatim at `[window.start, window.start + loaded.len())`, every
-    /// other index is a placeholder, and the result's length is
-    /// `window.total` (widened only when `window.total` would otherwise
-    /// truncate real loaded data) — as long as `window.total` is well
-    /// within [`WINDOWED_VIEWPORT_PAD_ROWS`] of `scroll_offset`, which this
-    /// test's small `total: 12` always is regardless of `scroll_offset`.
+    /// [`windowed_vec`]'s own documented shape: the band it materialises
+    /// starts at the absolute row the viewport is scrolled to, carries
+    /// this frame's loaded rows wherever the two overlap, and a
+    /// placeholder everywhere else.
     #[test]
-    fn windowed_vec_splices_the_loaded_slice_at_its_absolute_position() {
+    fn windowed_vec_materialises_the_band_with_the_loaded_slice_spliced_in() {
         let loaded = vec!["a", "b", "c"];
         let window = ItemsWindow {
             start: 5,
             total: 12,
         };
-        let out = windowed_vec(&loaded, window, 5, |_| "_");
-        assert_eq!(out.len(), 12);
-        assert_eq!(&out[0..5], &["_", "_", "_", "_", "_"]);
-        assert_eq!(&out[5..8], &["a", "b", "c"]);
-        assert_eq!(&out[8..12], &["_", "_", "_", "_"]);
+        let band = windowed_band(window, loaded.len(), 4, 5);
+        assert_eq!(band, WindowedBand { start: 4, len: 5 });
+        let out = windowed_vec(&loaded, window, band, |_| "_");
+        assert_eq!(out, vec!["_", "a", "b", "c", "_"]);
+    }
+
+    /// A band near the end of the collection is short rather than
+    /// over-running it — the same clamp a primitive's own layout applies
+    /// to a descriptor's `scroll_offset`.
+    #[test]
+    fn windowed_band_clamps_to_the_collections_own_tail() {
+        let window = ItemsWindow {
+            start: 90,
+            total: 100,
+        };
+        let band = windowed_band(window, 10, 97, 32);
+        assert_eq!(band, WindowedBand { start: 97, len: 3 });
+        // An offset past the end still lands on a real row.
+        let band = windowed_band(window, 10, 500, 32);
+        assert_eq!(band, WindowedBand { start: 99, len: 1 });
     }
 
     /// A `window.total` that understates `window.start + loaded.len()`
-    /// never truncates the real loaded payload — the result widens to fit
+    /// never truncates the real loaded payload — the extent widens to fit
     /// it instead.
     #[test]
     fn windowed_vec_widens_past_a_stale_undersized_total() {
         let loaded = vec![1, 2, 3];
         let window = ItemsWindow { start: 2, total: 3 };
-        let out = windowed_vec(&loaded, window, 2, |_| 0);
+        let band = windowed_band(window, loaded.len(), 0, 8);
+        assert_eq!(band, WindowedBand { start: 0, len: 5 });
+        let out = windowed_vec(&loaded, window, band, |_| 0);
         assert_eq!(out, vec![0, 0, 1, 2, 3]);
     }
 
-    /// A `window.total` many orders of magnitude past `scroll_offset` (an
-    /// adversarial or just stale wire payload) never drives the returned
-    /// `Vec`'s length past `scroll_offset + `[`WINDOWED_VIEWPORT_PAD_ROWS`]
-    /// — the whole point of bounding by `scroll_offset` instead of
-    /// materialising every index up to `window.total`.
+    /// Neither an adversarial `window.total` nor a scroll offset deep
+    /// inside one drives the materialised `Vec` past a viewport's worth of
+    /// rows — the whole point of materialising a band instead of padding
+    /// out to `window.total`, and what keeps `Vec::with_capacity` off an
+    /// unbounded wire field.
     #[test]
-    fn windowed_vec_never_materialises_past_the_scroll_offset_pad() {
+    fn windowed_vec_never_materialises_more_than_the_band() {
         let loaded = vec![0_u8; 10];
         let window = ItemsWindow {
             start: 0,
             total: 10_000_000_000,
         };
-        let out = windowed_vec(&loaded, window, 0, |_| 1_u8);
-        assert_eq!(out.len(), WINDOWED_VIEWPORT_PAD_ROWS);
+        for scroll_offset in [0, 9_999_999_000] {
+            let band = windowed_band(window, loaded.len(), scroll_offset, 32);
+            assert_eq!(band.len, 32, "band stays bounded at {scroll_offset}");
+            let out = windowed_vec(&loaded, window, band, |_| 1_u8);
+            assert_eq!(out.len(), 32, "materialised rows at {scroll_offset}");
+        }
+    }
+
+    /// [`windowed_band_rows`] bounds the band by the viewport's own row
+    /// capacity plus [`WINDOWED_BAND_PAD_ROWS`], so a 100,000-row
+    /// collection materialises a few dozen rows per frame rather than
+    /// 100,000 — on a cell-grid backend (TUI, `line_height == 1.0`) and a
+    /// pixel one alike.
+    #[test]
+    fn windowed_band_rows_track_the_viewport_not_the_collection() {
+        assert_eq!(
+            band_rows_for(24.0, TUI_LINE_HEIGHT),
+            24 + WINDOWED_BAND_PAD_ROWS
+        );
+        assert_eq!(
+            band_rows_for(24.0 * PIXEL_LINE_HEIGHT, PIXEL_LINE_HEIGHT),
+            24 + WINDOWED_BAND_PAD_ROWS
+        );
+        // A degenerate `line_height` can't divide by zero into an
+        // unbounded band.
+        assert_eq!(band_rows_for(1_000.0, 0.0), WINDOWED_BAND_PAD_ROWS);
     }
 }
