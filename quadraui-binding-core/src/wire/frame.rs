@@ -15,8 +15,8 @@ use crate::DecodeError;
 
 use super::layout::LAYOUT_NODE_KEYS;
 use super::value::{
-    check_unknown_keys, decode_value_checked, obj_get, DecodeDiagnostics, SCROLL_PX_EXTRA_KEYS,
-    UNIVERSAL_NODE_SIBLING_KEYS,
+    check_unknown_keys, decode_value_checked, obj_get, DecodeDiagnostics, TEXT_DISPLAY_EXTRA_KEYS,
+    UNIVERSAL_NODE_SIBLING_KEYS, WINDOWED_LEAF_EXTRA_KEYS,
 };
 
 // ─── Render output (flat frame vs. layout tree) ────────────────────────────
@@ -123,8 +123,9 @@ pub(super) fn check_wire_version(what: &str, value: &Value) -> Result<(), Decode
 /// decodable into `T`. An unrecognized key inside that dict routes through
 /// `diagnostics` via [`decode_value_checked`], the same strict/warn policy
 /// a layout-tree leaf's own body already gets. `extra_keys` is forwarded
-/// straight to [`decode_value_checked`] — `&SCROLL_PX_EXTRA_KEYS` for
-/// `"list"`/`"tree"`/`"data_table"`, `&[]` for every other slot.
+/// straight to [`decode_value_checked`] — `&WINDOWED_LEAF_EXTRA_KEYS` for
+/// `"list"`/`"tree"`/`"data_table"`, `&TEXT_DISPLAY_EXTRA_KEYS` for
+/// `"text_display"`, `&[]` for every other slot.
 fn slot_entry<T: serde::de::DeserializeOwned>(
     diagnostics: &DecodeDiagnostics,
     what: &str,
@@ -209,15 +210,21 @@ pub(crate) fn render_frame_from_value(
     let data_table_scroll_px = obj_get(value, "data_table").and_then(crate::scroll_px_from_value);
     Ok(RenderFrame {
         button: slot_entry(diagnostics, what, value, "button", &[])?,
-        text_display: slot_entry(diagnostics, what, value, "text_display", &[])?,
-        list: slot_entry(diagnostics, what, value, "list", &SCROLL_PX_EXTRA_KEYS)?,
-        tree: slot_entry(diagnostics, what, value, "tree", &SCROLL_PX_EXTRA_KEYS)?,
+        text_display: slot_entry(
+            diagnostics,
+            what,
+            value,
+            "text_display",
+            &TEXT_DISPLAY_EXTRA_KEYS,
+        )?,
+        list: slot_entry(diagnostics, what, value, "list", &WINDOWED_LEAF_EXTRA_KEYS)?,
+        tree: slot_entry(diagnostics, what, value, "tree", &WINDOWED_LEAF_EXTRA_KEYS)?,
         data_table: slot_entry(
             diagnostics,
             what,
             value,
             "data_table",
-            &SCROLL_PX_EXTRA_KEYS,
+            &WINDOWED_LEAF_EXTRA_KEYS,
         )?,
         tab_bar: slot_entry(diagnostics, what, value, "tab_bar", &[])?,
         extra,

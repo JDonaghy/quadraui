@@ -172,6 +172,11 @@ class ButtonSpecDescriptor(TypedDict):
     tooltip: NotRequired[Optional[str]]
     disabled: NotRequired[bool]
 
+class ItemsWindow(TypedDict):
+    """A virtualised `{start, total}` window: `start` is the index, into the widget's true row/item/line count `total`, that the carrying descriptor's own `items`/`rows`/`lines` payload begins at -- see `quadraui-binding-core`'s `items_window_from_value` doc."""
+    start: int
+    total: int
+
 class TextDisplayLineDescriptor(TypedDict):
     spans: List[StyledSpan]
     decoration: NotRequired[Decoration]
@@ -186,6 +191,7 @@ class TextDisplayDescriptor(TypedDict):
     has_focus: NotRequired[bool]
     title: NotRequired[Optional[StyledText]]
     show_scrollbar: NotRequired[bool]
+    items_window: NotRequired[Optional[ItemsWindow]]  # binding-core extension key, lifted out by `items_window_from_value` -- not a `TextDisplay` field. `lines` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 
 class ListItemDescriptor(TypedDict):
     text: StyledText
@@ -205,6 +211,7 @@ class ListViewDescriptor(TypedDict):
     max_content_width: NotRequired[Optional[int]]
     show_v_scrollbar: NotRequired[bool]
     scroll_px: NotRequired[float]  # binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.
+    items_window: NotRequired[Optional[ItemsWindow]]  # binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 
 class TreeRowEditStateDescriptor(TypedDict):
     text: str
@@ -231,6 +238,7 @@ class TreeViewDescriptor(TypedDict):
     style: TreeStyle
     has_focus: NotRequired[bool]
     scroll_px: NotRequired[float]
+    items_window: NotRequired[Optional[ItemsWindow]]  # binding-core extension key, lifted out by `items_window_from_value` -- not a `TreeView` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 
 ColumnAlign = Literal['Left', 'Center', 'Right']
 
@@ -271,6 +279,7 @@ class DataTableDescriptor(TypedDict):
     footer: NotRequired[Optional[DataRowDescriptor]]
     bordered: NotRequired[bool]
     scroll_px: NotRequired[float]
+    items_window: NotRequired[Optional[ItemsWindow]]  # binding-core extension key, lifted out by `items_window_from_value` -- not a `DataTable` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 
 class TreeTableNodeDescriptor(TypedDict):
     path: TreePath
@@ -2391,6 +2400,12 @@ class _TrayClickedPayload(TypedDict):
 class _NotificationActivatedPayload(TypedDict):
     tag: Optional[str]
     action: Optional[WidgetId]
+
+class RowsRequestedEvent(TypedDict):
+    """The `{id, start, count}` window a virtualised `list`/`tree`/`data_table`/`text_display` widget needs for its next frame, once scrolling moves outside the slice its own `ItemsWindow` currently covers -- see `quadraui-binding-core`'s own `render::rows_requested_for_window`. Not a `quadraui::UiEvent` variant (hence not part of `_UiEventDict`/`UiEvent` below): a binding computes this itself from a leaf's `PaintedHit` and its own `ItemsWindow`, then surfaces it to its app however its own event-callback contract already surfaces a synthesized event."""
+    id: WidgetId
+    start: int
+    count: int
 
 class _UiEventDict(TypedDict):
     """Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`."""

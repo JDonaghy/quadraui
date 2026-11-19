@@ -186,13 +186,24 @@ impl<'de> Visitor<'de> for ValueVisitor {
 pub(super) const UNIVERSAL_NODE_SIBLING_KEYS: [&str; 6] =
     ["style", "class", "size", "min", "max", "wire_version"];
 
-/// The one wire key [`decode_value_checked`] accepts inside a `"list"`/
-/// `"tree"`/`"data_table"` descriptor body despite none of `ListView`/
-/// `TreeView`/`DataTable` having a field for it — [`crate::scroll_px_from_value`]
-/// reads it straight out of the same `Value` dict, so it must stay out of the
-/// unknown-key check's reject set for exactly those three kinds. Every other
-/// descriptor-body kind passes `&[]` instead.
-pub(super) const SCROLL_PX_EXTRA_KEYS: [&str; 1] = ["scroll_px"];
+/// The two wire keys [`decode_value_checked`] accepts inside a `"list"`/
+/// `"tree"`/`"data_table"` descriptor body despite neither being a
+/// `ListView`/`TreeView`/`DataTable` field: `"scroll_px"` (read by
+/// [`crate::scroll_px_from_value`]) and `"items_window"` (read by
+/// [`crate::render::items_window_from_value`]) — both lifted straight out
+/// of the same `Value` dict, so neither may land in the unknown-key
+/// check's reject set for exactly those three kinds. Every other
+/// descriptor-body kind but `"text_display"` (see [`TEXT_DISPLAY_EXTRA_KEYS`])
+/// passes `&[]` instead.
+pub(super) const WINDOWED_LEAF_EXTRA_KEYS: [&str; 2] = ["scroll_px", "items_window"];
+
+/// The one wire key [`decode_value_checked`] accepts inside a
+/// `"text_display"` descriptor body despite `TextDisplay` having no field
+/// for it — [`crate::render::items_window_from_value`] reads it straight
+/// out of the same `Value` dict, mirroring [`WINDOWED_LEAF_EXTRA_KEYS`] for
+/// the three scrollable kinds. `TextDisplay` has no `"scroll_px"`
+/// equivalent, so this is `items_window` alone.
+pub(super) const TEXT_DISPLAY_EXTRA_KEYS: [&str; 1] = ["items_window"];
 
 /// The two leaf-only drag-role wire keys [`drag_role_from_leaf_value`]
 /// reads: `"draggable"` (this leaf can be picked up and dragged) and

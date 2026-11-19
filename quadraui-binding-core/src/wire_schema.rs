@@ -622,6 +622,14 @@ pub fn schema() -> Vec<DefJson> {
         ],
     ));
 
+    let items_window = b.define(obj_doc(
+        "ItemsWindow",
+        vec![field("start", int_()), field("total", int_())],
+        "A virtualised `{start, total}` window: `start` is the index, into \
+         the widget's true row/item/line count `total`, that the carrying \
+         descriptor's own `items`/`rows`/`lines` payload begins at -- see \
+         `quadraui-binding-core`'s `items_window_from_value` doc.",
+    ));
     let text_display_line_descriptor = b.define(obj(
         "TextDisplayLineDescriptor",
         vec![
@@ -641,6 +649,10 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("has_focus", bool_()),
             field_opt("title", nullable(styled_text.clone())),
             field_opt("show_scrollbar", bool_()),
+            with_doc(
+                field_opt("items_window", nullable(items_window.clone())),
+                "binding-core extension key, lifted out by `items_window_from_value` -- not a `TextDisplay` field. `lines` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.",
+            ),
         ],
     ));
 
@@ -669,6 +681,10 @@ pub fn schema() -> Vec<DefJson> {
             with_doc(
                 field_opt("scroll_px", float_()),
                 "binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.",
+            ),
+            with_doc(
+                field_opt("items_window", nullable(items_window.clone())),
+                "binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.",
             ),
         ],
     ));
@@ -706,6 +722,10 @@ pub fn schema() -> Vec<DefJson> {
             field("style", tree_style),
             field_opt("has_focus", bool_()),
             field_opt("scroll_px", float_()),
+            with_doc(
+                field_opt("items_window", nullable(items_window.clone())),
+                "binding-core extension key, lifted out by `items_window_from_value` -- not a `TreeView` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.",
+            ),
         ],
     ));
 
@@ -758,6 +778,10 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("footer", nullable(data_row_descriptor)),
             field_opt("bordered", bool_()),
             field_opt("scroll_px", float_()),
+            with_doc(
+                field_opt("items_window", nullable(items_window.clone())),
+                "binding-core extension key, lifted out by `items_window_from_value` -- not a `DataTable` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.",
+            ),
         ],
     ));
     let tree_table_node_descriptor = b.define(obj(
@@ -3619,6 +3643,23 @@ pub fn schema() -> Vec<DefJson> {
             field("tag", nullable(str_())),
             field("action", nullable(re("WidgetId"))),
         ],
+    ));
+    b.define(obj_doc(
+        "RowsRequestedEvent",
+        vec![
+            field("id", re("WidgetId")),
+            field("start", int_()),
+            field("count", int_()),
+        ],
+        "The `{id, start, count}` window a virtualised `list`/`tree`/\
+         `data_table`/`text_display` widget needs for its next frame, once \
+         scrolling moves outside the slice its own `ItemsWindow` currently \
+         covers -- see `quadraui-binding-core`'s own \
+         `render::rows_requested_for_window`. Not a `quadraui::UiEvent` \
+         variant (hence not part of `_UiEventDict`/`UiEvent` below): a \
+         binding computes this itself from a leaf's `PaintedHit` and its \
+         own `ItemsWindow`, then surfaces it to its app however its own \
+         event-callback contract already surfaces a synthesized event.",
     ));
 
     b.define(flat_doc(
