@@ -403,6 +403,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ButtonIconPosition`](#wire-buttoniconposition)
 - [`ButtonDescriptor`](#wire-buttondescriptor)
 - [`ButtonSpecDescriptor`](#wire-buttonspecdescriptor)
+- [`ItemsWindow`](#wire-itemswindow)
 - [`TextDisplayLineDescriptor`](#wire-textdisplaylinedescriptor)
 - [`TextDisplayDescriptor`](#wire-textdisplaydescriptor)
 - [`ListItemDescriptor`](#wire-listitemdescriptor)
@@ -778,6 +779,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_SplitDividerDraggedPayload`](#wire-_splitdividerdraggedpayload)
 - [`_TrayClickedPayload`](#wire-_trayclickedpayload)
 - [`_NotificationActivatedPayload`](#wire-_notificationactivatedpayload)
+- [`RowsRequestedEvent`](#wire-rowsrequestedevent)
 - [`_UiEventDict`](#wire-_uieventdict)
 - [`UiEvent`](#wire-uievent)
 
@@ -1072,6 +1074,16 @@ Alias for `"Leading" | "Trailing"`.
 | `tooltip` | `string \| null` | no |  |
 | `disabled` | `boolean` | no |  |
 
+<a id="wire-itemswindow"></a>
+#### `ItemsWindow`
+
+A virtualised `{start, total}` window: `start` is the index, into the widget's true row/item/line count `total`, that the carrying descriptor's own `items`/`rows`/`lines` payload begins at -- see `quadraui-binding-core`'s `items_window_from_value` doc.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `start` | `number` | yes |  |
+| `total` | `number` | yes |  |
+
 <a id="wire-textdisplaylinedescriptor"></a>
 #### `TextDisplayLineDescriptor`
 
@@ -1094,6 +1106,7 @@ Alias for `"Leading" | "Trailing"`.
 | `has_focus` | `boolean` | no |  |
 | `title` | `StyledText \| null` | no |  |
 | `show_scrollbar` | `boolean` | no |  |
+| `items_window` | `ItemsWindow \| null` | no | binding-core extension key, lifted out by `items_window_from_value` -- not a `TextDisplay` field. `lines` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one. |
 
 <a id="wire-listitemdescriptor"></a>
 #### `ListItemDescriptor`
@@ -1121,6 +1134,7 @@ Alias for `"Leading" | "Trailing"`.
 | `max_content_width` | `number \| null` | no |  |
 | `show_v_scrollbar` | `boolean` | no |  |
 | `scroll_px` | `number` | no | binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field. |
+| `items_window` | `ItemsWindow \| null` | no | binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one. |
 
 <a id="wire-treeroweditstatedescriptor"></a>
 #### `TreeRowEditStateDescriptor`
@@ -1159,6 +1173,7 @@ Alias for `"Leading" | "Trailing"`.
 | `style` | `TreeStyle` | yes |  |
 | `has_focus` | `boolean` | no |  |
 | `scroll_px` | `number` | no |  |
+| `items_window` | `ItemsWindow \| null` | no | binding-core extension key, lifted out by `items_window_from_value` -- not a `TreeView` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one. |
 
 <a id="wire-columnalign"></a>
 #### `ColumnAlign`
@@ -1228,6 +1243,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `footer` | `DataRowDescriptor \| null` | no |  |
 | `bordered` | `boolean` | no |  |
 | `scroll_px` | `number` | no |  |
+| `items_window` | `ItemsWindow \| null` | no | binding-core extension key, lifted out by `items_window_from_value` -- not a `DataTable` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one. |
 
 <a id="wire-treetablenodedescriptor"></a>
 #### `TreeTableNodeDescriptor`
@@ -4757,6 +4773,17 @@ Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _H
 | --- | --- | --- | --- |
 | `tag` | `string \| null` | yes |  |
 | `action` | `WidgetId \| null` | yes |  |
+
+<a id="wire-rowsrequestedevent"></a>
+#### `RowsRequestedEvent`
+
+The `{id, start, count}` window a virtualised `list`/`tree`/`data_table`/`text_display` widget needs for its next frame, once scrolling moves outside the slice its own `ItemsWindow` currently covers -- see `quadraui-binding-core`'s own `render::rows_requested_for_window`. Not a `quadraui::UiEvent` variant (hence not part of `_UiEventDict`/`UiEvent` below): a binding computes this itself from a leaf's `PaintedHit` and its own `ItemsWindow`, then surfaces it to its app however its own event-callback contract already surfaces a synthesized event.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `start` | `number` | yes |  |
+| `count` | `number` | yes |  |
 
 <a id="wire-_uieventdict"></a>
 #### `_UiEventDict`

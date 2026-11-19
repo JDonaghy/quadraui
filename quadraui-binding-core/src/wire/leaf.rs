@@ -12,7 +12,8 @@ use crate::DecodeError;
 
 use super::value::{
     check_unknown_keys, decode_value_checked, drag_role_from_leaf_value, must_be_dict, obj_get,
-    DecodeDiagnostics, DRAG_ROLE_KEYS, SCROLL_PX_EXTRA_KEYS, UNIVERSAL_NODE_SIBLING_KEYS,
+    DecodeDiagnostics, DRAG_ROLE_KEYS, TEXT_DISPLAY_EXTRA_KEYS, UNIVERSAL_NODE_SIBLING_KEYS,
+    WINDOWED_LEAF_EXTRA_KEYS,
 };
 
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
@@ -85,7 +86,7 @@ pub(super) fn layout_leaf_from_value(
                 &context,
                 key,
                 value_dict,
-                &[],
+                &TEXT_DISPLAY_EXTRA_KEYS,
             )?),
             "list" => {
                 scroll_px = crate::scroll_px_from_value(v);
@@ -94,7 +95,7 @@ pub(super) fn layout_leaf_from_value(
                     &context,
                     key,
                     value_dict,
-                    &SCROLL_PX_EXTRA_KEYS,
+                    &WINDOWED_LEAF_EXTRA_KEYS,
                 )?)
             }
             "tree" => {
@@ -104,7 +105,7 @@ pub(super) fn layout_leaf_from_value(
                     &context,
                     key,
                     value_dict,
-                    &SCROLL_PX_EXTRA_KEYS,
+                    &WINDOWED_LEAF_EXTRA_KEYS,
                 )?)
             }
             "data_table" => {
@@ -114,7 +115,7 @@ pub(super) fn layout_leaf_from_value(
                     &context,
                     key,
                     value_dict,
-                    &SCROLL_PX_EXTRA_KEYS,
+                    &WINDOWED_LEAF_EXTRA_KEYS,
                 )?)
             }
             "tab_bar" => LeafDescriptor::TabBar(decode_value_checked(
@@ -614,6 +615,115 @@ mod tests {
                 &strict,
             )
             .unwrap_or_else(|e| panic!("{kind} layout-tree leaf with scroll_px under strict: {e}"));
+        }
+    }
+
+    /// A minimal `"list"`/`"tree"`/`"data_table"`/`"text_display"`
+    /// descriptor body carrying `"items_window"` -- the documented
+    /// `items_window_from_value` extension key, not a field any of
+    /// `ListView`/`TreeView`/`DataTable`/`TextDisplay` declares. Mirrors
+    /// [`scrollable_body_with_scroll_px`]'s own dual-shape coverage.
+    fn windowed_body_with_items_window(kind: &str) -> Value {
+        let window = json!({"start": 0, "total": 100_000});
+        let body = match kind {
+            "list" => json!({
+                "id": "l1",
+                "items": [],
+                "selected_idx": 0,
+                "items_window": window,
+            }),
+            "tree" => json!({
+                "id": "t1",
+                "rows": [],
+                "selection_mode": "Single",
+                "selected_path": null,
+                "style": {
+                    "indent": 2,
+                    "show_chevrons": true,
+                    "chevron_expanded": "v",
+                    "chevron_collapsed": ">",
+                },
+                "items_window": window,
+            }),
+            "data_table" => json!({
+                "id": "dt1",
+                "columns": [{"title": "Name"}],
+                "rows": [],
+                "items_window": window,
+            }),
+            "text_display" => json!({
+                "id": "td1",
+                "lines": [],
+                "items_window": window,
+            }),
+            other => panic!("not a windowed kind: {other}"),
+        };
+        json!({ kind: body })
+    }
+
+    /// `"items_window"` inside a `"list"`/`"tree"`/`"data_table"`/
+    /// `"text_display"` descriptor body decodes cleanly under both `warn`
+    /// (no false "unknown key" finding) and `strict` (no
+    /// [`DecodeError::UnknownKey`]), on both the layout-tree leaf shape and
+    /// the flat per-slot shape -- mirrors
+    /// [`scroll_px_in_a_scrollable_body_is_not_reported_as_unknown`] for the
+    /// sibling extension key.
+    #[test]
+    fn items_window_in_a_windowed_body_is_not_reported_as_unknown() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        for kind in ["list", "tree", "data_table", "text_display"] {
+            let body = windowed_body_with_items_window(kind);
+
+            let warn = DecodeDiagnostics::warn();
+            decode_render_output_with_styles(
+                "test",
+                &body,
+                StyleContext::new(&sets, &theme),
+                &warn,
+            )
+            .unwrap_or_else(|e| panic!("{kind} flat frame with items_window: {e}"));
+            assert!(
+                warn.warned_keys().is_empty(),
+                "{kind} flat frame: items_window must not warn as unknown, got {:?}",
+                warn.warned_keys()
+            );
+            let strict = DecodeDiagnostics::strict();
+            decode_render_output_with_styles(
+                "test",
+                &body,
+                StyleContext::new(&sets, &theme),
+                &strict,
+            )
+            .unwrap_or_else(|e| panic!("{kind} flat frame with items_window under strict: {e}"));
+
+            let mut leaf = body.as_object().unwrap().clone();
+            leaf.insert("id".to_string(), json!("leaf-1"));
+            let leaf = Value::Object(leaf);
+
+            let warn = DecodeDiagnostics::warn();
+            decode_render_output_with_styles(
+                "test",
+                &leaf,
+                StyleContext::new(&sets, &theme),
+                &warn,
+            )
+            .unwrap_or_else(|e| panic!("{kind} layout-tree leaf with items_window: {e}"));
+            assert!(
+                warn.warned_keys().is_empty(),
+                "{kind} layout-tree leaf: items_window must not warn as unknown, got {:?}",
+                warn.warned_keys()
+            );
+            let strict = DecodeDiagnostics::strict();
+            decode_render_output_with_styles(
+                "test",
+                &leaf,
+                StyleContext::new(&sets, &theme),
+                &strict,
+            )
+            .unwrap_or_else(|e| {
+                panic!("{kind} layout-tree leaf with items_window under strict: {e}")
+            });
         }
     }
 

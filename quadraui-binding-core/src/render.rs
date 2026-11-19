@@ -1989,6 +1989,93 @@ pub fn data_table_viewport_rows(backend: &mut dyn Backend, rect: Rect, table: &D
     backend.data_table_layout(rect, &shadow).visible_rows
 }
 
+/// A `{start, total}` virtualised window lifted out of a `"list"`/`"tree"`/
+/// `"data_table"`/`"text_display"` leaf's own descriptor dict by
+/// [`items_window_from_value`] — `start` is the index, into the widget's
+/// true row/item/line count `total`, that this frame's `items`/`rows`/
+/// `lines` payload begins at. Like [`crate::scroll_px_from_value`], this is
+/// **not** a field any of `ListView`/`TreeView`/`DataTable`/`TextDisplay`
+/// declares: a render callback that never sets `"items_window"` is
+/// completely unaffected, and one that does only sends the slice of rows
+/// currently visible (plus whatever prefetch margin it chooses) instead of
+/// every row up front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemsWindow {
+    pub start: usize,
+    pub total: usize,
+}
+
+/// Lifts an optional `"items_window": {"start": ..., "total": ...}` object
+/// out of a `list`/`tree`/`data_table`/`text_display` leaf's own descriptor
+/// dict (the nested value under its `LEAF_KIND_KEYS` key, e.g. the `{...}`
+/// in `{"id": ..., "data_table": {...}}`) — mirrors
+/// [`crate::scroll_px_from_value`]'s own extraction, reading straight out of
+/// the raw [`serde_json::Value`] a binding already holds rather than
+/// requiring a dedicated struct field. Returns `None` when the key is
+/// absent, isn't an object, or either `start`/`total` is missing or not a
+/// non-negative integer — a malformed or missing `items_window` degrades to
+/// "this frame's payload holds every row" rather than failing the leaf's
+/// decode.
+pub fn items_window_from_value(value: &serde_json::Value) -> Option<ItemsWindow> {
+    let window = value.as_object()?.get("items_window")?.as_object()?;
+    let start = window.get("start")?.as_u64()? as usize;
+    let total = window.get("total")?.as_u64()? as usize;
+    Some(ItemsWindow { start, total })
+}
+
+/// The `{id, start, count}` a binding should ask its app's render callback
+/// for next, computed by [`rows_requested_for_window`] once scrolling moves
+/// outside the slice an [`ItemsWindow`] says is currently loaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowsRequestedEvent {
+    pub id: WidgetId,
+    pub start: usize,
+    pub count: usize,
+}
+
+/// Computes the [`RowsRequestedEvent`] a virtualised `list`/`tree`/
+/// `data_table`/`text_display` leaf needs for its next frame, given
+/// `window` (this frame's [`ItemsWindow`]), `loaded_len` (how many rows the
+/// current payload actually carries — `ListView::items.len()`,
+/// `TreeView::rows.len()`, `DataTable::rows.len()`, or
+/// `TextDisplay::lines.len()`), and `scroll_offset`/`viewport_rows` (the
+/// same values already recorded on this leaf's `PaintedHit` this frame,
+/// e.g. `list_viewport_rows`'s return value).
+///
+/// Returns `None` once the loaded slice `[window.start, window.start +
+/// loaded_len)` already covers the visible range `[scroll_offset,
+/// scroll_offset + viewport_rows)` — a render callback that already sent
+/// enough rows re-renders unchanged. Otherwise returns a request covering
+/// the visible range plus one viewport's worth of prefetch margin on each
+/// side, clamped to `[0, window.total)`: bounded by a small multiple of
+/// `viewport_rows`, never by `window.total`, so a 100k-row window never
+/// asks for more than a few hundred rows at once.
+pub fn rows_requested_for_window(
+    id: WidgetId,
+    window: ItemsWindow,
+    loaded_len: usize,
+    scroll_offset: usize,
+    viewport_rows: usize,
+) -> Option<RowsRequestedEvent> {
+    let visible_start = scroll_offset.min(window.total);
+    let visible_end = scroll_offset
+        .saturating_add(viewport_rows)
+        .min(window.total);
+    let loaded_end = window.start.saturating_add(loaded_len);
+    let covers = window.start <= visible_start && loaded_end >= visible_end;
+    if covers {
+        return None;
+    }
+    let margin = viewport_rows.max(1);
+    let start = visible_start.saturating_sub(margin);
+    let end = visible_end.saturating_add(margin).min(window.total);
+    Some(RowsRequestedEvent {
+        id,
+        start,
+        count: end.saturating_sub(start),
+    })
+}
+
 /// Paints `tree` into `area`, reserving a right-hand gutter for its
 /// vertical scrollbar when one is needed, and returns `(content_rect,
 /// scrollbar, viewport_rows)` so the caller can hit-test against the SAME
@@ -4709,6 +4796,174 @@ mod tests {
             sw.1 - nw.1,
             se.1 - ne.1,
             "both columns share the same row pitch -- equal `Weight` rows"
+        );
+    }
+
+    // ── virtualised `items_window` decode + `rows_requested_for_window` ──
+
+    /// A `data_table` leaf whose `items_window` says its 50 `rows` are only
+    /// a slice of a 100,000-row total decodes and paints with a payload
+    /// that stays exactly that small -- never ballooning to the full
+    /// total -- and scrolling within the loaded slice needs nothing more,
+    /// but scrolling past it asks for a new window bounded by a small
+    /// multiple of the viewport, never by the 100k-row total itself.
+    #[test]
+    fn windowed_data_table_decodes_bounded_and_requests_more_rows_on_scroll() {
+        const TOTAL: usize = 100_000;
+        const WINDOW_LEN: usize = 50;
+
+        fn leaf_value(scroll_offset: usize) -> serde_json::Value {
+            let rows: Vec<_> = (0..WINDOW_LEN)
+                .map(|_| serde_json::json!({"cells": [{"spans": []}]}))
+                .collect();
+            serde_json::json!({
+                "id": "table",
+                "data_table": {
+                    "id": "table",
+                    "columns": [{"title": "col"}],
+                    "rows": rows,
+                    "scroll_offset": scroll_offset,
+                    "items_window": {"start": 0, "total": TOTAL},
+                },
+            })
+        }
+
+        fn decode_table(value: &serde_json::Value) -> DataTable {
+            let node = crate::wire::decode_layout_node("test", value)
+                .expect("a data_table leaf with items_window must decode");
+            let LayoutNode::Leaf(leaf) = node else {
+                panic!("expected a leaf node");
+            };
+            let LeafDescriptor::DataTable(table) = leaf.descriptor else {
+                panic!("expected a DataTable descriptor");
+            };
+            table
+        }
+
+        let value = leaf_value(0);
+        let table = decode_table(&value);
+        assert_eq!(
+            table.rows.len(),
+            WINDOW_LEN,
+            "the decoded payload must stay bounded to the loaded window, \
+             never the full 100k-row total"
+        );
+        let id = table.id;
+
+        // `items_window` is independently readable straight off the raw
+        // dict, the same `Value` a binding already holds -- the extension
+        // key contract `items_window_from_value`'s own doc describes.
+        let window = items_window_from_value(&value["data_table"])
+            .expect("items_window should be present on the raw dict");
+        assert_eq!(
+            window,
+            ItemsWindow {
+                start: 0,
+                total: TOTAL
+            }
+        );
+
+        // Drives the real `event -> render -> paint` path through
+        // `TuiDriver` (every `Backend::draw_*` call needs the live frame
+        // scope only a real render pass sets up), re-decoding whatever
+        // `scroll_offset` this test currently has it hold.
+        use quadraui::tui::testing::TuiDriver;
+
+        struct WindowedTableLogic {
+            scroll_offset: std::cell::Cell<usize>,
+            viewport_rows: std::cell::Cell<usize>,
+            engine: crate::engine::InteractionEngine,
+        }
+
+        impl quadraui::AppLogic for WindowedTableLogic {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let value = leaf_value(self.scroll_offset.get());
+                let node = crate::wire::decode_layout_node("test", &value)
+                    .expect("a data_table leaf with items_window must decode");
+                // The viewport's true row capacity -- mirroring how
+                // `paint_leaf` feeds `list_viewport_rows`/`tree_viewport_rows`
+                // into this same function for `List`/`Tree`, rather than the
+                // `DataTableLayout::visible_rows` `PaintedHit::DataTable`
+                // itself carries, which degrades toward zero at whatever
+                // offset was actually painted -- exactly when more rows are
+                // needed.
+                let table = decode_table(&value);
+                self.viewport_rows
+                    .set(data_table_viewport_rows(backend, area, &table));
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &node, &mut hits, &|id| {
+                    self.engine.chrome_interaction(id)
+                });
+                self.engine.set_hits(hits);
+            }
+
+            fn handle(
+                &mut self,
+                _event: quadraui::UiEvent,
+                _backend: &mut dyn Backend,
+            ) -> quadraui::Reaction {
+                quadraui::Reaction::Continue
+            }
+        }
+
+        let logic = WindowedTableLogic {
+            scroll_offset: std::cell::Cell::new(0),
+            viewport_rows: std::cell::Cell::new(0),
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        driver.render();
+        let viewport_rows = driver.app().viewport_rows.get();
+        assert!(viewport_rows > 0, "a 5-row area must fit at least one row");
+
+        // Scrolled to the very top of the loaded window: everything the
+        // viewport can show is already loaded, so nothing more is needed.
+        assert_eq!(
+            rows_requested_for_window(id, window, WINDOW_LEN, 0, viewport_rows),
+            None,
+            "the viewport's visible range is already fully covered by the loaded slice"
+        );
+
+        // Scroll past the last loaded row (50..55 with a 5-row viewport):
+        // the same leaf, now at a deeper `scroll_offset`, still decodes and
+        // paints -- it just has nothing to show past row 49 until the app
+        // sends a new window.
+        let deep_offset = WINDOW_LEN + 5;
+        driver.app_mut().scroll_offset.set(deep_offset);
+        driver.render();
+        let painted_scroll_offset = driver
+            .app()
+            .engine
+            .hit_map()
+            .iter()
+            .find_map(|hit| match hit {
+                PaintedHit::DataTable { scroll_offset, .. } => Some(*scroll_offset),
+                _ => None,
+            })
+            .expect("the data_table should have painted a hit");
+        assert_eq!(painted_scroll_offset, deep_offset);
+
+        let request =
+            rows_requested_for_window(id, window, WINDOW_LEN, painted_scroll_offset, viewport_rows)
+                .expect("scrolling past the loaded window must request more rows");
+        assert_eq!(request.id, id);
+        assert!(
+            request.count < WINDOW_LEN * 10,
+            "a bounded request must stay a small multiple of the viewport, \
+             nowhere near the widget's own {TOTAL}-row total -- got {}",
+            request.count
+        );
+        assert!(
+            request.start <= deep_offset,
+            "the requested window must start at or before the scrolled-to row"
+        );
+        assert!(
+            request.start + request.count >= deep_offset + viewport_rows,
+            "the requested window must cover the whole visible range"
         );
     }
 }
