@@ -52,6 +52,8 @@ mod canvas_regions_demo;
 mod canvas_shapes_app;
 #[path = "../examples/common/caret_shape_demo.rs"]
 mod caret_shape_demo;
+#[path = "../examples/common/cell_grid_demo.rs"]
+mod cell_grid_demo;
 #[path = "../examples/common/codicon_tree_demo.rs"]
 mod codicon_tree_demo;
 // `ChartApp::last_chart_rect` is write-only in the shared example source
@@ -215,6 +217,7 @@ use canvas_app::CanvasApp;
 use canvas_regions_demo::CanvasRegionsDemo;
 use canvas_shapes_app::CanvasShapesApp;
 use caret_shape_demo::CaretShapeDemo;
+use cell_grid_demo::CellGridDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
@@ -11578,6 +11581,189 @@ fn grid_clicking_a_tile_focuses_and_activates_it() {
 #[test]
 fn grid_pressing_q_exits() {
     let mut driver = TuiDriver::new(GridApp::new(), 100, 24);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should make the app exit");
+}
+
+// ── tui_cell_grid: CellGridController ─────────────────────────────────
+
+/// Shift held on its own — `CellGridController` reads it to extend the
+/// selection rather than move the cursor.
+fn shift_only() -> Modifiers {
+    Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    }
+}
+
+fn ctrl_only() -> Modifiers {
+    Modifiers {
+        ctrl: true,
+        ..Modifiers::default()
+    }
+}
+
+fn press_with(driver: &mut TuiDriver<CellGridDemo>, key: NamedKey, modifiers: Modifiers) {
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(key),
+        modifiers,
+        repeat: false,
+    });
+}
+
+#[test]
+fn cell_grid_initial_screen_shows_the_frozen_header_row_and_region_column() {
+    let driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("Region"),
+        "frozen corner cell should name the frozen column:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Q1 2024"),
+        "frozen header row should paint its metric names:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("North 1"),
+        "first body row's frozen region cell should be visible:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Sel A1 (1 cell)"),
+        "status bar should report the initial single-cell cursor in A1 notation:\n{screen}"
+    );
+}
+
+#[test]
+fn cell_grid_arrows_move_the_cursor_and_shift_arrows_extend_the_range() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    press_with(&mut driver, NamedKey::Down, Modifiers::default());
+    press_with(&mut driver, NamedKey::Right, Modifiers::default());
+    let moved = driver.screen();
+    assert!(
+        moved.contains("Sel B2 (1 cell)"),
+        "Down then Right should leave a single-cell cursor at B2:\n{moved}"
+    );
+
+    press_with(&mut driver, NamedKey::Down, shift_only());
+    press_with(&mut driver, NamedKey::Right, shift_only());
+    let extended = driver.screen();
+    assert!(
+        extended.contains("Sel B2:C3 (4 cells)"),
+        "Shift+Down then Shift+Right should extend B2 into the 2x2 range B2:C3:\n{extended}"
+    );
+}
+
+#[test]
+fn cell_grid_tab_and_enter_walk_the_row_and_column_without_extending() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    press_with(&mut driver, NamedKey::Tab, Modifiers::default());
+    press_with(&mut driver, NamedKey::Enter, Modifiers::default());
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Sel B2 (1 cell)"),
+        "Tab then Enter should walk one column right and one row down, to B2:\n{screen}"
+    );
+}
+
+#[test]
+fn cell_grid_clicking_a_column_letter_selects_that_whole_column() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    let before = driver.screen();
+    let (x, y) = driver
+        .find("Q2 2024")
+        .unwrap_or_else(|| panic!("second metric column's header cell not painted:\n{before}"));
+    // The column-letter strip is the row above the frozen header row the
+    // cell text lands on, so step up one line height from the cell.
+    let line_height = driver.backend().line_height();
+    driver.click(x, y - line_height);
+    let after = driver.screen();
+    assert!(
+        after.contains("Sel C1:C48 (48 cells)"),
+        "clicking column C's letter should select all 48 of its rows:\n{after}"
+    );
+}
+
+#[test]
+fn cell_grid_dragging_across_body_cells_selects_a_rectangle() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    let screen = driver.screen();
+    let (x0, y0) = driver
+        .find("North 1")
+        .unwrap_or_else(|| panic!("row 2's region cell not painted:\n{screen}"));
+    let (_, y1) = driver
+        .find("East 3")
+        .unwrap_or_else(|| panic!("row 4's region cell not painted:\n{screen}"));
+    let (x1, _) = driver
+        .find("Q3 2024")
+        .unwrap_or_else(|| panic!("third metric column's header cell not painted:\n{screen}"));
+    driver.drag(x0, y0, x1, y1);
+    let after = driver.screen();
+    assert!(
+        after.contains("Sel A2:D4 (12 cells)"),
+        "dragging from A2 across to D4 should select that 3x4 rectangle:\n{after}"
+    );
+}
+
+#[test]
+fn cell_grid_ctrl_a_selects_the_whole_sheet() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Char('a'),
+        modifiers: ctrl_only(),
+        repeat: false,
+    });
+    let after = driver.screen();
+    assert!(
+        after.contains("Sel A1:N48 (672 cells)"),
+        "Ctrl+A should select every cell in the 48x14 sheet:\n{after}"
+    );
+}
+
+#[test]
+fn cell_grid_frozen_panes_stay_put_while_the_body_scrolls_to_follow_the_cursor() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    let before = driver.screen();
+    assert!(
+        before.contains("North 1"),
+        "first body row should be visible before scrolling:\n{before}"
+    );
+
+    press_with(&mut driver, NamedKey::End, ctrl_only());
+
+    let after = driver.screen();
+    assert_ne!(
+        before, after,
+        "Ctrl+End should scroll the body to the sheet's last cell"
+    );
+    assert!(
+        after.contains("Sel N48 (1 cell)"),
+        "Ctrl+End should put the cursor on the bottom-right cell N48:\n{after}"
+    );
+    assert!(
+        !after.contains("North 1"),
+        "the first body row should have scrolled out of view:\n{after}"
+    );
+    // The frozen row and column are pinned, so the sheet's own corner
+    // cell is still painted — and the line it sits on is still the
+    // frozen metric-name header, not a scrolled-in body row of figures.
+    let header_line = after
+        .lines()
+        .find(|line| line.contains("Region"))
+        .unwrap_or_else(|| panic!("frozen corner cell scrolled away:\n{after}"));
+    assert!(
+        header_line.contains('Q') && !header_line.contains('$'),
+        "the pinned line must still be the frozen header row, not body figures:\n{after}"
+    );
+    assert!(
+        after.contains("Pacifi"),
+        "the frozen region column must still paint row labels after scrolling:\n{after}"
+    );
+}
+
+#[test]
+fn cell_grid_pressing_q_exits() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
     assert!(!driver.exited());
     driver.type_char('q');
     assert!(driver.exited(), "'q' should make the app exit");

@@ -42,6 +42,12 @@
 //!   caret through `EditorCursorShape`'s three modes, calling
 //!   `Backend::set_caret_shape` on each change. Used by
 //!   `tui_caret_shape` / `gtk_caret_shape`.
+//! - [`CellGridDemo`] (in [`cell_grid_demo`]) — a quarterly-sales sheet
+//!   navigated through `quadraui::CellGridController`: cursor movement,
+//!   rectangular range selection, header/corner "select all" clicks and
+//!   frozen-pane-aware scroll-follow, with the cursor/selection extent
+//!   reported in A1 notation on a status bar. Used by `tui_cell_grid`;
+//!   `CellGrid` has a TUI rasteriser only so far.
 //! - [`key_map`] — **not** an `AppLogic`, unlike everything else in this
 //!   list. `KeyMap`/`KeyContext` are a standalone copy-paste recipe, not
 //!   wired into any runner. See its own module doc.
@@ -88,6 +94,7 @@ pub mod canvas_app;
 pub mod canvas_regions_demo;
 pub mod canvas_shapes_app;
 pub mod caret_shape_demo;
+pub mod cell_grid_demo;
 pub mod chart_app;
 pub mod chat_demo;
 pub mod clipboard_demo;
@@ -176,6 +183,7 @@ pub use canvas_app::CanvasApp;
 pub use canvas_regions_demo::CanvasRegionsDemo;
 pub use canvas_shapes_app::CanvasShapesApp;
 pub use caret_shape_demo::CaretShapeDemo;
+pub use cell_grid_demo::CellGridDemo;
 pub use chart_app::ChartApp;
 pub use chat_demo::ChatDemo;
 pub use clipboard_demo::ClipboardDemo;

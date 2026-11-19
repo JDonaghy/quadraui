@@ -138,7 +138,7 @@ let mut grid = CellGridController::new("sheet");
 grid.set_dimensions(1000, 64);
 grid.set_frozen(1, 1);
 // render:
-backend.draw_primitive(&grid.grid(self.visible_cells()), area);
+backend.draw_primitive(area, &grid.grid(self.visible_cells()));
 // handle:
 match grid.handle(&event, backend, area) {
     CellGridControllerEvent::CursorMoved { row, col } => self.show_formula(row, col),

@@ -282,7 +282,16 @@ impl CellGridController {
     /// `draw_primitive` call would resolve for the equivalent
     /// [`Self::grid`] — built directly through `Primitive::layout` so no
     /// paint call ever runs against the empty [`Self::geometry_grid`].
-    fn layout(&self, backend: &dyn Backend, rect: Rect) -> CellGridPrimitiveLayout {
+    ///
+    /// A host calls this before [`Self::grid`] to learn which absolute
+    /// rows and columns are on screen this frame —
+    /// [`crate::primitives::cell_grid::CellGridLayout::rows`] /
+    /// [`crate::primitives::cell_grid::CellGridLayout::cols`], in the same
+    /// frozen-then-scrolled order [`CellGrid::cells`] is indexed in — so
+    /// it can window exactly those cells instead of materialising the
+    /// whole sheet. See [`crate::primitives::cell_grid`]'s module doc,
+    /// "`cells` is a viewport-sized window".
+    pub fn layout(&self, backend: &dyn Backend, rect: Rect) -> CellGridPrimitiveLayout {
         let ctx = LayoutCtx {
             line_height: backend.chrome_line_height(),
             char_width: backend.char_width(),
