@@ -27,6 +27,7 @@ mod board;
 mod braille;
 mod button;
 mod canvas;
+mod cell_grid;
 // No reacher in `~/src/vimcode/src`, `~/src/coord-tui/src`, or any in-tree
 // consumer reaches either module-qualified (`crate::tui::caps::…`) —
 // `#[doc(hidden)]`: unstable, not covered by semver, like the flat
@@ -126,6 +127,9 @@ pub use board::{draw_board, tui_board_layout};
 pub use button::{draw_button, draw_button_interactive, tui_button_layout};
 #[doc(hidden)]
 pub use canvas::{draw_canvas, tui_canvas_layout, tui_canvas_region_hit_test};
+pub use cell_grid::draw_cell_grid;
+#[doc(hidden)]
+pub use cell_grid::tui_cell_grid_layout;
 #[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
 #[doc(hidden)]
@@ -425,6 +429,24 @@ pub(crate) fn set_cell_wide_styled(
             cont.modifier = modifier;
             cont.underline_color = underline_color.unwrap_or(RatatuiColor::Reset);
         }
+    }
+}
+
+/// Left/center/right offset (in cells) a `text_len`-wide run starts at
+/// within a `col_w`-wide column — the one alignment rule every
+/// column/cell text painter in this module shares: [`data_table`]'s
+/// header/body/footer cells and [`cell_grid`]'s header/gutter/body
+/// cells.
+pub(crate) fn align_offset(
+    align: crate::primitives::data_table::ColumnAlign,
+    text_len: u16,
+    col_w: u16,
+) -> u16 {
+    use crate::primitives::data_table::ColumnAlign;
+    match align {
+        ColumnAlign::Left => 0,
+        ColumnAlign::Center => col_w.saturating_sub(text_len) / 2,
+        ColumnAlign::Right => col_w.saturating_sub(text_len),
     }
 }
 

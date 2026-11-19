@@ -1,12 +1,15 @@
 //! `CellGrid` primitive: a spreadsheet-style grid of cells with letter
 //! column headers, numbered row headers, frozen leading rows/columns, and
-//! a rectangular cell selection — descriptor, layout and hit-testing only.
-//! No paint path exists yet: a backend rasteriser (TUI first, per the
-//! repo's *One backend per issue* rule) is a follow-up issue in the
-//! `CellGrid` epic, built on top of this module exactly as
-//! [`crate::primitives::tree_table::TreeTable`] was built on
-//! [`crate::primitives::data_table::DataTable`] rather than as a parallel
-//! primitive.
+//! a rectangular cell selection — descriptor, layout and hit-testing,
+//! plus the [`crate::primitive::Primitive`] impl near the bottom of this
+//! module that wires it through [`crate::backend::DrawsPrimitives::draw_primitive`]:
+//! TUI paints real content via
+//! [`crate::primitive::Primitive::paint_cells`] →
+//! [`crate::tui::draw_cell_grid`]; GTK/macOS/Win get their own
+//! `CellGrid` rasteriser in a follow-up issue, per the repo's *One
+//! backend per issue* rule, the same split
+//! [`crate::primitives::list::ListView`] and
+//! [`crate::primitives::icon_grid::IconGrid`] used.
 //!
 //! # The grid only presents
 //!
@@ -33,6 +36,7 @@
 //! (rather than a copy of) its row data, just windowed instead of
 //! flattened.
 
+use crate::event::Rect;
 use crate::primitives::data_table::ColumnAlign;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -584,6 +588,173 @@ impl CellGridLayout {
             (Some(r), Some(c)) => CellGridHit::Cell(r.index, c.index),
             _ => CellGridHit::Empty,
         }
+    }
+}
+
+/// Events a `CellGrid` emits back to the app. Not produced by
+/// [`CellGrid::layout`] itself — a host derives these from
+/// [`crate::UiEvent`] plus [`CellGridLayout::hit_test`] /
+/// [`CellGridPrimitiveLayout::hit_test`], the same convention every
+/// other row-family primitive's `*Event` enum follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CellGridEvent {
+    /// The active cell moved to a new absolute `(row, col)`.
+    CursorMoved { row: usize, col: usize },
+}
+
+// ── Accessibility ────────────────────────────────────────────────────
+//
+// `CellGrid`'s `A11yPrimitive` impl lives here rather than in
+// `crate::a11y::tree`, the same "new primitive owns its own a11y impl"
+// precedent `IconGrid::a11y_info`'s doc describes. `A11yRole::Table`/
+// `Row`/`Cell` are an exact fit, unlike `IconGrid`'s `List`/`ListItem`
+// stand-in. Reported children only ever cover `Self::cells`' painted
+// window (see the module doc) — the full sheet behind
+// `row_count`/`col_count` has no accessibility presence beyond that.
+
+impl crate::a11y::A11yPrimitive for CellGrid {
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        crate::a11y::A11yInfo::new().with_role(crate::a11y::A11yRole::Table)
+    }
+
+    fn a11y_children(&self) -> Vec<crate::a11y::A11yChild> {
+        self.cells
+            .iter()
+            .enumerate()
+            .flat_map(|(ri, row)| {
+                row.iter().enumerate().map(move |(ci, cell)| {
+                    let mut info =
+                        crate::a11y::A11yInfo::new().with_role(crate::a11y::A11yRole::Cell);
+                    if !cell.text.is_empty() {
+                        info = info.with_label(cell.text.clone());
+                    }
+                    crate::a11y::A11yChild::new(format!("cell.{ri}.{ci}"), info)
+                })
+            })
+            .collect()
+    }
+}
+
+/// [`CellGrid`]'s [`crate::primitive::Primitive::Layout`]: the absolute
+/// `area` [`CellGrid::layout`] was resolved for, plus the resolved
+/// [`CellGridLayout`] itself.
+///
+/// `#[non_exhaustive]`: backend-returned, never constructed by a
+/// consumer via struct literal, same convention as [`CellGridLayout`]
+/// itself.
+///
+/// Unlike [`crate::DataTable`]/[`crate::ListView`]/[`crate::IconGrid`]'s
+/// own `Primitive::Layout` types, not feature-gated: `CellGrid` has no
+/// bespoke `Backend::draw_cell_grid` method, so [`crate::frame::Surface::CellGrid`]
+/// paints exclusively through [`crate::backend::DrawsPrimitives::draw_primitive`],
+/// which `ScreenLayout::draw` calls unconditionally — gating this type
+/// behind a backend feature would make `frame.rs` fail to compile in a
+/// zero-backend build.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct CellGridPrimitiveLayout {
+    pub area: Rect,
+    /// The grid-local layout itself.
+    pub layout: CellGridLayout,
+}
+
+impl CellGridPrimitiveLayout {
+    /// Hit-test at an absolute `(x, y)` — subtracts [`Self::area`]'s
+    /// origin before delegating to [`CellGridLayout::hit_test`], whose
+    /// own coordinates are grid-local.
+    pub fn hit_test(&self, x: f32, y: f32) -> CellGridHit {
+        self.layout.hit_test(x - self.area.x, y - self.area.y)
+    }
+}
+
+impl crate::primitive::Primitive for CellGrid {
+    type Layout = CellGridPrimitiveLayout;
+    type Event = CellGridEvent;
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        // Same runtime discriminator `ListView`/`IconGrid`'s own
+        // `Primitive::layout` use: a terminal cell's `line_height` is
+        // architecturally always exactly `1.0`, so this tells a TUI
+        // caller apart from a pixel backend even when both features are
+        // compiled into the same binary.
+        #[cfg(feature = "tui")]
+        if ctx.line_height <= 1.0 {
+            // Route through the exact resolver `crate::tui::draw_cell_grid`
+            // itself calls (`tui_cell_grid_layout`), so this layout can
+            // never drift from what TUI actually paints —
+            // `Self::paint_cells` below makes the matching paint-side
+            // guarantee.
+            let area = crate::tui::backend::q_rect_to_ratatui(rect);
+            let layout = crate::tui::tui_cell_grid_layout(area, self);
+            return CellGridPrimitiveLayout { area: rect, layout };
+        }
+
+        // No pixel rasteriser yet (`Self::paint`'s own doc), so these
+        // header/scrollbar sizes are never actually painted against —
+        // they only let a GUI host reserve correct space and hit-test
+        // ahead of that follow-up issue landing.
+        let col_header_height = if self.show_col_headers {
+            ctx.line_height
+        } else {
+            0.0
+        };
+        let row_header_width = if self.show_row_headers {
+            let digits = if self.row_count == 0 {
+                1
+            } else {
+                self.row_count.to_string().chars().count()
+            };
+            (digits as f32 + 1.0) * ctx.char_width
+        } else {
+            0.0
+        };
+        let (scrollbar_w, scrollbar_h) = if self.show_scrollbar {
+            (ctx.char_width, ctx.line_height)
+        } else {
+            (0.0, 0.0)
+        };
+        let layout = self.layout(
+            rect.width,
+            rect.height,
+            col_header_height,
+            row_header_width,
+            scrollbar_w,
+            scrollbar_h,
+        );
+        CellGridPrimitiveLayout { area: rect, layout }
+    }
+
+    /// No pixel rasteriser yet: a GTK/macOS/Win `CellGrid` issue adds one
+    /// here, mirroring [`crate::primitives::list::native_surface_paint`]'s
+    /// shared [`crate::paint_surface::PaintSurface`] painter. Until then
+    /// this paints nothing — the same "resolve layout, maybe paint"
+    /// degrade [`crate::primitive::Primitive::paint_cells`]'s own default
+    /// documents for a backend-less primitive, just on the GUI side of
+    /// the split instead of the TUI side.
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        let _ = (layout, surface, theme, style);
+    }
+
+    /// Delegates straight to [`crate::tui::draw_cell_grid`] — the exact
+    /// function `TuiBackend` would call for a bespoke `draw_cell_grid`
+    /// `Backend` method, so painting `CellGrid` through
+    /// [`crate::primitive::Primitive`] on TUI is byte-for-byte identical
+    /// by construction.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        crate::tui::draw_cell_grid(buf, area, self, theme);
     }
 }
 

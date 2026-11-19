@@ -1112,6 +1112,7 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::RichTextPopup(_) => "Rich text popup",
         OwnedContent::Toast(_) => "Notifications",
         OwnedContent::DataTable(_) => "Table",
+        OwnedContent::CellGrid(_) => "Cell grid",
         OwnedContent::Chart(_) => "Chart",
         OwnedContent::Canvas(_) => "Canvas",
         OwnedContent::Board(_) => "Board",
