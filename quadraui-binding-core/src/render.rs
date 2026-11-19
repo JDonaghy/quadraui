@@ -5501,6 +5501,10 @@ mod tests {
     struct WindowedHarness {
         window_start: Rc<Cell<usize>>,
         requests: Rc<RefCell<Vec<RowsRequestedEvent>>>,
+        /// Every `UiEvent` the engine dispatched, so a test can assert on
+        /// a click resolving to the right ABSOLUTE row of a windowed
+        /// collection.
+        dispatched: Rc<RefCell<Vec<quadraui::UiEvent>>>,
     }
 
     impl WindowedHarness {
@@ -5508,6 +5512,7 @@ mod tests {
             Self {
                 window_start: Rc::new(Cell::new(window_start)),
                 requests: Rc::new(RefCell::new(Vec::new())),
+                dispatched: Rc::new(RefCell::new(Vec::new())),
             }
         }
 
@@ -5533,7 +5538,7 @@ mod tests {
         }
     }
 
-    /// Stands in for a binding's own event callback: ignores every
+    /// Stands in for a binding's own event callback: records every
     /// `UiEvent`, and answers a [`RowsRequestedEvent`] by moving the app's
     /// loaded window to the rows the engine asked for.
     struct WindowedRequestSink {
@@ -5543,9 +5548,10 @@ mod tests {
     impl crate::engine::EventSink for WindowedRequestSink {
         fn dispatch(
             &mut self,
-            _event: &quadraui::UiEvent,
+            event: &quadraui::UiEvent,
             _hit_detail: Option<&crate::hit::HitDetail>,
         ) -> quadraui::Reaction {
+            self.harness.dispatched.borrow_mut().push(event.clone());
             quadraui::Reaction::Continue
         }
 
@@ -5966,6 +5972,46 @@ mod tests {
              position:\n{}",
             driver.screen()
         );
+
+        // A click on a visible item resolves to its ABSOLUTE index -- the
+        // `ListViewLayout` indices the backend reports against the painted
+        // band are shifted back into the collection's own indexing before
+        // they reach the hit.
+        let (click_point, clicked_idx) = {
+            let hit_map = driver.app().engine.hit_map();
+            let (area, layout) = hit_map
+                .iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::List { area, layout, .. } => Some((*area, layout.clone())),
+                    _ => None,
+                })
+                .expect("the list should have painted a hit");
+            let item = layout
+                .visible_items
+                .first()
+                .expect("a scrolled-to list paints at least one item");
+            assert_eq!(
+                item.item_idx, scroll_offset_after,
+                "the first visible item's index must be the ABSOLUTE item \
+                 painted at the top of the viewport"
+            );
+            (
+                (area.x + item.bounds.x + 1.0, area.y + item.bounds.y + 0.5),
+                item.item_idx,
+            )
+        };
+        harness.dispatched.borrow_mut().clear();
+        driver.click(click_point.0, click_point.1);
+        assert!(
+            harness.dispatched.borrow().iter().any(|event| matches!(
+                event,
+                quadraui::UiEvent::List(id, quadraui::ListViewEvent::SelectionChanged { idx })
+                    if *id == WidgetId::new("list") && *idx == clicked_idx
+            )),
+            "clicking the top visible item of a windowed list must resolve \
+             to absolute item {clicked_idx}: {:?}",
+            harness.dispatched.borrow()
+        );
     }
 
     /// A `tree` leaf whose `items_window` says its 50 `rows` are only a
@@ -6177,6 +6223,51 @@ mod tests {
             driver.screen()
         );
 
+        // A click on a visible row resolves to that row's ABSOLUTE path,
+        // not a band-relative one: `paint_leaf_windowed` shifts every
+        // index the backend's own layout reports back into the
+        // collection's indexing before it reaches the hit.
+        let (click_point, clicked_row) = {
+            let hit_map = driver.app().engine.hit_map();
+            let (area, layout) = hit_map
+                .iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Tree { area, layout, .. } => Some((*area, layout.clone())),
+                    _ => None,
+                })
+                .expect("the tree should have painted a hit");
+            let row = layout
+                .visible_rows
+                .first()
+                .expect("a scrolled-to tree paints at least one row");
+            assert_eq!(
+                row.row_idx, scroll_offset_after,
+                "the first visible row's index must be the ABSOLUTE row \
+                 painted at the top of the viewport"
+            );
+            (
+                quadraui::Point {
+                    x: area.x + row.bounds.x + 1.0,
+                    y: area.y + row.bounds.y + 0.5,
+                },
+                row.row_idx,
+            )
+        };
+        harness.dispatched.borrow_mut().clear();
+        driver.click(click_point.x, click_point.y);
+        let clicked_path: Vec<u16> =
+            vec![(clicked_row / 60_000) as u16, (clicked_row % 60_000) as u16];
+        assert!(
+            harness.dispatched.borrow().iter().any(|event| matches!(
+                event,
+                quadraui::UiEvent::Tree(id, quadraui::TreeEvent::RowClicked { path, .. })
+                    if *id == WidgetId::new("tree") && *path == clicked_path
+            )),
+            "clicking the top visible row of a windowed tree must resolve to \
+             absolute row {clicked_row}: {:?}",
+            harness.dispatched.borrow()
+        );
+
         // `Home` goes back to the very first row, which this window no
         // longer holds -- so the engine asks for row 0's slice too.
         driver.dispatch(quadraui::UiEvent::KeyPressed {
@@ -6205,6 +6296,58 @@ mod tests {
             driver.screen_contains("row-0"),
             "the head of the collection must paint after Home:\n{}",
             driver.screen()
+        );
+
+        // Pointer input reaches the same request dispatch the keyboard
+        // does: `InteractionEngine::handle` translates a wheel notch over
+        // the tree body into an absolute `ScrollOffsetChanged` against the
+        // full extent, then asks for the rows that offset landed on.
+        const WHEEL_ROWS: usize = 120;
+        let wheel_point = {
+            let hit_map = driver.app().engine.hit_map();
+            let (area, layout) = hit_map
+                .iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Tree { area, layout, .. } => Some((*area, layout.clone())),
+                    _ => None,
+                })
+                .expect("the tree should have painted a hit");
+            let row = layout
+                .visible_rows
+                .first()
+                .expect("a tree at its head paints at least one row");
+            quadraui::Point {
+                x: area.x + row.bounds.x + 1.0,
+                y: area.y + row.bounds.y + 0.5,
+            }
+        };
+        driver.dispatch(quadraui::UiEvent::Scroll {
+            widget: None,
+            delta: quadraui::ScrollDelta::new(0.0, -(WHEEL_ROWS as f32)),
+            position: wheel_point,
+        });
+        let wheel_request = harness
+            .requests
+            .borrow()
+            .last()
+            .cloned()
+            .expect("a wheel past the loaded window must request rows");
+        assert_eq!(
+            harness.requests.borrow().len(),
+            3,
+            "a wheel notch landing outside the loaded window must produce \
+             its own request"
+        );
+        assert!(
+            wheel_request.start <= WHEEL_ROWS
+                && WHEEL_ROWS < wheel_request.start + wheel_request.count,
+            "the wheeled-to row {WHEEL_ROWS} must fall inside the requested \
+             window: {wheel_request:?}"
+        );
+        assert!(
+            wheel_request.count < WINDOW_LEN * 10,
+            "a wheel's request must stay bounded too -- got {}",
+            wheel_request.count
         );
     }
 
