@@ -16,12 +16,15 @@
 //! attach it to a `TextDisplay` rendering markdown, and assert on the
 //! resulting snapshot instead.
 
+use std::collections::BTreeMap;
+
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
-    markdown_a11y_children, render_markdown_to_styled, A11yRole, Canvas, Chart, ChartKind, Color,
-    Decoration, DiffEditability, DiffMode, DiffPane, DiffView, Editor, EditorLine, Image, ImageFit,
-    ImageSource, Minimap, Rect, Series, StyledSpan, StyledText, Surface, Terminal, TerminalCell,
-    TerminalCursorShape, TextDisplay, TextDisplayLine, TextInput, Theme, WidgetId,
+    markdown_a11y_children, render_markdown_to_styled, A11yRole, Canvas, Cell, CellGrid, Chart,
+    ChartKind, Color, Decoration, DiffEditability, DiffMode, DiffPane, DiffView, Editor,
+    EditorLine, Image, ImageFit, ImageSource, Minimap, Rect, Series, StyledSpan, StyledText,
+    Surface, Terminal, TerminalCell, TerminalCursorShape, TextDisplay, TextDisplayLine, TextInput,
+    Theme, WidgetId,
 };
 
 const VIEWPORT: Rect = Rect {
@@ -1071,5 +1074,81 @@ window \"quadraui\" [focused]
     heading \"Title\" [level=1 pos=1/2]
     label \"See the docs for more.\" [pos=2/2]
       link \"docs\" [value=\"https://example.com/docs\"]",
+    );
+}
+
+/// A 3×3 `CellGrid` (no frozen panes, no scroll) with a 2×2 selection
+/// anchored at `(0, 0)` and the cursor at `(1, 1)` — small enough that
+/// every windowed position's absolute index is just itself.
+fn cell_grid_3x3_with_selection() -> CellGrid {
+    let row = |label: &str| {
+        (0..3)
+            .map(|c| Cell::plain(format!("{label}{c}")))
+            .collect::<Vec<_>>()
+    };
+    CellGrid {
+        id: WidgetId::new("sheet"),
+        row_count: 3,
+        col_count: 3,
+        frozen_rows: 0,
+        frozen_cols: 0,
+        row_scroll: 0,
+        col_scroll: 0,
+        default_row_height: 1.0,
+        default_col_width: 4.0,
+        row_heights: BTreeMap::new(),
+        col_widths: BTreeMap::new(),
+        show_row_headers: true,
+        show_col_headers: true,
+        row_labels: BTreeMap::new(),
+        col_labels: BTreeMap::new(),
+        cursor: (1, 1),
+        selection_anchor: Some((0, 0)),
+        cells: vec![row("r0"), row("r1"), row("r2")],
+        has_focus: true,
+        show_scrollbar: false,
+    }
+}
+
+/// Covers the issue's own named acceptance deliverable: an `A11yScenario`
+/// snapshot of a 3×3 grid with a selection, proving the `Table`/`Row`/
+/// `Cell` structure, the selected cells and the focused cursor cell all
+/// reach the tree an agent-control (MCP) snapshot would see — not just
+/// the primitive-local `A11yPrimitive` unit tests in `cell_grid.rs`.
+#[test]
+fn cell_grid_exposes_a_table_with_header_row_and_selected_cells() {
+    let grid = cell_grid_3x3_with_selection();
+    let widget = grid.id;
+    let snapshot = A11yScenario::new()
+        .with_surface(Surface::CellGrid {
+            rect: rect(4.0),
+            grid,
+        })
+        .with_focus(widget)
+        .snapshot();
+
+    snapshot.assert_matches(
+        "\
+window \"quadraui\"
+  table \"Cell grid\" [size=3]
+    row \"Header\"
+      cell \"A\"
+      cell \"B\"
+      cell \"C\"
+    row
+      cell \"1\"
+      cell \"r00\" [selected]
+      cell \"r01\" [selected]
+      cell \"r02\"
+    row
+      cell \"2\"
+      cell \"r10\" [selected]
+      cell \"r11\" [focused selected]
+      cell \"r12\"
+    row
+      cell \"3\"
+      cell \"r20\"
+      cell \"r21\"
+      cell \"r22\"",
     );
 }

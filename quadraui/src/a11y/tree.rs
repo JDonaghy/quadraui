@@ -831,8 +831,14 @@ fn build_tree(
 
         if focus.focused() == owned.widget_id.as_ref() && owned.widget_id.is_some() {
             focus_id = match &described.focus_key {
-                Some(key) if child_ids.contains(&id.child(key)) => id.child(key),
-                _ => id,
+                // Searches the *whole* subtree, not just `children`
+                // itself, since a focus key can name a grandchild —
+                // `CellGrid::a11y_focus_key` names a `cell.{row}.{col}`
+                // nested under its own `row.{row}` node, not a direct
+                // child of the grid the way `DataTable`/`ListView`'s own
+                // focus keys are.
+                Some(key) => find_descendant(id, children, key).unwrap_or(id),
+                None => id,
             };
         }
 
@@ -870,15 +876,15 @@ fn build_tree(
                 },
             );
             if kind != A11yOwnerKind::Unsupported {
+                // Walks the *whole* subtree below each top-level child,
+                // not just the immediate children themselves — a flat
+                // primitive (`List`/`Tree`/`Form`) has none, so this is
+                // a no-op recursion for them, but `CellGrid`'s own
+                // `cell.{row}.{col}` keys are nested one level deeper,
+                // under a `row.{row}` node, and still need their own
+                // owner-table entry for `route_action` to find.
                 for child in &described.children {
-                    owners.insert(
-                        id.child(&child.key),
-                        A11yOwner {
-                            widget: *widget,
-                            key: child.key.clone(),
-                            kind,
-                        },
-                    );
+                    register_owner_subtree(&mut owners, id, *widget, kind, child);
                 }
             }
         }
@@ -892,6 +898,53 @@ fn build_tree(
         focus: focus_id,
         nodes,
         owners,
+    }
+}
+
+/// Depth-first search for the descendant of `parent`'s `children`
+/// (searched at every depth, not just the top level) whose own
+/// [`A11yChild::key`] equals `key`, returning its real chained node id —
+/// the same parent-then-child [`A11yNodeId::child`] chain [`push_child`]
+/// builds, so the id this returns matches a real node in the tree
+/// [`push_child`] populates.
+fn find_descendant(parent: A11yNodeId, children: &[A11yChild], key: &str) -> Option<A11yNodeId> {
+    for child in children {
+        let id = parent.child(&child.key);
+        if child.key == key {
+            return Some(id);
+        }
+        if let Some(found) = find_descendant(id, &child.children, key) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Inserts an owner-table entry for `child` and, recursively, for every
+/// one of its own descendants — not just `child` itself — so a
+/// `route_action` target can be an arbitrarily nested grandchild (e.g.
+/// `CellGrid`'s `cell.{row}.{col}` nested one level under its own
+/// `row.{row}` node) and not just an immediate child of the owning
+/// widget, the shape every flat primitive (`List`/`Tree`/`Form`) that
+/// has no grandchildren already satisfies trivially.
+fn register_owner_subtree(
+    owners: &mut HashMap<A11yNodeId, A11yOwner>,
+    parent: A11yNodeId,
+    widget: WidgetId,
+    kind: A11yOwnerKind,
+    child: &A11yChild,
+) {
+    let id = parent.child(&child.key);
+    owners.insert(
+        id,
+        A11yOwner {
+            widget,
+            key: child.key.clone(),
+            kind,
+        },
+    );
+    for grandchild in &child.children {
+        register_owner_subtree(owners, id, widget, kind, grandchild);
     }
 }
 
@@ -931,6 +984,7 @@ pub(crate) enum A11yOwnerKind {
     List,
     Tree,
     Form,
+    CellGrid,
     Unsupported,
 }
 
@@ -941,6 +995,7 @@ fn content_route_kind(content: &OwnedContent) -> A11yOwnerKind {
         OwnedContent::List(_) => A11yOwnerKind::List,
         OwnedContent::Tree(_) => A11yOwnerKind::Tree,
         OwnedContent::Form(_) => A11yOwnerKind::Form,
+        OwnedContent::CellGrid(_) => A11yOwnerKind::CellGrid,
         _ => A11yOwnerKind::Unsupported,
     }
 }

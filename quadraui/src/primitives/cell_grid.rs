@@ -1828,23 +1828,35 @@ mod native_surface_paint_tests {
         assert_eq!(surface.fill_alphas[0].1, theme.selection_bg);
         assert_eq!(surface.fill_alphas[0].2, theme.selection_alpha);
 
-        // The selection wash must land *before* every cell's own
+        // The selection wash must land *before* the selected cell's own
         // background/text, so it composites underneath them rather than
         // over already-painted glyphs — `DataTable::paint_row`'s own
-        // solid-fill-first convention (`data_table.rs`).
+        // solid-fill-first convention (`data_table.rs`). Pin this to
+        // cell (0, 0)'s own text run specifically (not just the first
+        // `text_run` of any kind), since the column/row headers paint
+        // their own bold `text_run`s earlier still and would otherwise
+        // make this assertion trivially pass regardless of ordering.
         let fill_alpha_pos = surface
             .calls
             .iter()
             .position(|c| *c == "fill_alpha")
             .expect("the selection fill must be recorded");
-        let first_text_run_pos = surface
+        let nth_text_run = surface
+            .text_runs
+            .iter()
+            .position(|(_, t, _, _)| t == "r00")
+            .expect("cell (0, 0)'s own text must have painted");
+        let cell_text_pos = surface
             .calls
             .iter()
-            .position(|c| *c == "text_run")
-            .expect("at least one cell's text must be recorded");
+            .enumerate()
+            .filter(|(_, c)| **c == "text_run")
+            .nth(nth_text_run)
+            .map(|(i, _)| i)
+            .expect("as many text_run calls as text_runs entries");
         assert!(
-            fill_alpha_pos < first_text_run_pos,
-            "selection fill (at {fill_alpha_pos}) must paint before any cell text (at {first_text_run_pos})"
+            fill_alpha_pos < cell_text_pos,
+            "selection fill (at {fill_alpha_pos}) must paint before the selected cell's own text (at {cell_text_pos})"
         );
     }
 

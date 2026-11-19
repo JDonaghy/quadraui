@@ -18,6 +18,7 @@
 use super::tree::{decode_tree_path, A11yOwnerKind};
 use crate::a11y::{A11yChecked, A11yNodeId, A11yRole, A11yTree};
 use crate::event::{Point, ScrollDelta, UiEvent};
+use crate::primitives::cell_grid::CellGridEvent;
 use crate::primitives::form::FormEvent;
 use crate::primitives::list::ListViewEvent;
 use crate::primitives::tree::TreeEvent;
@@ -146,6 +147,7 @@ pub fn route_action(
         A11yOwnerKind::List => route_list_action(widget, key, action),
         A11yOwnerKind::Tree => route_tree_action(widget, key, action),
         A11yOwnerKind::Form => route_form_action(tree, target, widget, key, action, value),
+        A11yOwnerKind::CellGrid => route_cell_grid_action(widget, key, action),
         A11yOwnerKind::Unsupported => {
             crate::diagnostics::emit(format!(
                 "a11y: widget {widget:?} does not support routed actions"
@@ -244,6 +246,40 @@ fn route_tree_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiE
         _ => {
             crate::diagnostics::emit(format!(
                 "a11y: tree widget {widget:?} does not support action {action:?}"
+            ));
+            Vec::new()
+        }
+    }
+}
+
+/// `Click` is `CellGrid`'s "move the cursor there" action — the same
+/// [`CellGridEvent::CursorMoved`] a mouse click on the cell would produce
+/// through a host's own `CellGridPrimitiveLayout::hit_test`, so a screen
+/// reader's default action and a sighted mouse user land on the
+/// identical `UiEvent`. Only the per-cell `cell.{row}.{col}` keys
+/// [`crate::primitives::cell_grid::cell_grid_row`] emits route here —
+/// the header-row keys (`header`, `colheader.{col}`, `rowheader.{row}`)
+/// have no mouse-click counterpart on `CellGrid` yet, so they fall
+/// through to [`emit_unroutable_key`] like any other malformed key.
+fn route_cell_grid_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiEvent> {
+    let parsed = key.strip_prefix("cell.").and_then(|rest| {
+        let (row, col) = rest.split_once('.')?;
+        Some((row.parse::<usize>().ok()?, col.parse::<usize>().ok()?))
+    });
+    let Some((row, col)) = parsed else {
+        emit_unroutable_key("cell grid", widget, key, action);
+        return Vec::new();
+    };
+    match action {
+        A11yAction::Click => {
+            vec![UiEvent::CellGrid(
+                widget,
+                CellGridEvent::CursorMoved { row, col },
+            )]
+        }
+        _ => {
+            crate::diagnostics::emit(format!(
+                "a11y: cell grid widget {widget:?} does not support action {action:?}"
             ));
             Vec::new()
         }

@@ -214,18 +214,15 @@ Pick the backends you ship; `terminal` is independent of them.
 
 **53 primitive modules**, one each under `quadraui/src/primitives/`: a
 declarative description and a shared layout, each with a rasteriser per
-backend — except `CellGrid`, which has a pixel rasteriser (GTK/macOS/Win,
-via `Primitive::paint`) but no TUI rasteriser yet, and the two
-shared-math modules `layout_metrics` and `row_stack`, which hold
-arithmetic several primitives reuse rather than a widget of their own.
-Among them:
+backend — except the two shared-math modules `layout_metrics` and
+`row_stack`, which hold arithmetic several primitives reuse rather than
+a widget of their own. Among them:
 
 - Content: `TreeView`, `ListView`, `IconGrid`, `DataTable`, `TreeTable`,
   `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
   `Minimap`, `DatePicker`,
-  `CellGrid` (spreadsheet-style cells with frozen panes; pixel rasteriser
-  only — TUI is a follow-up),
+  `CellGrid` (spreadsheet-style cells with frozen panes),
   `Canvas` (app-defined drawing, painted through the public
   `PaintSurface` seam).
 - Chrome: `TabBar`, `StatusBar`, `MenuBar`, `ActivityBar`, `Toolbar`,
