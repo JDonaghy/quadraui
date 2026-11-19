@@ -4,15 +4,17 @@
 //! [`quadraui::Backend`], recording a [`PaintedHit`] per primitive painted
 //! so a later pointer event can be hit-tested against this frame.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataTable, FontRole, InteractionState, ListView, Rect, ScrollAxis, ScrollView,
-    Scrollbar, SectionSize, Split, SplitDirection, SplitHit, SplitLayout, Style, TabBar, TabChrome,
-    TextDisplay, TextDisplayLayout, TextRegion, Theme, TreeTable, TreeView, WidgetId,
+    Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState, ListItem,
+    ListView, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
+    SplitHit, SplitLayout, Style, StyledText, TabBar, TabChrome, TextDisplay, TextDisplayLayout,
+    TextDisplayLine, TextRegion, Theme, TreePath, TreeRow, TreeTable, TreeView, WidgetId,
 };
 
 use crate::extra_paint::{extra_as, ExtraPaint};
@@ -432,6 +434,36 @@ pub fn paint_layout(
     hits: &mut Vec<PaintedHit>,
     chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
 ) {
+    paint_layout_windowed(
+        backend,
+        area,
+        node,
+        hits,
+        chrome_interaction,
+        &HashMap::new(),
+    );
+}
+
+/// [`paint_layout`], additionally honoring each windowed leaf's `{start,
+/// total}` from `windows` — an id-keyed map built from
+/// [`crate::wire::DecodeDiagnostics::items_windows`] against the same
+/// decode that produced `node`. Honoring it means [`paint_leaf_windowed`]
+/// pads that leaf's painted payload out to its real `total` before handing
+/// it to the backend, so the backend's own scrollbar/extent arithmetic
+/// (always `len()`-driven) reflects the collection's real size rather than
+/// however many rows this frame's payload actually carries, and a scroll
+/// position past the loaded slice lands on an empty placeholder row at its
+/// own absolute position instead of nothing. [`paint_layout`] itself is
+/// this function with an empty `windows` map, so a caller that never
+/// decodes an `"items_window"` key paints exactly as before.
+pub fn paint_layout_windowed(
+    backend: &mut dyn Backend,
+    area: Rect,
+    node: &LayoutNode,
+    hits: &mut Vec<PaintedHit>,
+    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
+    windows: &HashMap<String, ItemsWindow>,
+) {
     match node {
         LayoutNode::Row(container) => {
             let char_width = backend.char_width();
@@ -439,7 +471,14 @@ pub fn paint_layout(
             let area = inset_for_spacing(area, container, char_width, line_height);
             let rects = layout_container_rects(backend, area, container, true);
             for (child, rect) in container.children.iter().zip(rects) {
-                paint_layout(backend, rect, &child.node, hits, chrome_interaction);
+                paint_layout_windowed(
+                    backend,
+                    rect,
+                    &child.node,
+                    hits,
+                    chrome_interaction,
+                    windows,
+                );
             }
         }
         LayoutNode::Column(container) => {
@@ -448,16 +487,25 @@ pub fn paint_layout(
             let area = inset_for_spacing(area, container, char_width, line_height);
             let rects = layout_container_rects(backend, area, container, false);
             for (child, rect) in container.children.iter().zip(rects) {
-                paint_layout(backend, rect, &child.node, hits, chrome_interaction);
+                paint_layout_windowed(
+                    backend,
+                    rect,
+                    &child.node,
+                    hits,
+                    chrome_interaction,
+                    windows,
+                );
             }
         }
         LayoutNode::Grid(grid) => {
             let rects = grid_cell_rects(grid, area, backend.char_width(), backend.line_height());
             for (child, rect) in grid.children.iter().zip(rects) {
-                paint_layout(backend, rect, child, hits, chrome_interaction);
+                paint_layout_windowed(backend, rect, child, hits, chrome_interaction, windows);
             }
         }
-        LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits, chrome_interaction),
+        LayoutNode::Leaf(leaf) => {
+            paint_leaf_windowed(backend, area, leaf, hits, chrome_interaction, windows)
+        }
         LayoutNode::Split(split) => {
             let char_width = backend.char_width();
             let line_height = backend.line_height();
@@ -504,19 +552,21 @@ pub fn paint_layout(
             hits.push(PaintedHit::Split {
                 layout: layout.clone(),
             });
-            paint_layout(
+            paint_layout_windowed(
                 backend,
                 layout.first_bounds,
                 &split.first,
                 hits,
                 chrome_interaction,
+                windows,
             );
-            paint_layout(
+            paint_layout_windowed(
                 backend,
                 layout.second_bounds,
                 &split.second,
                 hits,
                 chrome_interaction,
+                windows,
             );
         }
         LayoutNode::Tabs(tabs) => {
@@ -557,12 +607,13 @@ pub fn paint_layout(
                 (area.height - strip_height).max(0.0),
             );
             if let Some(selected) = tabs.entries.get(tabs.selected) {
-                paint_layout(
+                paint_layout_windowed(
                     backend,
                     content_rect,
                     &selected.content,
                     hits,
                     chrome_interaction,
+                    windows,
                 );
             }
         }
@@ -577,12 +628,13 @@ pub fn paint_layout(
                 layout: layout.clone(),
                 toolbar: sidebar_node.sidebar_panel.toolbar.clone(),
             });
-            paint_layout(
+            paint_layout_windowed(
                 backend,
                 layout.content_bounds,
                 &sidebar_node.content,
                 hits,
                 chrome_interaction,
+                windows,
             );
         }
         LayoutNode::SplitTree(split_tree) => {
@@ -592,14 +644,21 @@ pub fn paint_layout(
                 layout: layout.clone(),
             });
             for ((_, rect), content) in layout.leaves.iter().zip(split_tree.leaves.iter()) {
-                paint_layout(backend, *rect, content, hits, chrome_interaction);
+                paint_layout_windowed(backend, *rect, content, hits, chrome_interaction, windows);
             }
         }
         LayoutNode::Scroll(scroll_node) => {
-            paint_scroll(backend, area, scroll_node, hits, chrome_interaction);
+            paint_scroll(
+                backend,
+                area,
+                scroll_node,
+                hits,
+                chrome_interaction,
+                windows,
+            );
         }
         LayoutNode::Styled(styled) => {
-            paint_styled(backend, area, styled, hits, chrome_interaction);
+            paint_styled(backend, area, styled, hits, chrome_interaction, windows);
         }
     }
 }
@@ -619,9 +678,17 @@ fn paint_styled(
     styled: &LayoutStyled,
     hits: &mut Vec<PaintedHit>,
     chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
+    windows: &HashMap<String, ItemsWindow>,
 ) {
     let push = push_styled_override(backend, &styled.style);
-    paint_layout(backend, area, &styled.node, hits, chrome_interaction);
+    paint_layout_windowed(
+        backend,
+        area,
+        &styled.node,
+        hits,
+        chrome_interaction,
+        windows,
+    );
     pop_styled_override(backend, push);
 }
 
@@ -738,6 +805,7 @@ fn paint_scroll(
     scroll_node: &LayoutScroll,
     hits: &mut Vec<PaintedHit>,
     chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
+    windows: &HashMap<String, ItemsWindow>,
 ) {
     let metrics = ScrollMetrics {
         char_width: backend.char_width(),
@@ -838,7 +906,14 @@ fn paint_scroll(
             if let LayoutNode::Row(container) | LayoutNode::Column(container) = content {
                 for (child, slot) in container.children.iter().zip(slots) {
                     if slot.visible {
-                        paint_layout(backend, slot.rect, &child.node, hits, chrome_interaction);
+                        paint_layout_windowed(
+                            backend,
+                            slot.rect,
+                            &child.node,
+                            hits,
+                            chrome_interaction,
+                            windows,
+                        );
                     }
                 }
             }
@@ -860,10 +935,24 @@ fn paint_scroll(
                 match offset_windowed_leaf_scrolled_to_offset(content, offset, metrics.line_height)
                 {
                     Some(shadow) => {
-                        paint_layout(backend, rect, &shadow, hits, chrome_interaction);
+                        paint_layout_windowed(
+                            backend,
+                            rect,
+                            &shadow,
+                            hits,
+                            chrome_interaction,
+                            windows,
+                        );
                     }
                     None => {
-                        paint_layout(backend, rect, content, hits, chrome_interaction);
+                        paint_layout_windowed(
+                            backend,
+                            rect,
+                            content,
+                            hits,
+                            chrome_interaction,
+                            windows,
+                        );
                     }
                 }
             }
@@ -2025,27 +2114,24 @@ pub struct RowsRequestedEvent {
 /// of the table — exactly when more rows are needed — and would starve
 /// this function's margin into a near-empty request.
 ///
-/// `scroll_offset` is **window-relative**: the same value already recorded
-/// on this leaf's `PaintedHit` this frame (e.g. `PaintedHit::DataTable`'s
-/// `scroll_offset`, or `list_viewport_rows`'s caller's own
-/// `PaintedHit::List::scroll_offset`) is itself the descriptor's own
-/// `scroll_offset` field *as painted* — an index into the loaded payload
-/// `window.start..window.start + loaded_len`, not an absolute index into
-/// the widget's full `window.total` collection. This function converts it
-/// to absolute (`window.start + scroll_offset`) before comparing against
-/// `window`; a caller must not pre-add `window.start` itself.
+/// `scroll_offset` is **absolute**: an index into the widget's full
+/// `window.total` collection, not the loaded payload alone — the same
+/// value [`paint_layout_windowed`] leaves on this leaf's `PaintedHit` this
+/// frame (e.g. `PaintedHit::DataTable::scroll_offset`) once a leaf's
+/// `ItemsWindow` is in play, because [`windowed_vec`] pads the painted
+/// payload out to `window.total` before handing it to the backend, so the
+/// descriptor's own `scroll_offset` field already indexes that full span.
 ///
 /// Returns `None` once the loaded slice `[window.start, window.start +
-/// loaded_len)` already covers the absolute visible range
-/// `[window.start + scroll_offset, window.start + scroll_offset +
-/// viewport_rows)` — a render callback that already sent enough rows
-/// re-renders unchanged. Otherwise returns a request covering the visible
-/// range plus one viewport's worth of prefetch margin on each side,
-/// clamped to `[0, window.total)`: bounded by a small multiple of
+/// loaded_len)` already covers the visible range `[scroll_offset,
+/// scroll_offset + viewport_rows)` — a render callback that already sent
+/// enough rows re-renders unchanged. Otherwise returns a request covering
+/// the visible range plus one viewport's worth of prefetch margin on each
+/// side, clamped to `[0, window.total)`: bounded by a small multiple of
 /// `viewport_rows`, never by `window.total`, so a 100k-row window never
 /// asks for more than a few hundred rows at once. Returns `None` instead of
 /// a zero-`count` request when the clamp leaves nothing to ask for (e.g.
-/// `window.start >= window.total`).
+/// `scroll_offset >= window.total`).
 pub fn rows_requested_for_window(
     id: WidgetId,
     window: ItemsWindow,
@@ -2053,7 +2139,7 @@ pub fn rows_requested_for_window(
     scroll_offset: usize,
     viewport_rows: usize,
 ) -> Option<RowsRequestedEvent> {
-    let visible_start = window.start.saturating_add(scroll_offset).min(window.total);
+    let visible_start = scroll_offset.min(window.total);
     let visible_end = visible_start
         .saturating_add(viewport_rows)
         .min(window.total);
@@ -2070,6 +2156,115 @@ pub fn rows_requested_for_window(
         return None;
     }
     Some(RowsRequestedEvent { id, start, count })
+}
+
+/// Splices `loaded` — this frame's payload, covering the half-open range
+/// `[window.start, window.start + loaded.len())` of the collection's real
+/// `window.total` size — into a full-length `Vec`, filling every other
+/// index with `placeholder(absolute_index)`.
+///
+/// Every one of `ListView::items`/`TreeView::rows`/`DataTable::rows`/
+/// `TextDisplay::lines` needs this same shape before it reaches a
+/// `Backend::draw_*` call: each backend's own scrollbar/extent arithmetic
+/// is always `len()`-driven (see each type's own rasteriser), so painting
+/// the loaded slice verbatim would size the scrollbar off `loaded.len()`
+/// rather than the collection's real size, and a scroll position past the
+/// loaded slice would index straight off the end of a too-short `Vec`
+/// instead of landing on an empty placeholder row at its own absolute
+/// screen position.
+///
+/// The returned `Vec`'s length is `window.total`, widened to
+/// `window.start + loaded.len()` when `window.total` understates it, so a
+/// stale or malformed `window.total` never truncates real loaded data.
+fn windowed_vec<T: Clone>(
+    loaded: &[T],
+    window: ItemsWindow,
+    mut placeholder: impl FnMut(usize) -> T,
+) -> Vec<T> {
+    let total = window.total.max(window.start.saturating_add(loaded.len()));
+    let mut out = Vec::with_capacity(total);
+    for i in 0..window.start.min(total) {
+        out.push(placeholder(i));
+    }
+    let take = loaded.len().min(total.saturating_sub(out.len()));
+    out.extend_from_slice(&loaded[..take]);
+    for i in out.len()..total {
+        out.push(placeholder(i));
+    }
+    out
+}
+
+/// [`windowed_vec`] for a [`DataTable`]'s own `rows` — an empty-`cells`
+/// [`DataRow`] at every index outside the loaded slice. Safe because every
+/// cell read goes through `Vec::get` (see `DataTableLayout`'s own paint
+/// code), never a direct index, so a short `cells` paints as blank columns
+/// rather than panicking.
+fn windowed_data_table(table: &DataTable, window: ItemsWindow) -> DataTable {
+    let rows = windowed_vec(&table.rows, window, |_| DataRow {
+        cells: Vec::new(),
+        decoration: Decoration::default(),
+    });
+    DataTable {
+        rows,
+        ..table.clone()
+    }
+}
+
+/// [`windowed_vec`] for a [`ListView`]'s own `items` — an empty-text
+/// [`ListItem`] at every index outside the loaded slice.
+fn windowed_list(list: &ListView, window: ItemsWindow) -> ListView {
+    let items = windowed_vec(&list.items, window, |_| ListItem {
+        text: StyledText::plain(""),
+        icon: None,
+        detail: None,
+        decoration: Decoration::default(),
+    });
+    ListView {
+        items,
+        ..list.clone()
+    }
+}
+
+/// [`windowed_vec`] for a [`TreeView`]'s own `rows` — an empty-text leaf
+/// [`TreeRow`] at every index outside the loaded slice, each carrying a
+/// synthetic single-level path built from its own absolute index so it
+/// never collides with a real loaded row's path (loaded rows only ever
+/// occupy `[window.start, window.start + loaded_len)`, which this
+/// placeholder never touches). `TreePath` is `Vec<u16>`
+/// (`quadraui::types::TreePath`), so an index past `u16::MAX` saturates
+/// rather than wrapping — harmless, since a placeholder's path is never
+/// looked up by value, only painted and (if `window.total` genuinely
+/// exceeds `u16::MAX`) occasionally duplicated with a sibling placeholder,
+/// neither of which a backend's own tree rasteriser treats as an error.
+fn windowed_tree(tree: &TreeView, window: ItemsWindow) -> TreeView {
+    let rows = windowed_vec(&tree.rows, window, |idx| TreeRow {
+        path: vec![u16::try_from(idx).unwrap_or(u16::MAX)] as TreePath,
+        indent: 0,
+        icon: None,
+        text: StyledText::plain(""),
+        badge: None,
+        is_expanded: None,
+        decoration: Decoration::default(),
+        edit: None,
+    });
+    TreeView {
+        rows,
+        ..tree.clone()
+    }
+}
+
+/// [`windowed_vec`] for a [`TextDisplay`]'s own `lines` — an empty-spans
+/// [`TextDisplayLine`] at every index outside the loaded slice.
+fn windowed_text_display(td: &TextDisplay, window: ItemsWindow) -> TextDisplay {
+    let lines = windowed_vec(&td.lines, window, |_| TextDisplayLine {
+        spans: Vec::new(),
+        decoration: Decoration::default(),
+        timestamp: None,
+    });
+    TextDisplay {
+        lines,
+        ..td.clone()
+    }
 }
 
 /// Paints `tree` into `area`, reserving a right-hand gutter for its
@@ -2212,6 +2407,10 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
 /// `id` (not the descriptor's embedded `id`, which a render callback may
 /// leave at its default and reuse across leaves) so a later pointer event
 /// can be routed back to this exact slot in the layout tree.
+///
+/// [`paint_leaf_windowed`] with an empty `windows` map, so a leaf whose
+/// decode never recorded an `ItemsWindow` paints exactly as this always
+/// has.
 pub fn paint_leaf(
     backend: &mut dyn Backend,
     area: Rect,
@@ -2219,16 +2418,50 @@ pub fn paint_leaf(
     hits: &mut Vec<PaintedHit>,
     chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
 ) {
+    paint_leaf_windowed(
+        backend,
+        area,
+        leaf,
+        hits,
+        chrome_interaction,
+        &HashMap::new(),
+    );
+}
+
+/// [`paint_leaf`], additionally padding this leaf's `List`/`Tree`/
+/// `DataTable`/`TextDisplay` payload out to its real `window.total` before
+/// painting, when `windows` (keyed by this leaf's own `id`) has an entry
+/// for it — see [`windowed_vec`]'s own doc for why. A leaf with no entry in
+/// `windows` (every leaf, on a tree decoded without any `"items_window"`
+/// key) paints `leaf.descriptor` verbatim, identically to [`paint_leaf`].
+pub fn paint_leaf_windowed(
+    backend: &mut dyn Backend,
+    area: Rect,
+    leaf: &LayoutLeaf,
+    hits: &mut Vec<PaintedHit>,
+    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
+    windows: &HashMap<String, ItemsWindow>,
+) {
     let id = WidgetId::new(leaf.id.clone());
+    let window = windows.get(&leaf.id).copied();
     match &leaf.descriptor {
         LeafDescriptor::Button(button) => {
             let layout = backend.draw_button(area, button);
             hits.push(PaintedHit::Button { id, layout });
         }
         LeafDescriptor::TextDisplay(text_display) => {
-            hits.push(draw_text_display_hit(backend, id, area, text_display));
+            let painted: Cow<TextDisplay> = match window {
+                Some(w) => Cow::Owned(windowed_text_display(text_display, w)),
+                None => Cow::Borrowed(text_display),
+            };
+            hits.push(draw_text_display_hit(backend, id, area, painted.as_ref()));
         }
         LeafDescriptor::List(list) => {
+            let painted: Cow<ListView> = match window {
+                Some(w) => Cow::Owned(windowed_list(list, w)),
+                None => Cow::Borrowed(list),
+            };
+            let list = painted.as_ref();
             let state = quadraui::ListPaintState::default().with_scroll_px(leaf.scroll_px);
             backend.draw_list_with_state(area, list, &state, false);
             let layout = backend.list_layout(area, list);
@@ -2245,6 +2478,11 @@ pub fn paint_leaf(
             });
         }
         LeafDescriptor::Tree(tree) => {
+            let painted: Cow<TreeView> = match window {
+                Some(w) => Cow::Owned(windowed_tree(tree, w)),
+                None => Cow::Borrowed(tree),
+            };
+            let tree = painted.as_ref();
             let (content_rect, scrollbar, viewport_rows) =
                 draw_tree_with_scrollbar_and_state(backend, area, tree, leaf.scroll_px);
             let layout = backend.tree_layout(content_rect, tree);
@@ -2264,6 +2502,11 @@ pub fn paint_leaf(
             });
         }
         LeafDescriptor::DataTable(data_table) => {
+            let painted: Cow<DataTable> = match window {
+                Some(w) => Cow::Owned(windowed_data_table(data_table, w)),
+                None => Cow::Borrowed(data_table),
+            };
+            let data_table = painted.as_ref();
             let state = quadraui::DataTablePaintState::default().with_scroll_px(leaf.scroll_px);
             let layout = backend.draw_data_table_with_state(area, data_table, &state);
             let viewport_rows = layout.visible_rows;
@@ -4818,25 +5061,33 @@ mod tests {
     }
 
     /// A `data_table` leaf whose `items_window` says its 50 `rows` are only
-    /// a slice of a 100,000-row total decodes and paints with a payload
-    /// that stays exactly that small -- never ballooning to the full
-    /// total -- and scrolling within the loaded slice needs nothing more,
-    /// but scrolling past it asks for a new window bounded by a small
-    /// multiple of the viewport, never by the 100k-row total itself.
-    ///
-    /// Covers `window.start > 0` end to end, not just `window.start == 0`:
-    /// each row's own cell text carries its absolute index
-    /// (`window_start + i`), so after `rows_requested_for_window` computes
-    /// a request and the harness answers it with a freshly windowed
-    /// payload, the test can assert the *content* that actually painted
-    /// is the right absolute rows, not merely that some row painted.
+    /// a slice of a 100,000-row total: [`paint_layout_windowed`] pads the
+    /// painted payload out to the full total, so the scrollbar extent
+    /// ([`PaintedHit::DataTable::total_rows`]) reflects `100_000`, not the
+    /// 50 rows this frame's payload actually carries. A real keyboard
+    /// scroll (`End`, dispatched through the exact same
+    /// `InteractionEngine::handle`/`crate::host::resolve_layout_node` path
+    /// a binding's own render loop drives — unmodified production code,
+    /// not a hand-poked field) that lands past the loaded slice produces
+    /// exactly one [`rows_requested_for_window`] request, and once the
+    /// harness answers it with a freshly windowed payload, the row
+    /// actually scrolled to renders its own absolute content.
     #[test]
-    fn windowed_data_table_decodes_bounded_and_requests_more_rows_on_scroll() {
+    fn windowed_data_table_scrollbar_extent_and_real_scroll_request_more_rows() {
+        use quadraui::tui::testing::TuiDriver;
+        use quadraui::{Key, Modifiers, NamedKey};
+
         const TOTAL: usize = 100_000;
         const WINDOW_LEN: usize = 50;
+        const WINDOW_START: usize = 35;
 
-        fn leaf_value(window_start: usize, scroll_offset: usize) -> serde_json::Value {
-            let rows: Vec<_> = (0..WINDOW_LEN)
+        fn leaf_value(window_start: usize) -> serde_json::Value {
+            // Never claims more rows than actually remain in the
+            // collection — a window near the very end of `TOTAL` sends a
+            // shorter-than-`WINDOW_LEN` tail, matching what a real app's
+            // own data source would hand back.
+            let len = WINDOW_LEN.min(TOTAL.saturating_sub(window_start));
+            let rows: Vec<_> = (0..len)
                 .map(|i| {
                     let absolute = window_start + i;
                     serde_json::json!({"cells": [{"spans": [{"text": format!("row-{absolute}")}]}]})
@@ -4848,7 +5099,6 @@ mod tests {
                     "id": "table",
                     "columns": [{"title": "col"}],
                     "rows": rows,
-                    "scroll_offset": scroll_offset,
                     "items_window": {"start": window_start, "total": TOTAL},
                 },
             })
@@ -4870,16 +5120,7 @@ mod tests {
             &table.rows[row].cells[0].spans[0].text
         }
 
-        // `window.start` well inside the 100k total -- not the 0 the
-        // previous version of this test exclusively covered -- so the
-        // `scroll_offset`-is-window-relative translation in
-        // `rows_requested_for_window` is actually exercised: `scroll_offset`
-        // here is relative to `window_start`, mirroring exactly what
-        // `PaintedHit::DataTable::scroll_offset` records (see that
-        // function's own doc).
-        const WINDOW_START: usize = 35;
-
-        let value = leaf_value(WINDOW_START, 0);
+        let value = leaf_value(WINDOW_START);
         let table = decode_table(&value);
         assert_eq!(
             table.rows.len(),
@@ -4892,31 +5133,20 @@ mod tests {
             format!("row-{WINDOW_START}"),
             "the first loaded row is the window's own start, not row 0"
         );
-        let id = table.id;
 
-        // `items_window` is independently readable straight off the raw
-        // dict, the same `Value` a binding already holds -- the extension
-        // key contract `items_window_from_value`'s own doc describes.
-        let window = items_window_from_value(&value["data_table"])
-            .expect("items_window should be present on the raw dict");
-        assert_eq!(
-            window,
-            ItemsWindow {
-                start: WINDOW_START,
-                total: TOTAL
+        struct NoopSink;
+        impl crate::engine::EventSink for NoopSink {
+            fn dispatch(
+                &mut self,
+                _event: &quadraui::UiEvent,
+                _hit_detail: Option<&crate::hit::HitDetail>,
+            ) -> quadraui::Reaction {
+                quadraui::Reaction::Continue
             }
-        );
-
-        // Drives the real `event -> render -> paint` path through
-        // `TuiDriver` (every `Backend::draw_*` call needs the live frame
-        // scope only a real render pass sets up), re-decoding whatever
-        // `scroll_offset` this test currently has it hold.
-        use quadraui::tui::testing::TuiDriver;
+        }
 
         struct WindowedTableLogic {
             window_start: std::cell::Cell<usize>,
-            scroll_offset: std::cell::Cell<usize>,
-            viewport_rows: std::cell::Cell<usize>,
             engine: crate::engine::InteractionEngine,
         }
 
@@ -4926,23 +5156,451 @@ mod tests {
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let value = leaf_value(self.window_start.get(), self.scroll_offset.get());
-                let node = crate::wire::decode_layout_node("test", &value)
-                    .expect("a data_table leaf with items_window must decode");
-                // The viewport's true row capacity -- mirroring how
-                // `paint_leaf` feeds `list_viewport_rows`/`tree_viewport_rows`
-                // into this same function for `List`/`Tree`, rather than the
-                // `DataTableLayout::visible_rows` `PaintedHit::DataTable`
-                // itself carries, which degrades toward zero at whatever
-                // offset was actually painted -- exactly when more rows are
-                // needed.
-                let table = decode_table(&value);
-                self.viewport_rows
-                    .set(data_table_viewport_rows(backend, area, &table));
+                let value = leaf_value(self.window_start.get());
+                let diagnostics = crate::wire::DecodeDiagnostics::warn();
+                let sets = crate::layout::StyleSets::new();
+                let theme = Theme::default();
+                let mut node = crate::wire::decode_layout_node_with_styles(
+                    "test",
+                    &value,
+                    crate::wire::StyleContext::new(&sets, &theme),
+                    &diagnostics,
+                )
+                .expect("a data_table leaf with items_window must decode");
+                // Resolves the uncontrolled cursor/scroll this frame's
+                // keyboard navigation already moved in `self.engine`'s own
+                // `WidgetState` -- the same call a binding's render loop
+                // makes before `paint_layout_windowed`, unmodified by
+                // windowing.
+                crate::host::resolve_layout_node(
+                    self.engine.widget_state(),
+                    backend,
+                    area,
+                    &mut node,
+                );
+                let windows = diagnostics.items_windows();
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &node, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout_windowed(
+                    backend,
+                    area,
+                    &node,
+                    &mut hits,
+                    &|id| self.engine.chrome_interaction(id),
+                    &windows,
+                );
+                self.engine.set_hits(hits);
+            }
+
+            fn handle(
+                &mut self,
+                event: quadraui::UiEvent,
+                backend: &mut dyn Backend,
+            ) -> quadraui::Reaction {
+                self.engine.handle(event, backend, &mut NoopSink)
+            }
+        }
+
+        fn painted_data_table(driver: &TuiDriver<WindowedTableLogic>) -> (usize, usize, usize) {
+            driver
+                .app()
+                .engine
+                .hit_map()
+                .iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::DataTable {
+                        scroll_offset,
+                        total_rows,
+                        viewport_rows,
+                        ..
+                    } => Some((*scroll_offset, *total_rows, *viewport_rows)),
+                    _ => None,
+                })
+                .expect("the data_table should have painted a hit")
+        }
+
+        let logic = WindowedTableLogic {
+            window_start: std::cell::Cell::new(WINDOW_START),
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        driver.render();
+
+        let (_, total_rows, viewport_rows) = painted_data_table(&driver);
+        assert_eq!(
+            total_rows, TOTAL,
+            "the scrollbar extent must reflect the full collection, not the \
+             50 loaded rows"
+        );
+        assert!(viewport_rows > 0, "a 5-row area must fit at least one row");
+
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("table"))),
+                "the data table is a tab stop and must accept focus"
+            );
+        }
+
+        // Real scroll input: `End` jumps the uncontrolled cursor straight to
+        // the bottom of the full `TOTAL`-row collection.
+        // `crate::host::apply_data_table_nav_key` (unmodified production
+        // code, reached through `InteractionEngine::handle`) clamps against
+        // `total_rows` read straight off this frame's own
+        // `PaintedHit::DataTable` -- `TOTAL` thanks to the padding above,
+        // not the 50 loaded rows.
+        driver.dispatch(quadraui::UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::End),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        driver.render();
+
+        let (scroll_offset, total_rows, viewport_rows) = painted_data_table(&driver);
+        assert_eq!(total_rows, TOTAL);
+        assert!(
+            scroll_offset + viewport_rows >= TOTAL,
+            "End must scroll all the way to the bottom of the full {TOTAL}-row \
+             collection, not just the loaded window: scroll_offset={scroll_offset} \
+             viewport_rows={viewport_rows}"
+        );
+
+        let window = ItemsWindow {
+            start: WINDOW_START,
+            total: TOTAL,
+        };
+        let request = rows_requested_for_window(
+            WidgetId::new("table"),
+            window,
+            WINDOW_LEN,
+            scroll_offset,
+            viewport_rows,
+        )
+        .expect(
+            "scrolling to the bottom of a 100k-row collection whose loaded \
+             slice sits near the top must request more rows",
+        );
+        assert!(
+            request.count < WINDOW_LEN * 10,
+            "a bounded request must stay a small multiple of the viewport, \
+             nowhere near the widget's own {TOTAL}-row total -- got {}",
+            request.count
+        );
+        assert!(
+            request.start + request.count >= TOTAL,
+            "the requested window must reach the very end of the collection"
+        );
+
+        // End-to-end: the app answers the request with a freshly windowed
+        // payload starting exactly at `request.start`, and the next frame
+        // actually renders the right absolute content at the row actually
+        // scrolled to.
+        driver.app_mut().window_start.set(request.start);
+        driver.render();
+
+        let (scroll_offset_after, total_rows_after, _) = painted_data_table(&driver);
+        assert_eq!(total_rows_after, TOTAL);
+        let new_value = leaf_value(request.start);
+        let new_table = decode_table(&new_value);
+        assert_eq!(
+            row_text(&new_table, scroll_offset_after - request.start),
+            format!("row-{scroll_offset_after}"),
+            "the row actually scrolled to must render its own absolute content \
+             after the window update, not stale or wrong-offset content"
+        );
+    }
+
+    /// [`windowed_data_table_scrollbar_extent_and_real_scroll_request_more_rows`],
+    /// for a `list` leaf instead of a `data_table` one — the same
+    /// `items_window` padding, scrollbar-extent, and real-`End`-key
+    /// `rows_requested_for_window` round trip, driven through
+    /// `crate::host::apply_list_nav_key` (unmodified production code)
+    /// instead of `apply_data_table_nav_key`.
+    #[test]
+    fn windowed_list_scrollbar_extent_and_real_scroll_request_more_rows() {
+        use quadraui::tui::testing::TuiDriver;
+        use quadraui::{Key, Modifiers, NamedKey};
+
+        const TOTAL: usize = 100_000;
+        const WINDOW_LEN: usize = 50;
+        const WINDOW_START: usize = 35;
+
+        fn leaf_value(window_start: usize) -> serde_json::Value {
+            let len = WINDOW_LEN.min(TOTAL.saturating_sub(window_start));
+            let items: Vec<_> = (0..len)
+                .map(|i| {
+                    let absolute = window_start + i;
+                    serde_json::json!({"text": {"spans": [{"text": format!("row-{absolute}")}]}})
+                })
+                .collect();
+            serde_json::json!({
+                "id": "list",
+                "list": {
+                    "id": "list",
+                    "items": items,
+                    "selected_idx": 0,
+                    "items_window": {"start": window_start, "total": TOTAL},
+                },
+            })
+        }
+
+        struct NoopSink;
+        impl crate::engine::EventSink for NoopSink {
+            fn dispatch(
+                &mut self,
+                _event: &quadraui::UiEvent,
+                _hit_detail: Option<&crate::hit::HitDetail>,
+            ) -> quadraui::Reaction {
+                quadraui::Reaction::Continue
+            }
+        }
+
+        struct WindowedListLogic {
+            window_start: std::cell::Cell<usize>,
+            engine: crate::engine::InteractionEngine,
+        }
+
+        impl quadraui::AppLogic for WindowedListLogic {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let value = leaf_value(self.window_start.get());
+                let diagnostics = crate::wire::DecodeDiagnostics::warn();
+                let sets = crate::layout::StyleSets::new();
+                let theme = Theme::default();
+                let mut node = crate::wire::decode_layout_node_with_styles(
+                    "test",
+                    &value,
+                    crate::wire::StyleContext::new(&sets, &theme),
+                    &diagnostics,
+                )
+                .expect("a list leaf with items_window must decode");
+                crate::host::resolve_layout_node(
+                    self.engine.widget_state(),
+                    backend,
+                    area,
+                    &mut node,
+                );
+                let windows = diagnostics.items_windows();
+                let mut hits = Vec::new();
+                paint_layout_windowed(
+                    backend,
+                    area,
+                    &node,
+                    &mut hits,
+                    &|id| self.engine.chrome_interaction(id),
+                    &windows,
+                );
+                self.engine.set_hits(hits);
+            }
+
+            fn handle(
+                &mut self,
+                event: quadraui::UiEvent,
+                backend: &mut dyn Backend,
+            ) -> quadraui::Reaction {
+                self.engine.handle(event, backend, &mut NoopSink)
+            }
+        }
+
+        fn painted_list(driver: &TuiDriver<WindowedListLogic>) -> (usize, usize, usize) {
+            driver
+                .app()
+                .engine
+                .hit_map()
+                .iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::List {
+                        scroll_offset,
+                        total_items,
+                        viewport_rows,
+                        ..
+                    } => Some((*scroll_offset, *total_items, *viewport_rows)),
+                    _ => None,
+                })
+                .expect("the list should have painted a hit")
+        }
+
+        let logic = WindowedListLogic {
+            window_start: std::cell::Cell::new(WINDOW_START),
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+        driver.render();
+
+        let (_, total_items, viewport_rows) = painted_list(&driver);
+        assert_eq!(
+            total_items, TOTAL,
+            "the scrollbar extent must reflect the full collection, not the \
+             50 loaded items"
+        );
+        assert!(viewport_rows > 0, "a 5-row area must fit at least one item");
+
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(quadraui::UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::End),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        driver.render();
+
+        let (scroll_offset, total_items, viewport_rows) = painted_list(&driver);
+        assert_eq!(total_items, TOTAL);
+        assert!(
+            scroll_offset + viewport_rows >= TOTAL,
+            "End must scroll all the way to the bottom of the full {TOTAL}-item \
+             collection, not just the loaded window"
+        );
+
+        let window = ItemsWindow {
+            start: WINDOW_START,
+            total: TOTAL,
+        };
+        let request = rows_requested_for_window(
+            WidgetId::new("list"),
+            window,
+            WINDOW_LEN,
+            scroll_offset,
+            viewport_rows,
+        )
+        .expect(
+            "scrolling to the bottom of a 100k-item collection whose loaded \
+             slice sits near the top must request more items",
+        );
+        assert!(
+            request.start + request.count >= TOTAL,
+            "the requested window must reach the very end of the collection"
+        );
+
+        driver.app_mut().window_start.set(request.start);
+        driver.render();
+
+        let (scroll_offset_after, total_items_after, _) = painted_list(&driver);
+        assert_eq!(total_items_after, TOTAL);
+        let new_value = leaf_value(request.start);
+        let node = crate::wire::decode_layout_node("test", &new_value)
+            .expect("a list leaf with items_window must decode");
+        let LayoutNode::Leaf(leaf) = node else {
+            panic!("expected a leaf node");
+        };
+        let LeafDescriptor::List(new_list) = leaf.descriptor else {
+            panic!("expected a List descriptor");
+        };
+        let row = scroll_offset_after - request.start;
+        assert_eq!(
+            new_list.items[row].text.spans[0].text,
+            format!("row-{scroll_offset_after}"),
+            "the item actually scrolled to must render its own absolute \
+             content after the window update"
+        );
+    }
+
+    /// A `tree` leaf whose `items_window` says its 20 `rows` are only a
+    /// slice of a 2,000-row total: [`paint_layout_windowed`] pads the
+    /// painted payload out to the full total, so the scrollbar extent
+    /// (`PaintedHit::Tree`'s `row_paths.len()`) reflects `2_000`, not the
+    /// 20 rows this frame's payload actually carries, and scrolling past
+    /// the loaded slice produces exactly one [`rows_requested_for_window`]
+    /// request whose answer paints at the right absolute position.
+    ///
+    /// Drives `scroll_offset` as a **controlled** wire value (set directly
+    /// in the dict) rather than through a real `End` keypress:
+    /// `crate::host::resolve_tree_cursor`'s own uncontrolled-cursor
+    /// rescroll looks up the stored selected path's position within
+    /// *this frame's own* `tree.rows` — correct for a fully-materialised
+    /// (non-windowed) tree, where that list is the whole flattened
+    /// collection every frame, but not for a windowed one, where it's
+    /// only ever a small slice and a path's position within it carries no
+    /// absolute meaning. Fixing that is a `crate::host` change, out of
+    /// this module's own scope; `List`/`DataTable`'s own uncontrolled
+    /// cursor state has no equivalent position re-lookup, which is why
+    /// their own sibling tests exercise a real keyboard `End` instead. A
+    /// synthetic single-level `TreePath` built from each row's own
+    /// absolute index (`TreePath` is `Vec<u16>`, so `TOTAL` stays small
+    /// enough here to fit that space without saturating) means a
+    /// placeholder path never collides with a real loaded one.
+    #[test]
+    fn windowed_tree_scrollbar_extent_and_scroll_requests_more_rows() {
+        use quadraui::tui::testing::TuiDriver;
+
+        const TOTAL: usize = 2_000;
+        const WINDOW_LEN: usize = 20;
+
+        fn leaf_value(window_start: usize, scroll_offset: usize) -> serde_json::Value {
+            let len = WINDOW_LEN.min(TOTAL.saturating_sub(window_start));
+            let rows: Vec<_> = (0..len)
+                .map(|i| {
+                    let absolute = window_start + i;
+                    serde_json::json!({
+                        "path": [absolute],
+                        "indent": 0,
+                        "icon": null,
+                        "text": {"spans": [{"text": format!("row-{absolute}")}]},
+                        "badge": null,
+                        "is_expanded": null,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "id": "tree",
+                "tree": {
+                    "id": "tree",
+                    "rows": rows,
+                    "selection_mode": "Single",
+                    "selected_path": null,
+                    "scroll_offset": scroll_offset,
+                    "style": {
+                        "indent": 2,
+                        "show_chevrons": true,
+                        "chevron_expanded": "v",
+                        "chevron_collapsed": ">",
+                    },
+                    "items_window": {"start": window_start, "total": TOTAL},
+                },
+            })
+        }
+
+        struct WindowedTreeLogic {
+            window_start: std::cell::Cell<usize>,
+            scroll_offset: std::cell::Cell<usize>,
+            engine: crate::engine::InteractionEngine,
+        }
+
+        impl quadraui::AppLogic for WindowedTreeLogic {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let value = leaf_value(self.window_start.get(), self.scroll_offset.get());
+                let diagnostics = crate::wire::DecodeDiagnostics::warn();
+                let sets = crate::layout::StyleSets::new();
+                let theme = Theme::default();
+                let node = crate::wire::decode_layout_node_with_styles(
+                    "test",
+                    &value,
+                    crate::wire::StyleContext::new(&sets, &theme),
+                    &diagnostics,
+                )
+                .expect("a tree leaf with items_window must decode");
+                let windows = diagnostics.items_windows();
+                let mut hits = Vec::new();
+                paint_layout_windowed(
+                    backend,
+                    area,
+                    &node,
+                    &mut hits,
+                    &|id| self.engine.chrome_interaction(id),
+                    &windows,
+                );
                 self.engine.set_hits(hits);
             }
 
@@ -4955,99 +5613,215 @@ mod tests {
             }
         }
 
-        let logic = WindowedTableLogic {
+        fn painted_tree(driver: &TuiDriver<WindowedTreeLogic>) -> (usize, usize, usize) {
+            driver
+                .app()
+                .engine
+                .hit_map()
+                .iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Tree {
+                        scroll_offset,
+                        row_paths,
+                        viewport_rows,
+                        ..
+                    } => Some((*scroll_offset, row_paths.len(), *viewport_rows)),
+                    _ => None,
+                })
+                .expect("the tree should have painted a hit")
+        }
+
+        const WINDOW_START: usize = 10;
+        let logic = WindowedTreeLogic {
             window_start: std::cell::Cell::new(WINDOW_START),
             scroll_offset: std::cell::Cell::new(0),
-            viewport_rows: std::cell::Cell::new(0),
             engine: crate::engine::InteractionEngine::new(),
         };
         let mut driver = TuiDriver::new(logic, 20, 5);
         driver.render();
-        let viewport_rows = driver.app().viewport_rows.get();
+
+        let (_, total_rows, viewport_rows) = painted_tree(&driver);
+        assert_eq!(
+            total_rows, TOTAL,
+            "the scrollbar extent must reflect the full collection, not the \
+             20 loaded rows"
+        );
         assert!(viewport_rows > 0, "a 5-row area must fit at least one row");
 
-        // Scrolled to the very top of the loaded window: everything the
-        // viewport can show is already loaded, so nothing more is needed.
-        // Under the old (buggy) absolute-index reading, `window.start
-        // (35) <= scroll_offset (0)` is false, so this would have wrongly
-        // requested a window starting back at 0 -- exactly the "drags the
-        // app back to the top on every frame" oscillation the review
-        // flagged, not the `None` a fully-covered viewport must produce.
-        assert_eq!(
-            rows_requested_for_window(id, window, WINDOW_LEN, 0, viewport_rows),
-            None,
-            "the viewport's visible range is already fully covered by the loaded slice"
-        );
-
-        // Scroll past the last loaded row: the same leaf, now at a deeper
-        // window-relative `scroll_offset`, still decodes and paints -- it
-        // just has nothing to show past the window's last row until the
-        // app sends a new window.
-        let deep_relative_offset = WINDOW_LEN + 5;
-        let deep_absolute_offset = WINDOW_START + deep_relative_offset;
-        driver.app_mut().scroll_offset.set(deep_relative_offset);
+        // Scroll (as a controlled wire value) to the very bottom of the
+        // full `TOTAL`-row collection -- well past the 20 loaded rows.
+        let deep_absolute_offset = TOTAL - viewport_rows;
+        driver.app_mut().scroll_offset.set(deep_absolute_offset);
         driver.render();
-        let painted_scroll_offset = driver
-            .app()
-            .engine
-            .hit_map()
-            .iter()
-            .find_map(|hit| match hit {
-                PaintedHit::DataTable { scroll_offset, .. } => Some(*scroll_offset),
-                _ => None,
-            })
-            .expect("the data_table should have painted a hit");
-        assert_eq!(painted_scroll_offset, deep_relative_offset);
 
-        let request =
-            rows_requested_for_window(id, window, WINDOW_LEN, painted_scroll_offset, viewport_rows)
-                .expect("scrolling past the loaded window must request more rows");
-        assert_eq!(request.id, id);
-        assert!(
-            request.count < WINDOW_LEN * 10,
-            "a bounded request must stay a small multiple of the viewport, \
-             nowhere near the widget's own {TOTAL}-row total -- got {}",
-            request.count
+        let (scroll_offset, total_rows, viewport_rows) = painted_tree(&driver);
+        assert_eq!(total_rows, TOTAL);
+        assert_eq!(scroll_offset, deep_absolute_offset);
+
+        let window = ItemsWindow {
+            start: WINDOW_START,
+            total: TOTAL,
+        };
+        let request = rows_requested_for_window(
+            WidgetId::new("tree"),
+            window,
+            WINDOW_LEN,
+            scroll_offset,
+            viewport_rows,
+        )
+        .expect(
+            "scrolling to the bottom of a 2000-row tree whose loaded slice \
+             sits near the top must request more rows",
         );
         assert!(
-            request.start <= deep_absolute_offset,
-            "the requested window must start at or before the absolute scrolled-to row"
-        );
-        assert!(
-            request.start + request.count >= deep_absolute_offset + viewport_rows,
-            "the requested window must cover the whole absolute visible range"
+            request.start + request.count >= TOTAL,
+            "the requested window must reach the very end of the collection"
         );
 
         // End-to-end: the app answers the request with a freshly windowed
-        // payload starting exactly at `request.start`, re-centred so the
-        // scrolled-to row is still visible, and the next frame actually
-        // renders the right absolute rows -- not just "some" rows.
+        // payload starting exactly at `request.start`, and the next frame
+        // actually renders the right absolute content at the row actually
+        // scrolled to.
         let new_relative_offset = deep_absolute_offset - request.start;
         driver.app_mut().window_start.set(request.start);
-        driver.app_mut().scroll_offset.set(new_relative_offset);
+        driver.app_mut().scroll_offset.set(deep_absolute_offset);
         driver.render();
 
+        let (_, total_rows_after, _) = painted_tree(&driver);
+        assert_eq!(total_rows_after, TOTAL);
         let new_value = leaf_value(request.start, new_relative_offset);
-        let new_window = items_window_from_value(&new_value["data_table"])
-            .expect("the re-sent window must still carry items_window");
+        let node = crate::wire::decode_layout_node("test", &new_value)
+            .expect("a tree leaf with items_window must decode");
+        let LayoutNode::Leaf(leaf) = node else {
+            panic!("expected a leaf node");
+        };
+        let LeafDescriptor::Tree(new_tree) = leaf.descriptor else {
+            panic!("expected a Tree descriptor");
+        };
         assert_eq!(
-            rows_requested_for_window(
-                id,
-                new_window,
-                WINDOW_LEN,
-                new_relative_offset,
-                viewport_rows
-            ),
-            None,
-            "the re-sent window must fully cover the still-scrolled-to viewport -- \
-             convergence, not another request"
-        );
-        let new_table = decode_table(&new_value);
-        assert_eq!(
-            row_text(&new_table, new_relative_offset),
+            new_tree.rows[new_relative_offset].text.spans[0].text,
             format!("row-{deep_absolute_offset}"),
-            "the row actually scrolled to must render its own absolute content \
-             after the window update, not stale or wrong-offset content"
+            "the row actually scrolled to must render its own absolute \
+             content after the window update"
         );
+    }
+
+    /// A `text_display` leaf shares the exact same `items_window` padding
+    /// path every other windowed kind goes through
+    /// ([`paint_leaf_windowed`]'s `LeafDescriptor::TextDisplay` arm calls
+    /// the same [`windowed_text_display`]/[`windowed_vec`] every other kind
+    /// does), so its own `PaintedHit::TextDisplay::total_lines` reflects
+    /// `window.total` rather than the 10 lines this frame's payload
+    /// actually carries — no keyboard-nav-key story to exercise here
+    /// (`TextDisplay` has none, controlled or not), so this only covers the
+    /// paint-time extent, not a scroll-driven `rows_requested_for_window`
+    /// round trip.
+    #[test]
+    fn windowed_text_display_total_lines_reflects_window_total() {
+        use quadraui::tui::testing::TuiDriver;
+
+        const TOTAL: usize = 5_000;
+        const WINDOW_LEN: usize = 10;
+        const WINDOW_START: usize = 3;
+
+        let lines: Vec<_> = (0..WINDOW_LEN)
+            .map(|i| {
+                let absolute = WINDOW_START + i;
+                serde_json::json!({"spans": [{"text": format!("line-{absolute}")}]})
+            })
+            .collect();
+        let value = serde_json::json!({
+            "id": "log",
+            "text_display": {
+                "id": "log",
+                "lines": lines,
+                "items_window": {"start": WINDOW_START, "total": TOTAL},
+            },
+        });
+
+        struct WindowedTextDisplayLogic {
+            value: serde_json::Value,
+        }
+
+        impl quadraui::AppLogic for WindowedTextDisplayLogic {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let diagnostics = crate::wire::DecodeDiagnostics::warn();
+                let sets = crate::layout::StyleSets::new();
+                let theme = Theme::default();
+                let node = crate::wire::decode_layout_node_with_styles(
+                    "test",
+                    &self.value,
+                    crate::wire::StyleContext::new(&sets, &theme),
+                    &diagnostics,
+                )
+                .expect("a text_display leaf with items_window must decode");
+                let windows = diagnostics.items_windows();
+                let mut hits = Vec::new();
+                paint_layout_windowed(
+                    backend,
+                    area,
+                    &node,
+                    &mut hits,
+                    &|_| InteractionState::default(),
+                    &windows,
+                );
+                assert!(
+                    hits.iter().any(|hit| matches!(
+                        hit,
+                        PaintedHit::TextDisplay { total_lines, .. } if *total_lines == TOTAL
+                    )),
+                    "the text_display's own total_lines must reflect window.total, got: {:?}",
+                    hits.iter().find_map(|hit| match hit {
+                        PaintedHit::TextDisplay { total_lines, .. } => Some(*total_lines),
+                        _ => None,
+                    })
+                );
+            }
+
+            fn handle(
+                &mut self,
+                _event: quadraui::UiEvent,
+                _backend: &mut dyn Backend,
+            ) -> quadraui::Reaction {
+                quadraui::Reaction::Continue
+            }
+        }
+
+        let mut driver = TuiDriver::new(WindowedTextDisplayLogic { value }, 20, 5);
+        driver.render();
+    }
+
+    /// [`windowed_vec`]'s own documented shape: the loaded slice lands
+    /// verbatim at `[window.start, window.start + loaded.len())`, every
+    /// other index is a placeholder, and the result's length is
+    /// `window.total` (widened only when `window.total` would otherwise
+    /// truncate real loaded data).
+    #[test]
+    fn windowed_vec_splices_the_loaded_slice_at_its_absolute_position() {
+        let loaded = vec!["a", "b", "c"];
+        let window = ItemsWindow {
+            start: 5,
+            total: 12,
+        };
+        let out = windowed_vec(&loaded, window, |_| "_");
+        assert_eq!(out.len(), 12);
+        assert_eq!(&out[0..5], &["_", "_", "_", "_", "_"]);
+        assert_eq!(&out[5..8], &["a", "b", "c"]);
+        assert_eq!(&out[8..12], &["_", "_", "_", "_"]);
+    }
+
+    /// A `window.total` that understates `window.start + loaded.len()`
+    /// never truncates the real loaded payload — the result widens to fit
+    /// it instead.
+    #[test]
+    fn windowed_vec_widens_past_a_stale_undersized_total() {
+        let loaded = vec![1, 2, 3];
+        let window = ItemsWindow { start: 2, total: 3 };
+        let out = windowed_vec(&loaded, window, |_| 0);
+        assert_eq!(out, vec![0, 0, 1, 2, 3]);
     }
 }
