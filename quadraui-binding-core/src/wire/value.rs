@@ -597,6 +597,32 @@ pub(super) fn opt_usize(
     }
 }
 
+/// [`opt_usize`], bounded to `u8` — raises a [`DecodeError`] when present
+/// but not an integer in `0..=255` (e.g. [`quadraui::Style::shadow_elevation`]'s
+/// own clamped range). `None` when absent.
+pub(super) fn opt_u8(value: &Value, key: &str, context: &str) -> Result<Option<u8>, DecodeError> {
+    match obj_get(value, key) {
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u8::try_from(n).ok())
+            .map(Some)
+            .ok_or_else(|| DecodeError::type_mismatch(context, key, "an integer in 0..=255")),
+        None => Ok(None),
+    }
+}
+
+/// [`opt_usize`], widened to `u64` — raises a [`DecodeError`] at `context`
+/// if present but not a non-negative integer. `None` when absent.
+pub(super) fn opt_u64(value: &Value, key: &str, context: &str) -> Result<Option<u64>, DecodeError> {
+    match obj_get(value, key) {
+        Some(v) => v
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| DecodeError::type_mismatch(context, key, "an integer")),
+        None => Ok(None),
+    }
+}
+
 /// [`dict_str`], but raises a [`DecodeError`] when `key` is absent or
 /// `null` instead of returning `Ok(None)`.
 pub(super) fn dict_required_str(

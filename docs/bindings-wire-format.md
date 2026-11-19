@@ -46,21 +46,25 @@ them -- see each node's own field table in the generated reference for
 exactly which it accepts.
 
 Every node kind, including a `"leaf"`, also accepts an optional `"style"`
-key (`StyleValue` in the generated reference): a scoped subset of `Theme`
-colour tokens (`"bg"`, `"fg"`, `"border"`, `"accent"`, `"surface_bg"`,
-`"accent_bg"` -- a `Color` object or a `"#rrggbb"`/`"#rrggbbaa"` hex
-string) and `Style` metric tokens (`"padding"`, `"corner_radius"`,
-`"border_width"`), applied as a derived theme/style to that node's own
-subtree only -- siblings, and anything above it in the tree, are
-unaffected. A nested `"style"` composes with an ancestor's: it only
-overrides the tokens it names, and everything it doesn't name falls
-through to whatever the ancestor already set.
+key (`StyleValue` in the generated reference): every `Theme` colour field
+and every `Style` metric field is a key here, under that field's own name
+-- a colour token (six of which have the semantic aliases `"bg"`, `"fg"`,
+`"border"`, `"accent"`, plus `"surface_bg"`/`"accent_bg"`, which already
+match their `Theme` field names) takes a `Color` object or a
+`"#rrggbb"`/`"#rrggbbaa"` hex string; a metric token takes a number. Every
+key is applied as a derived theme/style to that node's own subtree only --
+siblings, and anything above it in the tree, are unaffected. A nested
+`"style"` composes with an ancestor's: it only overrides the tokens it
+names, and everything it doesn't name falls through to whatever the
+ancestor already set.
 
-**`"padding"`/`"corner_radius"`/`"border_width"` affect paint only, never
-this frame's layout.** They change how the styled subtree *paints* this
-frame; they never feed back into measurement, so a `"Content"`-sized
-sibling, or this scroll's own content length, never shifts because of a
-metric override deeper in the tree.
+**Only `"padding"` feeds back into layout, and only for a `"button"`
+leaf.** Overriding it changes that leaf's own measured size (so a
+`"Content"`-sized sibling, or this scroll's own content length, can shift
+because of it), not just how it paints. Every other metric token
+(`"corner_radius"`, `"border_width"`, and the rest) still affects paint
+only, never this frame's layout -- a `"Content"`-sized sibling never
+shifts because of one of those deeper in the tree.
 
 **Which token a leaf actually reads varies by kind and, for `"button"`, by
 variant** -- a `"bg"` override reaches a plain `"row"`/`"column"`/`"split"`/
@@ -83,10 +87,11 @@ non-bordered `"list"`/`"tree"`, but **not** a `"button"`'s `Primary`/
 | `"corner_radius"` | `Style.corner_radius` | rounded-rect radius shared by every rounded overlay |
 | `"border_width"` | `Style.border_width` | border stroke width on a pixel backend (no-op on TUI) |
 
-`"tree"`/`"data_table"`/`"tab_bar"`'s own row/header fill
-(`Theme.tab_bar_bg`) and `"list"`'s header fill (`Theme.header_bg`) have
-no `"style"` alias yet -- overriding either still needs a host-wide
-`setTheme`/`set_theme` call.
+Every other `Theme` colour field (`"tree"`/`"data_table"`/`"tab_bar"`'s
+own row/header fill, `Theme.tab_bar_bg`; `"list"`'s header fill,
+`Theme.header_bg`; and the rest) and every other `Style` metric field are
+overridable too, under that field's own name -- see `StyleValue`'s own
+field table in the generated reference for the full list.
 
 **An unknown key inside `"style"` is always a decode error** — stricter
 than the warn-by-default policy an unrecognised sibling key on the
@@ -1486,7 +1491,7 @@ Alias for `Color | string`.
 <a id="wire-stylevalue"></a>
 #### `StyleValue`
 
-A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"border"/"accent"/"surface_bg"/"accent_bg" override Theme colour tokens, "padding"/"corner_radius"/"border_width" override Style metric tokens. "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.
+A per-node "style" override, scoped to that node's own subtree: every quadraui::Theme colour field and every quadraui::Style metric field is a key here, under that field's own name (plus "bg"/"fg"/"border"/"accent" as the semantic aliases for Theme::background/foreground/border_fg/accent_fg). "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1496,9 +1501,91 @@ A per-node "style" override, scoped to that node's own subtree: "bg"/"fg"/"borde
 | `accent` | `StyleColorValue` | no |  |
 | `surface_bg` | `StyleColorValue` | no |  |
 | `accent_bg` | `StyleColorValue` | no |  |
+| `tab_bar_bg` | `StyleColorValue` | no |  |
+| `tab_active_bg` | `StyleColorValue` | no |  |
+| `tab_active_fg` | `StyleColorValue` | no |  |
+| `tab_inactive_fg` | `StyleColorValue` | no |  |
+| `tab_preview_active_fg` | `StyleColorValue` | no |  |
+| `tab_preview_inactive_fg` | `StyleColorValue` | no |  |
+| `separator` | `StyleColorValue` | no |  |
+| `surface_fg` | `StyleColorValue` | no |  |
+| `selected_bg` | `StyleColorValue` | no |  |
+| `inactive_selected_bg` | `StyleColorValue` | no |  |
+| `title_fg` | `StyleColorValue` | no |  |
+| `header_bg` | `StyleColorValue` | no |  |
+| `header_fg` | `StyleColorValue` | no |  |
+| `muted_fg` | `StyleColorValue` | no |  |
+| `error_fg` | `StyleColorValue` | no |  |
+| `warning_fg` | `StyleColorValue` | no |  |
+| `query_fg` | `StyleColorValue` | no |  |
+| `match_fg` | `StyleColorValue` | no |  |
+| `hover_bg` | `StyleColorValue` | no |  |
+| `hover_fg` | `StyleColorValue` | no |  |
+| `hover_border` | `StyleColorValue` | no |  |
+| `input_bg` | `StyleColorValue` | no |  |
+| `inactive_fg` | `StyleColorValue` | no |  |
+| `selection_bg` | `StyleColorValue` | no |  |
+| `link_fg` | `StyleColorValue` | no |  |
+| `completion_bg` | `StyleColorValue` | no |  |
+| `completion_fg` | `StyleColorValue` | no |  |
+| `completion_border` | `StyleColorValue` | no |  |
+| `completion_selected_bg` | `StyleColorValue` | no |  |
+| `scrollbar_track` | `StyleColorValue` | no |  |
+| `scrollbar_thumb` | `StyleColorValue` | no |  |
+| `editor_active_background` | `StyleColorValue` | no |  |
+| `cursorline_bg` | `StyleColorValue` | no |  |
+| `dap_stopped_bg` | `StyleColorValue` | no |  |
+| `colorcolumn_bg` | `StyleColorValue` | no |  |
+| `diff_added_bg` | `StyleColorValue` | no |  |
+| `diff_removed_bg` | `StyleColorValue` | no |  |
+| `diff_padding_bg` | `StyleColorValue` | no |  |
+| `line_number_fg` | `StyleColorValue` | no |  |
+| `line_number_active_fg` | `StyleColorValue` | no |  |
+| `diagnostic_error` | `StyleColorValue` | no |  |
+| `diagnostic_warning` | `StyleColorValue` | no |  |
+| `diagnostic_info` | `StyleColorValue` | no |  |
+| `diagnostic_hint` | `StyleColorValue` | no |  |
+| `git_added` | `StyleColorValue` | no |  |
+| `git_modified` | `StyleColorValue` | no |  |
+| `git_deleted` | `StyleColorValue` | no |  |
+| `lightbulb` | `StyleColorValue` | no |  |
+| `spell_error` | `StyleColorValue` | no |  |
+| `cursor` | `StyleColorValue` | no |  |
+| `selection` | `StyleColorValue` | no |  |
+| `yank_highlight_bg` | `StyleColorValue` | no |  |
+| `bracket_match_bg` | `StyleColorValue` | no |  |
+| `indent_guide_fg` | `StyleColorValue` | no |  |
+| `indent_guide_active_fg` | `StyleColorValue` | no |  |
+| `annotation_fg` | `StyleColorValue` | no |  |
+| `ghost_text_fg` | `StyleColorValue` | no |  |
+| `command_line_bg` | `StyleColorValue` | no |  |
+| `command_line_fg` | `StyleColorValue` | no |  |
+| `board_selected_card_bg` | `StyleColorValue` | no |  |
+| `board_col_header_bg` | `StyleColorValue` | no |  |
+| `badge_running` | `StyleColorValue` | no |  |
+| `badge_passed` | `StyleColorValue` | no |  |
+| `badge_warning` | `StyleColorValue` | no |  |
+| `badge_blocked` | `StyleColorValue` | no |  |
+| `card_hint_bg` | `StyleColorValue` | no |  |
+| `card_hint_fg` | `StyleColorValue` | no |  |
 | `padding` | `number` | no |  |
 | `corner_radius` | `number` | no |  |
 | `border_width` | `number` | no |  |
+| `focus_ring_width` | `number` | no |  |
+| `button_radius` | `number` | no |  |
+| `shadow_elevation` | `number` | no |  |
+| `control_height` | `number` | no |  |
+| `backdrop_opacity` | `number` | no |  |
+| `tab_height` | `number` | no |  |
+| `status_bar_height` | `number` | no |  |
+| `activity_bar_width` | `number` | no |  |
+| `row_height` | `number` | no |  |
+| `toolbar_height` | `number` | no |  |
+| `scrollbar_width` | `number` | no |  |
+| `row_padding_x` | `number` | no |  |
+| `tab_padding_x` | `number` | no |  |
+| `tooltip_delay_ms` | `number` | no |  |
+| `tooltip_auto_dismiss_ms` | `number` | no |  |
 
 <a id="wire-classvalue"></a>
 #### `ClassValue`

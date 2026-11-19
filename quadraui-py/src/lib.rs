@@ -623,7 +623,11 @@ enum DeferredAction {
     SetDockMenu(serde_json::Value),
     SetJumpList(serde_json::Value),
     ActivateTab(WidgetId, usize),
-    DefineStyle(String, StyleOverride),
+    // Boxed: `StyleOverride` now covers every `Theme`/`Style` token, so
+    // storing it inline would make this variant dominate `DeferredAction`'s
+    // own size the same way it would `LayoutNode::Styled`'s (see
+    // `quadraui_binding_core::layout::LayoutStyled`'s own doc).
+    DefineStyle(String, Box<StyleOverride>),
     SetTreeTableChildren(WidgetId, String, Vec<TreeTableNodeData>),
     SetTreeTableSortOverride(WidgetId, Vec<TreeTableNodeData>),
 }
@@ -3463,7 +3467,10 @@ impl QuiAppActions {
         let parsed = decode_style_overrides("define_style", &json).map_err(decode_error_to_py)?;
         self.queue
             .borrow_mut()
-            .push_back(DeferredAction::DefineStyle(name.to_string(), parsed));
+            .push_back(DeferredAction::DefineStyle(
+                name.to_string(),
+                Box::new(parsed),
+            ));
         Ok(())
     }
 
@@ -3765,7 +3772,7 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
                 apply_tab_activated(app_logic.engine.widget_state(), id, index);
             }
             DeferredAction::DefineStyle(name, overrides) => {
-                app_logic.host.style_sets.define(name, overrides);
+                app_logic.host.style_sets.define(name, *overrides);
                 backend.request_frame_in(Duration::ZERO);
             }
             DeferredAction::SetTreeTableChildren(id, node_id, children) => {
