@@ -3551,8 +3551,12 @@ impl QuiApp {
     /// same `{"id": ..., "cells": [...], "icon": ..., "has_children":
     /// ..., "children": ...}` shape a `"tree_table_controller"` extra's
     /// own `"nodes"` list takes) under `nodeId`, found anywhere in the
-    /// tree, not just at the top level. A no-op if `id` names no cached
-    /// controller (it hasn't been painted this frame, or at all yet).
+    /// tree, not just at the top level. Call after `step`/`run` returns,
+    /// not from inside the handler itself (that raises
+    /// `ReentrantCallError`). A no-op if `id` names no cached controller
+    /// (it hasn't been painted this frame, or at all yet). Raises
+    /// `LiveRunnerActiveError` once `startTui`/`startNative` is active --
+    /// see [`QuiApp::check_not_live`]'s doc.
     #[napi(js_name = "setTreeTableChildren")]
     pub fn set_tree_table_children(
         &mut self,
@@ -3561,6 +3565,7 @@ impl QuiApp {
         node_id: String,
         children: Unknown,
     ) -> Result<()> {
+        self.check_not_live()?;
         let children: Vec<TreeTableControllerNode> =
             decode_via_json("setTreeTableChildren", children)?;
         let children = tree_table_controller_nodes_from_wire(children);
@@ -3580,7 +3585,11 @@ impl QuiApp {
     /// same wire-node shape [`Self::set_tree_table_children`]'s own
     /// `children` takes), already ordered however the host likes
     /// (numeric, locale-aware, ...). Selection survives by node id, not
-    /// position. A no-op if `id` names no cached controller.
+    /// position. Call after `step`/`run` returns, not from inside the
+    /// handler itself (that raises `ReentrantCallError`). A no-op if `id`
+    /// names no cached controller. Raises `LiveRunnerActiveError` once
+    /// `startTui`/`startNative` is active -- see
+    /// [`QuiApp::check_not_live`]'s doc.
     #[napi(js_name = "setTreeTableSortOverride")]
     pub fn set_tree_table_sort_override(
         &mut self,
@@ -3588,6 +3597,7 @@ impl QuiApp {
         id: String,
         nodes: Unknown,
     ) -> Result<()> {
+        self.check_not_live()?;
         let nodes: Vec<TreeTableControllerNode> =
             decode_via_json("setTreeTableSortOverride", nodes)?;
         let nodes = tree_table_controller_nodes_from_wire(nodes);
@@ -4399,7 +4409,14 @@ impl QuiApp {
     /// only exceptions and do not call this. `clipboard.rs`'s methods are
     /// a deliberate, documented exception too: they resolve against
     /// `self.driver.backend()`'s own clipboard regardless of a live
-    /// session, by design -- see that module's own doc.
+    /// session, by design -- see that module's own doc. [`Self::widget_state`]
+    /// (a read-only accessor) and [`Self::set_test_clock_ms`] (a
+    /// test-only hook) also skip this call today; unlike the exceptions
+    /// above, that is an acknowledged gap rather than a documented design
+    /// choice -- each would read or affect the orphaned, default
+    /// [`Self::driver`] rather than the live session during `startTui`/
+    /// `startNative`, the same silent-wrong-answer failure mode this
+    /// guard exists to turn into `LiveRunnerActiveError`.
     fn check_not_live(&self) -> Result<()> {
         if self.live.is_some() {
             return Err(live_runner_active_error(
