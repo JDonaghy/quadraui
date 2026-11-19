@@ -139,9 +139,13 @@ impl CellGridController {
     // ── Per-frame / model data ────────────────────────────────────────
 
     /// Set the sheet's full size. The cursor is re-clamped into the new
-    /// bounds and any selection beyond it collapses — a resize (e.g. a
-    /// filtered-out set of rows) always leaves a single, valid cursor
-    /// cell rather than a stale out-of-range anchor.
+    /// bounds, and a selection anchor outside those bounds collapses — a
+    /// shrink past the anchor (e.g. a filtered-out set of rows) always
+    /// leaves a single, valid cursor cell rather than a stale
+    /// out-of-range anchor. An anchor still inside the new bounds is
+    /// left untouched, so an idempotent re-declaration of the same
+    /// dimensions (the expected per-frame host call) never disturbs an
+    /// active range selection.
     pub fn set_dimensions(&mut self, row_count: usize, col_count: usize) {
         self.row_count = row_count;
         self.col_count = col_count;
@@ -149,7 +153,9 @@ impl CellGridController {
             self.cursor.0.min(row_count.saturating_sub(1)),
             self.cursor.1.min(col_count.saturating_sub(1)),
         );
-        self.selection_anchor = None;
+        self.selection_anchor = self
+            .selection_anchor
+            .filter(|&(row, col)| row < row_count && col < col_count);
     }
 
     pub fn set_frozen(&mut self, frozen_rows: usize, frozen_cols: usize) {
@@ -1113,5 +1119,53 @@ mod tests {
         c.handle(&key(NamedKey::Left, Modifiers::default()), &b, RECT);
         assert_eq!(c.cursor(), (0, 1));
         assert_eq!(c.col_scroll(), 0);
+    }
+
+    // ── set_dimensions ───────────────────────────────────────────────
+
+    #[test]
+    fn idempotent_set_dimensions_preserves_an_active_range_selection() {
+        let mut c = controller(10, 10);
+        let b = backend();
+        // Shift-extend a B2:C3 range (0-indexed: anchor (2, 2), cursor
+        // (1, 1) after extending back up and to the left).
+        c.handle(&key(NamedKey::Down, Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Down, Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Right, Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Right, Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Up, shift()), &b, RECT);
+        c.handle(&key(NamedKey::Left, shift()), &b, RECT);
+        assert_eq!(c.selection_bounds(), (1, 1, 2, 2));
+
+        // A host re-declaring the same dimensions every frame must not
+        // disturb the selection.
+        c.set_dimensions(10, 10);
+        assert_eq!(c.selection_anchor(), Some((2, 2)));
+        assert_eq!(c.cursor(), (1, 1));
+        assert_eq!(c.selection_bounds(), (1, 1, 2, 2));
+    }
+
+    #[test]
+    fn set_dimensions_drops_the_anchor_only_when_a_shrink_puts_it_out_of_range() {
+        let mut c = controller(10, 10);
+        let b = backend();
+        c.handle(&key(NamedKey::Down, Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Down, Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Right, Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Right, Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Up, shift()), &b, RECT);
+        c.handle(&key(NamedKey::Left, shift()), &b, RECT);
+        assert_eq!(c.selection_bounds(), (1, 1, 2, 2));
+
+        // Shrinking to a size that still contains both cursor and anchor
+        // leaves the selection intact.
+        c.set_dimensions(3, 3);
+        assert_eq!(c.selection_anchor(), Some((2, 2)));
+
+        // Shrinking past the anchor collapses it, leaving a single valid
+        // cursor cell rather than a stale out-of-range anchor.
+        c.set_dimensions(2, 2);
+        assert_eq!(c.selection_anchor(), None);
+        assert_eq!(c.cursor(), (1, 1));
     }
 }
