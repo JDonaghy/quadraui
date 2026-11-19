@@ -190,7 +190,7 @@ use quadraui_binding_core::{
     dialog_severity, drag::scroll_view_at, draw_bands, end_power_save_block, font_role,
     guarded as core_guarded, is_default_protocol_client, key_pressed_event, list_rows_and_viewport,
     login_item_enabled, menu_for_surface, merge_overrides, message_dialog_options_from_buttons,
-    paint_layout, pointer_shape, record_pending_error, remove_as_default_protocol_client,
+    paint_layout_windowed, pointer_shape, record_pending_error, remove_as_default_protocol_client,
     render_overlays, resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active,
     resolve_list_cursor, resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active,
     resolve_tree_cursor, resolve_tree_expansion, set_as_default_protocol_client, set_dock_menu,
@@ -1321,7 +1321,22 @@ impl AppLogic for PyAppLogic {
                 resolve_layout_node_state(&self.engine, &mut node);
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
+                // `_windowed`, not the plain `paint_layout` every other
+                // caller before this one used: a leaf whose render
+                // callback never sends an `"items_window"` key paints
+                // identically either way (see `paint_layout_windowed`'s own
+                // doc), but one that does now actually reaches a real
+                // scrollbar extent and padded paint instead of the decode
+                // side table `self.host.wire_diagnostics` tracks going
+                // unread.
+                paint_layout_windowed(
+                    backend,
+                    area,
+                    &node,
+                    &mut hits,
+                    &chrome_interaction,
+                    &self.host.wire_diagnostics.items_windows(),
+                );
                 // Refreshed every render so a hovered layout-tree button's
                 // tooltip resolves against this frame's tree, keyed by
                 // each leaf's own tree-address id -- see

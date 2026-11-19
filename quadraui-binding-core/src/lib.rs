@@ -281,6 +281,7 @@ pub use extra_paint::{
     decode_extra_primitive, extra_as, ExtraPaint, TreeTableControllerDescriptor,
     TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS,
 };
+pub use hit::tree_total_rows_and_viewport;
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
 pub use hit::{HitDetail, PaintedHit, ScrollChildHit};
@@ -288,13 +289,14 @@ pub use hit::{HitDetail, PaintedHit, ScrollChildHit};
 pub use host::NativeExitPolicy;
 pub use host::{
     app_path_kind, apply_data_table_nav_key, apply_list_nav_key, apply_split_divider_drag,
-    apply_tab_activated, apply_tab_closed, apply_tree_nav_key, apply_tree_toggle_expand,
-    callback_reaction, callback_reaction_for_render, caret_shape, click_down_up_events,
-    color_depth_name, dialog_severity, font_role, guarded, key_pressed_event, menu_for_surface,
-    merge_overrides, panic_message, pointer_shape, power_save_kind, record_pending_error,
-    reentrant_call_message, render_overlays, resize_edge, resolve_data_table_cursor,
-    resolve_layout_node, resolve_layout_tabs_active, resolve_list_cursor, resolve_render_refs,
-    resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
+    apply_tab_activated, apply_tab_closed, apply_tree_nav_key, apply_tree_nav_key_windowed,
+    apply_tree_toggle_expand, callback_reaction, callback_reaction_for_render, caret_shape,
+    click_down_up_events, color_depth_name, dialog_severity, font_role, guarded, key_pressed_event,
+    menu_for_surface, merge_overrides, panic_message, pointer_shape, power_save_kind,
+    record_pending_error, reentrant_call_message, render_overlays, resize_edge,
+    resolve_data_table_cursor, resolve_layout_node, resolve_layout_tabs_active,
+    resolve_list_cursor, resolve_render_refs, resolve_scroll_offset, resolve_split_ratio,
+    resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_cursor_windowed,
     resolve_tree_expansion, step_driver, take_pending_error, text_display_from_lines,
     theme_color_value, toast_corner, tree_table_controller_nodes_from_wire, widget_state_snapshot,
     window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, GuardedFailure,
@@ -313,6 +315,10 @@ pub use render::{
 pub use render::{
     data_table_viewport_rows, list_viewport_rows, split_rects_with_gap, tree_viewport_rows,
     RenderFrame, RenderRefs,
+};
+pub use render::{
+    draw_tree_with_scrollbar_and_state_windowed, items_window_from_value, paint_layout_windowed,
+    paint_leaf_windowed, rows_requested_for_window, ItemsWindow, RowsRequestedEvent,
 };
 pub use scripted::{
     register_scripted_widget, unregister_scripted_widget, ScriptWidget, ScriptedA11y,

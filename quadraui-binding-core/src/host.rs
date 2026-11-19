@@ -55,7 +55,7 @@ use crate::layout::{
 use crate::render::{
     apply_split_gap, data_table_viewport_rows, layout_container_rects, list_viewport_rows,
     natural_main_length, scroll_content_slots, scroll_viewport_and_track, shrink_main_axis,
-    tree_viewport_rows, RenderFrame, RenderRefs, ScrollMetrics, ScrollSlots,
+    tree_viewport_rows, ItemsWindow, RenderFrame, RenderRefs, ScrollMetrics, ScrollSlots,
 };
 use crate::widget_state::WidgetState;
 
@@ -894,6 +894,181 @@ pub fn resolve_tree_cursor(
             scroll_controlled,
         },
     );
+
+    TreeView {
+        selected_path,
+        scroll_offset,
+        ..tree.clone()
+    }
+}
+
+// ─── Windowed Tree cursor + scroll, by absolute index ──────────────────────
+//
+// A windowed tree's loaded `rows` is only ever a slice of its real
+// `ItemsWindow::total` extent, and a not-yet-loaded position's placeholder
+// `TreeRow::path` is a synthetic value with no stable identity across a
+// window update (see `crate::render::windowed_tree`'s own doc) — so unlike
+// `apply_tree_nav_key`/`resolve_tree_cursor` above, which track the cursor
+// by `TreePath` and re-locate it within `tree.rows` every frame, these
+// track it by absolute `usize` index instead, the same flat-cursor shape
+// `List`/`DataTable` already use (`move_flat_index`/`edge_flat_index`/
+// `scroll_into_view` below are the exact same functions, over `window.total`
+// rather than a bare row count).
+
+/// A windowed `Tree`'s cursor + scroll, persisted in [`WidgetState`] keyed
+/// by [`windowed_tree_cursor_id`] (NOT the tree's own id directly) — the
+/// windowed counterpart of [`TreeCursorState`]. `selected_index` is `None`
+/// only when nothing has been selected yet (`DataTableCursorState`'s own
+/// shape, not `ListCursorState`'s latch: an absolute index has no
+/// ambiguous "unset" sentinel the way a bare `usize` does).
+#[derive(Debug, Clone, Default)]
+struct TreeCursorStateWindowed {
+    selected_index: Option<usize>,
+    scroll_offset: usize,
+    scroll_controlled: bool,
+}
+
+/// The [`WidgetState`] key [`apply_tree_nav_key_windowed`]/
+/// [`resolve_tree_cursor_windowed`] store [`TreeCursorStateWindowed`]
+/// under — derived from, but distinct from, `id` itself.
+///
+/// [`WidgetState`] holds exactly one type-erased entry per [`WidgetId`]
+/// (see its own module doc), and [`InteractionEngine::handle`]'s generic
+/// focused-`Tree` key dispatch already writes a plain [`TreeCursorState`]
+/// under a tree's own id unconditionally — it has no way to know a given
+/// tree is windowed and should stay out of the way. Storing
+/// [`TreeCursorStateWindowed`] under that same id would have the generic
+/// dispatch silently clobber it (a `downcast_ref::<TreeCursorStateWindowed>()`
+/// against a stored `TreeCursorState` value just returns `None`, so this
+/// would fail silent, not loud) the moment a real app's event loop ran
+/// both paths for the same frame. Deriving a side key — the same
+/// `format!("{}-scrollbar", ...)` pattern `draw_tree_with_scrollbar_and_state`'s
+/// own `Scrollbar::vertical` call already uses for an unrelated per-tree
+/// id — keeps the two stores independent instead.
+fn windowed_tree_cursor_id(id: WidgetId) -> WidgetId {
+    WidgetId::new(format!("{}-windowed-cursor", id.as_str()))
+}
+
+/// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
+/// windowed `Tree`, resolved against [`WidgetState`] by absolute index —
+/// the windowed counterpart of [`apply_tree_nav_key`], for a tree whose
+/// `id` has an [`ItemsWindow`] in play. `total_rows`/`viewport_rows`
+/// should come from `crate::hit::tree_total_rows_and_viewport` against the
+/// most recent render's hit map (its `total_rows` is the collection's real
+/// extent — `ItemsWindow::total` — not the loaded slice's own length).
+/// Returns `true` (and leaves [`WidgetState`] updated) only when a
+/// recognized navigation key actually moved the cursor; `false` otherwise,
+/// mirroring [`apply_list_nav_key`]'s own contract exactly.
+pub fn apply_tree_nav_key_windowed(
+    widget_state: &WidgetState,
+    id: WidgetId,
+    total_rows: usize,
+    viewport_rows: usize,
+    key: &Key,
+) -> bool {
+    let Some(nav) = cursor_nav_for_key(key) else {
+        return false;
+    };
+    let state_id = windowed_tree_cursor_id(id);
+    let stored = widget_state
+        .get::<TreeCursorStateWindowed>(state_id)
+        .unwrap_or_default();
+    let new_idx = match nav {
+        CursorNav::Up => move_flat_index(stored.selected_index, -1, total_rows),
+        CursorNav::Down => move_flat_index(stored.selected_index, 1, total_rows),
+        CursorNav::Home => edge_flat_index(Edge::Start, total_rows),
+        CursorNav::End => edge_flat_index(Edge::End, total_rows),
+        CursorNav::PageUp => move_flat_index(
+            stored.selected_index,
+            -page_delta(viewport_rows),
+            total_rows,
+        ),
+        CursorNav::PageDown => {
+            move_flat_index(stored.selected_index, page_delta(viewport_rows), total_rows)
+        }
+    };
+    let moved = new_idx != stored.selected_index;
+    let scroll_offset = match new_idx {
+        Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
+        _ => stored.scroll_offset,
+    };
+    widget_state.set(
+        state_id,
+        TreeCursorStateWindowed {
+            selected_index: new_idx,
+            scroll_offset,
+            scroll_controlled: stored.scroll_controlled,
+        },
+    );
+    moved
+}
+
+/// Resolves a windowed `tree`'s cursor + scroll for painting — the
+/// windowed counterpart of [`resolve_tree_cursor`], for a tree whose `id`
+/// has `window` in play. `tree.selected_path`, when it resolves to one of
+/// `tree`'s own currently-loaded `rows`, controls the absolute index the
+/// same "controlled wins" way [`resolve_tree_cursor`] always has
+/// (translated into `window.start + row_idx`); otherwise the stored
+/// absolute index — persisted across frames, and across a window update
+/// moving which slice is loaded, by [`apply_tree_nav_key_windowed`] —
+/// wins. `scroll_offset` keeps [`resolve_tree_cursor`]'s own
+/// `scroll_controlled` latch unchanged (a non-zero `tree.scroll_offset`
+/// still means "the app pins this scroll" forever after).
+///
+/// Call once per frame, before painting `tree`, in place of
+/// [`resolve_tree_cursor`] for a leaf `window` already has an
+/// [`ItemsWindow`] for.
+pub fn resolve_tree_cursor_windowed(
+    widget_state: &WidgetState,
+    tree: &TreeView,
+    window: ItemsWindow,
+    viewport_rows: usize,
+) -> TreeView {
+    let state_id = windowed_tree_cursor_id(tree.id);
+    let stored = widget_state
+        .get::<TreeCursorStateWindowed>(state_id)
+        .unwrap_or_default();
+
+    let descriptor_index = tree.selected_path.as_ref().and_then(|path| {
+        tree.rows
+            .iter()
+            .position(|r| &r.path == path)
+            .map(|row_idx| window.start + row_idx)
+    });
+    let selected_index = descriptor_index.or(stored.selected_index);
+
+    let scroll_controlled = stored.scroll_controlled || tree.scroll_offset != 0;
+    let mut scroll_offset = if scroll_controlled {
+        tree.scroll_offset
+    } else {
+        stored.scroll_offset
+    };
+
+    if !scroll_controlled {
+        if let Some(idx) = selected_index {
+            scroll_offset = scroll_into_view(scroll_offset, idx, viewport_rows);
+        }
+    }
+
+    widget_state.set(
+        state_id,
+        TreeCursorStateWindowed {
+            selected_index,
+            scroll_offset,
+            scroll_controlled,
+        },
+    );
+
+    // Only translated back into a `TreePath` when the absolute index
+    // falls within this frame's own loaded slice -- a not-yet-loaded
+    // index has no real row to point `selected_path` at (and `tree.rows`
+    // past that slice is placeholder content a backend never highlights
+    // meaningfully anyway).
+    let selected_path = selected_index.and_then(|idx| {
+        idx.checked_sub(window.start)
+            .and_then(|row_idx| tree.rows.get(row_idx))
+            .map(|row| row.path.clone())
+    });
 
     TreeView {
         selected_path,

@@ -223,7 +223,7 @@ pub fn tree_row_path(hit_map: &[PaintedHit], id: WidgetId, row: usize) -> Option
             id: hit_id,
             row_paths,
             ..
-        } if *hit_id == id => row_paths.get(row).cloned(),
+        } if *hit_id == id => row_paths.get(row).cloned().flatten(),
         _ => None,
     })
 }
@@ -246,7 +246,12 @@ pub struct ScrollbarDrag {
 /// and the current `scroll_offset` as the drag's origin) and to compute a
 /// track-click page or a wheel notch (needs `total_rows`/`viewport_rows`
 /// for the `max_offset` clamp and `scroll_offset` as the value to move
-/// from).
+/// from). `total_rows` comes straight off [`PaintedHit::Tree::total_rows`]
+/// rather than `row_paths.len()`: on a windowed tree the two can differ
+/// (`row_paths` only ever spans the bounded `Vec`
+/// `crate::render::windowed_vec` actually materialises, while
+/// `total_rows` is the collection's real, possibly much larger, extent),
+/// and a scrollbar drag needs the real one.
 pub fn tree_scroll_state(
     hit_map: &[PaintedHit],
     id: WidgetId,
@@ -255,13 +260,13 @@ pub fn tree_scroll_state(
         PaintedHit::Tree {
             id: hit_id,
             scrollbar,
-            row_paths,
+            total_rows,
             viewport_rows,
             scroll_offset,
             ..
         } if *hit_id == id => scrollbar
             .clone()
-            .map(|sb| (sb, row_paths.len(), *viewport_rows, *scroll_offset)),
+            .map(|sb| (sb, *total_rows, *viewport_rows, *scroll_offset)),
         _ => None,
     })
 }
