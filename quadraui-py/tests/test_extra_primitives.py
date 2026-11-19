@@ -177,8 +177,8 @@ def test_render_callback_tree_split_and_panel_nest_an_extra_primitive():
 
     def render():
         return {
-            "panel": {
-                "id": "panel:outer",
+            "sidebar_panel": {
+                "id": "sidebar:outer",
                 "content": {
                     "split": {
                         "id": "split:1",

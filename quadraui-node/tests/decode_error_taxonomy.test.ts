@@ -136,7 +136,7 @@ test("a deeply nested decode error names every ancestor on the way down", () => 
           id: "one",
           title: "One",
           content: {
-            panel: {
+            sidebar_panel: {
               id: "chrome",
               content: {
                 split: {
@@ -156,7 +156,7 @@ test("a deeply nested decode error names every ancestor on the way down", () => 
     assert.ok(err instanceof MissingFieldError);
     const message = (err as Error).message;
     assert.match(message, /tabs#frm/);
-    assert.match(message, /panel#chrome/);
+    assert.match(message, /sidebar_panel#chrome/);
     assert.match(message, /split#inner/);
     // `.path` carries the same dotted path, independent of the message
     // text, and the NUL byte used to smuggle it across the napi-rs
@@ -166,7 +166,7 @@ test("a deeply nested decode error names every ancestor on the way down", () => 
     assert.ok(!(path as string).includes("\u0000"));
     assert.ok(!message.includes("\u0000"));
     assert.match(path as string, /tabs#frm/);
-    assert.match(path as string, /panel#chrome/);
+    assert.match(path as string, /sidebar_panel#chrome/);
     assert.match(path as string, /split#inner/);
     assert.ok(!(err as Error).stack!.includes("\u0000"));
     return true;
