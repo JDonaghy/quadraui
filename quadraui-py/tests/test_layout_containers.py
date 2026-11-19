@@ -34,9 +34,9 @@ binding work:
 - a `"row"`/`"column"` node's optional `"padding"`/`"gap"`/`"margin"`
   spacing keys, siblings of the `"row"`/`"column"` key in the same node
   dict, are honoured by the shared layout pass.
-- a `"split"`/`"tabs"`/`"panel"` node's own `"padding"`/`"margin"`
-  spacing keys, honoured the same way; a `"split"` node's `"gap"` also
-  works (the space between its two panes), while `"tabs"`/`"panel"` reject
+- a `"split"`/`"tabs"` node's own `"padding"`/`"margin"` spacing keys,
+  honoured the same way; a `"split"` node's `"gap"` also works (the space
+  between its two panes), while `"tabs"`/`"sidebar_panel"` reject
   `"gap"` as a decode error -- there's no second sibling to space it
   from.
 
@@ -61,90 +61,23 @@ def _text(node_id, text):
     }
 
 
-def test_panel_renders_nested_content():
+def test_a_panel_node_kind_is_rejected():
+    # `"panel"` is not a node kind -- chrome around content is a
+    # `"sidebar_panel"` -- so a descriptor naming it is a decode error,
+    # not a silent no-op.
     app = QuiApp(40, 20)
 
     def render():
         return {
             "panel": {
                 "id": "panel:outer",
-                "title": {"spans": [{"text": "Explorer", "fg": None, "bg": None}]},
                 "content": _text("text:body", "PANEL BODY"),
             }
         }
 
     app.set_render(render)
-    assert app.screen_contains("Explorer")
-    assert app.screen_contains("PANEL BODY")
-
-
-def test_clicking_a_panel_action_button_sets_the_click_s_widget_to_its_id():
-    # The lone action button is right-aligned in the title bar -- TUI's own
-    # 3-cell action width (`TUI_ACTION_BUTTON_WIDTH` in `quadraui::tui::panel`)
-    # puts it at x in [37.0, 40.0), row 0 (the title bar). `quadraui-binding-core`'s
-    # `InteractionEngine` records the panel's own chrome layout as a hit, so
-    # the raw `MouseDown` carries the action's own id as `widget`.
-    app = QuiApp(40, 20)
-
-    def render():
-        return {
-            "panel": {
-                "id": "panel:outer",
-                "title": {"spans": [{"text": "Explorer", "fg": None, "bg": None}]},
-                "actions": [
-                    {"id": "close", "icon": "x", "tooltip": "Close", "is_active": False}
-                ],
-                "content": _text("text:body", "PANEL BODY"),
-            }
-        }
-
-    app.set_render(render)
-    # Force the first paint so the panel's chrome layout is on the hit map
-    # before the click below -- `push_event`/`run` only ever re-render on a
-    # handler-returned `Reaction::Redraw`, never on their own.
-    app.screen()
-
-    received = []
-    app.set_handler(lambda event: received.append(event))
-    app.push_event(
-        {"MouseDown": {"button": "Left", "position": {"x": 38.0, "y": 0.0}, "modifiers": {}}}
-    )
-    app.run(1)
-
-    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
-    assert mouse_downs, received
-    assert mouse_downs[0]["widget"] == "close", received
-
-
-def test_clicking_a_panel_title_bar_sets_the_click_s_widget_to_the_panel_id():
-    # Clicking the title bar away from any action button (the panel's
-    # collapse affordance -- `PanelHit::TitleBar` is the only collapse hit
-    # the primitive exposes) must set the raw `MouseDown`'s `widget` to the
-    # panel's own id, same shape as the action-button click above.
-    app = QuiApp(40, 20)
-
-    def render():
-        return {
-            "panel": {
-                "id": "panel:outer",
-                "title": {"spans": [{"text": "Explorer", "fg": None, "bg": None}]},
-                "content": _text("text:body", "PANEL BODY"),
-            }
-        }
-
-    app.set_render(render)
-    app.screen()
-
-    received = []
-    app.set_handler(lambda event: received.append(event))
-    app.push_event(
-        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
-    )
-    app.run(1)
-
-    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
-    assert mouse_downs, received
-    assert mouse_downs[0]["widget"] == "panel:outer", received
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
 
 
 def test_clicking_a_sidebar_panel_toolbar_button_emits_toolbar_button_clicked():
@@ -480,7 +413,7 @@ def test_grid_rejects_more_cells_than_its_tracks_have_room_for():
 def test_grid_rejects_a_gap_key_it_does_not_support():
     # Grid tracks carry no gutter of their own, so `"gap"` is a decode
     # error naming the key rather than a silent no-op -- same treatment a
-    # `"panel"`/`"tabs"`/`"scroll"` node gives it.
+    # `"sidebar_panel"`/`"tabs"`/`"scroll"` node gives it.
     app = QuiApp(10, 4)
 
     def render():
@@ -498,41 +431,16 @@ def test_grid_rejects_a_gap_key_it_does_not_support():
         app.screen()
 
 
-def test_panel_padding_and_margin_inset_the_whole_panel_on_tui():
-    # A "panel" node's "padding"/"margin" keys are siblings of the "panel"
-    # key, honoured by the same shared layout pass a "row"/"column" node's
-    # own spacing keys use -- the whole panel (chrome and content both) is
-    # inset before `Backend::draw_panel` paints it. `padding: 12` insets a
-    # panel with no title bar by `ceil(12 / 8) == 2` columns and
-    # `ceil(12 / 16) == 1` row from the corner of a 10x5 screen.
-    app = QuiApp(10, 5)
-
-    def render():
-        return {
-            "panel": {
-                "id": "panel:1",
-                "content": _text("text:body", "X"),
-            },
-            "padding": 12,
-        }
-
-    app.set_render(render)
-    lines = app.screen().splitlines()
-    assert lines[0].strip() == "", "no padding row stays blank"
-    assert lines[1][:2] == "  ", "padding columns stay blank"
-    assert lines[1].strip() == "X"
-
-
-def test_panel_rejects_a_gap_key_it_does_not_support():
-    # "gap" has no meaning on a "panel" node -- there's no second sibling
+def test_sidebar_panel_rejects_a_gap_key_it_does_not_support():
+    # "gap" has no meaning on a "sidebar_panel" node -- there's no second sibling
     # to space it from -- so it's a decode error, same as "padding"/
     # "margin" were before this node kind supported them.
     app = QuiApp(10, 5)
 
     def render():
         return {
-            "panel": {
-                "id": "panel:1",
+            "sidebar_panel": {
+                "id": "sidebar:1",
                 "content": _text("text:body", "X"),
             },
             "gap": 8,
@@ -668,13 +576,13 @@ def test_split_padding_margin_and_gap_are_honoured_on_tui():
     )
 
 
-def test_duplicate_leaf_id_inside_panel_content_is_rejected():
+def test_duplicate_leaf_id_inside_sidebar_panel_content_is_rejected():
     app = QuiApp(40, 20)
 
     def render():
         return {
-            "panel": {
-                "id": "panel:outer",
+            "sidebar_panel": {
+                "id": "sidebar:outer",
                 "content": {
                     "row": [
                         _text("dup:1", "ONE"),

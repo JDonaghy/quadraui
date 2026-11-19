@@ -131,33 +131,13 @@ test("setRender honours a row's padding/gap spacing keys", () => {
   assert.equal(lines[1].trim(), "L");
 });
 
-test("setRender honours a panel's padding/margin spacing keys", () => {
-  // A `"panel"` node's `"padding"`/`"margin"` keys are siblings of the
-  // `"panel"` key, honoured by the same shared layout pass a `"row"`'s own
-  // spacing keys use -- the whole panel (chrome and content both) is
-  // inset before the chrome paints. `padding: 12` insets a panel with no
-  // title bar by `ceil(12 / 8) == 2` columns and `ceil(12 / 16) == 1` row.
-  const app = new QuiApp(10, 5);
-  app.setRender(() => ({
-    panel: {
-      id: "panel:1",
-      content: { id: "text:body", text_display: { id: "text:body", lines: [{ spans: [{ text: "X", fg: null, bg: null }] }] } },
-    },
-    padding: 12,
-  }));
-  const lines = app.screen().split("\n");
-  assert.equal(lines[0].trim(), "", "no padding row stays blank");
-  assert.equal(lines[1].slice(0, 2), "  ", "padding columns stay blank");
-  assert.equal(lines[1].trim(), "X");
-});
-
-test("setRender rejects a gap key on a panel node", () => {
-  // `"gap"` has no meaning on a `"panel"` node -- there's no second
+test("setRender rejects a gap key on a sidebar_panel node", () => {
+  // `"gap"` has no meaning on a `"sidebar_panel"` node -- there's no second
   // sibling to space it from -- so it's a decode error.
   const app = new QuiApp(10, 5);
   app.setRender(() => ({
-    panel: {
-      id: "panel:1",
+    sidebar_panel: {
+      id: "sidebar:1",
       content: { id: "text:body", text_display: { id: "text:body", lines: [] } },
     },
     gap: 8,

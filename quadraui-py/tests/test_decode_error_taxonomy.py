@@ -154,7 +154,7 @@ def test_a_nested_decode_error_s_path_names_every_ancestor_on_the_way_down():
                         "id": "one",
                         "title": "One",
                         "content": {
-                            "panel": {
+                            "sidebar_panel": {
                                 "id": "chrome",
                                 "content": {
                                     "split": {
@@ -176,11 +176,11 @@ def test_a_nested_decode_error_s_path_names_every_ancestor_on_the_way_down():
         app.screen()
     message = str(excinfo.value)
     assert "tabs#frm" in message
-    assert "panel#chrome" in message
+    assert "sidebar_panel#chrome" in message
     assert "split#inner" in message
     assert excinfo.value.code == "missing_field"
     assert excinfo.value.path == (
-        "render › tabs#frm › tab#one › content › panel#chrome › content › split#inner"
+        "render › tabs#frm › tab#one › content › sidebar_panel#chrome › content › split#inner"
     )
 
 
