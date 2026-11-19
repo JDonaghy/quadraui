@@ -13,6 +13,7 @@ pub mod activity_bar;
 pub mod board;
 pub mod button;
 pub mod canvas;
+pub mod cell_grid;
 pub mod chart;
 pub mod combo_box;
 pub mod command_center;
