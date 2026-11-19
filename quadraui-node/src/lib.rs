@@ -313,18 +313,18 @@ use quadraui_binding_core::{
     decode_shell_config, decode_style_overrides, dialog_severity, draw_bands, end_power_save_block,
     font_role, guarded as core_guarded, install_crash_handler, is_default_protocol_client,
     key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
-    message_dialog_options_from_buttons, paint_layout, pointer_shape, record_pending_error,
-    remove_as_default_protocol_client, render_overlays, resolve_app_path, resolve_layout_node,
-    resolve_render_refs, set_app_identifier, set_as_default_protocol_client, set_dock_menu,
-    set_jump_list, set_login_item, step_driver, take_pending_error as core_take_pending_error,
-    text_display_from_lines, theme_color_value, toast_corner,
-    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
-    update_download_and_stage, validate_style_set_name, widget_state_snapshot,
-    window_close_reaction, with_tray, with_window, BindingHost, DecodeError, DialogContentSize,
-    ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail, InteractionEngine,
-    OverrideError, RenderOutput, ScriptWidget, ScriptedA11y, ScriptedConstraints,
-    ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize,
-    ScriptedState, ServiceError, StyleContext, TreeTableControllerNode,
+    message_dialog_options_from_buttons, paint_layout_windowed, pointer_shape,
+    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    resolve_layout_node, resolve_render_refs, set_app_identifier, set_as_default_protocol_client,
+    set_dock_menu, set_jump_list, set_login_item, step_driver,
+    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
+    toast_corner, tree_table_controller_nodes_from_wire, update_apply_on_quit,
+    update_check_for_update, update_download_and_stage, validate_style_set_name,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
+    DialogContentSize, ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail,
+    InteractionEngine, OverrideError, RenderOutput, ScriptWidget, ScriptedA11y,
+    ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
+    ScriptedSize, ScriptedState, ServiceError, StyleContext, TreeTableControllerNode,
     TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON,
     SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
@@ -1078,14 +1078,14 @@ impl Drop for RenderCtxScope {
 // back either.
 //
 // **Env liveness.** [`ScriptWidget`]'s methods take no `Env` -- they are
-// called from deep inside [`paint_layout`]/[`InteractionEngine::handle`],
+// called from deep inside [`paint_layout_windowed`]/[`InteractionEngine::handle`],
 // well after the render/handle callback that registered this frame's
 // widget has already returned. [`ScriptEnvScope`] (mirroring
 // [`RenderCtxScope`] just above) stashes the live `Env` plus this app's
 // `pending_error` cell in [`CURRENT_SCRIPT_ENV`] for the whole span of
 // [`NodeAppLogic::render`]/[`NodeAppLogic::handle`] -- not just the
 // callback's own call, the way [`RenderCtxScope`] is scoped -- since
-// `paint_layout`'s own script-widget calls happen after the callback
+// `paint_layout_windowed`'s own script-widget calls happen after the callback
 // returns but still within the same `render`.
 
 thread_local! {
@@ -1423,7 +1423,7 @@ impl AppLogic for NodeAppLogic {
         let styles = StyleContext::new(&self.host.style_sets, &theme);
         // Installs `env`/`pending_error` into `CURRENT_SCRIPT_ENV` for the
         // whole rest of this render, not just the callback call below --
-        // `paint_layout` below calls back into any `defineWidget` this
+        // `paint_layout_windowed` below calls back into any `defineWidget` this
         // callback registered, well after it has already returned. See
         // the "Script widgets" module section's own doc.
         let _script_scope = ScriptEnvScope::enter(env, self.pending_error.clone());
@@ -1454,7 +1454,18 @@ impl AppLogic for NodeAppLogic {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
-                paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
+                // `_windowed`, not plain `paint_layout` — a leaf whose
+                // render callback never sends an `"items_window"` key
+                // paints identically either way (see
+                // `paint_layout_windowed`'s own doc).
+                paint_layout_windowed(
+                    backend,
+                    area,
+                    &node,
+                    &mut hits,
+                    &chrome_interaction,
+                    &self.host.wire_diagnostics.items_windows(),
+                );
             }
             None => {}
         }

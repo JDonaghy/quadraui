@@ -45,25 +45,40 @@ pub enum PaintedHit {
     /// narrows it) — checked for containment in `clip`'s place, so a point
     /// outside an enclosing scroll's viewport never resolves to this tree
     /// even though `area`'s own origin (hence the frame `layout.hit_test`
-    /// translates into) is untouched. `row_paths[i]` is the `TreePath` of
-    /// the row at visual index `i` (i.e. `TreeView::rows[i].path`), kept
-    /// alongside the layout so a `TreeViewHit::Row(i)` can be turned into a
-    /// semantic `UiEvent::Tree(RowClicked)` without re-borrowing the
-    /// `TreeView` itself. `area` is already narrowed to exclude
+    /// translates into) is untouched. `row_paths[i]` is `Some` of the
+    /// `TreePath` of the row at visual index `i` (i.e.
+    /// `TreeView::rows[i].path`) when that row is one this frame actually
+    /// loaded, kept alongside the layout so a `TreeViewHit::Row(i)` can be
+    /// turned into a semantic `UiEvent::Tree(RowClicked)` without
+    /// re-borrowing the `TreeView` itself. On an unwindowed tree every row
+    /// is loaded, so every entry is `Some`; on a windowed one (an
+    /// `ItemsWindow` was in play when this was painted — see
+    /// `crate::render::paint_leaf_windowed`'s own doc) a position outside
+    /// the loaded slice is `None` rather than the placeholder row's own
+    /// synthetic path, because that path is not a stable identity — it can
+    /// collide with a real row's path (see `crate::render::windowed_tree`'s
+    /// own doc) and would resolve a click or a cursor to the wrong row if
+    /// it escaped here. `area` is already narrowed to exclude
     /// `scrollbar`'s own gutter (see `draw_tree_with_scrollbar`), so a row
     /// hit-test never sees a point that landed on the scrollbar.
     /// `scrollbar` is `None` when the tree's rows fit without scrolling —
     /// its own `track` is an absolute rect (see [`quadraui::Scrollbar`]'s
     /// own doc), so [`clip_hits_to_viewport`] narrows it directly, the same
     /// way it narrows [`Self::Button`]'s `layout.bounds`. `scroll_offset`
-    /// is the tree's own offset as painted; `viewport_rows` is how many
-    /// rows fit in `area` at a zero offset (snapshotted at paint time,
-    /// since a `Scrollbar`'s `thumb_len` alone can't be inverted back to
-    /// it once `min_thumb_len` clamping has applied). Both feed the
-    /// scrollbar drag/page/wheel math in the binding's own event handler
-    /// without needing to re-borrow the `TreeView` or re-touch the backend.
-    /// `editing` is the path and edit state of whichever row currently has
-    /// `TreeRow::edit` set (`None` when no row is mid-rename), read by
+    /// is the tree's own offset as painted; `total_rows` is the
+    /// collection's real row count — `TreeView::rows.len()` on an
+    /// unwindowed tree, or the windowed `ItemsWindow::total` otherwise,
+    /// since a windowed tree's own `rows` is deliberately padded to less
+    /// than that (see `crate::render::windowed_vec`'s own doc), so a reader
+    /// needing the real extent must use this field rather than
+    /// `row_paths.len()`; `viewport_rows` is how many rows fit in `area` at
+    /// a zero offset (snapshotted at paint time, since a `Scrollbar`'s
+    /// `thumb_len` alone can't be inverted back to it once `min_thumb_len`
+    /// clamping has applied). All three feed the scrollbar drag/page/wheel
+    /// math in the binding's own event handler without needing to
+    /// re-borrow the `TreeView` or re-touch the backend. `editing` is the
+    /// path and edit state of whichever row currently has `TreeRow::edit`
+    /// set (`None` when no row is mid-rename), read by
     /// [`crate::semantic::focus_scoped_key_event`] so a key pressed while
     /// that row is being renamed is resolved by
     /// [`crate::tree_row_rename_key_event`] instead of falling straight
@@ -73,9 +88,10 @@ pub enum PaintedHit {
         area: Rect,
         clip: Rect,
         layout: TreeViewLayout,
-        row_paths: Vec<TreePath>,
+        row_paths: Vec<Option<TreePath>>,
         scrollbar: Option<Scrollbar>,
         scroll_offset: usize,
+        total_rows: usize,
         viewport_rows: usize,
         editing: Option<(TreePath, TreeRowEditState)>,
     },
@@ -871,6 +887,16 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
 /// visual row order and viewport capacity regardless of whether the tree
 /// currently has anything to scroll (e.g. the very first navigation key on
 /// a tree short enough to fit without one).
+///
+/// Drops every `None` entry of [`PaintedHit::Tree::row_paths`] (a
+/// not-yet-loaded placeholder on a windowed tree), so the returned `Vec`
+/// only ever holds real rows — `crate::host::apply_tree_nav_key`'s
+/// position-based navigation has no way to represent "this position has no
+/// row yet". A windowed tree's keyboard navigation therefore still only
+/// reaches its own loaded slice through this path; use
+/// `crate::host::apply_tree_nav_key_windowed` (fed `total_rows` from
+/// [`PaintedHit::Tree::total_rows`] instead of this function) for one that
+/// needs to reach the collection's full, possibly-unloaded extent.
 pub fn tree_rows_and_viewport(
     hit_map: &[PaintedHit],
     id: WidgetId,
@@ -882,7 +908,34 @@ pub fn tree_rows_and_viewport(
             viewport_rows,
             editing,
             ..
-        } if *hit_id == id && editing.is_none() => Some((row_paths.clone(), *viewport_rows)),
+        } if *hit_id == id && editing.is_none() => Some((
+            row_paths.iter().flatten().cloned().collect(),
+            *viewport_rows,
+        )),
+        _ => None,
+    })
+}
+
+/// The `(total_rows, viewport_rows)` of the `Tree` hit painted under id
+/// `id` this frame, or `None` if that tree isn't in the current hit map or
+/// its own selected row is currently mid-rename — the windowed-by-absolute-
+/// index counterpart of [`tree_rows_and_viewport`], read by
+/// `crate::host::apply_tree_nav_key_windowed` to move and scroll a
+/// windowed tree's cursor across its full real extent (`total_rows`,
+/// [`PaintedHit::Tree::total_rows`]) rather than only the loaded slice
+/// [`tree_rows_and_viewport`]'s own `Vec` is limited to.
+pub fn tree_total_rows_and_viewport(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Tree {
+            id: hit_id,
+            total_rows,
+            viewport_rows,
+            editing,
+            ..
+        } if *hit_id == id && editing.is_none() => Some((*total_rows, *viewport_rows)),
         _ => None,
     })
 }
@@ -1032,9 +1085,10 @@ mod tests {
             area,
             clip: area,
             layout,
-            row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
+            row_paths: tree.rows.iter().map(|row| Some(row.path.clone())).collect(),
             scrollbar: None,
             scroll_offset: 0,
+            total_rows: tree.rows.len(),
             viewport_rows: 24,
             editing,
         }
@@ -1273,6 +1327,7 @@ mod tests {
             row_paths: Vec::new(),
             scrollbar,
             scroll_offset: 0,
+            total_rows: 0,
             viewport_rows: 24,
             editing: None,
         }];
