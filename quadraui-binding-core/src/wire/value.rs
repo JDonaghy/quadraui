@@ -16,6 +16,7 @@ use serde_json::Value;
 use quadraui::{A11yInfo, A11yLive, Backend, BackendWidget, Rect, WidgetId};
 
 use crate::host::text_display_from_lines;
+use crate::render::ItemsWindow;
 use crate::DecodeError;
 
 /// Minimal [`BackendWidget`] painted into a `run_shell` bottom-panel tab's
@@ -329,6 +330,7 @@ pub struct DecodeDiagnostics {
     hook: RefCell<Option<UnknownKeyHook>>,
     drag_roles: RefCell<HashMap<String, DragRole>>,
     a11y_overrides: RefCell<HashMap<String, A11yInfo>>,
+    items_windows: RefCell<HashMap<String, ItemsWindow>>,
 }
 
 /// [`DecodeDiagnostics::set_hook`]'s registered callback, named so the
@@ -345,6 +347,7 @@ impl DecodeDiagnostics {
             hook: RefCell::new(None),
             drag_roles: RefCell::new(HashMap::new()),
             a11y_overrides: RefCell::new(HashMap::new()),
+            items_windows: RefCell::new(HashMap::new()),
         }
     }
 
@@ -428,6 +431,29 @@ impl DecodeDiagnostics {
     /// it directly.
     pub fn a11y_overrides(&self) -> HashMap<String, A11yInfo> {
         self.a11y_overrides.borrow().clone()
+    }
+
+    /// Records leaf `id`'s decoded [`ItemsWindow`] — called by
+    /// [`super::leaf::layout_leaf_from_value`] once per `"list"`/`"tree"`/
+    /// `"data_table"`/`"text_display"` leaf dict whose descriptor body sets
+    /// an `"items_window"` key, mirroring [`Self::record_drag_role`]: a
+    /// later call for the same `id` overwrites the earlier entry.
+    pub(super) fn record_items_window(&self, id: &str, window: ItemsWindow) {
+        self.items_windows
+            .borrow_mut()
+            .insert(id.to_string(), window);
+    }
+
+    /// The id-keyed side table [`Self::record_items_window`] has built up
+    /// over this session's decode(s) so far — every leaf id whose
+    /// descriptor body set an `"items_window"` key, mapped to its resolved
+    /// [`ItemsWindow`]. A leaf that never set the key has no entry here at
+    /// all. [`crate::render::paint_layout_windowed`] reads this to pad each
+    /// windowed leaf's painted payload out to its real `total`, so a
+    /// binding calls this once per decode and passes the result straight
+    /// through to that function.
+    pub fn items_windows(&self) -> HashMap<String, ItemsWindow> {
+        self.items_windows.borrow().clone()
     }
 
     /// Applies this session's policy to one finding: `key`, found on the

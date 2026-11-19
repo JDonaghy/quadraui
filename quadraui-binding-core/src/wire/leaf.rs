@@ -16,6 +16,18 @@ use super::value::{
     UNIVERSAL_NODE_SIBLING_KEYS, WINDOWED_LEAF_EXTRA_KEYS,
 };
 
+/// Records leaf `id`'s `"items_window"` into `diagnostics`'s own side
+/// table (see [`DecodeDiagnostics::record_items_window`]) when `body` (the
+/// raw `"list"`/`"tree"`/`"data_table"`/`"text_display"` descriptor dict,
+/// the same [`Value`] [`crate::render::items_window_from_value`] itself
+/// reads) carries one — a no-op when it doesn't, mirroring every other
+/// optional leaf-level side-table recording in this module.
+fn record_items_window(diagnostics: &DecodeDiagnostics, id: &str, body: &Value) {
+    if let Some(window) = crate::render::items_window_from_value(body) {
+        diagnostics.record_items_window(id, window);
+    }
+}
+
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
 /// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] or an
 /// [`EXTRA_PRIMITIVE_KINDS`] kind must be present and hold a `dict` — a
@@ -89,15 +101,19 @@ pub(super) fn layout_leaf_from_value(
                 value_dict,
                 &[],
             )?),
-            "text_display" => LeafDescriptor::TextDisplay(decode_value_checked(
-                diagnostics,
-                &context,
-                key,
-                value_dict,
-                &TEXT_DISPLAY_EXTRA_KEYS,
-            )?),
+            "text_display" => {
+                record_items_window(diagnostics, &id, v);
+                LeafDescriptor::TextDisplay(decode_value_checked(
+                    diagnostics,
+                    &context,
+                    key,
+                    value_dict,
+                    &TEXT_DISPLAY_EXTRA_KEYS,
+                )?)
+            }
             "list" => {
                 scroll_px = crate::scroll_px_from_value(v);
+                record_items_window(diagnostics, &id, v);
                 LeafDescriptor::List(decode_value_checked(
                     diagnostics,
                     &context,
@@ -108,6 +124,7 @@ pub(super) fn layout_leaf_from_value(
             }
             "tree" => {
                 scroll_px = crate::scroll_px_from_value(v);
+                record_items_window(diagnostics, &id, v);
                 LeafDescriptor::Tree(decode_value_checked(
                     diagnostics,
                     &context,
@@ -118,6 +135,7 @@ pub(super) fn layout_leaf_from_value(
             }
             "data_table" => {
                 scroll_px = crate::scroll_px_from_value(v);
+                record_items_window(diagnostics, &id, v);
                 LeafDescriptor::DataTable(decode_value_checked(
                     diagnostics,
                     &context,
