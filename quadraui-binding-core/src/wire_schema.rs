@@ -3853,6 +3853,7 @@ mod coverage {
             UiEvent::Chart(_, _) => {}
             UiEvent::DataTable(_, _) => {}
             UiEvent::TreeTable(_, _) => {}
+            UiEvent::CellGrid(_, _) => {}
             UiEvent::Toolbar(_, _) => {}
             UiEvent::Canvas(_, _) => {}
             UiEvent::BackendNative(_) => {}

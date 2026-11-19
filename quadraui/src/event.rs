@@ -121,9 +121,9 @@ use crate::backend::SystemTheme;
 use crate::power::PowerEventKind;
 use crate::types::{Modifiers, WidgetId};
 use crate::{
-    ActivityBarEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent, PaletteEvent,
-    StatusBarEvent, TabBarEvent, TerminalEvent, TextDisplayEvent, ToolbarEvent, TreeEvent,
-    TreeTableEvent,
+    ActivityBarEvent, CellGridEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent,
+    PaletteEvent, StatusBarEvent, TabBarEvent, TerminalEvent, TextDisplayEvent, ToolbarEvent,
+    TreeEvent, TreeTableEvent,
 };
 
 // ─── Supporting types ───────────────────────────────────────────────────────
@@ -1253,6 +1253,30 @@ pub enum UiEvent {
     /// wildcard `_ =>` arm regardless. Adding `TreeTable` compiles clean
     /// with no consumer changes required.
     TreeTable(WidgetId, TreeTableEvent),
+    /// A [`crate::CellGrid`] cell was clicked, moving the cursor to its
+    /// absolute `(row, col)` — see [`CellGridEvent::CursorMoved`]. Built
+    /// by [`crate::a11y::route_action`] for an assistive-technology
+    /// `Click` against a `cell.{row}.{col}` node; a mouse-driven click
+    /// produces the identical event through a host's own
+    /// `CellGridPrimitiveLayout::hit_test`.
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
+    /// exhaustive consumer match would need a wildcard arm to survive.
+    /// Blast-radius grep:
+    ///
+    /// ```text
+    /// $ grep -rn 'UiEvent::CellGrid\b\|CellGridEvent' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both; neither consumer references
+    /// CellGrid today)
+    /// ```
+    /// Both consumers' top-level `UiEvent` dispatch is a large match
+    /// ending in a wildcard `_ =>` arm (same precedent `NotificationActivated`'s
+    /// own doc above records), so this compiles clean with no consumer
+    /// changes required.
+    CellGrid(WidgetId, CellGridEvent),
     /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
     /// Enter/Space while keyboard-focused — the id is the toolbar's own,
     /// matching every other chrome-bar variant above (`StatusBar`,

@@ -295,10 +295,12 @@ impl fmt::Display for A11ySnapshot {
 mod tests {
     use super::*;
     use crate::a11y::{frame_to_tree, A11yNodeId};
+    use crate::primitives::cell_grid::{Cell, CellGrid, CellGridEvent};
     use crate::primitives::list::{ListItem, ListView};
     use crate::primitives::toolbar::{Toolbar, ToolbarButton};
     use crate::types::{Decoration, StyledText};
     use crate::Rect;
+    use std::collections::BTreeMap;
 
     fn list(id: &str, title: &str, items: &[&str], selected: usize) -> ListView {
         ListView {
@@ -513,6 +515,63 @@ window \"quadraui\" [focused]
             vec![UiEvent::List(
                 WidgetId::new("files"),
                 crate::primitives::list::ListViewEvent::ItemActivated { idx: 1 }
+            )]
+        );
+    }
+
+    /// A 2×2 `CellGrid` with no frozen panes or scroll — small enough
+    /// that a windowed position's absolute index is just itself.
+    fn cell_grid_surface(id: &str) -> Surface {
+        let row = |label: &str| {
+            (0..2)
+                .map(|c| Cell::plain(format!("{label}{c}")))
+                .collect::<Vec<_>>()
+        };
+        let grid = CellGrid {
+            id: WidgetId::new(id),
+            row_count: 2,
+            col_count: 2,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 4.0,
+            row_heights: BTreeMap::new(),
+            col_widths: BTreeMap::new(),
+            show_row_headers: true,
+            show_col_headers: true,
+            row_labels: BTreeMap::new(),
+            col_labels: BTreeMap::new(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: vec![row("r0"), row("r1")],
+            has_focus: true,
+            show_scrollbar: false,
+        };
+        Surface::CellGrid {
+            rect: Rect::new(0.0, 1.0, 30.0, 11.0),
+            grid,
+        }
+    }
+
+    #[test]
+    fn dispatch_action_routes_a_cell_grid_click_to_a_cursor_moved_event() {
+        let snapshot = A11yScenario::new()
+            .with_surface(cell_grid_surface("sheet"))
+            .snapshot();
+        let cell = snapshot
+            .find("r11")
+            .expect("cell (1, 1)'s own node, labelled with its text")
+            .id;
+
+        let events = snapshot.dispatch_action(cell, A11yAction::Click, None);
+
+        assert_eq!(
+            events,
+            vec![UiEvent::CellGrid(
+                WidgetId::new("sheet"),
+                CellGridEvent::CursorMoved { row: 1, col: 1 }
             )]
         );
     }
