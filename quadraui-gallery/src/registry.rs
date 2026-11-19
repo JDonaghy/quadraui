@@ -11,6 +11,7 @@ use crate::demos::board::BoardDemo;
 use crate::demos::bottom_panel::BottomPanelDemo;
 use crate::demos::canvas::CanvasDemo;
 use crate::demos::caret_shape::CaretShapeDemo;
+use crate::demos::cell_grid::CellGridDemo;
 use crate::demos::chart::ChartDemo;
 use crate::demos::chat::ChatDemo;
 use crate::demos::clipboard::ClipboardDemo;
@@ -105,6 +106,7 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         Box::new(ChatDemo::new()),
         // Data views.
         Box::new(DataTableDemo::new()),
+        Box::new(CellGridDemo::new()),
         Box::new(TreeDemo::new()),
         Box::new(TreeTableDemo::new()),
         Box::new(ChartDemo::new()),

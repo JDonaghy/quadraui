@@ -7,6 +7,7 @@ pub mod board;
 pub mod bottom_panel;
 pub mod canvas;
 pub mod caret_shape;
+pub mod cell_grid;
 pub mod chart;
 pub mod chat;
 pub mod clipboard;
