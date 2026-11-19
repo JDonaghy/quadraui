@@ -66,6 +66,7 @@ pub use overlay::{decode_layout_dialog, decode_popover, OverlayContent};
 pub use style::{decode_style_overrides, validate_style_set_name, StyleContext};
 pub(crate) use value::decode_value_checked;
 pub use value::DecodeDiagnostics;
+pub use value::DragRole;
 
 pub use layout::LAYOUT_NODE_KEYS;
 pub use value::StaticTabContent;
