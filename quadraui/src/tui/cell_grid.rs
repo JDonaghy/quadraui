@@ -45,12 +45,12 @@ fn row_header_width(grid: &CellGrid) -> f32 {
 /// touching a buffer.
 ///
 /// This is the **single** definition of TUI `CellGrid` geometry: both
-/// [`draw_cell_grid`] and `Backend::cell_grid_layout` go through it, so
-/// the layout a cache-free, layout-on-demand hit-test runs against is
-/// bit-for-bit the layout that was painted. TUI is cell-granular: one
-/// header row, a gutter sized from the sheet's own row numbers, and a
-/// 1-cell scrollbar strip on each axis when [`CellGrid::show_scrollbar`]
-/// is set.
+/// [`draw_cell_grid`] and `<CellGrid as Primitive>::layout` go through
+/// it, so the layout a cache-free, layout-on-demand hit-test runs
+/// against is bit-for-bit the layout that was painted. TUI is
+/// cell-granular: one header row, a gutter sized from the sheet's own
+/// row numbers, and a 1-cell scrollbar strip on each axis when
+/// [`CellGrid::show_scrollbar`] is set.
 pub fn tui_cell_grid_layout(area: Rect, grid: &CellGrid) -> CellGridLayout {
     let col_header_height = if grid.show_col_headers { 1.0 } else { 0.0 };
     let row_header_w = row_header_width(grid);

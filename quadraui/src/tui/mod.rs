@@ -127,9 +127,8 @@ pub use board::{draw_board, tui_board_layout};
 pub use button::{draw_button, draw_button_interactive, tui_button_layout};
 #[doc(hidden)]
 pub use canvas::{draw_canvas, tui_canvas_layout, tui_canvas_region_hit_test};
-pub use cell_grid::draw_cell_grid;
 #[doc(hidden)]
-pub use cell_grid::tui_cell_grid_layout;
+pub use cell_grid::{draw_cell_grid, tui_cell_grid_layout};
 #[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
 #[doc(hidden)]
