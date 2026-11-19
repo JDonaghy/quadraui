@@ -79,7 +79,7 @@ exports.WidgetNotFoundError = WidgetNotFoundError;
 
 // Layout nodes that hold other nodes rather than painting a primitive; every
 // other non-meta key on a node names the primitive kind it paints.
-const CONTAINER_ROLES = new Set(["row", "column", "split", "tabs", "panel", "sidebar_panel", "split_tree"]);
+const CONTAINER_ROLES = new Set(["row", "column", "split", "tabs", "sidebar_panel", "split_tree"]);
 
 // Keys a layout node may carry alongside its one role key. `wire_version`
 // is the top-level-only sibling key `js/app/runtime.ts`'s `App` now stamps
@@ -951,7 +951,7 @@ function appendChildren(harnessRef: Harness, widget: Widget, role: string, paylo
   } else if (role === "split") {
     appendNode(harnessRef, widget, payload.first, visible);
     appendNode(harnessRef, widget, payload.second, visible);
-  } else if (role === "panel" || role === "sidebar_panel") {
+  } else if (role === "sidebar_panel") {
     if (payload.toolbar !== undefined && payload.toolbar !== null) {
       appendNode(harnessRef, widget, { toolbar: payload.toolbar }, visible);
     }
