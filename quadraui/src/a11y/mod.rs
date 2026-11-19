@@ -61,9 +61,9 @@
 //! `A11yInfo`'s two oldest fields, `a11y_role` and `a11y_label`, keep the
 //! `a11y_` prefix to match `docs/UI_CRATE_DESIGN.md` decision #6 (see
 //! above). The state/structure fields alongside the typed role
-//! (`selected`, `expanded`, `checked`, `disabled`, `read_only`,
-//! `value`, `value_range`, `level`, `position_in_set`, `set_size`,
-//! `live`, `hidden`, `modal`) deliberately drop it: they live only on this sidecar struct,
+//! (`description`, `selected`, `expanded`, `checked`, `disabled`,
+//! `read_only`, `value`, `value_range`, `level`, `position_in_set`,
+//! `set_size`, `live`, `hidden`, `modal`) deliberately drop it: they live only on this sidecar struct,
 //! so the field name alone (`info.selected`, not `info.a11y_selected`)
 //! is already unambiguous, and decision #6's own rationale was to
 //! disambiguate `a11y_role`/`a11y_label` from a primitive's own
@@ -270,6 +270,13 @@ pub struct A11yInfo {
     /// AT-less behaviour.
     #[serde(default)]
     pub a11y_label: Option<String>,
+    /// Supplementary accessible description, read after the name —
+    /// ARIA's `aria-description`. Distinct from [`Self::a11y_label`]:
+    /// the label is the element's name ("Save"), the description is
+    /// extra detail an AT announces alongside it ("Saves the current
+    /// document"). `None` means no description was supplied.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Whether this element is the selected item within its container
     /// (e.g. a selected tab or list item). `None` means "not
     /// applicable" rather than "not selected".
@@ -355,6 +362,12 @@ impl A11yInfo {
     /// Sets the accessible label.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.a11y_label = Some(label.into());
+        self
+    }
+
+    /// Sets the supplementary accessible description.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
         self
     }
 
@@ -573,6 +586,7 @@ mod tests {
         let info = A11yInfo::default();
         assert_eq!(info.a11y_role, None);
         assert_eq!(info.a11y_label, None);
+        assert_eq!(info.description, None);
         assert_eq!(info.selected, None);
         assert_eq!(info.expanded, None);
         assert_eq!(info.checked, None);
@@ -593,6 +607,7 @@ mod tests {
         let info = A11yInfo::new()
             .with_role(A11yRole::Button)
             .with_label("Save")
+            .with_description("Saves the current document")
             .with_selected(true)
             .with_expanded(false)
             .with_checked(A11yChecked::Mixed)
@@ -609,6 +624,10 @@ mod tests {
 
         assert_eq!(info.a11y_role, Some(A11yRole::Button));
         assert_eq!(info.a11y_label.as_deref(), Some("Save"));
+        assert_eq!(
+            info.description.as_deref(),
+            Some("Saves the current document")
+        );
         assert_eq!(info.selected, Some(true));
         assert_eq!(info.expanded, Some(false));
         assert_eq!(info.checked, Some(A11yChecked::Mixed));
