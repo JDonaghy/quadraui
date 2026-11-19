@@ -2129,7 +2129,7 @@ pub fn widget_state_snapshot(
 /// The anchored-overlay paint pass every binding's `AppLogic::render` runs
 /// once, after painting its own fixed/additive slots (via [`crate::render::draw_bands`]
 /// or [`crate::render::paint_layout`]) and collecting `hits`: syncs the
-/// menu bar/forms/text-input carets against `hits`, then makes the one
+/// menu bar/forms/tree tables/text-input carets against `hits`, then makes the one
 /// [`InteractionEngine::render_overlays`] call that paints every open
 /// overlay in z-order (dialog on top of everything but tooltip/toast, then
 /// float/rich-text-popup/completions below it, toast topmost of all) — a
@@ -2146,6 +2146,7 @@ pub fn render_overlays(
 ) {
     engine.sync_menu_bar(backend, &hits);
     engine.sync_forms(backend, &hits);
+    engine.sync_tree_tables(backend, &hits);
     engine.sync_text_input_carets(backend, &hits);
     engine.render_overlays(backend);
     engine.set_hits(hits);
