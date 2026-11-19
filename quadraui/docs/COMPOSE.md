@@ -105,6 +105,54 @@ let config = ShellConfig::new("App", panels).with_bottom_panel_config(
 
 ---
 
+## `CellGridController` — `src/compose/cell_grid_controller.rs`
+
+**Owns:** spreadsheet-style cursor movement and rectangular range
+selection for a single `CellGrid` — arrows, Tab/Shift+Tab (wrapping
+across rows), Enter/Shift+Enter (down/up the column), Page Up/Down by
+the visible row count, Home/End within the row, Ctrl+Home/Ctrl+End to
+the sheet corners, Ctrl+Arrow to a sheet edge, any of those Shift-ed to
+extend the selection, Ctrl+A for the whole sheet, click and click-drag
+range selection, row/column-header and corner "select all" clicks, and
+keep-visible scrolling that leaves frozen panes alone. It owns the same
+geometry `CellGrid` carries (counts, frozen panes, sizes, labels,
+scroll) plus the cursor and selection anchor; it owns **no cell content
+and does no editing** — the host feeds the windowed cell text per
+frame.
+
+Unlike most controllers here it has no `render`: `CellGrid` paints
+through `Primitive`/`draw_primitive` rather than a bespoke `Backend`
+method, so the host calls `grid(cells)` to build the descriptor and
+draws that itself.
+
+**Events (`CellGridControllerEvent`):** `CursorMoved { row, col }` when
+the selection is just the cursor cell, `SelectionChanged { top, left,
+bottom, right }` (inclusive, already normalized) when it spans more,
+`Consumed` for a state-only change such as a drag update, `Ignored`
+otherwise.
+
+**Smallest wiring:**
+
+```ignore
+let mut grid = CellGridController::new("sheet");
+grid.set_dimensions(1000, 64);
+grid.set_frozen(1, 1);
+// render:
+backend.draw_primitive(&grid.grid(self.visible_cells()), area);
+// handle:
+match grid.handle(&event, backend, area) {
+    CellGridControllerEvent::CursorMoved { row, col } => self.show_formula(row, col),
+    CellGridControllerEvent::SelectionChanged { .. } => self.show_sum(grid.selection_bounds()),
+    _ => {}
+}
+```
+
+**Example:** `examples/tui_cell_grid.rs`
+(`examples/common/cell_grid_demo.rs`), driven end-to-end by
+`tests/tui_example_driver.rs`.
+
+---
+
 ## `ChatController` — `src/compose/chat_controller.rs`
 
 **Owns:** a chat-overlay interaction state machine — scrollable
