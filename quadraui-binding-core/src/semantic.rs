@@ -716,6 +716,58 @@ pub fn semantic_event_for_hit(
     }
 }
 
+/// Wire-shaped drag-gesture event [`crate::engine::InteractionEngine::handle`]
+/// dispatches through [`crate::engine::EventSink::dispatch_drag_gesture`] —
+/// mirrors [`crate::engine::TreeTableControllerWireEvent`]'s own `EventSink`
+/// default-method rollout: that method defaults to ignoring the event and
+/// reporting [`quadraui::Reaction::Continue`], so every existing
+/// [`crate::engine::EventSink`] impl keeps compiling unchanged until a
+/// binding deliberately overrides it to thread this to its own callback.
+/// Derives `Serialize` only, not `Deserialize`: [`HitDetail`] — the shape
+/// every `*_detail` field below reuses rather than inventing a second
+/// drag-specific hit description — has no `Deserialize` of its own either,
+/// since neither type has a reverse (host -> engine) decode path.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DragGestureWireEvent {
+    /// A `MouseDown` landed on a leaf
+    /// [`crate::engine::InteractionEngine::drag_roles`] marks
+    /// [`crate::wire::DragRole::draggable`] — the gesture's own arming
+    /// moment. Dispatched before the leaf's own ordinary click/selection
+    /// semantics (if any) also fire through [`crate::engine::EventSink::dispatch`]
+    /// for the same `MouseDown` — the two are independent effects of one
+    /// press, not alternatives.
+    DragStarted {
+        source: WidgetId,
+        source_detail: HitDetail,
+    },
+    /// The pointer moved onto a NEW leaf `drag_roles` marks
+    /// [`crate::wire::DragRole::drop_target`] while the gesture above is
+    /// still armed — dispatched once per target change (including back to
+    /// the same leaf under a different [`HitDetail`], e.g. a different
+    /// `List` row), never on every `MouseMoved` pixel that lands on the
+    /// unchanged target.
+    DragOver {
+        source: WidgetId,
+        source_detail: HitDetail,
+        target: WidgetId,
+        target_detail: HitDetail,
+    },
+    /// The gesture ended (`MouseUp`) while hovering a valid drop target —
+    /// the host applies whatever mutation `source`/`source_detail` dropped
+    /// onto `target`/`target_detail` stands for (e.g. reordering a
+    /// `List`'s own backing collection from `source_detail`'s row index to
+    /// `target_detail`'s). A `MouseUp` with no drop target under the
+    /// pointer ends the gesture silently instead — no `Dropped` is
+    /// dispatched at all.
+    Dropped {
+        source: WidgetId,
+        source_detail: HitDetail,
+        target: WidgetId,
+        target_detail: HitDetail,
+    },
+}
+
 /// Stringifies a raw key the same way every quadraui backend does, so a
 /// `*Event::KeyPressed` variant built here carries the identical `key`
 /// string an app would see from the TUI, GTK or macOS backend directly.

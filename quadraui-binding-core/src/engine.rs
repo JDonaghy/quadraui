@@ -33,8 +33,8 @@ use quadraui::{
 
 use crate::drag::{
     enclosing_scroll_child, find_data_table_layout, find_split_layout, find_split_tree_layout,
-    markdown_at, scroll_scrollbar, scroll_view_at, text_display_scroll_state, tree_scroll_state,
-    ActiveDrag, DataTableColumnDrag, ScrollDrag, ScrollbarDrag,
+    gesture_target_at, markdown_at, scroll_scrollbar, scroll_view_at, text_display_scroll_state,
+    tree_scroll_state, ActiveDrag, DataTableColumnDrag, GestureDrag, ScrollDrag, ScrollbarDrag,
 };
 use crate::extra_paint::{extra_as, TreeTableControllerDescriptor};
 use crate::hit::{
@@ -49,7 +49,7 @@ use crate::layout::LayoutNode;
 use crate::render::paint_layout;
 use crate::semantic::{
     button_clicked_event, focus_scoped_key_event, number_input_click_event, scripted_key_press,
-    scripted_region_click, semantic_event_for_hit,
+    scripted_region_click, semantic_event_for_hit, DragGestureWireEvent,
 };
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
@@ -609,6 +609,24 @@ pub trait EventSink {
         let _ = (id, event);
         quadraui::Reaction::Continue
     }
+
+    /// [`InteractionEngine::handle`]'s own drag-gesture arm/continue/clear
+    /// (see [`crate::drag::GestureDrag`]'s own doc) reported `event` —
+    /// mirrors [`Self::dispatch_tree_table_controller`]'s own default-method
+    /// rollout, carrying an already wire-shaped
+    /// [`crate::semantic::DragGestureWireEvent`] rather than a
+    /// [`quadraui::UiEvent`] for the identical reason that method does:
+    /// `quadraui::UiEvent` has no variant for a generic draggable/
+    /// drop-target gesture over an arbitrary leaf.
+    ///
+    /// Defaults to ignoring the event and reporting
+    /// [`quadraui::Reaction::Continue`] — every existing [`EventSink`] impl
+    /// keeps compiling unchanged against this new default method until it
+    /// deliberately overrides it.
+    fn dispatch_drag_gesture(&mut self, event: DragGestureWireEvent) -> quadraui::Reaction {
+        let _ = event;
+        quadraui::Reaction::Continue
+    }
 }
 
 /// Wire-shaped mirror of [`TreeTableControllerEvent`] — the same field
@@ -1045,6 +1063,17 @@ pub struct InteractionEngine {
     /// `Scroll` can scroll along either axis (see [`ScrollDrag::axis`]'s
     /// own doc), unlike a `Tree`'s always-vertical one.
     scroll_drag: RefCell<Option<ScrollDrag>>,
+    /// Armed by a `MouseDown` landing on a leaf [`Self::drag_roles`] marks
+    /// [`DragRole::draggable`], and cleared on the matching `MouseUp` —
+    /// see [`crate::drag::GestureDrag`]'s own doc for how this differs
+    /// from [`Self::active_drag`]/[`Self::scrollbar_drag`]/
+    /// [`Self::column_drag`]/[`Self::scroll_drag`] above: those four
+    /// rewrite the raw `MouseMoved`/`MouseUp` into a replacement
+    /// `UiEvent`; this one leaves them untouched and instead dispatches
+    /// [`crate::semantic::DragGestureWireEvent::DragStarted`]/`DragOver`/
+    /// `Dropped` alongside whatever else the same events already produce,
+    /// through [`EventSink::dispatch_drag_gesture`].
+    gesture_drag: RefCell<Option<GestureDrag>>,
     /// Per-`TextInput` [`quadraui::TextEditor`] session, keyed by
     /// `WidgetId`, that survives across keystrokes — see
     /// [`crate::text_input::apply_text_input_edit`]'s own doc for why a
@@ -3000,6 +3029,15 @@ impl InteractionEngine {
         // widget's behalf).
         let mut scripted_reaction = Reaction::Continue;
 
+        // Set when an armed `Self::gesture_drag` ends (`MouseUp`) over a
+        // valid drop target, below — merged into the final `Reaction` the
+        // same way `scripted_reaction` is. `drag_started_reaction`/
+        // `drag_over_reaction` are its arm/continue counterparts, set
+        // further down once `hit`/the `MouseMoved` branch are reached.
+        let mut gesture_reaction = Reaction::Continue;
+        let mut drag_started_reaction = Reaction::Continue;
+        let mut drag_over_reaction = Reaction::Continue;
+
         // A `MouseUp` always ends an armed divider/scrollbar drag, even
         // when the menu-bar/context-menu routing just below reports the
         // same event `Consumed` (e.g. a dropdown-item click, or the
@@ -3012,6 +3050,21 @@ impl InteractionEngine {
             *self.scrollbar_drag.borrow_mut() = None;
             *self.column_drag.borrow_mut() = None;
             *self.scroll_drag.borrow_mut() = None;
+            // Ends an armed `GestureDrag` the same way, dispatching
+            // `Dropped` first when it ended over a valid drop target (its
+            // own `target` is `Some`) — the gesture is cleared either way,
+            // so a `MouseUp` over nothing droppable still ends it, just
+            // silently (see `GestureDrag::target`'s own doc).
+            if let Some(gesture) = self.gesture_drag.borrow_mut().take() {
+                if let Some((target, target_detail)) = gesture.target {
+                    gesture_reaction = sink.dispatch_drag_gesture(DragGestureWireEvent::Dropped {
+                        source: gesture.source,
+                        source_detail: gesture.source_detail,
+                        target,
+                        target_detail,
+                    });
+                }
+            }
             self.chrome_pressed.borrow_mut().clear();
             // Mirrors the resets above for a `"form"` extra's own
             // scrollbar-thumb drag: `FormController::handle_event`'s `MouseUp`
@@ -3572,7 +3625,8 @@ impl InteractionEngine {
         let drag_armed = self.active_drag.borrow().is_some()
             || self.scrollbar_drag.borrow().is_some()
             || self.column_drag.borrow().is_some()
-            || self.scroll_drag.borrow().is_some();
+            || self.scroll_drag.borrow().is_some()
+            || self.gesture_drag.borrow().is_some();
         if let UiEvent::MouseMoved { position, .. } = &event {
             if !drag_armed {
                 let hit_now = hit_test_painted(&self.hit_map.borrow(), *position);
@@ -3627,6 +3681,50 @@ impl InteractionEngine {
                         return hover_reaction;
                     }
                 }
+            }
+        }
+
+        // A move while a `Self::gesture_drag` is armed updates its own
+        // `target` by re-hit-testing `position` against this frame's
+        // `Self::drag_roles` (via `gesture_target_at`), dispatching
+        // `DragGestureWireEvent::DragOver` through
+        // `sink.dispatch_drag_gesture` whenever that target changes —
+        // mirrors the hover-change bookkeeping just above, but scoped to
+        // drop-target leaves only and reported through the gesture's own
+        // dedicated `EventSink` method rather than `MouseEntered`/
+        // `MouseLeft`. Unlike the divider/scrollbar/column drags below,
+        // this never rewrites `event` itself — see `GestureDrag`'s own
+        // doc for why.
+        if let UiEvent::MouseMoved { position, .. } = &event {
+            let dispatch_over = {
+                let mut gesture = self.gesture_drag.borrow_mut();
+                gesture.as_mut().and_then(|active| {
+                    let new_target = gesture_target_at(
+                        &self.hit_map.borrow(),
+                        &self.drag_roles.borrow(),
+                        *position,
+                    );
+                    if new_target == active.target {
+                        return None;
+                    }
+                    active.target = new_target.clone();
+                    new_target.map(|(target, target_detail)| {
+                        (
+                            active.source,
+                            active.source_detail.clone(),
+                            target,
+                            target_detail,
+                        )
+                    })
+                })
+            };
+            if let Some((source, source_detail, target, target_detail)) = dispatch_over {
+                drag_over_reaction = sink.dispatch_drag_gesture(DragGestureWireEvent::DragOver {
+                    source,
+                    source_detail,
+                    target,
+                    target_detail,
+                });
             }
         }
 
@@ -3844,6 +3942,36 @@ impl InteractionEngine {
             (&event, &hit)
         {
             self.chrome_pressed.borrow_mut().insert(*bar, *action);
+        }
+
+        // A `MouseDown` landing on a leaf `Self::drag_roles` marks
+        // `DragRole::draggable` arms `Self::gesture_drag` and dispatches
+        // `DragGestureWireEvent::DragStarted` — tracked as a side effect of
+        // the press, independently of whatever semantic click event the
+        // same `MouseDown` also produces further below (e.g. a draggable
+        // `List` row still gets its own `ListViewEvent::SelectionChanged`;
+        // "pick it up" and "select it" are not mutually exclusive effects
+        // of one press). Mirrors `Self::active_drag`'s own arm timing,
+        // right after `hit`/`set_event_widget` resolve the id this
+        // `MouseDown` landed on.
+        if let (UiEvent::MouseDown { .. }, Some((id, detail))) = (&event, &hit) {
+            if self
+                .drag_roles
+                .borrow()
+                .get(id)
+                .is_some_and(|role| role.draggable)
+            {
+                *self.gesture_drag.borrow_mut() = Some(GestureDrag {
+                    source: *id,
+                    source_detail: detail.clone(),
+                    target: None,
+                });
+                drag_started_reaction =
+                    sink.dispatch_drag_gesture(DragGestureWireEvent::DragStarted {
+                        source: *id,
+                        source_detail: detail.clone(),
+                    });
+            }
         }
 
         // A wheel `Scroll` landing anywhere over a tree (its rows, its
@@ -4359,6 +4487,9 @@ impl InteractionEngine {
             .merge(event_reaction)
             .merge(persisted_state)
             .merge(scripted_reaction)
+            .merge(gesture_reaction)
+            .merge(drag_started_reaction)
+            .merge(drag_over_reaction)
     }
 }
 
@@ -4477,6 +4608,7 @@ mod tests {
     use crate::render::{
         draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
     };
+    use crate::semantic::DragGestureWireEvent;
 
     /// Records every event [`InteractionEngine::handle`] dispatches, in
     /// order, so a test can assert on the orchestration's decisions (e.g.
@@ -4490,6 +4622,10 @@ mod tests {
         /// method whose payload isn't a [`UiEvent`] (see that trait
         /// method's own doc for why).
         tree_table_dispatched: Vec<(WidgetId, TreeTableControllerWireEvent)>,
+        /// Every [`EventSink::dispatch_drag_gesture`] call, in order —
+        /// mirrors [`Self::tree_table_dispatched`] for the drag-gesture
+        /// counterpart.
+        drag_gesture_dispatched: Vec<DragGestureWireEvent>,
     }
 
     impl EventSink for RecordingSink {
@@ -4504,6 +4640,11 @@ mod tests {
             event: TreeTableControllerWireEvent,
         ) -> Reaction {
             self.tree_table_dispatched.push((id, event));
+            Reaction::Continue
+        }
+
+        fn dispatch_drag_gesture(&mut self, event: DragGestureWireEvent) -> Reaction {
+            self.drag_gesture_dispatched.push(event);
             Reaction::Continue
         }
     }
@@ -8535,6 +8676,122 @@ mod tests {
             )),
             "no items means no row to activate: {:?}",
             dispatched
+        );
+    }
+
+    /// Dragging a `List` row onto another row of the same list reorders it
+    /// -- the generic draggable/drop-target gesture
+    /// ([`crate::drag::GestureDrag`]) over a leaf `InteractionEngine::
+    /// drag_roles` marks both `draggable` and `drop_target`: `MouseDown` on
+    /// row 0 arms the gesture and dispatches `DragStarted`, `MouseMoved`
+    /// onto row 2 dispatches `DragOver` once the target changes, and
+    /// `MouseUp` still over row 2 dispatches `Dropped` carrying both rows'
+    /// own `HitDetail::ListItem` -- the shape a host actually moving the
+    /// dragged row from index 0 to index 2 in its own backing collection
+    /// reads back. Also checks that the ordinary pointer-click selection
+    /// semantics the same `MouseDown` already produces (`ListViewEvent::
+    /// SelectionChanged`) are untouched: arming a gesture is additive, not
+    /// a replacement, for a leaf with its own click semantics.
+    #[test]
+    fn dragging_a_list_row_onto_another_row_reports_dropped_with_both_row_indices() {
+        use crate::wire::DragRole;
+        use quadraui::ListViewEvent;
+
+        let mut driver = list_driver(3, 0);
+        driver.render();
+        driver.app().engine.set_drag_roles(HashMap::from([(
+            WidgetId::new("list"),
+            DragRole {
+                draggable: true,
+                drop_target: true,
+            },
+        )]));
+
+        let list_rect = driver
+            .app()
+            .engine
+            .tab_stops()
+            .iter()
+            .find_map(|(id, rect)| (*id == WidgetId::new("list")).then_some(*rect))
+            .expect("the list leaf should be a tab stop");
+        let line_height = {
+            let (backend, _) = driver.parts_mut();
+            backend.measure().line_height
+        };
+        let row_point = |row: usize| {
+            Point::new(
+                list_rect.x + 1.0,
+                list_rect.y + line_height * (row as f32 + 0.5),
+            )
+        };
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: row_point(0),
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseMoved {
+            position: row_point(2),
+            buttons: quadraui::ButtonMask {
+                left: true,
+                right: false,
+                middle: false,
+            },
+        });
+        driver.dispatch(UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: row_point(2),
+        });
+
+        let app = driver.app();
+        let sink = app.sink.borrow();
+        assert!(
+            sink.dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::List(id, ListViewEvent::SelectionChanged { idx: 0 })
+                    if *id == WidgetId::new("list")
+            )),
+            "picking up row 0 must still select it, same as a plain click: {:?}",
+            sink.dispatched
+        );
+        assert!(
+            matches!(
+                sink.drag_gesture_dispatched.first(),
+                Some(DragGestureWireEvent::DragStarted {
+                    source,
+                    source_detail: HitDetail::ListItem { index: 0 },
+                }) if *source == WidgetId::new("list")
+            ),
+            "expected DragStarted at row 0: {:?}",
+            sink.drag_gesture_dispatched
+        );
+        assert!(
+            sink.drag_gesture_dispatched.iter().any(|event| matches!(
+                event,
+                DragGestureWireEvent::DragOver {
+                    source,
+                    source_detail: HitDetail::ListItem { index: 0 },
+                    target,
+                    target_detail: HitDetail::ListItem { index: 2 },
+                } if *source == WidgetId::new("list") && *target == WidgetId::new("list")
+            )),
+            "expected a DragOver onto row 2: {:?}",
+            sink.drag_gesture_dispatched
+        );
+        assert!(
+            matches!(
+                sink.drag_gesture_dispatched.last(),
+                Some(DragGestureWireEvent::Dropped {
+                    source,
+                    source_detail: HitDetail::ListItem { index: 0 },
+                    target,
+                    target_detail: HitDetail::ListItem { index: 2 },
+                }) if *source == WidgetId::new("list") && *target == WidgetId::new("list")
+            ),
+            "expected Dropped from row 0 onto row 2: {:?}",
+            sink.drag_gesture_dispatched
         );
     }
 
