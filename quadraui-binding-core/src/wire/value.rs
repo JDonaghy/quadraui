@@ -13,7 +13,7 @@ use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::Deserializer;
 use serde_json::Value;
 
-use quadraui::{Backend, BackendWidget, Rect, WidgetId};
+use quadraui::{A11yInfo, A11yLive, Backend, BackendWidget, Rect, WidgetId};
 
 use crate::host::text_display_from_lines;
 use crate::DecodeError;
@@ -244,6 +244,68 @@ pub(super) fn drag_role_from_leaf_value(
     }))
 }
 
+/// The one leaf-only accessibility wire key [`a11y_info_from_leaf_value`]
+/// reads: `"a11y"`, a nested `{"label": ..., "description": ...,
+/// "live": ...}` dict (each entry optional). Valid only on an
+/// id-addressable leaf node dict, folded into [`super::leaf`]'s own
+/// known-key list alongside `"id"` and [`DRAG_ROLE_KEYS`].
+pub(super) const A11Y_KEYS: [&str; 1] = ["a11y"];
+
+/// The three keys [`a11y_info_from_leaf_value`] accepts inside a leaf's
+/// `"a11y"` sub-dict.
+pub(super) const A11Y_BODY_KEYS: [&str; 3] = ["label", "description", "live"];
+
+/// Reads the leaf-only `"a11y"` wire key off a leaf dict `value`,
+/// returning `Ok(None)` when the key is absent or its sub-dict sets none
+/// of [`A11Y_BODY_KEYS`] — the overwhelmingly common case, no leaf opts
+/// into an accessibility override. `"label"`/`"description"` must each be
+/// a string when present; `"live"` must decode as a
+/// [`quadraui::A11yLive`] (`"off"`/`"polite"`/`"assertive"`). An
+/// unrecognised key inside the sub-dict goes through `diagnostics`, same
+/// as every other optional sibling key this crate decodes.
+///
+/// The returned [`A11yInfo`] carries only the three fields above — never
+/// a role, state, or value — mirroring how [`crate::frame::OwnedNode::a11y`]
+/// (the consumer-facing override seam this is meant to feed) merges field
+/// by field over whatever a primitive already derived, rather than
+/// replacing it wholesale.
+pub(super) fn a11y_info_from_leaf_value(
+    diagnostics: &DecodeDiagnostics,
+    context: &str,
+    value: &Value,
+) -> Result<Option<A11yInfo>, DecodeError> {
+    let Some(a11y) = obj_get(value, "a11y") else {
+        return Ok(None);
+    };
+    let dict = must_be_dict(context, a11y, "a11y")?;
+    check_unknown_keys(diagnostics, context, "a11y", dict, &A11Y_BODY_KEYS)?;
+
+    let label = dict_str(context, dict, "label")?;
+    let description = dict_str(context, dict, "description")?;
+    let live = match obj_get(dict, "live") {
+        Some(v) => Some(serde_json::from_value::<A11yLive>(v.clone()).map_err(|_| {
+            DecodeError::type_mismatch(context, "a11y.live", "\"off\", \"polite\" or \"assertive\"")
+        })?),
+        None => None,
+    };
+
+    if label.is_none() && description.is_none() && live.is_none() {
+        return Ok(None);
+    }
+
+    let mut info = A11yInfo::new();
+    if let Some(label) = label {
+        info = info.with_label(label);
+    }
+    if let Some(description) = description {
+        info = info.with_description(description);
+    }
+    if let Some(live) = live {
+        info = info.with_live(live);
+    }
+    Ok(Some(info))
+}
+
 /// Session-scoped sink for a wire decode's unknown-*optional*-key findings
 /// — a dict key none of this crate's decoders recognize there, outside the
 /// small number of closed-vocabulary sub-dicts (`"padding"`'s object shape,
@@ -266,6 +328,7 @@ pub struct DecodeDiagnostics {
     warned: RefCell<HashSet<String>>,
     hook: RefCell<Option<UnknownKeyHook>>,
     drag_roles: RefCell<HashMap<String, DragRole>>,
+    a11y_overrides: RefCell<HashMap<String, A11yInfo>>,
 }
 
 /// [`DecodeDiagnostics::set_hook`]'s registered callback, named so the
@@ -281,6 +344,7 @@ impl DecodeDiagnostics {
             warned: RefCell::new(HashSet::new()),
             hook: RefCell::new(None),
             drag_roles: RefCell::new(HashMap::new()),
+            a11y_overrides: RefCell::new(HashMap::new()),
         }
     }
 
@@ -340,6 +404,30 @@ impl DecodeDiagnostics {
     /// A leaf that set neither key has no entry here at all.
     pub fn drag_roles(&self) -> HashMap<String, DragRole> {
         self.drag_roles.borrow().clone()
+    }
+
+    /// Records leaf `id`'s decoded `"a11y"` [`A11yInfo`] override — called
+    /// by [`super::leaf::layout_leaf_from_value`] once per leaf dict whose
+    /// `"a11y"` sub-dict sets at least one of [`A11Y_BODY_KEYS`]. A later
+    /// call for the same `id` overwrites the earlier entry, mirroring
+    /// [`Self::record_drag_role`].
+    pub(super) fn record_a11y_override(&self, id: &str, info: A11yInfo) {
+        self.a11y_overrides
+            .borrow_mut()
+            .insert(id.to_string(), info);
+    }
+
+    /// The id-keyed side table [`Self::record_a11y_override`] has built up
+    /// over this session's decode(s) so far — every leaf id whose `"a11y"`
+    /// sub-dict set at least one of [`A11Y_BODY_KEYS`], mapped to its
+    /// resolved [`A11yInfo`] (carrying only `a11y_label`, `description`
+    /// and `live` — see [`a11y_info_from_leaf_value`]). A leaf that never
+    /// set the key has no entry here at all. A binding merges this onto
+    /// [`crate::frame::OwnedNode::a11y`] for the matching widget id to
+    /// apply the override; no paint or dispatch path in this crate reads
+    /// it directly.
+    pub fn a11y_overrides(&self) -> HashMap<String, A11yInfo> {
+        self.a11y_overrides.borrow().clone()
     }
 
     /// Applies this session's policy to one finding: `key`, found on the

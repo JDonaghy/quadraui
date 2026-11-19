@@ -11,9 +11,9 @@ use crate::scripted::{lookup_scripted_widget, ScriptedWidgetDescriptor};
 use crate::DecodeError;
 
 use super::value::{
-    check_unknown_keys, decode_value_checked, drag_role_from_leaf_value, must_be_dict, obj_get,
-    DecodeDiagnostics, DRAG_ROLE_KEYS, TEXT_DISPLAY_EXTRA_KEYS, UNIVERSAL_NODE_SIBLING_KEYS,
-    WINDOWED_LEAF_EXTRA_KEYS,
+    a11y_info_from_leaf_value, check_unknown_keys, decode_value_checked, drag_role_from_leaf_value,
+    must_be_dict, obj_get, DecodeDiagnostics, A11Y_KEYS, DRAG_ROLE_KEYS, TEXT_DISPLAY_EXTRA_KEYS,
+    UNIVERSAL_NODE_SIBLING_KEYS, WINDOWED_LEAF_EXTRA_KEYS,
 };
 
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
@@ -24,7 +24,10 @@ use super::value::{
 /// across both loops below. Also reads this leaf's optional
 /// `"draggable"`/`"drop_target"` [`DRAG_ROLE_KEYS`], recording a
 /// [`super::value::DragRole`] against `id` in `diagnostics`'s side table
-/// when either is set.
+/// when either is set, and this leaf's optional `"a11y"` [`A11Y_KEYS`]
+/// accessibility override, recording a [`quadraui::A11yInfo`] against
+/// `id` in `diagnostics`'s side table when its sub-dict sets at least one
+/// of `"label"`/`"description"`/`"live"`.
 pub(super) fn layout_leaf_from_value(
     what: &str,
     value: &Value,
@@ -41,19 +44,24 @@ pub(super) fn layout_leaf_from_value(
     // "id" plus whichever of `LEAF_KIND_KEYS`/`EXTRA_PRIMITIVE_KINDS` holds
     // this leaf's one descriptor, plus the sibling keys every layout-tree
     // node dict may carry regardless of its own kind, plus the two
-    // leaf-only drag-role keys (`super::layout` rejects either
-    // unconditionally on a container, so they stay out of
-    // `UNIVERSAL_NODE_SIBLING_KEYS` itself).
+    // leaf-only drag-role keys and the one leaf-only accessibility-override
+    // key (`super::layout` rejects any of these unconditionally on a
+    // container, so they stay out of `UNIVERSAL_NODE_SIBLING_KEYS` itself).
     let known_keys: Vec<&str> = std::iter::once("id")
         .chain(LEAF_KIND_KEYS)
         .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
         .chain(UNIVERSAL_NODE_SIBLING_KEYS)
         .chain(DRAG_ROLE_KEYS)
+        .chain(A11Y_KEYS)
         .collect();
     check_unknown_keys(diagnostics, &context, "leaf", value, &known_keys)?;
 
     if let Some(role) = drag_role_from_leaf_value(&context, value)? {
         diagnostics.record_drag_role(&id, role);
+    }
+
+    if let Some(info) = a11y_info_from_leaf_value(diagnostics, &context, value)? {
+        diagnostics.record_a11y_override(&id, info);
     }
 
     let mut found: Option<LeafDescriptor> = None;
@@ -407,6 +415,100 @@ mod tests {
         });
         let error = err(layout_leaf_from_value("test", &value, &diagnostics));
         assert!(error.to_string().contains("draggable"), "{error}");
+    }
+
+    /// A leaf's `"a11y"` sub-dict carrying `"label"`, `"description"` and
+    /// `"live"` together decodes into a single [`quadraui::A11yInfo`]
+    /// recorded against the leaf's id in `diagnostics`'s side table —
+    /// mirroring [`a_leaf_may_set_both_drag_role_keys_at_once`] for the
+    /// sibling leaf-only extension key.
+    #[test]
+    fn a11y_leaf_key_records_label_description_and_live() {
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "save1",
+            "button": {"id": "save1", "label": "Save"},
+            "a11y": {
+                "label": "Save document",
+                "description": "Saves the current document",
+                "live": "polite",
+            },
+        });
+        layout_leaf_from_value("test", &value, &diagnostics).expect("decodes cleanly");
+        let overrides = diagnostics.a11y_overrides();
+        let info = overrides
+            .get("save1")
+            .expect("a11y override recorded against the leaf id");
+        assert_eq!(info.a11y_label.as_deref(), Some("Save document"));
+        assert_eq!(
+            info.description.as_deref(),
+            Some("Saves the current document")
+        );
+        assert_eq!(info.live, Some(quadraui::A11yLive::Polite));
+        assert_eq!(overrides.len(), 1);
+    }
+
+    /// A leaf with no `"a11y"` key at all gets no side-table entry.
+    #[test]
+    fn a_leaf_with_no_a11y_key_gets_no_side_table_entry() {
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "plain1",
+            "button": {"id": "plain1", "label": "Plain"},
+        });
+        layout_leaf_from_value("test", &value, &diagnostics).expect("decodes cleanly");
+        assert_eq!(diagnostics.a11y_overrides().get("plain1"), None);
+        assert!(diagnostics.a11y_overrides().is_empty());
+    }
+
+    /// `"a11y"` with an empty sub-dict (no `"label"`/`"description"`/
+    /// `"live"` set) also gets no side-table entry — the dict must set at
+    /// least one of the three to count as an override, same as
+    /// [`a_leaf_with_no_a11y_key_gets_no_side_table_entry`].
+    #[test]
+    fn a11y_leaf_key_with_an_empty_sub_dict_gets_no_side_table_entry() {
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "empty1",
+            "button": {"id": "empty1", "label": "Empty"},
+            "a11y": {},
+        });
+        layout_leaf_from_value("test", &value, &diagnostics).expect("decodes cleanly");
+        assert!(diagnostics.a11y_overrides().is_empty());
+    }
+
+    /// `"a11y.live"` set to a value outside `"off"`/`"polite"`/`"assertive"`
+    /// is a type-mismatch decode error naming `"a11y.live"`.
+    #[test]
+    fn an_invalid_a11y_live_value_is_a_decode_error() {
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "bad2",
+            "button": {"id": "bad2", "label": "Bad"},
+            "a11y": {"live": "urgent"},
+        });
+        let error = err(layout_leaf_from_value("test", &value, &diagnostics));
+        assert!(error.to_string().contains("a11y.live"), "{error}");
+    }
+
+    /// An unrecognised key inside the `"a11y"` sub-dict is reported through
+    /// [`DecodeDiagnostics`]'s usual warn/strict policy, same as any other
+    /// optional sibling key -- it does not stop the leaf from otherwise
+    /// decoding under the default `warn` policy.
+    #[test]
+    fn an_unknown_key_inside_the_a11y_sub_dict_warns_once_under_default_policy() {
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "typo1",
+            "button": {"id": "typo1", "label": "Typo"},
+            "a11y": {"lable": "Typo'd"},
+        });
+        layout_leaf_from_value("test", &value, &diagnostics)
+            .expect("warn mode still decodes despite the unrecognised a11y key");
+        assert_eq!(
+            diagnostics.warned_keys(),
+            HashSet::from(["lable".to_string()])
+        );
     }
 
     /// A container (here a `"row"`) carrying `"draggable"` is rejected --

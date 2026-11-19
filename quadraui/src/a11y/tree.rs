@@ -380,6 +380,9 @@ impl A11yTreeNode {
         if let Some(label) = self.label() {
             node.set_label(label.to_string());
         }
+        if let Some(description) = &self.info.description {
+            node.set_description(description.clone());
+        }
         if let Some(rect) = self.bounds {
             node.set_bounds(accesskit::Rect::new(
                 rect.x as f64,
@@ -1068,6 +1071,7 @@ fn merge(base: A11yInfo, over: &A11yInfo) -> A11yInfo {
     let mut merged = base;
     merged.a11y_role = over.a11y_role.or(merged.a11y_role);
     merged.a11y_label = over.a11y_label.clone().or(merged.a11y_label);
+    merged.description = over.description.clone().or(merged.description);
     merged.selected = over.selected.or(merged.selected);
     merged.expanded = over.expanded.or(merged.expanded);
     merged.checked = over.checked.or(merged.checked);
@@ -1175,6 +1179,9 @@ fn state_tokens(node: &A11yTreeNode, focused: bool) -> Vec<String> {
     }
     if info.read_only == Some(true) {
         tokens.push("readonly".to_string());
+    }
+    if let Some(description) = &info.description {
+        tokens.push(format!("desc=\"{}\"", escape_snapshot_text(description)));
     }
     if let Some(value) = &info.value {
         tokens.push(format!("value=\"{}\"", escape_snapshot_text(value)));
@@ -2474,6 +2481,48 @@ mod tests {
         assert_eq!(node.role(), A11yRole::List, "derived role survives");
     }
 
+    /// A consumer override carrying `label`, `description` and `live`
+    /// together — the `a11y {label, description, live}` shape a binding
+    /// decodes off the wire and attaches via [`crate::frame::OwnedNode::a11y`]
+    /// — all three show up in the snapshot: the label on the node's own
+    /// line, `desc=` and `live=` as state tokens.
+    #[test]
+    fn a11y_override_label_description_and_live_all_reach_the_snapshot() {
+        let mut frame = frame_with(vec![list_surface()]);
+        frame.nodes_mut()[0].a11y = Some(
+            A11yInfo::new()
+                .with_label("Open editors")
+                .with_description("Files currently open in the editor")
+                .with_live(A11yLive::Polite),
+        );
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let node = tree
+            .children_of(tree.root())
+            .first()
+            .copied()
+            .expect("surface node");
+        assert_eq!(node.label(), Some("Open editors"));
+        assert_eq!(
+            node.info.description.as_deref(),
+            Some("Files currently open in the editor")
+        );
+        assert_eq!(node.info.live, Some(A11yLive::Polite));
+
+        let snapshot = tree.to_snapshot();
+        assert!(
+            snapshot.contains("list \"Open editors\""),
+            "label on the node's own line: {snapshot}"
+        );
+        assert!(
+            snapshot.contains("desc=\"Files currently open in the editor\""),
+            "description as a state token: {snapshot}"
+        );
+        assert!(
+            snapshot.contains("live=polite"),
+            "live-region politeness as a state token: {snapshot}"
+        );
+    }
+
     #[test]
     fn first_update_is_full_then_only_changed_nodes_are_emitted() {
         let mut builder = A11yTreeBuilder::new();
@@ -2618,6 +2667,25 @@ mod tests {
         assert!(unchanged.nodes.is_empty());
         assert!(unchanged.tree.is_none());
         assert_eq!(unchanged.focus, update.focus);
+    }
+
+    #[cfg(feature = "a11y")]
+    #[test]
+    fn to_accesskit_sets_description() {
+        let node = A11yTreeNode {
+            id: A11yNodeId::for_key("widget"),
+            info: A11yInfo::new()
+                .with_role(A11yRole::Button)
+                .with_label("Save")
+                .with_description("Saves the current document"),
+            bounds: None,
+            children: Vec::new(),
+        };
+        let accesskit_node = node.to_accesskit();
+        assert_eq!(
+            accesskit_node.description(),
+            Some("Saves the current document")
+        );
     }
 
     #[test]
