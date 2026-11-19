@@ -1031,6 +1031,11 @@ name = "editor_bench"
 path = "benches/editor_bench.rs"
 harness = false
 
+[[bench]]
+name = "cell_grid_bench"
+path = "benches/cell_grid_bench.rs"
+harness = false
+
 # Issue #340: `TerminalSession` throughput — `process_with_capture`'s
 # scrollback-capture dance and `build_rows`'s full-grid snapshot rebuild,
 # the two plausible bottlenecks named in the issue. Requires `terminal`

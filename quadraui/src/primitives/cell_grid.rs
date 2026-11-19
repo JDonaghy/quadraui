@@ -36,6 +36,28 @@
 //! [`crate::primitives::tree_table::TreeTable::tree`] being parallel to
 //! (rather than a copy of) its row data, just windowed instead of
 //! flattened.
+//!
+//! # Two-axis virtualisation: `cells_window` + `CellsRequested`
+//!
+//! [`CellGrid::cells_window`] reports exactly what absolute block of the
+//! sheet the scrolled (non-frozen) portion of [`CellGrid::cells`]
+//! currently covers, as a [`CellsWindow`] — computed from
+//! [`CellGrid::frozen_rows`]/[`CellGrid::frozen_cols`]/
+//! [`CellGrid::row_scroll`]/[`CellGrid::col_scroll`] plus `cells`' own
+//! shape rather than stored as a field, since it's scroll-derived state
+//! (`CLAUDE.md`'s *Downstream consumers* section: keep that kind of thing
+//! a controller/accessor can recompute, not a required descriptor
+//! field). [`CellGrid::cells_requested`] compares that window against a
+//! resolved [`CellGridLayout`]'s own visible rows/columns and, when the
+//! loaded window doesn't cover what the viewport needs (a fresh scroll,
+//! a jump, or a resize that grew the viewport), returns a
+//! [`CellGridEvent::CellsRequested`] naming the exact absolute block —
+//! `row_start`/`col_start`/`rows`/`cols` — the app should supply next.
+//! [`CellGrid::row_count`]/[`CellGrid::col_count`] (the sheet totals)
+//! never change size with the loaded block, so the header strips and any
+//! scrollbar built from [`CellGrid::layout`] stay anchored to the real
+//! sheet extent regardless of how small a window the app currently has
+//! loaded.
 
 use crate::event::Rect;
 use crate::primitives::data_table::ColumnAlign;
@@ -592,15 +614,53 @@ impl CellGridLayout {
     }
 }
 
-/// Events a `CellGrid` emits back to the app. Not produced by
-/// [`CellGrid::layout`]/[`CellGridLayout::hit_test`] themselves — a host
-/// derives these from [`crate::UiEvent`] plus `CellGridPrimitiveLayout::hit_test`,
-/// the same convention every other row-family primitive's `*Event` enum
-/// follows (e.g. [`crate::primitives::icon_grid::IconGridEvent`]).
+/// Events a `CellGrid` emits back to the app.
+///
+/// [`Self::CursorMoved`] is not produced by [`CellGrid::layout`]/
+/// [`CellGridLayout::hit_test`] themselves — a host derives it from
+/// [`crate::UiEvent`] plus `CellGridPrimitiveLayout::hit_test`, the same
+/// convention every other row-family primitive's `*Event` enum follows
+/// (e.g. [`crate::primitives::icon_grid::IconGridEvent`]).
+/// [`Self::CellsRequested`] is different: it has no input event to derive
+/// from (no click or key fired it), so a host computes it directly via
+/// [`CellGrid::cells_requested`] once per frame after resolving layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CellGridEvent {
     /// The active cell moved to a new absolute `(row, col)`.
     CursorMoved { row: usize, col: usize },
+    /// The viewport needs the absolute sheet block `[row_start, row_start
+    /// + rows)` × `[col_start, col_start + cols)` painted this frame, and
+    /// [`CellGrid::cells_window`] says it isn't loaded yet — see
+    /// [`CellGrid::cells_requested`].
+    CellsRequested {
+        row_start: usize,
+        col_start: usize,
+        rows: usize,
+        cols: usize,
+    },
+}
+
+/// The absolute sheet block the scrolled (non-frozen) portion of
+/// [`CellGrid::cells`] currently covers, reported by
+/// [`CellGrid::cells_window`]. The leading frozen rows/columns are not
+/// part of this window — they never scroll, so a caller is expected to
+/// keep them loaded unconditionally (see the module doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellsWindow {
+    /// Absolute row the loaded scrolled body starts at.
+    pub row_start: usize,
+    /// Absolute column the loaded scrolled body starts at.
+    pub col_start: usize,
+    /// How many scrolled-body rows are loaded, starting at `row_start`.
+    pub rows: usize,
+    /// How many scrolled-body columns are loaded, starting at
+    /// `col_start`.
+    pub cols: usize,
+    /// [`CellGrid::row_count`] — the sheet's full row extent, independent
+    /// of how much is actually loaded.
+    pub total_rows: usize,
+    /// [`CellGrid::col_count`] — the sheet's full column extent.
+    pub total_cols: usize,
 }
 
 // ── Accessibility ────────────────────────────────────────────────────
@@ -649,6 +709,92 @@ impl CellGrid {
     #[must_use]
     fn windowed_col(&self, pos: usize) -> usize {
         windowed_abs_index(self.frozen_cols, self.col_scroll, self.col_count, pos)
+    }
+
+    /// The absolute sheet block the scrolled (non-frozen) portion of
+    /// [`Self::cells`] currently covers — see [`CellsWindow`]'s own doc
+    /// for why the frozen rows/columns are excluded. Computed from
+    /// [`Self::frozen_rows`]/[`Self::frozen_cols`]/[`Self::row_scroll`]/
+    /// [`Self::col_scroll`] plus `cells`' own shape rather than stored,
+    /// so a caller never has to keep it in sync by hand (see the module
+    /// doc's "Two-axis virtualisation" section).
+    ///
+    /// `rows`/`cols` take the *minimum* loaded extent across every
+    /// scrolled-body row rather than the first or the maximum — a jagged
+    /// `cells` (one row shorter than the rest) must never read as fully
+    /// covering a column that row doesn't actually have, which an
+    /// optimistic max would.
+    #[must_use]
+    pub fn cells_window(&self) -> CellsWindow {
+        let frozen_rows = self.frozen_rows.min(self.row_count);
+        let frozen_cols = self.frozen_cols.min(self.col_count);
+        let row_start = frozen_rows
+            + self
+                .row_scroll
+                .min(self.row_count.saturating_sub(frozen_rows));
+        let col_start = frozen_cols
+            + self
+                .col_scroll
+                .min(self.col_count.saturating_sub(frozen_cols));
+        let rows = self.cells.len().saturating_sub(frozen_rows);
+        let cols = self
+            .cells
+            .iter()
+            .skip(frozen_rows)
+            .map(|row| row.len().saturating_sub(frozen_cols))
+            .min()
+            .unwrap_or(0);
+        CellsWindow {
+            row_start,
+            col_start,
+            rows,
+            cols,
+            total_rows: self.row_count,
+            total_cols: self.col_count,
+        }
+    }
+
+    /// Whether [`Self::cells_window`] already covers every row/column
+    /// `layout` says is visible and, if not, the
+    /// [`CellGridEvent::CellsRequested`] naming the exact absolute block
+    /// the app should supply next — the frozen rows/columns are excluded
+    /// from both sides of this check since they're expected to be loaded
+    /// unconditionally (see the module doc).
+    ///
+    /// Returns `None` once the loaded window covers the visible range —
+    /// a caller that already sent the right block gets no repeat
+    /// request. There is no prefetch margin (unlike
+    /// `quadraui-binding-core`'s wire-level `rows_requested_for_window`):
+    /// the returned block is exactly the viewport's own visible
+    /// scrolled-body rows/columns, since that's the acceptance contract
+    /// this method exists to satisfy.
+    #[must_use]
+    pub fn cells_requested(&self, layout: &CellGridLayout) -> Option<CellGridEvent> {
+        let body_rows = &layout.rows[layout.frozen_rows.min(layout.rows.len())..];
+        let body_cols = &layout.cols[layout.frozen_cols.min(layout.cols.len())..];
+        let (Some(first_row), Some(first_col)) = (body_rows.first(), body_cols.first()) else {
+            return None;
+        };
+        let row_start = first_row.index;
+        let col_start = first_col.index;
+        let rows = body_rows.len();
+        let cols = body_cols.len();
+
+        let window = self.cells_window();
+        let covers = window.row_start <= row_start
+            && window.row_start + window.rows >= row_start + rows
+            && window.col_start <= col_start
+            && window.col_start + window.cols >= col_start + cols;
+        if covers {
+            None
+        } else {
+            Some(CellGridEvent::CellsRequested {
+                row_start,
+                col_start,
+                rows,
+                cols,
+            })
+        }
     }
 }
 
@@ -1461,6 +1607,156 @@ mod tests {
         g.selection_anchor = None;
         g.cursor = (3, 3);
         assert_eq!(g.selection_bounds(), (3, 3, 3, 3));
+    }
+
+    // ── cells_window / cells_requested — two-axis virtualisation ────
+
+    /// A `row_count`×`col_count` sheet with no frozen rows/columns and
+    /// nothing loaded into `cells` yet.
+    fn virtual_grid(row_count: usize, col_count: usize) -> CellGrid {
+        let mut g = grid();
+        g.row_count = row_count;
+        g.col_count = col_count;
+        g.frozen_rows = 0;
+        g.frozen_cols = 0;
+        g.row_scroll = 0;
+        g.col_scroll = 0;
+        g.cells = vec![];
+        g
+    }
+
+    /// Fill `g.cells` with a `rows`×`cols` block of blank cells, so
+    /// `g.cells_window()` reports exactly that much loaded.
+    fn load_cells(g: &mut CellGrid, rows: usize, cols: usize) {
+        g.cells = (0..rows)
+            .map(|_| (0..cols).map(|_| Cell::plain("")).collect())
+            .collect();
+    }
+
+    #[test]
+    fn cells_window_excludes_the_frozen_leading_rows_and_columns() {
+        let mut g = grid();
+        g.row_scroll = 50;
+        g.col_scroll = 20;
+        // One frozen row/column plus 4 scrolled-body rows/columns: 5
+        // total along each axis.
+        load_cells(&mut g, 5, 5);
+        let window = g.cells_window();
+        assert_eq!(window.row_start, g.frozen_rows + 50);
+        assert_eq!(window.col_start, g.frozen_cols + 20);
+        assert_eq!(window.rows, 4);
+        assert_eq!(window.cols, 4);
+        assert_eq!(window.total_rows, 1000);
+        assert_eq!(window.total_cols, 1000);
+    }
+
+    #[test]
+    fn cells_window_reports_the_loaded_block_at_a_million_row_scale() {
+        let mut g = virtual_grid(1_000_000, 16_384);
+        g.row_scroll = 500_000;
+        g.col_scroll = 8_000;
+        load_cells(&mut g, 20, 30);
+        let window = g.cells_window();
+        assert_eq!(window.row_start, 500_000);
+        assert_eq!(window.col_start, 8_000);
+        assert_eq!(window.rows, 20);
+        assert_eq!(window.cols, 30);
+        assert_eq!(window.total_rows, 1_000_000);
+        assert_eq!(window.total_cols, 16_384);
+    }
+
+    #[test]
+    fn cells_requested_is_none_once_the_loaded_window_covers_the_viewport() {
+        let mut g = virtual_grid(1_000_000, 16_384);
+        g.row_scroll = 500_000;
+        g.col_scroll = 8_000;
+        let layout = g.layout(100.0, 50.0, 1.0, 8.0, 0.0, 0.0);
+        load_cells(&mut g, layout.rows.len(), layout.cols.len());
+        assert_eq!(g.cells_requested(&layout), None);
+    }
+
+    #[test]
+    fn cells_requested_names_the_visible_block_after_scrolling_with_nothing_loaded() {
+        let mut g = virtual_grid(1_000_000, 16_384);
+        g.row_scroll = 500_000;
+        g.col_scroll = 8_000;
+        let layout = g.layout(100.0, 50.0, 1.0, 8.0, 0.0, 0.0);
+        let expected_row_start = layout.rows[0].index;
+        let expected_col_start = layout.cols[0].index;
+        let expected_rows = layout.rows.len();
+        let expected_cols = layout.cols.len();
+
+        let event = g.cells_requested(&layout).expect("nothing loaded yet");
+        assert_eq!(
+            event,
+            CellGridEvent::CellsRequested {
+                row_start: expected_row_start,
+                col_start: expected_col_start,
+                rows: expected_rows,
+                cols: expected_cols,
+            }
+        );
+    }
+
+    #[test]
+    fn cells_requested_matches_the_viewport_at_the_far_corner() {
+        let mut g = virtual_grid(1_000_000, 16_384);
+        g.row_scroll = 1_000_000 - 5;
+        g.col_scroll = 16_384 - 5;
+        let layout = g.layout(100.0, 50.0, 1.0, 8.0, 0.0, 0.0);
+        let last_row = layout
+            .rows
+            .last()
+            .expect("far corner must still have a row")
+            .index;
+        let last_col = layout
+            .cols
+            .last()
+            .expect("far corner must still have a col")
+            .index;
+        assert_eq!(last_row, 1_000_000 - 1);
+        assert_eq!(last_col, 16_384 - 1);
+
+        let event = g
+            .cells_requested(&layout)
+            .expect("nothing loaded at the far corner");
+        let CellGridEvent::CellsRequested {
+            row_start,
+            col_start,
+            rows,
+            cols,
+        } = event
+        else {
+            panic!("expected CellsRequested, got {event:?}");
+        };
+        assert_eq!(row_start, layout.rows[0].index);
+        assert_eq!(col_start, layout.cols[0].index);
+        assert_eq!(row_start + rows - 1, last_row);
+        assert_eq!(col_start + cols - 1, last_col);
+    }
+
+    #[test]
+    fn cells_requested_grows_with_a_larger_viewport_after_resizing() {
+        let mut g = virtual_grid(1_000_000, 16_384);
+        g.row_scroll = 100;
+        g.col_scroll = 100;
+        let small = g.layout(40.0, 20.0, 1.0, 8.0, 0.0, 0.0);
+        load_cells(&mut g, small.rows.len(), small.cols.len());
+        assert_eq!(g.cells_requested(&small), None);
+
+        // Resize to a much larger viewport without reloading `cells` —
+        // the loaded window no longer covers every visible row/column,
+        // so a fresh request names the bigger block the new viewport
+        // needs.
+        let big = g.layout(400.0, 200.0, 1.0, 8.0, 0.0, 0.0);
+        let event = g
+            .cells_requested(&big)
+            .expect("a grown viewport must request more cells");
+        let CellGridEvent::CellsRequested { rows, cols, .. } = event else {
+            panic!("expected CellsRequested, got {event:?}");
+        };
+        assert!(rows > small.rows.len());
+        assert!(cols > small.cols.len());
     }
 }
 

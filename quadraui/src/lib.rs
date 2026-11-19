@@ -558,7 +558,7 @@ pub use primitives::button::{
 pub use primitives::canvas::{Canvas, CanvasCursor, CanvasHit, CanvasLayout, CanvasRegion, DrawOp};
 pub use primitives::cell_grid::{
     column_letters, Cell, CellAlign, CellGrid, CellGridEvent, CellGridHit, CellGridLayout,
-    CellGridPrimitiveLayout, CellStyle, ResolvedSpan,
+    CellGridPrimitiveLayout, CellStyle, CellsWindow, ResolvedSpan,
 };
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
