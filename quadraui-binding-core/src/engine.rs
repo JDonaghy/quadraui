@@ -53,6 +53,7 @@ use crate::semantic::{
 };
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
+use crate::wire::DragRole;
 
 /// `backend.viewport()`, as a `(0, 0)`-origin [`Rect`] — the shape every
 /// anchored-overlay layout call here (`Tooltip`/`Completions`/`Float`/
@@ -995,6 +996,20 @@ pub struct InteractionEngine {
     /// to translate an incoming pointer event's screen coordinates into the
     /// `WidgetId` (and finer [`HitDetail`]) it landed on.
     hit_map: RefCell<Vec<PaintedHit>>,
+    /// This frame's draggable/drop-target roles, keyed by the same
+    /// [`WidgetId`] space [`Self::hit_map`]'s own entries carry —
+    /// [`crate::hit::drag_roles_by_widget_id`]'s `WidgetId`-keyed
+    /// reshaping of [`crate::wire::DecodeDiagnostics::drag_roles`]'s own
+    /// decode-time, `String`-keyed side table. [`Self::set_drag_roles`]
+    /// replaces this wholesale, mirroring [`Self::set_hits`]'s own
+    /// per-frame lifecycle for [`Self::hit_map`] — unlike
+    /// `DecodeDiagnostics::drag_roles`, which accumulates for its whole
+    /// session and is never scoped to "painted this frame", this is
+    /// cleared (via a `HashMap::new()` call) the moment a binding stops
+    /// calling `set_drag_roles` for a given render. Empty until a binding
+    /// starts calling [`Self::set_drag_roles`]; no gesture logic reads it
+    /// yet — this is the seam a future drag/drop dispatch reads from.
+    drag_roles: RefCell<HashMap<WidgetId, DragRole>>,
     /// Armed by a `MouseDown` landing on a split divider — a two-pane
     /// `Split`'s (per [`Self::hit_map`]'s [`PaintedHit::Split`]
     /// hit-testing) or one of an N-way `SplitTree`'s (per
@@ -1175,6 +1190,28 @@ impl InteractionEngine {
     /// [`InteractionEngine::tab_stops`] already expose.
     pub fn hit_map(&self) -> Ref<'_, Vec<PaintedHit>> {
         self.hit_map.borrow()
+    }
+
+    /// This frame's draggable/drop-target roles, keyed by [`WidgetId`] —
+    /// the [`Self::drag_roles`] field's own read access, mirroring
+    /// [`Self::hit_map`]'s. `None` entries mean "this id has no recorded
+    /// role" rather than appearing with [`DragRole::default`] — a leaf
+    /// never seen by [`Self::set_drag_roles`] (including every binding
+    /// that never calls it at all) simply has no key here.
+    pub fn drag_roles(&self) -> Ref<'_, HashMap<WidgetId, DragRole>> {
+        self.drag_roles.borrow()
+    }
+
+    /// Replaces this frame's retained draggable/drop-target roles,
+    /// keyed by [`WidgetId`] (see [`crate::hit::drag_roles_by_widget_id`]
+    /// for building one from [`crate::wire::DecodeDiagnostics::drag_roles`]'s
+    /// own decode-time, `String`-keyed table). Call once per render,
+    /// alongside [`Self::set_hits`] — this is a sibling call, not folded
+    /// into `set_hits` itself, so a binding that never decodes a drag
+    /// role (the common case today) keeps calling `set_hits` exactly as
+    /// before. No gesture logic reads [`Self::drag_roles`] yet.
+    pub fn set_drag_roles(&self, drag_roles: HashMap<WidgetId, DragRole>) {
+        *self.drag_roles.borrow_mut() = drag_roles;
     }
 
     /// This engine's own per-widget state store — a binding's `render`
@@ -10805,5 +10842,106 @@ mod tests {
     fn style_token_returns_none_for_an_unknown_name() {
         let style = quadraui::Style::default();
         assert_eq!(style_token(&style, "not_a_real_field"), None);
+    }
+
+    /// [`InteractionEngine::set_drag_roles`]/[`InteractionEngine::drag_roles`]'s
+    /// whole contract: a fresh engine has none, `set_drag_roles` makes
+    /// them readable back verbatim, and a later call replaces the table
+    /// wholesale (an id dropped from the new call disappears, mirroring
+    /// [`InteractionEngine::set_hits`]'s own "replaced every frame, not
+    /// merged" lifecycle for [`InteractionEngine::hit_map`]).
+    #[test]
+    fn set_drag_roles_replaces_the_retained_table_wholesale_each_call() {
+        use crate::wire::DragRole;
+
+        let engine = InteractionEngine::new();
+        assert!(
+            engine.drag_roles().is_empty(),
+            "a fresh engine has no drag roles until set_drag_roles is called"
+        );
+
+        let mut first = HashMap::new();
+        first.insert(
+            WidgetId::new("drag1"),
+            DragRole {
+                draggable: true,
+                drop_target: false,
+            },
+        );
+        first.insert(
+            WidgetId::new("drop1"),
+            DragRole {
+                draggable: false,
+                drop_target: true,
+            },
+        );
+        engine.set_drag_roles(first);
+        assert_eq!(
+            engine.drag_roles().get(&WidgetId::new("drag1")),
+            Some(&DragRole {
+                draggable: true,
+                drop_target: false,
+            })
+        );
+        assert_eq!(engine.drag_roles().len(), 2);
+
+        // A later call with only one entry replaces the table wholesale
+        // -- "drop1" (and its own role) is gone, not merged alongside the
+        // new entry.
+        let mut second = HashMap::new();
+        second.insert(
+            WidgetId::new("drag2"),
+            DragRole {
+                draggable: true,
+                drop_target: true,
+            },
+        );
+        engine.set_drag_roles(second);
+        assert_eq!(engine.drag_roles().len(), 1);
+        assert_eq!(engine.drag_roles().get(&WidgetId::new("drop1")), None);
+        assert_eq!(
+            engine.drag_roles().get(&WidgetId::new("drag2")),
+            Some(&DragRole {
+                draggable: true,
+                drop_target: true,
+            })
+        );
+    }
+
+    /// [`InteractionEngine::set_hits`] never touches
+    /// [`InteractionEngine::drag_roles`] -- the two are sibling calls a
+    /// binding makes independently, exactly like
+    /// [`InteractionEngine::hit_map`] and `drag_roles` are sibling
+    /// fields, not one derived from the other.
+    #[test]
+    fn set_hits_does_not_clear_drag_roles() {
+        use crate::wire::DragRole;
+
+        let engine = InteractionEngine::new();
+        let mut roles = HashMap::new();
+        roles.insert(
+            WidgetId::new("drag1"),
+            DragRole {
+                draggable: true,
+                drop_target: false,
+            },
+        );
+        engine.set_drag_roles(roles);
+
+        engine.set_hits(vec![PaintedHit::Button {
+            id: WidgetId::new("btn"),
+            layout: quadraui::ButtonLayout {
+                bounds: Rect::new(0.0, 0.0, 10.0, 1.0),
+            },
+        }]);
+
+        assert_eq!(
+            engine.drag_roles().get(&WidgetId::new("drag1")),
+            Some(&DragRole {
+                draggable: true,
+                drop_target: false,
+            }),
+            "set_hits must not clear drag_roles -- a binding sets each independently"
+        );
     }
 }

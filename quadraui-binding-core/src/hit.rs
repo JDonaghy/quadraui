@@ -4,6 +4,7 @@
 //! [`event_position`]/[`set_event_widget`] read and write the one `widget`
 //! field a [`quadraui::UiEvent`] this module enriches carries.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use quadraui::{
@@ -15,6 +16,7 @@ use quadraui::{
 };
 
 use crate::extra_paint::{extra_as, ExtraPaint};
+use crate::wire::DragRole;
 
 /// `(layout, scroll_offset, total_rows)` — the state [`PaintedHit::Extra::
 /// tree_table_hit`] stashes at paint time so a later click can resolve a
@@ -944,6 +946,23 @@ pub fn data_table_rows_and_viewport(
     })
 }
 
+/// Converts [`crate::wire::DecodeDiagnostics::drag_roles`]'s own
+/// decode-time, `String`-keyed side table (one entry per wire leaf whose
+/// dict set `"draggable"`/`"drop_target"`) into the [`WidgetId`]-keyed
+/// shape [`crate::engine::InteractionEngine::set_drag_roles`] retains —
+/// the same `String` → `WidgetId::new` wrapping a [`crate::layout::LayoutLeaf::id`]
+/// gets at paint time (see `crate::render::paint_leaf`), so a leaf id the
+/// decode recorded a [`DragRole`] against resolves to the identical
+/// [`WidgetId`] a later [`hit_test_painted`] call returns for that same
+/// leaf's [`PaintedHit`]. Pure: reads `roles`, builds a fresh map, touches
+/// neither `roles` nor any [`PaintedHit`].
+pub fn drag_roles_by_widget_id(roles: &HashMap<String, DragRole>) -> HashMap<WidgetId, DragRole> {
+    roles
+        .iter()
+        .map(|(id, role)| (WidgetId::new(id.clone()), *role))
+        .collect()
+}
+
 /// Hit-tests `point` against only the `chrome_hits` lists
 /// [`PaintedHit::Extra`] entries carry (`Toolbar`'s buttons, `StatusBar`'s
 /// segments, `ActivityBar`'s items) — the subset [`InteractionEngine`][crate::engine::InteractionEngine]
@@ -1464,5 +1483,53 @@ mod tests {
             hit_test_painted(&hits, Point { x: 1.0, y: 2.0 }),
             Some((WidgetId::new("widget"), HitDetail::ExtraBody))
         );
+    }
+
+    /// [`drag_roles_by_widget_id`]'s whole contract: every `String` key
+    /// becomes the identical [`WidgetId`] a [`PaintedHit`] for that same
+    /// leaf id would carry, each mapped to its own unchanged [`DragRole`],
+    /// with none dropped and none merged into another entry.
+    #[test]
+    fn drag_roles_by_widget_id_rekeys_every_entry_to_the_matching_widget_id() {
+        let mut roles = HashMap::new();
+        roles.insert(
+            "drag1".to_string(),
+            DragRole {
+                draggable: true,
+                drop_target: false,
+            },
+        );
+        roles.insert(
+            "drop1".to_string(),
+            DragRole {
+                draggable: false,
+                drop_target: true,
+            },
+        );
+
+        let by_widget_id = drag_roles_by_widget_id(&roles);
+
+        assert_eq!(by_widget_id.len(), 2);
+        assert_eq!(
+            by_widget_id.get(&WidgetId::new("drag1")),
+            Some(&DragRole {
+                draggable: true,
+                drop_target: false,
+            })
+        );
+        assert_eq!(
+            by_widget_id.get(&WidgetId::new("drop1")),
+            Some(&DragRole {
+                draggable: false,
+                drop_target: true,
+            })
+        );
+    }
+
+    /// An empty decode-time table rekeys to an empty `WidgetId`-keyed one
+    /// — no entry is invented out of nowhere.
+    #[test]
+    fn drag_roles_by_widget_id_of_an_empty_table_is_empty() {
+        assert!(drag_roles_by_widget_id(&HashMap::new()).is_empty());
     }
 }
