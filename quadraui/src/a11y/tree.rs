@@ -1054,6 +1054,7 @@ fn describe(content: &OwnedContent) -> Described {
         OwnedContent::Board(model) => Described::from_primitive(model),
         OwnedContent::MessageList(list) => Described::from_primitive(list),
         OwnedContent::PipelineView(view) => Described::from_primitive(view),
+        OwnedContent::CellGrid(grid) => Described::from_primitive(grid),
         // Unit variants: the source surface carries no serializable
         // content, so only the role and name survive the frame capture.
         OwnedContent::FindReplace => Described::labelled(A11yRole::Form, "Find and replace"),
