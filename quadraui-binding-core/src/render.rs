@@ -2018,8 +2018,8 @@ pub struct ItemsWindow {
 /// decode.
 pub fn items_window_from_value(value: &serde_json::Value) -> Option<ItemsWindow> {
     let window = value.as_object()?.get("items_window")?.as_object()?;
-    let start = window.get("start")?.as_u64()? as usize;
-    let total = window.get("total")?.as_u64()? as usize;
+    let start = usize::try_from(window.get("start")?.as_u64()?).ok()?;
+    let total = usize::try_from(window.get("total")?.as_u64()?).ok()?;
     Some(ItemsWindow { start, total })
 }
 
@@ -2038,18 +2038,38 @@ pub struct RowsRequestedEvent {
 /// `window` (this frame's [`ItemsWindow`]), `loaded_len` (how many rows the
 /// current payload actually carries — `ListView::items.len()`,
 /// `TreeView::rows.len()`, `DataTable::rows.len()`, or
-/// `TextDisplay::lines.len()`), and `scroll_offset`/`viewport_rows` (the
-/// same values already recorded on this leaf's `PaintedHit` this frame,
-/// e.g. `list_viewport_rows`'s return value).
+/// `TextDisplay::lines.len()`), and `scroll_offset`/`viewport_rows`.
+///
+/// `viewport_rows` must come from [`list_viewport_rows`]/
+/// [`tree_viewport_rows`]/[`data_table_viewport_rows`] (the viewport's true
+/// row capacity at a *zero* scroll offset), not straight off this leaf's
+/// own `PaintedHit::*.viewport_rows` field: for `PaintedHit::DataTable` in
+/// particular, that field is `DataTableLayout::visible_rows` at the
+/// table's ACTUAL painted offset, which degrades toward zero near the end
+/// of the table — exactly when more rows are needed — and would starve
+/// this function's margin into a near-empty request.
+///
+/// `scroll_offset` is **window-relative**: the same value already recorded
+/// on this leaf's `PaintedHit` this frame (e.g. `PaintedHit::DataTable`'s
+/// `scroll_offset`, or `list_viewport_rows`'s caller's own
+/// `PaintedHit::List::scroll_offset`) is itself the descriptor's own
+/// `scroll_offset` field *as painted* — an index into the loaded payload
+/// `window.start..window.start + loaded_len`, not an absolute index into
+/// the widget's full `window.total` collection. This function converts it
+/// to absolute (`window.start + scroll_offset`) before comparing against
+/// `window`; a caller must not pre-add `window.start` itself.
 ///
 /// Returns `None` once the loaded slice `[window.start, window.start +
-/// loaded_len)` already covers the visible range `[scroll_offset,
-/// scroll_offset + viewport_rows)` — a render callback that already sent
-/// enough rows re-renders unchanged. Otherwise returns a request covering
-/// the visible range plus one viewport's worth of prefetch margin on each
-/// side, clamped to `[0, window.total)`: bounded by a small multiple of
+/// loaded_len)` already covers the absolute visible range
+/// `[window.start + scroll_offset, window.start + scroll_offset +
+/// viewport_rows)` — a render callback that already sent enough rows
+/// re-renders unchanged. Otherwise returns a request covering the visible
+/// range plus one viewport's worth of prefetch margin on each side,
+/// clamped to `[0, window.total)`: bounded by a small multiple of
 /// `viewport_rows`, never by `window.total`, so a 100k-row window never
-/// asks for more than a few hundred rows at once.
+/// asks for more than a few hundred rows at once. Returns `None` instead of
+/// a zero-`count` request when the clamp leaves nothing to ask for (e.g.
+/// `window.start >= window.total`).
 pub fn rows_requested_for_window(
     id: WidgetId,
     window: ItemsWindow,
@@ -2057,8 +2077,8 @@ pub fn rows_requested_for_window(
     scroll_offset: usize,
     viewport_rows: usize,
 ) -> Option<RowsRequestedEvent> {
-    let visible_start = scroll_offset.min(window.total);
-    let visible_end = scroll_offset
+    let visible_start = window.start.saturating_add(scroll_offset).min(window.total);
+    let visible_end = visible_start
         .saturating_add(viewport_rows)
         .min(window.total);
     let loaded_end = window.start.saturating_add(loaded_len);
@@ -2069,11 +2089,11 @@ pub fn rows_requested_for_window(
     let margin = viewport_rows.max(1);
     let start = visible_start.saturating_sub(margin);
     let end = visible_end.saturating_add(margin).min(window.total);
-    Some(RowsRequestedEvent {
-        id,
-        start,
-        count: end.saturating_sub(start),
-    })
+    let count = end.saturating_sub(start);
+    if count == 0 {
+        return None;
+    }
+    Some(RowsRequestedEvent { id, start, count })
 }
 
 /// Paints `tree` into `area`, reserving a right-hand gutter for its
@@ -4801,20 +4821,83 @@ mod tests {
 
     // ── virtualised `items_window` decode + `rows_requested_for_window` ──
 
+    /// [`items_window_from_value`]'s documented `None` paths -- mirrors
+    /// `scroll_px_tests`'s own coverage of
+    /// [`crate::scroll_px_from_value`]'s identical set of degrade-to-`None`
+    /// cases for the sibling extension key.
+    #[test]
+    fn items_window_from_value_none_paths() {
+        use serde_json::json;
+
+        assert_eq!(
+            items_window_from_value(&json!({"rows": []})),
+            None,
+            "key absent"
+        );
+        assert_eq!(
+            items_window_from_value(&json!({"items_window": "not an object"})),
+            None,
+            "items_window present but not an object"
+        );
+        assert_eq!(
+            items_window_from_value(&json!({"items_window": {"total": 10}})),
+            None,
+            "start missing"
+        );
+        assert_eq!(
+            items_window_from_value(&json!({"items_window": {"start": 0}})),
+            None,
+            "total missing"
+        );
+        assert_eq!(
+            items_window_from_value(&json!({"items_window": {"start": -1, "total": 10}})),
+            None,
+            "start is negative, not a non-negative integer"
+        );
+        assert_eq!(
+            items_window_from_value(&json!({"items_window": {"start": 0, "total": 1.5}})),
+            None,
+            "total is not an integer"
+        );
+        assert_eq!(
+            items_window_from_value(&json!([1, 2, 3])),
+            None,
+            "non-object value"
+        );
+        assert_eq!(
+            items_window_from_value(&json!({"items_window": {"start": 0, "total": 10}})),
+            Some(ItemsWindow {
+                start: 0,
+                total: 10
+            }),
+            "the happy path still decodes"
+        );
+    }
+
     /// A `data_table` leaf whose `items_window` says its 50 `rows` are only
     /// a slice of a 100,000-row total decodes and paints with a payload
     /// that stays exactly that small -- never ballooning to the full
     /// total -- and scrolling within the loaded slice needs nothing more,
     /// but scrolling past it asks for a new window bounded by a small
     /// multiple of the viewport, never by the 100k-row total itself.
+    ///
+    /// Covers `window.start > 0` end to end, not just `window.start == 0`:
+    /// each row's own cell text carries its absolute index
+    /// (`window_start + i`), so after `rows_requested_for_window` computes
+    /// a request and the harness answers it with a freshly windowed
+    /// payload, the test can assert the *content* that actually painted
+    /// is the right absolute rows, not merely that some row painted.
     #[test]
     fn windowed_data_table_decodes_bounded_and_requests_more_rows_on_scroll() {
         const TOTAL: usize = 100_000;
         const WINDOW_LEN: usize = 50;
 
-        fn leaf_value(scroll_offset: usize) -> serde_json::Value {
+        fn leaf_value(window_start: usize, scroll_offset: usize) -> serde_json::Value {
             let rows: Vec<_> = (0..WINDOW_LEN)
-                .map(|_| serde_json::json!({"cells": [{"spans": []}]}))
+                .map(|i| {
+                    let absolute = window_start + i;
+                    serde_json::json!({"cells": [{"spans": [{"text": format!("row-{absolute}")}]}]})
+                })
                 .collect();
             serde_json::json!({
                 "id": "table",
@@ -4823,7 +4906,7 @@ mod tests {
                     "columns": [{"title": "col"}],
                     "rows": rows,
                     "scroll_offset": scroll_offset,
-                    "items_window": {"start": 0, "total": TOTAL},
+                    "items_window": {"start": window_start, "total": TOTAL},
                 },
             })
         }
@@ -4840,13 +4923,31 @@ mod tests {
             table
         }
 
-        let value = leaf_value(0);
+        fn row_text(table: &DataTable, row: usize) -> &str {
+            &table.rows[row].cells[0].spans[0].text
+        }
+
+        // `window.start` well inside the 100k total -- not the 0 the
+        // previous version of this test exclusively covered -- so the
+        // `scroll_offset`-is-window-relative translation in
+        // `rows_requested_for_window` is actually exercised: `scroll_offset`
+        // here is relative to `window_start`, mirroring exactly what
+        // `PaintedHit::DataTable::scroll_offset` records (see that
+        // function's own doc).
+        const WINDOW_START: usize = 35;
+
+        let value = leaf_value(WINDOW_START, 0);
         let table = decode_table(&value);
         assert_eq!(
             table.rows.len(),
             WINDOW_LEN,
             "the decoded payload must stay bounded to the loaded window, \
              never the full 100k-row total"
+        );
+        assert_eq!(
+            row_text(&table, 0),
+            format!("row-{WINDOW_START}"),
+            "the first loaded row is the window's own start, not row 0"
         );
         let id = table.id;
 
@@ -4858,7 +4959,7 @@ mod tests {
         assert_eq!(
             window,
             ItemsWindow {
-                start: 0,
+                start: WINDOW_START,
                 total: TOTAL
             }
         );
@@ -4870,6 +4971,7 @@ mod tests {
         use quadraui::tui::testing::TuiDriver;
 
         struct WindowedTableLogic {
+            window_start: std::cell::Cell<usize>,
             scroll_offset: std::cell::Cell<usize>,
             viewport_rows: std::cell::Cell<usize>,
             engine: crate::engine::InteractionEngine,
@@ -4881,7 +4983,7 @@ mod tests {
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let value = leaf_value(self.scroll_offset.get());
+                let value = leaf_value(self.window_start.get(), self.scroll_offset.get());
                 let node = crate::wire::decode_layout_node("test", &value)
                     .expect("a data_table leaf with items_window must decode");
                 // The viewport's true row capacity -- mirroring how
@@ -4911,6 +5013,7 @@ mod tests {
         }
 
         let logic = WindowedTableLogic {
+            window_start: std::cell::Cell::new(WINDOW_START),
             scroll_offset: std::cell::Cell::new(0),
             viewport_rows: std::cell::Cell::new(0),
             engine: crate::engine::InteractionEngine::new(),
@@ -4922,18 +5025,24 @@ mod tests {
 
         // Scrolled to the very top of the loaded window: everything the
         // viewport can show is already loaded, so nothing more is needed.
+        // Under the old (buggy) absolute-index reading, `window.start
+        // (35) <= scroll_offset (0)` is false, so this would have wrongly
+        // requested a window starting back at 0 -- exactly the "drags the
+        // app back to the top on every frame" oscillation the review
+        // flagged, not the `None` a fully-covered viewport must produce.
         assert_eq!(
             rows_requested_for_window(id, window, WINDOW_LEN, 0, viewport_rows),
             None,
             "the viewport's visible range is already fully covered by the loaded slice"
         );
 
-        // Scroll past the last loaded row (50..55 with a 5-row viewport):
-        // the same leaf, now at a deeper `scroll_offset`, still decodes and
-        // paints -- it just has nothing to show past row 49 until the app
-        // sends a new window.
-        let deep_offset = WINDOW_LEN + 5;
-        driver.app_mut().scroll_offset.set(deep_offset);
+        // Scroll past the last loaded row: the same leaf, now at a deeper
+        // window-relative `scroll_offset`, still decodes and paints -- it
+        // just has nothing to show past the window's last row until the
+        // app sends a new window.
+        let deep_relative_offset = WINDOW_LEN + 5;
+        let deep_absolute_offset = WINDOW_START + deep_relative_offset;
+        driver.app_mut().scroll_offset.set(deep_relative_offset);
         driver.render();
         let painted_scroll_offset = driver
             .app()
@@ -4945,7 +5054,7 @@ mod tests {
                 _ => None,
             })
             .expect("the data_table should have painted a hit");
-        assert_eq!(painted_scroll_offset, deep_offset);
+        assert_eq!(painted_scroll_offset, deep_relative_offset);
 
         let request =
             rows_requested_for_window(id, window, WINDOW_LEN, painted_scroll_offset, viewport_rows)
@@ -4958,12 +5067,44 @@ mod tests {
             request.count
         );
         assert!(
-            request.start <= deep_offset,
-            "the requested window must start at or before the scrolled-to row"
+            request.start <= deep_absolute_offset,
+            "the requested window must start at or before the absolute scrolled-to row"
         );
         assert!(
-            request.start + request.count >= deep_offset + viewport_rows,
-            "the requested window must cover the whole visible range"
+            request.start + request.count >= deep_absolute_offset + viewport_rows,
+            "the requested window must cover the whole absolute visible range"
+        );
+
+        // End-to-end: the app answers the request with a freshly windowed
+        // payload starting exactly at `request.start`, re-centred so the
+        // scrolled-to row is still visible, and the next frame actually
+        // renders the right absolute rows -- not just "some" rows.
+        let new_relative_offset = deep_absolute_offset - request.start;
+        driver.app_mut().window_start.set(request.start);
+        driver.app_mut().scroll_offset.set(new_relative_offset);
+        driver.render();
+
+        let new_value = leaf_value(request.start, new_relative_offset);
+        let new_window = items_window_from_value(&new_value["data_table"])
+            .expect("the re-sent window must still carry items_window");
+        assert_eq!(
+            rows_requested_for_window(
+                id,
+                new_window,
+                WINDOW_LEN,
+                new_relative_offset,
+                viewport_rows
+            ),
+            None,
+            "the re-sent window must fully cover the still-scrolled-to viewport -- \
+             convergence, not another request"
+        );
+        let new_table = decode_table(&new_value);
+        assert_eq!(
+            row_text(&new_table, new_relative_offset),
+            format!("row-{deep_absolute_offset}"),
+            "the row actually scrolled to must render its own absolute content \
+             after the window update, not stale or wrong-offset content"
         );
     }
 }
