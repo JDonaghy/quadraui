@@ -540,6 +540,9 @@ export interface StyleValue {
   badge_blocked?: StyleColorValue;
   card_hint_bg?: StyleColorValue;
   card_hint_fg?: StyleColorValue;
+  cursor_normal_alpha?: number;
+  selection_alpha?: number;
+  yank_highlight_alpha?: number;
   padding?: number;
   corner_radius?: number;
   border_width?: number;

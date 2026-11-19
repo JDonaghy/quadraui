@@ -279,6 +279,11 @@ macro_rules! style_override_tokens {
                 card_hint_bg => card_hint_bg,
                 card_hint_fg => card_hint_fg,
             ],
+            theme_floats: [
+                cursor_normal_alpha => cursor_normal_alpha,
+                selection_alpha => selection_alpha,
+                yank_highlight_alpha => yank_highlight_alpha,
+            ],
             metrics: [
                 padding: f32 => with_padding => opt_f32,
                 corner_radius: f32 => with_corner_radius => opt_f32,
@@ -312,6 +317,7 @@ pub(crate) use style_override_tokens;
 macro_rules! define_style_override {
     (
         colors: [ $( $cfield:ident => $tfield:ident ),* $(,)? ],
+        theme_floats: [ $( $ffield:ident => $tffield:ident ),* $(,)? ],
         metrics: [ $( $mfield:ident : $mty:ty => $setter:ident => $decode:ident ),* $(,)? ],
     ) => {
         /// A scoped subset of the backend-wide [`quadraui::Theme`] colour
@@ -324,6 +330,7 @@ macro_rules! define_style_override {
         #[derive(Clone, Copy, Debug, Default, PartialEq)]
         pub struct StyleOverride {
             $(pub $cfield: Option<Color>,)*
+            $(pub $ffield: Option<f32>,)*
             $(pub $mfield: Option<$mty>,)*
         }
 
@@ -339,11 +346,14 @@ macro_rules! define_style_override {
             }
 
             /// Applies this override onto `theme`, leaving every field
-            /// this override didn't name unchanged.
+            /// this override didn't name unchanged. Every [`Theme`] field
+            /// is named by either the colour or `theme_floats` group, so
+            /// this struct literal is already exhaustive and needs no
+            /// `..theme` base.
             pub fn apply_theme(&self, theme: Theme) -> Theme {
                 Theme {
                     $($tfield: self.$cfield.unwrap_or(theme.$tfield),)*
-                    ..theme
+                    $($tffield: self.$ffield.unwrap_or(theme.$tffield),)*
                 }
             }
 
@@ -370,6 +380,7 @@ macro_rules! define_style_override {
             pub fn merged_over(&self, base: StyleOverride) -> StyleOverride {
                 StyleOverride {
                     $($cfield: self.$cfield.or(base.$cfield),)*
+                    $($ffield: self.$ffield.or(base.$ffield),)*
                     $($mfield: self.$mfield.or(base.$mfield),)*
                 }
             }
@@ -1818,6 +1829,22 @@ mod tests {
         assert_eq!(derived.foreground, base.foreground);
         assert_eq!(derived.border_fg, base.border_fg);
         assert_eq!(derived.accent_fg, base.accent_fg);
+    }
+
+    #[test]
+    fn style_override_apply_theme_covers_the_alpha_fields() {
+        let base = Theme::default();
+        let over = StyleOverride {
+            selection_alpha: Some(0.9),
+            ..StyleOverride::default()
+        };
+        let derived = over.apply_theme(base);
+        assert_eq!(derived.selection_alpha, 0.9);
+        // Every other alpha field, and every colour field, passes through
+        // unchanged.
+        assert_eq!(derived.cursor_normal_alpha, base.cursor_normal_alpha);
+        assert_eq!(derived.yank_highlight_alpha, base.yank_highlight_alpha);
+        assert_eq!(derived.background, base.background);
     }
 
     #[test]

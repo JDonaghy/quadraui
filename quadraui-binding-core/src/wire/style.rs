@@ -46,10 +46,12 @@ impl<'a> StyleContext<'a> {
 macro_rules! define_style_decode {
     (
         colors: [ $( $cfield:ident => $tfield:ident ),* $(,)? ],
+        theme_floats: [ $( $ffield:ident => $tffield:ident ),* $(,)? ],
         metrics: [ $( $mfield:ident : $mty:ty => $setter:ident => $decode:ident ),* $(,)? ],
     ) => {
         const STYLE_OVERRIDE_KEYS: &[&str] = &[
             $(stringify!($cfield),)*
+            $(stringify!($ffield),)*
             $(stringify!($mfield),)*
         ];
 
@@ -79,6 +81,7 @@ macro_rules! define_style_decode {
             }
             Ok(StyleOverride {
                 $($cfield: opt_color(dict, stringify!($cfield), context)?,)*
+                $($ffield: opt_f32(dict, stringify!($ffield), context)?,)*
                 $($mfield: $decode(dict, stringify!($mfield), context)?,)*
             })
         }
@@ -307,6 +310,7 @@ mod tests {
                 "row_height": 30.0,
                 "shadow_elevation": 2,
                 "tooltip_delay_ms": 250,
+                "selection_alpha": 0.75,
             },
         });
         let node = decode(&value).expect("valid styled leaf");
@@ -317,6 +321,37 @@ mod tests {
         assert_eq!(styled.style.row_height, Some(30.0));
         assert_eq!(styled.style.shadow_elevation, Some(2));
         assert_eq!(styled.style.tooltip_delay_ms, Some(250));
+        assert_eq!(styled.style.selection_alpha, Some(0.75));
+    }
+
+    /// Every [`Theme`]/[`quadraui::Style`] field name shows up somewhere in
+    /// [`STYLE_OVERRIDE_KEYS`] — either verbatim, or (for the four fields
+    /// [`StyleOverride`]'s own token-mapping table aliases to a shorter
+    /// name) under its alias. A field [`style_override_tokens!`]'s table
+    /// doesn't name yet fails this before it ships un-overridable.
+    #[test]
+    fn style_override_keys_cover_every_theme_and_style_field() {
+        let theme_keys = serde_json::to_value(Theme::default())
+            .expect("Theme serializes")
+            .as_object()
+            .expect("Theme serializes to an object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let style_keys = serde_json::to_value(quadraui::Style::default())
+            .expect("Style serializes")
+            .as_object()
+            .expect("Style serializes to an object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        const ALIASED: &[&str] = &["background", "foreground", "border_fg", "accent_fg"];
+        for key in theme_keys.iter().chain(style_keys.iter()) {
+            assert!(
+                STYLE_OVERRIDE_KEYS.contains(&key.as_str()) || ALIASED.contains(&key.as_str()),
+                "{key:?} is a Theme/Style field with no matching \"style\" override token"
+            );
+        }
     }
 
     /// `"shadow_elevation"` decodes through [`super::value::opt_u8`],
