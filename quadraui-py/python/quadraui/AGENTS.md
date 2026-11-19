@@ -296,9 +296,14 @@ black-box test under
   a settings page via `Form` and every field builder (`ToggleField`,
   `TextInputField`, `SliderField`, `SelectField`, `PasswordField`,
   `TextAreaField`). Its test is `test_settings_form_demo.py`.
-- `appshell_demo.py` (VS Code-style shell via `run_shell`),
-  `native_window_demo.py`, `waker_demo.py` (background threads),
+- [`task_list_demo.py`](https://github.com/JDonaghy/quadraui/blob/main/quadraui-py/examples/task_list_demo.py):
+  a task list + detail form + confirm dialog + status bar, combining
+  `List`, `Form`, and `App.confirm` in one app. Its test is
+  `test_task_list_demo.py`.
+- `native_window_demo.py`, `waker_demo.py` (background threads),
   `asyncio_demo.py` (the asyncio runner, as an alternative to a thread +
-  waker).
+  waker). `appshell_demo.py` is on raw `QuiApp`, not this layer: a plain
+  `render` callback rebuilding a `list` leaf from 10,000 rows, to show
+  `QuiApp` scrolling a large list without the app layer in the way.
 
 Report bugs and API gaps at <https://github.com/JDonaghy/quadraui/issues>.
