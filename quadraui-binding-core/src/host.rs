@@ -3794,10 +3794,10 @@ mod tests {
                         });
                         if i == 0 {
                             LayoutNode::Styled(crate::layout::LayoutStyled {
-                                style: crate::layout::StyleOverride {
+                                style: Box::new(crate::layout::StyleOverride {
                                     fg: Some(quadraui::Color::rgb(0, 255, 0)),
                                     ..Default::default()
-                                },
+                                }),
                                 node: Box::new(leaf),
                             })
                         } else {
@@ -3811,10 +3811,10 @@ mod tests {
             // a cosmetic `bg` that must never flip `scroll_content_slots`
             // from `Children` to `Atomic`.
             let styled_content = LayoutNode::Styled(crate::layout::LayoutStyled {
-                style: crate::layout::StyleOverride {
+                style: Box::new(crate::layout::StyleOverride {
                     bg: Some(quadraui::Color::rgb(255, 0, 0)),
                     ..Default::default()
-                },
+                }),
                 node: Box::new(content),
             });
             let mut node = LayoutNode::Scroll(crate::layout::LayoutScroll {

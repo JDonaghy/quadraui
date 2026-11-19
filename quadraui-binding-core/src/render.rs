@@ -1444,12 +1444,19 @@ impl NaturalSize {
 /// [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for how each
 /// degrades a `None`.
 fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) -> NaturalSize {
-    // A `Styled` wrapper carries no geometry of its own -- unwrap straight
-    // through to whatever it wraps so a styled leaf still measures the
-    // same as an unstyled one. See `crate::layout::StyleOverride`'s own
-    // doc for why a metric override never reaches this measurement pass.
+    // A `Styled` wrapper carries no geometry of its own -- unwrap to
+    // whatever it wraps, but push the override first via the same
+    // `push_styled_override`/`pop_styled_override` bracket `paint_styled`
+    // brackets its own recursive paint with. A leaf arm below that reads
+    // `Backend::style()` (the `Button` chrome inset) sees the merged
+    // value for the duration of this call, so a `padding` override on
+    // this wrapper changes what gets measured here, not just how the
+    // subtree later paints.
     if let LayoutNode::Styled(styled) = node {
-        return natural_size(backend, &styled.node, line_height);
+        let push = push_styled_override(backend, &styled.style);
+        let size = natural_size(backend, &styled.node, line_height);
+        pop_styled_override(backend, push);
+        return size;
     }
     let LayoutNode::Leaf(leaf) = node else {
         return NaturalSize {
@@ -1469,12 +1476,28 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
             // main-axis size, not just misalign it. `char_width <= 1.0`
             // is the same cell-grid-backend test `layout::native_units`
             // uses; the pixel-backend branch is a nominal estimate, not
-            // a real `Style::padding` read (this layer has no `Style`
-            // handle), so it's the shakier of the two.
-            let chrome_w = if backend.char_width() <= 1.0 {
-                4.0
+            // a real `Style::padding` read.
+            //
+            // A `"style": {"padding": ...}` override changes this: rather
+            // than re-deriving the base chrome width from
+            // `Backend::style().padding` outright (which would also shift
+            // every unstyled button whose host sets a non-default global
+            // `Style`), only the *delta* from `Style::default().padding`
+            // is added on each side — zero whenever the active style's
+            // padding equals the default, which is every call site that
+            // never pushed an override. On a cell-grid backend the delta
+            // is rounded to whole cells first, the same
+            // `quantise_horizontal` rule `crate::layout::Spacing::inset`
+            // already applies to a container's own padding.
+            let style = backend.style();
+            let char_width = backend.char_width();
+            let default_padding = Style::default().padding;
+            let chrome_w = if char_width <= 1.0 {
+                let extra = quantise_horizontal(style.padding, char_width)
+                    - quantise_horizontal(default_padding, char_width);
+                4.0 + 2.0 * extra
             } else {
-                24.0
+                24.0 + 2.0 * (style.padding - default_padding)
             };
             NaturalSize {
                 width: Some(label_w + chrome_w),
@@ -2606,10 +2629,10 @@ mod tests {
                 vec![
                     leaf("a", "Alpha"),
                     LayoutNode::Styled(crate::layout::LayoutStyled {
-                        style: StyleOverride {
+                        style: Box::new(StyleOverride {
                             fg: Some(quadraui::Color::rgb(0, 255, 0)),
                             ..StyleOverride::default()
-                        },
+                        }),
                         node: Box::new(leaf("b", "Bravo")),
                     }),
                     leaf("c", "Charlie"),
@@ -2617,10 +2640,10 @@ mod tests {
                 Spacing::default(),
             ));
             let node = LayoutNode::Styled(crate::layout::LayoutStyled {
-                style: StyleOverride {
+                style: Box::new(StyleOverride {
                     fg: Some(quadraui::Color::rgb(255, 0, 0)),
                     ..StyleOverride::default()
-                },
+                }),
                 node: Box::new(row),
             });
             let mut hits = Vec::new();
@@ -2714,10 +2737,10 @@ mod tests {
                 vec![
                     icon_button("a", "Alpha"),
                     LayoutNode::Styled(crate::layout::LayoutStyled {
-                        style: StyleOverride {
+                        style: Box::new(StyleOverride {
                             bg: Some(quadraui::Color::rgb(0, 255, 0)),
                             ..StyleOverride::default()
-                        },
+                        }),
                         node: Box::new(icon_button("b", "Bravo")),
                     }),
                     icon_button("c", "Charlie"),
@@ -2725,10 +2748,10 @@ mod tests {
                 Spacing::default(),
             ));
             let node = LayoutNode::Styled(crate::layout::LayoutStyled {
-                style: StyleOverride {
+                style: Box::new(StyleOverride {
                     bg: Some(quadraui::Color::rgb(255, 0, 0)),
                     ..StyleOverride::default()
-                },
+                }),
                 node: Box::new(row),
             });
             let mut hits = Vec::new();
@@ -2822,17 +2845,17 @@ mod tests {
                     vec![
                         primary("unstyled", "Unstyled"),
                         LayoutNode::Styled(crate::layout::LayoutStyled {
-                            style: StyleOverride {
+                            style: Box::new(StyleOverride {
                                 bg: Some(quadraui::Color::rgb(0, 255, 0)),
                                 ..StyleOverride::default()
-                            },
+                            }),
                             node: Box::new(primary("bg", "BgOnly")),
                         }),
                         LayoutNode::Styled(crate::layout::LayoutStyled {
-                            style: StyleOverride {
+                            style: Box::new(StyleOverride {
                                 accent_bg: Some(quadraui::Color::rgb(0, 255, 0)),
                                 ..StyleOverride::default()
-                            },
+                            }),
                             node: Box::new(primary("accent_bg", "AccentBg")),
                         }),
                     ],
@@ -3229,6 +3252,61 @@ mod tests {
             assert_eq!(rects[0].width, 8.0);
             assert_eq!(rects[1].width, width - 8.0);
         }
+    }
+
+    /// A `"style": {"padding": ...}` override on a `Content`-sized
+    /// `Button` leaf changes that leaf's own measured rect, not just how
+    /// it later paints — the `padding` override [`StyleOverride`]'s own
+    /// doc describes under "Metric overrides feed layout".
+    #[test]
+    fn a_styled_padding_override_widens_a_content_sized_leaf_and_narrows_its_sibling() {
+        let width = 80.0_f32;
+        let area = Rect::new(0.0, 0.0, width, 10.0);
+        let baseline = layout_container_rects(
+            &mut tui(),
+            area,
+            &row(
+                vec![
+                    leaf_child("abcd", SectionSize::Content, None, None),
+                    leaf_child("rest", SectionSize::EqualShare, None, None),
+                ],
+                Justify::Start,
+                Align::Stretch,
+            ),
+            true,
+        );
+        assert_eq!(baseline[0].width, 8.0);
+
+        // Doubling `Style::default().padding` (`8.0` -> `16.0`) adds one
+        // whole cell of chrome on each side on `TuiBackend`
+        // (`ceil(16/8) - ceil(8/8) = 1`), widening the leaf by 2 cells
+        // total and narrowing its `EqualShare` sibling by the same
+        // amount — the row's own full width never changes.
+        let unstyled_leaf = leaf_child("abcd", SectionSize::Content, None, None);
+        let styled_first = LayoutChild {
+            node: LayoutNode::Styled(LayoutStyled {
+                style: Box::new(crate::layout::StyleOverride {
+                    padding: Some(16.0),
+                    ..Default::default()
+                }),
+                node: Box::new(unstyled_leaf.node),
+            }),
+            size: unstyled_leaf.size,
+            min: unstyled_leaf.min,
+            max: unstyled_leaf.max,
+        };
+        let styled = row(
+            vec![
+                styled_first,
+                leaf_child("rest", SectionSize::EqualShare, None, None),
+            ],
+            Justify::Start,
+            Align::Stretch,
+        );
+        let overridden = layout_container_rects(&mut tui(), area, &styled, true);
+        assert_eq!(overridden[0].width, 10.0);
+        assert_eq!(overridden[1].width, width - 10.0);
+        assert_eq!(overridden[0].height, baseline[0].height);
     }
 
     #[test]

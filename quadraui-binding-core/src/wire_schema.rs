@@ -66,7 +66,7 @@
 use serde::Serialize;
 
 use crate::extra_paint::EXTRA_PRIMITIVE_KINDS;
-use crate::layout::LEAF_KIND_KEYS;
+use crate::layout::{style_override_tokens, LEAF_KIND_KEYS};
 
 // ─── Wire format version ───────────────────────────────────────────────────
 
@@ -1032,21 +1032,57 @@ pub fn schema() -> Vec<DefJson> {
         uniont(vec![color.clone(), str_()]),
         "A `\"style\"` colour token: a `Color` object, or a \"#rrggbb\"/\"#rrggbbaa\" hex string.",
     ));
-    let style_value = b.define(obj_doc(
-        "StyleValue",
-        vec![
-            field_opt("bg", style_color_value.clone()),
-            field_opt("fg", style_color_value.clone()),
-            field_opt("border", style_color_value.clone()),
-            field_opt("accent", style_color_value.clone()),
-            field_opt("surface_bg", style_color_value.clone()),
-            field_opt("accent_bg", style_color_value.clone()),
-            field_opt("padding", float_()),
-            field_opt("corner_radius", float_()),
-            field_opt("border_width", float_()),
-        ],
-        "A per-node \"style\" override, scoped to that node's own subtree: \"bg\"/\"fg\"/\"border\"/\"accent\"/\"surface_bg\"/\"accent_bg\" override Theme colour tokens, \"padding\"/\"corner_radius\"/\"border_width\" override Style metric tokens. \"surface_bg\"/\"accent_bg\" are the aliases a Button/List/Dialog/... fill needs -- plain \"bg\" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.",
-    ));
+    // [`style_override_tokens!`]'s own type token (`f32`/`u8`/`u64`) mapped
+    // onto the schema primitive it decodes through -- `opt_u8`/`opt_u64`
+    // both read a JSON number but reject a fraction, so both map onto
+    // `int_()` rather than `float_()`.
+    macro_rules! style_schema_number_ty {
+        (f32) => {
+            float_()
+        };
+        (u8) => {
+            int_()
+        };
+        (u64) => {
+            int_()
+        };
+    }
+    // [`style_override_tokens!`]'s callback for this schema: every colour
+    // token decodes through `style_color_value`, every metric token
+    // through whichever `int_()`/`float_()` its own type maps onto above
+    // -- the exact same table [`crate::layout::StyleOverride`] and
+    // `crate::wire::style`'s decode expand, so a token missing here is a
+    // token this schema silently can't describe rather than a token three
+    // lists disagree about. Defines `style_value` itself (rather than
+    // evaluating to it) since a macro that expands to items/statements —
+    // which every other [`style_override_tokens!`] callback does — can't
+    // also be used directly in expression position.
+    macro_rules! define_style_schema_fields {
+        (
+            $name:ident
+            colors: [ $( $cfield:ident => $tfield:ident ),* $(,)? ],
+            metrics: [ $( $mfield:ident : $mty:ident => $setter:ident => $decode:ident ),* $(,)? ],
+        ) => {
+            // `$name` (rather than a literal `style_value` written inside
+            // this macro) is what makes the binding visible to the
+            // hand-written `style_value.clone()` call sites below --
+            // passed in from `style_override_tokens!`'s own call site, it
+            // carries that call site's hygiene context instead of this
+            // macro definition's.
+            let $name = {
+                let mut fields = vec![
+                    $(field_opt(stringify!($cfield), style_color_value.clone()),)*
+                ];
+                $(fields.push(field_opt(stringify!($mfield), style_schema_number_ty!($mty)));)*
+                b.define(obj_doc(
+                    "StyleValue",
+                    fields,
+                    "A per-node \"style\" override, scoped to that node's own subtree: every quadraui::Theme colour field and every quadraui::Style metric field is a key here, under that field's own name (plus \"bg\"/\"fg\"/\"border\"/\"accent\" as the semantic aliases for Theme::background/foreground/border_fg/accent_fg). \"surface_bg\"/\"accent_bg\" are the aliases a Button/List/Dialog/... fill needs -- plain \"bg\" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.",
+                ))
+            };
+        };
+    }
+    style_override_tokens!(define_style_schema_fields, style_value);
 
     // An optional `"class"` sibling key, valid everywhere `"style"` is
     // (`crate::wire::style_classes_from_value` reads it off the same outer

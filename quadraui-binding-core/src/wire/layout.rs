@@ -122,7 +122,7 @@ pub(super) fn layout_node_from_value(
         return Ok(node);
     }
     Ok(LayoutNode::Styled(LayoutStyled {
-        style,
+        style: Box::new(style),
         node: Box::new(node),
     }))
 }

@@ -7,10 +7,10 @@ use serde_json::Value;
 
 use quadraui::{Color, Theme};
 
-use crate::layout::{StyleOverride, StyleSets};
+use crate::layout::{style_override_tokens, StyleOverride, StyleSets};
 use crate::DecodeError;
 
-use super::value::{must_be_dict, obj_get, opt_f32};
+use super::value::{must_be_dict, obj_get, opt_f32, opt_u64, opt_u8};
 
 /// The host state a layout-tree decode resolves a node's `"class"` key
 /// against: the [`StyleSets`] registry a binding's own `define_style`
@@ -34,21 +34,57 @@ impl<'a> StyleContext<'a> {
         Self { sets, theme }
     }
 }
-/// Every key a `"style"` dict may carry — see [`StyleOverride`]'s own
-/// token-mapping table for what each resolves onto. `surface_bg`/
-/// `accent_bg` are the semantic aliases [`StyleOverride`]'s doc calls out
-/// for a `Button`/`List`/`Dialog`/... fill `bg` alone doesn't reach.
-const STYLE_OVERRIDE_KEYS: [&str; 9] = [
-    "bg",
-    "fg",
-    "border",
-    "accent",
-    "surface_bg",
-    "accent_bg",
-    "padding",
-    "corner_radius",
-    "border_width",
-];
+/// [`style_override_tokens!`]'s callback for this module: the closed key
+/// vocabulary [`STYLE_OVERRIDE_KEYS`] rejects anything outside of, and
+/// [`style_override_fields`]'s own per-key decode — generated from the
+/// exact same table [`StyleOverride`] itself expands from (`crate::layout`'s
+/// own `define_style_override` callback), so a token the struct accepts
+/// and a token this decode rejects as unknown can never drift apart.
+/// `surface_bg`/`accent_bg` are the semantic aliases [`StyleOverride`]'s
+/// doc calls out for a `Button`/`List`/`Dialog`/... fill `bg` alone
+/// doesn't reach.
+macro_rules! define_style_decode {
+    (
+        colors: [ $( $cfield:ident => $tfield:ident ),* $(,)? ],
+        metrics: [ $( $mfield:ident : $mty:ty => $setter:ident => $decode:ident ),* $(,)? ],
+    ) => {
+        const STYLE_OVERRIDE_KEYS: &[&str] = &[
+            $(stringify!($cfield),)*
+            $(stringify!($mfield),)*
+        ];
+
+        /// Reads every [`STYLE_OVERRIDE_KEYS`] token off `dict` (already
+        /// known to be an object), rejecting any key outside that list —
+        /// the same "typo is a decode error, not a silently-dropped key"
+        /// policy [`edge_insets_from_value`] already applies to
+        /// `"padding"`'s own object shape. `context` prefixes any error
+        /// raised.
+        fn style_override_fields(context: &str, dict: &Value) -> Result<StyleOverride, DecodeError> {
+            // The caller already guaranteed `dict.is_object()`, so this is
+            // never `None` -- `.as_object()` just gets at the key set to
+            // check.
+            for key in dict
+                .as_object()
+                .expect("the caller guarantees an object")
+                .keys()
+            {
+                if !STYLE_OVERRIDE_KEYS.contains(&key.as_str()) {
+                    return Err(DecodeError::unknown_key(
+                        context,
+                        "style",
+                        key.as_str(),
+                        STYLE_OVERRIDE_KEYS,
+                    ));
+                }
+            }
+            Ok(StyleOverride {
+                $($cfield: opt_color(dict, stringify!($cfield), context)?,)*
+                $($mfield: $decode(dict, stringify!($mfield), context)?,)*
+            })
+        }
+    };
+}
+style_override_tokens!(define_style_decode);
 
 /// Decodes an optional `"class"` sibling key found alongside any layout
 /// node dict, in the same place [`style_override_from_value`] reads
@@ -170,41 +206,6 @@ pub fn validate_style_set_name(what: &str, name: &str) -> Result<(), DecodeError
     Ok(())
 }
 
-/// Reads every [`STYLE_OVERRIDE_KEYS`] token off `dict` (already known to
-/// be an object), rejecting any key outside that list — the same "typo is
-/// a decode error, not a silently-dropped key" policy
-/// [`edge_insets_from_value`] already applies to `"padding"`'s own object
-/// shape. `context` prefixes any error raised.
-fn style_override_fields(context: &str, dict: &Value) -> Result<StyleOverride, DecodeError> {
-    // The caller already guaranteed `dict.is_object()`, so this is never
-    // `None` -- `.as_object()` just gets at the key set to check.
-    for key in dict
-        .as_object()
-        .expect("the caller guarantees an object")
-        .keys()
-    {
-        if !STYLE_OVERRIDE_KEYS.contains(&key.as_str()) {
-            return Err(DecodeError::unknown_key(
-                context,
-                "style",
-                key.as_str(),
-                &STYLE_OVERRIDE_KEYS,
-            ));
-        }
-    }
-    Ok(StyleOverride {
-        bg: opt_color(dict, "bg", context)?,
-        fg: opt_color(dict, "fg", context)?,
-        border: opt_color(dict, "border", context)?,
-        accent: opt_color(dict, "accent", context)?,
-        surface_bg: opt_color(dict, "surface_bg", context)?,
-        accent_bg: opt_color(dict, "accent_bg", context)?,
-        padding: opt_f32(dict, "padding", context)?,
-        corner_radius: opt_f32(dict, "corner_radius", context)?,
-        border_width: opt_f32(dict, "border_width", context)?,
-    })
-}
-
 /// Reads `value[key]` as an optional colour: a `"#rrggbb"`/`"#rrggbbaa"`
 /// hex string (mirroring [`crate::host::theme_color_value`]'s own
 /// convenience for a backend-wide `set_theme` override), or any other
@@ -290,6 +291,49 @@ mod tests {
         };
         assert_eq!(styled.style.surface_bg, Color::from_hex("#112233"));
         assert_eq!(styled.style.accent_bg, Color::from_hex("#445566"));
+    }
+
+    /// Every `Theme` colour field beyond the six semantic aliases is
+    /// overridable under its own name, and every `Style` metric field
+    /// (`f32`, `u8`, or `u64`) decodes too — [`StyleOverride`]'s own
+    /// "Every `Theme`/`Style` token is covered" doc.
+    #[test]
+    fn every_generated_token_round_trips_not_just_the_six_aliases() {
+        let value = json!({
+            "id": "btn",
+            "button": {"id": "btn", "label": "Go"},
+            "style": {
+                "tab_bar_bg": "#102030",
+                "row_height": 30.0,
+                "shadow_elevation": 2,
+                "tooltip_delay_ms": 250,
+            },
+        });
+        let node = decode(&value).expect("valid styled leaf");
+        let LayoutNode::Styled(styled) = node else {
+            panic!("expected a styled wrapper");
+        };
+        assert_eq!(styled.style.tab_bar_bg, Color::from_hex("#102030"));
+        assert_eq!(styled.style.row_height, Some(30.0));
+        assert_eq!(styled.style.shadow_elevation, Some(2));
+        assert_eq!(styled.style.tooltip_delay_ms, Some(250));
+    }
+
+    /// `"shadow_elevation"` decodes through [`super::value::opt_u8`],
+    /// which rejects a value outside `0..=255` rather than silently
+    /// wrapping it.
+    #[test]
+    fn shadow_elevation_rejects_a_value_outside_u8_range() {
+        let value = json!({
+            "row": [],
+            "style": {"shadow_elevation": 1000},
+        });
+        let error = err(decode(&value));
+        assert!(
+            error.to_string().contains("shadow_elevation"),
+            "{}",
+            error.to_string()
+        );
     }
 
     /// An empty `"style": {}` is a no-op -- decoding falls through to the
@@ -413,7 +457,7 @@ mod tests {
         let LayoutNode::Styled(styled) = node else {
             panic!("expected a styled wrapper");
         };
-        styled.style
+        *styled.style
     }
 
     fn set_with_fg(hex: &str) -> StyleOverride {

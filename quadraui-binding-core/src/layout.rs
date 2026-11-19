@@ -99,8 +99,18 @@ impl LayoutNode {
 /// after the row/column/split/tabs/panel/sidebar_panel/split_tree/scroll/
 /// leaf dispatch, so every node kind gets the same `"style"` key for free
 /// rather than each needing its own decode of it.
+///
+/// `style` is boxed for the same reason `node` already is:
+/// [`StyleOverride`] covers every [`quadraui::Theme`]/[`quadraui::Style`]
+/// token, so storing it inline here would make this (and therefore
+/// [`LayoutNode::Styled`], and every other node kind that nests a
+/// `LayoutNode` by value) the dominant size of the whole [`LayoutNode`]
+/// enum. Every read site reaches straight through the box via `Deref`
+/// (`styled.style.bg`, `styled.style.apply_theme(..)`), so only a
+/// construction site (`LayoutStyled { style: Box::new(..), .. }`) ever
+/// needs to know it's boxed.
 pub struct LayoutStyled {
-    pub style: StyleOverride,
+    pub style: Box<StyleOverride>,
     pub node: Box<LayoutNode>,
 }
 
@@ -145,10 +155,7 @@ pub struct LayoutStyled {
 /// above for which variant reads which. The same split applies to every
 /// other bordered/filled surface (`List`, `Dialog`, `Toast`, `Palette`,
 /// `Switch`, `Progress`, `Toolbar`, `FindReplace`, `Float`): `bg` only ever
-/// reaches `background`. `TreeView`/`DataTable`/`TabBar`'s own row/header
-/// fill (`Theme::tab_bar_bg`) and `List`'s header fill (`Theme::header_bg`)
-/// have no `"style"` alias yet — overriding either still needs a host-wide
-/// `Backend::set_theme` call.
+/// reaches `background`.
 ///
 /// `bg`/`fg`/`border`/`accent`/`surface_bg`/`accent_bg` decode from the
 /// same shapes [`quadraui::Color`]'s own `Deserialize` accepts (an
@@ -156,89 +163,220 @@ pub struct LayoutStyled {
 /// `"#rrggbb"`/`"#rrggbbaa"` hex string convenience — see
 /// `crate::wire::style_override_from_value`.
 ///
-/// # Metric overrides don't re-run layout
+/// # Every `Theme`/`Style` token is covered
 ///
-/// `padding`/`corner_radius`/`border_width` only ever change how this
-/// subtree *paints* this frame, never this frame's already-resolved
-/// layout/measurement — [`crate::render::natural_size`] always measures a
-/// `Styled` leaf by unwrapping straight through to the wrapped node with
-/// whatever theme/style was already active, so a `Content`/`Align`-sized
-/// sibling never shifts because of a metric override deeper in the tree. A
-/// future revision that needs a metric override to affect sizing would
-/// have to thread it into that measurement pass too.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct StyleOverride {
-    pub bg: Option<Color>,
-    pub fg: Option<Color>,
-    pub border: Option<Color>,
-    pub accent: Option<Color>,
-    pub surface_bg: Option<Color>,
-    pub accent_bg: Option<Color>,
-    pub padding: Option<f32>,
-    pub corner_radius: Option<f32>,
-    pub border_width: Option<f32>,
+/// Beyond the six semantic aliases the table above documents, every other
+/// [`quadraui::Theme`] colour field and every [`quadraui::Style`] metric
+/// field is overridable too, under the same name the struct it comes from
+/// already uses (`"tab_bar_bg"`, `"selected_bg"`, `"row_height"`,
+/// `"scrollbar_width"`, …) — [`style_override_tokens!`] is the single
+/// source of truth both this struct and its impls below expand from, and
+/// `crate::wire::style`'s decode and `crate::wire_schema`'s `style_value`
+/// schema expand the exact same table through their own callback. Adding a
+/// field to `Theme`/`Style` and wiring it up here is one appended line to
+/// that one table, not a four-way hand-sync.
+///
+/// # Metric overrides feed layout
+///
+/// `padding` changes `crate::render::natural_size`'s measurement of a
+/// `Content`/`Align`-sized `Button` leaf, not just how it paints —
+/// `natural_size` brackets its own recursion into a
+/// `Styled` node with the same push/pop this struct's override already
+/// gets at paint time, so `Backend::style()` reports the merged value
+/// while a wrapped leaf is being measured. Every other metric token
+/// (`corner_radius`, `border_width`, and the rest) still only ever
+/// changes how a subtree paints — no primitive measures them today, the
+/// same way `Theme`'s colours never affect geometry.
+///
+/// # Generated from one table
+///
+/// `style_override_tokens!` lists every colour field (`$struct_field =>
+/// $theme_field`, same identifier on both sides except the six aliases
+/// above) and every metric field (`$field: $ty => $setter => $decode`,
+/// `$setter` being the [`quadraui::Style`] `with_*` builder
+/// [`StyleOverride::apply_style`] calls and `$decode` the
+/// `crate::wire::value` reader `crate::wire::style::style_override_fields`
+/// calls) exactly once, then hands that table to a callback macro — the
+/// same X-macro shape `crate::extra_paint::extra_primitives` already uses
+/// for its own `"kind" => Type` dispatch table. `define_style_override`
+/// below is this struct's own callback.
+macro_rules! style_override_tokens {
+    ($callback:ident $(, $extra:tt)*) => {
+        $callback! {
+            $($extra)*
+            colors: [
+                bg => background,
+                fg => foreground,
+                border => border_fg,
+                accent => accent_fg,
+                surface_bg => surface_bg,
+                accent_bg => accent_bg,
+                tab_bar_bg => tab_bar_bg,
+                tab_active_bg => tab_active_bg,
+                tab_active_fg => tab_active_fg,
+                tab_inactive_fg => tab_inactive_fg,
+                tab_preview_active_fg => tab_preview_active_fg,
+                tab_preview_inactive_fg => tab_preview_inactive_fg,
+                separator => separator,
+                surface_fg => surface_fg,
+                selected_bg => selected_bg,
+                inactive_selected_bg => inactive_selected_bg,
+                title_fg => title_fg,
+                header_bg => header_bg,
+                header_fg => header_fg,
+                muted_fg => muted_fg,
+                error_fg => error_fg,
+                warning_fg => warning_fg,
+                query_fg => query_fg,
+                match_fg => match_fg,
+                hover_bg => hover_bg,
+                hover_fg => hover_fg,
+                hover_border => hover_border,
+                input_bg => input_bg,
+                inactive_fg => inactive_fg,
+                selection_bg => selection_bg,
+                link_fg => link_fg,
+                completion_bg => completion_bg,
+                completion_fg => completion_fg,
+                completion_border => completion_border,
+                completion_selected_bg => completion_selected_bg,
+                scrollbar_track => scrollbar_track,
+                scrollbar_thumb => scrollbar_thumb,
+                editor_active_background => editor_active_background,
+                cursorline_bg => cursorline_bg,
+                dap_stopped_bg => dap_stopped_bg,
+                colorcolumn_bg => colorcolumn_bg,
+                diff_added_bg => diff_added_bg,
+                diff_removed_bg => diff_removed_bg,
+                diff_padding_bg => diff_padding_bg,
+                line_number_fg => line_number_fg,
+                line_number_active_fg => line_number_active_fg,
+                diagnostic_error => diagnostic_error,
+                diagnostic_warning => diagnostic_warning,
+                diagnostic_info => diagnostic_info,
+                diagnostic_hint => diagnostic_hint,
+                git_added => git_added,
+                git_modified => git_modified,
+                git_deleted => git_deleted,
+                lightbulb => lightbulb,
+                spell_error => spell_error,
+                cursor => cursor,
+                selection => selection,
+                yank_highlight_bg => yank_highlight_bg,
+                bracket_match_bg => bracket_match_bg,
+                indent_guide_fg => indent_guide_fg,
+                indent_guide_active_fg => indent_guide_active_fg,
+                annotation_fg => annotation_fg,
+                ghost_text_fg => ghost_text_fg,
+                command_line_bg => command_line_bg,
+                command_line_fg => command_line_fg,
+                board_selected_card_bg => board_selected_card_bg,
+                board_col_header_bg => board_col_header_bg,
+                badge_running => badge_running,
+                badge_passed => badge_passed,
+                badge_warning => badge_warning,
+                badge_blocked => badge_blocked,
+                card_hint_bg => card_hint_bg,
+                card_hint_fg => card_hint_fg,
+            ],
+            metrics: [
+                padding: f32 => with_padding => opt_f32,
+                corner_radius: f32 => with_corner_radius => opt_f32,
+                border_width: f32 => with_border_width => opt_f32,
+                focus_ring_width: f32 => with_focus_ring_width => opt_f32,
+                button_radius: f32 => with_button_radius => opt_f32,
+                shadow_elevation: u8 => with_shadow_elevation => opt_u8,
+                control_height: f32 => with_control_height => opt_f32,
+                backdrop_opacity: f32 => with_backdrop_opacity => opt_f32,
+                tab_height: f32 => with_tab_height => opt_f32,
+                status_bar_height: f32 => with_status_bar_height => opt_f32,
+                activity_bar_width: f32 => with_activity_bar_width => opt_f32,
+                row_height: f32 => with_row_height => opt_f32,
+                toolbar_height: f32 => with_toolbar_height => opt_f32,
+                scrollbar_width: f32 => with_scrollbar_width => opt_f32,
+                row_padding_x: f32 => with_row_padding_x => opt_f32,
+                tab_padding_x: f32 => with_tab_padding_x => opt_f32,
+                tooltip_delay_ms: u64 => with_tooltip_delay_ms => opt_u64,
+                tooltip_auto_dismiss_ms: u64 => with_tooltip_auto_dismiss_ms => opt_u64,
+            ],
+        }
+    };
 }
+pub(crate) use style_override_tokens;
 
-impl StyleOverride {
-    /// `true` when every field is `None` — an override that changes
-    /// nothing, equivalent to no `"style"` key at all.
-    /// `crate::wire::style_override_from_value` folds an all-empty
-    /// `{"style": {}}` down to `None` via this check, rather than
-    /// threading a no-op [`LayoutNode::Styled`] wrapper through the tree.
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
+/// [`style_override_tokens!`]'s callback for [`StyleOverride`] itself:
+/// the struct (one `Option<Color>` field per colour token, one
+/// `Option<$ty>` per metric token) plus every impl this module's own
+/// callers need — [`StyleOverride::is_empty`], [`StyleOverride::apply_theme`],
+/// [`StyleOverride::apply_style`] and [`StyleOverride::merged_over`].
+macro_rules! define_style_override {
+    (
+        colors: [ $( $cfield:ident => $tfield:ident ),* $(,)? ],
+        metrics: [ $( $mfield:ident : $mty:ty => $setter:ident => $decode:ident ),* $(,)? ],
+    ) => {
+        /// A scoped subset of the backend-wide [`quadraui::Theme`] colour
+        /// tokens and [`quadraui::Style`] metric tokens a `"style"` wire
+        /// key may override for one [`LayoutNode::Styled`] subtree —
+        /// merged onto whichever theme/style were already in effect above
+        /// that node. See this module's own doc comment right above
+        /// [`style_override_tokens!`] for the full token list and the
+        /// token-mapping table for the six semantic aliases.
+        #[derive(Clone, Copy, Debug, Default, PartialEq)]
+        pub struct StyleOverride {
+            $(pub $cfield: Option<Color>,)*
+            $(pub $mfield: Option<$mty>,)*
+        }
 
-    /// Applies this override onto `theme`, leaving every field this
-    /// override didn't name unchanged.
-    pub fn apply_theme(&self, theme: Theme) -> Theme {
-        Theme {
-            background: self.bg.unwrap_or(theme.background),
-            foreground: self.fg.unwrap_or(theme.foreground),
-            border_fg: self.border.unwrap_or(theme.border_fg),
-            accent_fg: self.accent.unwrap_or(theme.accent_fg),
-            surface_bg: self.surface_bg.unwrap_or(theme.surface_bg),
-            accent_bg: self.accent_bg.unwrap_or(theme.accent_bg),
-            ..theme
-        }
-    }
+        impl StyleOverride {
+            /// `true` when every field is `None` — an override that
+            /// changes nothing, equivalent to no `"style"` key at all.
+            /// `crate::wire::style_override_from_value` folds an
+            /// all-empty `{"style": {}}` down to `None` via this check,
+            /// rather than threading a no-op [`LayoutNode::Styled`]
+            /// wrapper through the tree.
+            pub fn is_empty(&self) -> bool {
+                *self == Self::default()
+            }
 
-    /// [`Self::apply_theme`]'s [`quadraui::Style`] counterpart. `Style` is
-    /// `#[non_exhaustive]`, so this goes through its own `with_*` builder
-    /// methods rather than struct-update syntax.
-    pub fn apply_style(&self, style: Style) -> Style {
-        let mut style = style;
-        if let Some(padding) = self.padding {
-            style = style.with_padding(padding);
-        }
-        if let Some(corner_radius) = self.corner_radius {
-            style = style.with_corner_radius(corner_radius);
-        }
-        if let Some(border_width) = self.border_width {
-            style = style.with_border_width(border_width);
-        }
-        style
-    }
+            /// Applies this override onto `theme`, leaving every field
+            /// this override didn't name unchanged.
+            pub fn apply_theme(&self, theme: Theme) -> Theme {
+                Theme {
+                    $($tfield: self.$cfield.unwrap_or(theme.$tfield),)*
+                    ..theme
+                }
+            }
 
-    /// Merges `self` *over* `base`: every token `self` names wins, every
-    /// token it leaves `None` falls through to whatever `base` named (or
-    /// stays `None` if neither did). The merge a `"class"` list and a
-    /// node's own inline `"style"` key resolve through — see
-    /// [`StyleSets::resolve`] for the full precedence chain.
-    pub fn merged_over(&self, base: StyleOverride) -> StyleOverride {
-        StyleOverride {
-            bg: self.bg.or(base.bg),
-            fg: self.fg.or(base.fg),
-            border: self.border.or(base.border),
-            accent: self.accent.or(base.accent),
-            surface_bg: self.surface_bg.or(base.surface_bg),
-            accent_bg: self.accent_bg.or(base.accent_bg),
-            padding: self.padding.or(base.padding),
-            corner_radius: self.corner_radius.or(base.corner_radius),
-            border_width: self.border_width.or(base.border_width),
+            /// [`Self::apply_theme`]'s [`quadraui::Style`] counterpart.
+            /// `Style` is `#[non_exhaustive]`, so this goes through its
+            /// own `with_*` builder methods rather than struct-update
+            /// syntax.
+            pub fn apply_style(&self, style: Style) -> Style {
+                let mut style = style;
+                $(
+                    if let Some(v) = self.$mfield {
+                        style = style.$setter(v);
+                    }
+                )*
+                style
+            }
+
+            /// Merges `self` *over* `base`: every token `self` names
+            /// wins, every token it leaves `None` falls through to
+            /// whatever `base` named (or stays `None` if neither did).
+            /// The merge a `"class"` list and a node's own inline
+            /// `"style"` key resolve through — see [`StyleSets::resolve`]
+            /// for the full precedence chain.
+            pub fn merged_over(&self, base: StyleOverride) -> StyleOverride {
+                StyleOverride {
+                    $($cfield: self.$cfield.or(base.$cfield),)*
+                    $($mfield: self.$mfield.or(base.$mfield),)*
+                }
+            }
         }
-    }
+    };
 }
+style_override_tokens!(define_style_override);
 
 /// One [`BUILTIN_STYLE_SETS`] entry: a name paired with the `Theme`-deriving
 /// function it resolves through.
@@ -269,12 +407,17 @@ pub const BUILTIN_STYLE_SET_NAMES: [&str; 4] = [
 ];
 
 /// How one named style set produces the [`StyleOverride`] a `"class"`
-/// reference to it resolves to.
-#[derive(Clone, Copy)]
+/// reference to it resolves to. `Defined` boxes its payload for the same
+/// size reason [`LayoutStyled::style`] does — `StyleOverride` covers every
+/// `Theme`/`Style` token, so storing it inline would make this the
+/// dominant size of every [`StyleSets`] entry; boxing costs this enum its
+/// `Copy` derive (kept as plain `Clone`), with [`StyleSets::get`] reading
+/// the boxed value back out via double-deref (`StyleOverride: Copy`).
+#[derive(Clone)]
 enum StyleSetDef {
     /// A set a host defined through its own `define_style` surface: fixed
     /// tokens, independent of the active [`Theme`].
-    Defined(StyleOverride),
+    Defined(Box<StyleOverride>),
     /// One of [`BUILTIN_STYLE_SET_NAMES`], derived from whichever `Theme`
     /// is active when it resolves.
     Builtin(fn(&Theme) -> StyleOverride),
@@ -357,7 +500,7 @@ impl StyleSets {
     /// this registry.
     pub fn define(&mut self, name: impl Into<String>, overrides: StyleOverride) {
         self.sets
-            .insert(name.into(), StyleSetDef::Defined(overrides));
+            .insert(name.into(), StyleSetDef::Defined(Box::new(overrides)));
     }
 
     /// Every registered set name, sorted so a caller enumerating them gets
@@ -372,7 +515,7 @@ impl StyleSets {
     /// built-in. `None` for a name this registry has never heard of.
     pub fn get(&self, name: &str, theme: &Theme) -> Option<StyleOverride> {
         self.sets.get(name).map(|def| match def {
-            StyleSetDef::Defined(overrides) => *overrides,
+            StyleSetDef::Defined(overrides) => **overrides,
             StyleSetDef::Builtin(derive) => derive(theme),
         })
     }
@@ -1693,10 +1836,10 @@ mod tests {
     #[test]
     fn validate_unique_leaf_ids_passes_through_a_styled_wrapper() {
         let node = LayoutNode::Styled(LayoutStyled {
-            style: StyleOverride {
+            style: Box::new(StyleOverride {
                 bg: Some(quadraui::Color::rgb(1, 1, 1)),
                 ..StyleOverride::default()
-            },
+            }),
             node: Box::new(LayoutNode::Leaf(LayoutLeaf {
                 id: "a".to_string(),
                 descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new("a"), "A")),
