@@ -72,6 +72,7 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("board", "BoardModel"),
     ("button", "Button"),
     ("canvas", "Canvas"),
+    ("cell_grid", "CellGrid"),
     ("chart", "Chart"),
     ("combo_box", "ComboBox"),
     ("command_center", "CommandCenter"),
