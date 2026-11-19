@@ -83,6 +83,12 @@ macro_rules! define_style_decode {
                 $($cfield: opt_color(dict, stringify!($cfield), context)?,)*
                 $($ffield: opt_f32(dict, stringify!($ffield), context)?,)*
                 $($mfield: $decode(dict, stringify!($mfield), context)?,)*
+                // Font and interaction-state tokens
+                // (`crate::layout::StyleOverride`'s own doc) are hand-written
+                // fields outside this table and have no wire decode yet —
+                // `..Default::default()` leaves them unset rather than this
+                // macro needing its own copy of that field list.
+                ..StyleOverride::default()
             })
         }
     };
@@ -474,7 +480,7 @@ mod tests {
     fn decode_with_sets(value: &Value, sets: &[(&str, StyleOverride)]) -> LayoutNode {
         let mut registry = StyleSets::new();
         for (name, overrides) in sets {
-            registry.define(*name, *overrides);
+            registry.define(*name, overrides.clone());
         }
         let theme = Theme::default();
         decode_layout_node_with_styles(
@@ -492,7 +498,7 @@ mod tests {
         let LayoutNode::Styled(styled) = node else {
             panic!("expected a styled wrapper");
         };
-        *styled.style
+        (*styled.style).clone()
     }
 
     fn set_with_fg(hex: &str) -> StyleOverride {
