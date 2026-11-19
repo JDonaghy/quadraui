@@ -1076,10 +1076,27 @@ pub fn schema() -> Vec<DefJson> {
                 ];
                 $(fields.push(field_opt(stringify!($ffield), float_()));)*
                 $(fields.push(field_opt(stringify!($mfield), style_schema_number_ty!($mty)));)*
+                // Font and interaction-state tokens -- hand-appended rather
+                // than generated from the table above, since they carry no
+                // matching Theme/Style field (`crate::layout::StyleOverride`'s
+                // own doc). `"hover"`/`"pressed"`/`"focus"` each recurse into
+                // this very `"StyleValue"` definition by name, the same
+                // forward-self-reference `layout_node` uses for `LayoutNode`
+                // further down this function -- `b.define` below is what
+                // actually registers the name these `re()` calls point at.
+                fields.push(field_opt("font_family", str_()));
+                fields.push(field_opt("font_size", float_()));
+                fields.push(field_opt(
+                    "font_weight",
+                    lit(&["normal", "bold"]),
+                ));
+                fields.push(field_opt("hover", re("StyleValue")));
+                fields.push(field_opt("pressed", re("StyleValue")));
+                fields.push(field_opt("focus", re("StyleValue")));
                 b.define(obj_doc(
                     "StyleValue",
                     fields,
-                    "A per-node \"style\" override, scoped to that node's own subtree: every quadraui::Theme colour field and every quadraui::Style metric field is a key here, under that field's own name (plus \"bg\"/\"fg\"/\"border\"/\"accent\" as the semantic aliases for Theme::background/foreground/border_fg/accent_fg). \"surface_bg\"/\"accent_bg\" are the aliases a Button/List/Dialog/... fill needs -- plain \"bg\" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.",
+                    "A per-node \"style\" override, scoped to that node's own subtree: every quadraui::Theme colour field and every quadraui::Style metric field is a key here, under that field's own name (plus \"bg\"/\"fg\"/\"border\"/\"accent\" as the semantic aliases for Theme::background/foreground/border_fg/accent_fg). \"surface_bg\"/\"accent_bg\" are the aliases a Button/List/Dialog/... fill needs -- plain \"bg\" only ever reaches Theme::background. \"font_family\"/\"font_size\"/\"font_weight\" override the node's font; \"hover\"/\"pressed\"/\"focus\" are each a nested StyleValue applied while the node is in that interaction state (merged over this override's own base tokens), but may not themselves nest a further hover/pressed/focus branch. See docs/bindings-wire-format.md for the full per-leaf token mapping.",
                 ))
             };
         };

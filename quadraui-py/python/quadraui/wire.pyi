@@ -422,7 +422,7 @@ PaddingValue = Union[float, PaddingAxis, PaddingSides]
 StyleColorValue = Union[Color, str]
 
 class StyleValue(TypedDict):
-    """A per-node "style" override, scoped to that node's own subtree: every quadraui::Theme colour field and every quadraui::Style metric field is a key here, under that field's own name (plus "bg"/"fg"/"border"/"accent" as the semantic aliases for Theme::background/foreground/border_fg/accent_fg). "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping."""
+    """A per-node "style" override, scoped to that node's own subtree: every quadraui::Theme colour field and every quadraui::Style metric field is a key here, under that field's own name (plus "bg"/"fg"/"border"/"accent" as the semantic aliases for Theme::background/foreground/border_fg/accent_fg). "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. "font_family"/"font_size"/"font_weight" override the node's font; "hover"/"pressed"/"focus" are each a nested StyleValue applied while the node is in that interaction state (merged over this override's own base tokens), but may not themselves nest a further hover/pressed/focus branch. See docs/bindings-wire-format.md for the full per-leaf token mapping."""
     bg: NotRequired[StyleColorValue]
     fg: NotRequired[StyleColorValue]
     border: NotRequired[StyleColorValue]
@@ -517,6 +517,12 @@ class StyleValue(TypedDict):
     tab_padding_x: NotRequired[float]
     tooltip_delay_ms: NotRequired[int]
     tooltip_auto_dismiss_ms: NotRequired[int]
+    font_family: NotRequired[str]
+    font_size: NotRequired[float]
+    font_weight: NotRequired[Literal['normal', 'bold']]
+    hover: NotRequired[StyleValue]
+    pressed: NotRequired[StyleValue]
+    focus: NotRequired[StyleValue]
 
 # One or more named style sets (see define_style) applied to this node's own subtree: a single name, a whitespace-separated list of names in one string, or an array of names. Merged left to right, then overridden by this node's own "style" key. A name no set was ever defined under is ignored.
 ClassValue = Union[str, List[str]]

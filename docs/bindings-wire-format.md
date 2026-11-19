@@ -93,6 +93,17 @@ own row/header fill, `Theme.tab_bar_bg`; `"list"`'s header fill,
 overridable too, under that field's own name -- see `StyleValue`'s own
 field table in the generated reference for the full list.
 
+**`"font_family"`/`"font_size"`/`"font_weight"` override the node's font**
+(a string, a number of surface-native pixels, and `"normal"`/`"bold"`
+respectively) -- carrying no matching `Theme`/`Style` field, unlike every
+token above. **`"hover"`/`"pressed"`/`"focus"` are each a nested
+`StyleValue`**, applied over this override's own base tokens while the
+node is in that interaction state (a binding's own hit-test/focus tracking
+decides which states currently apply). A state branch accepts the same
+colour/metric/font tokens an inline `"style"` key does, but **may not
+itself nest a further `"hover"`/`"pressed"`/`"focus"` branch** -- an
+unknown-key decode error, the same policy below.
+
 **An unknown key inside `"style"` is always a decode error** — stricter
 than the warn-by-default policy an unrecognised sibling key on the
 surrounding node dict itself gets; see *Unknown optional wire key policy*
@@ -1491,7 +1502,7 @@ Alias for `Color | string`.
 <a id="wire-stylevalue"></a>
 #### `StyleValue`
 
-A per-node "style" override, scoped to that node's own subtree: every quadraui::Theme colour field and every quadraui::Style metric field is a key here, under that field's own name (plus "bg"/"fg"/"border"/"accent" as the semantic aliases for Theme::background/foreground/border_fg/accent_fg). "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. See docs/bindings-wire-format.md for the full per-leaf token mapping.
+A per-node "style" override, scoped to that node's own subtree: every quadraui::Theme colour field and every quadraui::Style metric field is a key here, under that field's own name (plus "bg"/"fg"/"border"/"accent" as the semantic aliases for Theme::background/foreground/border_fg/accent_fg). "surface_bg"/"accent_bg" are the aliases a Button/List/Dialog/... fill needs -- plain "bg" only ever reaches Theme::background. "font_family"/"font_size"/"font_weight" override the node's font; "hover"/"pressed"/"focus" are each a nested StyleValue applied while the node is in that interaction state (merged over this override's own base tokens), but may not themselves nest a further hover/pressed/focus branch. See docs/bindings-wire-format.md for the full per-leaf token mapping.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1589,6 +1600,12 @@ A per-node "style" override, scoped to that node's own subtree: every quadraui::
 | `tab_padding_x` | `number` | no |  |
 | `tooltip_delay_ms` | `number` | no |  |
 | `tooltip_auto_dismiss_ms` | `number` | no |  |
+| `font_family` | `string` | no |  |
+| `font_size` | `number` | no |  |
+| `font_weight` | `"normal" \| "bold"` | no |  |
+| `hover` | `StyleValue` | no |  |
+| `pressed` | `StyleValue` | no |  |
+| `focus` | `StyleValue` | no |  |
 
 <a id="wire-classvalue"></a>
 #### `ClassValue`
