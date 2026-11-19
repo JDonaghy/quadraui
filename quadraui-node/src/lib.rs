@@ -317,14 +317,16 @@ use quadraui_binding_core::{
     remove_as_default_protocol_client, render_overlays, resolve_app_path, resolve_layout_node,
     resolve_render_refs, set_app_identifier, set_as_default_protocol_client, set_dock_menu,
     set_jump_list, set_login_item, step_driver, take_pending_error as core_take_pending_error,
-    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
-    update_check_for_update, update_download_and_stage, validate_style_set_name,
-    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
-    DialogContentSize, ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail,
-    InteractionEngine, OverrideError, RenderOutput, ScriptWidget, ScriptedA11y,
-    ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
-    ScriptedSize, ScriptedState, ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling,
-    SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    text_display_from_lines, theme_color_value, toast_corner,
+    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, validate_style_set_name, widget_state_snapshot,
+    window_close_reaction, with_tray, with_window, BindingHost, DecodeError, DialogContentSize,
+    ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail, InteractionEngine,
+    OverrideError, RenderOutput, ScriptWidget, ScriptedA11y, ScriptedConstraints,
+    ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize,
+    ScriptedState, ServiceError, StyleContext, TreeTableControllerNode,
+    TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON,
+    SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode};
@@ -1729,6 +1731,64 @@ impl EventSink for NodeEventSink<'_> {
             Ok(result) if matches!(event, UiEvent::WindowClose) => {
                 window_close_reaction(bool_from_return(result), self.render_callback_present)
             }
+            Ok(result) => {
+                callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
+            }
+            Err(err) => {
+                record_error(self.pending_error, err);
+                Reaction::Exit
+            }
+        }
+    }
+
+    /// Delivers a `"tree_table_controller"` extra's cached
+    /// [`TreeTableControllerWireEvent`] to the same registered handler
+    /// [`Self::dispatch`] calls, as `{"TreeTableController": [id, event]}` --
+    /// `id` is the extra's own id (a plain JS string), `event` the JSON
+    /// encoding of the wire event (e.g. `{"RowSelected": {"id": "..."}}`),
+    /// mirroring the `{"TreeTable": [tableId, event]}` shape a flat-slot
+    /// `TreeTable`'s own `TreeTableEvent` already reaches the handler as
+    /// (a Rust tuple's `Serialize` impl produces a JSON array, which
+    /// `encode_via_json`/`Env::to_js_value` then converts into a JS array --
+    /// destructured here as `event.TreeTableController[0]`/`[1]`, the
+    /// napi-rs analog of `quadraui-py`'s Python-tuple
+    /// `event.TreeTableController`). A `"ChildrenRequested"` here is
+    /// answered with `QuiApp.setTreeTableChildren`; a `"SortChanged"` may
+    /// be answered with `QuiApp.setTreeTableSortOverride` to replace the
+    /// engine's default comparator's result with a host-chosen order.
+    fn dispatch_tree_table_controller(
+        &mut self,
+        id: WidgetId,
+        event: TreeTableControllerWireEvent,
+    ) -> Reaction {
+        let event_value = match serde_json::to_value(&event) {
+            Ok(value) => value,
+            Err(err) => {
+                record_error(
+                    self.pending_error,
+                    invalid_descriptor_error(format!(
+                        "failed to convert tree table controller event to JSON: {err}"
+                    )),
+                );
+                return Reaction::Exit;
+            }
+        };
+        let wrapped = serde_json::json!({ "TreeTableController": [id.as_str(), event_value] });
+        let js_payload: Unknown<'static> = match self.env.to_js_value(&wrapped) {
+            Ok(value) => value,
+            Err(err) => {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+        };
+        let func = match self.handler.borrow_back(&self.env) {
+            Ok(func) => func,
+            Err(err) => {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+        };
+        match func.call(js_payload) {
             Ok(result) => {
                 callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
             }
@@ -3482,6 +3542,62 @@ impl QuiApp {
             widget_state_snapshot(self.driver.app().engine.widget_state(), WidgetId::new(id))
                 .map(WidgetStateJs::from);
         encode_via_json(env, "widgetState", &snapshot)
+    }
+
+    /// Answers a `"tree_table_controller"` extra's `"ChildrenRequested"`
+    /// event -- delivered to the registered handler as
+    /// `{"TreeTableController": [id, {"ChildrenRequested": {"id":
+    /// nodeId}}]}` -- by attaching `children` (a list of wire nodes, the
+    /// same `{"id": ..., "cells": [...], "icon": ..., "has_children":
+    /// ..., "children": ...}` shape a `"tree_table_controller"` extra's
+    /// own `"nodes"` list takes) under `nodeId`, found anywhere in the
+    /// tree, not just at the top level. A no-op if `id` names no cached
+    /// controller (it hasn't been painted this frame, or at all yet).
+    #[napi(js_name = "setTreeTableChildren")]
+    pub fn set_tree_table_children(
+        &mut self,
+        env: Env,
+        id: String,
+        node_id: String,
+        children: Unknown,
+    ) -> Result<()> {
+        let children: Vec<TreeTableControllerNode> =
+            decode_via_json("setTreeTableChildren", children)?;
+        let children = tree_table_controller_nodes_from_wire(children);
+        self.guarded(env, |app| {
+            app.driver
+                .app()
+                .engine
+                .set_tree_table_children(WidgetId::new(id), &node_id, children);
+            Ok(())
+        })
+    }
+
+    /// Overrides the comparator a `"tree_table_controller"` extra's
+    /// `{"TreeTableController": [id, {"SortChanged": {"col": ...,
+    /// "ascending": ...}}]}` event already applied by default: replaces
+    /// every loaded node under `id`'s cached controller with `nodes` (the
+    /// same wire-node shape [`Self::set_tree_table_children`]'s own
+    /// `children` takes), already ordered however the host likes
+    /// (numeric, locale-aware, ...). Selection survives by node id, not
+    /// position. A no-op if `id` names no cached controller.
+    #[napi(js_name = "setTreeTableSortOverride")]
+    pub fn set_tree_table_sort_override(
+        &mut self,
+        env: Env,
+        id: String,
+        nodes: Unknown,
+    ) -> Result<()> {
+        let nodes: Vec<TreeTableControllerNode> =
+            decode_via_json("setTreeTableSortOverride", nodes)?;
+        let nodes = tree_table_controller_nodes_from_wire(nodes);
+        self.guarded(env, |app| {
+            app.driver
+                .app()
+                .engine
+                .set_tree_table_sort_override(WidgetId::new(id), nodes);
+            Ok(())
+        })
     }
 
     /// Inserts a `Button` descriptor from a JS object, returning its slot
