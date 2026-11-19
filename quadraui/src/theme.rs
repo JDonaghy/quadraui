@@ -786,6 +786,39 @@ impl Theme {
         self.list_pressed_bg(base)
     }
 
+    // ── Generic leaf state lift ───────────────────────────────────────
+    //
+    // Every hover/pressed derivation above (`button_hover_bg`,
+    // `list_hover_bg`, `tree_hover_bg`, `menu_item_hover_bg`, ...) picks
+    // one specific primitive family's own resting fill as `base`. A
+    // per-node style override — a `"style"` wire key's `hover`/
+    // `pressed`/`focus` branch, resolved through a binding's own
+    // `StyleOverride::resolve` — names whatever leaf it's attached to,
+    // not a specific primitive family, so it has no family-specific
+    // derivation to pick. These three accessors are the family-agnostic
+    // fallback such a resolver reaches for.
+
+    /// Generic background tint for a hovered leaf with no
+    /// primitive-specific derivation of its own — the same blend
+    /// [`Self::list_hover_bg`] uses.
+    pub fn leaf_hover_bg(&self, base: Color) -> Color {
+        self.list_hover_bg(base)
+    }
+
+    /// Generic background tint for a pressed leaf — the same blend
+    /// [`Self::list_pressed_bg`] uses.
+    pub fn leaf_pressed_bg(&self, base: Color) -> Color {
+        self.list_pressed_bg(base)
+    }
+
+    /// Generic foreground accent for a focused leaf — [`Self::accent_fg`],
+    /// the same colour [`Self::focus_ring_color`] already uses for the
+    /// keyboard-focus ring, so a focused leaf's accent always matches its
+    /// own ring.
+    pub fn leaf_focus_fg(&self) -> Color {
+        self.accent_fg
+    }
+
     // ── Terminal find-highlight lift ────────────────────────────
     //
     // `tui/terminal.rs`, `gtk/terminal.rs`, and `macos/terminal.rs`
@@ -1740,6 +1773,40 @@ mod tests {
         let hovered = theme.list_hover_bg(base);
         let pressed = theme.list_pressed_bg(base);
         assert_ne!(pressed, hovered, "pressed must read differently from hover");
+    }
+
+    /// The family-agnostic fallback must match `list_hover_bg` exactly —
+    /// it is the same derivation under a different name, not an
+    /// independent (and therefore driftable) tint.
+    #[test]
+    fn leaf_hover_bg_matches_list_hover_bg() {
+        let theme = Theme::default();
+        let base = theme.background;
+        assert_eq!(theme.leaf_hover_bg(base), theme.list_hover_bg(base));
+    }
+
+    /// Same proof as `leaf_hover_bg_matches_list_hover_bg`, for the
+    /// pressed variant.
+    #[test]
+    fn leaf_pressed_bg_matches_list_pressed_bg() {
+        let theme = Theme::default();
+        let base = theme.background;
+        assert_eq!(theme.leaf_pressed_bg(base), theme.list_pressed_bg(base));
+    }
+
+    /// `leaf_focus_fg` must track `focus_ring_color` (both derive from
+    /// `accent_fg`) so a focused leaf's own accent never clashes with
+    /// the keyboard-focus ring drawn around it.
+    #[test]
+    fn leaf_focus_fg_matches_focus_ring_color() {
+        let theme = Theme::default();
+        assert_eq!(theme.leaf_focus_fg(), theme.focus_ring_color());
+
+        let theme = Theme {
+            accent_fg: Color::rgb(255, 100, 0),
+            ..Theme::default()
+        };
+        assert_eq!(theme.leaf_focus_fg(), Color::rgb(255, 100, 0));
     }
 
     #[test]

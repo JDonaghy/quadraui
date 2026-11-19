@@ -176,6 +176,13 @@ pub struct LayoutStyled {
 /// field to `Theme`/`Style` and wiring it up here is one appended line to
 /// that one table, not a four-way hand-sync.
 ///
+/// [`StyleOverride::font_family`]/[`StyleOverride::font_size`]/
+/// [`StyleOverride::font_weight`] and [`StyleOverride::hover`]/
+/// [`StyleOverride::pressed`]/[`StyleOverride::focus`] are the exception:
+/// they carry no matching `Theme`/`Style` field, so they are hand-written
+/// fields on the struct this table expands into rather than table rows —
+/// see [`StyleOverride`]'s own doc for why.
+///
 /// # Metric overrides feed layout
 ///
 /// `padding` changes `crate::render::natural_size`'s measurement of a
@@ -309,6 +316,31 @@ macro_rules! style_override_tokens {
 }
 pub(crate) use style_override_tokens;
 
+/// A per-node font-weight override — mirrors the one weight distinction
+/// every pixel backend's native font API already exposes through a
+/// plain bold flag (e.g. `measure_text_styled(text, bold)`), rather than
+/// modelling the full CSS `100`–`900` numeric scale no backend resolves
+/// today. A future backend that wants finer weights grows this enum
+/// additively; nothing here forecloses that.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FontWeight {
+    #[default]
+    Normal,
+    Bold,
+}
+
+/// Which interaction state a leaf currently has, for
+/// [`StyleOverride::resolve`] to pick the matching state-variant branch
+/// (`hover`/`pressed`/`focus`) of a `"style"` override. A binding's own
+/// hit-test/focus tracking decides which states currently apply to a
+/// given node; this module only resolves the override once told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InteractionState {
+    Hovered,
+    Pressed,
+    Focused,
+}
+
 /// [`style_override_tokens!`]'s callback for [`StyleOverride`] itself:
 /// the struct (one `Option<Color>` field per colour token, one
 /// `Option<$ty>` per metric token) plus every impl this module's own
@@ -327,11 +359,53 @@ macro_rules! define_style_override {
         /// that node. See this module's own doc comment right above
         /// [`style_override_tokens!`] for the full token list and the
         /// token-mapping table for the six semantic aliases.
-        #[derive(Clone, Copy, Debug, Default, PartialEq)]
+        ///
+        /// # Font and interaction-state tokens
+        ///
+        /// [`Self::font_family`]/[`Self::font_size`]/[`Self::font_weight`]
+        /// and [`Self::hover`]/[`Self::pressed`]/[`Self::focus`] are
+        /// **not** generated from [`style_override_tokens!`]'s table —
+        /// unlike every other field above, none of them maps onto an
+        /// existing [`quadraui::Theme`]/[`quadraui::Style`] field, so
+        /// [`Self::apply_theme`]/[`Self::apply_style`] never touch them.
+        /// They are read straight off the resolved override instead: a
+        /// paint path calls [`Self::resolve`] with the node's current
+        /// [`InteractionState`]s to fold the matching branch over the
+        /// base tokens, then reads `font_family`/`font_size`/
+        /// `font_weight` off the result directly.
+        ///
+        /// `font_family` being an owned `String` (rather than
+        /// `Option<Color>`/`Option<f32>`'s plain-data shapes) is why this
+        /// struct is `Clone`, not `Copy`, unlike most small token
+        /// structs in this crate — [`StyleSets::get`] clones a boxed
+        /// `Defined` entry instead of copying it out.
+        #[derive(Clone, Debug, Default, PartialEq)]
         pub struct StyleOverride {
             $(pub $cfield: Option<Color>,)*
             $(pub $ffield: Option<f32>,)*
             $(pub $mfield: Option<$mty>,)*
+            /// Per-node font family override (e.g. `"Fira Code"`) — see
+            /// this struct's own "Font and interaction-state tokens"
+            /// doc for why it isn't merged by [`Self::apply_theme`]/
+            /// [`Self::apply_style`].
+            pub font_family: Option<String>,
+            /// Per-node font size override, in surface-native pixels.
+            pub font_size: Option<f32>,
+            /// Per-node font weight override.
+            pub font_weight: Option<FontWeight>,
+            /// Override applied when the node is hovered, merged over
+            /// this override's own base tokens by [`Self::resolve`].
+            /// Boxed for the same reason [`LayoutStyled::style`] is —
+            /// inlining a full [`StyleOverride`] three times over would
+            /// make this the dominant size of every value that embeds
+            /// one.
+            pub hover: Option<Box<StyleOverride>>,
+            /// Override applied when the node is pressed. See
+            /// [`Self::hover`].
+            pub pressed: Option<Box<StyleOverride>>,
+            /// Override applied when the node has keyboard focus. See
+            /// [`Self::hover`].
+            pub focus: Option<Box<StyleOverride>>,
         }
 
         impl StyleOverride {
@@ -377,17 +451,82 @@ macro_rules! define_style_override {
             /// The merge a `"class"` list and a node's own inline
             /// `"style"` key resolve through — see [`StyleSets::resolve`]
             /// for the full precedence chain.
+            ///
+            /// `hover`/`pressed`/`focus` merge recursively: when both
+            /// `self` and `base` name the same state branch, that
+            /// branch's own tokens merge the same way (`self`'s branch
+            /// over `base`'s), rather than one branch replacing the
+            /// other wholesale — so a `"class"` list's `hover` tokens
+            /// and a node's own inline `"style"`'s `hover` tokens
+            /// combine instead of the inline one silently discarding
+            /// the class's.
             pub fn merged_over(&self, base: StyleOverride) -> StyleOverride {
                 StyleOverride {
                     $($cfield: self.$cfield.or(base.$cfield),)*
                     $($ffield: self.$ffield.or(base.$ffield),)*
                     $($mfield: self.$mfield.or(base.$mfield),)*
+                    font_family: self.font_family.clone().or(base.font_family),
+                    font_size: self.font_size.or(base.font_size),
+                    font_weight: self.font_weight.or(base.font_weight),
+                    hover: merge_state_branch(self.hover.as_deref(), base.hover.as_deref()),
+                    pressed: merge_state_branch(self.pressed.as_deref(), base.pressed.as_deref()),
+                    focus: merge_state_branch(self.focus.as_deref(), base.focus.as_deref()),
+                }
+            }
+
+            /// Resolves this override for the leaf's current interaction
+            /// `states`: picks the matching state-variant branch (if
+            /// any is set) and merges it *over* `self`'s own base
+            /// tokens via [`Self::merged_over`], so a state branch only
+            /// ever narrows what it names — a token the branch leaves
+            /// unset still falls through to the base override, exactly
+            /// like a nested `"class"`/`"style"` merge.
+            ///
+            /// `pressed` takes precedence over `hovered`, which takes
+            /// precedence over `focused`, when more than one applies at
+            /// once — a node that is both hovered and pressed (ordinary
+            /// mouse-down-while-hovering) reads as pressed, and a
+            /// pressed or hovered node's focus ring doesn't also tint
+            /// it with the focus branch, matching every `Button`-family
+            /// primitive's own resting/hover/pressed precedence. An
+            /// empty `states` (nothing currently active) returns `self`
+            /// unchanged.
+            pub fn resolve(&self, states: &[InteractionState]) -> StyleOverride {
+                let branch = if states.contains(&InteractionState::Pressed) {
+                    self.pressed.as_deref()
+                } else if states.contains(&InteractionState::Hovered) {
+                    self.hover.as_deref()
+                } else if states.contains(&InteractionState::Focused) {
+                    self.focus.as_deref()
+                } else {
+                    None
+                };
+                match branch {
+                    Some(over) => over.merged_over(self.clone()),
+                    None => self.clone(),
                 }
             }
         }
     };
 }
 style_override_tokens!(define_style_override);
+
+/// [`StyleOverride::merged_over`]'s helper for one `hover`/`pressed`/
+/// `focus` branch: merges `over` onto `under` when both are set, keeps
+/// whichever one is set when only one is, and stays `None` when neither
+/// is — the same "narrow, never reset" merge [`StyleOverride::merged_over`]
+/// itself documents, applied one level down.
+fn merge_state_branch(
+    over: Option<&StyleOverride>,
+    under: Option<&StyleOverride>,
+) -> Option<Box<StyleOverride>> {
+    match (over, under) {
+        (Some(o), Some(u)) => Some(Box::new(o.merged_over(u.clone()))),
+        (Some(o), None) => Some(Box::new(o.clone())),
+        (None, Some(u)) => Some(Box::new(u.clone())),
+        (None, None) => None,
+    }
+}
 
 /// One [`BUILTIN_STYLE_SETS`] entry: a name paired with the `Theme`-deriving
 /// function it resolves through.
@@ -421,9 +560,9 @@ pub const BUILTIN_STYLE_SET_NAMES: [&str; 4] = [
 /// reference to it resolves to. `Defined` boxes its payload for the same
 /// size reason [`LayoutStyled::style`] does — `StyleOverride` covers every
 /// `Theme`/`Style` token, so storing it inline would make this the
-/// dominant size of every [`StyleSets`] entry; boxing costs this enum its
-/// `Copy` derive (kept as plain `Clone`), with [`StyleSets::get`] reading
-/// the boxed value back out via double-deref (`StyleOverride: Copy`).
+/// dominant size of every [`StyleSets`] entry; [`StyleSets::get`] reads
+/// the boxed value back out with a clone (`StyleOverride` is `Clone`,
+/// not `Copy` — see its own doc comment for why).
 #[derive(Clone)]
 enum StyleSetDef {
     /// A set a host defined through its own `define_style` surface: fixed
@@ -526,7 +665,7 @@ impl StyleSets {
     /// built-in. `None` for a name this registry has never heard of.
     pub fn get(&self, name: &str, theme: &Theme) -> Option<StyleOverride> {
         self.sets.get(name).map(|def| match def {
-            StyleSetDef::Defined(overrides) => **overrides,
+            StyleSetDef::Defined(overrides) => (**overrides).clone(),
             StyleSetDef::Builtin(derive) => derive(theme),
         })
     }
@@ -1858,6 +1997,173 @@ mod tests {
         assert_eq!(derived.corner_radius, 99.0);
         assert_eq!(derived.padding, base.padding);
         assert_eq!(derived.border_width, base.border_width);
+    }
+
+    /// Font tokens are a plain part of the override, round-tripping
+    /// through construction just like any colour/metric field —
+    /// `apply_theme`/`apply_style` never touch them (no matching
+    /// `Theme`/`Style` field exists), so they are only observable by
+    /// reading them straight off the override.
+    #[test]
+    fn style_override_carries_font_tokens() {
+        let over = StyleOverride {
+            font_family: Some("Fira Code".to_string()),
+            font_size: Some(14.0),
+            font_weight: Some(FontWeight::Bold),
+            ..StyleOverride::default()
+        };
+        assert_eq!(over.font_family, Some("Fira Code".to_string()));
+        assert_eq!(over.font_size, Some(14.0));
+        assert_eq!(over.font_weight, Some(FontWeight::Bold));
+        assert!(!over.is_empty());
+    }
+
+    /// [`StyleOverride::resolve`] with no active state returns the base
+    /// override unchanged.
+    #[test]
+    fn resolve_with_no_states_returns_base_unchanged() {
+        let base = StyleOverride {
+            bg: Some(quadraui::Color::rgb(10, 10, 10)),
+            ..StyleOverride::default()
+        };
+        assert_eq!(base.resolve(&[]), base);
+    }
+
+    /// A `hover` branch's tokens win over the base's once the leaf is
+    /// hovered; a token the branch doesn't name still falls through to
+    /// the base.
+    #[test]
+    fn resolve_hovered_applies_the_hover_branch_over_the_base() {
+        let base = StyleOverride {
+            bg: Some(quadraui::Color::rgb(10, 10, 10)),
+            fg: Some(quadraui::Color::rgb(20, 20, 20)),
+            hover: Some(Box::new(StyleOverride {
+                bg: Some(quadraui::Color::rgb(99, 99, 99)),
+                ..StyleOverride::default()
+            })),
+            ..StyleOverride::default()
+        };
+        let resolved = base.resolve(&[InteractionState::Hovered]);
+        assert_eq!(resolved.bg, Some(quadraui::Color::rgb(99, 99, 99)));
+        // `fg` wasn't named by the hover branch, so the base's own value
+        // falls through.
+        assert_eq!(resolved.fg, Some(quadraui::Color::rgb(20, 20, 20)));
+    }
+
+    /// With no matching branch set, resolving for a state the override
+    /// never named returns the base unchanged — a style that only
+    /// defines `hover` has nothing special to say about `focus`.
+    #[test]
+    fn resolve_falls_through_to_base_when_the_matching_branch_is_unset() {
+        let base = StyleOverride {
+            bg: Some(quadraui::Color::rgb(10, 10, 10)),
+            hover: Some(Box::new(StyleOverride {
+                bg: Some(quadraui::Color::rgb(99, 99, 99)),
+                ..StyleOverride::default()
+            })),
+            ..StyleOverride::default()
+        };
+        assert_eq!(base.resolve(&[InteractionState::Focused]), base);
+    }
+
+    /// `pressed` outranks `hovered`, which outranks `focused`, when more
+    /// than one state is active at once — the ordinary
+    /// mouse-down-while-hovering case must read as pressed, not hover.
+    #[test]
+    fn resolve_prefers_pressed_over_hovered_over_focused() {
+        let base = StyleOverride {
+            bg: Some(quadraui::Color::rgb(0, 0, 0)),
+            hover: Some(Box::new(StyleOverride {
+                bg: Some(quadraui::Color::rgb(10, 10, 10)),
+                ..StyleOverride::default()
+            })),
+            pressed: Some(Box::new(StyleOverride {
+                bg: Some(quadraui::Color::rgb(20, 20, 20)),
+                ..StyleOverride::default()
+            })),
+            focus: Some(Box::new(StyleOverride {
+                bg: Some(quadraui::Color::rgb(30, 30, 30)),
+                ..StyleOverride::default()
+            })),
+            ..StyleOverride::default()
+        };
+        let resolved = base.resolve(&[
+            InteractionState::Focused,
+            InteractionState::Hovered,
+            InteractionState::Pressed,
+        ]);
+        assert_eq!(resolved.bg, Some(quadraui::Color::rgb(20, 20, 20)));
+
+        let resolved = base.resolve(&[InteractionState::Focused, InteractionState::Hovered]);
+        assert_eq!(resolved.bg, Some(quadraui::Color::rgb(10, 10, 10)));
+    }
+
+    /// `merged_over`'s `hover`/`pressed`/`focus` branches merge
+    /// recursively: a `"class"` list's `hover` tokens and a node's own
+    /// inline `"style"`'s `hover` tokens combine rather than one
+    /// replacing the other wholesale.
+    #[test]
+    fn merged_over_combines_hover_branches_instead_of_replacing() {
+        let class_set = StyleOverride {
+            hover: Some(Box::new(StyleOverride {
+                bg: Some(quadraui::Color::rgb(1, 1, 1)),
+                fg: Some(quadraui::Color::rgb(2, 2, 2)),
+                ..StyleOverride::default()
+            })),
+            ..StyleOverride::default()
+        };
+        let inline = StyleOverride {
+            hover: Some(Box::new(StyleOverride {
+                bg: Some(quadraui::Color::rgb(9, 9, 9)),
+                ..StyleOverride::default()
+            })),
+            ..StyleOverride::default()
+        };
+        let merged = inline.merged_over(class_set);
+        let hover = merged.hover.expect("hover branch must survive the merge");
+        // Inline's own `bg` wins...
+        assert_eq!(hover.bg, Some(quadraui::Color::rgb(9, 9, 9)));
+        // ...but the class's `fg` (which inline's hover branch never
+        // named) still comes through.
+        assert_eq!(hover.fg, Some(quadraui::Color::rgb(2, 2, 2)));
+    }
+
+    /// A registered style set round-trips its own `hover` branch through
+    /// `StyleSets::define`/`get`, and that branch survives
+    /// `StyleSets::resolve`'s own merge — a `"class"` reference carries
+    /// state variants exactly like a node's inline `"style"` key does.
+    #[test]
+    fn named_style_set_round_trips_its_hover_branch() {
+        let mut sets = StyleSets::new();
+        sets.define(
+            "card",
+            StyleOverride {
+                bg: Some(quadraui::Color::rgb(5, 5, 5)),
+                hover: Some(Box::new(StyleOverride {
+                    bg: Some(quadraui::Color::rgb(50, 50, 50)),
+                    ..StyleOverride::default()
+                })),
+                ..StyleOverride::default()
+            },
+        );
+        let theme = Theme::default();
+
+        let got = sets.get("card", &theme).expect("just-defined set exists");
+        let hover = got.hover.expect("hover branch must round-trip through get");
+        assert_eq!(hover.bg, Some(quadraui::Color::rgb(50, 50, 50)));
+
+        let resolved = sets.resolve(&["card".to_string()], &theme);
+        let hover = resolved
+            .hover
+            .as_deref()
+            .expect("hover branch must survive resolve's merge");
+        assert_eq!(hover.bg, Some(quadraui::Color::rgb(50, 50, 50)));
+        // The resolved set's own hover-state tokens apply through
+        // `StyleOverride::resolve` the same way any other override's do.
+        assert_eq!(
+            resolved.resolve(&[InteractionState::Hovered]).bg,
+            Some(quadraui::Color::rgb(50, 50, 50))
+        );
     }
 
     #[test]
