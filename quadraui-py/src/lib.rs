@@ -623,7 +623,7 @@ enum DeferredAction {
     SetDockMenu(serde_json::Value),
     SetJumpList(serde_json::Value),
     ActivateTab(WidgetId, usize),
-    // Boxed: `StyleOverride` now covers every `Theme`/`Style` token, so
+    // Boxed: `StyleOverride` covers every `Theme`/`Style` token, so
     // storing it inline would make this variant dominate `DeferredAction`'s
     // own size the same way it would `LayoutNode::Styled`'s (see
     // `quadraui_binding_core::layout::LayoutStyled`'s own doc).
@@ -6476,10 +6476,14 @@ impl QuiApp {
 
     /// Registers a named style set under `name` -- the CSS-class analogue
     /// of [`Self::set_theme`]'s whole-app override. `overrides` takes the
-    /// same keys a layout node's own `"style"` dict does (`"bg"`/`"fg"`/
-    /// `"border"`/`"accent"`/`"surface_bg"`/`"accent_bg"`/`"padding"`/
-    /// `"corner_radius"`/`"border_width"`; an unknown key raises
-    /// `InvalidDescriptorError`). Any node in any later frame's tree then
+    /// same keys a layout node's own `"style"` dict does -- every
+    /// `quadraui::Theme` colour field and every `quadraui::Style` metric
+    /// field, under that field's own name, plus `"bg"`/`"fg"`/`"border"`/
+    /// `"accent"` as the semantic aliases for `Theme::background`/
+    /// `foreground`/`border_fg`/`accent_fg` (an unknown key raises
+    /// `InvalidDescriptorError`; see `quadraui_binding_core::layout::
+    /// StyleOverride`'s own doc for the full token list). Any node in any
+    /// later frame's tree then
     /// names the set through its own `"class"` key -- a single name, a
     /// whitespace-separated string of them, or a list -- instead of
     /// restating the same tokens inline on every node that wants them.

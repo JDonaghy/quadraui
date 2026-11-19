@@ -1061,6 +1061,7 @@ pub fn schema() -> Vec<DefJson> {
         (
             $name:ident
             colors: [ $( $cfield:ident => $tfield:ident ),* $(,)? ],
+            theme_floats: [ $( $ffield:ident => $tffield:ident ),* $(,)? ],
             metrics: [ $( $mfield:ident : $mty:ident => $setter:ident => $decode:ident ),* $(,)? ],
         ) => {
             // `$name` (rather than a literal `style_value` written inside
@@ -1073,6 +1074,7 @@ pub fn schema() -> Vec<DefJson> {
                 let mut fields = vec![
                     $(field_opt(stringify!($cfield), style_color_value.clone()),)*
                 ];
+                $(fields.push(field_opt(stringify!($ffield), float_()));)*
                 $(fields.push(field_opt(stringify!($mfield), style_schema_number_ty!($mty)));)*
                 b.define(obj_doc(
                     "StyleValue",

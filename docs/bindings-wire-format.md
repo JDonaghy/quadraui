@@ -1568,6 +1568,9 @@ A per-node "style" override, scoped to that node's own subtree: every quadraui::
 | `badge_blocked` | `StyleColorValue` | no |  |
 | `card_hint_bg` | `StyleColorValue` | no |  |
 | `card_hint_fg` | `StyleColorValue` | no |  |
+| `cursor_normal_alpha` | `number` | no |  |
+| `selection_alpha` | `number` | no |  |
+| `yank_highlight_alpha` | `number` | no |  |
 | `padding` | `number` | no |  |
 | `corner_radius` | `number` | no |  |
 | `border_width` | `number` | no |  |
