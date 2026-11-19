@@ -214,18 +214,16 @@ Pick the backends you ship; `terminal` is independent of them.
 
 **53 primitive modules**, one each under `quadraui/src/primitives/`: a
 declarative description and a shared layout, each with a rasteriser per
-backend — except `DatePicker` and `CellGrid`, which ship layout/hit-test
-logic only and have no backend rasteriser yet (they are seams, exercised
-headlessly via `quadraui/tests/date_picker_driver.rs` and `CellGrid`'s
-own unit tests), and the two
-shared-math modules `layout_metrics` and `row_stack`, which hold
-arithmetic several primitives reuse rather than a widget of their own.
-Among them:
+backend — except `CellGrid`, which ships layout/hit-test logic only and
+has no backend rasteriser yet (it is a seam, exercised headlessly via its
+own unit tests), and the two shared-math modules `layout_metrics` and
+`row_stack`, which hold arithmetic several primitives reuse rather than a
+widget of their own. Among them:
 
 - Content: `TreeView`, `ListView`, `IconGrid`, `DataTable`, `TreeTable`,
   `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
-  `Minimap`, `DatePicker` (layout/hit-test only — no rasteriser yet),
+  `Minimap`, `DatePicker`,
   `CellGrid` (spreadsheet-style cells with frozen panes; layout/hit-test
   only — no rasteriser yet),
   `Canvas` (app-defined drawing, painted through the public
