@@ -1,15 +1,16 @@
 //! `CellGrid` primitive: a spreadsheet-style grid of cells with letter
 //! column headers, numbered row headers, frozen leading rows/columns, and
-//! a rectangular cell selection — descriptor, layout and hit-testing,
-//! plus the [`crate::primitive::Primitive`] impl near the bottom of this
+//! a rectangular cell selection — descriptor, layout, hit-testing, plus
+//! the [`crate::primitive::Primitive`] impl near the bottom of this
 //! module that wires it through [`crate::backend::DrawsPrimitives::draw_primitive`]:
-//! TUI paints real content via
-//! [`crate::primitive::Primitive::paint_cells`] →
-//! [`crate::tui::draw_cell_grid`]; GTK/macOS/Win get their own
-//! `CellGrid` rasteriser in a follow-up issue, per the repo's *One
-//! backend per issue* rule, the same split
-//! [`crate::primitives::list::ListView`] and
-//! [`crate::primitives::icon_grid::IconGrid`] used.
+//! TUI paints real content via [`crate::primitive::Primitive::paint_cells`]
+//! → [`crate::tui::draw_cell_grid`], and GTK/macOS/Win paint through
+//! [`crate::primitive::Primitive::paint`] → this module's own
+//! `native_surface_paint`, reusing
+//! [`crate::primitives::data_table::DataTable`]'s own alignment/ellipsis
+//! text helpers rather than forking them — the same "extend, don't fork"
+//! rule [`crate::primitives::tree_table::TreeTable`] already follows for
+//! its own cell text.
 //!
 //! # The grid only presents
 //!
@@ -592,10 +593,10 @@ impl CellGridLayout {
 }
 
 /// Events a `CellGrid` emits back to the app. Not produced by
-/// [`CellGrid::layout`] itself — a host derives these from
-/// [`crate::UiEvent`] plus [`CellGridLayout::hit_test`] /
-/// [`CellGridPrimitiveLayout::hit_test`], the same convention every
-/// other row-family primitive's `*Event` enum follows.
+/// [`CellGrid::layout`]/[`CellGridLayout::hit_test`] themselves — a host
+/// derives these from [`crate::UiEvent`] plus `CellGridPrimitiveLayout::hit_test`,
+/// the same convention every other row-family primitive's `*Event` enum
+/// follows (e.g. [`crate::primitives::icon_grid::IconGridEvent`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CellGridEvent {
     /// The active cell moved to a new absolute `(row, col)`.
@@ -605,39 +606,457 @@ pub enum CellGridEvent {
 // ── Accessibility ────────────────────────────────────────────────────
 //
 // `CellGrid`'s `A11yPrimitive` impl lives here rather than in
-// `crate::a11y::tree`, the same "new primitive owns its own a11y impl"
-// precedent `IconGrid::a11y_info`'s doc describes. `A11yRole::Table`/
-// `Row`/`Cell` are an exact fit, unlike `IconGrid`'s `List`/`ListItem`
-// stand-in. Reported children only ever cover `Self::cells`' painted
-// window (see the module doc) — the full sheet behind
-// `row_count`/`col_count` has no accessibility presence beyond that.
+// `crate::a11y::tree` (where `DataTable`/`TreeView`'s impls live) — the
+// same "new primitive owns its own a11y impl" precedent
+// `IconGrid::a11y_info`'s doc describes, since the private per-row a11y
+// helpers in `crate::a11y::tree` aren't reachable from this module
+// either. Unlike `IconGrid`, `A11yRole::Table`/`Row`/`Cell` already fit
+// exactly, the same roles `crate::a11y::tree::data_table_row` reports
+// for `DataTable`.
+//
+// Reported children only ever cover `Self::cells`' painted window (see
+// the module doc's "`cells` is a viewport-sized window") — the full
+// sheet behind `row_count`/`col_count` has no accessibility presence
+// beyond that.
 
-impl crate::a11y::A11yPrimitive for CellGrid {
-    fn a11y_info(&self) -> crate::a11y::A11yInfo {
-        crate::a11y::A11yInfo::new().with_role(crate::a11y::A11yRole::Table)
-    }
-
-    fn a11y_children(&self) -> Vec<crate::a11y::A11yChild> {
-        self.cells
-            .iter()
-            .enumerate()
-            .flat_map(|(ri, row)| {
-                row.iter().enumerate().map(move |(ci, cell)| {
-                    let mut info =
-                        crate::a11y::A11yInfo::new().with_role(crate::a11y::A11yRole::Cell);
-                    if !cell.text.is_empty() {
-                        info = info.with_label(cell.text.clone());
-                    }
-                    crate::a11y::A11yChild::new(format!("cell.{ri}.{ci}"), info)
-                })
-            })
-            .collect()
+/// Absolute sheet index for windowed position `pos` along one axis —
+/// the same frozen-then-scrolled order [`resolve_spans`] resolves a
+/// pixel [`CellGridLayout`] in, but viewport-agnostic: unlike
+/// [`CellGrid::layout`]'s caller, [`CellGrid::a11y_children`] has no
+/// pixel rect to resolve a real layout from, only [`CellGrid::cells`]'
+/// windowed shape plus the frozen/scroll counts that produced it. Never
+/// clips past `total` the way [`resolve_spans`]'s own early-break does —
+/// a caller is expected to pass a `pos` already within `cells`' bounds.
+fn windowed_abs_index(frozen: usize, scroll: usize, total: usize, pos: usize) -> usize {
+    let frozen = frozen.min(total);
+    if pos < frozen {
+        pos
+    } else {
+        frozen + scroll.min(total.saturating_sub(frozen)) + (pos - frozen)
     }
 }
 
-/// [`CellGrid`]'s [`crate::primitive::Primitive::Layout`]: the absolute
-/// `area` [`CellGrid::layout`] was resolved for, plus the resolved
-/// [`CellGridLayout`] itself.
+impl CellGrid {
+    /// The absolute row index [`Self::cells`]' windowed row `pos` maps
+    /// onto — see [`windowed_abs_index`].
+    #[must_use]
+    fn windowed_row(&self, pos: usize) -> usize {
+        windowed_abs_index(self.frozen_rows, self.row_scroll, self.row_count, pos)
+    }
+
+    /// The absolute column index [`Self::cells`]' windowed column `pos`
+    /// maps onto — see [`windowed_abs_index`].
+    #[must_use]
+    fn windowed_col(&self, pos: usize) -> usize {
+        windowed_abs_index(self.frozen_cols, self.col_scroll, self.col_count, pos)
+    }
+}
+
+impl crate::a11y::A11yPrimitive for CellGrid {
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        crate::a11y::A11yInfo::new()
+            .with_role(crate::a11y::A11yRole::Table)
+            .with_label("Cell grid")
+            .with_set_size(self.row_count as u32)
+    }
+
+    fn a11y_children(&self) -> Vec<crate::a11y::A11yChild> {
+        let col_count = self.cells.iter().map(|row| row.len()).max().unwrap_or(0);
+        let mut children = Vec::new();
+        if self.show_col_headers && col_count > 0 {
+            children.push(cell_grid_header_row(self, col_count));
+        }
+        children.extend(
+            self.cells
+                .iter()
+                .enumerate()
+                .map(|(r_pos, row)| cell_grid_row(self, r_pos, row)),
+        );
+        children
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        Some(format!("cell.{}.{}", self.cursor.0, self.cursor.1))
+    }
+}
+
+/// The column-letter header row: one [`crate::a11y::A11yRole::Cell`] per
+/// visible column (`0..col_count` of [`CellGrid::cells`]), labelled with
+/// [`CellGrid::col_label`] — the same `Row`-of-`Cell`s shape
+/// [`crate::a11y::tree::data_table_header`] reports for [`crate::DataTable`].
+fn cell_grid_header_row(grid: &CellGrid, col_count: usize) -> crate::a11y::A11yChild {
+    let cells = (0..col_count)
+        .map(|c_pos| {
+            let col = grid.windowed_col(c_pos);
+            let info = crate::a11y::A11yInfo::new()
+                .with_role(crate::a11y::A11yRole::Cell)
+                .with_label(grid.col_label(col));
+            crate::a11y::A11yChild::new(format!("colheader.{col}"), info)
+        })
+        .collect();
+    crate::a11y::A11yChild::new(
+        "header".to_string(),
+        crate::a11y::A11yInfo::new()
+            .with_role(crate::a11y::A11yRole::Row)
+            .with_label("Header"),
+    )
+    .with_children(cells)
+}
+
+/// One visible body row: an optional leading row-number header cell
+/// (when [`CellGrid::show_row_headers`]), then one
+/// [`crate::a11y::A11yRole::Cell`] per visible column, carrying its text
+/// and `with_selected` whenever `(row, col)` falls inside
+/// [`CellGrid::selection_bounds`]. The *focused* cell (the cursor) is
+/// named separately via [`CellGrid::a11y_focus_key`] rather than a
+/// per-cell flag — the same split [`crate::a11y::tree::data_table_row`]
+/// draws between `Row`'s `with_selected` and `DataTable::a11y_focus_key`.
+fn cell_grid_row(grid: &CellGrid, r_pos: usize, row: &[Cell]) -> crate::a11y::A11yChild {
+    let abs_row = grid.windowed_row(r_pos);
+    let (sr0, sc0, sr1, sc1) = grid.selection_bounds();
+    let mut cells = Vec::new();
+    if grid.show_row_headers {
+        let info = crate::a11y::A11yInfo::new()
+            .with_role(crate::a11y::A11yRole::Cell)
+            .with_label(grid.row_label(abs_row));
+        cells.push(crate::a11y::A11yChild::new(
+            format!("rowheader.{abs_row}"),
+            info,
+        ));
+    }
+    for (c_pos, cell) in row.iter().enumerate() {
+        let abs_col = grid.windowed_col(c_pos);
+        let selected = (sr0..=sr1).contains(&abs_row) && (sc0..=sc1).contains(&abs_col);
+        let mut info = crate::a11y::A11yInfo::new()
+            .with_role(crate::a11y::A11yRole::Cell)
+            .with_selected(selected);
+        if !cell.text.is_empty() {
+            info = info.with_label(cell.text.clone());
+        }
+        cells.push(crate::a11y::A11yChild::new(
+            format!("cell.{abs_row}.{abs_col}"),
+            info,
+        ));
+    }
+    crate::a11y::A11yChild::new(
+        format!("row.{abs_row}"),
+        crate::a11y::A11yInfo::new().with_role(crate::a11y::A11yRole::Row),
+    )
+    .with_children(cells)
+}
+
+// ── GUI paint: headers, gridlines, cursor ring, selection, cell text ──
+//
+// `CellGrid` has no bespoke `Backend::draw_cell_grid` method — like
+// [`crate::primitives::icon_grid::IconGrid`], it paints exclusively
+// through [`crate::backend::DrawsPrimitives::draw_primitive`] (see
+// [`Primitive::paint`][crate::primitive::Primitive::paint] below), so
+// this module is the only pixel rasteriser it has.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) mod native_surface_paint {
+    use super::{Cell, CellGrid, CellGridLayout};
+    use crate::event::Rect;
+    use crate::paint_surface::{fit_text_prefix, PaintSurface};
+    use crate::primitives::data_table::ColumnAlign;
+    use crate::style::Style;
+    use crate::theme::Theme;
+
+    /// `col_x`/`col_w`'s text origin for a `text_w`-wide run under
+    /// `align` — the same three-way split
+    /// [`crate::primitives::data_table::native_surface_paint`]'s own
+    /// (private) `align_text_x` computes, duplicated here rather than
+    /// exposed from there since it's a single `match` over an already
+    /// shared [`ColumnAlign`].
+    fn align_text_x(col_x: f32, col_w: f32, text_w: f32, align: ColumnAlign) -> f32 {
+        match align {
+            ColumnAlign::Left => col_x,
+            ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
+            ColumnAlign::Right => col_x + col_w - text_w,
+        }
+    }
+
+    /// Paint one already-formatted header label, bold and centred in
+    /// `rect` — the same bold convention
+    /// [`crate::primitives::data_table::native_surface_paint::paint_header`]
+    /// uses for column titles.
+    fn paint_header_label(surface: &mut dyn PaintSurface, label: &str, rect: Rect, theme: &Theme) {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+        surface.surface_push_clip(rect);
+        let (raw_w, _) = surface.surface_measure_text_styled(label, true);
+        let (text, tw) = if raw_w <= rect.width {
+            (label.to_string(), raw_w)
+        } else {
+            fit_text_prefix(surface, label, true, rect.width)
+        };
+        let (_, th) = surface.surface_measure_text_styled(&text, true);
+        let x = rect.x + (rect.width - tw).max(0.0) / 2.0;
+        let y = rect.y + (rect.height - th).max(0.0) / 2.0;
+        surface.surface_draw_text_run_styled(
+            Rect::new(x, y, tw.max(1.0), th.max(1.0)),
+            &text,
+            theme.foreground,
+            true,
+            false,
+            false,
+            1.0,
+        );
+        surface.surface_pop_clip();
+    }
+
+    /// Paint one already-formatted body cell's text, honouring its
+    /// [`crate::CellStyle`] — bold/italic/underline plus an optional
+    /// foreground override — via [`PaintSurface::surface_draw_text_run_styled`].
+    /// Ellipsis-truncated via the same shared [`fit_text_prefix`]
+    /// [`crate::primitives::data_table::native_surface_paint::paint_cell`]
+    /// uses, since a per-cell style flag has no parallel in
+    /// `DataTable`'s own plain [`crate::StyledText`] cells.
+    fn paint_cell_text(surface: &mut dyn PaintSurface, cell: &Cell, rect: Rect, theme: &Theme) {
+        if cell.text.is_empty() || rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+        let bold = cell.style.bold.unwrap_or(false);
+        surface.surface_push_clip(rect);
+        let (raw_w, _) = surface.surface_measure_text_styled(&cell.text, bold);
+        let (text, tw) = if raw_w <= rect.width {
+            (cell.text.clone(), raw_w)
+        } else {
+            fit_text_prefix(surface, &cell.text, bold, rect.width)
+        };
+        let (_, th) = surface.surface_measure_text_styled(&text, bold);
+        let align = cell.style.effective_align(&cell.text);
+        let x = align_text_x(rect.x, rect.width, tw, align);
+        let y = rect.y + (rect.height - th).max(0.0) / 2.0;
+        let fg = cell.style.fg.unwrap_or(theme.foreground);
+        surface.surface_draw_text_run_styled(
+            Rect::new(x, y, tw.max(1.0), th.max(1.0)),
+            &text,
+            fg,
+            bold,
+            cell.style.italic.unwrap_or(false),
+            cell.style.underline.unwrap_or(false),
+            1.0,
+        );
+        surface.surface_pop_clip();
+    }
+
+    /// The bounding rect of the resolved rectangular selection
+    /// `(top, left, bottom, right)` — all inclusive absolute indices,
+    /// see [`CellGrid::selection_bounds`] — over whichever of `layout`'s
+    /// visible rows/columns fall inside it, or `None` when none do
+    /// (the whole selection has scrolled out of view).
+    ///
+    /// Takes the bounding box of the matching spans rather than summing
+    /// only contiguous ones, so a selection straddling the
+    /// frozen/scrolled boundary (two separate runs in `layout.rows`/
+    /// `layout.cols`) paints as one solid rect spanning the gap between
+    /// them — a deliberate simplification a future issue can tighten to
+    /// per-run rects if that gap ever reads as visually wrong.
+    fn selection_rect(
+        area: Rect,
+        layout: &CellGridLayout,
+        top: usize,
+        left: usize,
+        bottom: usize,
+        right: usize,
+    ) -> Option<Rect> {
+        let mut y_bounds: Option<(f32, f32)> = None;
+        for row in &layout.rows {
+            if row.index >= top && row.index <= bottom {
+                let (y0, y1) = (row.start, row.start + row.size);
+                y_bounds = Some(match y_bounds {
+                    Some((lo, hi)) => (lo.min(y0), hi.max(y1)),
+                    None => (y0, y1),
+                });
+            }
+        }
+        let mut x_bounds: Option<(f32, f32)> = None;
+        for col in &layout.cols {
+            if col.index >= left && col.index <= right {
+                let (x0, x1) = (col.start, col.start + col.size);
+                x_bounds = Some(match x_bounds {
+                    Some((lo, hi)) => (lo.min(x0), hi.max(x1)),
+                    None => (x0, x1),
+                });
+            }
+        }
+        match (y_bounds, x_bounds) {
+            (Some((yt, yb)), Some((xl, xr))) if yb > yt && xr > xl => {
+                Some(Rect::new(area.x + xl, area.y + yt, xr - xl, yb - yt))
+            }
+            _ => None,
+        }
+    }
+
+    /// Paint `grid`'s visible headers, cell backgrounds/text, gridlines,
+    /// frozen-pane dividers, selection fill and cursor ring into `area`
+    /// on `surface` — the entry point every GUI backend's
+    /// [`crate::primitive::Primitive::paint`] goes through (`CellGrid`
+    /// has no bespoke `Backend::draw_cell_grid` method, so this is its
+    /// only pixel paint path).
+    ///
+    /// No scrollbar thumb is painted even when
+    /// [`CellGrid::show_scrollbar`] reserves a strip for one — a visual
+    /// scrollbar thumb is a follow-up, not part of this issue's
+    /// acceptance criteria (gridlines/headers/cursor/selection/text).
+    pub(crate) fn paint(
+        grid: &CellGrid,
+        area: Rect,
+        layout: &CellGridLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+    ) {
+        if area.width <= 0.0 || area.height <= 0.0 {
+            return;
+        }
+        surface.surface_push_clip(area);
+        surface.surface_fill_rect(area, theme.background);
+
+        let body_left = area.x + layout.row_header_width;
+        let body_top = area.y + layout.col_header_height;
+        let body_right = area.x + layout.viewport_width - layout.scrollbar_width;
+        let body_bottom = area.y + layout.viewport_height - layout.scrollbar_height;
+
+        // ── Headers ──────────────────────────────────────────────────
+        if layout.col_header_height > 0.0 {
+            surface.surface_fill_rect(
+                Rect::new(
+                    area.x,
+                    area.y,
+                    layout.viewport_width,
+                    layout.col_header_height,
+                ),
+                theme.tab_bar_bg,
+            );
+            for col in &layout.cols {
+                let x = area.x + col.start;
+                if col.size <= 0.0 || x + col.size <= body_left || x >= body_right {
+                    continue;
+                }
+                let rect = Rect::new(x, area.y, col.size, layout.col_header_height);
+                paint_header_label(surface, &grid.col_label(col.index), rect, theme);
+            }
+        }
+        if layout.row_header_width > 0.0 {
+            surface.surface_fill_rect(
+                Rect::new(
+                    area.x,
+                    area.y,
+                    layout.row_header_width,
+                    layout.viewport_height,
+                ),
+                theme.tab_bar_bg,
+            );
+            for row in &layout.rows {
+                let y = area.y + row.start;
+                if row.size <= 0.0 || y + row.size <= body_top || y >= body_bottom {
+                    continue;
+                }
+                let rect = Rect::new(area.x, y, layout.row_header_width, row.size);
+                paint_header_label(surface, &grid.row_label(row.index), rect, theme);
+            }
+        }
+
+        // ── Selection fill ───────────────────────────────────────────
+        // Painted *before* cell backgrounds/text, the same solid-fill-
+        // first convention `DataTable::paint_row` uses for its own
+        // selection/hover bands: a cell's own background (an opaque
+        // `surface_fill_rect`) and its text then composite on top of
+        // this alpha wash rather than the wash landing over already-
+        // painted glyphs and half-washing them out.
+        let (sr0, sc0, sr1, sc1) = grid.selection_bounds();
+        if let Some(rect) = selection_rect(area, layout, sr0, sc0, sr1, sc1) {
+            surface.surface_fill_rect_alpha(rect, theme.selection_bg, theme.selection_alpha);
+        }
+
+        // ── Cell backgrounds + text ──────────────────────────────────
+        for (r_pos, row_span) in layout.rows.iter().enumerate() {
+            if row_span.size <= 0.0 {
+                continue;
+            }
+            let Some(row_cells) = grid.cells.get(r_pos) else {
+                continue;
+            };
+            let y = area.y + row_span.start;
+            for (c_pos, col_span) in layout.cols.iter().enumerate() {
+                if col_span.size <= 0.0 {
+                    continue;
+                }
+                let Some(cell) = row_cells.get(c_pos) else {
+                    continue;
+                };
+                let rect = Rect::new(area.x + col_span.start, y, col_span.size, row_span.size);
+                if let Some(bg) = cell.style.bg {
+                    surface.surface_fill_rect(rect, bg);
+                }
+                paint_cell_text(surface, cell, rect, theme);
+            }
+        }
+
+        // ── Gridlines ────────────────────────────────────────────────
+        let body_w = (body_right - body_left).max(0.0);
+        let body_h = (body_bottom - body_top).max(0.0);
+        for row in &layout.rows {
+            let y = area.y + row.start + row.size;
+            if y < body_top || y > body_bottom {
+                continue;
+            }
+            surface.surface_fill_rect(Rect::new(body_left, y - 0.5, body_w, 1.0), theme.separator);
+        }
+        for col in &layout.cols {
+            let x = area.x + col.start + col.size;
+            if x < body_left || x > body_right {
+                continue;
+            }
+            surface.surface_fill_rect(Rect::new(x - 0.5, body_top, 1.0, body_h), theme.separator);
+        }
+
+        // ── Frozen-pane dividers ─────────────────────────────────────
+        // A thicker (2px) rule right after the last frozen row/column —
+        // distinct from the 1px gridlines above so the frozen boundary
+        // reads as structural, the same way a spreadsheet's own "freeze
+        // panes" divider does.
+        if layout.frozen_rows > 0 && layout.frozen_rows < layout.rows.len() {
+            let last = &layout.rows[layout.frozen_rows - 1];
+            let y = area.y + last.start + last.size;
+            surface.surface_fill_rect(Rect::new(body_left, y - 1.0, body_w, 2.0), theme.separator);
+        }
+        if layout.frozen_cols > 0 && layout.frozen_cols < layout.cols.len() {
+            let last = &layout.cols[layout.frozen_cols - 1];
+            let x = area.x + last.start + last.size;
+            surface.surface_fill_rect(Rect::new(x - 1.0, body_top, 2.0, body_h), theme.separator);
+        }
+
+        // ── Cursor ring ──────────────────────────────────────────────
+        if grid.has_focus {
+            let cursor_rect = layout
+                .rows
+                .iter()
+                .find(|r| r.index == grid.cursor.0)
+                .zip(layout.cols.iter().find(|c| c.index == grid.cursor.1))
+                .map(|(r, c)| Rect::new(area.x + c.start, area.y + r.start, c.size, r.size));
+            if let Some(rect) = cursor_rect {
+                surface.surface_stroke_rect(
+                    rect,
+                    theme.focus_ring_color(),
+                    style.focus_ring_width.max(1.0),
+                );
+            }
+        }
+
+        surface.surface_pop_clip();
+    }
+}
+
+/// [`crate::primitive::Primitive::Layout`] for [`CellGrid`]: the
+/// absolute `area` [`CellGrid::layout`] was resolved for, plus the
+/// resolved [`CellGridLayout`] itself.
 ///
 /// `#[non_exhaustive]`: backend-returned, never constructed by a
 /// consumer via struct literal, same convention as [`CellGridLayout`]
@@ -689,10 +1108,14 @@ impl crate::primitive::Primitive for CellGrid {
             return CellGridPrimitiveLayout { area: rect, layout };
         }
 
-        // No pixel rasteriser yet (`Self::paint`'s own doc), so these
-        // header/scrollbar sizes are never actually painted against —
-        // they only let a GUI host reserve correct space and hit-test
-        // ahead of that follow-up issue landing.
+        // No live text measurer reaches `Primitive::layout` on a pixel
+        // backend (its signature carries only `LayoutCtx`'s flat
+        // `char_width`), so the row-header gutter's width is estimated
+        // from the sheet's own digit count rather than any backend's
+        // real glyph metrics — the same no-live-font fallback
+        // [`crate::primitives::layout_metrics::pixel_tree_table_layout`]
+        // already applies for a pixel backend with no live glyph
+        // measurer reachable.
         let col_header_height = if self.show_col_headers {
             ctx.line_height
         } else {
@@ -724,13 +1147,13 @@ impl crate::primitive::Primitive for CellGrid {
         CellGridPrimitiveLayout { area: rect, layout }
     }
 
-    /// No pixel rasteriser yet: a GTK/macOS/Win `CellGrid` issue adds one
-    /// here, mirroring [`crate::primitives::list::native_surface_paint`]'s
-    /// shared [`crate::paint_surface::PaintSurface`] painter. Until then
-    /// this paints nothing — the same "resolve layout, maybe paint"
-    /// degrade [`crate::primitive::Primitive::paint_cells`]'s own default
-    /// documents for a backend-less primitive, just on the GUI side of
-    /// the split instead of the TUI side.
+    /// Paints through [`native_surface_paint::paint`] on every pixel
+    /// backend (GTK/macOS/Win); a `tui`-only build has no
+    /// [`crate::paint_surface::PaintSurface`] to paint into at all, so
+    /// `self` reaching the screen there goes through [`Self::paint_cells`]
+    /// below instead, mirroring
+    /// [`crate::primitives::icon_grid::IconGrid::paint`]'s identical
+    /// split.
     fn paint(
         &self,
         layout: &Self::Layout,
@@ -738,7 +1161,22 @@ impl crate::primitive::Primitive for CellGrid {
         theme: &crate::theme::Theme,
         style: &crate::style::Style,
     ) {
-        let _ = (layout, surface, theme, style);
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(self, layout.area, &layout.layout, surface, theme, style);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
     }
 
     /// Delegates straight to [`crate::tui::draw_cell_grid`] — the exact
@@ -1023,5 +1461,411 @@ mod tests {
         g.selection_anchor = None;
         g.cursor = (3, 3);
         assert_eq!(g.selection_bounds(), (3, 3, 3, 3));
+    }
+}
+
+#[cfg(test)]
+mod a11y_tests {
+    use super::*;
+    use crate::a11y::{A11yInfo, A11yPrimitive, A11yRole};
+
+    /// A 3×3 grid (no frozen panes, no scroll) with a 2×2 selection
+    /// anchored at `(0, 0)` and cursor at `(1, 1)` — small enough that
+    /// every windowed position's absolute index is just itself, so the
+    /// assertions below can use plain `0`/`1`/`2` without first
+    /// reasoning about `windowed_row`/`windowed_col`.
+    fn grid_3x3_with_selection() -> CellGrid {
+        let row = |label: &str| {
+            (0..3)
+                .map(|c| Cell::plain(format!("{label}{c}")))
+                .collect::<Vec<_>>()
+        };
+        CellGrid {
+            id: WidgetId::new("grid:a11y"),
+            row_count: 3,
+            col_count: 3,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 4.0,
+            row_heights: BTreeMap::new(),
+            col_widths: BTreeMap::new(),
+            show_row_headers: true,
+            show_col_headers: true,
+            row_labels: BTreeMap::new(),
+            col_labels: BTreeMap::new(),
+            cursor: (1, 1),
+            selection_anchor: Some((0, 0)),
+            cells: vec![row("r0"), row("r1"), row("r2")],
+            has_focus: true,
+            show_scrollbar: false,
+        }
+    }
+
+    #[test]
+    fn a11y_info_reports_a_table_role() {
+        let grid = grid_3x3_with_selection();
+        let info = grid.a11y_info();
+        assert_eq!(
+            info,
+            A11yInfo::new()
+                .with_role(A11yRole::Table)
+                .with_label("Cell grid")
+                .with_set_size(3)
+        );
+    }
+
+    #[test]
+    fn a11y_children_include_a_header_row_of_column_letters() {
+        let grid = grid_3x3_with_selection();
+        let children = grid.a11y_children();
+        let header = children
+            .iter()
+            .find(|c| c.key == "header")
+            .expect("a column-header row child");
+        assert_eq!(
+            header.info,
+            A11yInfo::new()
+                .with_role(A11yRole::Row)
+                .with_label("Header")
+        );
+        let labels: Vec<_> = header
+            .children
+            .iter()
+            .map(|c| c.info.a11y_label.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(labels, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn a11y_children_carry_row_header_and_cell_text_with_absolute_indices() {
+        let grid = grid_3x3_with_selection();
+        let children = grid.a11y_children();
+        let row1 = children
+            .iter()
+            .find(|c| c.key == "row.1")
+            .expect("row 1's child");
+        assert_eq!(row1.info, A11yInfo::new().with_role(A11yRole::Row));
+
+        let row_header = row1
+            .children
+            .iter()
+            .find(|c| c.key == "rowheader.1")
+            .expect("row 1's row-header cell");
+        assert_eq!(row_header.info.a11y_label.as_deref(), Some("2"));
+
+        let cell = row1
+            .children
+            .iter()
+            .find(|c| c.key == "cell.1.1")
+            .expect("absolute cell (1, 1)");
+        assert_eq!(cell.info.a11y_label.as_deref(), Some("r11"));
+    }
+
+    #[test]
+    fn a11y_children_mark_cells_inside_the_selection_rectangle_selected() {
+        let grid = grid_3x3_with_selection();
+        let children = grid.a11y_children();
+        let cell_at = |row_key: &str, cell_key: &str| {
+            children
+                .iter()
+                .find(|c| c.key == row_key)
+                .and_then(|r| r.children.iter().find(|c| c.key == cell_key))
+                .unwrap_or_else(|| panic!("missing {row_key}/{cell_key}"))
+        };
+
+        // Selection spans (0, 0)..=(1, 1) — every cell inside that
+        // rectangle reads selected, and (2, 2), well outside it, does
+        // not.
+        assert_eq!(cell_at("row.0", "cell.0.0").info.selected, Some(true));
+        assert_eq!(cell_at("row.1", "cell.1.1").info.selected, Some(true));
+        assert_eq!(cell_at("row.2", "cell.2.2").info.selected, Some(false));
+    }
+
+    #[test]
+    fn a11y_focus_key_names_the_cursor_cell() {
+        let grid = grid_3x3_with_selection();
+        assert_eq!(grid.a11y_focus_key(), Some("cell.1.1".to_string()));
+    }
+
+    #[test]
+    fn windowed_index_passes_through_the_frozen_block_then_adds_scroll() {
+        let mut g = grid_3x3_with_selection();
+        g.frozen_rows = 1;
+        g.row_scroll = 5;
+        g.row_count = 20;
+        // Position 0 is still the frozen row (absolute index 0);
+        // position 1 is the scrolled body's first row, which is
+        // `frozen_rows + row_scroll` (1 + 5 = 6), not `row_scroll` alone.
+        assert_eq!(g.windowed_row(0), 0);
+        assert_eq!(g.windowed_row(1), 6);
+        assert_eq!(g.windowed_row(2), 7);
+    }
+}
+
+#[cfg(all(
+    test,
+    any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )
+))]
+mod native_surface_paint_tests {
+    use super::native_surface_paint::paint;
+    use super::*;
+    use crate::backend::ImagePaintResult;
+    use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
+    use crate::theme::Theme;
+    use crate::Image;
+
+    /// Records every surface verb this module's paint uses — mirrors
+    /// [`crate::primitives::tree_table::native_surface_paint`]'s own test
+    /// double, so this test runs on any host without Core
+    /// Graphics/Direct2D/Pango.
+    #[derive(Default)]
+    struct RecordingSurface {
+        fills: Vec<(Rect, Color)>,
+        fill_alphas: Vec<(Rect, Color, f32)>,
+        strokes: Vec<(Rect, Color, f32)>,
+        text_runs: Vec<(Rect, String, Color, bool)>,
+        /// One tag per paint verb call, in call order, so a test can
+        /// assert *ordering* across the otherwise-separate `fills`/
+        /// `fill_alphas`/`text_runs` vecs above — in particular that the
+        /// selection's `fill_alpha` precedes the cell `text_run`s it
+        /// should composite underneath, not over.
+        calls: Vec<&'static str>,
+    }
+
+    impl PaintSurface for RecordingSurface {
+        fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> crate::Viewport {
+            crate::Viewport::new(300.0, 200.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            16.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 8.0, 16.0)
+        }
+        fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+            self.fills.push((rect, color));
+            self.calls.push("fill");
+        }
+        fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+        fn surface_fill_rect_alpha(&mut self, rect: Rect, color: Color, alpha: f32) {
+            self.fill_alphas.push((rect, color, alpha));
+            self.calls.push("fill_alpha");
+        }
+        fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+            self.strokes.push((rect, color, stroke_width));
+            self.calls.push("stroke");
+        }
+        fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+            self.text_runs.push((rect, text.to_string(), color, false));
+            self.calls.push("text_run");
+        }
+        fn surface_draw_text_run_styled(
+            &mut self,
+            rect: Rect,
+            text: &str,
+            color: Color,
+            bold: bool,
+            _italic: bool,
+            _underline: bool,
+            _scale_x: f32,
+        ) {
+            self.text_runs.push((rect, text.to_string(), color, bold));
+            self.calls.push("text_run");
+        }
+        fn surface_draw_line(
+            &mut self,
+            _from: crate::Point,
+            _to: crate::Point,
+            _color: Color,
+            _stroke_width: f32,
+        ) {
+        }
+        fn surface_push_clip(&mut self, _rect: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    /// A 4×4 grid, one frozen leading row/column, with a 2×2 selection
+    /// and a cursor at `(1, 1)` — small enough that every visible span's
+    /// absolute index matches [`CellGridLayout::rows`]/`cols` directly.
+    fn grid() -> CellGrid {
+        let row = |label: &str| {
+            (0..4)
+                .map(|c| Cell::plain(format!("{label}{c}")))
+                .collect::<Vec<_>>()
+        };
+        CellGrid {
+            id: WidgetId::new("grid:paint"),
+            row_count: 4,
+            col_count: 4,
+            frozen_rows: 1,
+            frozen_cols: 1,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 10.0,
+            default_col_width: 40.0,
+            row_heights: BTreeMap::new(),
+            col_widths: BTreeMap::new(),
+            show_row_headers: true,
+            show_col_headers: true,
+            row_labels: BTreeMap::new(),
+            col_labels: BTreeMap::new(),
+            cursor: (1, 1),
+            selection_anchor: Some((0, 0)),
+            cells: vec![row("r0"), row("r1"), row("r2"), row("r3")],
+            has_focus: true,
+            show_scrollbar: false,
+        }
+    }
+
+    #[test]
+    fn column_and_row_headers_paint_their_labels_at_the_resolved_positions() {
+        let grid = grid();
+        let layout = grid.layout(200.0, 100.0, 10.0, 15.0, 0.0, 0.0);
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let mut surface = RecordingSurface::default();
+        let theme = Theme::default();
+        let style = Style::default();
+        paint(&grid, area, &layout, &mut surface, &theme, &style);
+
+        let col0 = layout.cols[0];
+        let header = surface
+            .text_runs
+            .iter()
+            .find(|(_, t, _, bold)| t == "A" && *bold)
+            .expect("column header A must paint, bold");
+        assert!(
+            header.0.x >= col0.start && header.0.x < col0.start + col0.size,
+            "column header A must paint within column 0's own span"
+        );
+        assert!(header.0.y < layout.col_header_height);
+
+        let row0 = layout.rows[0];
+        let row_header = surface
+            .text_runs
+            .iter()
+            .find(|(_, t, _, bold)| t == "1" && *bold)
+            .expect("row header 1 must paint, bold");
+        assert!(
+            row_header.0.y >= row0.start && row_header.0.y < row0.start + row0.size,
+            "row header 1 must paint within row 0's own span"
+        );
+        assert!(row_header.0.x < layout.row_header_width);
+    }
+
+    #[test]
+    fn cursor_ring_strokes_exactly_the_active_cells_resolved_rect() {
+        let grid = grid();
+        let layout = grid.layout(200.0, 100.0, 10.0, 15.0, 0.0, 0.0);
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let mut surface = RecordingSurface::default();
+        let theme = Theme::default();
+        let style = Style::default();
+        paint(&grid, area, &layout, &mut surface, &theme, &style);
+
+        let row = layout.rows.iter().find(|r| r.index == 1).unwrap();
+        let col = layout.cols.iter().find(|c| c.index == 1).unwrap();
+        let expected = Rect::new(col.start, row.start, col.size, row.size);
+        assert_eq!(
+            surface.strokes.len(),
+            1,
+            "exactly one cursor ring must be stroked"
+        );
+        assert_eq!(surface.strokes[0].0, expected);
+    }
+
+    #[test]
+    fn no_cursor_ring_is_painted_when_the_grid_is_not_focused() {
+        let mut grid = grid();
+        grid.has_focus = false;
+        let layout = grid.layout(200.0, 100.0, 10.0, 15.0, 0.0, 0.0);
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let mut surface = RecordingSurface::default();
+        let theme = Theme::default();
+        let style = Style::default();
+        paint(&grid, area, &layout, &mut surface, &theme, &style);
+        assert!(surface.strokes.is_empty());
+    }
+
+    #[test]
+    fn selection_fill_covers_exactly_the_selected_rows_and_columns() {
+        let grid = grid();
+        let layout = grid.layout(200.0, 100.0, 10.0, 15.0, 0.0, 0.0);
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let mut surface = RecordingSurface::default();
+        let theme = Theme::default();
+        let style = Style::default();
+        paint(&grid, area, &layout, &mut surface, &theme, &style);
+
+        // Selection is (0, 0)..=(1, 1) — rows/cols 0 and 1.
+        let r0 = layout.rows.iter().find(|r| r.index == 0).unwrap();
+        let r1 = layout.rows.iter().find(|r| r.index == 1).unwrap();
+        let c0 = layout.cols.iter().find(|c| c.index == 0).unwrap();
+        let c1 = layout.cols.iter().find(|c| c.index == 1).unwrap();
+        let expected = Rect::new(
+            c0.start.min(c1.start),
+            r0.start.min(r1.start),
+            (c1.start + c1.size).max(c0.start + c0.size) - c0.start.min(c1.start),
+            (r1.start + r1.size).max(r0.start + r0.size) - r0.start.min(r1.start),
+        );
+        assert_eq!(surface.fill_alphas.len(), 1);
+        assert_eq!(surface.fill_alphas[0].0, expected);
+        assert_eq!(surface.fill_alphas[0].1, theme.selection_bg);
+        assert_eq!(surface.fill_alphas[0].2, theme.selection_alpha);
+
+        // The selection wash must land *before* every cell's own
+        // background/text, so it composites underneath them rather than
+        // over already-painted glyphs — `DataTable::paint_row`'s own
+        // solid-fill-first convention (`data_table.rs`).
+        let fill_alpha_pos = surface
+            .calls
+            .iter()
+            .position(|c| *c == "fill_alpha")
+            .expect("the selection fill must be recorded");
+        let first_text_run_pos = surface
+            .calls
+            .iter()
+            .position(|c| *c == "text_run")
+            .expect("at least one cell's text must be recorded");
+        assert!(
+            fill_alpha_pos < first_text_run_pos,
+            "selection fill (at {fill_alpha_pos}) must paint before any cell text (at {first_text_run_pos})"
+        );
+    }
+
+    #[test]
+    fn cell_text_paints_with_its_own_style_fg_and_bold() {
+        let mut grid = grid();
+        grid.cells[2][2].style.fg = Some(Color::rgb(200, 10, 10));
+        grid.cells[2][2].style.bold = Some(true);
+        let layout = grid.layout(200.0, 100.0, 10.0, 15.0, 0.0, 0.0);
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let mut surface = RecordingSurface::default();
+        let theme = Theme::default();
+        let style = Style::default();
+        paint(&grid, area, &layout, &mut surface, &theme, &style);
+
+        let run = surface
+            .text_runs
+            .iter()
+            .find(|(_, t, _, _)| t == "r22")
+            .expect("cell (2, 2)'s text must paint");
+        assert_eq!(run.2, Color::rgb(200, 10, 10));
+        assert!(run.3, "the cell's own bold override must apply");
     }
 }
