@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 52 primitive modules (one each under `src/primitives/`) — widgets,
+//! 53 primitive modules (one each under `src/primitives/`) — widgets,
 //! each declarative + serde-friendly so apps and Lua plugins can
 //! describe UI as data, plus the `layout_metrics` and `row_stack`
 //! shared-math helpers the widget modules reuse. A representative
@@ -117,7 +117,7 @@
 //! `0.11.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 52 primitive modules
+//! `quadraui/docs/decisions/DECISIONS.md`. 53 primitive modules
 //! shipped. The TUI and GTK backends have full feature parity and are
 //! battle-tested by vimcode (5000+ tests). The macOS backend
 //! implements the whole `Backend` trait and is built/tested for real
