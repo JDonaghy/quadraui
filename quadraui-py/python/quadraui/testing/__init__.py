@@ -92,7 +92,7 @@ class WidgetNotFound(AssertionError):
 
 # Layout nodes that hold other nodes rather than painting a primitive; every
 # other non-meta key on a node names the primitive kind it paints.
-_CONTAINER_ROLES = frozenset({"row", "column", "split", "tabs", "panel", "sidebar_panel", "split_tree"})
+_CONTAINER_ROLES = frozenset({"row", "column", "split", "tabs", "sidebar_panel", "split_tree"})
 
 # Keys a layout node may carry alongside its one role key. `wire_version`
 # is the top-level-only sibling key `quadraui.app.runtime.App` now stamps
@@ -903,7 +903,7 @@ def _append_children(harness: Harness, widget: Widget, role: str, payload: Any, 
     elif role == "split":
         _append(harness, widget, payload.get("first"), visible=visible)
         _append(harness, widget, payload.get("second"), visible=visible)
-    elif role in ("panel", "sidebar_panel"):
+    elif role == "sidebar_panel":
         toolbar = payload.get("toolbar")
         if toolbar is not None:
             _append(harness, widget, {"toolbar": toolbar}, visible=visible)

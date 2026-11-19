@@ -250,7 +250,7 @@ pub(super) fn style_classes_from_value(
 }
 
 /// Decodes an optional `"style"` sibling key found alongside any layout
-/// node dict (any of `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"`/
+/// node dict (any of `"row"`/`"column"`/`"split"`/`"tabs"`/
 /// `"sidebar_panel"`/`"split_tree"`/`"scroll"`, or a leaf's own `{"id",
 /// "<kind>"}` dict) into a [`StyleOverride`]. `None` when the key is
 /// absent, or present but empty — [`StyleOverride::is_empty`] folds
