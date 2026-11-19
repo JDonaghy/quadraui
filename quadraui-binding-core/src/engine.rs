@@ -39,14 +39,16 @@ use crate::drag::{
 use crate::extra_paint::{extra_as, TreeTableControllerDescriptor};
 use crate::hit::{
     chrome_hover_hit, data_table_rows_and_viewport, event_position, hit_test_painted,
-    list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, HitDetail, PaintedHit,
+    list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, tree_total_rows_and_viewport,
+    windowed_leaf_extent, HitDetail, LoadedRows, PaintedHit,
 };
 use crate::host::{
     apply_data_table_nav_key, apply_list_nav_key, apply_scroll_offset, apply_split_divider_drag,
-    apply_tab_activated, apply_tab_closed, apply_tree_nav_key, apply_tree_toggle_expand,
+    apply_tab_activated, apply_tab_closed, apply_tree_nav_key, apply_tree_nav_key_windowed,
+    apply_tree_toggle_expand, stored_cursor_scroll_offset,
 };
 use crate::layout::LayoutNode;
-use crate::render::paint_layout;
+use crate::render::{paint_layout, rows_requested_for_window, ItemsWindow, RowsRequestedEvent};
 use crate::semantic::{
     button_clicked_event, focus_scoped_key_event, number_input_click_event, scripted_key_press,
     scripted_region_click, semantic_event_for_hit, DragGestureWireEvent,
@@ -626,6 +628,34 @@ pub trait EventSink {
         let _ = event;
         quadraui::Reaction::Continue
     }
+
+    /// A scroll input [`InteractionEngine::handle`] just resolved moved a
+    /// windowed `list`/`tree`/`data_table`/`text_display` leaf's viewport
+    /// outside the slice its app currently has loaded, so the app needs to
+    /// re-render that leaf with `event`'s rows — mirrors
+    /// [`Self::dispatch_tree_table_controller`]/[`Self::dispatch_drag_gesture`]'s
+    /// own default-method rollout, carrying a
+    /// [`crate::render::RowsRequestedEvent`] rather than a
+    /// [`quadraui::UiEvent`] for the identical reason those two do:
+    /// `quadraui::UiEvent` has no variant for a virtualised collection
+    /// asking for more rows, so each binding surfaces this the way it
+    /// surfaces any other synthesized event — see
+    /// `docs/bindings-wire-format.md`'s `RowsRequestedEvent` entry.
+    ///
+    /// Only ever called for a leaf whose decode recorded an
+    /// `"items_window"` (i.e. whose hit carries a
+    /// [`crate::hit::LoadedRows`]), and never twice for the same request
+    /// while the app's own loaded slice stays put, so an app that ignores
+    /// one of these isn't re-asked every frame.
+    ///
+    /// Defaults to ignoring the event and reporting
+    /// [`quadraui::Reaction::Continue`] — every existing [`EventSink`] impl
+    /// keeps compiling unchanged against this new default method until it
+    /// deliberately overrides it.
+    fn dispatch_rows_requested(&mut self, event: RowsRequestedEvent) -> quadraui::Reaction {
+        let _ = event;
+        quadraui::Reaction::Continue
+    }
 }
 
 /// Wire-shaped mirror of [`TreeTableControllerEvent`] — the same field
@@ -1027,6 +1057,18 @@ pub struct InteractionEngine {
     /// starts calling [`Self::set_drag_roles`]; no gesture logic reads it
     /// yet — this is the seam a future drag/drop dispatch reads from.
     drag_roles: RefCell<HashMap<WidgetId, DragRole>>,
+    /// The last rows a windowed leaf's app was asked for through
+    /// [`EventSink::dispatch_rows_requested`], keyed by that leaf's id:
+    /// `(the loaded slice the request was computed against, start, count)`.
+    ///
+    /// [`Self::dispatch_rows_requested`] suppresses a request identical to
+    /// the stored one, so an app that doesn't answer (or hasn't answered
+    /// yet) isn't re-asked on every subsequent scroll event. The loaded
+    /// slice is part of the key, not just the request: the moment the app
+    /// does answer, the leaf's own [`crate::hit::LoadedRows`] changes and
+    /// the next genuinely-uncovered scroll asks again rather than being
+    /// mistaken for a repeat.
+    rows_requested: RefCell<HashMap<WidgetId, (LoadedRows, usize, usize)>>,
     /// Armed by a `MouseDown` landing on a split divider — a two-pane
     /// `Split`'s (per [`Self::hit_map`]'s [`PaintedHit::Split`]
     /// hit-testing) or one of an N-way `SplitTree`'s (per
@@ -1279,6 +1321,13 @@ impl InteractionEngine {
         self.text_editors
             .borrow_mut()
             .retain(|id, _| live_text_inputs.contains(id));
+        // Same "painted this frame" retain for the windowed-leaf request
+        // bookkeeping: a leaf that stops rendering (or stops sending an
+        // `items_window`) must not leave its last request behind to
+        // suppress a future one under a reused id.
+        self.rows_requested
+            .borrow_mut()
+            .retain(|id, _| windowed_leaf_extent(&hits, *id).is_some());
         self.widget_state.gc();
         *self.hit_map.borrow_mut() = hits;
     }
@@ -3001,6 +3050,85 @@ impl InteractionEngine {
     /// handler is registered before calling this (so that an app with no
     /// handler at all skips every bit of state this engine would otherwise
     /// touch) and supply `sink`.
+    /// The [`RowsRequestedEvent`] the windowed leaf painted under `id`
+    /// needs now that a scroll input left it scrolled to ABSOLUTE
+    /// `scroll_offset`, or `None` when `id` isn't a windowed leaf, its
+    /// loaded slice already covers the viewport, or the identical request
+    /// was already made against the same loaded slice (see
+    /// [`Self::rows_requested`]).
+    ///
+    /// The window and the viewport capacity come off the leaf's own hit
+    /// ([`crate::hit::windowed_leaf_extent`]) — the frame that painted it
+    /// is the only place that knew both — so this pairs an absolute offset
+    /// with the window that produced it, which is
+    /// [`rows_requested_for_window`]'s own precondition.
+    fn rows_requested_for(&self, id: WidgetId, scroll_offset: usize) -> Option<RowsRequestedEvent> {
+        let (loaded, total, viewport_rows) = windowed_leaf_extent(&self.hit_map.borrow(), id)?;
+        let request = rows_requested_for_window(
+            id,
+            ItemsWindow {
+                start: loaded.start,
+                total,
+            },
+            loaded.len,
+            scroll_offset,
+            viewport_rows,
+        )?;
+        let asked = (loaded, request.start, request.count);
+        if self.rows_requested.borrow().get(&id) == Some(&asked) {
+            return None;
+        }
+        self.rows_requested.borrow_mut().insert(id, asked);
+        Some(request)
+    }
+
+    /// Asks `sink` for the rows a windowed leaf needs after `event` — the
+    /// fully-resolved event [`Self::handle`] is about to dispatch — moved
+    /// its scroll offset. Every scroll input that reaches a windowed leaf
+    /// resolves to one of these two events (a wheel notch, a scrollbar
+    /// thumb drag and a track page all become `ScrollOffsetChanged`; a
+    /// `TextDisplay` has its own typed scroll event), and both carry the
+    /// new ABSOLUTE offset, which is what [`Self::rows_requested_for`]
+    /// needs.
+    fn dispatch_rows_requested_after_scroll(
+        &self,
+        event: &UiEvent,
+        sink: &mut dyn EventSink,
+    ) -> quadraui::Reaction {
+        let scrolled = match event {
+            UiEvent::ScrollOffsetChanged { widget, new_offset } => Some((*widget, *new_offset)),
+            UiEvent::TextDisplay(id, TextDisplayEvent::Scrolled { new_offset }) => {
+                Some((*id, *new_offset))
+            }
+            _ => None,
+        };
+        let Some((id, scroll_offset)) = scrolled else {
+            return quadraui::Reaction::Continue;
+        };
+        match self.rows_requested_for(id, scroll_offset) {
+            Some(request) => sink.dispatch_rows_requested(request),
+            None => quadraui::Reaction::Continue,
+        }
+    }
+
+    /// [`Self::dispatch_rows_requested_after_scroll`] for a navigation key
+    /// instead of a pointer scroll: an `apply_*_nav_key` call leaves the
+    /// cursor's new offset in [`Self::widget_state`] rather than on the
+    /// event, so the offset is read back from there.
+    fn dispatch_rows_requested_after_nav(
+        &self,
+        id: WidgetId,
+        sink: &mut dyn EventSink,
+    ) -> quadraui::Reaction {
+        let Some(scroll_offset) = stored_cursor_scroll_offset(&self.widget_state, id) else {
+            return quadraui::Reaction::Continue;
+        };
+        match self.rows_requested_for(id, scroll_offset) {
+            Some(request) => sink.dispatch_rows_requested(request),
+            None => quadraui::Reaction::Continue,
+        }
+    }
+
     pub fn handle(
         &mut self,
         mut event: UiEvent,
@@ -3803,7 +3931,26 @@ impl InteractionEngine {
         // binding's own `sink.dispatch` leaves the key unhandled.
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
             if let Some(focused) = backend.focus_manager().focused().copied() {
-                let nav_applied = if let Some((row_paths, viewport_rows)) =
+                let nav_applied = if let Some((total_rows, viewport_rows)) =
+                    tree_total_rows_and_viewport(&self.hit_map.borrow(), focused)
+                {
+                    // A WINDOWED tree, tried before the path-based
+                    // `apply_tree_nav_key` below: only the loaded slice's
+                    // own rows reach that one, so `End` on a 100,000-row
+                    // tree with 50 rows loaded could never move past row
+                    // 49. `apply_tree_nav_key_windowed` tracks the cursor
+                    // by absolute index over the collection's real extent
+                    // instead (`total_rows`), which the next render's
+                    // `crate::host::resolve_tree_cursor_windowed` call
+                    // turns back into a scroll offset and a selected path.
+                    apply_tree_nav_key_windowed(
+                        &self.widget_state,
+                        focused,
+                        total_rows,
+                        viewport_rows,
+                        key,
+                    )
+                } else if let Some((row_paths, viewport_rows)) =
                     tree_rows_and_viewport(&self.hit_map.borrow(), focused)
                 {
                     apply_tree_nav_key(&self.widget_state, focused, &row_paths, viewport_rows, key)
@@ -3893,7 +4040,12 @@ impl InteractionEngine {
                     &self.text_editors,
                 );
                 if nav_applied {
-                    return Reaction::Redraw.merge(sink.dispatch(&event, None));
+                    // A windowed leaf's cursor move can scroll past the
+                    // slice its app has loaded — ask for the rows that
+                    // move brought into view, right after the key itself
+                    // reaches the app.
+                    let dispatched = Reaction::Redraw.merge(sink.dispatch(&event, None));
+                    return dispatched.merge(self.dispatch_rows_requested_after_nav(focused, sink));
                 }
             }
         }
@@ -4472,12 +4624,18 @@ impl InteractionEngine {
             None
         };
         let event_reaction = sink.dispatch(&event, hit_detail);
+        // After the app has seen the scroll itself: a wheel notch, a
+        // scrollbar drag or a track page on a windowed leaf can leave its
+        // viewport outside the loaded slice, and the app can only paint
+        // those rows once it's been asked for them.
+        let rows_requested_reaction = self.dispatch_rows_requested_after_scroll(&event, sink);
         let tooltip_reaction = if tooltip_dismissed {
             Reaction::Redraw
         } else {
             Reaction::Continue
         };
         tooltip_reaction
+            .merge(rows_requested_reaction)
             .merge(scroll_into_view_reaction)
             .merge(menu_reaction)
             .merge(hover_reaction)

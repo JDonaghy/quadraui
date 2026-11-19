@@ -193,15 +193,16 @@ use quadraui_binding_core::{
     paint_layout_windowed, pointer_shape, record_pending_error, remove_as_default_protocol_client,
     render_overlays, resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active,
     resolve_list_cursor, resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active,
-    resolve_tree_cursor, resolve_tree_expansion, set_as_default_protocol_client, set_dock_menu,
-    set_jump_list, set_login_item, step_driver, take_pending_error as core_take_pending_error,
-    text_display_from_lines, theme_color_value, toast_corner, tree_rows_and_viewport,
-    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
+    resolve_tree_cursor, resolve_tree_cursor_windowed, resolve_tree_expansion,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
+    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
+    toast_corner, tree_rows_and_viewport, tree_table_controller_nodes_from_wire,
+    tree_total_rows_and_viewport, update_apply_on_quit, update_check_for_update,
     update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
     with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, PaintedHit,
-    RenderFrame, RenderOutput, ServiceError, StyleContext, TreeTableControllerNode,
-    TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
+    InteractionEngine, ItemsWindow, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError,
+    PaintedHit, RenderFrame, RenderOutput, RowsRequestedEvent, ServiceError, StyleContext,
+    TreeTableControllerNode, TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
 };
 use quadraui_binding_core::{decode_layout_dialog, decode_popover, DialogContentSize};
 use quadraui_binding_core::{validate_style_set_name, StyleOverride};
@@ -1318,24 +1319,26 @@ impl AppLogic for PyAppLogic {
             Some(RenderOutput::Tree(mut node)) => {
                 // The layout-tree counterpart of the `resolve_render_frame_state`
                 // call above.
-                resolve_layout_node_state(&self.engine, &mut node);
+                // The same `items_window` side table `paint_layout_windowed`
+                // below honours: a windowed leaf's cursor/scroll resolve
+                // has to agree with the band that actually paints.
+                let windows = self.host.wire_diagnostics.items_windows();
+                resolve_layout_node_state(&self.engine, &mut node, &windows);
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                // `_windowed`, not the plain `paint_layout` every other
-                // caller before this one used: a leaf whose render
-                // callback never sends an `"items_window"` key paints
-                // identically either way (see `paint_layout_windowed`'s own
-                // doc), but one that does now actually reaches a real
-                // scrollbar extent and padded paint instead of the decode
-                // side table `self.host.wire_diagnostics` tracks going
-                // unread.
+                // `_windowed`, not the plain `paint_layout`: a leaf whose
+                // render callback never sends an `"items_window"` key
+                // paints identically either way (see
+                // `paint_layout_windowed`'s own doc), while one that does
+                // gets its real scrollbar extent and a band-painted
+                // payload instead of its `items_window` going unread.
                 paint_layout_windowed(
                     backend,
                     area,
                     &node,
                     &mut hits,
                     &chrome_interaction,
-                    &self.host.wire_diagnostics.items_windows(),
+                    &windows,
                 );
                 // Refreshed every render so a hovered layout-tree button's
                 // tooltip resolves against this frame's tree, keyed by
@@ -1575,6 +1578,48 @@ impl EventSink for PyEventSink<'_> {
                 record_error(self.pending_error, err);
                 return Reaction::Exit;
             }
+            match self.handler.call1(py, (dict,)) {
+                Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
+                Err(err) => {
+                    record_error(self.pending_error, err);
+                    Reaction::Exit
+                }
+            }
+        })
+    }
+
+    /// Delivers a windowed `list`/`tree`/`data_table`/`text_display`
+    /// leaf's [`RowsRequestedEvent`] to the same registered Python handler
+    /// [`Self::dispatch`] calls, as `{"RowsRequested": {"id": ..., "start":
+    /// ..., "count": ...}}` — the synthesized-event shape
+    /// `docs/bindings-wire-format.md`'s own `RowsRequestedEvent` entry
+    /// describes, mirroring [`Self::dispatch_tree_table_controller`]'s
+    /// `{"TreeTableController": ...}`.
+    ///
+    /// The app answers by re-rendering that leaf with
+    /// `items_window = {"start": start, "total": <unchanged>}` and the
+    /// `count` rows from `start`; the engine never re-asks for the same
+    /// rows until the loaded slice actually moves (see
+    /// `InteractionEngine::rows_requested_for`), so an app that ignores
+    /// this isn't called again every frame.
+    fn dispatch_rows_requested(&mut self, event: RowsRequestedEvent) -> Reaction {
+        Python::attach(|py| {
+            let built = (|| {
+                let request = PyDict::new(py);
+                request.set_item("id", event.id.as_str())?;
+                request.set_item("start", event.start)?;
+                request.set_item("count", event.count)?;
+                let dict = PyDict::new(py);
+                dict.set_item("RowsRequested", request)?;
+                Ok::<_, PyErr>(dict)
+            })();
+            let dict = match built {
+                Ok(dict) => dict,
+                Err(err) => {
+                    record_error(self.pending_error, err);
+                    return Reaction::Exit;
+                }
+            };
             match self.handler.call1(py, (dict,)) {
                 Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
                 Err(err) => {
@@ -2617,36 +2662,40 @@ fn resolve_render_frame_state(engine: &InteractionEngine, frame: &mut RenderFram
 /// counterpart of [`resolve_render_frame_state`], called right before
 /// [`paint_layout`] paints `node`. See that function's own doc for why
 /// this never needs to special-case a controlled leaf.
-fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) {
+fn resolve_layout_node_state(
+    engine: &InteractionEngine,
+    node: &mut LayoutNode,
+    windows: &HashMap<String, ItemsWindow>,
+) {
     match node {
         LayoutNode::Row(container) | LayoutNode::Column(container) => {
             for child in &mut container.children {
-                resolve_layout_node_state(engine, &mut child.node);
+                resolve_layout_node_state(engine, &mut child.node, windows);
             }
         }
         LayoutNode::Grid(grid_node) => {
             for child in &mut grid_node.children {
-                resolve_layout_node_state(engine, child);
+                resolve_layout_node_state(engine, child, windows);
             }
         }
-        LayoutNode::Leaf(leaf) => resolve_layout_leaf_state(engine, leaf),
+        LayoutNode::Leaf(leaf) => resolve_layout_leaf_state(engine, leaf, windows),
         LayoutNode::Split(split_node) => {
             split_node.split = resolve_split_ratio(engine.widget_state(), &split_node.split);
-            resolve_layout_node_state(engine, &mut split_node.first);
-            resolve_layout_node_state(engine, &mut split_node.second);
+            resolve_layout_node_state(engine, &mut split_node.first, windows);
+            resolve_layout_node_state(engine, &mut split_node.second, windows);
         }
         LayoutNode::Tabs(tabs_node) => {
             resolve_layout_tabs_active(engine.widget_state(), tabs_node);
             for entry in &mut tabs_node.entries {
-                resolve_layout_node_state(engine, &mut entry.content);
+                resolve_layout_node_state(engine, &mut entry.content, windows);
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
-            resolve_layout_node_state(engine, &mut sidebar_node.content);
+            resolve_layout_node_state(engine, &mut sidebar_node.content, windows);
         }
         LayoutNode::SplitTree(split_tree_node) => {
             for leaf in &mut split_tree_node.leaves {
-                resolve_layout_node_state(engine, leaf);
+                resolve_layout_node_state(engine, leaf, windows);
             }
         }
         // Mirrors `resolved_viewport_rows`'s own "read the previous
@@ -2685,13 +2734,13 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
             let offset =
                 resolve_scroll_offset(engine.widget_state(), id, scroll_node.offset, max_offset);
             scroll_node.offset = Some(offset);
-            resolve_layout_node_state(engine, &mut scroll_node.content);
+            resolve_layout_node_state(engine, &mut scroll_node.content, windows);
         }
         // A `"style"` wrapper carries no cursor/scroll/active-tab state of
         // its own -- it's purely a paint-time overlay -- so this resolve
         // pass is a straight passthrough to whatever it wraps.
         LayoutNode::Styled(styled_node) => {
-            resolve_layout_node_state(engine, &mut styled_node.node);
+            resolve_layout_node_state(engine, &mut styled_node.node, windows);
         }
     }
 }
@@ -2702,20 +2751,50 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
 /// kinds the widget-state store tracks. A `Button`/`TextDisplay`/`Extra`
 /// leaf is untouched -- none of those have cursor/scroll/active-tab/
 /// expanded-set state.
-fn resolve_layout_leaf_state(engine: &InteractionEngine, leaf: &mut LayoutLeaf) {
+fn resolve_layout_leaf_state(
+    engine: &InteractionEngine,
+    leaf: &mut LayoutLeaf,
+    windows: &HashMap<String, ItemsWindow>,
+) {
+    let window = windows.get(&leaf.id).copied();
     match &mut leaf.descriptor {
         LeafDescriptor::Tree(tree) => {
             // Expansion first -- see `resolve_render_frame_state`'s own
             // `tree` branch for why collapse has to run before scroll-into-
             // view's row-position search.
             let expanded = resolve_tree_expansion(engine.widget_state(), tree);
-            let viewport_rows = resolved_viewport_rows(
-                engine,
-                expanded.id,
-                expanded.rows.len(),
-                tree_rows_and_viewport_for_resolve,
-            );
-            *tree = resolve_tree_cursor(engine.widget_state(), &expanded, viewport_rows);
+            let id = WidgetId::new(leaf.id.as_str());
+            match window {
+                // A windowed tree's cursor is tracked by ABSOLUTE index
+                // (`InteractionEngine::handle` moves it with
+                // `apply_tree_nav_key_windowed`), because a not-yet-loaded
+                // row has no `TreePath` to track it by -- so it resolves
+                // through the windowed counterpart, keyed by the same
+                // tree-address id the hit map and the windows table use.
+                Some(window) => {
+                    let viewport_rows = resolved_viewport_rows(
+                        engine,
+                        id,
+                        expanded.rows.len(),
+                        tree_total_rows_and_viewport,
+                    );
+                    *tree = resolve_tree_cursor_windowed(
+                        engine.widget_state(),
+                        &expanded,
+                        window,
+                        viewport_rows,
+                    );
+                }
+                None => {
+                    let viewport_rows = resolved_viewport_rows(
+                        engine,
+                        expanded.id,
+                        expanded.rows.len(),
+                        tree_rows_and_viewport_for_resolve,
+                    );
+                    *tree = resolve_tree_cursor(engine.widget_state(), &expanded, viewport_rows);
+                }
+            }
         }
         LeafDescriptor::List(list) => {
             let viewport_rows = resolved_viewport_rows(

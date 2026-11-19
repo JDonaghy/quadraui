@@ -1003,6 +1003,38 @@ pub fn apply_tree_nav_key_windowed(
     moved
 }
 
+/// The absolute scroll offset [`WidgetState`] currently holds for `id`'s
+/// uncontrolled `Tree`/`List`/`DataTable` cursor, or `None` when nothing
+/// has stored one yet.
+///
+/// [`WidgetState`] keeps exactly one type-erased entry per [`WidgetId`]
+/// (see its own module doc), so which cursor-state type a given id holds is
+/// decided by whichever `apply_*_nav_key` last wrote it — this tries each
+/// in turn rather than requiring the caller to know the leaf's kind. The
+/// windowed-`Tree` store is checked first because it lives under its own
+/// derived key ([`windowed_tree_cursor_id`]), so it can coexist with a
+/// plain [`TreeCursorState`] under the tree's own id and is the one that
+/// tracks absolute indices.
+///
+/// Read by [`crate::InteractionEngine::handle`] right after a navigation
+/// key moved a cursor, to ask a windowed leaf's app for the rows that move
+/// scrolled into view.
+pub fn stored_cursor_scroll_offset(widget_state: &WidgetState, id: WidgetId) -> Option<usize> {
+    if let Some(stored) = widget_state.get::<TreeCursorStateWindowed>(windowed_tree_cursor_id(id)) {
+        return Some(stored.scroll_offset);
+    }
+    if let Some(stored) = widget_state.get::<TreeCursorState>(id) {
+        return Some(stored.scroll_offset);
+    }
+    if let Some(stored) = widget_state.get::<ListCursorState>(id) {
+        return Some(stored.scroll_offset);
+    }
+    if let Some(stored) = widget_state.get::<DataTableCursorState>(id) {
+        return Some(stored.scroll_offset);
+    }
+    None
+}
+
 /// Resolves a windowed `tree`'s cursor + scroll for painting — the
 /// windowed counterpart of [`resolve_tree_cursor`], for a tree whose `id`
 /// has `window` in play. `tree.selected_path`, when it resolves to one of
@@ -1976,11 +2008,32 @@ pub fn resolve_render_refs(
 /// Call once per frame, immediately before [`crate::render::paint_layout`]
 /// — `node` is mutated in place, so the exact same tree handed to
 /// `paint_layout` right after is the resolved one.
+/// [`resolve_layout_node_windowed`] with an empty `windows` map — a tree
+/// whose decode recorded no `"items_window"` for any leaf resolves exactly
+/// as this always has.
 pub fn resolve_layout_node(
     widget_state: &WidgetState,
     backend: &mut dyn Backend,
     area: Rect,
     node: &mut LayoutNode,
+) {
+    resolve_layout_node_windowed(widget_state, backend, area, node, &HashMap::new());
+}
+
+/// [`resolve_layout_node`], additionally resolving a WINDOWED `Tree` leaf
+/// (one `windows`, keyed by the leaf's own tree-address id, has an
+/// [`ItemsWindow`] for) through [`resolve_tree_cursor_windowed`] instead of
+/// [`resolve_tree_cursor`]. `windows` is the same
+/// [`crate::wire::DecodeDiagnostics::items_windows`] side table a binding
+/// hands [`crate::render::paint_layout_windowed`] right after this, so the
+/// cursor/scroll a frame resolves always agrees with the band that frame
+/// paints.
+pub fn resolve_layout_node_windowed(
+    widget_state: &WidgetState,
+    backend: &mut dyn Backend,
+    area: Rect,
+    node: &mut LayoutNode,
+    windows: &HashMap<String, ItemsWindow>,
 ) {
     match node {
         LayoutNode::Row(container) => {
@@ -1989,7 +2042,7 @@ pub fn resolve_layout_node(
             let inner = container.spacing.inset(area, char_width, line_height);
             let rects = layout_container_rects(backend, inner, container, true);
             for (child, rect) in container.children.iter_mut().zip(rects) {
-                resolve_layout_node(widget_state, backend, rect, &mut child.node);
+                resolve_layout_node_windowed(widget_state, backend, rect, &mut child.node, windows);
             }
         }
         LayoutNode::Column(container) => {
@@ -1998,13 +2051,13 @@ pub fn resolve_layout_node(
             let inner = container.spacing.inset(area, char_width, line_height);
             let rects = layout_container_rects(backend, inner, container, false);
             for (child, rect) in container.children.iter_mut().zip(rects) {
-                resolve_layout_node(widget_state, backend, rect, &mut child.node);
+                resolve_layout_node_windowed(widget_state, backend, rect, &mut child.node, windows);
             }
         }
         LayoutNode::Grid(grid) => {
             let rects = grid_cell_rects(grid, area, backend.char_width(), backend.line_height());
             for (child, rect) in grid.children.iter_mut().zip(rects) {
-                resolve_layout_node(widget_state, backend, rect, child);
+                resolve_layout_node_windowed(widget_state, backend, rect, child, windows);
             }
         }
         LayoutNode::Leaf(LayoutLeaf {
@@ -2037,7 +2090,23 @@ pub fn resolve_layout_node(
                     tree.id = widget_id;
                     let expanded = resolve_tree_expansion(widget_state, tree);
                     let viewport_rows = tree_viewport_rows(backend, area, &expanded);
-                    *tree = resolve_tree_cursor(widget_state, &expanded, viewport_rows);
+                    // A windowed tree's cursor is tracked by ABSOLUTE
+                    // index, not by `TreePath`: a not-yet-loaded row has
+                    // no path to track it by, and
+                    // `crate::InteractionEngine::handle` moves it with
+                    // `apply_tree_nav_key_windowed` for that reason -- so
+                    // it has to resolve through the matching windowed
+                    // counterpart here, or every keyboard move would be
+                    // discarded the next frame.
+                    *tree = match windows.get(leaf_id).copied() {
+                        Some(window) => resolve_tree_cursor_windowed(
+                            widget_state,
+                            &expanded,
+                            window,
+                            viewport_rows,
+                        ),
+                        None => resolve_tree_cursor(widget_state, &expanded, viewport_rows),
+                    };
                 }
                 LeafDescriptor::List(list) => {
                     list.id = widget_id;
@@ -2088,12 +2157,19 @@ pub fn resolve_layout_node(
             let draw_area = shrink_main_axis(inner, horizontal, gap);
             let mut layout = native_split.layout(draw_area, SplitMeasure::new(line_height));
             apply_split_gap(&mut layout, horizontal, gap);
-            resolve_layout_node(widget_state, backend, layout.first_bounds, &mut split.first);
-            resolve_layout_node(
+            resolve_layout_node_windowed(
+                widget_state,
+                backend,
+                layout.first_bounds,
+                &mut split.first,
+                windows,
+            );
+            resolve_layout_node_windowed(
                 widget_state,
                 backend,
                 layout.second_bounds,
                 &mut split.second,
+                windows,
             );
         }
         LayoutNode::Tabs(tabs) => {
@@ -2117,15 +2193,27 @@ pub fn resolve_layout_node(
             // [`resolve_render_refs`]'s own doc calls out for its
             // "ran out of vertical room" case.
             if let Some(entry) = tabs.entries.get_mut(selected) {
-                resolve_layout_node(widget_state, backend, content_rect, &mut entry.content);
+                resolve_layout_node_windowed(
+                    widget_state,
+                    backend,
+                    content_rect,
+                    &mut entry.content,
+                    windows,
+                );
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
-            resolve_layout_node(widget_state, backend, area, &mut sidebar_node.content);
+            resolve_layout_node_windowed(
+                widget_state,
+                backend,
+                area,
+                &mut sidebar_node.content,
+                windows,
+            );
         }
         LayoutNode::SplitTree(split_tree) => {
             for leaf in &mut split_tree.leaves {
-                resolve_layout_node(widget_state, backend, area, leaf);
+                resolve_layout_node_windowed(widget_state, backend, area, leaf, windows);
             }
         }
         LayoutNode::Scroll(scroll_node) => {
@@ -2172,11 +2260,12 @@ pub fn resolve_layout_node(
                     {
                         for (child, slot) in container.children.iter_mut().zip(slots) {
                             if slot.visible {
-                                resolve_layout_node(
+                                resolve_layout_node_windowed(
                                     widget_state,
                                     backend,
                                     slot.rect,
                                     &mut child.node,
+                                    windows,
                                 );
                             }
                         }
@@ -2184,7 +2273,13 @@ pub fn resolve_layout_node(
                 }
                 ScrollSlots::Atomic(rect, visible) => {
                     if visible {
-                        resolve_layout_node(widget_state, backend, rect, &mut scroll_node.content);
+                        resolve_layout_node_windowed(
+                            widget_state,
+                            backend,
+                            rect,
+                            &mut scroll_node.content,
+                            windows,
+                        );
                     }
                 }
             }
@@ -2193,7 +2288,7 @@ pub fn resolve_layout_node(
         // purely a `crate::render::paint_layout`-time overlay -- so this
         // resolve pass is a straight passthrough to whatever it wraps.
         LayoutNode::Styled(styled) => {
-            resolve_layout_node(widget_state, backend, area, &mut styled.node);
+            resolve_layout_node_windowed(widget_state, backend, area, &mut styled.node, windows);
         }
     }
 }

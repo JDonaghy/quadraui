@@ -4718,7 +4718,7 @@ Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _H
 <a id="wire-rowsrequestedevent"></a>
 #### `RowsRequestedEvent`
 
-The `{id, start, count}` window a virtualised `list`/`tree`/`data_table`/`text_display` widget needs for its next frame, once scrolling moves outside the slice its own `ItemsWindow` currently covers -- see `quadraui-binding-core`'s own `render::rows_requested_for_window`. Not a `quadraui::UiEvent` variant (hence not part of `_UiEventDict`/`UiEvent` below): a binding computes this itself from a leaf's `PaintedHit` and its own `ItemsWindow`, then surfaces it to its app however its own event-callback contract already surfaces a synthesized event.
+The `{id, start, count}` window a virtualised `list`/`tree`/`data_table`/`text_display` widget needs for its next frame, once scrolling moves outside the slice its own `ItemsWindow` currently covers -- see `quadraui-binding-core`'s own `render::rows_requested_for_window`. Not a `quadraui::UiEvent` variant (hence not part of `_UiEventDict`/`UiEvent` below): the interaction engine computes it from the leaf's own `PaintedHit` plus the offset a scroll input resolved to, and each binding surfaces it to its app the way it surfaces any other synthesized event -- `{"RowsRequested": {id, start, count}}` to the registered handler, in both `quadraui-py` and `quadraui-node`. An app answers by re-rendering that widget with an `items_window` starting at `start` and `count` rows from there; a slice already loaded is never re-requested.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

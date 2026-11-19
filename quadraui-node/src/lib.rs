@@ -315,14 +315,14 @@ use quadraui_binding_core::{
     key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
     message_dialog_options_from_buttons, paint_layout_windowed, pointer_shape,
     record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
-    resolve_layout_node, resolve_render_refs, set_app_identifier, set_as_default_protocol_client,
-    set_dock_menu, set_jump_list, set_login_item, step_driver,
+    resolve_layout_node_windowed, resolve_render_refs, set_app_identifier,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
     toast_corner, tree_table_controller_nodes_from_wire, update_apply_on_quit,
     update_check_for_update, update_download_and_stage, validate_style_set_name,
     widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
     DialogContentSize, ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail,
-    InteractionEngine, OverrideError, RenderOutput, ScriptWidget, ScriptedA11y,
+    InteractionEngine, OverrideError, RenderOutput, RowsRequestedEvent, ScriptWidget, ScriptedA11y,
     ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
     ScriptedSize, ScriptedState, ServiceError, StyleContext, TreeTableControllerNode,
     TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON,
@@ -1453,7 +1453,17 @@ impl AppLogic for NodeAppLogic {
             Some(RenderOutput::Tree(mut node)) => {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+                // The same `items_window` side table both calls below
+                // read: a windowed leaf's cursor/scroll resolve has to
+                // agree with the band that actually paints it.
+                let windows = self.host.wire_diagnostics.items_windows();
+                resolve_layout_node_windowed(
+                    self.engine.widget_state(),
+                    backend,
+                    area,
+                    &mut node,
+                    &windows,
+                );
                 // `_windowed`, not plain `paint_layout` — a leaf whose
                 // render callback never sends an `"items_window"` key
                 // paints identically either way (see
@@ -1464,7 +1474,7 @@ impl AppLogic for NodeAppLogic {
                     &node,
                     &mut hits,
                     &chrome_interaction,
-                    &self.host.wire_diagnostics.items_windows(),
+                    &windows,
                 );
             }
             None => {}
@@ -1785,6 +1795,52 @@ impl EventSink for NodeEventSink<'_> {
             }
         };
         let wrapped = serde_json::json!({ "TreeTableController": [id.as_str(), event_value] });
+        let js_payload: Unknown<'static> = match self.env.to_js_value(&wrapped) {
+            Ok(value) => value,
+            Err(err) => {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+        };
+        let func = match self.handler.borrow_back(&self.env) {
+            Ok(func) => func,
+            Err(err) => {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+        };
+        match func.call(js_payload) {
+            Ok(result) => {
+                callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
+            }
+            Err(err) => {
+                record_error(self.pending_error, err);
+                Reaction::Exit
+            }
+        }
+    }
+
+    /// Delivers a windowed `list`/`tree`/`data_table`/`text_display`
+    /// leaf's [`RowsRequestedEvent`] to the same registered JS handler
+    /// [`EventSink::dispatch`] calls, as
+    /// `{"RowsRequested": {id, start, count}}` -- the synthesized-event
+    /// shape `docs/bindings-wire-format.md`'s own `RowsRequestedEvent`
+    /// entry describes, mirroring the
+    /// `{"TreeTableController": [...]}` above.
+    ///
+    /// The app answers by re-rendering that leaf with
+    /// `items_window: {start, total}` and the `count` rows from `start`;
+    /// the engine never re-asks for the same rows until the loaded slice
+    /// actually moves, so an app that ignores this isn't called again
+    /// every frame.
+    fn dispatch_rows_requested(&mut self, event: RowsRequestedEvent) -> Reaction {
+        let wrapped = serde_json::json!({
+            "RowsRequested": {
+                "id": event.id.as_str(),
+                "start": event.start,
+                "count": event.count,
+            }
+        });
         let js_payload: Unknown<'static> = match self.env.to_js_value(&wrapped) {
             Ok(value) => value,
             Err(err) => {
@@ -3545,7 +3601,7 @@ impl QuiApp {
     /// populated. Returns `null` when `id` has never been resolved through
     /// this app's own `render` (the no-callback fixed-slot path via
     /// [`resolve_render_refs`], or a render-callback's decoded tree via
-    /// [`resolve_layout_node`]) -- `id` names a widget that hasn't
+    /// [`resolve_layout_node_windowed`]) -- `id` names a widget that hasn't
     /// rendered, or hasn't rendered yet this session.
     #[napi(js_name = "widgetState")]
     pub fn widget_state(&self, env: Env, id: String) -> Result<Unknown<'static>> {

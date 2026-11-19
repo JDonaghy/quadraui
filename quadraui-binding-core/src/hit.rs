@@ -23,6 +23,39 @@ use crate::wire::DragRole;
 /// chevron hit without a live `Backend`; see that field's own doc for why.
 pub(crate) type TreeTableHitState = (quadraui::TreeTableLayout, usize, usize);
 
+/// Which absolute slice of a windowed `List`/`Tree`/`DataTable`/
+/// `TextDisplay`'s collection the frame that produced this hit actually
+/// had rows for: the half-open range `[start, start + len)` of its
+/// `total_items`/`total_rows`/`total_lines` extent.
+///
+/// `None` on every hit painted without an
+/// [`crate::render::ItemsWindow`] — i.e. every leaf of a tree decoded
+/// without an `"items_window"` key — where the loaded slice and the
+/// collection are the same thing. `Some` is the marker that tells a reader
+/// (`crate::render::rows_requested_for_window`'s caller,
+/// `crate::host::apply_tree_nav_key_windowed`'s dispatch) that this leaf is
+/// virtualised: its painted rows are a slice, its `scroll_offset` is an
+/// absolute index into the full extent, and the rows outside `[start, start
+/// + len)` are placeholders the app has not supplied yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadedRows {
+    pub start: usize,
+    pub len: usize,
+}
+
+/// The [`TreePath`] at ABSOLUTE row index `row`, out of a
+/// [`PaintedHit::Tree`]'s own `row_paths`/`loaded_rows` pair — `None` when
+/// `row` is a windowed tree's not-yet-loaded position (so `row_paths` has
+/// no entry for it) or past the loaded slice's end.
+pub fn loaded_row_path(
+    row_paths: &[TreePath],
+    loaded_rows: Option<LoadedRows>,
+    row: usize,
+) -> Option<&TreePath> {
+    let origin = loaded_rows.map_or(0, |loaded| loaded.start);
+    row_paths.get(row.checked_sub(origin)?)
+}
+
 /// One primitive this app painted during the current frame: its id and the
 /// hit-testable layout its backend `draw_*` call returned (or, for
 /// `Backend::draw_tree`/`draw_list`, which paint without returning one, the
@@ -45,16 +78,16 @@ pub enum PaintedHit {
     /// narrows it) — checked for containment in `clip`'s place, so a point
     /// outside an enclosing scroll's viewport never resolves to this tree
     /// even though `area`'s own origin (hence the frame `layout.hit_test`
-    /// translates into) is untouched. `row_paths[i]` is `Some` of the
-    /// `TreePath` of the row at visual index `i` (i.e.
-    /// `TreeView::rows[i].path`) when that row is one this frame actually
-    /// loaded, kept alongside the layout so a `TreeViewHit::Row(i)` can be
-    /// turned into a semantic `UiEvent::Tree(RowClicked)` without
-    /// re-borrowing the `TreeView` itself. On an unwindowed tree every row
-    /// is loaded, so every entry is `Some`; on a windowed one (an
-    /// `ItemsWindow` was in play when this was painted — see
-    /// `crate::render::paint_leaf_windowed`'s own doc) a position outside
-    /// the loaded slice is `None` rather than the placeholder row's own
+    /// translates into) is untouched. `row_paths` holds the `TreePath` of
+    /// every row this frame actually loaded, in visual order, kept
+    /// alongside the layout so a `TreeViewHit::Row(i)` can be turned into
+    /// a semantic `UiEvent::Tree(RowClicked)` without re-borrowing the
+    /// `TreeView` itself — indexed by [`LoadedRows`]-relative position, so
+    /// `row_paths[i]` is the row at ABSOLUTE index `loaded_rows.start + i`
+    /// ([`loaded_row_path`] does that translation; `loaded_rows` is `None`
+    /// on an unwindowed tree, where `start` is `0` and every row is
+    /// loaded). A windowed tree's not-yet-loaded positions are absent from
+    /// `row_paths` entirely rather than carrying the placeholder row's own
     /// synthetic path, because that path is not a stable identity — it can
     /// collide with a real row's path (see `crate::render::windowed_tree`'s
     /// own doc) and would resolve a click or a cursor to the wrong row if
@@ -65,11 +98,12 @@ pub enum PaintedHit {
     /// its own `track` is an absolute rect (see [`quadraui::Scrollbar`]'s
     /// own doc), so [`clip_hits_to_viewport`] narrows it directly, the same
     /// way it narrows [`Self::Button`]'s `layout.bounds`. `scroll_offset`
-    /// is the tree's own offset as painted; `total_rows` is the
+    /// is the tree's own ABSOLUTE offset as painted (an index into
+    /// `total_rows`, not into `row_paths`); `total_rows` is the
     /// collection's real row count — `TreeView::rows.len()` on an
     /// unwindowed tree, or the windowed `ItemsWindow::total` otherwise,
-    /// since a windowed tree's own `rows` is deliberately padded to less
-    /// than that (see `crate::render::windowed_vec`'s own doc), so a reader
+    /// since a windowed tree only ever materialises the band it paints
+    /// (see `crate::render::windowed_vec`'s own doc), so a reader
     /// needing the real extent must use this field rather than
     /// `row_paths.len()`; `viewport_rows` is how many rows fit in `area` at
     /// a zero offset (snapshotted at paint time, since a `Scrollbar`'s
@@ -82,18 +116,20 @@ pub enum PaintedHit {
     /// [`crate::semantic::focus_scoped_key_event`] so a key pressed while
     /// that row is being renamed is resolved by
     /// [`crate::tree_row_rename_key_event`] instead of falling straight
-    /// through to the tree's raw `TreeEvent::KeyPressed`.
+    /// through to the tree's raw `TreeEvent::KeyPressed`. `loaded_rows` is
+    /// `Some` only for a windowed tree — see [`LoadedRows`]'s own doc.
     Tree {
         id: WidgetId,
         area: Rect,
         clip: Rect,
         layout: TreeViewLayout,
-        row_paths: Vec<Option<TreePath>>,
+        row_paths: Vec<TreePath>,
         scrollbar: Option<Scrollbar>,
         scroll_offset: usize,
         total_rows: usize,
         viewport_rows: usize,
         editing: Option<(TreePath, TreeRowEditState)>,
+        loaded_rows: Option<LoadedRows>,
     },
     List {
         id: WidgetId,
@@ -110,17 +146,22 @@ pub enum PaintedHit {
         /// painted, the same way [`Self::DataTable`]'s `selected_idx`/
         /// `total_rows` feed its own Enter handling. `selected_idx` is
         /// `ListView::selected_idx` verbatim (always a valid index into a
-        /// non-empty list); `total_items` is `ListView::items.len()`, and
-        /// `0` is what tells the key handler there is no row to activate.
+        /// non-empty list); `total_items` is `ListView::items.len()` on an
+        /// unwindowed list, or the windowed `ItemsWindow::total` otherwise,
+        /// and `0` is what tells the key handler there is no row to
+        /// activate.
         selected_idx: usize,
         total_items: usize,
-        /// `ListView::scroll_offset` as painted, and how many rows fit in
-        /// `area` at a zero offset (snapshotted at paint time, mirroring
-        /// [`Self::Tree`]'s own `scroll_offset`/`viewport_rows`) — read by
+        /// `ListView::scroll_offset` as painted — ABSOLUTE, an index into
+        /// `total_items` — and how many rows fit in `area` at a zero offset
+        /// (snapshotted at paint time, mirroring [`Self::Tree`]'s own
+        /// `scroll_offset`/`viewport_rows`) — read by
         /// `crate::host::apply_list_nav_key`/`crate::host::resolve_list_cursor`
         /// to move the uncontrolled cursor and scroll it into view.
         scroll_offset: usize,
         viewport_rows: usize,
+        /// `Some` only for a windowed list — see [`LoadedRows`]'s own doc.
+        loaded_rows: Option<LoadedRows>,
     },
     DataTable {
         id: WidgetId,
@@ -128,6 +169,8 @@ pub enum PaintedHit {
         /// See [`Self::Tree`]'s own doc.
         clip: Rect,
         layout: DataTableLayout,
+        /// ABSOLUTE, an index into `total_rows` — see [`Self::Tree`]'s own
+        /// `scroll_offset`.
         scroll_offset: usize,
         total_rows: usize,
         /// The table's current row selection, as painted — read by
@@ -142,6 +185,8 @@ pub enum PaintedHit {
         /// `crate::host::resolve_data_table_cursor` to scroll the
         /// uncontrolled cursor into view.
         viewport_rows: usize,
+        /// `Some` only for a windowed table — see [`LoadedRows`]'s own doc.
+        loaded_rows: Option<LoadedRows>,
     },
     TabBar {
         id: WidgetId,
@@ -185,6 +230,10 @@ pub enum PaintedHit {
         body_offset: f32,
         total_lines: usize,
         viewport_lines: usize,
+        /// `Some` only for a windowed display — see [`LoadedRows`]'s own
+        /// doc. `layout.resolved_scroll_offset` is ABSOLUTE either way (an
+        /// index into `total_lines`).
+        loaded_rows: Option<LoadedRows>,
     },
     /// `Split`'s layout is already in the ABSOLUTE frame, and its own
     /// `WidgetId` only matters once a hit is found — carried by
@@ -888,15 +937,14 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
 /// currently has anything to scroll (e.g. the very first navigation key on
 /// a tree short enough to fit without one).
 ///
-/// Drops every `None` entry of [`PaintedHit::Tree::row_paths`] (a
-/// not-yet-loaded placeholder on a windowed tree), so the returned `Vec`
-/// only ever holds real rows — `crate::host::apply_tree_nav_key`'s
-/// position-based navigation has no way to represent "this position has no
-/// row yet". A windowed tree's keyboard navigation therefore still only
-/// reaches its own loaded slice through this path; use
-/// `crate::host::apply_tree_nav_key_windowed` (fed `total_rows` from
-/// [`PaintedHit::Tree::total_rows`] instead of this function) for one that
-/// needs to reach the collection's full, possibly-unloaded extent.
+/// Also `None` for a *windowed* tree (`loaded_rows.is_some()`): its loaded
+/// rows are only a slice of the real collection, and
+/// `crate::host::apply_tree_nav_key`'s position-based navigation has no way
+/// to represent "this position has no row yet", so it could never reach
+/// past the slice. [`tree_total_rows_and_viewport`] is the windowed
+/// counterpart — `crate::InteractionEngine::handle`'s own dispatch tries it
+/// first for exactly this reason, and falls back here for an unwindowed
+/// tree.
 pub fn tree_rows_and_viewport(
     hit_map: &[PaintedHit],
     id: WidgetId,
@@ -907,19 +955,20 @@ pub fn tree_rows_and_viewport(
             row_paths,
             viewport_rows,
             editing,
+            loaded_rows,
             ..
-        } if *hit_id == id && editing.is_none() => Some((
-            row_paths.iter().flatten().cloned().collect(),
-            *viewport_rows,
-        )),
+        } if *hit_id == id && editing.is_none() && loaded_rows.is_none() => {
+            Some((row_paths.clone(), *viewport_rows))
+        }
         _ => None,
     })
 }
 
-/// The `(total_rows, viewport_rows)` of the `Tree` hit painted under id
-/// `id` this frame, or `None` if that tree isn't in the current hit map or
-/// its own selected row is currently mid-rename — the windowed-by-absolute-
-/// index counterpart of [`tree_rows_and_viewport`], read by
+/// The `(total_rows, viewport_rows)` of the **windowed** `Tree` hit painted
+/// under id `id` this frame, or `None` if that tree isn't in the current
+/// hit map, isn't windowed (`loaded_rows.is_none()`), or has its own
+/// selected row currently mid-rename — the by-absolute-index counterpart of
+/// [`tree_rows_and_viewport`], read by
 /// `crate::host::apply_tree_nav_key_windowed` to move and scroll a
 /// windowed tree's cursor across its full real extent (`total_rows`,
 /// [`PaintedHit::Tree::total_rows`]) rather than only the loaded slice
@@ -934,8 +983,55 @@ pub fn tree_total_rows_and_viewport(
             total_rows,
             viewport_rows,
             editing,
+            loaded_rows,
             ..
-        } if *hit_id == id && editing.is_none() => Some((*total_rows, *viewport_rows)),
+        } if *hit_id == id && editing.is_none() && loaded_rows.is_some() => {
+            Some((*total_rows, *viewport_rows))
+        }
+        _ => None,
+    })
+}
+
+/// The `(loaded_rows, total, viewport_rows)` of the **windowed**
+/// `List`/`Tree`/`DataTable`/`TextDisplay` hit painted under id `id` this
+/// frame — everything `crate::render::rows_requested_for_window` needs
+/// except the leaf's post-event scroll offset, and `None` for a leaf that
+/// isn't windowed (so nothing ever asks an unwindowed leaf's app for more
+/// rows). Read by `crate::InteractionEngine::handle` after a scroll input
+/// moved a leaf's absolute offset.
+pub fn windowed_leaf_extent(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(LoadedRows, usize, usize)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::List {
+            id: hit_id,
+            total_items,
+            viewport_rows,
+            loaded_rows: Some(loaded),
+            ..
+        } if *hit_id == id => Some((*loaded, *total_items, *viewport_rows)),
+        PaintedHit::Tree {
+            id: hit_id,
+            total_rows,
+            viewport_rows,
+            loaded_rows: Some(loaded),
+            ..
+        } if *hit_id == id => Some((*loaded, *total_rows, *viewport_rows)),
+        PaintedHit::DataTable {
+            id: hit_id,
+            total_rows,
+            viewport_rows,
+            loaded_rows: Some(loaded),
+            ..
+        } if *hit_id == id => Some((*loaded, *total_rows, *viewport_rows)),
+        PaintedHit::TextDisplay {
+            id: hit_id,
+            total_lines,
+            viewport_lines,
+            loaded_rows: Some(loaded),
+            ..
+        } if *hit_id == id => Some((*loaded, *total_lines, *viewport_lines)),
         _ => None,
     })
 }
@@ -1085,12 +1181,13 @@ mod tests {
             area,
             clip: area,
             layout,
-            row_paths: tree.rows.iter().map(|row| Some(row.path.clone())).collect(),
+            row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
             scrollbar: None,
             scroll_offset: 0,
             total_rows: tree.rows.len(),
             viewport_rows: 24,
             editing,
+            loaded_rows: None,
         }
     }
 
@@ -1158,6 +1255,7 @@ mod tests {
             body_offset: 0.0,
             total_lines: 100,
             viewport_lines: viewport.height as usize,
+            loaded_rows: None,
         }
     }
 
@@ -1273,6 +1371,7 @@ mod tests {
             total_items: 100,
             scroll_offset: 0,
             viewport_rows: 10,
+            loaded_rows: None,
         }];
         let viewport = Rect::new(0.0, 0.0, 200.0, 160.0);
         clip_hits_to_viewport(&mut hits, 0, viewport);
@@ -1330,6 +1429,7 @@ mod tests {
             total_rows: 0,
             viewport_rows: 24,
             editing: None,
+            loaded_rows: None,
         }];
         clip_hits_to_viewport(&mut hits, 0, viewport);
 
