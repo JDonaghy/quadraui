@@ -3307,13 +3307,19 @@ impl InteractionEngine {
             }
         }
 
-        // A `MouseDown` lands on at most one `"tree_table_controller"`
-        // extra's own `rect` — [`TreeTableController::handle`]'s own
-        // `click`/`click_scrollbar` return `Ignored` for a position outside
-        // it — so trying every cached controller, in `tree_table_order`'s
-        // deterministic paint order, and stopping at the first non-`Ignored`
-        // result mirrors the `"form"` claim loop just above.
-        if matches!(event, UiEvent::MouseDown { .. }) {
+        // A `MouseDown` or a `DoubleClick` (the second click of a pair
+        // `DoubleClickDetector` folded, e.g. the mouse half of
+        // `TreeTableControllerEvent::RowActivated`) lands on at most one
+        // `"tree_table_controller"` extra's own `rect` —
+        // [`TreeTableController::handle`]'s own `click`/`click_scrollbar`
+        // return `Ignored` for a position outside it — so trying every
+        // cached controller, in `tree_table_order`'s deterministic paint
+        // order, and stopping at the first non-`Ignored` result mirrors
+        // the `"form"` claim loop just above.
+        if matches!(
+            event,
+            UiEvent::MouseDown { .. } | UiEvent::DoubleClick { .. }
+        ) {
             let claim = self
                 .tree_table_order
                 .borrow()
@@ -4423,9 +4429,9 @@ mod tests {
     use crate::extra_paint::{TreeTableControllerDescriptor, TreeTableControllerNode};
     use crate::hit::{HitDetail, PaintedHit};
     use crate::host::{
-        resolve_data_table_cursor, resolve_layout_node, resolve_layout_tabs_active,
-        resolve_list_cursor, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
-        resolve_tree_expansion,
+        render_overlays, resolve_data_table_cursor, resolve_layout_node,
+        resolve_layout_tabs_active, resolve_list_cursor, resolve_split_ratio,
+        resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
     };
     use crate::layout::{
         LayoutContainer, LayoutLeaf, LayoutNode, LayoutPanel, LayoutScroll, LayoutSplit,
@@ -4717,8 +4723,7 @@ mod tests {
             paint_layout(backend, area, &content, &mut hits, &|id| {
                 self.engine.chrome_interaction(id)
             });
-            self.engine.sync_tree_tables(backend, &hits);
-            self.engine.set_hits(hits);
+            render_overlays(&self.engine, backend, hits);
         }
 
         fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
@@ -4902,6 +4907,43 @@ mod tests {
             table.table.selected_idx,
             Some(2),
             "\"zebra\" is now at flattened index 2 after the sort"
+        );
+    }
+
+    /// `UiEvent::DoubleClick` — the event `DoubleClickDetector` folds a
+    /// real second close-together `MouseDown` into, with default folding
+    /// left on (`driver.double_click` delivers the folded shape directly,
+    /// deterministically) — must reach the cached `TreeTableController`
+    /// the same way a plain `MouseDown` does, not fall through unclaimed.
+    /// A dropped `DoubleClick` here would mean `RowActivated`'s mouse half
+    /// never fires and a rapid second click near the first is silently
+    /// lost.
+    #[test]
+    fn tree_table_controller_double_click_activates_row() {
+        let logic = TreeTableControllerLogic {
+            descriptor: lazy_root_descriptor(),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+
+        driver.double_click(10.0, 1.5);
+        driver.render();
+
+        assert_eq!(
+            driver.backend().focus_manager().focused(),
+            Some(&WidgetId::new("tt")),
+            "a DoubleClick claimed by the tree-table-controller should also click-focus it"
+        );
+        let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
+        assert!(
+            dispatched.iter().any(|(_, ev)| matches!(
+                ev,
+                TreeTableControllerWireEvent::RowActivated { id } if id == "dir"
+            )),
+            "a DoubleClick on the row should activate it: {:?}",
+            dispatched
         );
     }
 
