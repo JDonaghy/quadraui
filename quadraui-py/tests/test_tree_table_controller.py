@@ -16,6 +16,18 @@ test, driven end-to-end through this binding's Python surface instead, at
 three hierarchy levels (root -> directory -> file) rather than two, so both
 `QuiApp.set_tree_table_children` calls answer a genuinely nested lazy load.
 
+The round-trip test above calls `QuiApp.set_tree_table_children`/
+`set_tree_table_sort_override` from top-level script code, after `_press`
+returns -- never from inside the registered handler, since both raise
+`ReentrantCallError` there (the handler already holds this app's one
+mutable borrow for the whole dispatch). `ChildrenRequested`/`SortChanged`
+are in fact only ever delivered to that same handler, so
+`test_children_requested_answered_from_inside_the_handler` below answers
+one for real: via `QuiAppActions.set_tree_table_children`/
+`set_tree_table_sort_override` (obtained once from `QuiApp.actions()`),
+which queue the write instead of applying it immediately, applied right
+after that same dispatch finishes.
+
 Run against a built wheel/extension, e.g.:
 
     maturin develop
@@ -210,7 +222,7 @@ def test_three_level_lazy_tree_expand_sort_and_selection_round_trip():
     ), received
 
     screen = app.screen()
-    apple_row, apple_indent = _locate(screen, "apple_file")
+    apple_row, _ = _locate(screen, "apple_file")
     zebra_row, zebra_indent = _locate(screen, "zebra_dir")
     a_leaf_row, a_leaf_indent = _locate(screen, "a_leaf")
     z_leaf_row, z_leaf_indent = _locate(screen, "z_leaf")
@@ -232,6 +244,103 @@ def test_three_level_lazy_tree_expand_sort_and_selection_round_trip():
     assert _tree_table_controller_events(received, "tt", {"RowActivated": {"id": "z_leaf"}}), (
         received
     )
+
+
+def test_children_requested_answered_from_inside_the_handler():
+    """`ChildrenRequested` is only ever actually delivered to the
+    registered handler -- unlike the round trip above, which answers it
+    with `QuiApp.set_tree_table_children` from top-level script code,
+    after `_press` returns. A direct `app.set_tree_table_children(...)`
+    call from inside the handler itself raises `ReentrantCallError`
+    instead (the handler already holds this app's one mutable borrow for
+    the whole dispatch) -- `test_reentrant_call_guard.py` covers that wall
+    for the whole restricted-method family. This answers the request the
+    way a real `run_tui`/`run_native` app must: via
+    `QuiAppActions.set_tree_table_children`, obtained once up front from
+    `QuiApp.actions()`, and applied by `flush_deferred_actions` right
+    after this same dispatch finishes -- so the newly loaded children are
+    already in the cached controller by the time `_press` returns."""
+    app = QuiApp(40, 12, render=_render)
+    app.screen()
+    actions = app.actions()
+
+    def on_event(event):
+        if "TreeTableController" not in event:
+            return
+        table_id, payload = event["TreeTableController"]
+        if "ChildrenRequested" in payload:
+            actions.set_tree_table_children(
+                table_id,
+                payload["ChildrenRequested"]["id"],
+                [
+                    _node("zebra_dir", "zebra_dir", has_children=True),
+                    _node("apple_file", "apple_file"),
+                ],
+            )
+
+    app.set_handler(on_event)
+
+    # Tab focuses the sole tab stop; Space on the selected lazy-branch
+    # root expands it, requesting its children -- answered above, from
+    # inside `on_event` itself, not after `_press` returns.
+    _press(app, _TAB)
+    _press(app, _SPACE)
+
+    assert app.screen_contains("zebra_dir")
+    assert app.screen_contains("apple_file")
+
+
+def test_set_tree_table_sort_override_applies_a_host_chosen_order():
+    """The positive path `test_set_tree_table_children_is_a_no_op_for_an_unpainted_id`
+    below doesn't exercise: a host order that disagrees with the engine's
+    own default ascending comparator -- "zebra_dir" before "apple_file",
+    the reverse of alphabetical -- is what actually renders, proving the
+    override wins rather than the header click's own default sort
+    silently winning instead."""
+    app = QuiApp(40, 12, render=_render)
+    app.screen()
+
+    app.set_handler(lambda _event: None)
+    _press(app, _TAB)
+    _press(app, _SPACE)
+
+    app.set_tree_table_children(
+        "tt",
+        "root",
+        [
+            _node("apple_file", "apple_file"),
+            _node("zebra_dir", "zebra_dir", has_children=True),
+        ],
+    )
+
+    # A header click applies the engine's own default ascending sort --
+    # already "apple_file" first here, so this is a no-op on the visible
+    # order, exercised only so the override below has a real `SortChanged`
+    # dispatch (and its default application) to override.
+    app.push_event(
+        {
+            "MouseDown": {
+                "button": "Left",
+                "position": {"x": 5.0, "y": 0.0},
+                "modifiers": {},
+            }
+        }
+    )
+    app.run(1)
+
+    app.set_tree_table_sort_override(
+        "tt",
+        [
+            _node("zebra_dir", "zebra_dir", has_children=True),
+            _node("apple_file", "apple_file"),
+        ],
+    )
+
+    screen = app.screen()
+    apple_row, _ = _locate(screen, "apple_file")
+    zebra_row, _ = _locate(screen, "zebra_dir")
+    assert None not in (apple_row, zebra_row), screen
+    assert zebra_row < apple_row, screen
 
 
 def test_set_tree_table_children_is_a_no_op_for_an_unpainted_id():
