@@ -226,10 +226,14 @@ pub struct CellGrid {
     /// Leading columns that never scroll, clamped to `col_count`.
     #[serde(default)]
     pub frozen_cols: usize,
-    /// First non-frozen row currently scrolled into view.
+    /// How many rows after the frozen block are skipped before the body
+    /// starts painting — the body's first visible row is
+    /// `frozen_rows + row_scroll`, not `row_scroll` itself.
     #[serde(default)]
     pub row_scroll: usize,
-    /// First non-frozen column currently scrolled into view.
+    /// How many columns after the frozen block are skipped before the
+    /// body starts painting — the body's first visible column is
+    /// `frozen_cols + col_scroll`, not `col_scroll` itself.
     #[serde(default)]
     pub col_scroll: usize,
     /// Row height in surface-native units (cells on TUI, pixels on a
@@ -402,12 +406,21 @@ pub struct ResolvedSpan {
 
 /// Stack `total` 0-based indices into spans of `overrides.get(i)` (falling
 /// back to `default_size`), starting at `start` and stopping once a span
-/// would start at or past `end` — first the leading `frozen` indices
-/// (always included, even if some end up clipped by `end`), then,
-/// immediately following them, indices from `frozen + scroll` up to
-/// `total` (the scrolled body). Shared by [`CellGrid::layout`] for both
-/// the row (y) and column (x) axis, since the arithmetic — a running
-/// position plus a per-index size lookup — is identical either way.
+/// would start at or past `end` — first the leading `frozen` indices (each
+/// included only while `pos` stays below `end`, so `frozen_count` can come
+/// back smaller than the requested `frozen` once enough of them are
+/// clipped), then, immediately following them, indices from
+/// `frozen + scroll` up to `total` (the scrolled body). Shared by
+/// [`CellGrid::layout`] for both the row (y) and column (x) axis, since the
+/// arithmetic — a running position plus a per-index size lookup — is
+/// identical either way.
+///
+/// A zero, negative or NaN size (an override or `default_size` of `0.0`,
+/// say) advances `pos` by nothing, so it is skipped rather than pushed —
+/// otherwise `pos >= end` would never trip and the full `0..total` range
+/// would each get a `ResolvedSpan`, which for a real sheet (`total` in the
+/// hundreds of thousands) means one zero-size allocation per row/column
+/// instead of an empty viewport.
 ///
 /// Returns the resolved spans in that frozen-then-scrolled paint order,
 /// plus how many of the leading entries are the frozen ones.
@@ -428,11 +441,13 @@ fn resolve_spans(
             break;
         }
         let size = overrides.get(&i).copied().unwrap_or(default_size).max(0.0);
-        out.push(ResolvedSpan {
-            index: i,
-            start: pos,
-            size,
-        });
+        if size > 0.0 {
+            out.push(ResolvedSpan {
+                index: i,
+                start: pos,
+                size,
+            });
+        }
         pos += size;
     }
     let frozen_count = out.len();
@@ -442,18 +457,25 @@ fn resolve_spans(
             break;
         }
         let size = overrides.get(&i).copied().unwrap_or(default_size).max(0.0);
-        out.push(ResolvedSpan {
-            index: i,
-            start: pos,
-            size,
-        });
+        if size > 0.0 {
+            out.push(ResolvedSpan {
+                index: i,
+                start: pos,
+                size,
+            });
+        }
         pos += size;
     }
     (out, frozen_count)
 }
 
 /// Hit-test result for a `CellGrid`.
+///
+/// `#[non_exhaustive]` so a future variant can land without breaking an
+/// external exhaustive `match` — see `CLAUDE.md`'s *Downstream consumers*
+/// section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CellGridHit {
     /// Click on the top-left box where the row and column header strips
     /// meet — conventionally "select everything".
@@ -682,6 +704,40 @@ mod tests {
         // absolute index, not row/col 1.
         assert_eq!(scrolled.rows[1].index, 1 + 20);
         assert_eq!(scrolled.cols[1].index, 1 + 15);
+    }
+
+    #[test]
+    fn row_heights_and_col_widths_overrides_resize_only_their_own_absolute_index() {
+        let mut g = grid();
+        g.row_scroll = 10;
+        // Absolute row 11 (the scrolled body's first row, per the
+        // boundary test above) is 3 units tall instead of the default 1;
+        // every other row keeps the default.
+        g.row_heights.insert(11, 3.0);
+        // Absolute column 0 (the frozen column) is 9 units wide instead
+        // of the default 4.
+        g.col_widths.insert(0, 9.0);
+        let layout = g.layout(100.0, 50.0, 1.0, 4.0, 1.0, 1.0);
+
+        assert_eq!(layout.rows[1].index, 11);
+        assert_eq!(layout.rows[1].size, 3.0);
+        // The next row after the overridden one starts 3 units later,
+        // not 1 — the override shifted every following `pos`, not just
+        // its own span.
+        assert_eq!(layout.rows[2].index, 12);
+        assert_eq!(layout.rows[2].start, layout.rows[1].start + 3.0);
+
+        assert_eq!(layout.cols[0].index, 0);
+        assert_eq!(layout.cols[0].size, 9.0);
+        assert_eq!(layout.cols[1].start, layout.cols[0].start + 9.0);
+
+        // A click inside the tall row's extra height (2 units into its
+        // 3-unit band, past where the old 1-unit height would have ended)
+        // still resolves to that row, not the one after it.
+        assert_eq!(
+            layout.hit_test(layout.cols[0].start, layout.rows[1].start + 2.5),
+            CellGridHit::Cell(11, 0)
+        );
     }
 
     // ── hit_test at frozen/scrolled boundaries ──────────────────────
