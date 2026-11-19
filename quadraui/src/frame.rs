@@ -166,11 +166,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::backend::DrawsPrimitives;
 use crate::descriptor_store::{DescriptorStore, Handle};
 use crate::event::Rect;
 use crate::primitives::activity_bar::ActivityBar;
 use crate::primitives::board::BoardModel;
 use crate::primitives::canvas::Canvas;
+use crate::primitives::cell_grid::CellGrid;
 use crate::primitives::chart::Chart;
 use crate::primitives::command_center::CommandCenter;
 use crate::primitives::command_line::CommandLine;
@@ -331,6 +333,16 @@ pub enum Surface {
         table: DataTable,
         hovered: Option<usize>,
     },
+    /// Paints through [`crate::backend::DrawsPrimitives::draw_primitive`]
+    /// — `CellGrid` has no bespoke `Backend::draw_cell_grid` method, so
+    /// this is its only `Surface` paint path, on every backend
+    /// including a zero-feature build (see
+    /// [`crate::primitives::cell_grid::CellGridPrimitiveLayout`]'s doc
+    /// for why that impl isn't feature-gated).
+    CellGrid {
+        rect: Rect,
+        grid: CellGrid,
+    },
     Chart {
         rect: Rect,
         chart: Chart,
@@ -476,6 +488,7 @@ pub enum FrameZone {
     RichTextPopup { idx: usize },
     Toast { idx: usize },
     DataTable { idx: usize },
+    CellGrid { idx: usize },
     Chart { idx: usize },
     Canvas { idx: usize },
     Board { idx: usize },
@@ -803,6 +816,9 @@ impl ScreenLayout {
                 } => {
                     backend.draw_data_table(*rect, table, *hovered);
                 }
+                Surface::CellGrid { rect, grid } => {
+                    backend.draw_primitive(*rect, grid);
+                }
                 Surface::Chart {
                     rect,
                     chart,
@@ -952,6 +968,7 @@ impl ScreenLayout {
                 Surface::MenuBar { rect, bar } => Some((bar.id, *rect)),
                 Surface::Palette { rect, palette } => Some((palette.id, *rect)),
                 Surface::DataTable { rect, table, .. } => Some((table.id, *rect)),
+                Surface::CellGrid { rect, grid } => Some((grid.id, *rect)),
                 Surface::Chart { rect, chart, .. } => Some((chart.id, *rect)),
                 Surface::Board { rect, model } => Some((model.id, *rect)),
                 Surface::CommandCenter { rect, cc } => Some((cc.id, *rect)),
@@ -1021,6 +1038,7 @@ impl ScreenLayout {
             }
             Surface::Toast { rect, .. } => (*rect, FrameZone::Toast { idx }),
             Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
+            Surface::CellGrid { rect, .. } => (*rect, FrameZone::CellGrid { idx }),
             Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
             Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
             Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
@@ -1088,6 +1106,7 @@ pub enum OwnedContent {
     RichTextPopup(RichTextPopup),
     Toast(ToastOverlay),
     DataTable(DataTable),
+    CellGrid(CellGrid),
     Chart(Chart),
     Canvas(Canvas),
     Board(BoardModel),
@@ -1168,6 +1187,9 @@ impl OwnedContent {
             }
             OwnedContent::DataTable(table) => {
                 backend.draw_data_table(rect, table, None);
+            }
+            OwnedContent::CellGrid(grid) => {
+                backend.draw_primitive(rect, grid);
             }
             OwnedContent::Chart(chart) => {
                 backend.draw_chart(rect, chart, None, None);
@@ -1258,6 +1280,7 @@ impl OwnedContent {
             OwnedContent::RichTextPopup(_) => FrameZone::RichTextPopup { idx },
             OwnedContent::Toast(_) => FrameZone::Toast { idx },
             OwnedContent::DataTable(_) => FrameZone::DataTable { idx },
+            OwnedContent::CellGrid(_) => FrameZone::CellGrid { idx },
             OwnedContent::Chart(_) => FrameZone::Chart { idx },
             OwnedContent::Canvas(_) => FrameZone::Canvas { idx },
             OwnedContent::Board(_) => FrameZone::Board { idx },
@@ -1470,6 +1493,9 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
             Some(table.id),
             OwnedContent::DataTable(table.clone()),
         ),
+        Surface::CellGrid { rect, grid } => {
+            (*rect, Some(grid.id), OwnedContent::CellGrid(grid.clone()))
+        }
         Surface::Chart { rect, chart, .. } => {
             (*rect, Some(chart.id), OwnedContent::Chart(chart.clone()))
         }
@@ -2366,6 +2392,121 @@ mod tests {
         let stops = layout.tab_stops();
         assert_eq!(stops.len(), 1);
         assert_eq!(stops[0].0.as_str(), "search");
+    }
+
+    /// `Surface::CellGrid` has no bespoke `Backend::draw_cell_grid`
+    /// method — it paints exclusively through
+    /// `DrawsPrimitives::draw_primitive` (see that `Surface` variant's
+    /// own doc) — so unlike every `assert!(backend.calls.contains(...))`
+    /// check above, there is no named call to assert on here. What this
+    /// still proves: `zone_for`/`tab_stops` wire a `draw_primitive`-only
+    /// `Surface` variant exactly like every bespoke-method one, and
+    /// `ScreenLayout::draw` never panics calling it through a backend
+    /// (`RecordingBackend`) with no `PaintSurface`/cell-buffer of its
+    /// own — the exact "resolve layout, maybe paint" degrade
+    /// `DrawsPrimitives::draw_primitive`'s own doc promises.
+    #[test]
+    fn surface_cell_grid_dispatches_through_draw_primitive_and_is_a_tab_stop() {
+        use crate::primitives::cell_grid::{Cell, CellGrid};
+        use crate::testing::RecordingBackend;
+
+        let rect = Rect::new(0.0, 0.0, 20.0, 5.0);
+        let grid = CellGrid {
+            id: WidgetId::new("grid:sheet"),
+            row_count: 4,
+            col_count: 4,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 6.0,
+            row_heights: Default::default(),
+            col_widths: Default::default(),
+            show_row_headers: false,
+            show_col_headers: false,
+            row_labels: Default::default(),
+            col_labels: Default::default(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: vec![vec![Cell::plain("hi")]],
+            has_focus: true,
+            show_scrollbar: false,
+        };
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::CellGrid {
+            rect,
+            grid: grid.clone(),
+        });
+
+        let mut backend = RecordingBackend::new();
+        let hit_map = layout.draw(&mut backend);
+        assert_eq!(hit_map.zones()[0].0, rect);
+        assert_eq!(hit_map.zones()[0].1, FrameZone::CellGrid { idx: 0 });
+
+        let stops = layout.tab_stops();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].0, grid.id);
+    }
+
+    /// The TUI side of the same wiring: `ScreenLayout::draw` through a
+    /// real `TuiBackend` paints the grid's actual cell text, not just an
+    /// empty reserved rect — proving `Surface::CellGrid` →
+    /// `draw_primitive` → `Primitive::paint_cells` →
+    /// `crate::tui::draw_cell_grid` end to end.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn surface_cell_grid_paints_real_cell_text_through_tui_backend() {
+        use crate::primitives::cell_grid::{Cell, CellGrid};
+        use crate::runner::{AppLogic, Reaction};
+        use crate::tui::testing::TuiDriver;
+
+        let grid = CellGrid {
+            id: WidgetId::new("grid:sheet"),
+            row_count: 4,
+            col_count: 4,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 6.0,
+            row_heights: Default::default(),
+            col_widths: Default::default(),
+            show_row_headers: false,
+            show_col_headers: false,
+            row_labels: Default::default(),
+            col_labels: Default::default(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: vec![vec![Cell::plain("ahoy")]],
+            has_focus: true,
+            show_scrollbar: false,
+        };
+
+        struct ShowGrid(CellGrid);
+        impl AppLogic for ShowGrid {
+            type AreaId = ();
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let mut layout = ScreenLayout::new();
+                layout.push(Surface::CellGrid {
+                    rect: Rect::new(0.0, 0.0, 20.0, 5.0),
+                    grid: self.0.clone(),
+                });
+                layout.draw(backend);
+            }
+            fn handle(&mut self, _event: crate::UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        let driver = TuiDriver::new(ShowGrid(grid), 20, 5);
+        assert!(
+            driver.screen_contains("ahoy"),
+            "the grid's own cell text must appear on screen: {}",
+            driver.screen()
+        );
     }
 
     /// `FrameHitMap` is serializable: round-trips through JSON

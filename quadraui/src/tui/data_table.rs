@@ -13,7 +13,7 @@ use ratatui::layout::Rect;
 use ratatui::prelude::Position;
 use ratatui::style::{Color as RatatuiColor, Modifier, Style};
 
-use super::{ratatui_color, set_cell, set_cell_wide};
+use super::{align_offset, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::data_table::{
     ColumnAlign, ColumnMeasure, DataRow, DataTable, DataTableGlyphs, DataTableLayout,
     DataTablePaintState, ResolvedColumn, SortDirection,
@@ -755,14 +755,6 @@ fn column_align(table: &DataTable, col_idx: usize) -> ColumnAlign {
         .columns
         .get(col_idx)
         .map_or(ColumnAlign::Left, |c| c.align)
-}
-
-fn align_offset(align: ColumnAlign, text_len: u16, col_w: u16) -> u16 {
-    match align {
-        ColumnAlign::Left => 0,
-        ColumnAlign::Center => col_w.saturating_sub(text_len) / 2,
-        ColumnAlign::Right => col_w.saturating_sub(text_len),
-    }
 }
 
 #[cfg(test)]
