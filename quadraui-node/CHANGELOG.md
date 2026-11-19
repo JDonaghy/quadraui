@@ -37,6 +37,14 @@ fragment step for this package (that mechanism, and
   typed `{TreeTable: [id, {ToggleExpanded: {path, expand}}]}` event
   instead of only a raw `MouseDown`; a click elsewhere in the row body
   still falls back to the raw `MouseDown`.
+- A `"style"` object (inline on a node, or passed to `defineStyle`) now
+  accepts `font_family`/`font_size`/`font_weight` (a string, a number,
+  and `"normal"`/`"bold"` respectively) and `hover`/`pressed`/`focus` --
+  each a nested `StyleValue` applied over the override's own base tokens
+  while the node is in that interaction state. A state branch may itself
+  carry colour/metric/font tokens but may not nest a further
+  `hover`/`pressed`/`focus` branch. `wire.d.ts`'s `StyleValue` carries the
+  six new keys.
 - `App.confirm(title, body, buttons, severity?)` and `App.alert(title,
   body, options?)`: queue an in-canvas dialog through `App.actions`
   (never the direct, mid-dispatch-unsafe `QuiApp.showMessageDialog`) and

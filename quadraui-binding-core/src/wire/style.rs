@@ -7,10 +7,10 @@ use serde_json::Value;
 
 use quadraui::{Color, Theme};
 
-use crate::layout::{style_override_tokens, StyleOverride, StyleSets};
+use crate::layout::{style_override_tokens, FontWeight, StyleOverride, StyleSets};
 use crate::DecodeError;
 
-use super::value::{must_be_dict, obj_get, opt_f32, opt_u64, opt_u8};
+use super::value::{dict_str, must_be_dict, obj_get, opt_f32, opt_u64, opt_u8};
 
 /// The host state a layout-tree decode resolves a node's `"class"` key
 /// against: the [`StyleSets`] registry a binding's own `define_style`
@@ -42,26 +42,69 @@ impl<'a> StyleContext<'a> {
 /// and a token this decode rejects as unknown can never drift apart.
 /// `surface_bg`/`accent_bg` are the semantic aliases [`StyleOverride`]'s
 /// doc calls out for a `Button`/`List`/`Dialog`/... fill `bg` alone
-/// doesn't reach.
+/// doesn't reach. `font_family`/`font_size`/`font_weight` and
+/// `hover`/`pressed`/`focus` are hand-appended below rather than generated
+/// from the table — they carry no matching `Theme`/`Style` field (see
+/// [`StyleOverride`]'s own doc).
 macro_rules! define_style_decode {
     (
         colors: [ $( $cfield:ident => $tfield:ident ),* $(,)? ],
         theme_floats: [ $( $ffield:ident => $tffield:ident ),* $(,)? ],
         metrics: [ $( $mfield:ident : $mty:ty => $setter:ident => $decode:ident ),* $(,)? ],
     ) => {
+        /// The closed vocabulary a top-level `"style"` override (an inline
+        /// node key, or a `define_style`/`decode_style_overrides` argument)
+        /// accepts: every [`style_override_tokens!`] token, the three font
+        /// tokens, and the three state-variant branch keys. See
+        /// [`STYLE_OVERRIDE_BRANCH_KEYS`] for the narrower vocabulary a
+        /// branch's own nested dict is decoded through.
         const STYLE_OVERRIDE_KEYS: &[&str] = &[
             $(stringify!($cfield),)*
             $(stringify!($ffield),)*
             $(stringify!($mfield),)*
+            "font_family",
+            "font_size",
+            "font_weight",
+            "hover",
+            "pressed",
+            "focus",
         ];
 
-        /// Reads every [`STYLE_OVERRIDE_KEYS`] token off `dict` (already
-        /// known to be an object), rejecting any key outside that list —
-        /// the same "typo is a decode error, not a silently-dropped key"
+        /// [`STYLE_OVERRIDE_KEYS`] minus `"hover"`/`"pressed"`/`"focus"` —
+        /// the vocabulary a `"hover"`/`"pressed"`/`"focus"` branch's own
+        /// nested dict is decoded through, so a branch may itself override
+        /// colour/metric/font tokens but may not nest a further state
+        /// branch inside it. `{"hover": {"hover": {...}}}` is therefore a
+        /// decode error (an unknown key, caught by the same unknown-key
+        /// loop every other level uses) rather than unbounded recursion.
+        const STYLE_OVERRIDE_BRANCH_KEYS: &[&str] = &[
+            $(stringify!($cfield),)*
+            $(stringify!($ffield),)*
+            $(stringify!($mfield),)*
+            "font_family",
+            "font_size",
+            "font_weight",
+        ];
+
+        /// Reads every token off `dict` (already known to be an object),
+        /// rejecting any key outside [`STYLE_OVERRIDE_KEYS`] (or, when
+        /// `allow_state_branches` is `false`, [`STYLE_OVERRIDE_BRANCH_KEYS`])
+        /// — the same "typo is a decode error, not a silently-dropped key"
         /// policy [`edge_insets_from_value`] already applies to
         /// `"padding"`'s own object shape. `context` prefixes any error
-        /// raised.
-        fn style_override_fields(context: &str, dict: &Value) -> Result<StyleOverride, DecodeError> {
+        /// raised. `allow_state_branches` is `false` when `dict` is itself
+        /// a `"hover"`/`"pressed"`/`"focus"` branch, bounding the recursion
+        /// [`opt_style_branch`] would otherwise perform to one level.
+        fn style_override_fields(
+            context: &str,
+            dict: &Value,
+            allow_state_branches: bool,
+        ) -> Result<StyleOverride, DecodeError> {
+            let keys: &[&str] = if allow_state_branches {
+                STYLE_OVERRIDE_KEYS
+            } else {
+                STYLE_OVERRIDE_BRANCH_KEYS
+            };
             // The caller already guaranteed `dict.is_object()`, so this is
             // never `None` -- `.as_object()` just gets at the key set to
             // check.
@@ -70,30 +113,88 @@ macro_rules! define_style_decode {
                 .expect("the caller guarantees an object")
                 .keys()
             {
-                if !STYLE_OVERRIDE_KEYS.contains(&key.as_str()) {
-                    return Err(DecodeError::unknown_key(
-                        context,
-                        "style",
-                        key.as_str(),
-                        STYLE_OVERRIDE_KEYS,
-                    ));
+                if !keys.contains(&key.as_str()) {
+                    return Err(DecodeError::unknown_key(context, "style", key.as_str(), keys));
                 }
             }
             Ok(StyleOverride {
                 $($cfield: opt_color(dict, stringify!($cfield), context)?,)*
                 $($ffield: opt_f32(dict, stringify!($ffield), context)?,)*
                 $($mfield: $decode(dict, stringify!($mfield), context)?,)*
-                // Font and interaction-state tokens
-                // (`crate::layout::StyleOverride`'s own doc) are hand-written
-                // fields outside this table and have no wire decode yet —
-                // `..Default::default()` leaves them unset rather than this
-                // macro needing its own copy of that field list.
-                ..StyleOverride::default()
+                font_family: dict_str(context, dict, "font_family")?,
+                font_size: opt_f32(dict, "font_size", context)?,
+                font_weight: opt_font_weight(dict, context)?,
+                hover: if allow_state_branches {
+                    opt_style_branch(context, dict, "hover")?
+                } else {
+                    None
+                },
+                pressed: if allow_state_branches {
+                    opt_style_branch(context, dict, "pressed")?
+                } else {
+                    None
+                },
+                focus: if allow_state_branches {
+                    opt_style_branch(context, dict, "focus")?
+                } else {
+                    None
+                },
             })
         }
     };
 }
 style_override_tokens!(define_style_decode);
+
+/// The lowercase spellings `"font_weight"` accepts — mirrors
+/// [`crate::layout::FontWeight`]'s two variants.
+const FONT_WEIGHT_VALUES: [&str; 2] = ["normal", "bold"];
+
+/// Decodes a `"style"` dict's optional `"font_weight"` key. `None` when
+/// absent.
+fn opt_font_weight(dict: &Value, context: &str) -> Result<Option<FontWeight>, DecodeError> {
+    match obj_get(dict, "font_weight") {
+        None => Ok(None),
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| DecodeError::type_mismatch(context, "font_weight", "a string"))?;
+            match s {
+                "normal" => Ok(Some(FontWeight::Normal)),
+                "bold" => Ok(Some(FontWeight::Bold)),
+                _ => Err(DecodeError::unknown_variant(
+                    context,
+                    "font_weight",
+                    s,
+                    &FONT_WEIGHT_VALUES,
+                )),
+            }
+        }
+    }
+}
+
+/// Decodes a `"style"` dict's optional `"hover"`/`"pressed"`/`"focus"`
+/// branch key: a nested dict through [`style_override_fields`]'s own
+/// [`STYLE_OVERRIDE_BRANCH_KEYS`] vocabulary — a branch may override its
+/// own colour/metric/font tokens but may not nest a further state branch
+/// inside it. `None` when `key` is absent.
+fn opt_style_branch(
+    context: &str,
+    dict: &Value,
+    key: &str,
+) -> Result<Option<Box<StyleOverride>>, DecodeError> {
+    match obj_get(dict, key) {
+        None => Ok(None),
+        Some(value) => {
+            let branch_dict = must_be_dict(context, value, key)?;
+            let branch_context = format!("{context} › {key:?}");
+            Ok(Some(Box::new(style_override_fields(
+                &branch_context,
+                branch_dict,
+                false,
+            )?)))
+        }
+    }
+}
 
 /// Decodes an optional `"class"` sibling key found alongside any layout
 /// node dict, in the same place [`style_override_from_value`] reads
@@ -175,7 +276,7 @@ pub(super) fn style_override_from_value(
     };
     let dict = must_be_dict(what, raw, "style")?;
     let context = format!("{what} › \"style\"");
-    let over = style_override_fields(&context, dict)?;
+    let over = style_override_fields(&context, dict, true)?;
     Ok(if over.is_empty() { None } else { Some(over) })
 }
 
@@ -188,7 +289,7 @@ pub(super) fn style_override_from_value(
 /// shapes. `what` names the calling surface in any error raised.
 pub fn decode_style_overrides(what: &str, value: &Value) -> Result<StyleOverride, DecodeError> {
     let dict = must_be_dict(what, value, "overrides")?;
-    style_override_fields(what, dict)
+    style_override_fields(what, dict, true)
 }
 
 /// Validates `name` for a binding's own `define_style(name, overrides)`
@@ -328,6 +429,158 @@ mod tests {
         assert_eq!(styled.style.shadow_elevation, Some(2));
         assert_eq!(styled.style.tooltip_delay_ms, Some(250));
         assert_eq!(styled.style.selection_alpha, Some(0.75));
+    }
+
+    /// `"font_family"`/`"font_size"`/`"font_weight"` decode on an inline
+    /// `"style"` key, the same place every other token does —
+    /// [`crate::layout::StyleOverride`]'s own "Font and interaction-state
+    /// tokens" doc.
+    #[test]
+    fn font_tokens_round_trip_on_an_inline_style_key() {
+        use crate::layout::FontWeight;
+
+        let value = json!({
+            "id": "btn",
+            "button": {"id": "btn", "label": "Go"},
+            "style": {
+                "font_family": "Fira Code",
+                "font_size": 14.0,
+                "font_weight": "bold",
+            },
+        });
+        let node = decode(&value).expect("valid styled leaf");
+        let LayoutNode::Styled(styled) = node else {
+            panic!("expected a styled wrapper");
+        };
+        assert_eq!(styled.style.font_family, Some("Fira Code".to_string()));
+        assert_eq!(styled.style.font_size, Some(14.0));
+        assert_eq!(styled.style.font_weight, Some(FontWeight::Bold));
+    }
+
+    /// `"font_weight"` rejects a value outside `"normal"`/`"bold"`.
+    #[test]
+    fn font_weight_rejects_an_unknown_variant() {
+        let value = json!({
+            "row": [],
+            "style": {"font_weight": "heavy"},
+        });
+        let error = err(decode(&value));
+        assert!(
+            error.to_string().contains("font_weight"),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// `"hover"`/`"pressed"`/`"focus"` each decode a nested dict through
+    /// the same token vocabulary a top-level `"style"` key accepts (minus
+    /// further state branches) — [`crate::layout::StyleOverride::resolve`]'s
+    /// own doc for how a binding picks the matching branch.
+    #[test]
+    fn state_branches_round_trip_on_an_inline_style_key() {
+        let value = json!({
+            "id": "btn",
+            "button": {"id": "btn", "label": "Go"},
+            "style": {
+                "bg": "#000000",
+                "hover": {"bg": "#111111"},
+                "pressed": {"bg": "#222222"},
+                "focus": {"bg": "#333333"},
+            },
+        });
+        let node = decode(&value).expect("valid styled leaf");
+        let LayoutNode::Styled(styled) = node else {
+            panic!("expected a styled wrapper");
+        };
+        assert_eq!(styled.style.bg, Color::from_hex("#000000"));
+        assert_eq!(
+            styled.style.hover.as_ref().and_then(|h| h.bg),
+            Color::from_hex("#111111")
+        );
+        assert_eq!(
+            styled.style.pressed.as_ref().and_then(|p| p.bg),
+            Color::from_hex("#222222")
+        );
+        assert_eq!(
+            styled.style.focus.as_ref().and_then(|f| f.bg),
+            Color::from_hex("#333333")
+        );
+    }
+
+    /// A state branch may itself carry font tokens, not just colours.
+    #[test]
+    fn a_state_branch_may_override_font_tokens_too() {
+        use crate::layout::FontWeight;
+
+        let value = json!({
+            "row": [],
+            "style": {"hover": {"font_weight": "bold"}},
+        });
+        let node = decode(&value).expect("valid styled row");
+        let LayoutNode::Styled(styled) = node else {
+            panic!("expected a styled wrapper");
+        };
+        assert_eq!(
+            styled.style.hover.as_ref().and_then(|h| h.font_weight),
+            Some(FontWeight::Bold)
+        );
+    }
+
+    /// A state branch may not nest a further state branch inside it —
+    /// bounds the recursion [`super::opt_style_branch`] would otherwise
+    /// perform to one level.
+    #[test]
+    fn a_state_branch_rejects_nesting_another_state_branch() {
+        let value = json!({
+            "row": [],
+            "style": {"hover": {"hover": {"bg": "#000000"}}},
+        });
+        let error = err(decode(&value));
+        assert!(
+            error.to_string().contains("unknown key"),
+            "{}",
+            error.to_string()
+        );
+        assert!(
+            error.to_string().contains("\"hover\""),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// A state branch's own dict must be an object, not a bare value.
+    #[test]
+    fn a_state_branch_rejects_a_non_object_value() {
+        let value = json!({
+            "row": [],
+            "style": {"hover": "bg"},
+        });
+        let error = err(decode(&value));
+        assert!(
+            error.to_string().contains("\"hover\""),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// `define_style`'s own `decode_style_overrides` entry point accepts
+    /// the same font/state tokens an inline `"style"` key does — both
+    /// decode through [`style_override_fields`].
+    #[test]
+    fn named_style_set_round_trips_its_hover_branch() {
+        let overrides = decode_style_overrides(
+            "define_style",
+            &json!({
+                "font_family": "Fira Code",
+                "hover": {"accent": "#ff00ff"},
+            }),
+        )
+        .expect("valid overrides");
+        assert_eq!(overrides.font_family, Some("Fira Code".to_string()));
+        assert_eq!(
+            overrides.hover.as_ref().and_then(|h| h.accent),
+            Color::from_hex("#ff00ff")
+        );
     }
 
     /// Every [`Theme`]/[`quadraui::Style`] field name shows up somewhere in

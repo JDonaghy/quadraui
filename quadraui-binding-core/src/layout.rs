@@ -322,9 +322,8 @@ pub(crate) use style_override_tokens;
 /// modelling the full CSS `100`–`900` numeric scale no backend resolves
 /// today. A future backend that wants finer weights grows this enum
 /// additively; nothing here forecloses that.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FontWeight {
-    #[default]
     Normal,
     Bold,
 }
@@ -475,36 +474,53 @@ macro_rules! define_style_override {
             }
 
             /// Resolves this override for the leaf's current interaction
-            /// `states`: picks the matching state-variant branch (if
-            /// any is set) and merges it *over* `self`'s own base
-            /// tokens via [`Self::merged_over`], so a state branch only
-            /// ever narrows what it names — a token the branch leaves
-            /// unset still falls through to the base override, exactly
-            /// like a nested `"class"`/`"style"` merge.
+            /// `states`: picks the matching state-variant branch and
+            /// merges it *over* `self`'s own base tokens via
+            /// [`Self::merged_over`], so a state branch only ever narrows
+            /// what it names — a token the branch leaves unset still
+            /// falls through to the base override, exactly like a nested
+            /// `"class"`/`"style"` merge.
             ///
             /// `pressed` takes precedence over `hovered`, which takes
             /// precedence over `focused`, when more than one applies at
             /// once — a node that is both hovered and pressed (ordinary
-            /// mouse-down-while-hovering) reads as pressed, and a
-            /// pressed or hovered node's focus ring doesn't also tint
-            /// it with the focus branch, matching every `Button`-family
-            /// primitive's own resting/hover/pressed precedence. An
-            /// empty `states` (nothing currently active) returns `self`
-            /// unchanged.
+            /// mouse-down-while-hovering) reads as pressed, matching every
+            /// `Button`-family primitive's own resting/hover/pressed
+            /// precedence. Ranking falls through to the next-highest
+            /// active state when a higher-ranked one has no branch of its
+            /// own set: a style that only defines `hover` keeps its hover
+            /// tint once the mouse goes down, rather than losing it the
+            /// instant `pressed` (unset) would otherwise take over. An
+            /// empty `states`, or no branch set for any state in
+            /// `states`, returns `self` unchanged.
+            ///
+            /// The returned override still carries its own
+            /// `hover`/`pressed`/`focus` fields (unlike `font_family`/
+            /// `font_size`/`font_weight` and every colour/metric token,
+            /// which the chosen branch already folded in) — calling this
+            /// method again on the result for a *different* state layers
+            /// that state's branch on top of whichever one already got
+            /// applied, rather than resolving fresh against the original
+            /// base. Call this once per node per frame, on the
+            /// not-yet-resolved override, not on a previous call's result.
             pub fn resolve(&self, states: &[InteractionState]) -> StyleOverride {
-                let branch = if states.contains(&InteractionState::Pressed) {
-                    self.pressed.as_deref()
-                } else if states.contains(&InteractionState::Hovered) {
-                    self.hover.as_deref()
-                } else if states.contains(&InteractionState::Focused) {
-                    self.focus.as_deref()
-                } else {
-                    None
-                };
-                match branch {
-                    Some(over) => over.merged_over(self.clone()),
-                    None => self.clone(),
+                let resolved = self.clone();
+                if states.contains(&InteractionState::Pressed) {
+                    if let Some(over) = self.pressed.as_deref() {
+                        return over.merged_over(resolved);
+                    }
                 }
+                if states.contains(&InteractionState::Hovered) {
+                    if let Some(over) = self.hover.as_deref() {
+                        return over.merged_over(resolved);
+                    }
+                }
+                if states.contains(&InteractionState::Focused) {
+                    if let Some(over) = self.focus.as_deref() {
+                        return over.merged_over(resolved);
+                    }
+                }
+                resolved
             }
         }
     };
@@ -2064,6 +2080,25 @@ mod tests {
             ..StyleOverride::default()
         };
         assert_eq!(base.resolve(&[InteractionState::Focused]), base);
+    }
+
+    /// A style that only defines `hover` keeps its hover tint once the
+    /// mouse goes down — `pressed` outranks `hovered` only when `pressed`
+    /// itself has a branch set; with none set, resolution falls through
+    /// to the next-ranked active state instead of losing the tint
+    /// entirely.
+    #[test]
+    fn resolve_falls_through_to_hover_when_pressed_has_no_branch_of_its_own() {
+        let base = StyleOverride {
+            bg: Some(quadraui::Color::rgb(0, 0, 0)),
+            hover: Some(Box::new(StyleOverride {
+                bg: Some(quadraui::Color::rgb(10, 10, 10)),
+                ..StyleOverride::default()
+            })),
+            ..StyleOverride::default()
+        };
+        let resolved = base.resolve(&[InteractionState::Pressed, InteractionState::Hovered]);
+        assert_eq!(resolved.bg, Some(quadraui::Color::rgb(10, 10, 10)));
     }
 
     /// `pressed` outranks `hovered`, which outranks `focused`, when more

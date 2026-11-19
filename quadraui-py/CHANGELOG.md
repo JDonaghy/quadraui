@@ -39,6 +39,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   typed `{"TreeTable": (id, {"ToggleExpanded": {"path", "expand"}})}`
   event instead of only a raw `MouseDown`; a click elsewhere in the row
   body still falls back to the raw `MouseDown`.
+- A `"style"` dict (inline on a node, or passed to `define_style`) now
+  accepts `"font_family"`/`"font_size"`/`"font_weight"` (a string, a
+  number, and `"normal"`/`"bold"` respectively) and `"hover"`/`"pressed"`/
+  `"focus"` -- each a nested `StyleValue` applied over the override's own
+  base tokens while the node is in that interaction state. A state branch
+  may itself carry colour/metric/font tokens but may not nest a further
+  `"hover"`/`"pressed"`/`"focus"` branch. `wire.pyi`'s `StyleValue`
+  carries the six new keys.
 
 ### Changed
 

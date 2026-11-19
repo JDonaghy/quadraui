@@ -303,9 +303,9 @@ pub use host::{
 };
 pub use layout::{grid_cell_rects, LayoutGrid};
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
+pub use layout::{FontWeight, InteractionState, StyleOverride, StyleSets, BUILTIN_STYLE_SET_NAMES};
 pub use layout::{LayoutPanel, LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree};
 pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
-pub use layout::{StyleOverride, StyleSets, BUILTIN_STYLE_SET_NAMES};
 pub use render::{
     collect_leaf_tooltips, draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf,
     split_rects,
