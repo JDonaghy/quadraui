@@ -191,10 +191,6 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::Minimap;
 use crate::primitives::multi_section_view::MultiSectionView;
 use crate::primitives::palette::Palette;
-// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
-// `Surface::Panel`/`OwnedContent::Panel` are this type's own plumbing.
-#[allow(deprecated)]
-use crate::primitives::panel::Panel;
 use crate::primitives::pipeline_view::PipelineView;
 use crate::primitives::progress::ProgressBar;
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
@@ -285,11 +281,6 @@ pub enum Surface {
     Split {
         rect: Rect,
         split: Split,
-    },
-    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this variant is its own plumbing.
-    Panel {
-        rect: Rect,
-        panel: Panel,
     },
     Scrollbar {
         rect: Rect,
@@ -474,7 +465,6 @@ pub enum FrameZone {
     Form { idx: usize },
     MenuBar { idx: usize },
     Split { idx: usize },
-    Panel { idx: usize },
     Scrollbar { idx: usize },
     Palette { idx: usize },
     Tooltip { idx: usize },
@@ -773,9 +763,6 @@ impl ScreenLayout {
                 Surface::Split { rect, split } => {
                     backend.draw_split(*rect, split);
                 }
-                Surface::Panel { rect, panel } => {
-                    backend.draw_panel(*rect, panel);
-                }
                 Surface::Scrollbar { rect, sb } => {
                     backend.draw_scrollbar(*rect, sb);
                 }
@@ -963,8 +950,6 @@ impl ScreenLayout {
                 Surface::List { rect, list } => Some((list.id, *rect)),
                 Surface::Form { rect, form } => Some((form.id, *rect)),
                 Surface::MenuBar { rect, bar } => Some((bar.id, *rect)),
-                #[allow(deprecated)] // `Panel` is `#[deprecated]`.
-                Surface::Panel { rect, panel } => Some((panel.id, *rect)),
                 Surface::Palette { rect, palette } => Some((palette.id, *rect)),
                 Surface::DataTable { rect, table, .. } => Some((table.id, *rect)),
                 Surface::Chart { rect, chart, .. } => Some((chart.id, *rect)),
@@ -1023,7 +1008,6 @@ impl ScreenLayout {
             Surface::Form { rect, .. } => (*rect, FrameZone::Form { idx }),
             Surface::MenuBar { rect, .. } => (*rect, FrameZone::MenuBar { idx }),
             Surface::Split { rect, .. } => (*rect, FrameZone::Split { idx }),
-            Surface::Panel { rect, .. } => (*rect, FrameZone::Panel { idx }),
             Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
             Surface::Palette { rect, .. } => (*rect, FrameZone::Palette { idx }),
             Surface::Tooltip { layout, .. } => (layout.bounds, FrameZone::Tooltip { idx }),
@@ -1094,8 +1078,6 @@ pub enum OwnedContent {
     Form(Form),
     MenuBar(MenuBar),
     Split(Split),
-    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this variant is its own plumbing.
-    Panel(Panel),
     Scrollbar(Scrollbar),
     Palette(Palette),
     Tooltip(Tooltip),
@@ -1178,9 +1160,6 @@ impl OwnedContent {
             }
             OwnedContent::Split(split) => {
                 backend.draw_split(rect, split);
-            }
-            OwnedContent::Panel(panel) => {
-                backend.draw_panel(rect, panel);
             }
             OwnedContent::Scrollbar(sb) => backend.draw_scrollbar(rect, sb),
             OwnedContent::Palette(palette) => backend.draw_palette(rect, palette),
@@ -1269,7 +1248,6 @@ impl OwnedContent {
             OwnedContent::Form(_) => FrameZone::Form { idx },
             OwnedContent::MenuBar(_) => FrameZone::MenuBar { idx },
             OwnedContent::Split(_) => FrameZone::Split { idx },
-            OwnedContent::Panel(_) => FrameZone::Panel { idx },
             OwnedContent::Scrollbar(_) => FrameZone::Scrollbar { idx },
             OwnedContent::Palette(_) => FrameZone::Palette { idx },
             OwnedContent::Tooltip(_) => FrameZone::Tooltip { idx },
@@ -1454,10 +1432,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::Form { rect, form } => (*rect, Some(form.id), OwnedContent::Form(form.clone())),
         Surface::MenuBar { rect, bar } => (*rect, Some(bar.id), OwnedContent::MenuBar(bar.clone())),
         Surface::Split { rect, split } => (*rect, None, OwnedContent::Split(split.clone())),
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
-        Surface::Panel { rect, panel } => {
-            (*rect, Some(panel.id), OwnedContent::Panel(panel.clone()))
-        }
         Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
         Surface::Palette { rect, palette } => (
             *rect,

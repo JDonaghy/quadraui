@@ -1055,6 +1055,22 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
              reached over D-Bus/StatusNotifierItem rather than any paint this suite's \
              paint-and-click vocabulary could assert on",
         ),
+        (
+            "text_selection",
+            "the only two scenarios ever gating on it (`panel.drag_select_copy`, \
+             `panel.select_all_copy_via_keyboard`) drove `panel_app`'s `register_text_region` \
+             call, removed with the `Panel` primitive it demonstrated — `fixtures::build` only \
+             wraps a plain `AppLogic`, and the surviving text-selection demo \
+             (`examples/common/selection_app.rs`'s `SelectionDemo`) implements `ShellApp` \
+             instead, so it isn't `DriverFactory::make`-compatible. End-to-end coverage for the \
+             same drag/Ctrl-A/Ctrl-C pipeline lives on in \
+             `tests/tui_example_driver.rs::shell_runner_path_drag_and_ctrl_c_copies_text`.",
+        ),
+        (
+            "drag",
+            "`panel.drag_select_copy` was the only scenario gating on it, removed alongside \
+             `panel_app` for the same reason `text_selection` above names — see that entry.",
+        ),
     ];
 
     let required: std::collections::BTreeSet<String> = load_scenarios()
@@ -1122,7 +1138,7 @@ mod c0_verdict_tests {
 
     #[test]
     fn survived_text_ok_observable_is_a_clean_pass() {
-        let v = classify_c0_case(&outcome(true, true, true), "draw_panel", None, "win");
+        let v = classify_c0_case(&outcome(true, true, true), "draw_split", None, "win");
         assert_eq!(v.cell, "pass");
         assert!(v.gap_line.is_none());
     }

@@ -1,6 +1,6 @@
-//! Decodes the nine [`LAYOUT_NODE_KEYS`] container node kinds a layout
+//! Decodes the eight [`LAYOUT_NODE_KEYS`] container node kinds a layout
 //! tree may hold — `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/
-//! `"panel"`/`"sidebar_panel"`/`"split_tree"`/`"scroll"` — plus the `"style"`/
+//! `"sidebar_panel"`/`"split_tree"`/`"scroll"` — plus the `"style"`/
 //! `"class"` wrapping and `"padding"`/`"margin"`/`"gap"`/`"justify"`/
 //! `"align"` siblings every node dict may carry regardless of its own
 //! kind. A dict matching none of these falls through to
@@ -8,8 +8,6 @@
 
 use serde_json::Value;
 
-#[allow(deprecated)]
-use quadraui::Panel;
 use quadraui::{
     Color, ScrollAxis, SectionSize, SidebarPanel, Split, SplitDirection, SplitTree, TabBar,
     TabBarSegment, TabItem, WidgetId,
@@ -18,9 +16,9 @@ use quadraui::{
 use quadraui::layout::GridTrack;
 
 use crate::layout::{
-    Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutGrid, LayoutNode, LayoutPanel,
-    LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutStyled, LayoutTabEntry,
-    LayoutTabs, Spacing,
+    Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutGrid, LayoutNode, LayoutScroll,
+    LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutStyled, LayoutTabEntry, LayoutTabs,
+    Spacing,
 };
 use crate::{decode_value, DecodeError};
 
@@ -83,17 +81,16 @@ fn reject_drag_role_keys_on_container(what: &str, value: &Value) -> Result<(), D
 // ─── Layout tree decode ─────────────────────────────────────────────────────
 
 /// The dispatch keys [`crate::wire::decode_layout_node`] checks, in check
-/// order — a `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/`"panel"`/
+/// order — a `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/
 /// `"sidebar_panel"`/`"split_tree"`/`"scroll"` node, else a leaf. Shared
 /// with [`super::frame::is_layout_tree`]'s flat-vs-tree sniff so the two
 /// can't drift onto different key lists.
-pub const LAYOUT_NODE_KEYS: [&str; 9] = [
+pub const LAYOUT_NODE_KEYS: [&str; 8] = [
     "row",
     "column",
     "grid",
     "split",
     "tabs",
-    "panel",
     "sidebar_panel",
     "split_tree",
     "scroll",
@@ -119,7 +116,6 @@ const COLUMN_SHAPE_KEYS: [&str; 7] = [
 const GRID_SHAPE_KEYS: [&str; 3] = ["grid", "padding", "margin"];
 const SPLIT_SHAPE_KEYS: [&str; 4] = ["split", "padding", "margin", "gap"];
 const TABS_SHAPE_KEYS: [&str; 3] = ["tabs", "padding", "margin"];
-const PANEL_SHAPE_KEYS: [&str; 3] = ["panel", "padding", "margin"];
 const SIDEBAR_PANEL_SHAPE_KEYS: [&str; 1] = ["sidebar_panel"];
 const SPLIT_TREE_SHAPE_KEYS: [&str; 1] = ["split_tree"];
 const SCROLL_SHAPE_KEYS: [&str; 3] = ["scroll", "padding", "margin"];
@@ -210,7 +206,7 @@ fn layout_node_from_value_inner(
     if let Some(v) = obj_get(value, "split") {
         check_node_sibling_keys(diagnostics, what, "\"split\"", value, &SPLIT_SHAPE_KEYS)?;
         // `gap` is meaningful here -- the space between the split's two
-        // panes -- unlike `"tabs"`/`"panel"` below.
+        // panes -- unlike `"tabs"` below.
         let spacing = spacing_from_value(what, value, "\"split\"", true)?;
         let split_value = must_be_dict(what, v, "split")?;
         return Ok(LayoutNode::Split(layout_split_from_value(
@@ -228,18 +224,6 @@ fn layout_node_from_value_inner(
         return Ok(LayoutNode::Tabs(layout_tabs_from_value(
             what,
             tabs_value,
-            spacing,
-            styles,
-            diagnostics,
-        )?));
-    }
-    if let Some(v) = obj_get(value, "panel") {
-        check_node_sibling_keys(diagnostics, what, "\"panel\"", value, &PANEL_SHAPE_KEYS)?;
-        let spacing = spacing_from_value(what, value, "\"panel\"", false)?;
-        let panel_value = must_be_dict(what, v, "panel")?;
-        return Ok(LayoutNode::Panel(layout_panel_from_value(
-            what,
-            panel_value,
             spacing,
             styles,
             diagnostics,
@@ -325,7 +309,7 @@ fn reject_unsupported_spacing_keys(
             return Err(DecodeError::borrow(
                 what,
                 format!(
-                    "{label} does not support \"{key}\" yet -- only \"row\"/\"column\"/\"split\"/\"tabs\"/\"panel\"/\"scroll\" nodes do"
+                    "{label} does not support \"{key}\" yet -- only \"row\"/\"column\"/\"split\"/\"tabs\"/\"scroll\" nodes do"
                 ),
             ));
         }
@@ -497,7 +481,7 @@ fn wrap_from_value(what: &str, value: &Value, label: &str) -> Result<bool, Decod
 /// key is optional and defaults to [`Spacing::default`], so an existing
 /// dict with none of them decodes to exactly the same (no-op) spacing as
 /// before this existed. `allow_gap` is false for a node kind where `"gap"`
-/// has no meaning (`"tabs"`/`"panel"` — there's no second sibling to space
+/// has no meaning (`"tabs"` — there's no second sibling to space
 /// it from); `"gap"` present there is a decode error naming the key,
 /// rather than a silent no-op.
 fn spacing_from_value(
@@ -659,47 +643,6 @@ fn layout_split_from_value(
         },
         first: Box::new(first),
         second: Box::new(second),
-        spacing,
-    })
-}
-
-/// Decodes a `"panel"` node: the chrome dict decoded generically into a
-/// [`Panel`] (`title`/`actions`/`accent`/`collapsed`, each `#[serde(default)]`,
-/// so a minimal `{"id": ...}` is enough) plus a required `"content"` child
-/// node, recursively decoded by [`layout_node_from_value`]. The `"content"`
-/// key is harmless noise to the `Panel` decode itself — `Panel` has no
-/// `deny_unknown_fields`. `spacing` is the node's own `"padding"`/`"margin"`
-/// siblings, already decoded by [`spacing_from_value`] in the caller
-/// (`"gap"` is rejected there — a panel has no second sibling to space it
-/// from).
-#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own wire-decode plumbing.
-fn layout_panel_from_value(
-    what: &str,
-    value: &Value,
-    spacing: Spacing,
-    styles: StyleContext<'_>,
-    diagnostics: &DecodeDiagnostics,
-) -> Result<LayoutPanel, DecodeError> {
-    let panel: Panel = decode_value(what, value)?;
-    let id = panel.id.as_str().to_owned();
-    let context = format!("{what} › panel#{id}");
-    check_unknown_keys(
-        diagnostics,
-        &context,
-        "panel",
-        value,
-        &["id", "title", "actions", "accent", "collapsed", "content"],
-    )?;
-    let content_value = required_dict(value, "content", &context)?;
-    let content = layout_node_from_value(
-        &format!("{context} › content"),
-        content_value,
-        styles,
-        diagnostics,
-    )?;
-    Ok(LayoutPanel {
-        panel,
-        content: Box::new(content),
         spacing,
     })
 }
@@ -1191,6 +1134,5 @@ fn layout_tabs_from_value(
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // `Panel` is `#[deprecated]`; these tests cover the `"panel"` wire node's decode directly.
 #[path = "tests/layout.rs"]
 mod tests;

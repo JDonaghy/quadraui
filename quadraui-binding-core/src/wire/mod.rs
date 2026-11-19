@@ -79,7 +79,7 @@ use value::materialize;
 /// Decodes one layout tree node from `deserializer`: a `"row"` or `"column"`
 /// key holds the container's children, a `"split"` key holds a two-pane
 /// divider, a `"tabs"` key holds a tab strip plus per-tab content, a
-/// `"panel"`/`"sidebar_panel"` key holds one chrome descriptor plus a
+/// `"sidebar_panel"` key holds one chrome descriptor plus a
 /// single content subtree, a `"split_tree"` key holds an arbitrarily
 /// nested divider tree, a `"scroll"` key holds one content subtree hosted
 /// in a scrollable viewport; any other shape is decoded as a leaf.
@@ -257,9 +257,9 @@ mod tests {
     /// ancestor node on the way down, not just the render callback's own
     /// top-level label -- the whole point of carrying a path rather than
     /// a bare field name. A `"ratio"` missing from a `"split"` nested
-    /// inside a `"panel"` nested inside a `"tabs"` entry's content names
-    /// `"tabs#frm"`, `"panel#chrome"` and `"split#inner"` in that order,
-    /// not just `"render"`.
+    /// inside a `"sidebar_panel"` nested inside a `"tabs"` entry's content
+    /// names `"tabs#frm"`, `"sidebar_panel#chrome"` and `"split#inner"` in
+    /// that order, not just `"render"`.
     #[test]
     fn a_deeply_nested_decode_error_names_every_ancestor_on_the_way_down() {
         let value = json!({
@@ -269,7 +269,7 @@ mod tests {
                     "id": "one",
                     "title": "One",
                     "content": {
-                        "panel": {
+                        "sidebar_panel": {
                             "id": "chrome",
                             "content": {
                                 "split": {
@@ -292,7 +292,7 @@ mod tests {
         );
         assert_eq!(
             error.path(),
-            "render › tabs#frm › tab#one › content › panel#chrome › content › split#inner"
+            "render › tabs#frm › tab#one › content › sidebar_panel#chrome › content › split#inner"
         );
         let message = error.to_string();
         assert!(
@@ -300,7 +300,7 @@ mod tests {
             "expected the root label and \"at\", got: {message}"
         );
         assert!(message.contains("tabs#frm"), "{message}");
-        assert!(message.contains("panel#chrome"), "{message}");
+        assert!(message.contains("sidebar_panel#chrome"), "{message}");
         assert!(message.contains("split#inner"), "{message}");
         assert!(message.contains("missing field \"ratio\""), "{message}");
     }
@@ -417,12 +417,6 @@ mod tests {
                         },
                     },
                     "padding": 4,
-                },
-                {
-                    "panel": {
-                        "id": "panel1",
-                        "content": {"id": "c", "button": {"id": "c", "label": "C"}},
-                    },
                 },
                 {
                     "sidebar_panel": {

@@ -105,7 +105,7 @@ fn severity_bg(severity: ToastSeverity, theme: &Theme) -> crate::types::Color {
 /// Compute the TUI cell-unit layout for a [`ToastOverlay`] without painting.
 ///
 /// `area`'s origin is baked into the returned bounds (absolute buffer
-/// coordinates, matching `tui_menu_bar_layout` / `tui_panel_layout`) —
+/// coordinates, matching `tui_menu_bar_layout` / `tui_sidebar_panel_layout`) —
 /// hosts call `layout.hit_test(x, y)` with raw click coordinates, no
 /// localisation needed.
 pub fn tui_toast_stack_layout(stack: &ToastOverlay, area: Rect) -> ToastStackLayout {
@@ -382,7 +382,7 @@ mod tests {
     /// Shared body for `single_toast_paint_and_click_round_trip`, run at
     /// both the origin and a non-zero `area` origin. `tui_toast_stack_layout`
     /// bakes `area.x`/`area.y` straight into the returned bounds (absolute
-    /// frame, matching `tui_menu_bar_layout`/`tui_panel_layout`), so both the
+    /// frame, matching `tui_menu_bar_layout`/`tui_sidebar_panel_layout`), so both the
     /// painted glyph position AND the `hit_test` coordinates must shift
     /// together with the origin.
     fn single_toast_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {

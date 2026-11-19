@@ -408,12 +408,6 @@ class ToolbarDescriptor(TypedDict):
     overflow: NotRequired[ToolbarOverflow]
     overflow_priorities: NotRequired[List[ToolbarOverflowPriorityEntry]]
 
-class PanelActionDescriptor(TypedDict):
-    id: WidgetId
-    icon: str
-    tooltip: NotRequired[str]
-    is_active: NotRequired[bool]
-
 class PaddingAxis(TypedDict):
     x: NotRequired[float]
     y: NotRequired[float]
@@ -658,30 +652,6 @@ LayoutTabsNode = TypedDict(
     "LayoutTabsNode",
     {
         "tabs": LayoutTabsPayload,
-        "padding": NotRequired[PaddingValue],
-        "margin": NotRequired[float],
-        "wire_version": NotRequired[int],
-        "style": NotRequired[StyleValue],
-        "class": NotRequired[ClassValue],
-        "size": NotRequired[SectionSize],
-        "min": NotRequired[float],
-        "max": NotRequired[float],
-    },
-)
-
-class LayoutPanelPayload(TypedDict):
-    """The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`."""
-    id: str
-    title: NotRequired[Optional[StyledText]]
-    actions: NotRequired[List[PanelActionDescriptor]]
-    accent: NotRequired[Optional[Color]]
-    collapsed: NotRequired[bool]
-    content: LayoutNode
-
-LayoutPanelNode = TypedDict(
-    "LayoutPanelNode",
-    {
-        "panel": LayoutPanelPayload,
         "padding": NotRequired[PaddingValue],
         "margin": NotRequired[float],
         "wire_version": NotRequired[int],
@@ -1770,7 +1740,7 @@ LayoutLeafNode = TypedDict(
 """One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed."""
 
 # One node of a render callback's returned layout tree.
-LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutGridNode, LayoutSplitNode, LayoutTabsNode, LayoutPanelNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutScrollNode, LayoutLeafNode]
+LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutGridNode, LayoutSplitNode, LayoutTabsNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutScrollNode, LayoutLeafNode]
 
 class RenderFrameDict(TypedDict):
     """The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed."""
@@ -2284,12 +2254,6 @@ class _HitDetailSplitTreeDivider(TypedDict):
     kind: Literal['split_tree_divider']
     split_index: int
 
-class _HitDetailPanelAction(TypedDict):
-    kind: Literal['panel_action']
-
-class _HitDetailPanelTitleBar(TypedDict):
-    kind: Literal['panel_title_bar']
-
 class _HitDetailSidebarPanelToolbarButton(TypedDict):
     kind: Literal['sidebar_panel_toolbar_button']
     bar: WidgetId
@@ -2327,7 +2291,7 @@ class _HitDetailScrollScrollbarTrackAfter(TypedDict):
     kind: Literal['scroll_scrollbar_track_after']
 
 # The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
-HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 class _UiKeyPressedPayload(TypedDict):
     key: Key

@@ -25,7 +25,7 @@ both exist and when to reach for each.
 Every code sample here opens with `use quadraui::prelude::*;`. The
 prelude is a deliberately small subset of quadraui's ~500 crate-root
 exports — the two runner traits, the event/geometry types, and a
-handful of primitives (`Panel`, `Split`, `StatusBar`, `TextDisplay`,
+handful of primitives (`Split`, `StatusBar`, `TextDisplay`,
 `TextInput`, `TreeView`) representative enough to build this app. When
 you reach for a primitive the prelude doesn't carry, import it from
 `quadraui::` directly — nothing is hidden, the prelude just narrows the

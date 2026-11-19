@@ -230,9 +230,10 @@ fn every_manifest_row_matches_a_registered_demo_variant() {
         // through as a quiet `"error"` row for a demo this issue opens
         // an overlay on. Scoped to those demos rather than every row:
         // `click_demo_zone`'s own doc in `capture.rs` already names an
-        // unrelated, pre-existing name-collision bug (clicking "Panel"
-        // can select "Bottom Panel" first) that a blanket assertion
-        // would also trip on.
+        // unrelated, pre-existing name-collision bug (one demo's name
+        // being a substring of another's can select the wrong row by a
+        // first-match text search) that a blanket assertion would also
+        // trip on.
         const OVERLAY_DEMOS: &[&str] = &[
             "Dialog",
             "Message Dialog",

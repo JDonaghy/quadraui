@@ -6,7 +6,7 @@
 //! # Shape
 //!
 //! [`SidebarPanelBody`] is a stateless per-frame value, the same shape
-//! as [`crate::Panel`] or [`crate::Scrollbar`] — hosts build one fresh
+//! as [`crate::SidebarPanel`] or [`crate::Scrollbar`] — hosts build one fresh
 //! each frame from their own state (search query, focus, theme colour)
 //! and call [`SidebarPanelBody::render`]. It owns no interaction state
 //! of its own: scrolling, search-query editing, and body-widget
@@ -193,7 +193,7 @@ impl SidebarPanelChrome {
 /// A stateless, per-frame description of a sidebar panel's body:
 /// background fill + optional header/search chrome + scrollbar gutter
 /// reservation. Build one fresh per frame (same pattern as
-/// [`crate::Panel`]/[`crate::Scrollbar`]) and call [`Self::render`] with
+/// [`crate::SidebarPanel`]/[`crate::Scrollbar`]) and call [`Self::render`] with
 /// the body widget. See the module doc for the full rationale.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SidebarPanelBody {

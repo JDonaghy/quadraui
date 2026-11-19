@@ -5,8 +5,8 @@
 //! (`┌─┐`/`│`/`└─┘`, the same glyph set `tui::tooltip`/
 //! `tui::context_menu` already use). Content is the host's
 //! responsibility — it draws into `layout.content_bounds`, same
-//! contract as `crate::tui::draw_panel` (`#[doc(hidden)]`, so not
-//! linked here).
+//! contract as `crate::tui::draw_sidebar_panel` (`#[doc(hidden)]`, so
+//! not linked here).
 //!
 //! `float.transparent` skips the fill and draws border glyphs over each
 //! cell's existing background, so the base layer shows through.

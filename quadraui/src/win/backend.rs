@@ -38,10 +38,6 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
-// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
-// `WinBackend::draw_panel`/`panel_layout` are this type's own plumbing.
-#[allow(deprecated)]
-use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::radio_group::{
     RadioGroup, RadioGroupLayout, RadioOption, RadioOptionMeasure,
@@ -2708,8 +2704,8 @@ impl Backend for WinBackend {
     /// `text_selection` is declared `true`: `register_text_region`/
     /// `cancel_text_selection_drag` are both overridden, backed by the
     /// same `crate::text_selection::TextSelectionState` `GtkBackend`/
-    /// `TuiBackend` embed, so `panel.drag_select_copy` (which
-    /// `requires: ["text_selection"]`) now runs instead of skipping.
+    /// `TuiBackend` embed, so a conformance scenario requiring
+    /// `"text_selection"` now runs instead of skipping.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         // A genuine struct literal (not `let mut caps = ...; caps.field =
         // true;`), matching every other backend's `backend_caps` shape —
@@ -2747,7 +2743,7 @@ impl Backend for WinBackend {
             // `text_selection`: `register_text_region` and
             // `cancel_text_selection_drag` are both overridden, backed by the
             // shared `crate::text_selection::TextSelectionState` GTK/TUI also
-            // embed — `panel.drag_select_copy` (which `requires: ["text_selection"]`)
+            // embed — a conformance scenario requiring `"text_selection"`
             // now runs instead of skipping.
             crate::backend::BackendCaps {
                 file_dialogs: true,
@@ -5319,149 +5315,7 @@ impl Backend for WinBackend {
         crate::backend::ImagePaintResult::Unsupported
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
-    ///
-    /// Paints the title bar's background + title label through the
-    /// mapped `SidebarPanel` + `Toolbar` header (via
-    /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`])
-    /// instead of `panel::native_surface_paint::paint`'s own near-duplicate
-    /// title-bar painter — same shape as `GtkBackend::draw_panel`.
-    /// `header_toolbar`'s own `Action` buttons are dropped before the
-    /// header reaches the delegate (see the `truncate` below) and painted
-    /// directly against `layout.visible_actions` instead:
-    /// `header_toolbar`'s actions are measured by `Toolbar`'s
-    /// text-width-based `measure_button`, not
-    /// `PanelMeasure::action_button_width`, so letting the delegate paint
-    /// them too could land each glyph at a different rect than this
-    /// method's own hit-test bounds for anything wider than a single
-    /// narrow glyph. The returned layout stays `win_panel_layout(...)`
-    /// (this method's hit-test contract), unaffected either way.
-    ///
-    /// Disclosed-and-pinned divergence (see `CHANGELOG.md` and
-    /// `draw_panel_paints_title_vertically_centered`): the delegate
-    /// vertically centres the title label in the title bar, where
-    /// `panel::native_surface_paint::paint` drew it flush against the
-    /// bar's top edge. The action glyphs below are still painted
-    /// top-aligned at `va.bounds.y`, so a title bar much taller than
-    /// the chrome font (an editor line height far above the chrome
-    /// text height) now shows the title centred but the actions
-    /// top-aligned — `GtkBackend::draw_panel` has the same shape.
-    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
-    fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && self.dwrite.is_some() {
-            let line_height = self.current_line_height;
-            let layout = super::panel::win_panel_layout(rect, panel, line_height);
-            // `self.current_theme` is the live theme `Backend::set_theme`
-            // writes, same as `draw_toast_overlay` above.
-            let theme = self.current_theme;
-
-            if let Some(tb) = layout.title_bar_bounds {
-                let measure = crate::primitives::panel::PanelMeasure {
-                    title_bar_height: tb.height,
-                    action_button_width:
-                        crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON,
-                    content_padding: 0.0,
-                };
-                if let Some(mut header) = panel.header_toolbar(tb, measure) {
-                    // Keep only the title `Label` + its trailing `Spacer`
-                    // — `header_toolbar` always appends `Action` buttons
-                    // after those two (see its own doc), and this method
-                    // paints actions itself below.
-                    header.buttons.truncate(2);
-
-                    // `header_toolbar` leaves `Label::fg` as `None`
-                    // (painted as `theme.muted_fg` by the delegate) and
-                    // maps `bg` from `panel.accent` alone (painted as
-                    // `theme.header_bg` by the delegate when `None`) —
-                    // resolve both explicitly so the title text colour
-                    // and title-bar background keep matching
-                    // `panel::native_surface_paint::paint`'s
-                    // `theme.foreground` / `panel.accent.unwrap_or(theme.separator)`
-                    // contract exactly.
-                    let bar_bg = panel.accent.unwrap_or(theme.separator);
-                    header.bg = Some(bar_bg);
-                    if let Some(crate::primitives::toolbar::ToolbarButton::Label { fg, .. }) =
-                        header.buttons.first_mut()
-                    {
-                        *fg = Some(theme.foreground);
-                    }
-
-                    let sidebar = crate::primitives::sidebar_panel::SidebarPanel {
-                        id: panel.id,
-                        toolbar: Some(header),
-                        toolbar_height: Some(tb.height),
-                    };
-                    // `Self::surface_draw_text_run`/`surface_measure_text`
-                    // already resolve `chrome_dwrite` by default (see
-                    // those methods' own docs), so no per-call adapter is
-                    // needed around this call.
-                    crate::primitives::sidebar_panel::native_surface_paint::paint(
-                        &sidebar, self, &theme, tb, tb.height, None, None,
-                    );
-
-                    // Paint every action button directly against this
-                    // method's own hit-test rects (`layout.visible_actions`),
-                    // filled with `theme.accent_bg` when `is_active` else
-                    // the title bar's own colour, glyph top-aligned at
-                    // `va.bounds.y` and centred horizontally — left-aligned
-                    // instead when the measured text is wider than the
-                    // button, and clipped to `va.bounds`, so an oversized
-                    // icon never bleeds into the title or a neighbouring
-                    // action (`PanelAction::icon` is an app-supplied string,
-                    // so this overflow case is reachable even though
-                    // `win_panel_layout`'s action rects are fixed-width).
-                    // Drawn through `surface_draw_icon_glyph` so an
-                    // app-chosen codicon/nerd-font `PanelAction::icon`
-                    // resolves through the same icon-font fallback this
-                    // crate's other chrome glyphs use.
-                    for va in &layout.visible_actions {
-                        let Some(action) = panel.actions.get(va.action_idx) else {
-                            continue;
-                        };
-                        let action_bg = if action.is_active {
-                            theme.accent_bg
-                        } else {
-                            bar_bg
-                        };
-                        self.surface_fill_rect(va.bounds, action_bg);
-                        let (gw, gh) = self.surface_measure_text(&action.icon);
-                        let glyph_x = va.bounds.x + ((va.bounds.width - gw) / 2.0).max(0.0);
-                        self.surface_push_clip(va.bounds);
-                        self.surface_draw_icon_glyph(
-                            crate::event::Rect::new(glyph_x, va.bounds.y, gw, gh),
-                            &action.icon,
-                            theme.foreground,
-                        );
-                        self.surface_pop_clip();
-                    }
-                }
-            }
-
-            return layout;
-        }
-        // No surface/DWrite yet — return the real (pure-geometry) layout
-        // via `panel_layout` and paint nothing.
-        self.panel_layout(rect, panel)
-    }
-
-    /// Pure geometry — `Panel::layout` needs only `line_height`,
-    /// not text measurement, so this needs no `self.dwrite`/surface at
-    /// all — computed directly rather than reaching into
-    /// the Windows-only `super::panel` module.
-    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
-    fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
-        let line_height = self.current_line_height;
-        let measure = crate::primitives::panel::PanelMeasure::new(if panel.title.is_some() {
-            line_height
-        } else {
-            0.0
-        });
-        panel.layout(rect, measure)
-    }
-
-    /// Unlike [`Self::draw_panel`]/[`Self::draw_toast_overlay`] above,
+    /// Unlike [`Self::draw_toast_overlay`] above,
     /// this needs no `#[cfg(target_os = "windows")]`/"no surface yet"
     /// branch at all: every [`PaintSurface`] verb
     /// [`crate::primitives::canvas::native_surface_paint::paint`] calls
@@ -6005,7 +5859,7 @@ impl Backend for WinBackend {
         if self.surface.is_some() && self.dwrite.is_some() {
             let line_height = self.resolved_toolbar_height(self.current_line_height);
             // `self.current_theme` is the live theme `Backend::set_theme`
-            // writes, same as `WinBackend::draw_panel` above.
+            // writes, same as `WinBackend::draw_toast_overlay` above.
             let theme = self.current_theme;
             let mut surface = ChromeSurface { backend: self };
             return crate::primitives::sidebar_panel::native_surface_paint::paint(
@@ -6796,7 +6650,7 @@ impl PaintSurface for WinBackend {
 
     /// `self` is the surface every non-editor-class primitive
     /// measures/paints through unwrapped (`draw_data_table`'s shared
-    /// paint helper, `draw_panel`, `draw_toast_overlay`, …), so this
+    /// paint helper, `draw_toast_overlay`, …), so this
     /// resolves `chrome_dwrite` — falling back to the editor `dwrite`
     /// handle only when no live chrome handle exists yet, the same
     /// "degrade, don't panic" convention
@@ -9914,265 +9768,6 @@ mod tests {
         );
     }
 
-    /// `draw_panel`'s title-bar chrome must paint from the live theme
-    /// rather than a hardcoded `Theme::default()`.
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[allow(deprecated)] // constructs the deprecated `Panel`
-    fn set_theme_reaches_the_panel() {
-        use crate::primitives::panel::Panel;
-        use crate::theme::Theme;
-        use crate::types::{Color, StyledText, WidgetId};
-        use crate::win::testing::HeadlessSurface;
-
-        const W: u32 = 100;
-        const H: u32 = 60;
-
-        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
-        let mut backend = WinBackend::new();
-        backend
-            .attach_headless(surface.target().clone(), W, H)
-            .expect("attach headless surface");
-
-        let custom_separator = Color::rgb(0x12, 0x99, 0x34);
-        assert_ne!(
-            custom_separator,
-            Theme::default().separator,
-            "test fixture bug: the probe colour must differ from the default theme's"
-        );
-        backend.set_theme(Theme {
-            separator: custom_separator,
-            ..Theme::default()
-        });
-
-        let panel = Panel {
-            id: WidgetId::new("panel"),
-            title: Some(StyledText::plain("Terminal")),
-            actions: Vec::new(),
-            accent: None,
-            collapsed: false,
-        };
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-
-        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_panel(rect, &panel);
-        backend.end_frame();
-
-        let tb = layout
-            .title_bar_bounds
-            .expect("panel has a title, so a title bar is reserved");
-        // Sample near the title bar's right edge, not its horizontal
-        // centre: the title's mapped `Toolbar::Label` carries a leading
-        // space (see `Panel::header_toolbar`'s doc) ahead of "Terminal",
-        // which is itself wide enough on a real Windows font to reach
-        // past the centre of this 100-DIP-wide panel, so a centre
-        // sample lands on anti-aliased glyph ink (a blend of
-        // `theme.foreground` and the fill) rather than the solid
-        // `title_bg` fill this test means to probe. Text metrics are a
-        // stub off-Windows, so this only matters on real Windows runs.
-        let px = surface.pixel_at(
-            (tb.x + tb.width - 2.0) as u32,
-            (tb.y + tb.height / 2.0) as u32,
-        );
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (custom_separator.r, custom_separator.g, custom_separator.b),
-            "panel title-bar background must reflect the live theme, not `Theme::default()`",
-        );
-    }
-
-    /// `draw_panel`'s title paints inset from the title bar's left edge
-    /// — `Panel::header_toolbar`'s leading space ahead of the title text
-    /// reproduces the one-cell/4px inset the title-bar painter it
-    /// replaces hardcoded as `tb.x + 4.0` — and every action glyph's
-    /// painted ink stays inside its own `visible_actions[i].bounds`,
-    /// the same rects `PanelLayout::hit_test` resolves clicks against.
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[allow(deprecated)] // constructs the deprecated `Panel`/`PanelAction`
-    fn draw_panel_paints_title_inset_and_actions_within_their_bounds() {
-        use crate::primitives::panel::{Panel, PanelAction};
-        use crate::theme::Theme;
-        use crate::types::{StyledText, WidgetId};
-        use crate::win::testing::HeadlessSurface;
-
-        const W: u32 = 200;
-        const H: u32 = 60;
-
-        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
-        let mut backend = WinBackend::new();
-        backend
-            .attach_headless(surface.target().clone(), W, H)
-            .expect("attach headless surface");
-
-        let panel = Panel {
-            id: WidgetId::new("panel"),
-            title: Some(StyledText::plain("Explorer")),
-            actions: vec![PanelAction {
-                id: WidgetId::new("panel:close"),
-                icon: "\u{d7}".into(),
-                tooltip: "Close".into(),
-                is_active: false,
-            }],
-            accent: None,
-            collapsed: false,
-        };
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-
-        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_panel(rect, &panel);
-        backend.end_frame();
-
-        let theme = Theme::default();
-        let tb = layout
-            .title_bar_bounds
-            .expect("panel has a title, so a title bar is reserved");
-        let title_bg = theme.separator; // no accent on this panel
-
-        // Title: the leftmost column whose pixel differs from the bar's
-        // own fill is where the title's glyph ink starts. Bounded to
-        // left of the action button's bounds so this can only find the
-        // title's own ink, never the action glyph's — otherwise a
-        // blank title would still pass by picking up the action's ink
-        // far to the right. It must sit strictly right of `tb.x` — the
-        // leading-space inset — and within a few pixels of it, pinning
-        // the documented 4px-equivalent inset rather than merely
-        // "somewhere to the right".
-        let row_y = (tb.y + tb.height / 2.0) as u32;
-        let action_x_start = layout.visible_actions[0].bounds.x as u32;
-        let first_ink_x = (tb.x as u32..action_x_start)
-            .find(|&x| {
-                let px = surface.pixel_at(x, row_y);
-                (px.r, px.g, px.b) != (title_bg.r, title_bg.g, title_bg.b)
-            })
-            .expect("title text must paint some ink");
-        assert!(
-            first_ink_x as f32 > tb.x && (first_ink_x as f32 - tb.x) < 20.0,
-            "title ink must start inset from the title bar's left edge by \
-             roughly the leading-space advance, got first ink at x={first_ink_x} \
-             vs tb.x={}",
-            tb.x,
-        );
-
-        // Action: scan a small window around (not across the whole bar,
-        // so this never trips on the title's own ink far to the left)
-        // `visible_actions[0].bounds` for ink, at every row the button
-        // spans. Every ink pixel found must fall within the bounds'
-        // own x-range.
-        let va = &layout.visible_actions[0];
-        let margin = 10.0_f32.min(va.bounds.x);
-        let x_start = (va.bounds.x - margin).max(0.0) as u32;
-        let x_end = ((va.bounds.x + va.bounds.width + margin).min(W as f32)) as u32;
-        let y_start = va.bounds.y as u32;
-        let y_end = (va.bounds.y + va.bounds.height) as u32;
-        let mut found_action_ink = false;
-        for x in x_start..x_end {
-            for y in y_start..y_end {
-                let px = surface.pixel_at(x, y);
-                if (px.r, px.g, px.b) != (title_bg.r, title_bg.g, title_bg.b) {
-                    found_action_ink = true;
-                    assert!(
-                        x as f32 >= va.bounds.x && (x as f32) < va.bounds.x + va.bounds.width,
-                        "action glyph ink at x={x} must fall inside \
-                         visible_actions[0].bounds ({:?}), not bleed outside it",
-                        va.bounds,
-                    );
-                }
-            }
-        }
-        assert!(
-            found_action_ink,
-            "action glyph must paint some ink inside visible_actions[0].bounds"
-        );
-    }
-
-    /// Disclosed-and-pinned divergence (`CHANGELOG.md`): the title label
-    /// now paints vertically centred in the title bar, not top-aligned
-    /// the way `panel::native_surface_paint::paint` drew it. Uses a title
-    /// bar much taller than the title glyph (`current_line_height`, set
-    /// far above the chrome font's own metrics) so top-aligned vs.
-    /// centred land at clearly different rows. Mirrors
-    /// `gtk_backend_draw_panel_title_label_is_vertically_centered`.
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[allow(deprecated)] // constructs the deprecated `Panel`
-    fn draw_panel_paints_title_vertically_centered() {
-        use crate::primitives::panel::Panel;
-        use crate::theme::Theme;
-        use crate::types::{Color, StyledText, WidgetId};
-        use crate::win::testing::HeadlessSurface;
-
-        const W: u32 = 200;
-        const H: u32 = 60;
-
-        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
-        let mut backend = WinBackend::new();
-        backend
-            .attach_headless(surface.target().clone(), W, H)
-            .expect("attach headless surface");
-
-        // A title-bar height far taller than the title glyph makes
-        // top-aligned vs. vertically-centred land at clearly different
-        // rows.
-        backend.set_current_line_height(50.0);
-        backend.set_theme(Theme {
-            separator: Color::rgb(255, 255, 255),
-            foreground: Color::rgb(0, 0, 0),
-            ..Theme::default()
-        });
-
-        let panel = Panel {
-            id: WidgetId::new("panel"),
-            title: Some(StyledText::plain("T")),
-            actions: Vec::new(),
-            accent: None,
-            collapsed: false,
-        };
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-
-        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_panel(rect, &panel);
-        backend.end_frame();
-
-        let title_bg = Color::rgb(255, 255, 255);
-        let tb = layout
-            .title_bar_bounds
-            .expect("panel has a title, so a title bar is reserved");
-        let row_top = tb.y as u32;
-        let row_bottom = (tb.y + tb.height) as u32;
-        let text_x_start = tb.x as u32;
-        let text_x_end = text_x_start + 20;
-
-        let mut first_ink_row = None;
-        let mut last_ink_row = None;
-        for y in row_top..row_bottom {
-            let has_ink = (text_x_start..text_x_end).any(|x| {
-                let px = surface.pixel_at(x, y);
-                (px.r, px.g, px.b) != (title_bg.r, title_bg.g, title_bg.b)
-            });
-            if has_ink {
-                first_ink_row.get_or_insert(y);
-                last_ink_row = Some(y);
-            }
-        }
-        let first_ink_row = first_ink_row.expect("title text must paint some ink");
-        let last_ink_row = last_ink_row.expect("title text must paint some ink");
-
-        assert!(
-            first_ink_row > row_top + 5,
-            "title text must not be top-aligned flush against the title \
-             bar's top edge: first_ink_row={first_ink_row}, row_top={row_top}"
-        );
-
-        let text_mid = (first_ink_row + last_ink_row) as f32 / 2.0;
-        let bar_mid = tb.y + tb.height / 2.0;
-        assert!(
-            (text_mid - bar_mid).abs() < 4.0,
-            "title text must be vertically centred in the title bar: \
-             text_mid={text_mid}, bar_mid={bar_mid}"
-        );
-    }
-
     /// `draw_sidebar_panel_interactive`'s embedded toolbar chrome must
     /// paint from the live theme rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
@@ -11294,43 +10889,10 @@ mod tests {
         );
     }
 
-    /// `Panel`'s title paints through `surface_draw_text_run` (plain
-    /// `self`, not a per-call adapter), so this is fixed purely by
-    /// `impl PaintSurface for WinBackend`'s inverted default — no
-    /// per-call-site change needed, unlike `draw_palette` above.
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[allow(deprecated)] // constructs the deprecated `Panel`
-    fn win_backend_draw_panel_paints_title_in_the_chrome_fonts_size() {
-        let panel = Panel {
-            id: WidgetId::new("panel"),
-            title: Some(crate::types::StyledText::plain("Explorer")),
-            actions: Vec::new(),
-            accent: None,
-            collapsed: false,
-        };
-        let diff = chrome_font_diff_pixel_count(
-            200,
-            80,
-            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
-            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
-            |backend| {
-                let _ = backend.draw_panel(Rect::new(0.0, 0.0, 200.0, 80.0), &panel);
-            },
-        );
-        assert!(
-            diff > 0,
-            "varying only the chrome font size must repaint different pixels — \
-             draw_panel must paint the title through chrome_dwrite (WinBackend's \
-             own PaintSurface default), not the editor dwrite handle"
-        );
-    }
-
     /// Spinner paints through `surface_draw_text_run` (plain `self`, not
     /// a per-call adapter), so this is fixed purely by `impl PaintSurface
-    /// for WinBackend`'s inverted default — the same shape as
-    /// `win_backend_draw_panel_paints_title_in_the_chrome_fonts_size`
-    /// above, unlike `draw_palette`'s own per-call adapter.
+    /// for WinBackend`'s inverted default, unlike `draw_palette`'s own
+    /// per-call adapter.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_spinner_paints_label_in_the_chrome_fonts_size() {
@@ -11442,7 +11004,7 @@ mod tests {
     }
 
     /// The editor-class twin of the three tests above: `TextDisplay`
-    /// paints through `EditorSurface`, so unlike `Panel`/`Palette`/
+    /// paints through `EditorSurface`, so unlike `Palette`/
     /// `Spinner` its rendered pixels must stay identical regardless of
     /// the chrome font size — only the editor font (held fixed by
     /// `chrome_font_diff_pixel_count`) should affect it.
@@ -13221,17 +12783,6 @@ mod tests {
         }
     }
 
-    #[allow(deprecated)] // constructs the deprecated `Panel`
-    fn sample_panel() -> Panel {
-        Panel {
-            id: WidgetId::new("panel"),
-            title: None,
-            actions: Vec::new(),
-            accent: None,
-            collapsed: false,
-        }
-    }
-
     /// A `WinBackend` that has never had `attach_surface`/`attach_headless`
     /// called — the same surface-less state a fresh `WinBackend::new()` starts in
     /// and the state `end_frame` drops back to after a device-lost `EndDraw`
@@ -13303,10 +12854,6 @@ mod tests {
         };
         let interaction = crate::interaction::InteractionState::default();
         let _ = backend.draw_toolbar_interactive(rect, &toolbar, &interaction);
-
-        // `PanelLayout` category (pure geometry, no measurer).
-        let panel = sample_panel();
-        let _ = backend.draw_panel(rect, &panel);
 
         // `MinimapPaintResult` category (`painted: false`, real layout).
         let minimap = sample_minimap();
@@ -13385,24 +12932,6 @@ mod tests {
             result.layout, scaled_layout,
             "draw_minimap's own (unpainted, no-surface) layout must also honor the \
              backend's minimap_scale"
-        );
-    }
-
-    /// `draw_panel` with no surface must agree with `panel_layout`,
-    /// upholding the same contract as the minimap test.
-    #[test]
-    fn draw_panel_with_no_surface_agrees_with_panel_layout() {
-        let mut backend = WinBackend::new();
-        let panel = sample_panel();
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-
-        let painted = backend.draw_panel(rect, &panel);
-        let no_paint = backend.panel_layout(rect, &panel);
-
-        assert_eq!(
-            painted, no_paint,
-            "draw_panel's returned layout must agree with panel_layout's \
-             standalone query"
         );
     }
 

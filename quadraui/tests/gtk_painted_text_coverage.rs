@@ -63,8 +63,6 @@ mod menu_bar_app;
 mod multi_tree;
 #[path = "../examples/common/palette_dual_mode_app.rs"]
 mod palette_dual_mode_app;
-#[path = "../examples/common/panel_app.rs"]
-mod panel_app;
 #[path = "../examples/common/shell_app.rs"]
 mod shell_app;
 #[path = "../examples/common/sidebar_panel_app.rs"]
@@ -429,12 +427,6 @@ fn palette_dual_mode_paints_locatable_title_query_and_items() {
             ("draw_palette", "docs/testing-guide"),
         ],
     );
-}
-
-#[test]
-fn panel_app_paints_locatable_title_bar_and_actions() {
-    let driver = GtkDriver::new(panel_app::PanelApp::new(), W, H);
-    assert_locatable(&driver, &[("draw_sidebar_panel_interactive", "Demo Panel")]);
 }
 
 #[test]

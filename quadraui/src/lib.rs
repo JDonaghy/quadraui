@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 53 primitive modules (one each under `src/primitives/`) — widgets,
+//! 52 primitive modules (one each under `src/primitives/`) — widgets,
 //! each declarative + serde-friendly so apps and Lua plugins can
 //! describe UI as data, plus the `layout_metrics` and `row_stack`
 //! shared-math helpers the widget modules reuse. A representative
@@ -117,7 +117,7 @@
 //! `0.11.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 53 primitive modules
+//! `quadraui/docs/decisions/DECISIONS.md`. 52 primitive modules
 //! shipped. The TUI and GTK backends have full feature parity and are
 //! battle-tested by vimcode (5000+ tests). The macOS backend
 //! implements the whole `Backend` trait and is built/tested for real
@@ -667,13 +667,6 @@ pub use primitives::number_input::{
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,
     PalettePreview, PaletteScrollbar, VisiblePaletteItem,
-};
-// `Panel`/`PanelAction` are `#[deprecated]` (use `SidebarPanel` + `Toolbar`
-// instead). Allow it here since `pub use` of a deprecated item is itself a
-// use site.
-#[allow(deprecated)]
-pub use primitives::panel::{
-    Panel, PanelAction, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
 };
 pub use primitives::pipeline_view::{
     PipelineEvent, PipelineHit, PipelineStage, PipelineView, PipelineViewLayout,

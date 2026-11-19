@@ -306,7 +306,7 @@ per-backend one.** In practice: primitives a parent composer paints
 painted as a freestanding widget at their own screen rect, where the
 caller has no other reason to track that rect, are ABSOLUTE
 (`tab_bar_layout`, `menu_bar_layout`, `split_layout`,
-`split_tree_layout`, `panel_layout`, `toast_stack_layout`,
+`split_tree_layout`, `toast_stack_layout`,
 `pipeline_view_layout`, `progress_layout`, `spinner_layout`,
 `command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`,
 `chart_layout`, `minimap_layout`, `msv_layout`, `text_input_layout`,

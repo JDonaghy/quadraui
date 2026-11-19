@@ -525,13 +525,13 @@ fn macos_backend_is_described_as_shipped_not_planned() {
 
 #[test]
 fn shipped_primitives_and_backend_trait_are_not_called_roadmapped() {
-    // Panel, MenuBar, and the Backend trait are shipped; verify they exist
-    // and the documentation no longer claims they are roadmapped.
+    // SidebarPanel, MenuBar, and the Backend trait are shipped; verify they
+    // exist and the documentation no longer claims they are roadmapped.
     let primitives = primitives_mod_rs();
     assert!(
-        primitives.contains("pub mod panel;"),
-        "expected `panel` primitive module — if it was renamed/removed, \
-         re-verify docs/APP_ARCHITECTURE.md's Panel claim independently."
+        primitives.contains("pub mod sidebar_panel;"),
+        "expected `sidebar_panel` primitive module — if it was renamed/removed, \
+         re-verify docs/APP_ARCHITECTURE.md's SidebarPanel claim independently."
     );
     assert!(
         primitives.contains("pub mod menu_bar;"),
@@ -550,11 +550,10 @@ fn shipped_primitives_and_backend_trait_are_not_called_roadmapped() {
     assert!(
         !app_arch.contains("roadmapped but not yet shipped"),
         "docs/APP_ARCHITECTURE.md still says something is \"roadmapped but \
-         not yet shipped\" — #798 corrected this for Panel/MenuBar/Backend \
-         trait, which all exist in src/ today. If new text reintroduced \
-         this exact phrase for something genuinely unshipped, reword to \
-         avoid tripping this guard, or extend it to name-check the new \
-         claim specifically."
+         not yet shipped\" — SidebarPanel/MenuBar/Backend trait all exist in \
+         src/ today. If new text reintroduced this exact phrase for \
+         something genuinely unshipped, reword to avoid tripping this \
+         guard, or extend it to name-check the new claim specifically."
     );
 }
 

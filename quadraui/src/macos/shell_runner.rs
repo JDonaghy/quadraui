@@ -9,7 +9,7 @@
 //!
 //! `MacBackend` already implements every `Backend` trait method `AppShell`
 //! renders through (`draw_activity_bar`, `draw_sidebar_panel`,
-//! `draw_tab_bar`, `draw_panel`, `draw_status_bar`, …), so no new rasteriser
+//! `draw_tab_bar`, `draw_status_bar`, …), so no new rasteriser
 //! work is needed here — this is pure composition, same as the TUI/GTK
 //! runners.
 //!

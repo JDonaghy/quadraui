@@ -4,8 +4,8 @@
 //!
 //! On GTK, `GtkBackend`'s own `PaintSurface` implementation is the
 //! default surface every non-editor-class primitive paints through —
-//! Form, Palette, TextInput, Completions, Panel and Toast among them.
-//! This file paints each of those six primitives twice, with the
+//! Form, Palette, TextInput, Completions and Toast among them.
+//! This file paints each of those five primitives twice, with the
 //! chrome/editor font sizes swapped between runs, and asserts the
 //! painted text run tracks the chrome font's size every time, proving
 //! the primitive paints in [`quadraui::FontRole::Chrome`] regardless of
@@ -69,10 +69,6 @@ use quadraui::{
     TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Tooltip,
     TooltipMeasure, UiEvent, WidgetId,
 };
-// `Panel` is `#[deprecated]`; imported separately so the allow stays
-// scoped to the one chrome-font paint case below.
-#[allow(deprecated)]
-use quadraui::Panel;
 
 const W: i32 = 640;
 const H: i32 = 400;
@@ -371,21 +367,6 @@ fn draw_toast_overlay_paints_in_chrome_font() {
             focus: None,
         };
         let _ = b.draw_toast_overlay(area, &stack);
-    });
-}
-
-#[test]
-#[allow(deprecated)] // constructs the deprecated `Panel`
-fn draw_panel_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_panel", |b, area| {
-        let panel = Panel {
-            id: id("panel"),
-            title: Some(StyledText::plain(LABEL)),
-            actions: vec![],
-            accent: None,
-            collapsed: false,
-        };
-        let _ = b.draw_panel(area, &panel);
     });
 }
 

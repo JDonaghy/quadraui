@@ -32,7 +32,6 @@ pub mod message_dialog;
 pub mod message_list;
 pub mod minimap;
 pub mod palette;
-pub mod panel;
 pub mod pipeline;
 pub mod search_panel;
 pub mod sidebar;

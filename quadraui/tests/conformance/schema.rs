@@ -270,7 +270,7 @@ mod tests {
     fn parses_struct_variant_steps_and_requires() {
         let src = r#"{
             "id": "panel.drag_select_copy",
-            "fixture": "panel_app",
+            "fixture": "shell_app",
             "tier": 1,
             "viewport": { "cols": 100, "rows": 30 },
             "requires": ["text_selection"],
@@ -312,7 +312,7 @@ mod tests {
     fn click_text_at_anchor_defaults_to_center_when_omitted() {
         let src = r#"{
             "id": "x",
-            "fixture": "panel_app",
+            "fixture": "shell_app",
             "tier": 1,
             "viewport": { "cols": 100, "rows": 30 },
             "steps": [
@@ -337,7 +337,7 @@ mod tests {
     fn click_text_any_parses_an_ordered_needle_list() {
         let src = r#"{
             "id": "x",
-            "fixture": "panel_app",
+            "fixture": "shell_app",
             "tier": 1,
             "viewport": { "cols": 100, "rows": 30 },
             "steps": [

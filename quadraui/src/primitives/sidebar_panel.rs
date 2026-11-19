@@ -36,8 +36,7 @@
 //! Each backend renders the toolbar into the header slot and **does
 //! not paint the content region** — the content rect is returned in
 //! `SidebarPanelLayout.content_bounds` for the host to paint into
-//! (typically a tree, list, form, etc.). This is the same pattern
-//! [`crate::Panel`] uses for its content region.
+//! (typically a tree, list, form, etc.).
 //!
 //! Hit-test:
 //! - Click inside the toolbar slot routes via the nested
@@ -270,8 +269,7 @@ impl SidebarPanel {
 // 3. **Alpha-channel preserved**: Uses `surface_fill_rect` which
 //    respects `Color::a`, unlike the old GTK path that dropped it.
 // 4. **Default theme on Win**: `WinBackend::draw_sidebar_panel`
-//    passes `Theme::default()`, not live theme — consistent with
-//    how `Panel` chrome is rendered.
+//    passes `Theme::default()`, not live theme.
 //
 // `#[allow(dead_code)]`: only called when a real pixel backend is
 // compiled in, exercised by each backend's `Backend::draw_sidebar_panel`

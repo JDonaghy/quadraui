@@ -14,7 +14,7 @@ use crate::theme::Theme;
 /// Compute the GTK pixel-unit layout for a [`ToastOverlay`] without painting.
 ///
 /// `(origin_x, origin_y)` is baked into the returned bounds (absolute
-/// window coordinates, matching `gtk_menu_bar_layout` / `gtk_panel_layout`)
+/// window coordinates, matching `gtk_menu_bar_layout` / `gtk_sidebar_panel_layout`)
 /// — hosts call `layout.hit_test(x, y)` with raw click coordinates, no
 /// localisation needed.
 ///

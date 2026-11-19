@@ -9,10 +9,10 @@ use std::rc::Rc;
 
 use quadraui::{
     ButtonHit, ButtonLayout, Canvas, CanvasHit, DataTableHit, DataTableLayout, ListViewHit,
-    ListViewLayout, PanelHit, PanelLayout, Point, PressZone, Rect, ScrollAxis, Scrollbar,
-    SidebarPanelHit, SidebarPanelLayout, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit,
-    TabBarLayout, TextDisplayHit, TextDisplayLayout, Toolbar, TreePath, TreeRowEditState,
-    TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    ListViewLayout, Point, PressZone, Rect, ScrollAxis, Scrollbar, SidebarPanelHit,
+    SidebarPanelLayout, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout,
+    TextDisplayHit, TextDisplayLayout, Toolbar, TreePath, TreeRowEditState, TreeViewHit,
+    TreeViewLayout, UiEvent, WidgetId,
 };
 
 use crate::extra_paint::{extra_as, ExtraPaint};
@@ -188,16 +188,8 @@ pub enum PaintedHit {
         id: WidgetId,
         layout: SplitTreeLayout,
     },
-    /// A [`quadraui::Panel`]'s chrome layout, in the ABSOLUTE frame
-    /// (matching [`Self::Split`]). `id` is the panel's own id; a
-    /// `PanelHit::Action`/`PanelHit::TitleBar` resolves to its OWN id
-    /// (the action button's, or the panel's), same convention `SplitHit`'s
-    /// variants use. `PanelHit::Content` is left to the panel's own
-    /// content subtree, pushed after this entry by
-    /// `crate::render::paint_layout`'s `LayoutNode::Panel` arm.
-    Panel { id: WidgetId, layout: PanelLayout },
     /// A [`quadraui::SidebarPanel`]'s chrome layout, in the ABSOLUTE frame.
-    /// Mirrors [`Self::Panel`]: a `SidebarPanelHit::ToolbarButton` resolves
+    /// A `SidebarPanelHit::ToolbarButton` resolves
     /// to the clicked button's own id; `SidebarPanelHit::Content` is left
     /// to the content subtree pushed after this entry. `toolbar` is a
     /// clone of [`quadraui::SidebarPanel::toolbar`] as painted — `None`
@@ -254,7 +246,7 @@ pub enum PaintedHit {
     /// ABSOLUTE frame (matching [`Self::Split`]) — `viewport` already
     /// excludes the scrollbar gutter `crate::render::paint_layout`'s
     /// `LayoutNode::Scroll` arm reserves. Pushed BEFORE that arm recurses
-    /// into its (culled, offset) content, same ordering as [`Self::Panel`]/
+    /// into its (culled, offset) content, same ordering as
     /// [`Self::SidebarPanel`]'s own chrome hit — a descendant content hit
     /// (pushed after, so checked first in reverse order) wins over this
     /// one. Content scrolled out of view never gets its own
@@ -346,7 +338,7 @@ pub struct ScrollChildHit {
 /// [`PaintedHit::Extra`]'s `chrome_hits` (each
 /// entry independently intersected and dropped on no overlap, the same
 /// per-entry treatment `hits` itself gets). The chrome-layout kinds
-/// (`Split`/`SplitTree`/`Panel`/`SidebarPanel`) carry several independent
+/// (`Split`/`SplitTree`/`SidebarPanel`) carry several independent
 /// sub-region rects apiece with no single outer bounds to narrow, and
 /// aren't realistic `Scroll` content — left as-is.
 pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, viewport: Rect) {
@@ -407,7 +399,6 @@ fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
         PaintedHit::Scroll { viewport, .. } => Some(viewport),
         PaintedHit::Split { .. }
         | PaintedHit::SplitTree { .. }
-        | PaintedHit::Panel { .. }
         | PaintedHit::SidebarPanel { .. } => None,
     }
 }
@@ -511,17 +502,9 @@ pub enum HitDetail {
     SplitTreeDivider {
         split_index: usize,
     },
-    /// Landed on a [`quadraui::Panel`]'s title-bar action button. `id`
-    /// resolves to the matched hit returned alongside this detail as the
-    /// action button's own id (`PanelAction::id`), same as a plain
-    /// `Button` click.
-    PanelAction,
-    /// Landed on a [`quadraui::Panel`]'s title bar (not an action button).
-    /// `id` resolves to the panel's own id.
-    PanelTitleBar,
     /// Landed on a [`quadraui::SidebarPanel`]'s toolbar button. `id`
     /// resolves to the matched hit returned alongside this detail as the
-    /// clicked button's own id, same as `PanelAction`. `bar` is the
+    /// clicked button's own id, same as a plain `Button` click. `bar` is the
     /// embedded [`quadraui::Toolbar`]'s own id (not the `SidebarPanel`'s),
     /// carried here so [`crate::semantic::semantic_event_for_hit`] can look
     /// the toolbar back up in the hit map and build its typed
@@ -769,11 +752,6 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     return Some((*id, HitDetail::SplitTreeDivider { split_index }));
                 }
             }
-            PaintedHit::Panel { layout, .. } => match layout.hit_test(point.x, point.y) {
-                PanelHit::Action(action_id) => return Some((action_id, HitDetail::PanelAction)),
-                PanelHit::TitleBar(panel_id) => return Some((panel_id, HitDetail::PanelTitleBar)),
-                PanelHit::Content(_) | PanelHit::Outside => {}
-            },
             PaintedHit::SidebarPanel {
                 id,
                 layout,

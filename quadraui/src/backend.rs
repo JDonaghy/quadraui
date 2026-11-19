@@ -76,11 +76,6 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::number_input::{NumberInput, NumberInputLayout};
-// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
-// `Backend::draw_panel`/`panel_layout` are this type's own plumbing and
-// keep carrying it until every in-repo caller migrates.
-#[allow(deprecated)]
-use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::radio_group::{RadioGroup, RadioGroupLayout};
@@ -3608,18 +3603,17 @@ pub trait Backend: sealed::Sealed {
     /// `float_layout` method — there is nothing backend-specific left
     /// to compute once the caller has resolved the anchor.
     ///
-    /// **Content is NOT painted here.** A `Float` is pure chrome, same
-    /// contract as [`Self::draw_panel`] — the host paints its own
-    /// content (a tree, a list, a form, plain text — whatever the
-    /// which-key hint / jump label / sticky header / floating terminal
-    /// actually needs) into `layout.content_bounds` after this call
-    /// returns.
+    /// **Content is NOT painted here.** A `Float` is pure chrome — the
+    /// host paints its own content (a tree, a list, a form, plain text —
+    /// whatever the which-key hint / jump label / sticky header / floating
+    /// terminal actually needs) into `layout.content_bounds` after this
+    /// call returns.
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error, same as [`Self::draw_image`] (`PRIMITIVE_RULES.md`
     /// rule 7). Shared across GTK/macOS/Win via
     /// [`crate::primitives::float::native_surface_paint::paint`], the
-    /// same zero-backend-specific-policy pattern as `Canvas`/`Panel`;
+    /// same zero-backend-specific-policy pattern as `Canvas`;
     /// TUI has its own cell-based rasteriser in
     /// `crate::tui::draw_float` (`#[doc(hidden)]`, so not linked here).
     fn draw_float(&mut self, float: &Float, layout: &FloatLayout);
@@ -4017,24 +4011,6 @@ pub trait Backend: sealed::Sealed {
     /// shifted by `rect.x` / `rect.y`.
     fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
 
-    /// Draw a [`Panel`] chrome (title bar + action buttons). The
-    /// backend computes the layout with its native title-bar height
-    /// (1 cell for TUI, line_height for GTK) and returns the
-    /// [`PanelLayout`] so hosts can route clicks to actions, title
-    /// bar, or content. Content is NOT drawn — hosts paint into
-    /// `layout.content_bounds`. Same coordinate frame as
-    /// [`Self::panel_layout`] (ABSOLUTE).
-    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this method is its own plumbing.
-    fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout;
-
-    /// Compute the panel layout without painting. Hosts call this in
-    /// click handlers to resolve hits without re-deriving metrics.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — `title_bar_bounds` / action /
-    /// `content_bounds` are shifted by `rect.x` / `rect.y`.
-    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this method is its own plumbing.
-    fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout;
-
     /// Draw a [`ToastOverlay`] overlay. The backend computes the layout
     /// with its native toast dimensions (cell-width boxes for TUI,
     /// pixel boxes for GTK) and returns the [`ToastStackLayout`] so
@@ -4364,8 +4340,7 @@ pub trait Backend: sealed::Sealed {
     /// Draw a [`SidebarPanel`] — optional header toolbar + content
     /// region. Backends paint the toolbar slot only; the content rect
     /// is returned in `SidebarPanelLayout.content_bounds` for the
-    /// host to paint into (tree / list / form / etc). Mirrors the
-    /// `Panel` rasteriser contract.
+    /// host to paint into (tree / list / form / etc).
     ///
     /// `interaction`'s hovered / pressed [`WidgetId`]s are forwarded to
     /// the nested toolbar paint for hover / pressed tints. Same
@@ -4562,8 +4537,8 @@ pub trait Backend: sealed::Sealed {
     /// implementation, [`crate::primitives::canvas::native_surface_paint::paint`],
     /// routed through [`crate::paint_surface::PaintSurface`] — there is
     /// no backend-specific *policy* here, only a passthrough, unlike
-    /// [`Self::draw_panel`]/[`Self::draw_toast_overlay`] which resolve
-    /// theme colours and chrome metrics. TUI has no pixel grid, so it
+    /// [`Self::draw_toast_overlay`] which resolves theme colours and
+    /// chrome metrics. TUI has no pixel grid, so it
     /// rasterises the same ops into cells instead of reporting
     /// `Unsupported` — see [`Canvas`]'s module doc's degrade table
     /// (design decision D-014: `Canvas` is a **degrade** capability, not

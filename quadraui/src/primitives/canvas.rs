@@ -2,7 +2,7 @@
 //!
 //! Every other primitive in this crate is a closed shape — an app that
 //! wants a diagram, a custom gauge, a sparkline with bespoke decoration,
-//! or any pixel the 52 other shipped primitive modules don't already
+//! or any pixel the 51 other shipped primitive modules don't already
 //! draw has no way to put it on screen. `Canvas` is the escape hatch: a
 //! declarative list of [`DrawOp`]s (rect, rounded rect, line, path,
 //! text run, image, push/pop clip) that every backend paints through
@@ -677,8 +677,8 @@ impl CanvasLayout {
 // Every pixel backend (GTK/macOS/Win) paints a `Canvas` identically: walk
 // `ops` in order, translate each op's LOCAL coordinates by the layout's
 // own origin, and call the matching `PaintSurface` verb. There is no
-// backend-specific behaviour here at all — unlike `Panel`/`Toast`, which
-// resolve theme colours and chrome metrics, `Canvas`'s ops already carry
+// backend-specific behaviour here at all — unlike `SidebarPanel`/`Toast`,
+// which resolve theme colours and chrome metrics, `Canvas`'s ops already carry
 // every colour/geometry value the app wants, so this is a pure
 // passthrough rather than a shared *policy*. `Path` has no dedicated
 // `PaintSurface` verb (the trait's verbs don't include one, by design),

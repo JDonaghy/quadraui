@@ -3,8 +3,8 @@
 //! vertical window splits, and anywhere a resizable boundary between
 //! two regions is needed.
 //!
-//! Like `Panel`, `Split` describes the frame (divider position + pane
-//! rectangles) but doesn't hold pane content. Apps draw their content
+//! Like `SidebarPanel`, `Split` describes the frame (divider position +
+//! pane rectangles) but doesn't hold pane content. Apps draw their content
 //! into `first_bounds` and `second_bounds`.
 //!
 //! # Backend contract

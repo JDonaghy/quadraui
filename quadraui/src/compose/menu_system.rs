@@ -1357,14 +1357,6 @@ mod tests {
         fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
             unimplemented!()
         }
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
-        fn draw_panel(&mut self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
-            unimplemented!()
-        }
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
-        fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
-            unimplemented!()
-        }
         fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
             unimplemented!()
         }

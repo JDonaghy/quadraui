@@ -32,13 +32,12 @@ of these keys, naming the node's kind:
 | `"grid"` | `LayoutGridNode` | Two independent `columns`/`rows` track lists, filled row-major by `cells`. |
 | `"split"` | `LayoutSplitNode` | Two children (`first`/`second`) either side of a draggable divider. |
 | `"tabs"` | `LayoutTabsNode` | A tab strip, each tab's `content` itself a `LayoutNode`. |
-| `"panel"` | `LayoutPanelNode` | Deprecated chrome wrapper around one child -- prefer `"sidebar_panel"`. |
 | `"sidebar_panel"` | `LayoutSidebarPanelNode` | Chrome (toolbar, accent) wrapper around one child. |
 | `"split_tree"` | `LayoutSplitTreeNode` | A recursive tree of splits (`SplitTreeRecursiveNode`), for more than two panes. |
 | `"scroll"` | `LayoutScrollNode` | A scrollable viewport around one content child, built on `ScrollView`. |
 | `"leaf"` | `LayoutLeafNode` | A primitive widget -- see *Leaf kinds* below. |
 
-A `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/`"panel"`/
+A `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/
 `"sidebar_panel"`/`"split_tree"`/`"scroll"` node also accepts the sizing keys `"size"`,
 `"min"`, `"max"` when it's itself a `"row"`/`"column"` child, and the
 chrome keys `"padding"`, `"margin"`, `"gap"` where that node kind supports
@@ -79,10 +78,10 @@ non-bordered `"list"`/`"tree"`, but **not** a `"button"`'s `Primary`/
 | --- | --- | --- |
 | `"bg"` | `Theme.background` | plain `"row"`/`"column"`/`"split"`/`"tabs"`/`"split_tree"` areas; a `"button"`'s `Icon` variant; a non-bordered `"list"`/`"tree"` |
 | `"fg"` | `Theme.foreground` | generic chrome text (`"tab_bar"`'s dirty-tab glyph, `"list"`/`"tree"`/`"data_table"` body/header text) |
-| `"border"` | `Theme.border_fg` | bordered-surface border glyphs (`"list"`, `"dialog"`, a bordered `"panel"`) |
+| `"border"` | `Theme.border_fg` | bordered-surface border glyphs (`"list"`, `"dialog"`) |
 | `"accent"` | `Theme.accent_fg` | focus/active-state accents (a `"form"` toggle, a slider fill, `"tab_bar"`'s active-tab underline) |
 | `"surface_bg"` | `Theme.surface_bg` | a `"button"`'s `Secondary`/`Danger`/`Warning` variants and disabled state, a bordered `"list"`, `"dialog"`/`"toast"`/`"palette"`/`"toolbar"`/`"float"` chrome |
-| `"accent_bg"` | `Theme.accent_bg` | a `"button"`'s `Primary` variant's solid fill, `"switch"`/`"progress"`'s active fill, a `"panel"`'s active-action fill |
+| `"accent_bg"` | `Theme.accent_bg` | a `"button"`'s `Primary` variant's solid fill, `"switch"`/`"progress"`'s active fill |
 | `"padding"` | `Style.padding` | inner inset shared by `"button"`/`"toast"`/`"tooltip"`/`"context_menu"`/`"palette"`/`"dialog"` |
 | `"corner_radius"` | `Style.corner_radius` | rounded-rect radius shared by every rounded overlay |
 | `"border_width"` | `Style.border_width` | border stroke width on a pixel backend (no-op on TUI) |
@@ -443,7 +442,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ToolbarOverflow`](#wire-toolbaroverflow)
 - [`ToolbarOverflowPriorityEntry`](#wire-toolbaroverflowpriorityentry)
 - [`ToolbarDescriptor`](#wire-toolbardescriptor)
-- [`PanelActionDescriptor`](#wire-panelactiondescriptor)
 - [`PaddingAxis`](#wire-paddingaxis)
 - [`PaddingSides`](#wire-paddingsides)
 - [`PaddingValue`](#wire-paddingvalue)
@@ -464,8 +462,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`LayoutTabEntryNode`](#wire-layouttabentrynode)
 - [`LayoutTabsPayload`](#wire-layouttabspayload)
 - [`LayoutTabsNode`](#wire-layouttabsnode)
-- [`LayoutPanelPayload`](#wire-layoutpanelpayload)
-- [`LayoutPanelNode`](#wire-layoutpanelnode)
 - [`LayoutSidebarPanelPayload`](#wire-layoutsidebarpanelpayload)
 - [`LayoutSidebarPanelNode`](#wire-layoutsidebarpanelnode)
 - [`LayoutScrollPayload`](#wire-layoutscrollpayload)
@@ -748,8 +744,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailSplitSecondPane`](#wire-_hitdetailsplitsecondpane)
 - [`_HitDetailSplitDivider`](#wire-_hitdetailsplitdivider)
 - [`_HitDetailSplitTreeDivider`](#wire-_hitdetailsplittreedivider)
-- [`_HitDetailPanelAction`](#wire-_hitdetailpanelaction)
-- [`_HitDetailPanelTitleBar`](#wire-_hitdetailpaneltitlebar)
 - [`_HitDetailSidebarPanelToolbarButton`](#wire-_hitdetailsidebarpaneltoolbarbutton)
 - [`_HitDetailTreeScrollbarTrackBefore`](#wire-_hitdetailtreescrollbartrackbefore)
 - [`_HitDetailTreeScrollbarThumb`](#wire-_hitdetailtreescrollbarthumb)
@@ -1473,16 +1467,6 @@ Alias for `"Clip" | "Wrap" | "Menu"`.
 | `overflow` | `ToolbarOverflow` | no |  |
 | `overflow_priorities` | `ToolbarOverflowPriorityEntry[]` | no |  |
 
-<a id="wire-panelactiondescriptor"></a>
-#### `PanelActionDescriptor`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | `WidgetId` | yes |  |
-| `icon` | `string` | yes |  |
-| `tooltip` | `string` | no |  |
-| `is_active` | `boolean` | no |  |
-
 <a id="wire-paddingaxis"></a>
 #### `PaddingAxis`
 
@@ -1791,35 +1775,6 @@ A "grid" node's two track lists plus its row-major cells (left to right within a
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `tabs` | `LayoutTabsPayload` | yes |  |
-| `padding` | `PaddingValue` | no |  |
-| `margin` | `number` | no |  |
-| `wire_version` | `number` | no |  |
-| `style` | `StyleValue` | no |  |
-| `class` | `ClassValue` | no |  |
-| `size` | `SectionSize` | no |  |
-| `min` | `number` | no |  |
-| `max` | `number` | no |  |
-
-<a id="wire-layoutpanelpayload"></a>
-#### `LayoutPanelPayload`
-
-The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | `string` | yes |  |
-| `title` | `StyledText \| null` | no |  |
-| `actions` | `PanelActionDescriptor[]` | no |  |
-| `accent` | `Color \| null` | no |  |
-| `collapsed` | `boolean` | no |  |
-| `content` | `LayoutNode` | yes |  |
-
-<a id="wire-layoutpanelnode"></a>
-#### `LayoutPanelNode`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `panel` | `LayoutPanelPayload` | yes |  |
 | `padding` | `PaddingValue` | no |  |
 | `margin` | `number` | no |  |
 | `wire_version` | `number` | no |  |
@@ -3589,7 +3544,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 
 One node of a render callback's returned layout tree.
 
-Alias for `LayoutRowNode | LayoutColumnNode | LayoutGridNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode`.
+Alias for `LayoutRowNode | LayoutColumnNode | LayoutGridNode | LayoutSplitNode | LayoutTabsNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode`.
 
 <a id="wire-renderframedict"></a>
 #### `RenderFrameDict`
@@ -4533,20 +4488,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `kind` | `"split_tree_divider"` | yes |  |
 | `split_index` | `number` | yes |  |
 
-<a id="wire-_hitdetailpanelaction"></a>
-#### `_HitDetailPanelAction`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"panel_action"` | yes |  |
-
-<a id="wire-_hitdetailpaneltitlebar"></a>
-#### `_HitDetailPanelTitleBar`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"panel_title_bar"` | yes |  |
-
 <a id="wire-_hitdetailsidebarpaneltoolbarbutton"></a>
 #### `_HitDetailSidebarPanelToolbarButton`
 
@@ -4632,7 +4573,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`

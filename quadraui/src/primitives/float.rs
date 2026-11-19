@@ -3,15 +3,15 @@
 //! overlays/floats for Lua extensions" work needs so vimcode never has
 //! to build floats itself (the Platform-Neutrality Rule).
 //!
-//! A `Float` is pure chrome, the same contract as [`crate::Panel`]:
-//! this primitive paints a background fill and an optional border, and
-//! nothing else. The content a consumer actually wants inside a float
-//! — which-key-style key hints, flash-style jump labels, a
-//! treesitter-context-style sticky header, a floating terminal — is any
-//! other quadraui primitive, painted by the host into
-//! [`FloatLayout::content_bounds`] after [`crate::Backend::draw_float`]
-//! returns. `Float` doesn't own that content any more than `Panel`
-//! owns the tree/terminal/form a host draws into `PanelLayout::content_bounds`.
+//! A `Float` is pure chrome: this primitive paints a background fill
+//! and an optional border, and nothing else. The content a consumer
+//! actually wants inside a float — which-key-style key hints,
+//! flash-style jump labels, a treesitter-context-style sticky header, a
+//! floating terminal — is any other quadraui primitive, painted by the
+//! host into [`FloatLayout::content_bounds`] after
+//! [`crate::Backend::draw_float`] returns. `Float` doesn't own that
+//! content any more than [`crate::SidebarPanel`] owns the tree/terminal/
+//! form a host draws into `SidebarPanelLayout::content_bounds`.
 //!
 //! # Position: [`crate::layout::Anchor`]
 //!
@@ -77,7 +77,7 @@
 //! background fill (`float.bg`, or the theme default) and, when
 //! `float.border` is set, a 1-unit border stroke — nothing else. No
 //! text, no sub-widgets. The host paints its own content into
-//! `layout.content_bounds` afterwards, same as `Panel`.
+//! `layout.content_bounds` afterwards, same as [`crate::SidebarPanel`].
 //!
 //! Setting [`Float::transparent`] skips the background fill entirely —
 //! a pure border-only overlay through which whatever is already
@@ -296,7 +296,7 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`Float`]'s chrome (background fill + optional border
     /// stroke) at `layout.bounds`. Content is NOT painted — the host
     /// draws into `layout.content_bounds`, same contract as
-    /// `Backend::draw_panel`. Skips the fill entirely when
+    /// `Backend::draw_sidebar_panel_interactive`. Skips the fill entirely when
     /// `float.transparent` is set, leaving whatever the surface
     /// already holds in place underneath the border.
     pub(crate) fn paint(

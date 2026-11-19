@@ -450,13 +450,6 @@ export interface ToolbarDescriptor {
   overflow_priorities?: ToolbarOverflowPriorityEntry[];
 }
 
-export interface PanelActionDescriptor {
-  id: WidgetId;
-  icon: string;
-  tooltip?: string;
-  is_active?: boolean;
-}
-
 export interface PaddingAxis {
   x?: number;
   y?: number;
@@ -698,28 +691,6 @@ export interface LayoutTabsPayload {
 
 export interface LayoutTabsNode {
   tabs: LayoutTabsPayload;
-  padding?: PaddingValue;
-  margin?: number;
-  wire_version?: number;
-  style?: StyleValue;
-  class?: ClassValue;
-  size?: SectionSize;
-  min?: number;
-  max?: number;
-}
-
-/** The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`. */
-export interface LayoutPanelPayload {
-  id: string;
-  title?: StyledText | null;
-  actions?: PanelActionDescriptor[];
-  accent?: Color | null;
-  collapsed?: boolean;
-  content: LayoutNode;
-}
-
-export interface LayoutPanelNode {
-  panel: LayoutPanelPayload;
   padding?: PaddingValue;
   margin?: number;
   wire_version?: number;
@@ -1898,7 +1869,7 @@ export interface LayoutLeafNode {
 }
 
 /** One node of a render callback's returned layout tree. */
-export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutGridNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode;
+export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutGridNode | LayoutSplitNode | LayoutTabsNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutScrollNode | LayoutLeafNode;
 
 /** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed. */
 export interface RenderFrameDict {
@@ -2411,14 +2382,6 @@ export interface _HitDetailSplitTreeDivider {
   split_index: number;
 }
 
-export interface _HitDetailPanelAction {
-  kind: "panel_action";
-}
-
-export interface _HitDetailPanelTitleBar {
-  kind: "panel_title_bar";
-}
-
 export interface _HitDetailSidebarPanelToolbarButton {
   kind: "sidebar_panel_toolbar_button";
   bar: WidgetId;
@@ -2467,7 +2430,7 @@ export interface _HitDetailScrollScrollbarTrackAfter {
 }
 
 /** The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`. */
-export type HitDetail = _HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
+export type HitDetail = _HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
 
 export interface _UiKeyPressedPayload {
   key: Key;

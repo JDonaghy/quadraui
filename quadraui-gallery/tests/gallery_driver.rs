@@ -83,7 +83,7 @@ fn sidebar_content_center<A: AppLogic>(driver: &mut TuiDriver<A>) -> (f32, f32) 
 /// counting only demos in the currently-active group) by computing its
 /// bounds from the registered `app-shell:sidebar-content` zone — not a
 /// `driver.find(name)` scrape, which a name that's a substring of
-/// another demo's name (e.g. "Panel" inside "Bottom Panel") can resolve
+/// another demo's name (e.g. "Zone" inside "Drop Zone") can resolve
 /// to the wrong row. Mirrors `GalleryApp::render_content`'s own row
 /// layout: one `line_height()`-tall row per demo, top to bottom.
 ///
@@ -463,8 +463,8 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
         // digit-scraping click land on the wrong element. The sidebar
         // row is selected the same way — by its position in the sidebar
         // content area, not a `find(name)` scrape, since one demo's name
-        // can be a substring of another's (e.g. "Panel" inside "Bottom
-        // Panel").
+        // can be a substring of another's (e.g. "Zone" inside "Drop
+        // Zone").
         let config = GalleryApp::config();
         let mut driver = driver_with_shell(GalleryApp::new(), config, 100, 32);
         let group_idx = GROUPS

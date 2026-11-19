@@ -3,8 +3,8 @@
 //!
 //! On macOS, `MacBackend`'s own `PaintSurface` implementation is the
 //! default surface every non-editor-class primitive paints through —
-//! DataTable, Form, Toast, Panel, Tooltip, Palette, Progress, and Spinner
-//! among them. This file paints each of those eight primitives twice,
+//! DataTable, Form, Toast, Tooltip, Palette, Progress, and Spinner
+//! among them. This file paints each of those seven primitives twice,
 //! with the chrome/editor font sizes swapped between runs, and asserts
 //! the painted text run tracks `chrome_font`'s size every time, proving
 //! the primitive paints in [`quadraui::FontRole::Chrome`] regardless of
@@ -34,7 +34,7 @@
 //! `mac_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`
 //! test uses exactly that for the explicit-role entry point, because the
 //! only thing it paints *is* a glyph. It is the wrong oracle for a whole
-//! primitive: a `Panel`, `ProgressBar` or `DataTable` fills a background,
+//! primitive: a `ProgressBar` or `DataTable` fills a background,
 //! strokes a border and paints a filled track, all of which are ink and
 //! none of which depend on the font. Those font-independent pixels swamp
 //! the few hundred belonging to the label, so the ratio between two font
@@ -71,10 +71,6 @@ use quadraui::{
     Terminal, TerminalCell, TerminalCursorShape, TextDisplay, TextDisplayLine, Toast, ToastCorner,
     ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
-// `Panel` is `#[deprecated]`; imported separately so the allow stays
-// scoped to the one chrome-font paint case below.
-#[allow(deprecated)]
-use quadraui::Panel;
 
 const W: u32 = 640;
 const H: u32 = 400;
@@ -392,21 +388,6 @@ fn draw_toast_overlay_paints_in_chrome_font() {
             focus: None,
         };
         let _ = b.draw_toast_overlay(area, &stack);
-    });
-}
-
-#[test]
-#[allow(deprecated)] // constructs the deprecated `Panel`
-fn draw_panel_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_panel", |b, area| {
-        let panel = Panel {
-            id: id("panel"),
-            title: Some(StyledText::plain(LABEL)),
-            actions: vec![],
-            accent: None,
-            collapsed: false,
-        };
-        let _ = b.draw_panel(area, &panel);
     });
 }
 

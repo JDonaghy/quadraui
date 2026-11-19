@@ -699,13 +699,10 @@ where
 /// registered zone for [`demo_zone_id`] — a sibling of [`click_group_zone`],
 /// clicking by zone id rather than by the demo's painted name text. Two
 /// demos in the same group can have names where one is a literal substring
-/// of the other (e.g. "Panel" and "Bottom Panel"); the shared
-/// `find`/`find_bounds` text search every `ConformanceDriver` uses is a
-/// first-match substring search, so clicking by name text can silently
-/// select the wrong demo's row when its name collides with an
-/// earlier-registered one — the production `BottomPanelDemo`/`PanelDemo`
-/// pair, registered in that order, is exactly this collision
-/// (`"Panel"` matches inside `"Bottom Panel"`'s own row first).
+/// of the other; the shared `find`/`find_bounds` text search every
+/// `ConformanceDriver` uses is a first-match substring search, so clicking
+/// by name text can silently select the wrong demo's row when its name
+/// collides with an earlier-registered one.
 ///
 /// `GalleryApp::render_content` registers this zone on every backend
 /// (via `Backend::register_zone`, since a `ListView` row carries no
@@ -1995,12 +1992,12 @@ mod tests {
     /// A single-variant [`crate::Demo`] test double that paints its own
     /// name — used in a pair below, under group index 0 (`GROUPS[0]`, the
     /// group every freshly built [`GalleryApp`] already has active), and
-    /// with one demo's name a literal substring of the other's (mirroring
-    /// the production "Panel"/"Bottom Panel" pair). Pins two regressions
-    /// at once: clicking group 0's own already-active activity-bar icon
-    /// (which toggles it hidden instead of selecting it), and selecting a
-    /// demo's sidebar row by its painted name text (ambiguous whenever
-    /// another registered demo's name contains it as a substring).
+    /// with one demo's name a literal substring of the other's. Pins two
+    /// regressions at once: clicking group 0's own already-active
+    /// activity-bar icon (which toggles it hidden instead of selecting
+    /// it), and selecting a demo's sidebar row by its painted name text
+    /// (ambiguous whenever another registered demo's name contains it
+    /// as a substring).
     #[cfg(any(feature = "tui", all(feature = "win", target_os = "windows")))]
     struct NamedDemo(&'static str);
 
@@ -2058,10 +2055,9 @@ mod tests {
         }
     }
 
-    /// The longer name is registered first, exactly like the production
-    /// `BottomPanelDemo`/`PanelDemo` pair in `registry()` — a text search
-    /// for `"Zone"` would match this row first, since `"Drop Zone"`
-    /// contains `"Zone"` as a substring.
+    /// The longer name is registered first — a text search for `"Zone"`
+    /// would match this row first, since `"Drop Zone"` contains `"Zone"`
+    /// as a substring.
     #[cfg(any(feature = "tui", all(feature = "win", target_os = "windows")))]
     fn name_collision_registry() -> Vec<Box<dyn crate::Demo>> {
         vec![
@@ -2072,11 +2068,10 @@ mod tests {
 
     /// `click_demo_zone` lands each click by the sidebar row's registered
     /// `WidgetId` zone rather than by searching for its painted name, so a
-    /// name collision like `"Drop Zone"`/`"Zone"` (or the production
-    /// `"Bottom Panel"`/`"Panel"` pair) can't make it select the wrong
-    /// row — `GalleryApp::render_content` registers that zone on every
-    /// backend, so `capture_tui_over` picks the right row here exactly
-    /// the same way `capture_win_over` already did below.
+    /// name collision like `"Drop Zone"`/`"Zone"` can't make it select the
+    /// wrong row — `GalleryApp::render_content` registers that zone on
+    /// every backend, so `capture_tui_over` picks the right row here
+    /// exactly the same way `capture_win_over` already did below.
     #[cfg(feature = "tui")]
     #[test]
     fn capture_tui_selects_each_demo_by_its_own_zone_despite_a_group_0_name_collision() {
@@ -2111,78 +2106,6 @@ mod tests {
                 "SVG for {name} should show that demo's own rendered content \
                  (proving the click landed on its own row, not the other \
                  demo's whose name collides with it as a substring):\n{svg}"
-            );
-        }
-    }
-
-    /// The literal production pair, in production order: `BottomPanelDemo`
-    /// ("Bottom Panel") registered immediately before `PanelDemo`
-    /// ("Panel"), both in `registry()`'s `"Chrome"` group — a two-entry
-    /// double rather than driving the full ~400-capture production
-    /// `registry()` (every demo, re-constructed per variant, including a
-    /// `FilePickerDemo` temp directory tree each time) just to pin this
-    /// one name collision.
-    #[cfg(feature = "tui")]
-    fn panel_name_collision_registry() -> Vec<Box<dyn crate::Demo>> {
-        vec![
-            Box::new(crate::demos::bottom_panel::BottomPanelDemo::new()),
-            Box::new(crate::demos::panel::PanelDemo::new()),
-        ]
-    }
-
-    /// Pins the literal production regression the collision tests above
-    /// generalise: `BottomPanelDemo` ("Bottom Panel") is registered
-    /// immediately before `PanelDemo` ("Panel") in `registry()`, in the
-    /// same `"Chrome"` group — selecting "Panel" by painted name text
-    /// would land on "Bottom Panel"'s row instead (a first-match
-    /// substring search), and then every one of `PanelDemo`'s three
-    /// variant labels ("Expanded"/"Collapsed"/"No accent, close only")
-    /// fails to find its own text on `BottomPanelDemo`'s screen.
-    #[cfg(feature = "tui")]
-    #[test]
-    fn capture_tui_captures_every_panel_demo_variant_despite_the_bottom_panel_name_collision() {
-        let dir = tempfile::tempdir().expect("create temp capture dir");
-        let mut manifest = Vec::new();
-
-        capture_tui_over(
-            panel_name_collision_registry,
-            dir.path(),
-            CaptureTheme::Dark,
-            &mut manifest,
-        )
-        .expect("capture_tui_over");
-
-        let panel_entries: Vec<_> = manifest.iter().filter(|e| e.demo == "Panel").collect();
-        assert_eq!(
-            panel_entries.len(),
-            3,
-            "Panel has three variants, so three manifest rows: {panel_entries:#?}"
-        );
-        for entry in &panel_entries {
-            assert!(
-                entry.status.is_none(),
-                "Panel's {:?} variant should have captured cleanly: {entry:#?}",
-                entry.variant
-            );
-            let path = entry.path.as_deref().unwrap_or_else(|| {
-                panic!("Panel's {:?} variant should have a path", entry.variant)
-            });
-            let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
-            // The title bar always paints — even collapsed (see
-            // `header_toolbar_present_when_collapsed` in
-            // `quadraui/src/primitives/panel.rs`, which pins that a
-            // collapsed panel still maps to a header `Toolbar`) — so
-            // "Demo Panel" shows on every one of the three variants.
-            // `BottomPanelDemo` never
-            // paints that string, so finding it here proves the click
-            // actually landed on `PanelDemo`'s own row, not on
-            // `BottomPanelDemo`'s whose name collides with it as a
-            // substring.
-            assert!(
-                svg.contains("Demo Panel"),
-                "SVG for Panel's {:?} variant should show its own painted \
-                 title:\n{svg}",
-                entry.variant
             );
         }
     }
