@@ -16,18 +16,19 @@ use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
     ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction,
     FormDialogAction, FormDialogController, Handled, MenuDef, MenuEvent, MenuSystem,
-    MessageDialogController,
+    MessageDialogController, TreeTableController, TreeTableControllerEvent,
 };
 use quadraui::primitives::form::focus_order;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
-    wheel_row_delta, Backend, CanvasEvent, CompletionItemMeasure, Completions, CompletionsHit,
-    CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog,
-    EditOp, Float, FloatLayout, FloatMeasure, Form, FormEvent, InteractionState, Key, MenuBar,
-    MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, Rect, RichTextPopup,
-    RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, ScrollAxis, ScrollViewEvent,
-    TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay,
-    ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, UiEvent, WidgetId,
+    wheel_row_delta, Backend, CanvasEvent, Column, CompletionItemMeasure, Completions,
+    CompletionsHit, CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement,
+    DataTableEvent, Dialog, EditOp, Float, FloatLayout, FloatMeasure, Form, FormEvent,
+    InteractionState, Key, MenuBar, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point,
+    Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, ScrollAxis,
+    ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit,
+    ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
+    TreeTableNodeData, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -35,7 +36,7 @@ use crate::drag::{
     markdown_at, scroll_scrollbar, scroll_view_at, text_display_scroll_state, tree_scroll_state,
     ActiveDrag, DataTableColumnDrag, ScrollDrag, ScrollbarDrag,
 };
-use crate::extra_paint::extra_as;
+use crate::extra_paint::{extra_as, TreeTableControllerDescriptor};
 use crate::hit::{
     chrome_hover_hit, data_table_rows_and_viewport, event_position, hit_test_painted,
     list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, HitDetail, PaintedHit,
@@ -579,6 +580,86 @@ fn focused_leaf_claims_page_keys(hit_map: &[PaintedHit], focused: WidgetId) -> b
 /// and lives in [`InteractionEngine::handle`] instead.
 pub trait EventSink {
     fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> quadraui::Reaction;
+
+    /// A `"tree_table_controller"` extra's cached [`TreeTableController`]
+    /// (`id` is the extra's own, not the event's node id) reported `event`
+    /// — [`InteractionEngine::sync_tree_tables`]/[`InteractionEngine::handle`]'s
+    /// own per-widget-id routing, mirroring the main `dispatch` above but
+    /// carrying an already wire-shaped [`TreeTableControllerWireEvent`]
+    /// rather than a [`quadraui::UiEvent`]: `quadraui::UiEvent` has no
+    /// variant for this hierarchical, id-keyed controller yet (its
+    /// flat-model `TreeTable`'s own `TreeTableEvent` carries a positional
+    /// `idx`/`path`, and has no `ChildrenRequested`/ascending-aware
+    /// `SortChanged` counterpart at all), so a binding wires this default
+    /// method to its own callback however it threads a widget-scoped
+    /// event today, once it exposes `"tree_table_controller"` over its own
+    /// FFI surface.
+    ///
+    /// Defaults to ignoring the event and reporting
+    /// [`quadraui::Reaction::Continue`] — every existing [`EventSink`] impl
+    /// (a binding's own callback bridge, a `RecordingSink` test double)
+    /// keeps compiling unchanged against this new default method until it
+    /// deliberately overrides it.
+    fn dispatch_tree_table_controller(
+        &mut self,
+        id: WidgetId,
+        event: TreeTableControllerWireEvent,
+    ) -> quadraui::Reaction {
+        let _ = (id, event);
+        quadraui::Reaction::Continue
+    }
+}
+
+/// Wire-shaped mirror of [`TreeTableControllerEvent`] — the same field
+/// shapes, but `Serialize`/`Deserialize` (`TreeTableControllerEvent` itself
+/// has neither; it's an in-crate-only `quadraui::compose` type), and
+/// `Consumed`/`Ignored` dropped: [`InteractionEngine::handle`] only ever
+/// calls [`EventSink::dispatch_tree_table_controller`] for the five
+/// variants below, folding `Consumed`/`Ignored` straight into its own
+/// `Reaction` instead (see that method's own `TreeTableController` routing
+/// blocks).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TreeTableControllerWireEvent {
+    /// Row selected — click or keyboard navigation. `id` is the selected
+    /// node's own [`quadraui::compose::NodeId`] (a plain `String`).
+    RowSelected { id: String },
+    /// Enter pressed, or a row/chevron double-clicked.
+    RowActivated { id: String },
+    /// A branch node's expand state flipped; its children were already
+    /// loaded (or this collapses).
+    ToggleExpand { id: String, expand: bool },
+    /// A lazy branch was expanded for the first time with no loaded
+    /// children — the host should fetch them and answer via
+    /// [`InteractionEngine::set_tree_table_children`].
+    ChildrenRequested { id: String },
+    /// A header click (re-)sorted every loaded level's children by `col`'s
+    /// cell text — see [`TreeTableController::header_clicked`]'s own doc
+    /// for how a host overrides the comparator via
+    /// [`InteractionEngine::set_tree_table_sort_override`].
+    SortChanged { col: usize, ascending: bool },
+}
+
+impl TreeTableControllerWireEvent {
+    /// Translates a [`TreeTableControllerEvent`] into its wire-shaped
+    /// counterpart — `None` for `Consumed`/`Ignored`, which
+    /// [`InteractionEngine::handle`]'s own callers fold into a `Reaction`
+    /// directly rather than ever handing to [`EventSink::dispatch_tree_table_controller`].
+    fn from_controller_event(event: TreeTableControllerEvent) -> Option<Self> {
+        match event {
+            TreeTableControllerEvent::RowSelected { id } => Some(Self::RowSelected { id }),
+            TreeTableControllerEvent::RowActivated { id } => Some(Self::RowActivated { id }),
+            TreeTableControllerEvent::ToggleExpand { id, expand } => {
+                Some(Self::ToggleExpand { id, expand })
+            }
+            TreeTableControllerEvent::ChildrenRequested { id } => {
+                Some(Self::ChildrenRequested { id })
+            }
+            TreeTableControllerEvent::SortChanged { col, ascending } => {
+                Some(Self::SortChanged { col, ascending })
+            }
+            TreeTableControllerEvent::Consumed | TreeTableControllerEvent::Ignored => None,
+        }
+    }
 }
 
 /// One entry in [`InteractionEngine::overlays`] — every anchored popup/
@@ -1059,6 +1140,28 @@ pub struct InteractionEngine {
     /// moves the whole stack, same caveat [`quadraui::ToastOverlay`]'s
     /// own single-`corner` field already carried.
     toast_corner: ToastCorner,
+    /// One [`TreeTableController`] per `"tree_table_controller"` extra
+    /// painted this (or a prior) frame, keyed by the extra's own id —
+    /// generalizes [`Self::form_controllers`]'s "one stateful controller
+    /// per widget id, rebuilt every render" pattern to this hierarchical
+    /// model. [`Self::sync_tree_tables`] seeds a newly-created entry from
+    /// the extra's own `nodes`/`selected_id` exactly once
+    /// ([`crate::extra_paint::TreeTableControllerDescriptor::seed_controller`]);
+    /// from then on the controller owns its own expand/selection/sort
+    /// state, same as [`Self::form_controllers`] owns `scroll_offset` from
+    /// its own creation onward.
+    tree_table_controllers: RefCell<HashMap<WidgetId, TreeTableController>>,
+    /// The absolute bounds and current `columns` [`Self::sync_tree_tables`]
+    /// most recently painted each [`Self::tree_table_controllers`] entry
+    /// with — [`TreeTableController::handle`] takes both as plain
+    /// arguments rather than storing them (see that method's own doc), so
+    /// [`Self::handle`]'s routing needs both back to call it.
+    tree_table_rects: RefCell<HashMap<WidgetId, (Rect, Vec<Column>)>>,
+    /// This frame's `"tree_table_controller"` extra ids, in the paint
+    /// order [`Self::sync_tree_tables`] saw them — mirrors
+    /// [`Self::form_order`]'s own doc for why a `MouseDown` claim loop
+    /// walks this rather than the `HashMap`s above directly.
+    tree_table_order: RefCell<Vec<WidgetId>>,
 }
 
 impl InteractionEngine {
@@ -2178,6 +2281,92 @@ impl InteractionEngine {
         *self.form_order.borrow_mut() = seen;
     }
 
+    /// The [`crate::extra_paint::TreeTableControllerDescriptor`]
+    /// counterpart of [`Self::sync_forms`]: every `"tree_table_controller"`
+    /// extra painted this frame gets its own cached
+    /// [`TreeTableController`] (creating and seeding one the first time an
+    /// id is seen, via [`crate::extra_paint::TreeTableControllerDescriptor::seed_controller`]),
+    /// repainted from that controller's own live expand/selection/sort
+    /// state instead of the plain, stateless [`crate::extra_paint::ExtraPaint::paint`]
+    /// every extra gets by default. Call once per render, after the extras
+    /// loop in `draw_bands`/`paint_leaf` already painted the plain
+    /// fallback.
+    ///
+    /// `has_focus`/`show_scrollbar`/`bordered` ARE reconciled every frame
+    /// (same as [`Self::sync_forms`]'s own `has_focus`): they're cosmetic,
+    /// host-echoed flags with no internal state of the controller's own to
+    /// clobber. `nodes`/`selected_id` are not — see [`Self::tree_table_controllers`]'s
+    /// own doc for why those are seeded once, on creation, and never again.
+    ///
+    /// A cached entry whose id wasn't painted this frame is dropped, so a
+    /// tree table that stops rendering doesn't keep answering events
+    /// forever.
+    pub fn sync_tree_tables(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
+        let mut seen = Vec::new();
+        for hit in hits {
+            let PaintedHit::Extra {
+                id, area, extra, ..
+            } = hit
+            else {
+                continue;
+            };
+            let Some(descriptor) = extra_as::<TreeTableControllerDescriptor>(extra) else {
+                continue;
+            };
+            seen.push(*id);
+            let engine_focused = backend.focus_manager().focused() == Some(id);
+            let mut controllers = self.tree_table_controllers.borrow_mut();
+            let controller = controllers
+                .entry(*id)
+                .or_insert_with(|| descriptor.seed_controller());
+            controller.set_has_focus(descriptor.has_focus || engine_focused);
+            controller.set_show_scrollbar(descriptor.show_scrollbar);
+            controller.set_bordered(descriptor.bordered);
+            controller.render(backend, *area, descriptor.columns.clone());
+            self.tree_table_rects
+                .borrow_mut()
+                .insert(*id, (*area, descriptor.columns.clone()));
+        }
+        self.tree_table_controllers
+            .borrow_mut()
+            .retain(|id, _| seen.contains(id));
+        self.tree_table_rects
+            .borrow_mut()
+            .retain(|id, _| seen.contains(id));
+        *self.tree_table_order.borrow_mut() = seen;
+    }
+
+    /// Answers a [`TreeTableControllerWireEvent::ChildrenRequested`] for
+    /// the `"tree_table_controller"` cached under `id`: attaches
+    /// `children` to `node_id` via [`TreeTableController::set_children`]
+    /// (found anywhere in the tree, not just at the top level — see that
+    /// method's own doc) and clears it from the controller's own pending-
+    /// request set. A no-op if `id` names no cached controller (it hasn't
+    /// been painted this frame, or at all yet).
+    pub fn set_tree_table_children(
+        &self,
+        id: WidgetId,
+        node_id: &str,
+        children: Vec<TreeTableNodeData>,
+    ) {
+        if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(&id) {
+            controller.set_children(&node_id.to_string(), children);
+        }
+    }
+
+    /// Overrides the comparator a [`TreeTableControllerWireEvent::SortChanged`]
+    /// this engine already emitted applied by default: replaces every
+    /// loaded node under `id`'s cached controller with `nodes`, already
+    /// ordered however the host likes (numeric, locale-aware, ...) — a
+    /// thin [`TreeTableController::set_nodes`] forward, named for what a
+    /// binding's own sort-override call does with it. A no-op if `id`
+    /// names no cached controller.
+    pub fn set_tree_table_sort_override(&self, id: WidgetId, nodes: Vec<TreeTableNodeData>) {
+        if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(&id) {
+            controller.set_nodes(nodes);
+        }
+    }
+
     /// Tab/Shift-Tab inside a main-tree `"form"` extra that currently
     /// holds engine focus — called from [`Self::handle`]'s own
     /// `KeyPressed` routing once [`Self::tab_stops`]'s own exclusion (see
@@ -2381,6 +2570,35 @@ impl InteractionEngine {
             repainted.cursor_col = live.1;
             backend.draw_text_input(*area, &repainted);
         }
+    }
+
+    /// Translates a [`TreeTableController::handle`] outcome into the
+    /// `Reaction` [`Self::handle`]'s own `"tree_table_controller"` routing
+    /// blocks return: `None` for [`TreeTableControllerEvent::Ignored`] —
+    /// nothing claimed the event, so the caller's own fallback keeps
+    /// running, mirroring every `Handled::Ignored` check the `"form"`
+    /// blocks already make. `Some(Reaction::Redraw)` for `Consumed`;
+    /// `Some(reaction)` for each of the five real variants, folding in
+    /// whatever [`EventSink::dispatch_tree_table_controller`] itself
+    /// returns.
+    fn dispatch_tree_table_outcome(
+        &self,
+        id: WidgetId,
+        outcome: TreeTableControllerEvent,
+        sink: &mut dyn EventSink,
+    ) -> Option<quadraui::Reaction> {
+        use quadraui::Reaction;
+        if matches!(outcome, TreeTableControllerEvent::Ignored) {
+            return None;
+        }
+        Some(
+            match TreeTableControllerWireEvent::from_controller_event(outcome) {
+                Some(wire_event) => {
+                    Reaction::Redraw.merge(sink.dispatch_tree_table_controller(id, wire_event))
+                }
+                None => Reaction::Redraw,
+            },
+        )
     }
 
     /// The single hit-test/dispatch pass over [`Self::overlays`],
@@ -2773,6 +2991,17 @@ impl InteractionEngine {
                     }
                 }
             }
+            // Same reset for a `"tree_table_controller"` extra's own
+            // scrollbar-thumb drag — `TreeTableController::handle`'s own
+            // `MouseUp` arm ends it unconditionally too.
+            for id in self.tree_table_order.borrow().iter() {
+                let ctx = self.tree_table_rects.borrow().get(id).cloned();
+                if let Some((rect, columns)) = ctx {
+                    if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(id) {
+                        let _ = controller.handle(&event, backend, rect, columns);
+                    }
+                }
+            }
         }
 
         // A tooltip is non-interactive chrome, not a modal-input state
@@ -2979,6 +3208,40 @@ impl InteractionEngine {
             }
         }
 
+        // A `KeyPressed` landing on a focused `"tree_table_controller"`
+        // extra routes through its own cached [`TreeTableController`] —
+        // `TreeTableController::handle` does its own internal
+        // `Ignored`-when-nothing-to-do gate (it has no generic `KeyPressed`
+        // arm at all beyond [`crate::host`]'s own navigation keys), so
+        // trying this unconditionally is safe even when no tree-table
+        // controller is focused: `tree_table_rects` then has no entry for
+        // the focused id. Unlike `"form"`, there is no Tab/Shift-Tab
+        // special case — [`TreeTableController::handle`] never claims
+        // Tab/BackTab, so the generic cross-widget cycle already handles
+        // leaving it.
+        if matches!(event, UiEvent::KeyPressed { .. }) {
+            if let Some(focused) = backend.focus_manager().focused().copied() {
+                let ctx = self.tree_table_rects.borrow().get(&focused).cloned();
+                if let Some((rect, columns)) = ctx {
+                    let outcome = self
+                        .tree_table_controllers
+                        .borrow_mut()
+                        .get_mut(&focused)
+                        .map(|controller| {
+                            controller.set_has_focus(true);
+                            controller.handle(&event, backend, rect, columns)
+                        });
+                    if let Some(outcome) = outcome {
+                        if let Some(reaction) =
+                            self.dispatch_tree_table_outcome(focused, outcome, sink)
+                        {
+                            return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
+                        }
+                    }
+                }
+            }
+        }
+
         // A `MouseDown` lands on at most one `"form"` extra's own `rect`
         // (`FormController::handle_event`'s own `click_inner` returns `Ignored`,
         // with no mutation, for every other one — see its doc), so trying
@@ -3044,6 +3307,60 @@ impl InteractionEngine {
             }
         }
 
+        // A `MouseDown` or a `DoubleClick` (the second click of a pair
+        // `DoubleClickDetector` folded, e.g. the mouse half of
+        // `TreeTableControllerEvent::RowActivated`) lands on at most one
+        // `"tree_table_controller"` extra's own `rect` —
+        // [`TreeTableController::handle`]'s own `click`/`click_scrollbar`
+        // return `Ignored` for a position outside it — so trying every
+        // cached controller, in `tree_table_order`'s deterministic paint
+        // order, and stopping at the first non-`Ignored` result mirrors
+        // the `"form"` claim loop just above.
+        if matches!(
+            event,
+            UiEvent::MouseDown { .. } | UiEvent::DoubleClick { .. }
+        ) {
+            let claim = self
+                .tree_table_order
+                .borrow()
+                .iter()
+                .filter_map(|id| {
+                    self.tree_table_rects
+                        .borrow()
+                        .get(id)
+                        .cloned()
+                        .map(|ctx| (*id, ctx))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .find_map(|(id, (rect, columns))| {
+                    let outcome = self
+                        .tree_table_controllers
+                        .borrow_mut()
+                        .get_mut(&id)
+                        .map(|controller| controller.handle(&event, backend, rect, columns))?;
+                    (!matches!(outcome, TreeTableControllerEvent::Ignored)).then_some((id, outcome))
+                });
+            if let Some((id, outcome)) = claim {
+                // Mirrors the `"form"` claim loop above: a click a
+                // `TreeTableController` just claimed also moves
+                // engine-level focus to the extra's own id, so the
+                // `KeyPressed` routing above can find it on the very next
+                // keystroke.
+                let mut focus_reaction = Reaction::Continue;
+                if backend.set_focus(Some(id)) {
+                    focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(id)), None);
+                    if matches!(focus_reaction, Reaction::Exit) {
+                        return focus_reaction;
+                    }
+                }
+                let reaction = self
+                    .dispatch_tree_table_outcome(id, outcome, sink)
+                    .unwrap_or(Reaction::Redraw);
+                return focus_reaction.merge(reaction);
+            }
+        }
+
         // A move with the left button held continues whichever `"form"`
         // extra's own scrollbar-thumb drag (if any) the `MouseDown` claim
         // above armed — `FormController::handle_event`'s `MouseMoved` arm
@@ -3081,6 +3398,38 @@ impl InteractionEngine {
             }
         }
 
+        // A move with the left button held continues whichever
+        // `"tree_table_controller"` extra's own scrollbar-thumb drag (if
+        // any) the `MouseDown` claim above armed — mirrors the `"form"`
+        // block just above; [`TreeTableController::handle`]'s own
+        // `MouseMoved` arm no-ops (`Ignored`) for every controller with no
+        // active drag.
+        if matches!(
+            event,
+            UiEvent::MouseMoved {
+                buttons: quadraui::ButtonMask { left: true, .. },
+                ..
+            }
+        ) {
+            let mut consumed = false;
+            for id in self.tree_table_order.borrow().iter() {
+                let ctx = self.tree_table_rects.borrow().get(id).cloned();
+                if let Some((rect, columns)) = ctx {
+                    if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(id) {
+                        if matches!(
+                            controller.handle(&event, backend, rect, columns),
+                            TreeTableControllerEvent::Consumed
+                        ) {
+                            consumed = true;
+                        }
+                    }
+                }
+            }
+            if consumed {
+                return Reaction::Redraw;
+            }
+        }
+
         // A wheel `Scroll` landing inside a `"form"` extra's own rect
         // scrolls it directly through the cached `FormController` — unlike
         // the tree/text-display wheel-scroll translation below, this never
@@ -3103,6 +3452,36 @@ impl InteractionEngine {
                     if matches!(
                         controller.handle_event(&event, backend, rect),
                         Handled::Consumed | Handled::Event(FormControllerAction::ScrollChanged)
+                    ) {
+                        return Reaction::Redraw;
+                    }
+                }
+            }
+        }
+
+        // A wheel `Scroll` landing inside a `"tree_table_controller"`
+        // extra's own rect scrolls it directly through the cached
+        // `TreeTableController` — mirrors the `"form"` block just above.
+        if let UiEvent::Scroll { position, .. } = &event {
+            let claim = self
+                .tree_table_order
+                .borrow()
+                .iter()
+                .filter_map(|id| {
+                    self.tree_table_rects
+                        .borrow()
+                        .get(id)
+                        .cloned()
+                        .map(|ctx| (*id, ctx))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .find(|(_, (rect, _))| rect.contains(*position));
+            if let Some((id, (rect, columns))) = claim {
+                if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(&id) {
+                    if matches!(
+                        controller.handle(&event, backend, rect, columns),
+                        TreeTableControllerEvent::Consumed
                     ) {
                         return Reaction::Redraw;
                     }
@@ -4036,19 +4415,23 @@ mod tests {
 
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, MouseButton, NamedKey,
-        Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split, StyledSpan, TabBar, TabBarEvent,
-        TabBarHit, TextDisplay, TextDisplayLine, TextInput, ToolbarEvent, TreeEvent, TreeView,
-        UiEvent, WidgetId,
+        AppLogic, Backend, Button, Column, ColumnAlign, ColumnWidth, DataTable, Key, ListView,
+        Modifiers, MouseButton, NamedKey, Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split,
+        StyledSpan, StyledText, TabBar, TabBarEvent, TabBarHit, TextDisplay, TextDisplayLine,
+        TextInput, ToolbarEvent, TreeEvent, TreeView, UiEvent, WidgetId,
     };
 
-    use super::{style_token, theme_token, viewport_rect, EventSink, InteractionEngine};
+    use super::{
+        style_token, theme_token, viewport_rect, EventSink, InteractionEngine,
+        TreeTableControllerWireEvent,
+    };
     use crate::drag::find_split_tree_layout;
+    use crate::extra_paint::{TreeTableControllerDescriptor, TreeTableControllerNode};
     use crate::hit::{HitDetail, PaintedHit};
     use crate::host::{
-        resolve_data_table_cursor, resolve_layout_node, resolve_layout_tabs_active,
-        resolve_list_cursor, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
-        resolve_tree_expansion,
+        render_overlays, resolve_data_table_cursor, resolve_layout_node,
+        resolve_layout_tabs_active, resolve_list_cursor, resolve_split_ratio,
+        resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
     };
     use crate::layout::{
         LayoutContainer, LayoutLeaf, LayoutNode, LayoutPanel, LayoutScroll, LayoutSplit,
@@ -4065,11 +4448,25 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         dispatched: Vec<(UiEvent, Option<HitDetail>)>,
+        /// Every [`EventSink::dispatch_tree_table_controller`] call, in
+        /// order — mirrors [`Self::dispatched`] for the one `EventSink`
+        /// method whose payload isn't a [`UiEvent`] (see that trait
+        /// method's own doc for why).
+        tree_table_dispatched: Vec<(WidgetId, TreeTableControllerWireEvent)>,
     }
 
     impl EventSink for RecordingSink {
         fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> Reaction {
             self.dispatched.push((event.clone(), hit_detail.cloned()));
+            Reaction::Continue
+        }
+
+        fn dispatch_tree_table_controller(
+            &mut self,
+            id: WidgetId,
+            event: TreeTableControllerWireEvent,
+        ) -> Reaction {
+            self.tree_table_dispatched.push((id, event));
             Reaction::Continue
         }
     }
@@ -4294,6 +4691,260 @@ mod tests {
             self.engine
                 .handle(event, backend, &mut *self.sink.borrow_mut())
         }
+    }
+
+    /// A single `"tree_table_controller"` extra, filling the whole
+    /// viewport via a bare [`LayoutNode::Leaf`] (same embedding
+    /// [`FormBetweenTwoButtonsLogic`] uses, minus the sibling buttons) —
+    /// this per-widget-id controller cache's own end-to-end acceptance
+    /// coverage: click/key routing through [`InteractionEngine::handle`],
+    /// expand → `ChildrenRequested` →
+    /// [`InteractionEngine::set_tree_table_children`] → header-click sort
+    /// → selection survives the sort by node id, all through the real
+    /// `event -> hit -> semantic` path, with no host-language FFI type in
+    /// scope.
+    struct TreeTableControllerLogic {
+        descriptor: TreeTableControllerDescriptor,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for TreeTableControllerLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let area = viewport_rect(backend);
+            let content = LayoutNode::Leaf(LayoutLeaf {
+                id: self.descriptor.id.as_str().to_string(),
+                descriptor: LeafDescriptor::Extra(Rc::new(self.descriptor.clone())),
+                scroll_px: None,
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &content, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            render_overlays(&self.engine, backend, hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// A single lazy-branch root `"dir"` — matches
+    /// [`quadraui::TreeTableNodeData::lazy_branch`]'s own "has_children,
+    /// no loaded children yet" shape, seeding a fresh
+    /// [`TreeTableControllerLogic`].
+    fn lazy_root_descriptor() -> TreeTableControllerDescriptor {
+        TreeTableControllerDescriptor {
+            id: WidgetId::new("tt"),
+            columns: vec![Column {
+                title: "Name".into(),
+                width: ColumnWidth::Flex(1.0),
+                align: ColumnAlign::Left,
+            }],
+            nodes: vec![TreeTableControllerNode {
+                id: "dir".to_string(),
+                cells: vec![StyledText::plain("dir")],
+                icon: None,
+                has_children: true,
+                children: None,
+            }],
+            selected_id: Some("dir".to_string()),
+            has_focus: true,
+            show_scrollbar: true,
+            bordered: false,
+            folders_first: false,
+        }
+    }
+
+    /// End-to-end acceptance coverage for the `TreeTableController`
+    /// per-widget-id seam: expand a lazy branch → exactly one
+    /// `ChildrenRequested` → [`InteractionEngine::set_tree_table_children`]
+    /// fills the level → a header click sorts children under their
+    /// parent, not into one flat list → selection survives the sort by
+    /// node id, not by its (now-changed) position.
+    #[test]
+    fn tree_table_controller_expand_fetch_sort_and_selection_round_trip() {
+        let logic = TreeTableControllerLogic {
+            descriptor: lazy_root_descriptor(),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        // The row click and the later header click land close enough in
+        // time and position that `DoubleClickDetector`'s default folding
+        // would otherwise merge them into a `UiEvent::DoubleClick` --
+        // irrelevant to this test, which only drives plain clicks.
+        driver.set_double_click_folding(false);
+        driver.render();
+
+        // Click the "dir" row (the only row painted so far) to
+        // click-focus the extra -- a keyboard Space needs engine focus on
+        // it first, same as any other focusable primitive.
+        driver.click(10.0, 1.5);
+        driver.render();
+        assert_eq!(
+            driver.backend().focus_manager().focused(),
+            Some(&WidgetId::new("tt")),
+            "clicking the row should click-focus the tree-table-controller extra"
+        );
+
+        // Space on the selected lazy branch expands it -- no loaded
+        // children yet, so this requests them exactly once.
+        driver.type_char(' ');
+        driver.render();
+        {
+            let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
+            let requests = dispatched
+                .iter()
+                .filter(|(_, ev)| {
+                    matches!(
+                        ev,
+                        TreeTableControllerWireEvent::ChildrenRequested { id } if id == "dir"
+                    )
+                })
+                .count();
+            assert_eq!(
+                requests, 1,
+                "expanding a lazy branch should request its children exactly once: {:?}",
+                dispatched
+            );
+        }
+
+        // Answer the request: fills "dir"'s level with two children, in
+        // an intentionally unsorted order -- through the same wire-node
+        // decode a `"tree_table_controller"` extra's own `nodes` use.
+        let children = crate::host::tree_table_controller_nodes_from_wire(vec![
+            TreeTableControllerNode {
+                id: "zebra".to_string(),
+                cells: vec![StyledText::plain("zebra")],
+                icon: None,
+                has_children: false,
+                children: None,
+            },
+            TreeTableControllerNode {
+                id: "apple".to_string(),
+                cells: vec![StyledText::plain("apple")],
+                icon: None,
+                has_children: false,
+                children: None,
+            },
+        ]);
+        driver
+            .app()
+            .engine
+            .set_tree_table_children(WidgetId::new("tt"), "dir", children);
+        driver.render();
+
+        // Down from "dir" selects its first (still unsorted) child,
+        // "zebra" -- picked deliberately so the later "selection survives
+        // the sort" assertion is a genuine id-keyed survival, not a lucky
+        // positional coincidence.
+        driver.press_named(NamedKey::Down);
+        driver.render();
+        {
+            let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
+            assert!(
+                dispatched.iter().any(|(_, ev)| matches!(
+                    ev,
+                    TreeTableControllerWireEvent::RowSelected { id } if id == "zebra"
+                )),
+                "Down from \"dir\" should select its first (unsorted) child \"zebra\": {:?}",
+                dispatched
+            );
+        }
+        driver.app().sink.borrow_mut().tree_table_dispatched.clear();
+
+        // A header click sorts every loaded level's children ascending --
+        // "zebra" moves from index 0 to index 1 among "dir"'s children,
+        // but must stay selected by id, not by its old position.
+        driver.click(10.0, 0.5);
+        driver.render();
+        {
+            let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
+            assert!(
+                dispatched.iter().any(|(_, ev)| matches!(
+                    ev,
+                    TreeTableControllerWireEvent::SortChanged {
+                        col: 0,
+                        ascending: true
+                    }
+                )),
+                "a header click should sort ascending by column 0: {:?}",
+                dispatched
+            );
+        }
+
+        let controllers = driver.app().engine.tree_table_controllers.borrow();
+        let controller = controllers.get(&WidgetId::new("tt")).unwrap();
+        assert_eq!(
+            controller.selected_id(),
+            Some(&"zebra".to_string()),
+            "selection should survive the sort by node id"
+        );
+        let table = controller.flatten(vec![Column {
+            title: "Name".into(),
+            width: ColumnWidth::Flex(1.0),
+            align: ColumnAlign::Left,
+        }]);
+        assert_eq!(
+            table
+                .table
+                .rows
+                .iter()
+                .map(|r| r.cells[0].spans[0].text.clone())
+                .collect::<Vec<_>>(),
+            vec!["dir".to_string(), "apple".to_string(), "zebra".to_string()],
+            "children should sort ascending under their parent, not flatten into one list"
+        );
+        assert_eq!(
+            table.table.selected_idx,
+            Some(2),
+            "\"zebra\" is now at flattened index 2 after the sort"
+        );
+    }
+
+    /// `UiEvent::DoubleClick` — the event `DoubleClickDetector` folds a
+    /// real second close-together `MouseDown` into, with default folding
+    /// left on (`driver.double_click` delivers the folded shape directly,
+    /// deterministically) — must reach the cached `TreeTableController`
+    /// the same way a plain `MouseDown` does, not fall through unclaimed.
+    /// A dropped `DoubleClick` here would mean `RowActivated`'s mouse half
+    /// never fires and a rapid second click near the first is silently
+    /// lost.
+    #[test]
+    fn tree_table_controller_double_click_activates_row() {
+        let logic = TreeTableControllerLogic {
+            descriptor: lazy_root_descriptor(),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+
+        driver.double_click(10.0, 1.5);
+        driver.render();
+
+        assert_eq!(
+            driver.backend().focus_manager().focused(),
+            Some(&WidgetId::new("tt")),
+            "a DoubleClick claimed by the tree-table-controller should also click-focus it"
+        );
+        let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
+        assert!(
+            dispatched.iter().any(|(_, ev)| matches!(
+                ev,
+                TreeTableControllerWireEvent::RowActivated { id } if id == "dir"
+            )),
+            "a DoubleClick on the row should activate it: {:?}",
+            dispatched
+        );
     }
 
     fn text_input_field(id: &str) -> quadraui::FormField {

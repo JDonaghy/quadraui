@@ -275,9 +275,12 @@ pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{
     message_dialog_options_from_buttons, style_token, theme_token, DialogContentSize, EventSink,
-    InteractionEngine,
+    InteractionEngine, TreeTableControllerWireEvent,
 };
-pub use extra_paint::{decode_extra_primitive, extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
+pub use extra_paint::{
+    decode_extra_primitive, extra_as, ExtraPaint, TreeTableControllerDescriptor,
+    TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS,
+};
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
 pub use hit::{HitDetail, PaintedHit, ScrollChildHit};
@@ -293,10 +296,10 @@ pub use host::{
     resolve_layout_node, resolve_layout_tabs_active, resolve_list_cursor, resolve_render_refs,
     resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
     resolve_tree_expansion, step_driver, take_pending_error, text_display_from_lines,
-    theme_color_value, toast_corner, widget_state_snapshot, window_close_reaction, with_tray,
-    with_window, BindingHost, ErasedShellDriver, GuardedFailure, OverrideError,
-    WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
-    SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    theme_color_value, toast_corner, tree_table_controller_nodes_from_wire, widget_state_snapshot,
+    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, GuardedFailure,
+    OverrideError, WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
+    SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::{grid_cell_rects, LayoutGrid};
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
