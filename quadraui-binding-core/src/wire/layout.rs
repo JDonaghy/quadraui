@@ -30,6 +30,7 @@ use super::style::{style_classes_from_value, style_override_from_value, StyleCon
 use super::value::{
     check_node_sibling_keys, check_unknown_keys, must_be_dict, obj_get, opt_bool, opt_f32,
     opt_usize, required_dict, required_f32, required_list, required_str, DecodeDiagnostics,
+    DRAG_ROLE_KEYS,
 };
 
 /// `"horizontal"`/`"vertical"` → [`SplitDirection`], shared by a top-level
@@ -50,6 +51,33 @@ fn split_direction(context: &str, orientation: &str) -> Result<SplitDirection, D
             &SPLIT_ORIENTATIONS,
         )),
     }
+}
+
+/// Rejects `value` carrying either of [`DRAG_ROLE_KEYS`] when it is also
+/// one of [`LAYOUT_NODE_KEYS`]'s nine container kinds — a leaf dict (no
+/// container kind key present) is left alone here, since
+/// [`super::leaf::layout_leaf_from_value`] is the one place `"draggable"`/
+/// `"drop_target"` are valid. Both are leaf-only wire keys, so a container
+/// setting one is a structurally invalid dict, not merely an unrecognised
+/// sibling key — a hard [`DecodeError`] regardless of [`DecodeDiagnostics`]'s
+/// warn/strict policy, the same way a leaf naming two descriptor kinds at
+/// once is unconditional rather than policy-gated.
+fn reject_drag_role_keys_on_container(what: &str, value: &Value) -> Result<(), DecodeError> {
+    if !LAYOUT_NODE_KEYS
+        .iter()
+        .any(|kind| obj_get(value, kind).is_some())
+    {
+        return Ok(());
+    }
+    for key in DRAG_ROLE_KEYS {
+        if obj_get(value, key).is_some() {
+            return Err(DecodeError::borrow(
+                what,
+                format!("{key:?} is only valid on a leaf node, not a container"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 // ─── Layout tree decode ─────────────────────────────────────────────────────
@@ -136,6 +164,7 @@ fn layout_node_from_value_inner(
     styles: StyleContext<'_>,
     diagnostics: &DecodeDiagnostics,
 ) -> Result<LayoutNode, DecodeError> {
+    reject_drag_role_keys_on_container(what, value)?;
     if let Some(v) = obj_get(value, "row") {
         check_node_sibling_keys(diagnostics, what, "\"row\"", value, &ROW_SHAPE_KEYS)?;
         let children = layout_children_from_value(what, v, "\"row\"", styles, diagnostics)?;
