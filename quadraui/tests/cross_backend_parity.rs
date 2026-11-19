@@ -42,10 +42,6 @@ use appshell_demo::{ActivityProbe, AppShellDemo};
 mod data_table_app;
 use data_table_app::DataTableApp;
 
-#[path = "../examples/common/panel_app.rs"]
-mod panel_app;
-use panel_app::PanelApp;
-
 #[path = "../examples/common/minimap_app.rs"]
 mod minimap_app;
 use minimap_app::MinimapApp;
@@ -338,53 +334,6 @@ fn appshell_demo_parity_tui_and_gtk_agree_on_logical_state() {
         vec![false, true, true],
         "expected: no Source Control mention before activating the cursor item, \
          a mention after Tab+j+j+Enter switches to panel:git, and exited after 'q'"
-    );
-}
-
-// ─── ConformanceDriver: a shared `drag_text` step ───────────────────────────
-//
-// The shared test body defines one generic test body with one `drag_text` step,
-// constructed via the trait's `LogicalViewport`-aligned `new_fixture` and run
-// against both drivers unmodified.
-
-/// Drag-select from "brown" (content line 0) to "wizards" (content line 3)
-/// across `PanelApp`'s selectable content block — the same fixture and
-/// substrings `tests/tui_example_driver.rs::panel_drag_selects_text_and_ctrl_c_copies_it`
-/// already proves work — and report whether the shell reacted with a
-/// "Selecting row…" status message, i.e. the drag actually started a
-/// `TextSelectionChanged` sequence rather than a no-op click.
-fn run_panel_drag_select_script<D: ConformanceDriver<App = PanelApp>>(d: &mut D) -> bool {
-    let before = d.screen_has("Selecting row");
-    d.drag_text("brown", "wizards");
-    let after = d.screen_has("Selecting row");
-    !before && after
-}
-
-#[test]
-fn panel_drag_text_selects_across_lines_parity_tui_and_gtk_agree() {
-    // `new_fixture` is `ConformanceDriver`'s LogicalViewport-aligned constructor
-    // — the same 80×24 logical size on both backends, each interpreting it in
-    // its own native units.
-    let mut tui = TuiDriver::new_fixture(PanelApp::new(), LogicalViewport::new(80, 24));
-    let mut gtk = GtkDriver::new_fixture(PanelApp::new(), LogicalViewport::new(80, 24));
-
-    let tui_selected = run_panel_drag_select_script(&mut tui);
-    let gtk_selected = run_panel_drag_select_script(&mut gtk);
-
-    assert!(
-        tui_selected,
-        "TUI: dragging from \"brown\" to \"wizards\" should start a text \
-         selection spanning both content lines:\n{}",
-        tui.screen()
-    );
-    assert!(
-        gtk_selected,
-        "GTK: dragging from \"brown\" to \"wizards\" should start a text \
-         selection spanning both content lines"
-    );
-    assert_eq!(
-        tui_selected, gtk_selected,
-        "both backends should agree that drag_text produced a selection"
     );
 }
 

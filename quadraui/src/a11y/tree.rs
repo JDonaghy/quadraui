@@ -1035,8 +1035,6 @@ fn describe(content: &OwnedContent) -> Described {
         OwnedContent::Scrollbar(sb) => Described::from_primitive(sb),
         OwnedContent::Split(split) => Described::from_primitive(split),
         OwnedContent::SplitTree(tree) => Described::from_primitive(tree),
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
-        OwnedContent::Panel(panel) => Described::from_primitive(panel),
         OwnedContent::SidebarPanel(panel) => Described::from_primitive(panel),
         OwnedContent::Editor(editor) => Described::from_primitive(editor),
         OwnedContent::TextInput(ti) => Described::from_primitive(ti),
@@ -1104,8 +1102,6 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::Form(_) => "Form",
         OwnedContent::MenuBar(_) => "Menu bar",
         OwnedContent::Split(_) => "Split",
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
-        OwnedContent::Panel(_) => "Panel",
         OwnedContent::Scrollbar(_) => "Scrollbar",
         OwnedContent::Palette(_) => "Palette",
         OwnedContent::Tooltip(_) => "Tooltip",

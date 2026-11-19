@@ -36,7 +36,6 @@ use crate::demos::message_dialog::MessageDialogDemo;
 use crate::demos::message_list::MessageListDemo;
 use crate::demos::minimap::MinimapDemo;
 use crate::demos::palette::PaletteDemo;
-use crate::demos::panel::PanelDemo;
 use crate::demos::pipeline::PipelineDemo;
 use crate::demos::search_panel::SearchPanelDemo;
 use crate::demos::sidebar::SidebarDemo;
@@ -83,7 +82,6 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         Box::new(StatusBarDemo::new()),
         Box::new(TabBarDemo::new()),
         Box::new(BottomPanelDemo::new()),
-        Box::new(PanelDemo::new()),
         Box::new(SidebarDemo::new()),
         Box::new(SplitDemo::new()),
         Box::new(FloatDemo::new()),

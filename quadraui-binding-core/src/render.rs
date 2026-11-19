@@ -413,13 +413,12 @@ fn text_display_region(
 /// `Backend::draw_tab_bar_layout`, the same strip every backend already
 /// shares for the Rust-side `TabBar` primitive) and recurses into the
 /// remaining area with the selected tab's content, so a tab group is just a
-/// `Split` whose panes are each a `Tabs`. A `Panel`/`SidebarPanel` paints its
-/// chrome (title bar + actions, or toolbar) via `Backend::draw_panel`/
-/// `Backend::draw_sidebar_panel_interactive` and recurses into
-/// `content_bounds` with its one content subtree; a `SplitTree` paints its
-/// dividers via `Backend::draw_split_tree` and recurses into each resolved
-/// leaf rect. All four record a [`PaintedHit`] for their own chrome
-/// (divider / title bar / action button / toolbar button), same as `Split`,
+/// `Split` whose panes are each a `Tabs`. A `SidebarPanel` paints its
+/// chrome (toolbar) via `Backend::draw_sidebar_panel_interactive` and
+/// recurses into `content_bounds` with its one content subtree; a
+/// `SplitTree` paints its dividers via `Backend::draw_split_tree` and
+/// recurses into each resolved leaf rect. All three record a [`PaintedHit`]
+/// for their own chrome (divider / toolbar button), same as `Split`,
 /// so a later pointer event can resolve against it. A `Grid` resolves its
 /// `columns`/`rows` tracks into cell rects via
 /// [`crate::layout::grid_cell_rects`] and recurses into each with the
@@ -566,29 +565,6 @@ pub fn paint_layout(
                     chrome_interaction,
                 );
             }
-        }
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own plumbing.
-        LayoutNode::Panel(panel_node) => {
-            let char_width = backend.char_width();
-            let line_height = backend.line_height();
-            let area = panel_node.spacing.inset(area, char_width, line_height);
-            let layout = backend.draw_panel(area, &panel_node.panel);
-            // Pushed before recursing into content, same reasoning as
-            // `LayoutNode::Split`'s own push above: a descendant primitive's
-            // more specific hit wins over this chrome hit (title bar /
-            // action button) only when nothing inside `content_bounds`
-            // claims the point first.
-            hits.push(PaintedHit::Panel {
-                id: panel_node.panel.id,
-                layout: layout.clone(),
-            });
-            paint_layout(
-                backend,
-                layout.content_bounds,
-                &panel_node.content,
-                hits,
-                chrome_interaction,
-            );
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
             let layout = backend.draw_sidebar_panel_interactive(
@@ -1065,7 +1041,7 @@ pub(crate) struct ScrollMetrics {
 /// `SectionSize` is still a relative share with no intrinsic length of its
 /// own, so it keeps falling through to [`natural_size`]. For a `Row`/
 /// `Column` on the cross axis, the max over its children's own natural
-/// length along `axis`. For anything else (`Split`/`Tabs`/`Panel`/
+/// length along `axis`. For anything else (`Split`/`Tabs`/
 /// `SidebarPanel`/`SplitTree`, or a nested `Scroll`), the same one-unit
 /// fallback a `Leaf` with no intrinsic size gets — deeper measurement of
 /// those node kinds as `Scroll` content is unimplemented today. `node` is
@@ -1439,7 +1415,7 @@ impl NaturalSize {
 /// method's own impls — the handful of viewport-filling/multi-cell-grid
 /// ones that don't fall back to that method's own `(None, None)`
 /// default). Every other node kind (a nested `Row`/`Column`/`Split`/
-/// `Tabs`/`Panel`/`SidebarPanel`/`SplitTree`) has no cheap measurement
+/// `Tabs`/`SidebarPanel`/`SplitTree`) has no cheap measurement
 /// at this layer and reports [`None`] on both axes — see
 /// [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for how each
 /// degrades a `None`.
@@ -1883,7 +1859,7 @@ pub(crate) fn apply_split_gap(layout: &mut SplitLayout, horizontal: bool, gap: f
 /// for the margin-then-padding rule and why `char_width`/`line_height` (the
 /// painting backend's own `Backend::char_width()`/`Backend::line_height()`)
 /// are needed. Kept as its own name for every `Row`/`Column` call site;
-/// `Split`/`Tabs`/`Panel` call `Spacing::inset` directly since they have no
+/// `Split`/`Tabs` call `Spacing::inset` directly since they have no
 /// [`LayoutContainer`] to unwrap it from.
 fn inset_for_spacing(
     area: Rect,
@@ -2220,7 +2196,6 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
                 collect_leaf_tooltips(&entry.content, out);
             }
         }
-        LayoutNode::Panel(panel_node) => collect_leaf_tooltips(&panel_node.content, out),
         LayoutNode::SidebarPanel(sidebar_node) => collect_leaf_tooltips(&sidebar_node.content, out),
         LayoutNode::SplitTree(split_tree) => {
             for leaf in &split_tree.leaves {
@@ -2510,7 +2485,7 @@ mod tests {
         assert_eq!(rects[1].x - (rects[0].x + rects[0].width), 1.0);
     }
 
-    // ── Split/Tabs/Panel spacing (issue #2025) ──────────────────────────
+    // ── Split/Tabs spacing ───────────────────────────────────────────────
 
     use quadraui::SplitMeasure;
 
@@ -3207,38 +3182,6 @@ mod tests {
     /// straight through, same as every other spacing-aware node kind.
     #[test]
     fn tabs_spacing_insets_the_whole_area_on_a_pixel_backend() {
-        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
-        let spacing = Spacing {
-            padding: EdgeInsets::uniform(5.0),
-            margin: 3.0,
-            gap: 0.0,
-        };
-        let inset = spacing.inset(area, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
-        assert_eq!(inset, Rect::new(8.0, 8.0, 200.0 - 16.0, 100.0 - 16.0));
-    }
-
-    /// A `"panel"` node's `margin`/`padding` inset the whole panel area —
-    /// chrome and content both — before `Backend::draw_panel` paints it,
-    /// the same [`Spacing::inset`] call every other spacing-aware node
-    /// kind makes. `padding: 12` on an 80×24 terminal must leave real room
-    /// to paint the panel into.
-    #[test]
-    fn panel_spacing_insets_the_whole_area_and_does_not_clip_on_tui() {
-        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
-        let spacing = Spacing {
-            padding: EdgeInsets::uniform(12.0),
-            margin: 0.0,
-            gap: 0.0,
-        };
-        let inset = spacing.inset(area, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
-        assert_eq!(inset, Rect::new(2.0, 1.0, 80.0 - 4.0, 24.0 - 2.0));
-        assert!(inset.width > 0.0, "panel must not clip to zero width");
-        assert!(inset.height > 0.0, "panel must not clip to zero height");
-    }
-
-    /// The same inset on a pixel backend.
-    #[test]
-    fn panel_spacing_insets_the_whole_area_on_a_pixel_backend() {
         let area = Rect::new(0.0, 0.0, 200.0, 100.0);
         let spacing = Spacing {
             padding: EdgeInsets::uniform(5.0),

@@ -281,47 +281,8 @@ fn a_split_child_of_a_row_accepts_size_min_max() {
     assert!(matches!(container.children[0].node, LayoutNode::Split(_)));
 }
 
-/// A `"panel"` node's `"padding"`/`"margin"` keys are siblings of the
-/// `"panel"` key itself, decoded into [`crate::layout::Spacing`]
-/// alongside the chrome/content.
-#[test]
-fn round_trips_a_panel_node_s_padding_and_margin() {
-    let value = json!({
-        "panel": {
-            "id": "p1",
-            "content": {"id": "p1-leaf", "button": {"id": "p1-leaf", "label": "Go"}},
-        },
-        "padding": 12,
-        "margin": 4,
-    });
-    let node = decode(&value).expect("valid panel with spacing");
-    let LayoutNode::Panel(panel) = node else {
-        panic!("expected a panel node");
-    };
-    assert_eq!(panel.spacing.padding, EdgeInsets::uniform(12.0));
-    assert_eq!(panel.spacing.margin, 4.0);
-    assert_eq!(panel.spacing.gap, 0.0);
-}
-
-/// `"gap"` has no meaning on a `"panel"` node -- there's no second
-/// sibling to space it from -- so it's a decode error instead of a
-/// silent no-op, same as it was for `padding`/`margin` before they
-/// were supported.
-#[test]
-fn panel_rejects_a_gap_key_it_does_not_support() {
-    let value = json!({
-        "panel": {
-            "id": "p1",
-            "content": {"id": "p1-leaf", "button": {"id": "p1-leaf", "label": "Go"}},
-        },
-        "gap": 8,
-    });
-    let error = err(decode(&value));
-    assert!(error.to_string().contains("gap"), "{}", error.to_string());
-}
-
 /// A `"tabs"` node's `"padding"`/`"margin"` keys decode the same way a
-/// `"panel"` node's do.
+/// `"split"` node's do.
 #[test]
 fn round_trips_a_tabs_node_s_padding_and_margin() {
     let value = json!({
@@ -360,7 +321,7 @@ fn tabs_rejects_a_gap_key_it_does_not_support() {
 }
 
 /// A `"split"` node's `"padding"`/`"margin"`/`"gap"` keys all decode --
-/// unlike `"tabs"`/`"panel"`, `"gap"` has a real meaning here: the
+/// unlike `"tabs"`, `"gap"` has a real meaning here: the
 /// space between the two panes.
 #[test]
 fn round_trips_a_split_node_s_spacing_keys() {
@@ -386,7 +347,7 @@ fn round_trips_a_split_node_s_spacing_keys() {
 }
 
 /// A `"sidebar_panel"` node still rejects every spacing key -- only
-/// `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"` nodes support any
+/// `"row"`/`"column"`/`"split"`/`"tabs"` nodes support any
 /// of them.
 #[test]
 fn sidebar_panel_rejects_a_padding_key_it_does_not_support_yet() {
@@ -542,25 +503,8 @@ fn tabs_node_allows_a_zero_focused_index_on_an_empty_tab_list() {
     assert_eq!(tabs.focused_index, Some(0));
 }
 
-/// A `"panel"` node decodes its chrome generically and recurses into
-/// its required `"content"` child.
-#[test]
-fn round_trips_a_panel_node() {
-    let value = json!({
-        "panel": {
-            "id": "p1",
-            "content": {"id": "p1-leaf", "button": {"id": "p1-leaf", "label": "Go"}},
-        }
-    });
-    let node = decode(&value).expect("valid panel");
-    let LayoutNode::Panel(panel) = node else {
-        panic!("expected a panel node");
-    };
-    assert_eq!(panel.panel.id.as_str(), "p1");
-    assert!(matches!(*panel.content, LayoutNode::Leaf(_)));
-}
-
-/// A `"sidebar_panel"` node decodes the same way a `"panel"` node does.
+/// A `"sidebar_panel"` node decodes its chrome generically and recurses
+/// into its required `"content"` child.
 #[test]
 fn round_trips_a_sidebar_panel_node() {
     let value = json!({
@@ -647,7 +591,7 @@ fn round_trips_a_horizontal_scroll_node_with_a_controlled_offset() {
 }
 
 /// A `"scroll"` node's `"padding"`/`"margin"` keys decode the same way
-/// a `"panel"` node's do.
+/// a `"tabs"` node's do.
 #[test]
 fn round_trips_a_scroll_node_s_padding_and_margin() {
     let value = json!({
@@ -669,7 +613,7 @@ fn round_trips_a_scroll_node_s_padding_and_margin() {
 
 /// `"gap"` has no meaning on a `"scroll"` node -- there's no second
 /// sibling to space it from -- so it's a decode error, same as
-/// `"panel"`'s own.
+/// `"tabs"`'s own.
 #[test]
 fn scroll_rejects_a_gap_key_it_does_not_support() {
     let value = json!({
@@ -933,7 +877,6 @@ fn node_shape_key_constants_match_the_wire_schema_field_list() {
         ("LayoutGridNode", &GRID_SHAPE_KEYS),
         ("LayoutSplitNode", &SPLIT_SHAPE_KEYS),
         ("LayoutTabsNode", &TABS_SHAPE_KEYS),
-        ("LayoutPanelNode", &PANEL_SHAPE_KEYS),
         ("LayoutSidebarPanelNode", &SIDEBAR_PANEL_SHAPE_KEYS),
         ("LayoutSplitTreeNode", &SPLIT_TREE_SHAPE_KEYS),
         ("LayoutScrollNode", &SCROLL_SHAPE_KEYS),

@@ -4537,34 +4537,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_split_tree_layout(tree, area)
     }
 
-    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
-    fn draw_panel(
-        &mut self,
-        rect: QRect,
-        panel: &crate::primitives::panel::Panel,
-    ) -> crate::primitives::panel::PanelLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_panel called outside enter_frame_scope"
-            );
-            return self.panel_layout(rect, panel);
-        };
-        crate::tui::draw_panel(frame.buffer_mut(), area, panel, &theme)
-    }
-
-    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
-    fn panel_layout(
-        &self,
-        rect: QRect,
-        panel: &crate::primitives::panel::Panel,
-    ) -> crate::primitives::panel::PanelLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_panel_layout(panel, area)
-    }
-
     fn draw_canvas(
         &mut self,
         rect: QRect,
@@ -5785,26 +5757,6 @@ mod tests {
                 bounds,
                 crate::primitives::split_tree::SplitTreeMeasure::new(1.0),
             )
-        }
-
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
-        fn draw_panel(
-            &mut self,
-            _r: QRect,
-            panel: &crate::primitives::panel::Panel,
-        ) -> crate::primitives::panel::PanelLayout {
-            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
-            panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
-        }
-
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
-        fn panel_layout(
-            &self,
-            _r: QRect,
-            panel: &crate::primitives::panel::Panel,
-        ) -> crate::primitives::panel::PanelLayout {
-            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
-            panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
         }
 
         fn draw_canvas(

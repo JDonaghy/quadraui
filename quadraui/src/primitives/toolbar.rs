@@ -1,7 +1,7 @@
 //! `Toolbar` primitive: a horizontal strip of clickable action buttons that
-//! sits **above** a content area (above a tree, list, terminal, etc.) — not
-//! on a panel title bar (use [`crate::Panel`]`.actions` for that) and not for
-//! view selection (use [`crate::TabBar`]).
+//! sits **above** a content area (above a tree, list, terminal, etc.) — this
+//! is also what a [`crate::SidebarPanel`]'s own header embeds, and it is not
+//! for view selection (use [`crate::TabBar`]).
 //!
 //! ## Why this isn't `StatusBar`
 //!

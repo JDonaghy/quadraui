@@ -1785,11 +1785,11 @@ pub fn resolve_render_refs(
 /// expand state is resolved before its cursor, same ordering reasoning as
 /// [`resolve_render_refs`]'s own tree leaf.
 ///
-/// `Panel`/`SidebarPanel`/`SplitTree` hold no *leaf* widget-state of their
+/// `SidebarPanel`/`SplitTree` hold no *leaf* widget-state of their
 /// own (no cursor/scroll/ratio/active-tab), so their own content recurses
 /// with `area` passed straight through rather than their real (paint-time,
 /// backend-side-effecting) content rect — the only cost is a `Tree`/
-/// `List`/`DataTable` leaf nested under one of those three computing its
+/// `List`/`DataTable` leaf nested under one of those two computing its
 /// very first `viewport_rows` against a larger-than-actual rect; every
 /// later `apply_*_nav_key` call still scrolls it correctly, against the
 /// real painted geometry `crate::hit::tree_rows_and_viewport` (and its
@@ -1944,10 +1944,6 @@ pub fn resolve_layout_node(
             if let Some(entry) = tabs.entries.get_mut(selected) {
                 resolve_layout_node(widget_state, backend, content_rect, &mut entry.content);
             }
-        }
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own plumbing.
-        LayoutNode::Panel(panel_node) => {
-            resolve_layout_node(widget_state, backend, area, &mut panel_node.content);
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
             resolve_layout_node(widget_state, backend, area, &mut sidebar_node.content);

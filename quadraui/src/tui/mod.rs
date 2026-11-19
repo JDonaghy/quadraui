@@ -74,7 +74,6 @@ mod minimap;
 mod multi_section_view;
 mod number_input;
 mod palette;
-mod panel;
 mod pipeline_view;
 mod progress;
 mod radio_group;
@@ -188,8 +187,6 @@ pub use number_input::draw_number_input;
 pub(crate) use palette::draw_palette_with_style;
 #[doc(hidden)]
 pub use palette::{draw_palette, tui_palette_layout};
-#[doc(hidden)]
-pub use panel::{draw_panel, tui_panel_layout};
 #[doc(hidden)]
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 #[doc(hidden)]

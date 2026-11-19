@@ -36,10 +36,6 @@ use crate::primitives::dialog::{Dialog, DialogInput, DialogTable};
 use crate::primitives::form::{FieldKind, Form, FormField, ValidationState};
 use crate::primitives::menu_bar::MenuBar;
 use crate::primitives::number_input::NumberInput;
-// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead); its
-// `A11yPrimitive` impl below is this type's own plumbing.
-#[allow(deprecated)]
-use crate::primitives::panel::Panel;
 use crate::primitives::progress::ProgressBar;
 use crate::primitives::radio_group::RadioGroup;
 use crate::primitives::rich_text_popup::RichTextPopup;
@@ -1191,42 +1187,6 @@ fn split_tree_node(tree: &SplitTree, key: impl Into<String>) -> A11yChild {
 }
 
 // ------------------------------------------------------------------- panel
-
-#[allow(deprecated)] // `Panel` is `#[deprecated]`; this impl is its own plumbing.
-impl A11yPrimitive for Panel {
-    fn a11y_info(&self) -> A11yInfo {
-        let label = self
-            .title
-            .as_ref()
-            .and_then(|title| non_empty(plain_text(title)))
-            .unwrap_or_else(|| "Panel".to_string());
-        A11yInfo::new()
-            .with_role(A11yRole::Group)
-            .with_label(label)
-            .with_expanded(!self.collapsed)
-    }
-
-    fn a11y_children(&self) -> Vec<A11yChild> {
-        let total = self.actions.len();
-        self.actions
-            .iter()
-            .enumerate()
-            .map(|(idx, action)| {
-                let mut info = in_set(
-                    A11yInfo::new()
-                        .with_role(A11yRole::Button)
-                        .with_label(&action.tooltip),
-                    idx,
-                    total,
-                );
-                if action.is_active {
-                    info = info.with_checked(A11yChecked::True);
-                }
-                A11yChild::new(format!("action.{}", action.id.as_str()), info)
-            })
-            .collect()
-    }
-}
 
 impl A11yPrimitive for SidebarPanel {
     fn a11y_info(&self) -> A11yInfo {

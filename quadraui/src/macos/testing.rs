@@ -968,10 +968,11 @@ mod tests {
     const SELECTABLE_BG: Color = Color::rgb(10, 10, 10);
 
     /// One line of selectable text filling the whole surface, registered
-    /// as a single `TextRegion` each frame — the minimal fixture
-    /// `panel_app`'s conformance scenario (`panel.drag_select_copy`)
-    /// already exercises end-to-end; this is the pixel-level twin that
-    /// asserts the highlight itself, not just the app's confirmation text.
+    /// as a single `TextRegion` each frame — a minimal fixture exercising
+    /// the same drag-select-and-copy pipeline `tests/tui_example_driver.rs`'s
+    /// `shell_runner_path_drag_and_ctrl_c_copies_text` proves end-to-end;
+    /// this is the pixel-level twin that asserts the highlight itself,
+    /// not just the app's confirmation text.
     struct SelectableApp;
 
     impl AppLogic for SelectableApp {

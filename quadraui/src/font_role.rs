@@ -12,7 +12,7 @@
 //!
 //! The shared paint seam, [`crate::PaintSurface::surface_draw_text_run`]
 //! (and its `_styled`/measure twins), sits one layer below that allow-list
-//! and governs every other primitive — DataTable, Form, Toast, Panel,
+//! and governs every other primitive — DataTable, Form, Toast,
 //! Tooltip, Palette, Progress, Spinner, and more — that paints through it
 //! without an explicit role. On the backends where that seam has been
 //! inverted (macOS so far; GTK and Win-GUI in their own follow-up work),

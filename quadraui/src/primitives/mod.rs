@@ -38,7 +38,6 @@ pub mod minimap;
 pub mod multi_section_view;
 pub mod number_input;
 pub mod palette;
-pub mod panel;
 pub mod pipeline_view;
 pub mod progress;
 pub mod radio_group;

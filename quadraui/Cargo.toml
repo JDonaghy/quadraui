@@ -1120,11 +1120,6 @@ path = "examples/gtk_multi_tree.rs"
 required-features = ["gtk"]
 
 [[example]]
-name = "tui_panel"
-path = "examples/tui_panel.rs"
-required-features = ["tui"]
-
-[[example]]
 name = "tui_palette_dual_mode"
 path = "examples/tui_palette_dual_mode.rs"
 required-features = ["tui"]
@@ -1133,11 +1128,6 @@ required-features = ["tui"]
 name = "tui_selection"
 path = "examples/tui_selection.rs"
 required-features = ["tui"]
-
-[[example]]
-name = "gtk_panel"
-path = "examples/gtk_panel.rs"
-required-features = ["gtk"]
 
 [[example]]
 name = "tui_toast"
@@ -1302,11 +1292,6 @@ required-features = ["macos"]
 [[example]]
 name = "macos_split"
 path = "examples/macos_split.rs"
-required-features = ["macos"]
-
-[[example]]
-name = "macos_panel"
-path = "examples/macos_panel.rs"
 required-features = ["macos"]
 
 [[example]]
@@ -1916,11 +1901,6 @@ required-features = ["win"]
 [[example]]
 name = "win_split"
 path = "examples/win_split.rs"
-required-features = ["win"]
-
-[[example]]
-name = "win_panel"
-path = "examples/win_panel.rs"
 required-features = ["win"]
 
 [[example]]

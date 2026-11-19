@@ -19,7 +19,7 @@ use crate::theme::Theme;
 /// Compute the macOS pixel-unit layout for a [`ToastOverlay`].
 ///
 /// `(origin_x, origin_y)` is baked into the returned bounds (absolute
-/// screen coordinates, matching `mac_menu_bar_layout` / `mac_panel_layout`)
+/// screen coordinates, matching `mac_menu_bar_layout` / `mac_sidebar_panel_layout`)
 /// — hosts call `layout.hit_test(x, y)` with raw click coordinates, no
 /// localisation needed.
 ///
@@ -101,7 +101,7 @@ mod tests {
     /// at an arbitrary `(origin_x, origin_y)` instead of always `(0, 0)`.
     /// `mac_toast_stack_layout` bakes the origin straight into the returned
     /// bounds (absolute frame, matching `mac_menu_bar_layout` /
-    /// `mac_panel_layout`), so `hit_test` must keep resolving against raw
+    /// `mac_sidebar_panel_layout`), so `hit_test` must keep resolving against raw
     /// (unshifted) click coordinates at any origin, not just `(0, 0)`.
     fn paint_via_backend_at(
         stack: &ToastOverlay,

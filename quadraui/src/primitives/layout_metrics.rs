@@ -36,10 +36,6 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
     SectionMeasure,
 };
-// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
-// `pixel_panel_layout` is this type's own shared layout plumbing.
-#[allow(deprecated)]
-use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout, PipelineViewMeasure};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
@@ -120,9 +116,6 @@ pub mod pixel {
     pub const PROGRESS_CANCEL_WIDTH: f32 = 28.0;
     /// [`crate::ProgressBar`] width of the sliding indeterminate pulse.
     pub const PROGRESS_PULSE_WIDTH: f32 = 40.0;
-
-    /// [`crate::Panel`] width reserved per title-bar action button.
-    pub const PANEL_ACTION_BUTTON: f32 = 24.0;
 
     /// [`crate::primitives::pipeline_view::PipelineView`] arrow connector
     /// width between stage boxes.
@@ -1002,32 +995,6 @@ pub fn pixel_board_layout(model: &BoardModel, x: f32, y: f32, w: f32, h: f32) ->
             BOARD_CARD_GAP_PX,
         ),
     )
-}
-
-// ── Panel ────────────────────────────────────────────────────────────
-
-/// Compute a [`Panel`]'s layout. `content_padding` is always `0.0`
-/// today — no backend passes a non-zero value.
-#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
-pub fn pixel_panel_layout(
-    panel: &Panel,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    line_height: f32,
-) -> PanelLayout {
-    let bounds = QRect::new(x, y, w, h);
-    let measure = PanelMeasure {
-        title_bar_height: if panel.title.is_some() {
-            line_height
-        } else {
-            0.0
-        },
-        action_button_width: pixel::PANEL_ACTION_BUTTON,
-        content_padding: 0.0,
-    };
-    panel.layout(bounds, measure)
 }
 
 // ── Chart ────────────────────────────────────────────────────────────

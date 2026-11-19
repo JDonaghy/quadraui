@@ -3,7 +3,7 @@
 //! Paints the toolbar header slot via [`super::draw_toolbar`]. The
 //! content region (`SidebarPanelLayout.content_bounds`) is **not**
 //! painted — the host is responsible for drawing its tree / list /
-//! form / whatever into that rect. Same contract as [`super::draw_panel`].
+//! form / whatever into that rect.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

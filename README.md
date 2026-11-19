@@ -212,7 +212,7 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**53 primitive modules**, one each under `quadraui/src/primitives/`: a
+**52 primitive modules**, one each under `quadraui/src/primitives/`: a
 declarative description and a shared layout, each with a rasteriser per
 backend — except `DatePicker`, which currently ships layout/hit-test
 logic only and has no backend rasteriser yet (it is a seam, exercised
@@ -229,7 +229,7 @@ Among them:
   `PaintSurface` seam).
 - Chrome: `TabBar`, `StatusBar`, `MenuBar`, `ActivityBar`, `Toolbar`,
   `CommandCenter`, `Scrollbar`.
-- Containers: `Split`, `SplitTree`, `Panel`, `MultiSectionView`.
+- Containers: `Split`, `SplitTree`, `SidebarPanel`, `MultiSectionView`.
 - Overlays: `Dialog`, `Palette`, `ContextMenu`, `Tooltip`, `Float`
   (anchored overlay above the main layout, stacked via `ModalStack`
   with focus vs. non-focus floats), `Completions`, `FindReplace`,

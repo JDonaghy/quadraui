@@ -348,7 +348,7 @@ impl FloatApp {
 
     /// Paint the menu's own items into `layout.content_bounds` — `Float`
     /// never paints content itself (see its module doc); this is the
-    /// host's job, same contract as `Panel::content_bounds`.
+    /// host's job, same contract as `SidebarPanelLayout::content_bounds`.
     fn paint_menu_content(&self, backend: &mut dyn Backend, layout: &FloatLayout) {
         let lh = backend.line_height();
         let cb = layout.content_bounds;

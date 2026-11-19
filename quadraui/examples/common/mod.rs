@@ -137,7 +137,6 @@ pub mod modal_occlusion_demo;
 pub mod multi_tree;
 pub mod native_menu;
 pub mod palette_dual_mode_app;
-pub mod panel_app;
 pub mod pipeline_app;
 pub mod platform_seams_demo;
 pub mod right_click_demo;
@@ -224,7 +223,6 @@ pub use modal_occlusion_demo::ModalOcclusionDemo;
 pub use multi_tree::DebugSidebar;
 pub use native_menu::NativeMenuApp;
 pub use palette_dual_mode_app::PaletteDualModeApp;
-pub use panel_app::PanelApp;
 pub use pipeline_app::PipelineApp;
 pub use right_click_demo::RightClickDemo;
 #[cfg(any(feature = "gtk", feature = "win"))]

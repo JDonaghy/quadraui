@@ -52,10 +52,6 @@ use quadraui::{
     ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
     TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
 };
-// `Panel` is `#[deprecated]`; imported separately so the allow stays
-// scoped to the one `draw_panel` back-compat case below.
-#[allow(deprecated)]
-use quadraui::Panel;
 
 use super::runner::{DriverFactory, DynDriver};
 
@@ -1469,26 +1465,6 @@ pub const CASES: &[Case] = &[
                 SplitTree::leaf(id("split-tree-b")),
             );
             let _ = b.draw_split_tree(area, &tree);
-        },
-    },
-    Case {
-        method: "draw_panel",
-        needle: Some("c0panl"),
-        paint: |b, area| {
-            // `Panel` is `#[deprecated]`; `draw_panel` itself is not yet
-            // removed, so this row keeps proving the backend trait method
-            // still paints its argument until the follow-up removal PR
-            // drops both.
-            #[allow(deprecated)]
-            let panel = Panel {
-                id: id("panel"),
-                title: Some(StyledText::plain("c0panl")),
-                actions: vec![],
-                accent: None,
-                collapsed: false,
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_panel(area, &panel);
         },
     },
     Case {

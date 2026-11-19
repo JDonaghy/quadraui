@@ -110,8 +110,8 @@ pub fn group_panel_id(index: usize) -> WidgetId {
 /// capture helper (e.g. `capture.rs`'s `click_demo_zone`) can resolve a
 /// demo's real click target from its zone instead of scraping its name
 /// as painted text, which two demos sharing a name substring (e.g.
-/// `"Panel"` and `"Bottom Panel"`) makes ambiguous for a
-/// first-match-wins text search.
+/// `"Zone"` and `"Drop Zone"`) makes ambiguous for a first-match-wins
+/// text search.
 pub fn demo_zone_id(index: usize) -> WidgetId {
     WidgetId::new(format!("gallery:demo:{index}"))
 }

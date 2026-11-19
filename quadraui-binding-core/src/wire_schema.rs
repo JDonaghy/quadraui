@@ -988,16 +988,6 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("overflow_priorities", list(toolbar_overflow_priority_entry)),
         ],
     ));
-    b.define(obj(
-        "PanelActionDescriptor",
-        vec![
-            field("id", re("WidgetId")),
-            field("icon", str_()),
-            field_opt("tooltip", str_()),
-            field_opt("is_active", bool_()),
-        ],
-    ));
-
     // ── Layout tree node wire shapes ─────────────────────────────────────
     let padding_axis = b.define(obj(
         "PaddingAxis",
@@ -1278,33 +1268,6 @@ pub fn schema() -> Vec<DefJson> {
         [
             vec![
                 field("tabs", layout_tabs_payload),
-                field_opt("padding", padding_value.clone()),
-                field_opt("margin", float_()),
-                wire_version_field.clone(),
-                field_opt("style", style_value.clone()),
-                field_opt("class", class_value.clone()),
-            ],
-            child_size_fields(),
-        ]
-        .concat(),
-    ));
-    let layout_panel_payload = b.define(obj_doc(
-        "LayoutPanelPayload",
-        vec![
-            field("id", str_()),
-            field_opt("title", nullable(styled_text.clone())),
-            field_opt("actions", list(re("PanelActionDescriptor"))),
-            field_opt("accent", nullable(color.clone())),
-            field_opt("collapsed", bool_()),
-            field("content", layout_node.clone()),
-        ],
-        "The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`.",
-    ));
-    let layout_panel_node = b.define(obj(
-        "LayoutPanelNode",
-        [
-            vec![
-                field("panel", layout_panel_payload),
                 field_opt("padding", padding_value.clone()),
                 field_opt("margin", float_()),
                 wire_version_field.clone(),
@@ -2885,7 +2848,6 @@ pub fn schema() -> Vec<DefJson> {
             layout_grid_node,
             layout_split_node,
             layout_tabs_node,
-            layout_panel_node,
             layout_sidebar_panel_node,
             layout_split_tree_node,
             layout_scroll_node,
@@ -3482,8 +3444,6 @@ pub fn schema() -> Vec<DefJson> {
             "split_tree_divider",
             &[("split_index", int_)],
         ),
-        ("_HitDetailPanelAction", "panel_action", &[]),
-        ("_HitDetailPanelTitleBar", "panel_title_bar", &[]),
         (
             "_HitDetailSidebarPanelToolbarButton",
             "sidebar_panel_toolbar_button",
@@ -3761,11 +3721,6 @@ mod coverage {
     //! unrelated code.
 
     #![allow(dead_code, unused_variables)]
-    // `Panel`/`PanelAction` are `#[deprecated]` (use `SidebarPanel` + a
-    // header `Toolbar` instead); this module's own coverage guards for
-    // their fields are the deprecated type's own plumbing, same rationale
-    // as `crate::wire`'s identical allow.
-    #![allow(deprecated)]
 
     use quadraui::{
         Accelerator, AcceleratorScope, ActivityBar, ActivityBarEvent, ActivityItem,
@@ -3783,10 +3738,10 @@ mod coverage {
         ImageSource, InlineInput, Key, KeyBinding, LabelAlign, LabelPosition, ListItem, ListView,
         ListViewEvent, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine,
         MinimapSpan, Modifiers, MouseButton, MsvAxis, MultiSectionView, NamedKey, NumberInput,
-        Palette, PaletteEvent, PaletteItem, PaletteMode, PalettePreview, Panel, PanelAction,
-        PipelineStage, PipelineView, Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption,
-        Rect, RowAlign, ScrollAxis, ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section,
-        SectionAux, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel,
+        Palette, PaletteEvent, PaletteItem, PaletteMode, PalettePreview, PipelineStage,
+        PipelineView, Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption, Rect, RowAlign,
+        ScrollAxis, ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section, SectionAux,
+        SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel,
         SortDirection, SpellMark, Spinner, StageStatus, StatusBar, StatusBarEvent,
         StatusBarSegment, StyledSpan, StyledText, Switch, SystemTheme, TabBar, TabBarEvent,
         TabBarSegment, TabItem, Terminal, TerminalCell, TerminalCursorShape, TerminalEvent,
@@ -4165,8 +4120,6 @@ mod coverage {
             HitDetail::SplitSecondPane => {}
             HitDetail::SplitDivider => {}
             HitDetail::SplitTreeDivider { split_index: _ } => {}
-            HitDetail::PanelAction => {}
-            HitDetail::PanelTitleBar => {}
             HitDetail::SidebarPanelToolbarButton { bar: _ } => {}
             HitDetail::TreeScrollbarTrackBefore => {}
             HitDetail::TreeScrollbarThumb => {}
@@ -4201,7 +4154,6 @@ mod coverage {
             LayoutNode::Leaf(_) => {}
             LayoutNode::Split(_) => {}
             LayoutNode::Tabs(_) => {}
-            LayoutNode::Panel(_) => {}
             LayoutNode::SidebarPanel(_) => {}
             LayoutNode::SplitTree(_) => {}
             LayoutNode::Scroll(_) => {}
@@ -4263,6 +4215,7 @@ mod coverage {
         }
     }
 
+    #[allow(deprecated)] // `ColumnWidth::Fixed` is `#[deprecated]`; this arm is its own plumbing.
     fn assert_column_width(w: ColumnWidth) {
         match w {
             // Deprecated in favour of `FixedCells`/`FixedPx` (ambiguous
@@ -4518,16 +4471,6 @@ mod coverage {
         }
     );
     assert_fields!(
-        assert_panel_fields,
-        Panel {
-            id,
-            title,
-            actions,
-            accent,
-            collapsed
-        }
-    );
-    assert_fields!(
         assert_sidebar_panel_fields,
         SidebarPanel {
             id,
@@ -4542,15 +4485,6 @@ mod coverage {
             buttons,
             bg,
             focused_index
-        }
-    );
-    assert_fields!(
-        assert_panel_action_fields,
-        PanelAction {
-            id,
-            icon,
-            tooltip,
-            is_active
         }
     );
     assert_fields!(

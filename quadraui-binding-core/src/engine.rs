@@ -374,11 +374,11 @@ impl LayoutContent {
 /// can run against either [`InteractionEngine::hit_map`] (the main tree)
 /// or a `Layout`-content popover's own
 /// [`FloatContent::Layout`]-scoped hits — same filter, same order, just a
-/// different `hits` slice. `Split`/`SplitTree`/`Panel`/`SidebarPanel` are
+/// different `hits` slice. `Split`/`SplitTree`/`SidebarPanel` are
 /// chrome around other content, not focusable leaves themselves, so they
-/// are skipped (their own action/toolbar buttons aren't recorded as
-/// separate `PaintedHit` entries — see `crate::hit::HitDetail::PanelAction`
-/// et al. — so a future keyboard-nav pass over those specific buttons
+/// are skipped (their own toolbar buttons aren't recorded as
+/// separate `PaintedHit` entries — see `crate::hit::HitDetail::SidebarPanelToolbarButton`
+/// — so a future keyboard-nav pass over those specific buttons
 /// still has nothing to pick up here); `Extra` is a tab stop only when its
 /// descriptor opts in via [`crate::extra_paint::ExtraPaint::tab_stop`]
 /// (currently `Switch` and `TextInput`); `TextDisplay` is always one
@@ -395,10 +395,9 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             | PaintedHit::TextDisplay { id, area, .. } => Some((*id, *area)),
             PaintedHit::Split { .. }
             | PaintedHit::SplitTree { .. }
-            | PaintedHit::Panel { .. }
             | PaintedHit::SidebarPanel { .. } => None,
             // A `Scroll` is chrome around its own content, like
-            // `Split`/`Panel`/`SidebarPanel` above -- its content's own
+            // `Split`/`SidebarPanel` above -- its content's own
             // leaves are the tab stops, reached via their own
             // `PaintedHit` arms once scrolled into view.
             PaintedHit::Scroll { .. } => None,
@@ -1786,7 +1785,7 @@ impl InteractionEngine {
     /// Replaces (and pops) any float already open.
     ///
     /// Every leaf in `content` (at any nesting depth — directly, or
-    /// wrapped in `Row`/`Column`/`Split`/`Tabs`/`Panel`/`SidebarPanel`/
+    /// wrapped in `Row`/`Column`/`Split`/`Tabs`/`SidebarPanel`/
     /// `SplitTree`/`Scroll`/`Styled`) receives focus, click and keyboard
     /// routing exactly as the same leaf would in the main tree: a click
     /// on a `Button` emits the normal
@@ -2062,10 +2061,10 @@ impl InteractionEngine {
 
     /// Derives this frame's tab stops directly from the hit map
     /// [`InteractionEngine::set_hits`] last recorded, in paint order.
-    /// `Split`/`SplitTree`/`Panel`/`SidebarPanel` are chrome around other
+    /// `Split`/`SplitTree`/`SidebarPanel` are chrome around other
     /// content, not focusable leaves themselves, so they are skipped (their
-    /// own action/toolbar buttons aren't recorded as separate `PaintedHit`
-    /// entries — see `crate::hit::HitDetail::PanelAction` et al. — so a
+    /// own toolbar buttons aren't recorded as separate `PaintedHit`
+    /// entries — see `crate::hit::HitDetail::SidebarPanelToolbarButton` — so a
     /// future keyboard-nav pass over those specific buttons still has
     /// nothing to pick up here); `Extra` is a tab stop only when its
     /// descriptor opts in via
@@ -4574,7 +4573,6 @@ pub fn style_token(style: &quadraui::Style, name: &str) -> Option<serde_json::Va
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; `PanelLogic` and its tests cover `LayoutNode::Panel`'s own plumbing directly.
 mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -4602,8 +4600,8 @@ mod tests {
         resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
     };
     use crate::layout::{
-        LayoutContainer, LayoutLeaf, LayoutNode, LayoutPanel, LayoutScroll, LayoutSplit,
-        LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing,
+        LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutSplit, LayoutSplitTree,
+        LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing,
     };
     use crate::render::{
         draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
@@ -9530,144 +9528,6 @@ mod tests {
             resolved.rows[0].is_expanded,
             Some(true),
             "the toggled row must stay expanded even though the descriptor never changes"
-        );
-    }
-
-    /// A minimal [`AppLogic`] painting a single `quadraui::Panel` node, for
-    /// the title-bar-action-click coverage below.
-    struct PanelLogic {
-        panel: quadraui::Panel,
-        engine: InteractionEngine,
-        sink: RefCell<RecordingSink>,
-    }
-
-    impl AppLogic for PanelLogic {
-        type AreaId = ();
-
-        fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let mut hits = Vec::new();
-            let viewport = backend.viewport();
-            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-            let node = LayoutNode::Panel(LayoutPanel {
-                panel: self.panel.clone(),
-                content: Box::new(LayoutNode::Leaf(LayoutLeaf {
-                    id: "body".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(
-                        WidgetId::new("body-btn"),
-                        "Body",
-                    )),
-                    scroll_px: None,
-                })),
-                spacing: crate::layout::Spacing::default(),
-            });
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
-            self.engine.set_hits(hits);
-        }
-
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
-            self.engine.tab_stops()
-        }
-
-        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-            self.engine
-                .handle(event, backend, &mut *self.sink.borrow_mut())
-        }
-    }
-
-    /// Clicking a `Panel` title-bar action button must set the raw
-    /// `MouseDown`'s `widget` to the action's own id — exercising
-    /// `crate::render::paint_layout`'s `LayoutNode::Panel` arm, which
-    /// records the panel's chrome layout as a [`crate::hit::PaintedHit::Panel`]
-    /// so this hit resolves instead of being dropped, same as every other
-    /// primitive's own hit-test coverage in this module.
-    #[test]
-    fn clicking_a_panel_action_button_sets_the_click_widget_to_its_id() {
-        use quadraui::{Panel, PanelAction, StyledText};
-
-        let panel = Panel {
-            id: WidgetId::new("outer"),
-            title: Some(StyledText::plain("Explorer")),
-            actions: vec![PanelAction {
-                id: WidgetId::new("close"),
-                icon: "x".to_string(),
-                tooltip: "Close".to_string(),
-                is_active: false,
-            }],
-            accent: None,
-            collapsed: false,
-        };
-        let logic = PanelLogic {
-            panel,
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink::default()),
-        };
-        let mut driver = TuiDriver::new(logic, 40, 10);
-        driver.render();
-
-        // The lone action button is right-aligned in the title bar — TUI's
-        // own 3-cell action width (`TUI_ACTION_BUTTON_WIDTH` in
-        // `quadraui::tui::panel`) puts it at [40.0 - 3.0, 40.0) ==
-        // [37.0, 40.0).
-        driver.dispatch(UiEvent::MouseDown {
-            widget: None,
-            button: MouseButton::Left,
-            position: Point::new(38.0, 0.0),
-            modifiers: Modifiers::default(),
-        });
-
-        let dispatched = &driver.app().sink.borrow().dispatched;
-        assert!(
-            dispatched.iter().any(|(event, _)| matches!(
-                event,
-                UiEvent::MouseDown { widget: Some(id), .. } if *id == WidgetId::new("close")
-            )),
-            "expected a MouseDown with widget=close: {:?}",
-            dispatched
-        );
-    }
-
-    /// Clicking a `Panel`'s title bar away from its action buttons (the
-    /// collapse affordance — `PanelHit::TitleBar` is the only collapse hit
-    /// the primitive exposes) must set the raw `MouseDown`'s `widget` to
-    /// the panel's own id.
-    #[test]
-    fn clicking_a_panel_title_bar_sets_the_click_widget_to_the_panel_id() {
-        use quadraui::{Panel, StyledText};
-
-        let panel = Panel {
-            id: WidgetId::new("outer"),
-            title: Some(StyledText::plain("Explorer")),
-            actions: vec![],
-            accent: None,
-            collapsed: false,
-        };
-        let logic = PanelLogic {
-            panel,
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink::default()),
-        };
-        let mut driver = TuiDriver::new(logic, 40, 10);
-        driver.render();
-
-        // Row 0 away from any action button (there are none here) is the
-        // title bar itself.
-        driver.dispatch(UiEvent::MouseDown {
-            widget: None,
-            button: MouseButton::Left,
-            position: Point::new(1.0, 0.0),
-            modifiers: Modifiers::default(),
-        });
-
-        let dispatched = &driver.app().sink.borrow().dispatched;
-        assert!(
-            dispatched.iter().any(|(event, _)| matches!(
-                event,
-                UiEvent::MouseDown { widget: Some(id), .. } if *id == WidgetId::new("outer")
-            )),
-            "expected a MouseDown with widget=outer: {:?}",
-            dispatched
         );
     }
 

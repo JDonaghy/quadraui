@@ -18,10 +18,6 @@ use quadraui::{
     TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure,
     Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
 };
-// `Panel`/`PanelAction` are `#[deprecated]`; imported separately so the
-// allow stays scoped to the one `Surface::Panel` a11y case below.
-#[allow(deprecated)]
-use quadraui::{Panel, PanelAction};
 
 const VIEWPORT: Rect = Rect {
     x: 0.0,
@@ -612,25 +608,6 @@ fn overlays_and_containers_report_their_own_structure() {
         fg: None,
         bg: None,
     };
-    // `Panel`/`PanelAction` are `#[deprecated]`; `Surface::Panel` keeps its
-    // own a11y coverage until the two-PR removal lands, matching the
-    // `#[allow(deprecated)]` plumbing already in `frame.rs` and `testing/mod.rs`.
-    #[allow(deprecated)]
-    let panel_surface = Surface::Panel {
-        rect: rect(1.0, 8.0),
-        panel: Panel {
-            id: WidgetId::new("panel"),
-            title: Some(StyledText::plain("Problems")),
-            actions: vec![PanelAction {
-                id: WidgetId::new("panel:filter"),
-                icon: "⚑".to_string(),
-                tooltip: "Filter".to_string(),
-                is_active: true,
-            }],
-            accent: None,
-            collapsed: true,
-        },
-    };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Spinner {
             rect: rect(0.0, 1.0),
@@ -641,7 +618,6 @@ fn overlays_and_containers_report_their_own_structure() {
                 accent: None,
             },
         })
-        .with_surface(panel_surface)
         .with_surface(Surface::SplitTree {
             rect: rect(9.0, 10.0),
             tree: SplitTree::split(
@@ -677,8 +653,6 @@ fn overlays_and_containers_report_their_own_structure() {
 window \"quadraui\" [focused]
   progress \"Connecting\"
     presentation \"Spinner\"
-  group \"Problems\" [collapsed]
-    button \"Filter\" [checked pos=1/1]
   splitter \"Split tree\"
     splitter \"Split\" [value=\"vertical\" range=0.25/0-1]
       group \"editor\"

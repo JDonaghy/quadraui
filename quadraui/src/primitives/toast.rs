@@ -579,7 +579,7 @@ impl ToastOverlay {
     ///   overlay area, in the backend's absolute (screen/buffer) frame.
     ///   Returned `bounds` / `hit_regions` are absolute — callers pass
     ///   `hit_test` raw click coordinates in that same frame, matching
-    ///   the `MenuBar`/`Panel` convention (unlike `TreeView`'s
+    ///   the `MenuBar`/`SidebarPanel` convention (unlike `TreeView`'s
     ///   viewport-local frame). Pass `(0.0, 0.0)` for an overlay
     ///   anchored at the buffer/window origin.
     /// - `viewport_width`, `viewport_height` — the app's overlay area

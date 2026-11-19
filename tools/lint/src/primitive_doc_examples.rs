@@ -96,7 +96,6 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("multi_section_view", "MultiSectionView"),
     ("number_input", "NumberInput"),
     ("palette", "Palette"),
-    ("panel", "Panel"),
     ("pipeline_view", "PipelineView"),
     ("progress", "ProgressBar"),
     ("radio_group", "RadioGroup"),

@@ -94,8 +94,6 @@ pub mod multi_section_view;
 #[doc(hidden)]
 pub mod palette;
 #[doc(hidden)]
-pub mod panel;
-#[doc(hidden)]
 pub mod pipeline_view;
 #[doc(hidden)]
 pub mod progress;
@@ -198,8 +196,6 @@ pub use minimap::mac_minimap_layout;
 pub use multi_section_view::{draw_multi_section_view, mac_msv_layout, mac_msv_metrics};
 #[doc(hidden)]
 pub use palette::{draw_palette, mac_palette_layout};
-#[doc(hidden)]
-pub use panel::mac_panel_layout;
 #[doc(hidden)]
 pub use pipeline_view::mac_pipeline_view_layout;
 #[doc(hidden)]

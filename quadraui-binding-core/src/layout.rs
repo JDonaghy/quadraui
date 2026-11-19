@@ -1,6 +1,6 @@
 //! The retained layout-tree descriptor model a binding's render callback
 //! decodes into: `LayoutNode` and its `Row`/`Column`/`Grid`/`Leaf`/`Split`/
-//! `Tabs`/`Panel`/`SidebarPanel`/`SplitTree` shapes, each paired with the
+//! `Tabs`/`SidebarPanel`/`SplitTree` shapes, each paired with the
 //! `quadraui` descriptor(s) it carries. A binding owns decoding its own
 //! wire format (a Python `dict`, a JS object, ...) into these types; this
 //! module owns what the decoded shape looks like and how it paints
@@ -9,12 +9,8 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
-// `LayoutNode::Panel`/`LayoutPanel` are this type's own wire-decode plumbing
-// — the `"panel"` wire node itself is a separate breaking change.
-#[allow(deprecated)]
 use quadraui::{
-    Button, Color, DataTable, ListView, Panel, Rect, ScrollAxis, SectionSize, SidebarPanel, Split,
+    Button, Color, DataTable, ListView, Rect, ScrollAxis, SectionSize, SidebarPanel, Split,
     SplitTree, Style, TabBar, TextDisplay, Theme, TreeView,
 };
 
@@ -27,8 +23,8 @@ use crate::DecodeError;
 /// holding child nodes, a `Leaf` wrapping one id-addressable primitive
 /// descriptor, a `Split` holding exactly two named child nodes divided by a
 /// draggable ratio, a `Tabs` holding a tab strip plus one content subtree
-/// per tab (of which only the selected one paints), a `Panel` or
-/// `SidebarPanel` holding one chrome descriptor plus a single content
+/// per tab (of which only the selected one paints), a `SidebarPanel`
+/// holding one chrome descriptor plus a single content
 /// subtree, a `SplitTree` holding an arbitrarily nested divider tree of
 /// content subtrees, a `Scroll` holding one content subtree painted at
 /// its own natural size and offset inside a clipped viewport, a `Grid`
@@ -42,7 +38,6 @@ pub enum LayoutNode {
     Leaf(LayoutLeaf),
     Split(LayoutSplit),
     Tabs(LayoutTabs),
-    Panel(LayoutPanel),
     SidebarPanel(LayoutSidebarPanel),
     SplitTree(LayoutSplitTree),
     Scroll(LayoutScroll),
@@ -96,7 +91,7 @@ impl LayoutNode {
 /// `"style"` wire sibling key decodes to this wrapper around whatever node
 /// the rest of that same dict already decoded to — see
 /// `crate::wire::layout_node_from_value`'s own wrapping, applied uniformly
-/// after the row/column/split/tabs/panel/sidebar_panel/split_tree/scroll/
+/// after the row/column/split/tabs/sidebar_panel/split_tree/scroll/
 /// leaf dispatch, so every node kind gets the same `"style"` key for free
 /// rather than each needing its own decode of it.
 ///
@@ -139,10 +134,10 @@ pub struct LayoutStyled {
 /// |---|---|---|
 /// | `bg` | [`quadraui::Theme::background`] | plain `Row`/`Column`/`Split`/`Tabs`/`SplitTree` areas; `Button`'s `Icon` variant; a non-`bordered` `List`/`Tree` |
 /// | `fg` | [`quadraui::Theme::foreground`] | generic chrome text (`TabBar`'s dirty-tab glyph, `List`/`Tree`/`DataTable` body/header text) |
-/// | `border` | [`quadraui::Theme::border_fg`] | bordered-surface border glyphs (`List`/`Dialog`/bordered `Panel`) |
+/// | `border` | [`quadraui::Theme::border_fg`] | bordered-surface border glyphs (`List`/`Dialog`) |
 /// | `accent` | [`quadraui::Theme::accent_fg`] | focus/active-state accents (`Form` toggle, slider fill, `TabBar`'s active-tab underline) |
 /// | `surface_bg` | [`quadraui::Theme::surface_bg`] | `Button`'s `Secondary`/`Danger`/`Warning` variants and disabled state, a `bordered` `List`, `Dialog`/`Toast`/`Palette`/`Toolbar`/`Float` chrome |
-/// | `accent_bg` | [`quadraui::Theme::accent_bg`] | `Button`'s `Primary` variant's solid fill, `Switch`/`Progress`'s active fill, `Panel`'s active-action fill |
+/// | `accent_bg` | [`quadraui::Theme::accent_bg`] | `Button`'s `Primary` variant's solid fill, `Switch`/`Progress`'s active fill |
 /// | `padding` | [`quadraui::Style::padding`] | inner inset shared by `Button`/`Toast`/`Tooltip`/`ContextMenu`/`Palette`/`Dialog` |
 /// | `corner_radius` | [`quadraui::Style::corner_radius`] | rounded-rect radius shared by every rounded overlay |
 /// | `border_width` | [`quadraui::Style::border_width`] | border stroke width on a pixel backend (no-op on TUI, same as the token itself) |
@@ -1373,21 +1368,6 @@ pub struct LayoutTabEntry {
     pub content: Box<LayoutNode>,
 }
 
-/// A [`LayoutNode::Panel`]'s decoded shape: the `quadraui::Panel` chrome
-/// descriptor (title/actions/accent/collapsed) paired with the single
-/// content subtree it frames. `content` is a full [`LayoutNode`], not a
-/// leaf-only slot, so a panel may itself hold a nested row/column/split.
-/// `spacing` is this node's own `padding`/`margin` (its `gap` is always
-/// `0.0` — a `"panel"` node decodes `"gap"` as an error instead, see
-/// `crate::wire::spacing_from_value`), inset around the whole panel
-/// (chrome and content both) before the chrome is painted.
-#[allow(deprecated)] // `Panel` is `#[deprecated]`; this struct is its own plumbing.
-pub struct LayoutPanel {
-    pub panel: Panel,
-    pub content: Box<LayoutNode>,
-    pub spacing: Spacing,
-}
-
 /// A [`LayoutNode::SidebarPanel`]'s decoded shape: the `quadraui::SidebarPanel`
 /// chrome descriptor (optional toolbar) paired with the single content
 /// subtree painted beneath the toolbar slot.
@@ -1568,15 +1548,6 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
                     walk(&entry_context, &entry.content, seen)?;
                 }
                 Ok(())
-            }
-            #[allow(deprecated)] // `Panel` is `#[deprecated]`.
-            LayoutNode::Panel(panel_node) => {
-                let id = panel_node.panel.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(duplicate_leaf_id_error(what, "panel", &id));
-                }
-                let context = format!("{what} › panel#{id}");
-                walk(&context, &panel_node.content, seen)
             }
             LayoutNode::SidebarPanel(sidebar_node) => {
                 let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
@@ -2247,7 +2218,7 @@ mod tests {
     }
 
     /// The same collision, but found several levels deep inside a
-    /// `split`/`panel` nesting -- every ancestor's own `kind#id`
+    /// `split`/`sidebar_panel` nesting -- every ancestor's own `kind#id`
     /// accumulates into the error's path, so it names the whole subtree
     /// the collision was found in, not just the colliding leaf hung
     /// directly off the tree's root label.
@@ -2260,17 +2231,13 @@ mod tests {
                 scroll_px: None,
             })
         };
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
-        let panel = LayoutNode::Panel(LayoutPanel {
-            panel: quadraui::Panel {
+        let panel = LayoutNode::SidebarPanel(LayoutSidebarPanel {
+            sidebar_panel: quadraui::SidebarPanel {
                 id: quadraui::WidgetId::new("chrome"),
-                title: None,
-                actions: Vec::new(),
-                accent: None,
-                collapsed: false,
+                toolbar: None,
+                toolbar_height: None,
             },
             content: Box::new(leaf("dup")),
-            spacing: Spacing::default(),
         });
         let split = LayoutNode::Split(LayoutSplit {
             split: quadraui::Split {
@@ -2288,7 +2255,7 @@ mod tests {
         assert_eq!(error.code(), "borrow");
         assert_eq!(
             error.path(),
-            "render › split#body › panel#chrome › leaf#dup"
+            "render › split#body › sidebar_panel#chrome › leaf#dup"
         );
     }
 }

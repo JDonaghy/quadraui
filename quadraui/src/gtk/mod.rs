@@ -145,7 +145,6 @@ mod multi_section_view;
 mod number_input;
 mod painted_text;
 mod palette;
-mod panel;
 mod pipeline_view;
 mod progress;
 mod rich_text_popup;
@@ -238,8 +237,6 @@ pub use multi_section_view::{
 };
 #[doc(hidden)]
 pub use palette::{draw_palette, gtk_palette_layout};
-#[doc(hidden)]
-pub use panel::gtk_panel_layout;
 #[doc(hidden)]
 pub use pipeline_view::gtk_pipeline_view_layout;
 #[doc(hidden)]

@@ -2234,10 +2234,6 @@ fn apply_pending_script_widgets_node(
                 apply_pending_script_widgets_node(&mut entry.content, pending, pending_error);
             }
         }
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own wire plumbing.
-        LayoutNode::Panel(panel_node) => {
-            apply_pending_script_widgets_node(&mut panel_node.content, pending, pending_error);
-        }
         LayoutNode::SidebarPanel(sidebar_node) => {
             apply_pending_script_widgets_node(&mut sidebar_node.content, pending, pending_error);
         }
@@ -2629,10 +2625,6 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
             for entry in &mut tabs_node.entries {
                 resolve_layout_node_state(engine, &mut entry.content);
             }
-        }
-        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own wire plumbing.
-        LayoutNode::Panel(panel_node) => {
-            resolve_layout_node_state(engine, &mut panel_node.content);
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
             resolve_layout_node_state(engine, &mut sidebar_node.content);

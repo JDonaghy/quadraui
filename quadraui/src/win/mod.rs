@@ -10,7 +10,7 @@
 //! rasterisers include `tree`/`list`/`form`/`data_table`/`editor`/`chart`;
 //! overlay/popup rasterisers include `tooltip`/`context_menu`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
-//! indicator rasterisers include `panel`/`split`/`toast`/`progress`/
+//! indicator rasterisers include `split`/`toast`/`progress`/
 //! `spinner`; text-heavy rasterisers include `terminal`/`text_display`/
 //! `message_list` — every other `draw_*`/`*_layout` rasteriser is still a
 //! `todo!()` stub; implement each one against Direct2D / DirectWrite and
@@ -142,10 +142,6 @@ mod number_input;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod palette;
-/// Direct2D / DirectWrite rasteriser for [`crate::Panel`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod panel;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::pipeline_view::PipelineView`]. Windows-only
 /// in full — see its module docs.
@@ -364,9 +360,6 @@ pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_me
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use palette::{draw_palette, win_palette_layout};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use panel::win_panel_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use pipeline_view::win_pipeline_view_layout;

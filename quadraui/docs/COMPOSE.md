@@ -387,10 +387,10 @@ match dialog.handle(&event, backend) {
 
 ## `HelpRegistry` / `HelpOverlayController` — `src/compose/help_layer.rs`
 
-**Owns:** a context-sensitive `?`-triggered help overlay (#431), split
+**Owns:** a context-sensitive `?`-triggered help overlay, split
 in two: `HelpRegistry` is where views register a `ViewHelp` (reference
 `HelpNote`s + `HelpAction`s) per view/panel id; `HelpOverlayController`
-renders the active view's registered help as a `Panel` + `TextDisplay`
+renders the active view's registered help as a `Dialog`
 cheatsheet. `help_actions_to_palette_items` / `filter_help_actions`
 feed the same registered actions into `DualModePaletteController` so
 they're searchable by label *and* description.
@@ -596,7 +596,7 @@ before issue #1041 — background fill, optional header/search chrome,
 the panel's own body widget, optional scrollbar-gutter reservation —
 composed from existing `Backend` methods (`draw_solid_fill`,
 `draw_settings_chrome`, your content rasteriser) into one ordered paint
-call. Stateless per-frame value, like `Panel` or `Scrollbar`.
+call. Stateless per-frame value, like `SidebarPanel` or `Scrollbar`.
 
 **Events:** none — a paint composer, not an interaction state machine.
 Click routing stays with whatever owns the body widget (e.g.
