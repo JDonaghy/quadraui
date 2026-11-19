@@ -12,6 +12,11 @@
 //! of its own, so these rebuild a [`quadraui::ScrollView`] (for the
 //! wheel/keyboard delta math) and hand back the already-painted
 //! [`quadraui::Scrollbar`] separately, rather than one combined tuple.
+//! [`GestureDrag`] is a different shape entirely: a generic draggable/
+//! drop-target gesture over ANY leaf `InteractionEngine::drag_roles`
+//! marks, rather than a fixed-geometry divider/thumb — see its own doc.
+
+use std::collections::HashMap;
 
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{
@@ -20,7 +25,8 @@ use quadraui::{
 };
 
 use crate::extra_paint::{extra_as, Markdown};
-use crate::hit::PaintedHit;
+use crate::hit::{hit_test_painted, HitDetail, PaintedHit};
+use crate::wire::DragRole;
 
 /// A divider drag in progress: armed by the binding's own event handler on a
 /// `MouseDown` landing on `HitDetail::SplitDivider` (a two-pane
@@ -403,4 +409,68 @@ pub fn tab_bar_for_right_segment(hit_map: &[PaintedHit], button_id: WidgetId) ->
         }
         _ => None,
     })
+}
+
+/// A draggable-leaf gesture in progress: armed by
+/// [`crate::engine::InteractionEngine::handle`] on a `MouseDown` landing on
+/// a leaf whose [`DragRole::draggable`] is set (per
+/// [`crate::engine::InteractionEngine::drag_roles`]), continued on every
+/// `MouseMoved` via [`gesture_target_at`], and cleared on the matching
+/// `MouseUp` — mirrors [`ActiveDrag`]'s own arm/continue/clear lifecycle,
+/// but tracks an opaque drag source/target pair (any leaf, keyed by
+/// whatever [`crate::wire::DecodeDiagnostics::drag_roles`] recorded for it)
+/// rather than a fixed divider/thumb geometry. Unlike every other drag in
+/// this module, arming one never rewrites the raw `MouseMoved`/`MouseUp`
+/// into a replacement `UiEvent`: a draggable leaf's own click/selection
+/// semantics (e.g. a `List` row's `ListViewEvent::SelectionChanged`) keep
+/// firing exactly as without a gesture armed, and
+/// `InteractionEngine::handle` dispatches the
+/// [`crate::semantic::DragGestureWireEvent::DragStarted`]/`DragOver`/
+/// `Dropped` wire events alongside them, through
+/// [`crate::engine::EventSink::dispatch_drag_gesture`].
+pub struct GestureDrag {
+    /// The leaf the gesture started on.
+    pub source: WidgetId,
+    /// The [`HitDetail`] the originating `MouseDown` landed on within
+    /// [`Self::source`] — e.g. [`HitDetail::ListItem`] for a drag starting
+    /// on one row of a `List` — so a host reordering a list by drag knows
+    /// WHICH row was picked up, not just that `source` (the whole `List`)
+    /// was.
+    pub source_detail: HitDetail,
+    /// The leaf (and its own [`HitDetail`]) currently under the pointer,
+    /// when that leaf's own [`DragRole::drop_target`] is set — `None`
+    /// while the pointer hovers nothing accepting a drop, including right
+    /// after arming (before the first `MouseMoved`). Updated by every
+    /// `MouseMoved` while this gesture is armed, via [`gesture_target_at`];
+    /// read back on the terminating `MouseUp` to resolve `Dropped`'s own
+    /// target — a `MouseUp` with this still `None` ends the gesture with
+    /// no `Dropped` dispatched at all.
+    pub target: Option<(WidgetId, HitDetail)>,
+}
+
+/// The drop-target `(id, HitDetail)` the pointer at `point` currently
+/// resolves to, if any — `None` when `point` lands on nothing painted this
+/// frame, or on a leaf whose `drag_roles` entry has
+/// [`DragRole::drop_target`] `false` (including a leaf absent from
+/// `drag_roles` altogether, the common case for a binding that never calls
+/// [`crate::engine::InteractionEngine::set_drag_roles`]). The `MouseMoved`
+/// continuation of an armed [`GestureDrag`] calls this on every move to
+/// decide whether its own [`GestureDrag::target`] changed — a target hit
+/// on the gesture's own [`GestureDrag::source`] counts the same as any
+/// other leaf: nothing here special-cases "dropping back onto where the
+/// drag started" as a no-op, since that's just as meaningful a drop as any
+/// other for a leaf marked both `draggable` and `drop_target` (e.g.
+/// reordering a `List` by dragging one row onto another row of the same
+/// list).
+pub fn gesture_target_at(
+    hit_map: &[PaintedHit],
+    drag_roles: &HashMap<WidgetId, DragRole>,
+    point: Point,
+) -> Option<(WidgetId, HitDetail)> {
+    let (id, detail) = hit_test_painted(hit_map, point)?;
+    if drag_roles.get(&id).is_some_and(|role| role.drop_target) {
+        Some((id, detail))
+    } else {
+        None
+    }
 }
