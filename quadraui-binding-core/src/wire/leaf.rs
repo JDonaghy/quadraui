@@ -11,8 +11,8 @@ use crate::scripted::{lookup_scripted_widget, ScriptedWidgetDescriptor};
 use crate::DecodeError;
 
 use super::value::{
-    check_unknown_keys, decode_value_checked, must_be_dict, obj_get, DecodeDiagnostics,
-    SCROLL_PX_EXTRA_KEYS, UNIVERSAL_NODE_SIBLING_KEYS,
+    check_unknown_keys, decode_value_checked, drag_role_from_leaf_value, must_be_dict, obj_get,
+    DecodeDiagnostics, DRAG_ROLE_KEYS, SCROLL_PX_EXTRA_KEYS, UNIVERSAL_NODE_SIBLING_KEYS,
 };
 
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
@@ -20,7 +20,10 @@ use super::value::{
 /// [`EXTRA_PRIMITIVE_KINDS`] kind must be present and hold a `dict` — a
 /// leaf with two keys from either set (fixed+fixed, fixed+extra, or
 /// extra+extra) is rejected by the single `found` duplicate check shared
-/// across both loops below.
+/// across both loops below. Also reads this leaf's optional
+/// `"draggable"`/`"drop_target"` [`DRAG_ROLE_KEYS`], recording a
+/// [`super::value::DragRole`] against `id` in `diagnostics`'s side table
+/// when either is set.
 pub(super) fn layout_leaf_from_value(
     what: &str,
     value: &Value,
@@ -36,13 +39,21 @@ pub(super) fn layout_leaf_from_value(
     let context = format!("{what} › leaf#{id}");
     // "id" plus whichever of `LEAF_KIND_KEYS`/`EXTRA_PRIMITIVE_KINDS` holds
     // this leaf's one descriptor, plus the sibling keys every layout-tree
-    // node dict may carry regardless of its own kind.
+    // node dict may carry regardless of its own kind, plus the two
+    // leaf-only drag-role keys (`super::layout` rejects either
+    // unconditionally on a container, so they stay out of
+    // `UNIVERSAL_NODE_SIBLING_KEYS` itself).
     let known_keys: Vec<&str> = std::iter::once("id")
         .chain(LEAF_KIND_KEYS)
         .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
         .chain(UNIVERSAL_NODE_SIBLING_KEYS)
+        .chain(DRAG_ROLE_KEYS)
         .collect();
     check_unknown_keys(diagnostics, &context, "leaf", value, &known_keys)?;
+
+    if let Some(role) = drag_role_from_leaf_value(&context, value)? {
+        diagnostics.record_drag_role(&id, role);
+    }
 
     let mut found: Option<LeafDescriptor> = None;
     // Set alongside `found` only for the three scrollable kinds —
@@ -304,6 +315,123 @@ mod tests {
             err.to_string().contains("more than one descriptor kind"),
             "{}",
             err.to_string()
+        );
+    }
+
+    /// A tree with three leaves -- one `"draggable"`, one `"drop_target"`,
+    /// one neither -- decodes normally, and `diagnostics.drag_roles()`
+    /// (the id-keyed side table [`DecodeDiagnostics::record_drag_role`]
+    /// builds up) carries exactly the two leaves that set either key, each
+    /// mapped to the right [`crate::wire::value::DragRole`] -- the
+    /// "decode-only ... round trip into a small id-keyed side table" this
+    /// seam exists for. No entry is recorded for the plain leaf.
+    #[test]
+    fn drag_role_keys_round_trip_into_the_id_keyed_side_table() {
+        use crate::wire::value::DragRole;
+        use crate::wire::{decode_layout_node_with_styles, StyleContext};
+
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "row": [
+                {"id": "drag1", "button": {"id": "drag1", "label": "Drag"}, "draggable": true},
+                {"id": "drop1", "button": {"id": "drop1", "label": "Drop"}, "drop_target": true},
+                {"id": "plain1", "button": {"id": "plain1", "label": "Plain"}},
+            ],
+        });
+        decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        )
+        .expect("draggable/drop_target leaves decode cleanly");
+
+        let roles = diagnostics.drag_roles();
+        assert_eq!(
+            roles.get("drag1"),
+            Some(&DragRole {
+                draggable: true,
+                drop_target: false,
+            })
+        );
+        assert_eq!(
+            roles.get("drop1"),
+            Some(&DragRole {
+                draggable: false,
+                drop_target: true,
+            })
+        );
+        assert_eq!(
+            roles.get("plain1"),
+            None,
+            "a leaf setting neither key gets no side-table entry"
+        );
+        assert_eq!(roles.len(), 2);
+    }
+
+    /// A leaf setting both `"draggable"` and `"drop_target"` records both
+    /// flags `true` in the same [`crate::wire::value::DragRole`] entry.
+    #[test]
+    fn a_leaf_may_set_both_drag_role_keys_at_once() {
+        use crate::wire::value::DragRole;
+
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "both1",
+            "button": {"id": "both1", "label": "Both"},
+            "draggable": true,
+            "drop_target": true,
+        });
+        layout_leaf_from_value("test", &value, &diagnostics).expect("decodes cleanly");
+        assert_eq!(
+            diagnostics.drag_roles().get("both1"),
+            Some(&DragRole {
+                draggable: true,
+                drop_target: true,
+            })
+        );
+    }
+
+    /// `"draggable"` set to a non-bool is a type-mismatch decode error, not
+    /// a silently-dropped or defaulted flag.
+    #[test]
+    fn a_non_bool_draggable_value_is_a_decode_error() {
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "bad1",
+            "button": {"id": "bad1", "label": "Bad"},
+            "draggable": "yes",
+        });
+        let error = err(layout_leaf_from_value("test", &value, &diagnostics));
+        assert!(error.to_string().contains("draggable"), "{error}");
+    }
+
+    /// A container (here a `"row"`) carrying `"draggable"` is rejected --
+    /// the key is valid only on an id-addressable leaf. This holds even
+    /// under the default *warn* policy, not just `strict`: an invalid
+    /// drag-role placement is a structural error
+    /// ([`super::reject_drag_role_keys_on_container`]), not an
+    /// unrecognised-key finding gated on [`DecodeDiagnostics`]'s policy.
+    #[test]
+    fn a_container_carrying_a_drag_role_key_is_a_decode_error_even_under_warn() {
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "row": [
+                {"id": "l1", "button": {"id": "l1", "label": "A"}},
+            ],
+            "draggable": true,
+        });
+        let error = err(crate::wire::decode_layout_node_with_styles(
+            "test",
+            &value,
+            crate::wire::StyleContext::new(&StyleSets::new(), &Theme::default()),
+            &diagnostics,
+        ));
+        assert!(
+            error.to_string().contains("draggable") && error.to_string().contains("leaf"),
+            "{error}"
         );
     }
 

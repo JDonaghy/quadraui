@@ -6,7 +6,7 @@
 //! other `wire` submodule reads a decoded `Value` dict through.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -194,6 +194,45 @@ pub(super) const UNIVERSAL_NODE_SIBLING_KEYS: [&str; 6] =
 /// descriptor-body kind passes `&[]` instead.
 pub(super) const SCROLL_PX_EXTRA_KEYS: [&str; 1] = ["scroll_px"];
 
+/// The two leaf-only drag-role wire keys [`drag_role_from_leaf_value`]
+/// reads: `"draggable"` (this leaf can be picked up and dragged) and
+/// `"drop_target"` (this leaf accepts a drop). Both are optional and
+/// independent — a leaf may set either, both, or neither. Valid only on an
+/// id-addressable leaf node dict (folded into [`super::leaf`]'s own
+/// known-key list alongside `"id"`); a container dict carrying either is a
+/// hard [`DecodeError`], checked by [`super::layout`] unconditionally
+/// rather than through the warn/strict [`DecodeDiagnostics`] policy.
+pub(super) const DRAG_ROLE_KEYS: [&str; 2] = ["draggable", "drop_target"];
+
+/// One leaf's decoded drag-role flags — see [`DRAG_ROLE_KEYS`]. Recorded
+/// into [`DecodeDiagnostics::drag_roles`]'s id-keyed side table rather than
+/// onto `LayoutLeaf` itself; no paint or dispatch path reads it yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DragRole {
+    pub draggable: bool,
+    pub drop_target: bool,
+}
+
+/// Reads the leaf-only [`DRAG_ROLE_KEYS`] off a leaf dict `value`, returning
+/// `Ok(None)` when neither key is present (the overwhelmingly common case —
+/// no leaf opts into either drag role) rather than a [`DragRole`] that's
+/// `Default`-equal to "neither". Each key present must be a JSON bool; a
+/// non-bool value is a [`DecodeError::type_mismatch`].
+pub(super) fn drag_role_from_leaf_value(
+    context: &str,
+    value: &Value,
+) -> Result<Option<DragRole>, DecodeError> {
+    let draggable = opt_bool(value, "draggable", context)?;
+    let drop_target = opt_bool(value, "drop_target", context)?;
+    if draggable.is_none() && drop_target.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(DragRole {
+        draggable: draggable.unwrap_or(false),
+        drop_target: drop_target.unwrap_or(false),
+    }))
+}
+
 /// Session-scoped sink for a wire decode's unknown-*optional*-key findings
 /// — a dict key none of this crate's decoders recognize there, outside the
 /// small number of closed-vocabulary sub-dicts (`"padding"`'s object shape,
@@ -215,6 +254,7 @@ pub struct DecodeDiagnostics {
     strict: Cell<bool>,
     warned: RefCell<HashSet<String>>,
     hook: RefCell<Option<UnknownKeyHook>>,
+    drag_roles: RefCell<HashMap<String, DragRole>>,
 }
 
 /// [`DecodeDiagnostics::set_hook`]'s registered callback, named so the
@@ -229,6 +269,7 @@ impl DecodeDiagnostics {
             strict: Cell::new(false),
             warned: RefCell::new(HashSet::new()),
             hook: RefCell::new(None),
+            drag_roles: RefCell::new(HashMap::new()),
         }
     }
 
@@ -270,6 +311,24 @@ impl DecodeDiagnostics {
     /// assert "once per key" without needing to install a hook itself.
     pub fn warned_keys(&self) -> HashSet<String> {
         self.warned.borrow().clone()
+    }
+
+    /// Records leaf `id`'s decoded [`DragRole`] — called by
+    /// [`super::leaf::layout_leaf_from_value`] once per leaf dict that sets
+    /// at least one of [`DRAG_ROLE_KEYS`]. A later call for the same `id`
+    /// overwrites the earlier entry, matching how a re-decoded frame's
+    /// other diagnostics state (the warned-key set) is also carried
+    /// forward rather than reset.
+    pub(super) fn record_drag_role(&self, id: &str, role: DragRole) {
+        self.drag_roles.borrow_mut().insert(id.to_string(), role);
+    }
+
+    /// The id-keyed side table [`Self::record_drag_role`] has built up over
+    /// this session's decode(s) so far — every leaf id whose dict set at
+    /// least one of [`DRAG_ROLE_KEYS`], mapped to its resolved [`DragRole`].
+    /// A leaf that set neither key has no entry here at all.
+    pub fn drag_roles(&self) -> HashMap<String, DragRole> {
+        self.drag_roles.borrow().clone()
     }
 
     /// Applies this session's policy to one finding: `key`, found on the
