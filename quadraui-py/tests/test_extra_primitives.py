@@ -1,10 +1,12 @@
-"""Black-box coverage for the additive primitive mechanism: `insert_progress`,
-`insert_spinner`, `insert_image`, the generic `insert_extra` and `clear_extra`
-build a `ProgressBar`, `Spinner` and `Image` descriptor from a plain Python
-dict, each rendering alongside (not instead of) the six fixed slots, and the
-same three kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
-container) behind a render callback -- the one other path a descriptor can
-reach the screen through.
+"""Black-box coverage for the additive primitive mechanism: a render
+callback's flat `{"progress": ..., "spinner": ..., "image": ...}` dict (and
+the generic, kind-by-name `insert_extra`/`clear_extra` pair, whose own
+occupancy/validation behaviour has no render-callback equivalent) builds a
+`ProgressBar`, `Spinner` and `Image` descriptor from a plain Python dict,
+each rendering alongside (not instead of) the six fixed slots, and the same
+three kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
+container) behind that same render callback -- the one other path a
+descriptor can reach the screen through.
 
 These three primitives prove the additive mechanism described in the
 `EXTRA_PRIMITIVES` doc comment in `quadraui-py/src/lib.rs`: registering a new
@@ -13,8 +15,9 @@ these three, a little layout derivation for one that needs a measure pass)
 and one line appended to the `EXTRA_PRIMITIVES` registry slice -- never an
 edit to the six-slot machinery (`SLOT_*`, `is_known_slot`/`clear_slot`,
 `LeafDescriptor`'s six-variant set) that `test_descriptors.py` exercises, and
-never a new pymethod, since `insert_extra(kind, descriptor)` already covers
-any registered kind by name.
+never a new pymethod, since a render callback dict (or, for the deprecated
+slot API, `insert_extra(kind, descriptor)`) already covers any registered
+kind by name.
 
 Run against a built wheel/extension, e.g.:
 
@@ -27,29 +30,33 @@ import pytest
 from quadraui import InvalidDescriptorError, QuiApp, SlotOccupiedError
 
 
-def test_insert_progress_renders_label():
+def test_progress_leaf_renders_label():
     app = QuiApp(40, 20)
-    app.insert_progress(
-        {"id": "progress:download", "label": "Downloading", "value": 0.5}
+    app.set_render(
+        lambda: {
+            "progress": {"id": "progress:download", "label": "Downloading", "value": 0.5}
+        }
     )
     assert app.screen_contains("Downloading")
 
 
-def test_insert_spinner_renders_label():
+def test_spinner_leaf_renders_label():
     app = QuiApp(40, 20)
-    app.insert_spinner({"id": "spinner:lsp_boot", "label": "Indexing"})
+    app.set_render(lambda: {"spinner": {"id": "spinner:lsp_boot", "label": "Indexing"}})
     assert app.screen_contains("Indexing")
 
 
-def test_insert_image_renders_fallback_text():
+def test_image_leaf_renders_fallback_text():
     app = QuiApp(40, 20)
-    app.insert_image(
-        {
-            "id": "image:logo",
-            "source": {"Path": "assets/logo.png"},
-            "intrinsic_size": None,
-            "fit": "Contain",
-            "fallback_text": "[LOGO]",
+    app.set_render(
+        lambda: {
+            "image": {
+                "id": "image:logo",
+                "source": {"Path": "assets/logo.png"},
+                "intrinsic_size": None,
+                "fit": "Contain",
+                "fallback_text": "[LOGO]",
+            }
         }
     )
     assert app.screen_contains("[LOGO]")
@@ -57,8 +64,12 @@ def test_insert_image_renders_fallback_text():
 
 def test_extra_primitives_coexist_with_fixed_slots():
     app = QuiApp(40, 20)
-    app.insert_button({"id": "demo:ok", "label": "OK"})
-    app.insert_progress({"id": "progress:download", "label": "Downloading"})
+    app.set_render(
+        lambda: {
+            "button": {"id": "demo:ok", "label": "OK"},
+            "progress": {"id": "progress:download", "label": "Downloading"},
+        }
+    )
     assert app.screen_contains("OK")
     assert app.screen_contains("Downloading")
 
@@ -95,15 +106,19 @@ def test_clear_extra_on_unknown_kind_returns_false():
     assert app.clear_extra("not_a_real_kind") is False
 
 
-def test_insert_image_invalid_descriptor_raises():
+def test_image_leaf_invalid_descriptor_raises():
     app = QuiApp(40, 20)
+    app.set_render(lambda: {"image": {"id": "image:logo"}})
     with pytest.raises(InvalidDescriptorError):
-        app.insert_image({"id": "image:logo"})
+        app.screen()
 
 
 def test_insert_extra_renders_by_kind_name():
     # The generic entry point: a future additive primitive reaches the
-    # screen through this one method with no new pymethod required.
+    # screen through this one method with no new pymethod required --
+    # unlike a render callback, where every kind is already addressed
+    # generically by its dict key with no distinct "by name" method to
+    # prove at all.
     app = QuiApp(40, 20)
     app.insert_extra("progress", {"id": "progress:download", "label": "Downloading"})
     assert app.screen_contains("Downloading")
@@ -169,7 +184,7 @@ def test_render_callback_tree_split_and_panel_nest_an_extra_primitive():
     #
     # A `Scrollbar` paints from its own absolute `track` rect rather than
     # the leaf area the layout computes for it (it owns its own layout, same
-    # as a direct `insert_extra` call outside any node tree), so its track
+    # as a standalone flat-slot render outside any node tree), so its track
     # is placed at the second pane's known on-screen column (ratio 0.5 of a
     # 40-wide screen, i.e. column 21 onward) rather than at the pane-local
     # origin.
@@ -499,48 +514,49 @@ def test_inline_tree_leaf_round_trips_semantic_event_per_kind(leaf_tree, events,
             assert actual == want, actual
 
 
-def test_insert_extra_text_input_renders_value():
+def test_text_input_leaf_renders_value():
     app = QuiApp(40, 20)
-    app.insert_extra("text_input", {"id": "ti:1", "lines": ["hello"]})
+    app.set_render(lambda: {"text_input": {"id": "ti:1", "lines": ["hello"]}})
     assert app.screen_contains("hello")
 
 
-def test_insert_extra_text_field_renders_value_in_brackets():
+def test_text_field_leaf_renders_value_in_brackets():
     app = QuiApp(40, 20)
-    app.insert_extra("text_field", {"id": "tf:1", "value": "hello"})
+    app.set_render(lambda: {"text_field": {"id": "tf:1", "value": "hello"}})
     assert app.screen_contains("[hello")
 
 
-def test_insert_extra_number_input_renders_value():
+def test_number_input_leaf_renders_value():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "number_input", {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}
+    app.set_render(
+        lambda: {"number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}
     )
     assert app.screen_contains("42")
 
 
-def test_insert_extra_radio_group_renders_options():
+def test_radio_group_leaf_renders_options():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "radio_group",
-        {
-            "id": "rg:1",
-            "options": [
-                {"id": "opt:a", "label": "Alpha"},
-                {"id": "opt:b", "label": "Beta"},
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "radio_group": {
+                "id": "rg:1",
+                "options": [
+                    {"id": "opt:a", "label": "Alpha"},
+                    {"id": "opt:b", "label": "Beta"},
+                ],
+            }
+        }
     )
     assert app.screen_contains("Alpha")
     assert app.screen_contains("Beta")
 
 
-def test_insert_extra_switch_renders_knob_and_responds_to_value():
+def test_switch_leaf_renders_knob_and_responds_to_value():
     app_on = QuiApp(40, 20)
-    app_on.insert_extra("switch", {"id": "sw:1", "value": True})
+    app_on.set_render(lambda: {"switch": {"id": "sw:1", "value": True}})
 
     app_off = QuiApp(40, 20)
-    app_off.insert_extra("switch", {"id": "sw:1", "value": False})
+    app_off.set_render(lambda: {"switch": {"id": "sw:1", "value": False}})
 
     # Switch has no label text -- it paints only a 4-cell `[`/knob/`]`
     # track with the knob on the right when `value` is true and on the
@@ -550,46 +566,49 @@ def test_insert_extra_switch_renders_knob_and_responds_to_value():
     assert app_off.screen_contains("[● ]")
 
 
-def test_insert_extra_combo_box_renders_options_when_open():
+def test_combo_box_leaf_renders_options_when_open():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "combo_box",
-        {"id": "combo:1", "options": ["alpha", "beta", "gamma"], "open": True},
+    app.set_render(
+        lambda: {
+            "combo_box": {"id": "combo:1", "options": ["alpha", "beta", "gamma"], "open": True}
+        }
     )
     assert app.screen_contains("alpha")
 
 
-def test_insert_extra_date_picker_renders_header():
+def test_date_picker_leaf_renders_header():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "date_picker",
-        {
-            "id": "date:1",
-            "visible_month": {"year": 2024, "month": 3, "day": 1},
-            "focused": {"year": 2024, "month": 3, "day": 15},
-            "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
-            "has_focus": True,
-        },
+    app.set_render(
+        lambda: {
+            "date_picker": {
+                "id": "date:1",
+                "visible_month": {"year": 2024, "month": 3, "day": 1},
+                "focused": {"year": 2024, "month": 3, "day": 15},
+                "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
+                "has_focus": True,
+            }
+        }
     )
     assert app.screen_contains("2024-03")
 
 
-def test_insert_extra_icon_grid_renders_item_label():
+def test_icon_grid_leaf_renders_item_label():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "icon_grid",
-        {
-            "id": "icons:1",
-            "items": [
-                {
-                    "id": "file:readme",
-                    "icon": {"glyph": "", "fallback": "F"},
-                    "label": {"spans": [{"text": "README.md", "fg": None, "bg": None}]},
-                },
-            ],
-            "selected_idx": 0,
-            "has_focus": True,
-        },
+    app.set_render(
+        lambda: {
+            "icon_grid": {
+                "id": "icons:1",
+                "items": [
+                    {
+                        "id": "file:readme",
+                        "icon": {"glyph": "", "fallback": "F"},
+                        "label": {"spans": [{"text": "README.md", "fg": None, "bg": None}]},
+                    },
+                ],
+                "selected_idx": 0,
+                "has_focus": True,
+            }
+        }
     )
     assert app.screen_contains("README.md")
 
@@ -603,7 +622,12 @@ def test_number_input_stepper_click_increments_and_decrements_the_value():
     # for, translated into `FormEvent::TextInputChanged` (`NumberInput`
     # has no `FormEvent` slot of its own).
     app = QuiApp(40, 20)
-    app.insert_extra("number_input", {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0})
+    app.set_render(
+        lambda: {"number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}
+    )
+    # `set_render` itself never repaints -- force the first render so the
+    # hit map is in place before the clicks below.
+    app.screen()
     received = []
     app.set_handler(lambda event: received.append(event))
 
@@ -629,10 +653,18 @@ def test_number_input_stepper_click_increments_and_decrements_the_value():
 
 def test_number_input_up_key_increments_the_focused_value():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "number_input",
-        {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0, "focused": True},
+    app.set_render(
+        lambda: {
+            "number_input": {
+                "id": "ni:1",
+                "min": 0.0,
+                "max": 100.0,
+                "value": 42.0,
+                "focused": True,
+            }
+        }
     )
+    app.screen()
     received = _click_events(app, 1.0, 1.0)
     assert received[0]["FocusChanged"] == "ni:1"
 
@@ -654,17 +686,19 @@ def test_radio_group_arrow_key_changes_the_selection():
     # own either -- it's translated into `SegmentedControlChanged`, which
     # carries the exact same `{ id, selected_idx }` shape.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "radio_group",
-        {
-            "id": "rg:1",
-            "options": [
-                {"id": "opt:a", "label": "Alpha"},
-                {"id": "opt:b", "label": "Beta"},
-            ],
-            "focused": True,
-        },
+    app.set_render(
+        lambda: {
+            "radio_group": {
+                "id": "rg:1",
+                "options": [
+                    {"id": "opt:a", "label": "Alpha"},
+                    {"id": "opt:b", "label": "Beta"},
+                ],
+                "focused": True,
+            }
+        }
     )
+    app.screen()
     received = _click_events(app, 1.0, 1.0)
     assert received[0]["FocusChanged"] == "rg:1"
 
@@ -743,16 +777,18 @@ def test_date_picker_enter_confirms_the_focused_day():
     # (`DateChanged`, which already carries the same `CalendarDate`
     # shape) -- `Enter` confirms the focused day.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "date_picker",
-        {
-            "id": "dp:1",
-            "visible_month": {"year": 2024, "month": 3, "day": 1},
-            "focused": {"year": 2024, "month": 3, "day": 15},
-            "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
-            "has_focus": True,
-        },
+    app.set_render(
+        lambda: {
+            "date_picker": {
+                "id": "dp:1",
+                "visible_month": {"year": 2024, "month": 3, "day": 1},
+                "focused": {"year": 2024, "month": 3, "day": 15},
+                "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
+                "has_focus": True,
+            }
+        }
     )
+    app.screen()
     received = _click_events(app, 1.0, 1.0)
     assert received[0]["FocusChanged"] == "dp:1"
 
@@ -771,7 +807,7 @@ def test_date_picker_enter_confirms_the_focused_day():
     }
 
 
-def test_insert_extra_form_renders_mixed_fields_with_label_position_and_validation():
+def test_form_leaf_renders_mixed_fields_with_label_position_and_validation():
     # Acceptance criterion: a `Form` with mixed field kinds plus a
     # `label_position` override and a field `validation` state decodes
     # and renders without raising.
@@ -782,31 +818,32 @@ def test_insert_extra_form_renders_mixed_fields_with_label_position_and_validati
     # override would cost each field a second row for its label and only
     # the first field or two would fit in the band.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "label_position": "Left",
-            "focused_field": None,
-            "fields": [
-                {
-                    "id": "header",
-                    "label": {"spans": [{"text": "Settings", "fg": None, "bg": None}]},
-                    "kind": "Label",
-                },
-                {
-                    "id": "name",
-                    "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
-                    "kind": {"TextInput": {"value": "Alice"}},
-                },
-                {
-                    "id": "enabled",
-                    "label": {"spans": [{"text": "Enabled", "fg": None, "bg": None}]},
-                    "kind": {"Toggle": {"value": True}},
-                    "validation": {"Error": "Required"},
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "label_position": "Left",
+                "focused_field": None,
+                "fields": [
+                    {
+                        "id": "header",
+                        "label": {"spans": [{"text": "Settings", "fg": None, "bg": None}]},
+                        "kind": "Label",
+                    },
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": "Alice"}},
+                    },
+                    {
+                        "id": "enabled",
+                        "label": {"spans": [{"text": "Enabled", "fg": None, "bg": None}]},
+                        "kind": {"Toggle": {"value": True}},
+                        "validation": {"Error": "Required"},
+                    },
+                ],
+            }
+        }
     )
     assert app.screen_contains("Settings")
     assert app.screen_contains("Name")
@@ -815,31 +852,32 @@ def test_insert_extra_form_renders_mixed_fields_with_label_position_and_validati
     assert app.screen_contains("[x]")
 
 
-def test_insert_extra_form_control_width_aligns_fields_regardless_of_mode():
+def test_form_leaf_control_width_aligns_fields_regardless_of_mode():
     # Acceptance criterion: every field kind starts its control at one
     # shared column, regardless of each field's own `control_width`
     # mode. Both values below are the same length, so if the two
     # fields' controls start at the same column, both values start at
     # the same column in their own (different) screen row.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "fields": [
-                {
-                    "id": "fill",
-                    "label": {"spans": [{"text": "Fill", "fg": None, "bg": None}]},
-                    "kind": {"TextInput": {"value": "stretches"}},
-                },
-                {
-                    "id": "content",
-                    "label": {"spans": [{"text": "Content", "fg": None, "bg": None}]},
-                    "kind": {"TextInput": {"value": "shortval1"}},
-                    "control_width": "Content",
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "fill",
+                        "label": {"spans": [{"text": "Fill", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": "stretches"}},
+                    },
+                    {
+                        "id": "content",
+                        "label": {"spans": [{"text": "Content", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": "shortval1"}},
+                        "control_width": "Content",
+                    },
+                ],
+            }
+        }
     )
     lines = app.screen().splitlines()
     fill_col = next(line.find("stretches") for line in lines if "stretches" in line)
@@ -848,46 +886,48 @@ def test_insert_extra_form_control_width_aligns_fields_regardless_of_mode():
     assert fill_col == content_col
 
 
-def test_insert_extra_form_control_width_fixed_truncates_without_a_floor():
+def test_form_leaf_control_width_fixed_truncates_without_a_floor():
     # A `Fixed` control narrower than the value's own length truncates
     # it (TUI draws only as many characters as fit the box).
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "fields": [
-                {
-                    "id": "clipped",
-                    "label": {"spans": [{"text": "A", "fg": None, "bg": None}]},
-                    "kind": {"TextInput": {"value": "exactwidth"}},
-                    "control_width": {"Fixed": 4.0},
-                }
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "clipped",
+                        "label": {"spans": [{"text": "A", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": "exactwidth"}},
+                        "control_width": {"Fixed": 4.0},
+                    }
+                ],
+            }
+        }
     )
     assert not app.screen_contains("exactwidth")
 
 
-def test_insert_extra_form_control_width_min_control_width_prevents_clipping():
+def test_form_leaf_control_width_min_control_width_prevents_clipping():
     # The same too-narrow `Fixed` control from the previous test, but
     # with `min_control_width` floored above the value's own length —
     # the value now renders in full instead of being truncated.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "fields": [
-                {
-                    "id": "floored",
-                    "label": {"spans": [{"text": "A", "fg": None, "bg": None}]},
-                    "kind": {"TextInput": {"value": "exactwidth"}},
-                    "control_width": {"Fixed": 4.0},
-                    "min_control_width": 14.0,
-                }
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "floored",
+                        "label": {"spans": [{"text": "A", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": "exactwidth"}},
+                        "control_width": {"Fixed": 4.0},
+                        "min_control_width": 14.0,
+                    }
+                ],
+            }
+        }
     )
     assert app.screen_contains("exactwidth")
 
@@ -901,19 +941,21 @@ def test_form_toggle_click_routes_through_form_controller():
     # `FormEvent::ToggleChanged` a `Form`-embedding host driving
     # `FormController` directly would get.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "fields": [
-                {
-                    "id": "wrap",
-                    "label": {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]},
-                    "kind": {"Toggle": {"value": False}},
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "wrap",
+                        "label": {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]},
+                        "kind": {"Toggle": {"value": False}},
+                    },
+                ],
+            }
+        }
     )
+    app.screen()
 
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -930,19 +972,21 @@ def test_form_toggle_click_routes_through_form_controller():
 
 def test_form_button_click_emits_button_clicked():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "fields": [
-                {
-                    "id": "save",
-                    "label": {"spans": [{"text": "Save", "fg": None, "bg": None}]},
-                    "kind": "Button",
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "save",
+                        "label": {"spans": [{"text": "Save", "fg": None, "bg": None}]},
+                        "kind": "Button",
+                    },
+                ],
+            }
+        }
     )
+    app.screen()
 
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -1163,20 +1207,21 @@ def test_form_descriptor_has_focus_seeds_the_controller_highlight():
     # `(50, 60, 90)` is `Theme::default()`'s `selected_bg`, paired with the
     # focused row; an unfocused row uses `tab_bar_bg` (`(20, 22, 30)`).
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "has_focus": True,
-            "focused_field": "name",
-            "fields": [
-                {
-                    "id": "name",
-                    "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
-                    "kind": {"TextInput": {"value": "Alice"}},
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "has_focus": True,
+                "focused_field": "name",
+                "fields": [
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": "Alice"}},
+                    },
+                ],
+            }
+        }
     )
     assert app.cell_colors(0, 0)[1] == (50, 60, 90)
 
@@ -1189,20 +1234,21 @@ def test_form_descriptor_scroll_offset_seeds_the_controller_view():
     # `scroll_offset: 2` over 5 one-row `Label` fields should show
     # `Field2`..`Field4` and hide `Field0`/`Field1`.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "scroll_offset": 2,
-            "fields": [
-                {
-                    "id": f"f{i}",
-                    "label": {"spans": [{"text": f"Field{i}", "fg": None, "bg": None}]},
-                    "kind": "Label",
-                }
-                for i in range(5)
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "scroll_offset": 2,
+                "fields": [
+                    {
+                        "id": f"f{i}",
+                        "label": {"spans": [{"text": f"Field{i}", "fg": None, "bg": None}]},
+                        "kind": "Label",
+                    }
+                    for i in range(5)
+                ],
+            }
+        }
     )
     assert app.screen_contains("Field2")
     assert app.screen_contains("Field3")
@@ -1287,19 +1333,20 @@ def test_form_wheel_scroll_advances_the_controller_scroll_offset():
     # resolves silently -- the assertion is on what's painted, not on a
     # dispatched event.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "fields": [
-                {
-                    "id": f"f{i}",
-                    "label": {"spans": [{"text": f"Field{i}", "fg": None, "bg": None}]},
-                    "kind": "Label",
-                }
-                for i in range(10)
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": f"f{i}",
+                        "label": {"spans": [{"text": f"Field{i}", "fg": None, "bg": None}]},
+                        "kind": "Label",
+                    }
+                    for i in range(10)
+                ],
+            }
+        }
     )
     app.set_handler(lambda event: None)
     assert app.screen_contains("Field0")
@@ -1590,44 +1637,44 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
     # `app.tab_stops()`, built from `InteractionEngine::tab_stops`'s own
     # paint-order traversal of the hit map. One `Tab` per extra, in
     # `EXTRA_PRIMITIVE_KINDS`' registration order (`form` < `number_input`
-    # < `combo_box` < `date_picker` < `radio_group`), must focus it.
+    # < `combo_box` < `date_picker` < `radio_group`), must focus it -- plus
+    # one extra `Tab` for `form` itself: a render callback's `frame` is
+    # resynced against the engine's own tracked state every frame
+    # (`resolve_render_frame_state`), so once `settings` has engine focus,
+    # the next `Tab` moves `FormController`'s own cursor onto its first
+    # field before a further `Tab` yields back to the engine's cycle.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "form",
-        {
-            "id": "settings",
-            "fields": [
-                {
-                    "id": "name",
-                    "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
-                    "kind": {"TextInput": {"value": "A"}},
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "form": {
+                "id": "settings",
+                "fields": [
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": "A"}},
+                    },
+                ],
+            },
+            "number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0},
+            "combo_box": {"id": "combo:1", "options": ["alpha", "beta"], "open": False},
+            "date_picker": {
+                "id": "date:1",
+                "visible_month": {"year": 2024, "month": 3, "day": 1},
+                "focused": {"year": 2024, "month": 3, "day": 15},
+                "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
+            },
+            "radio_group": {
+                "id": "rg:1",
+                "options": [{"id": "opt:a", "label": "Alpha"}],
+            },
+        }
     )
-    app.insert_extra(
-        "number_input", {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}
-    )
-    app.insert_extra(
-        "combo_box", {"id": "combo:1", "options": ["alpha", "beta"], "open": False}
-    )
-    app.insert_extra(
-        "date_picker",
-        {
-            "id": "date:1",
-            "visible_month": {"year": 2024, "month": 3, "day": 1},
-            "focused": {"year": 2024, "month": 3, "day": 15},
-            "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
-        },
-    )
-    app.insert_extra(
-        "radio_group",
-        {"id": "rg:1", "options": [{"id": "opt:a", "label": "Alpha"}]},
-    )
+    app.screen()
 
     received = []
     app.set_handler(lambda event: received.append(event))
-    for _ in range(5):
+    for _ in range(6):
         app.push_event(
             {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
         )
@@ -1635,6 +1682,7 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
 
     assert received == [
         {"FocusChanged": "settings"},
+        {"Form": ("settings", {"FocusChanged": {"id": "name"}})},
         {"FocusChanged": "ni:1"},
         {"FocusChanged": "combo:1"},
         {"FocusChanged": "date:1"},
@@ -1664,105 +1712,110 @@ def test_render_callback_flat_dict_still_works_with_extra_key():
 
 def test_message_list_renders_row_text():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "message_list",
-        {
-            "id": "messages:1",
-            "rows": [
-                {"text": "Build succeeded", "fg": {"r": 0, "g": 200, "b": 0, "a": 255}},
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "message_list": {
+                "id": "messages:1",
+                "rows": [
+                    {"text": "Build succeeded", "fg": {"r": 0, "g": 200, "b": 0, "a": 255}},
+                ],
+            }
+        }
     )
     assert app.screen_contains("Build succeeded")
 
 
 def test_board_renders_column_title():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "board",
-        {
-            "id": "board:1",
-            "columns": [
-                {
-                    "id": "col:backlog",
-                    "title": "Backlog",
-                    "cards": [
-                        {"id": "card:1", "title": "Fix flaky test"},
-                    ],
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "board": {
+                "id": "board:1",
+                "columns": [
+                    {
+                        "id": "col:backlog",
+                        "title": "Backlog",
+                        "cards": [
+                            {"id": "card:1", "title": "Fix flaky test"},
+                        ],
+                    },
+                ],
+            }
+        }
     )
     assert app.screen_contains("Backlog")
 
 
 def test_diff_view_renders_unified_hunk_header():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "diff_view",
-        {
-            "id": "diff:1",
-            "left": "foo\n",
-            "right": "foo\nbar\n",
-            "left_label": None,
-            "right_label": None,
-            "hunks": [
-                {
-                    "left_start": 1,
-                    "right_start": 1,
-                    "rows": [
-                        {"left": "foo", "right": "foo", "kind": "Same"},
-                        {"left": None, "right": "bar", "kind": "Added"},
-                    ],
-                },
-            ],
-            "mode": "Unified",
-            "editability": "ReadOnly",
-            "scroll_offset": 0,
-            "focused_pane": "Left",
-            "has_focus": False,
-        },
+    app.set_render(
+        lambda: {
+            "diff_view": {
+                "id": "diff:1",
+                "left": "foo\n",
+                "right": "foo\nbar\n",
+                "left_label": None,
+                "right_label": None,
+                "hunks": [
+                    {
+                        "left_start": 1,
+                        "right_start": 1,
+                        "rows": [
+                            {"left": "foo", "right": "foo", "kind": "Same"},
+                            {"left": None, "right": "bar", "kind": "Added"},
+                        ],
+                    },
+                ],
+                "mode": "Unified",
+                "editability": "ReadOnly",
+                "scroll_offset": 0,
+                "focused_pane": "Left",
+                "has_focus": False,
+            }
+        }
     )
     assert app.screen_contains("@@")
 
 
 def test_minimap_renders_braille_cells():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "minimap",
-        {
-            "id": "minimap:1",
-            "lines": [{"text": "fn main() {}", "line_idx": 0}],
-            "syntax_spans": [],
-            "visible_row_start": 0,
-            "visible_row_count": 1,
-            "total_buffer_lines": 1,
-        },
+    app.set_render(
+        lambda: {
+            "minimap": {
+                "id": "minimap:1",
+                "lines": [{"text": "fn main() {}", "line_idx": 0}],
+                "syntax_spans": [],
+                "visible_row_start": 0,
+                "visible_row_count": 1,
+                "total_buffer_lines": 1,
+            }
+        }
     )
     assert app.screen_contains("⠀")
 
 
 def test_multi_section_view_renders_section_header_title():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "multi_section_view",
-        {
-            "id": "sections:1",
-            "sections": [
-                {
-                    "id": "section:explorer",
-                    "header": {
-                        "icon": None,
-                        "title": {"spans": [{"text": "Explorer", "fg": None, "bg": None}]},
-                        "badge": None,
+    app.set_render(
+        lambda: {
+            "multi_section_view": {
+                "id": "sections:1",
+                "sections": [
+                    {
+                        "id": "section:explorer",
+                        "header": {
+                            "icon": None,
+                            "title": {"spans": [{"text": "Explorer", "fg": None, "bg": None}]},
+                            "badge": None,
+                        },
+                        "body": {"Text": []},
+                        "size": "EqualShare",
                     },
-                    "body": {"Text": []},
-                    "size": "EqualShare",
-                },
-            ],
-            "axis": "Vertical",
-            "scroll_mode": "PerSection",
-        },
+                ],
+                "axis": "Vertical",
+                "scroll_mode": "PerSection",
+            }
+        }
     )
     assert app.screen_contains("Explorer")
 
@@ -1820,33 +1873,35 @@ def test_activity_bar_renders_item_fallback_glyph():
     # glyph/fallback string (see activity_bar.rs), so the fallback here is
     # a single character.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "activity_bar",
-        {
-            "id": "activity_bar:main",
-            "top_items": [
-                {
-                    "id": "activity:explorer",
-                    "icon": {"glyph": "", "fallback": "E"},
-                    "tooltip": "Explorer",
-                    "is_active": True,
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "activity_bar": {
+                "id": "activity_bar:main",
+                "top_items": [
+                    {
+                        "id": "activity:explorer",
+                        "icon": {"glyph": "", "fallback": "E"},
+                        "tooltip": "Explorer",
+                        "is_active": True,
+                    },
+                ],
+            }
+        }
     )
     assert app.screen_contains("E")
 
 
 def test_toolbar_renders_action_label():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "toolbar",
-        {
-            "id": "toolbar:main",
-            "buttons": [
-                {"Action": {"id": "toolbar:refresh", "label": "Refresh"}},
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "toolbar": {
+                "id": "toolbar:main",
+                "buttons": [
+                    {"Action": {"id": "toolbar:refresh", "label": "Refresh"}},
+                ],
+            }
+        }
     )
     assert app.screen_contains("Refresh")
 
@@ -1860,30 +1915,31 @@ def test_toolbar_renders_field_placeholder_and_menu_button_caret():
     # paints its placeholder in brackets; `MenuButton` paints its label
     # plus a trailing caret.
     app = QuiApp(60, 20)
-    app.insert_extra(
-        "toolbar",
-        {
-            "id": "toolbar:main",
-            "buttons": [
-                {
-                    "MenuButton": {
-                        "id": "toolbar:action-menu",
-                        "label": "Action",
-                        "menu": [],
-                    }
-                },
-                {
-                    "Field": {
-                        "id": "toolbar:search",
-                        "field": {
+    app.set_render(
+        lambda: {
+            "toolbar": {
+                "id": "toolbar:main",
+                "buttons": [
+                    {
+                        "MenuButton": {
+                            "id": "toolbar:action-menu",
+                            "label": "Action",
+                            "menu": [],
+                        }
+                    },
+                    {
+                        "Field": {
                             "id": "toolbar:search",
-                            "placeholder": "Search",
-                        },
-                        "width": {"Fixed": 20.0},
-                    }
-                },
-            ],
-        },
+                            "field": {
+                                "id": "toolbar:search",
+                                "placeholder": "Search",
+                            },
+                            "width": {"Fixed": 20.0},
+                        }
+                    },
+                ],
+            }
+        }
     )
     assert app.screen_contains("Action")
     assert app.screen_contains("▾")  # the pull-down ▾ affordance
@@ -1892,33 +1948,35 @@ def test_toolbar_renders_field_placeholder_and_menu_button_caret():
 
 def test_menu_bar_renders_item_label():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "menu_bar",
-        {
-            "id": "menu_bar:main",
-            "items": [
-                {"id": "menu:file", "label": "&File"},
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "menu_bar": {
+                "id": "menu_bar:main",
+                "items": [
+                    {"id": "menu:file", "label": "&File"},
+                ],
+            }
+        }
     )
     assert app.screen_contains("File")
 
 
 def test_status_bar_renders_segment_text():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "status_bar",
-        {
-            "id": "status_bar:main",
-            "left_segments": [
-                {
-                    "text": "main",
-                    "fg": {"r": 255, "g": 255, "b": 255, "a": 255},
-                    "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
-                },
-            ],
-            "right_segments": [],
-        },
+    app.set_render(
+        lambda: {
+            "status_bar": {
+                "id": "status_bar:main",
+                "left_segments": [
+                    {
+                        "text": "main",
+                        "fg": {"r": 255, "g": 255, "b": 255, "a": 255},
+                        "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
+                    },
+                ],
+                "right_segments": [],
+            }
+        }
     )
     assert app.screen_contains("main")
 
@@ -1931,15 +1989,17 @@ def test_clicking_a_toolbar_button_emits_toolbar_button_clicked():
     # bar is a tab stop, so no `FocusChanged` precedes it and `_click`
     # (which asserts exactly one event) applies directly.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "toolbar",
-        {
-            "id": "toolbar:main",
-            "buttons": [
-                {"Action": {"id": "toolbar:refresh", "label": "Refresh"}},
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "toolbar": {
+                "id": "toolbar:main",
+                "buttons": [
+                    {"Action": {"id": "toolbar:refresh", "label": "Refresh"}},
+                ],
+            }
+        }
     )
+    app.screen()
 
     event = _click(app, 1.0, 0.0)
 
@@ -1951,15 +2011,17 @@ def test_clicking_a_toolbar_button_emits_toolbar_button_clicked():
 
 def test_clicking_an_active_toolbar_button_reports_it_toggled_off():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "toolbar",
-        {
-            "id": "toolbar:main",
-            "buttons": [
-                {"Action": {"id": "toolbar:wrap", "label": "Wrap", "is_active": True}},
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "toolbar": {
+                "id": "toolbar:main",
+                "buttons": [
+                    {"Action": {"id": "toolbar:wrap", "label": "Wrap", "is_active": True}},
+                ],
+            }
+        }
     )
+    app.screen()
 
     event = _click(app, 1.0, 0.0)
 
@@ -1973,17 +2035,19 @@ def test_enter_on_a_focused_toolbar_activates_its_focused_button():
     # button `focused_index` names, emitting the same `Toolbar` event shape
     # a mouse click does.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "toolbar",
-        {
-            "id": "toolbar:main",
-            "focused_index": 1,
-            "buttons": [
-                {"Action": {"id": "toolbar:filter", "label": "Filter"}},
-                {"Action": {"id": "toolbar:reset", "label": "Reset"}},
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "toolbar": {
+                "id": "toolbar:main",
+                "focused_index": 1,
+                "buttons": [
+                    {"Action": {"id": "toolbar:filter", "label": "Filter"}},
+                    {"Action": {"id": "toolbar:reset", "label": "Reset"}},
+                ],
+            }
+        }
     )
+    app.screen()
 
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -2002,21 +2066,23 @@ def test_enter_on_a_focused_toolbar_activates_its_focused_button():
 
 def test_clicking_a_status_bar_segment_emits_segment_clicked():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "status_bar",
-        {
-            "id": "status_bar:main",
-            "left_segments": [
-                {
-                    "text": "main",
-                    "fg": {"r": 255, "g": 255, "b": 255, "a": 255},
-                    "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
-                    "action_id": "status:branch",
-                },
-            ],
-            "right_segments": [],
-        },
+    app.set_render(
+        lambda: {
+            "status_bar": {
+                "id": "status_bar:main",
+                "left_segments": [
+                    {
+                        "text": "main",
+                        "fg": {"r": 255, "g": 255, "b": 255, "a": 255},
+                        "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
+                        "action_id": "status:branch",
+                    },
+                ],
+                "right_segments": [],
+            }
+        }
     )
+    app.screen()
 
     event = _click(app, 1.0, 0.0)
 
@@ -2027,20 +2093,22 @@ def test_clicking_a_status_bar_segment_emits_segment_clicked():
 
 def test_clicking_an_activity_bar_item_emits_item_clicked():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "activity_bar",
-        {
-            "id": "activity_bar:main",
-            "top_items": [
-                {
-                    "id": "activity:explorer",
-                    "icon": {"glyph": "", "fallback": "E"},
-                    "tooltip": "Explorer",
-                    "is_active": True,
-                },
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "activity_bar": {
+                "id": "activity_bar:main",
+                "top_items": [
+                    {
+                        "id": "activity:explorer",
+                        "icon": {"glyph": "", "fallback": "E"},
+                        "tooltip": "Explorer",
+                        "is_active": True,
+                    },
+                ],
+            }
+        }
     )
+    app.screen()
 
     event = _click(app, 0.0, 0.0)
 
@@ -2053,7 +2121,8 @@ def test_clicking_an_activity_bar_item_emits_item_clicked():
 # `menu_bar`) already have dedicated flat-slot click tests above this
 # comment; these four mirror each one through a literal inline
 # `{"row": [{"id", "<kind>": {...}}]}` leaf -- the shape a render callback
-# writes -- instead of `insert_extra`, proving the chrome-bar leaf path
+# writes -- instead of a flat `{"<kind>": {...}}` dict, proving the
+# chrome-bar leaf path
 # (`ExtraPaint::paint_chrome`'s `chrome_hits`, and for `menu_bar`,
 # `render_overlays`'s `sync_menu_bar`) carries the same semantic event all
 # the way to the handler, not just its paint.
@@ -2250,7 +2319,7 @@ def test_inline_tree_leaf_markdown_renders_formatting_and_link_click_emits_event
     assert app.screen_contains("•")
 
     # `QuiApp` (unlike `QuiShellApp`) has no `find` helper, so the link's
-    # cell position is located the same way `test_insert_extra_form_control_width_*`
+    # cell position is located the same way `test_form_leaf_control_width_*`
     # above locates a column: scan `screen()`'s own rows/columns directly.
     lines = app.screen().splitlines()
     y = next(i for i, line in enumerate(lines) if "docs" in line)
@@ -2265,14 +2334,15 @@ def test_inline_tree_leaf_markdown_renders_formatting_and_link_click_emits_event
 def test_inline_tree_leaf_find_replace_renders_query_text():
     # `FindReplacePanel` carries no `id` field of its own (see
     # `ExtraPaint::id`'s fixed-sentinel doc); `test_missing_primitives.py`
-    # already covers it via `insert_extra`, so this proves the same
-    # painter also works from an inline layout leaf. `hit_regions` drives
-    # both click routing AND which content the TUI rasteriser paints
-    # (`tui::draw_find_replace` walks it to place the find/replace input
-    # text) -- a real host builds it via `compute_find_replace_hit_regions`;
-    # this test supplies just the one entry it needs directly. An inline
-    # leaf gets the full 40-column viewport rather than `insert_extra`'s
-    # narrower band, so a `width` of 20 keeps the region inside it.
+    # already covers it through the flat-slot path, so this proves the
+    # same painter also works from an inline layout leaf. `hit_regions`
+    # drives both click routing AND which content the TUI rasteriser
+    # paints (`tui::draw_find_replace` walks it to place the find/replace
+    # input text) -- a real host builds it via
+    # `compute_find_replace_hit_regions`; this test supplies just the one
+    # entry it needs directly. An inline leaf gets the full 40-column
+    # viewport rather than the flat-slot path's narrower band, so a
+    # `width` of 20 keeps the region inside it.
     app = QuiApp(40, 20)
 
     def render():
@@ -2295,7 +2365,7 @@ def test_inline_tree_leaf_find_replace_renders_query_text():
 
 def test_command_line_renders_text():
     app = QuiApp(40, 20)
-    app.insert_extra("command_line", {"id": "command_line:main", "text": ":wq"})
+    app.set_render(lambda: {"command_line": {"id": "command_line:main", "text": ":wq"}})
     assert app.screen_contains(":wq")
 
 
@@ -2318,14 +2388,15 @@ def test_inline_tree_leaf_command_line_renders_text():
 
 def test_command_center_renders_search_label():
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "command_center",
-        {
-            "id": "command_center:main",
-            "back_enabled": True,
-            "forward_enabled": False,
-            "search_label": "my-project",
-        },
+    app.set_render(
+        lambda: {
+            "command_center": {
+                "id": "command_center:main",
+                "back_enabled": True,
+                "forward_enabled": False,
+                "search_label": "my-project",
+            }
+        }
     )
     assert app.screen_contains("my-project")
 
@@ -2354,7 +2425,7 @@ def test_inline_tree_leaf_command_center_renders_search_label():
 
 def test_palette_renders_item_text():
     # Palette's TUI rasteriser refuses to paint anything below a 4x4 area,
-    # and `insert_extra` only ever gives an additive primitive a fixed
+    # and the flat-slot path only ever gives an additive primitive a fixed
     # 3-row band, so this one routes through a render-callback `row` leaf
     # instead, which hands the leaf the full viewport.
     app = QuiApp(40, 20)
@@ -2382,7 +2453,7 @@ def test_palette_renders_item_text():
 
 
 # The data-view kinds below (`message_list`, `board`, `diff_view`, `minimap`,
-# `multi_section_view`) already have a dedicated flat-slot `insert_extra`
+# `multi_section_view`) already have a dedicated flat-slot render-callback
 # paint test above this comment, the same way `chart`/`pipeline_view` do
 # just above `test_activity_bar_renders_item_fallback_glyph`. Each one here
 # mirrors that same descriptor through a literal inline
@@ -2542,8 +2613,8 @@ def test_inline_tree_leaf_multi_section_view_renders_section_header_title():
     assert app.screen_contains("Explorer")
 
 
-# `editor`/`terminal`/`canvas` already have their own `insert_extra`
-# flat-slot paint-and-click coverage in `test_missing_primitives.py` (C17).
+# `editor`/`terminal`/`canvas` already have their own flat-slot
+# paint-and-click coverage in `test_missing_primitives.py` (C17).
 # These three mirror that same click behaviour (click-to-focus for the two
 # tab stops, a bare routed hit for the non-focusable `Canvas`) through a
 # literal inline leaf instead, proving the generic `LeafDescriptor::Extra`
@@ -2806,15 +2877,17 @@ def _click_events(app, x, y):
 
 
 def test_clicking_a_switch_routes_a_hit_with_widget_set():
-    # `insert_extra`'s own render already populated the hit map, so the
-    # switch -- the first (and only) extra, painted into the top 3-line
-    # band -- is hit-testable the moment it's inserted. `Switch` is also a
-    # tab stop, so the click-to-focus step fires a `FocusChanged` ahead of
-    # the click itself, and `semantic_event_for_hit` rewrites the click into
-    # a `Form`/`ToggleChanged` event rather than leaving it as a raw
+    # `set_render` itself never repaints -- the explicit `screen()` below
+    # forces the render that populates the hit map, so the switch -- the
+    # first (and only) extra, painted into the top 3-line band -- is
+    # hit-testable before the click. `Switch` is also a tab stop, so the
+    # click-to-focus step fires a `FocusChanged` ahead of the click itself,
+    # and `semantic_event_for_hit` rewrites the click into a
+    # `Form`/`ToggleChanged` event rather than leaving it as a raw
     # `MouseDown` with a `"hit"` dict.
     app = QuiApp(40, 20)
-    app.insert_extra("switch", {"id": "settings:wrap"})
+    app.set_render(lambda: {"switch": {"id": "settings:wrap"}})
+    app.screen()
 
     received = _click_events(app, 1.0, 1.0)
 
@@ -3187,7 +3260,8 @@ def test_disabled_switch_click_falls_through_with_hit_attached():
     # itself: the raw `MouseDown` (with its `"hit"` dict) reaches Python
     # unchanged instead of being replaced by a `Form` event.
     app = QuiApp(40, 20)
-    app.insert_extra("switch", {"id": "sw:1", "disabled": True})
+    app.set_render(lambda: {"switch": {"id": "sw:1", "disabled": True}})
+    app.screen()
 
     received = _click_events(app, 1.0, 1.0)
 
@@ -3235,7 +3309,8 @@ def test_text_input_enter_commits_current_value():
     # no multiline mode to special-case -- carrying whatever value the
     # current descriptor snapshot holds.
     app = QuiApp(40, 20)
-    app.insert_extra("text_input", {"id": "ti:1", "lines": ["hello"]})
+    app.set_render(lambda: {"text_input": {"id": "ti:1", "lines": ["hello"]}})
+    app.screen()
 
     _click_events(app, 1.0, 1.0)
 
@@ -3265,7 +3340,8 @@ def test_switch_enter_toggles_once_host_echoes_focus_onto_the_descriptor():
     # it received back onto the descriptor (`"focused": True`) before the
     # `Enter`/`Space` arrives, same as any other per-frame extra state.
     app = QuiApp(40, 20)
-    app.insert_extra("switch", {"id": "sw:1", "focused": True})
+    app.set_render(lambda: {"switch": {"id": "sw:1", "focused": True}})
+    app.screen()
 
     focus_and_click = _click_events(app, 1.0, 1.0)
     assert focus_and_click[0]["FocusChanged"] == "sw:1"
@@ -3295,9 +3371,12 @@ def test_clicking_a_display_only_extra_attaches_no_hit():
     # `FocusChanged`, no `widget`, no `hit` -- the "no behavior change for
     # display-only extras" half of the interaction seam.
     app = QuiApp(40, 20)
-    app.insert_extra(
-        "progress", {"id": "progress:download", "label": "Downloading", "value": 0.5}
+    app.set_render(
+        lambda: {
+            "progress": {"id": "progress:download", "label": "Downloading", "value": 0.5}
+        }
     )
+    app.screen()
 
     event = _click(app, 1.0, 1.0)
 
@@ -3618,26 +3697,29 @@ def test_show_message_dialog_closes_an_open_menu_bar_dropdown():
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
-    app.insert_extra(
-        "menu_bar",
-        {
-            "id": "bar:main",
-            "items": [
-                {
-                    "id": "menu:file",
-                    "label": "&File",
-                    "disabled": False,
-                    "submenu": [
-                        {
-                            "id": "item:open",
-                            "label": {"spans": [{"text": "Open", "fg": None, "bg": None}]},
-                        }
-                    ],
-                }
-            ],
-            "open_item": None,
-            "focused_item": None,
-        },
+    app.set_render(
+        lambda: {
+            "menu_bar": {
+                "id": "bar:main",
+                "items": [
+                    {
+                        "id": "menu:file",
+                        "label": "&File",
+                        "disabled": False,
+                        "submenu": [
+                            {
+                                "id": "item:open",
+                                "label": {
+                                    "spans": [{"text": "Open", "fg": None, "bg": None}]
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "open_item": None,
+                "focused_item": None,
+            }
+        }
     )
 
     row, col = _locate(app, "File")

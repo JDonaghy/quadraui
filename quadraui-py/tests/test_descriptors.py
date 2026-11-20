@@ -1,6 +1,11 @@
-"""Black-box coverage for `QuiApp`: insert each of the six core primitive
-descriptors from a plain Python dict and assert the rendered screen shows
-it.
+"""Black-box coverage for `QuiApp`: render each of the six core primitives
+from a plain Python dict, through a render callback's flat
+`{"<kind>": {...}}` dict, and assert the rendered screen shows it. The
+deprecated slot API's own occupancy/validation behaviour (`insert_*`'s
+`SlotOccupiedError`, `slot_clear`'s `UnknownSlotError`/`bool` return) has no
+render-callback equivalent -- a render callback has no notion of "occupied",
+it just returns fresh data every frame -- so the handful of tests below that
+exercise that behaviour specifically stay on the deprecated calls.
 
 Run against a built wheel/extension, e.g.:
 
@@ -19,59 +24,69 @@ from quadraui import (
 )
 
 
-def test_insert_button():
+def test_button_leaf_renders_label():
     app = QuiApp(40, 20)
-    slot = app.insert_button({"id": "demo:ok", "label": "OK"})
-    assert slot == 0
+    app.set_render(lambda: {"button": {"id": "demo:ok", "label": "OK"}})
     assert app.screen_contains("OK")
 
 
-def test_insert_button_accepts_an_optional_tooltip():
+def test_button_leaf_accepts_an_optional_tooltip():
     app = QuiApp(40, 20)
-    app.insert_button({"id": "demo:ok", "label": "OK", "tooltip": "Confirm the action"})
+    app.set_render(
+        lambda: {
+            "button": {"id": "demo:ok", "label": "OK", "tooltip": "Confirm the action"}
+        }
+    )
     assert app.screen_contains("OK")
 
 
-def test_insert_button_rejects_a_non_string_tooltip():
+def test_button_leaf_rejects_a_non_string_tooltip():
     # `Button::tooltip` is typed `Option<String>`, not merely ignored the
     # way an unrecognized key would be -- a non-string value must fail to
     # decode, proving the field is actually wired into `Button`'s own
     # `Deserialize` rather than silently dropped.
     app = QuiApp(40, 20)
+    app.set_render(lambda: {"button": {"id": "demo:ok", "label": "OK", "tooltip": 123}})
     with pytest.raises(InvalidDescriptorError):
-        app.insert_button({"id": "demo:ok", "label": "OK", "tooltip": 123})
+        app.screen()
 
 
-def test_insert_text_display():
+def test_text_display_leaf_renders():
     app = QuiApp(40, 20)
-    app.insert_text_display(
-        {
-            "id": "text:1",
-            "lines": [{"spans": [{"text": "Hello", "fg": None, "bg": None}]}],
+    app.set_render(
+        lambda: {
+            "text_display": {
+                "id": "text:1",
+                "lines": [{"spans": [{"text": "Hello", "fg": None, "bg": None}]}],
+            }
         }
     )
     assert app.screen_contains("Hello")
 
 
-def test_text_display_wheel_scroll_emits_scrolled():
-    # `insert_text_display`'s own render already populated the hit map, so
-    # the display is hit-testable the moment it's inserted. Five lines into
-    # a 3-line viewport (the fixed-slot band height every `QuiApp` default
-    # render reserves) leaves two lines of scroll room; a wheel notch
-    # forward (`delta.y < 0`, per `wheel_row_delta`'s convention) must move
+def test_text_display_leaf_wheel_scroll_emits_scrolled():
+    # `set_render` itself never repaints -- the explicit `screen()` below
+    # forces the render that populates the hit map, so the display is
+    # hit-testable before the wheel event. Five lines into a 3-line
+    # viewport (the fixed-slot band height every `QuiApp` default render
+    # reserves) leaves two lines of scroll room; a wheel notch forward
+    # (`delta.y < 0`, per `wheel_row_delta`'s convention) must move
     # `scroll_offset` from 0 to 1, landing on `TextDisplayEvent::Scrolled`
     # rather than a raw `Scroll` with `widget: None`.
     app = QuiApp(40, 20)
-    app.insert_text_display(
-        {
-            "id": "text:1",
-            "lines": [
-                {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
-                for i in range(5)
-            ],
-            "auto_scroll": False,
+    app.set_render(
+        lambda: {
+            "text_display": {
+                "id": "text:1",
+                "lines": [
+                    {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
+                    for i in range(5)
+                ],
+                "auto_scroll": False,
+            }
         }
     )
+    app.screen()
 
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -91,7 +106,7 @@ def test_text_display_wheel_scroll_emits_scrolled():
     assert text_display_event == {"Scrolled": {"new_offset": 1}}
 
 
-def test_text_display_with_title_wheel_scroll_emits_scrolled():
+def test_text_display_leaf_with_title_wheel_scroll_emits_scrolled():
     # Every backend's text-display layout lays the body out from `0.0` and
     # leaves the title row to be painted separately above it, so a hit on
     # the *last* visible body row (one row lower than an untitled display's
@@ -99,17 +114,20 @@ def test_text_display_with_title_wheel_scroll_emits_scrolled():
     # for the title's body offset, a wheel notch there missed the layout
     # entirely and no `Scrolled` event was emitted at all.
     app = QuiApp(40, 20)
-    app.insert_text_display(
-        {
-            "id": "text:1",
-            "title": {"spans": [{"text": "Logs", "fg": None, "bg": None}]},
-            "lines": [
-                {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
-                for i in range(5)
-            ],
-            "auto_scroll": False,
+    app.set_render(
+        lambda: {
+            "text_display": {
+                "id": "text:1",
+                "title": {"spans": [{"text": "Logs", "fg": None, "bg": None}]},
+                "lines": [
+                    {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
+                    for i in range(5)
+                ],
+                "auto_scroll": False,
+            }
         }
     )
+    app.screen()
 
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -132,49 +150,53 @@ def test_text_display_with_title_wheel_scroll_emits_scrolled():
     assert text_display_event == {"Scrolled": {"new_offset": 1}}
 
 
-def test_insert_list():
+def test_list_leaf_renders():
     app = QuiApp(40, 20)
-    app.insert_list(
-        {
-            "id": "list:1",
-            "items": [
-                {"text": {"spans": [{"text": "Row 1", "fg": None, "bg": None}]}}
-            ],
-            "selected_idx": 0,
+    app.set_render(
+        lambda: {
+            "list": {
+                "id": "list:1",
+                "items": [
+                    {"text": {"spans": [{"text": "Row 1", "fg": None, "bg": None}]}}
+                ],
+                "selected_idx": 0,
+            }
         }
     )
     assert app.screen_contains("Row 1")
 
 
-def test_insert_tree():
+def test_tree_leaf_renders():
     app = QuiApp(40, 20)
-    app.insert_tree(
-        {
-            "id": "tree:1",
-            "rows": [
-                {
-                    "path": [0],
-                    "indent": 0,
-                    "icon": None,
-                    "text": {"spans": [{"text": "Alpha", "fg": None, "bg": None}]},
-                    "badge": None,
-                    "is_expanded": None,
-                }
-            ],
-            "selection_mode": "Single",
-            "selected_path": None,
-            "style": {
-                "indent": 2,
-                "show_chevrons": True,
-                "chevron_expanded": "v",
-                "chevron_collapsed": ">",
-            },
+    app.set_render(
+        lambda: {
+            "tree": {
+                "id": "tree:1",
+                "rows": [
+                    {
+                        "path": [0],
+                        "indent": 0,
+                        "icon": None,
+                        "text": {"spans": [{"text": "Alpha", "fg": None, "bg": None}]},
+                        "badge": None,
+                        "is_expanded": None,
+                    }
+                ],
+                "selection_mode": "Single",
+                "selected_path": None,
+                "style": {
+                    "indent": 2,
+                    "show_chevrons": True,
+                    "chevron_expanded": "v",
+                    "chevron_collapsed": ">",
+                },
+            }
         }
     )
     assert app.screen_contains("Alpha")
 
 
-def test_insert_tree_with_codicon_icon():
+def test_tree_leaf_with_codicon_icon():
     """A tree row's `icon` accepts `{"codicon": "...", "fallback": "..."}`
     in place of `{"glyph": "...", "fallback": "..."}` — the wire shape
     `Icon`'s `Deserialize` impl resolves through the bundled codicon name
@@ -182,38 +204,40 @@ def test_insert_tree_with_codicon_icon():
     rendered row shows the icon's plain-text fallback.
     """
     app = QuiApp(40, 20)
-    app.insert_tree(
-        {
-            "id": "tree:1",
-            "rows": [
-                {
-                    "path": [0],
-                    "indent": 0,
-                    "icon": {"codicon": "folder", "fallback": "DIR"},
-                    "text": {"spans": [{"text": "src", "fg": None, "bg": None}]},
-                    "badge": None,
-                    "is_expanded": None,
-                }
-            ],
-            "selection_mode": "Single",
-            "selected_path": None,
-            "style": {
-                "indent": 2,
-                "show_chevrons": True,
-                "chevron_expanded": "v",
-                "chevron_collapsed": ">",
-            },
+    app.set_render(
+        lambda: {
+            "tree": {
+                "id": "tree:1",
+                "rows": [
+                    {
+                        "path": [0],
+                        "indent": 0,
+                        "icon": {"codicon": "folder", "fallback": "DIR"},
+                        "text": {"spans": [{"text": "src", "fg": None, "bg": None}]},
+                        "badge": None,
+                        "is_expanded": None,
+                    }
+                ],
+                "selection_mode": "Single",
+                "selected_path": None,
+                "style": {
+                    "indent": 2,
+                    "show_chevrons": True,
+                    "chevron_expanded": "v",
+                    "chevron_collapsed": ">",
+                },
+            }
         }
     )
     assert app.screen_contains("DIR")
     assert app.screen_contains("src")
 
 
-def test_insert_tree_with_unknown_codicon_name_raises():
+def test_tree_leaf_with_unknown_codicon_name_raises():
     app = QuiApp(40, 20)
-    with pytest.raises(InvalidDescriptorError):
-        app.insert_tree(
-            {
+    app.set_render(
+        lambda: {
+            "tree": {
                 "id": "tree:1",
                 "rows": [
                     {
@@ -234,26 +258,31 @@ def test_insert_tree_with_unknown_codicon_name_raises():
                     "chevron_collapsed": ">",
                 },
             }
-        )
+        }
+    )
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
 
 
-def test_insert_data_table():
+def test_data_table_leaf_renders():
     app = QuiApp(40, 20)
-    app.insert_data_table(
-        {
-            "id": "table:1",
-            "columns": [{"title": "Name"}],
-            "rows": [
-                {"cells": [{"spans": [{"text": "Row1", "fg": None, "bg": None}]}]}
-            ],
+    app.set_render(
+        lambda: {
+            "data_table": {
+                "id": "table:1",
+                "columns": [{"title": "Name"}],
+                "rows": [
+                    {"cells": [{"spans": [{"text": "Row1", "fg": None, "bg": None}]}]}
+                ],
+            }
         }
     )
     assert app.screen_contains("Row1")
 
 
-def test_insert_tab_bar():
+def test_tab_bar_leaf_renders():
     app = QuiApp(40, 20)
-    app.insert_tab_bar({"id": "tabbar:1", "tabs": [{"label": "Tab 1"}]})
+    app.set_render(lambda: {"tab_bar": {"id": "tabbar:1", "tabs": [{"label": "Tab 1"}]}})
     assert app.screen_contains("Tab 1")
 
 
@@ -270,10 +299,11 @@ def test_slot_occupied_then_cleared():
     assert app.screen_contains("OK2")
 
 
-def test_invalid_descriptor_raises_invalid_descriptor_error():
+def test_button_leaf_invalid_descriptor_raises_invalid_descriptor_error():
     app = QuiApp(40, 20)
+    app.set_render(lambda: {"button": {"not": "a button"}})
     with pytest.raises(InvalidDescriptorError):
-        app.insert_button({"not": "a button"})
+        app.screen()
 
 
 def test_zero_sized_app_raises_invalid_dimensions_error():
@@ -296,9 +326,9 @@ def test_slot_clear_empty_slot_returns_false():
     assert app.slot_clear(0) is False
 
 
-def test_screen_reflects_inserted_descriptors():
+def test_screen_reflects_rendered_descriptors():
     app = QuiApp(40, 20)
-    app.insert_button({"id": "demo:ok", "label": "OK"})
+    app.set_render(lambda: {"button": {"id": "demo:ok", "label": "OK"}})
     screen = app.screen()
     assert isinstance(screen, str)
     assert "OK" in screen
