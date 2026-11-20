@@ -440,7 +440,7 @@ where
             None => (
                 ControlReply::Error(
                     "snapshot: no captured frame yet — enable \
-                     crate::frame::set_frame_capture first"
+                     quadraui::set_frame_capture first"
                         .into(),
                 ),
                 Reaction::Continue,
@@ -455,7 +455,7 @@ where
                 return (
                     ControlReply::Error(
                         "act: no captured frame yet — enable \
-                         crate::frame::set_frame_capture first"
+                         quadraui::set_frame_capture first"
                             .into(),
                     ),
                     Reaction::Continue,
@@ -525,7 +525,7 @@ where
             None => (
                 ControlReply::Error(
                     "screenshot: unsupported on this backend, or no captured frame yet \
-                     — enable crate::frame::set_frame_capture first"
+                     — enable quadraui::set_frame_capture first"
                         .into(),
                 ),
                 Reaction::Continue,

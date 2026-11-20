@@ -65,14 +65,13 @@ use crate::{
 // check into `BackendCore` — so this file's non-test code no
 // longer names either type directly. Gate the import so a non-test
 // build doesn't flag it as unused.
-use super::text::char_cell_width;
 #[cfg(test)]
 use crate::{AcceleratorScope, DragTarget, KeyBinding};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
 use super::services::TuiPlatformServices;
-use super::text::display_width;
+use super::text::{char_cell_width, display_width};
 
 /// Minimum gap (in cells) between left and right status-bar halves
 /// before priority drop kicks in. Mirrors `crate::gtk::status_bar`'s
@@ -2692,8 +2691,19 @@ impl Backend for TuiBackend {
     /// captured while [`Self::frame_capture`] was enabled, `None`
     /// otherwise — see that method's doc for exactly when the capture
     /// runs relative to post-render overlays.
+    ///
+    /// Re-checks [`crate::frame::FrameCapture::is_enabled`] on every call
+    /// rather than trusting `last_screenshot` alone: disabling capture
+    /// drops the retained frame for [`Self::last_frame`]
+    /// (`FrameCapture::set_enabled`'s documented invariant), and this
+    /// method honors the same contract so a consumer that opts out can't
+    /// still be served a stale screen through here.
     fn screenshot(&self) -> Option<Screenshot> {
-        self.last_screenshot.clone()
+        if self.frame_capture.is_enabled() {
+            self.last_screenshot.clone()
+        } else {
+            None
+        }
     }
 
     fn services(&self) -> &dyn PlatformServices {
@@ -10199,6 +10209,40 @@ mod tests {
         assert!(
             after.iter().any(|r| r.contains("▶ beta")),
             "row 1 must show the selection marker after the change: {after:?}"
+        );
+    }
+
+    /// Opting out of capture is not one-way: once a frame has been
+    /// captured, disabling it via
+    /// [`crate::frame::set_frame_capture`] must make
+    /// [`Backend::screenshot`] answer `None` again, not keep handing out
+    /// the last painted grid — the same "turning it off also drops the
+    /// retained frame" contract [`crate::frame::FrameCapture::set_enabled`]
+    /// documents for [`Backend::last_frame`].
+    #[test]
+    fn screenshot_is_none_again_after_frame_capture_is_disabled() {
+        let app = ScreenshotListApp {
+            items: vec!["alpha", "beta"],
+            selected: 0,
+        };
+        let mut driver = crate::tui::testing::TuiDriver::new(app, 20, 5);
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(crate::frame::set_frame_capture(backend, true));
+        }
+        driver.render();
+        assert!(
+            driver.backend().screenshot().is_some(),
+            "capture is enabled and a frame has painted"
+        );
+
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(crate::frame::set_frame_capture(backend, false));
+        }
+        assert!(
+            driver.backend().screenshot().is_none(),
+            "disabling capture must not leave a stale screenshot readable"
         );
     }
 }

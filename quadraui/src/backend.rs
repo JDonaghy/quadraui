@@ -1128,8 +1128,11 @@ pub struct ScreenshotRun {
     pub fg: Option<String>,
     /// `None` means the backend's default background.
     pub bg: Option<String>,
+    /// Whether every cell in the run is bold.
     pub bold: bool,
+    /// Whether every cell in the run is italic.
     pub italic: bool,
+    /// Whether every cell in the run is underlined.
     pub underline: bool,
 }
 
