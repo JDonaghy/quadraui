@@ -39,6 +39,19 @@ use hello_ex::Hello;
 #[allow(dead_code)]
 mod tui_commands_demo_ex;
 
+// `tui_mcp_demo.rs` is the reference example for `quadraui-mcp`'s crate
+// doc ("Driving a quadraui app from an agent"): it starts a real
+// `quadraui-mcp` server on a Unix socket alongside its interactive TUI.
+// It needs `control` for the same reason `tui_commands_demo.rs` does,
+// plus this crate's `quadraui-mcp` dev-dependency for `quadraui_mcp`
+// itself — see that dependency's own comment in `Cargo.toml` for why a
+// dev-dependency can point back at this crate without a real cycle. Its
+// own `fn main()` rides along unused under the `#[path]` include.
+#[cfg(feature = "control")]
+#[path = "../examples/tui_mcp_demo.rs"]
+#[allow(dead_code)]
+mod tui_mcp_demo_ex;
+
 #[path = "../examples/common/toolbar_app.rs"]
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
@@ -12186,4 +12199,239 @@ fn tui_commands_demo_keyboard_and_json_cli_reach_the_same_commands() {
         serde_json::json!({"selected": 2}),
         "the CLI helper and a direct run_command are the same call"
     );
+}
+
+/// Black-box acceptance test for `tui_mcp_demo`: a real `quadraui-mcp`
+/// client, connected over a Unix-domain socket, drives the headless
+/// example through `initialize` → `tools/list` → a Level 2 app command
+/// (`filter`) → a Level 1 UI action (`act`, clicking a list row) →
+/// `snapshot`, then asserts the *rendered* detail pane changed — not
+/// just the model — the same three-thread shape
+/// `quadraui-mcp/tests/mcp_tui_roundtrip.rs` uses for its own app, with
+/// `TuiDriver::service_control` standing in for a live `TuiRunner`'s own
+/// per-iteration call.
+#[cfg(all(unix, feature = "control"))]
+#[test]
+fn tui_mcp_demo_filter_then_act_moves_the_painted_detail_pane() {
+    use quadraui::control::channel;
+    use quadraui::{set_frame_capture, A11yNodeId, WidgetId};
+    use quadraui_mcp::Transport;
+    use serde_json::{json, Value};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use tui_mcp_demo_ex::McpDemo;
+
+    /// One JSON-RPC round trip: writes `request` as a line, reads one
+    /// line back, parses it as JSON.
+    fn call(stream: &mut UnixStream, reader: &mut BufReader<UnixStream>, request: &Value) -> Value {
+        let mut line = serde_json::to_string(request).expect("request serializes");
+        line.push('\n');
+        stream.write_all(line.as_bytes()).expect("write request");
+        stream.flush().expect("flush request");
+
+        let mut response_line = String::new();
+        reader.read_line(&mut response_line).expect("read response");
+        assert!(
+            !response_line.is_empty(),
+            "server closed the connection before answering {request}"
+        );
+        serde_json::from_str(&response_line)
+            .unwrap_or_else(|e| panic!("response {response_line:?} is not valid JSON: {e}"))
+    }
+
+    /// Finds the node with id `target` anywhere under `node` (a
+    /// snapshot's `"root"` value, or one of its `"children"`).
+    fn find_node(node: &Value, target: u64) -> Option<Value> {
+        if node.get("id").and_then(Value::as_u64) == Some(target) {
+            return Some(node.clone());
+        }
+        node.get("children")?
+            .as_array()?
+            .iter()
+            .find_map(|child| find_node(child, target))
+    }
+
+    let mut driver = TuiDriver::new(McpDemo::new(), 80, 20);
+    {
+        let (backend, _app) = driver.parts_mut();
+        assert!(
+            set_frame_capture(backend, true),
+            "the TUI backend offers a frame-capture slot"
+        );
+    }
+    driver.render();
+
+    let before_screen = driver.screen();
+    assert!(
+        before_screen.contains("crisp, sweet fruit"),
+        "apple should start selected, with its detail painted:\n{before_screen}"
+    );
+
+    let waker = driver.backend().waker();
+    let (handle, port) = channel(waker);
+
+    // Short, deliberately: a Unix socket path is capped at `SUN_LEN`
+    // (~104 bytes including the null terminator on macOS/BSD), and
+    // `std::env::temp_dir()` alone can already use half of that budget —
+    // unlike a plain tempfile, there is no library-level fallback if the
+    // joined path doesn't fit.
+    let socket_path = std::env::temp_dir().join(format!("qd-mcp-demo-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket_path);
+
+    let server_socket_path = socket_path.clone();
+    let server =
+        thread::spawn(move || quadraui_mcp::serve(handle, Transport::Unix(server_socket_path)));
+
+    // `TuiDriver` isn't `Send`, so it stays on this thread, which plays
+    // the runner's role (servicing the control port in a loop) while a
+    // background thread plays the MCP client.
+    let client_done = Arc::new(AtomicBool::new(false));
+    let worker_done = client_done.clone();
+    let socket_path_for_client = socket_path.clone();
+    let client = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket_path_for_client.exists() {
+            assert!(Instant::now() < deadline, "server never created its socket");
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let mut stream =
+            UnixStream::connect(&socket_path_for_client).expect("connect to the MCP socket");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone the connected stream"));
+
+        let init = call(
+            &mut stream,
+            &mut reader,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05"},
+            }),
+        );
+        assert_eq!(init["result"]["serverInfo"]["name"], json!("quadraui-mcp"));
+
+        let listed = call(
+            &mut stream,
+            &mut reader,
+            &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        );
+        let tool_names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            tool_names,
+            vec!["snapshot", "act", "key", "type", "filter", "clear_filter"],
+            "the four built-ins plus both Level 2 app commands, in that order"
+        );
+
+        // Level 2: narrow the list down with the app-defined `filter`
+        // command. "a" matches apple, banana and date, in catalogue
+        // order — `filter` resets the selection to the first match
+        // (apple), so a later `act` on a *different* row is what
+        // actually moves the painted selection.
+        let filtered = call(
+            &mut stream,
+            &mut reader,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "filter", "arguments": {"query": "a"}},
+            }),
+        );
+        assert_eq!(
+            filtered["result"]["isError"],
+            json!(false),
+            "filter call failed: {filtered:?}"
+        );
+        let filtered_text: Value =
+            serde_json::from_str(filtered["result"]["content"][0]["text"].as_str().unwrap())
+                .expect("filter's result is JSON");
+        assert_eq!(filtered_text, json!({"matches": 3}));
+
+        // Level 1: select the third filtered row ("date") through the
+        // same UI-level `act` tool any app gets for free.
+        let row_2_id = A11yNodeId::for_widget(&WidgetId::new("items"))
+            .child("item.2")
+            .as_u64();
+        let acted = call(
+            &mut stream,
+            &mut reader,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "act", "arguments": {"node": row_2_id, "action": "click"}},
+            }),
+        );
+        assert_eq!(
+            acted["result"]["isError"],
+            json!(false),
+            "act call failed: {acted:?}"
+        );
+
+        // The control channel dispatches synchronously, but the
+        // accessibility tree snapshot comes from the most recently
+        // *painted* frame — poll `snapshot` until the runner thread's
+        // next repaint picks the selection change up.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let after = call(
+                &mut stream,
+                &mut reader,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {"name": "snapshot", "arguments": {}},
+                }),
+            );
+            let tree: Value =
+                serde_json::from_str(after["result"]["content"][0]["text"].as_str().unwrap())
+                    .expect("snapshot content is a JSON tree");
+            let row = find_node(&tree["root"], row_2_id).expect("row 2 present after filtering");
+            if row["selected"] == json!(true) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "selection never became visible");
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        worker_done.store(true, Ordering::SeqCst);
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !client_done.load(Ordering::SeqCst) {
+        driver.service_control(&port);
+        assert!(Instant::now() < deadline, "MCP client never finished");
+        thread::sleep(Duration::from_millis(1));
+    }
+    client.join().expect("client thread panicked");
+
+    // Assert on the *rendered* screen, per the acceptance bar: the
+    // detail pane painted "date"'s description, not apple's.
+    driver.render();
+    let after_screen = driver.screen();
+    assert!(
+        after_screen.contains("dries well for snacking"),
+        "act should have moved the painted detail pane to date's description:\n{after_screen}"
+    );
+    assert!(
+        !after_screen.contains("crisp, sweet fruit"),
+        "the stale apple detail text must not still be painted:\n{after_screen}"
+    );
+
+    let _ = std::fs::remove_file(&socket_path);
+    // `server` is an infinite accept loop with no shutdown signal — its
+    // thread leaks for the rest of the test process, which exits with
+    // this test binary; nothing to join.
+    drop(server);
 }

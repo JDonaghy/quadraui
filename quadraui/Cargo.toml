@@ -1006,6 +1006,18 @@ quote = "1"
 # call-site-only with no line info) — needed so a failure names a line a
 # human can jump to instead of just a byte-order description.
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# `examples/tui_mcp_demo.rs` starts a real `quadraui-mcp` server on a Unix
+# socket, and `tests/tui_example_driver.rs`'s driver test for it attaches
+# to that server exactly the way an agent would. `quadraui-mcp` itself
+# depends on this crate (`control` feature) as a normal dependency, so
+# this entry closes a cycle — one Cargo explicitly allows, because a
+# dev-dependency builds only this crate's own tests/examples/benches,
+# never the library `quadraui-mcp` links against. No features to name
+# here — `quadraui-mcp` has none of its own; its own `tui`+`control`
+# requirement on *this* crate is carried by its `[dependencies]`/
+# `[dev-dependencies]` tables and unifies with whatever this crate's own
+# build already activated, since it's the same path-dependency package.
+quadraui-mcp = { path = "../quadraui-mcp" }
 # criterion benches (issue #1118): 100k-row DataTable/Tree + 4k-line
 # Editor `frame_build`/`layout`/`paint` stages, one bench binary per
 # workload under `benches/`. `default-features = false` +
@@ -2247,4 +2259,15 @@ required-features = ["gtk"]
 [[example]]
 name = "tui_commands_demo"
 path = "examples/tui_commands_demo.rs"
+required-features = ["tui", "control"]
+
+# Agent-drivable reference demo (`quadraui-mcp`'s crate doc, "Driving a
+# quadraui app from an agent"). Without an explicit `[[example]]`,
+# autodiscovery picks up `tui_mcp_demo.rs` with no `required-features`,
+# and `cargo check -p quadraui --all-targets` (no `--features
+# tui,control`) then fails on `quadraui::tui`/`quadraui::control` being
+# configured out.
+[[example]]
+name = "tui_mcp_demo"
+path = "examples/tui_mcp_demo.rs"
 required-features = ["tui", "control"]
