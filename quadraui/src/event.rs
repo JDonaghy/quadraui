@@ -514,7 +514,29 @@ pub enum CanvasEvent {
 ///
 /// Produced by [`Backend::poll_events`][crate::Backend::poll_events] every
 /// frame; consumed by app dispatch code.
+///
+/// `#[non_exhaustive]`: a new variant (`Backend::poll_events` growing a new
+/// event kind) is additive, not breaking — every exhaustive `match` outside
+/// this crate must already carry a wildcard arm to compile at all. Variant
+/// construction and per-variant destructuring (`if let UiEvent::MouseDown
+/// { .. } = event`) are unaffected; only a `match` that tries to enumerate
+/// every variant with no `_` arm is rejected:
+///
+/// ```compile_fail
+/// // Rejected: `UiEvent` is `#[non_exhaustive]`, so a downstream `match`
+/// // needs a wildcard arm even when every variant known today is listed.
+/// fn handle(event: quadraui::UiEvent) {
+///     match event {
+///         quadraui::UiEvent::WindowClose => {}
+///         quadraui::UiEvent::DisplaysChanged => {}
+///         quadraui::UiEvent::ContextMenuDismissed => {}
+///         // ... every other variant would still need its own arm, and
+///         // the compiler would still reject this match without `_ => {}`.
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum UiEvent {
     // ── Input ───────────────────────────────────────────────────────────
     /// A declared accelerator fired. The backend matched a
@@ -544,38 +566,6 @@ pub enum UiEvent {
     ///
     /// Routing: broadcast, like [`Self::PowerStateChanged`] — the OS
     /// delivered it outside the normal focus/hit-test path entirely.
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
-    /// exhaustively `match`es every variant with no wildcard arm would
-    /// fail to compile the moment this variant landed. Blast-radius grep,
-    /// per CLAUDE.md's mandatory rule 1 (this covers the new
-    /// `PlatformServices::register_global_shortcut`/
-    /// `unregister_global_shortcut`/`unregister_all_global_shortcuts`
-    /// methods and the `GlobalShortcutId`/`GlobalShortcutRegistry` types
-    /// as well as this variant — all landed together):
-    ///
-    /// ```text
-    /// $ grep -rn 'GlobalShortcut\|register_global_shortcut\|unregister_global_shortcut\|unregister_all_global_shortcuts' \
-    ///     ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both)
-    /// ```
-    ///
-    /// Zero hits means neither consumer references any of the new items
-    /// yet, but the real question for a *new enum variant* is whether
-    /// either consumer's existing `match`es over `UiEvent` are exhaustive
-    /// (no wildcard arm) — same two dispatch sites checked for
-    /// [`Self::PowerStateChanged`]:
-    ///
-    /// - `vimcode`'s `src/app/dispatch.rs` top-level `UiEvent` dispatch
-    ///   ends in a wildcard `_ => {}` arm (`dispatch.rs:1067`).
-    /// - `coord-tui`'s `src/app/events.rs` has two top-level `UiEvent`
-    ///   dispatches, both wildcard-terminated (`events.rs:6326` and
-    ///   `events.rs:6386`, each `_ => false`).
-    ///
-    /// Adding `GlobalShortcut` compiles clean against both `develop`-tip
-    /// checkouts with no consumer changes required.
     GlobalShortcut(crate::GlobalShortcutId),
 
     /// A raw key was pressed. Routes to the focused widget. Apps that only
@@ -825,36 +815,6 @@ pub enum UiEvent {
     /// push, only answer a query — so it will never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
-    /// exhaustively `match`es every variant with no wildcard arm would
-    /// fail to compile the moment this variant landed. Blast-radius grep,
-    /// per CLAUDE.md's mandatory rule 1 (this covers the new
-    /// `PlatformServices::system_theme` method and `SystemTheme` struct
-    /// as well as this variant — all three landed together):
-    ///
-    /// ```text
-    /// $ grep -rn 'SystemThemeChanged\|SystemTheme\|system_theme' ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both)
-    /// ```
-    ///
-    /// Zero hits means neither consumer references any of the three new
-    /// items yet, but the real question for a *new enum variant* is
-    /// whether either consumer's existing `match`es over `UiEvent` are
-    /// exhaustive (no wildcard arm), since those would need to add one:
-    ///
-    /// - `vimcode`'s `tui_main/shell_app.rs` top-level `UiEvent` dispatch
-    ///   (`shell_app.rs:2403,2689`) already ends in a wildcard `_ =>` arm.
-    /// - `coord-tui`'s `app/events.rs` top-level `UiEvent` dispatch
-    ///   (`events.rs:1390,3973`) likewise already ends in a wildcard
-    ///   `_ =>` arm.
-    ///
-    /// Every other `UiEvent` match in both consumers is either an `if
-    /// let` on one specific variant or itself wildcard-terminated. Adding
-    /// `SystemThemeChanged` compiles clean against both `develop`-tip
-    /// checkouts with no consumer changes required.
     SystemThemeChanged(SystemTheme),
 
     // ── Display topology change ─────────────────────────────────────────
@@ -885,28 +845,6 @@ pub enum UiEvent {
     /// never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
-    /// exhaustively `match`es every variant with no wildcard arm would
-    /// fail to compile the moment this variant landed. Blast-radius grep,
-    /// per CLAUDE.md's mandatory rule 1 (this covers the new
-    /// `PlatformServices::displays`/`cursor_screen_point` methods and the
-    /// `Display` struct as well as this variant — all landed together):
-    ///
-    /// ```text
-    /// $ grep -rn 'DisplaysChanged\|PlatformServices::displays\|cursor_screen_point\|backend::Display\b' \
-    ///     ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both)
-    /// ```
-    /// Zero hits means neither consumer references this variant yet, but
-    /// the real question for a *new enum variant* is whether either
-    /// consumer's existing `match`es over `UiEvent` are exhaustive
-    /// (no wildcard arm). Both top-level `UiEvent` dispatches are large
-    /// multi-hundred-line matches that already end in a wildcard `_ =>`
-    /// arm. Adding `DisplaysChanged` compiles clean with no consumer
-    /// changes required.
     DisplaysChanged,
 
     // ── Power state change ──────────────────────────────────────────────
@@ -932,42 +870,6 @@ pub enum UiEvent {
     /// it will never emit this variant; see [`crate::power`]'s module doc.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
-    /// exhaustively `match`es every variant with no wildcard arm would
-    /// fail to compile the moment this variant landed. Blast-radius grep,
-    /// per CLAUDE.md's mandatory rule 1 (this covers the new
-    /// `PlatformServices::on_battery`/`thermal_state`/
-    /// `begin_power_save_block`/`end_power_save_block` methods and the
-    /// `PowerSaveKind`/`BlockerId`/`ThermalState`/`PowerEventKind` types as
-    /// well as this variant — all landed together):
-    ///
-    /// ```text
-    /// $ grep -rn 'PowerStateChanged\|PowerSaveKind\|PowerEventKind\|BlockerId\|ThermalState\|on_battery\|power_save_block\|thermal_state' \
-    ///     ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both)
-    /// ```
-    ///
-    /// Zero hits means neither consumer references any of the new items
-    /// yet, but the real question for a *new enum variant* is whether
-    /// either consumer's existing `match`es over `UiEvent` are exhaustive
-    /// (no wildcard arm):
-    ///
-    /// - `vimcode`'s `src/app/dispatch.rs` top-level `UiEvent` dispatch
-    ///   (`dispatch.rs:630`–`1067`) already ends in a wildcard `_ => {}`
-    ///   arm (`dispatch.rs:1067`).
-    /// - `coord-tui`'s `src/app/events.rs` has two top-level `UiEvent`
-    ///   dispatches: the keyboard/window one (`events.rs:1391`–`4007`)
-    ///   ends in a wildcard `_ => {}` arm (`events.rs:4007`), and
-    ///   `handle_mouse`'s (`events.rs:4031`–`5003`) ends in a wildcard
-    ///   `_ => false` arm (`events.rs:5003`).
-    ///
-    /// Every other `UiEvent` match in both consumers is either an `if
-    /// let` on one specific variant or itself wildcard-terminated. Adding
-    /// `PowerStateChanged` compiles clean against both `develop`-tip
-    /// checkouts with no consumer changes required.
     PowerStateChanged {
         kind: PowerEventKind,
     },
@@ -1102,21 +1004,6 @@ pub enum UiEvent {
     /// [`crate::RichTextLink::url`]. Escape, or a click outside the
     /// popup, dismisses it without dispatching any event, same as
     /// [`Self::CompletionItemActivated`]'s dismissal shape.
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is **not** `#[non_exhaustive]`; [`Self::ToastActionClicked`],
-    /// [`Self::CompletionItemActivated`] and this variant are new, so an
-    /// exhaustively-matched consumer fails to compile until it adds an
-    /// arm (or a wildcard). Blast-radius grep:
-    ///
-    /// ```text
-    /// $ grep -rn 'ToastActionClicked\|CompletionItemActivated\|RichTextLinkClicked' \
-    ///     ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both; neither consumer names any of
-    /// these three variants, so this lands as a non-breaking addition in
-    /// practice)
-    /// ```
     RichTextLinkClicked(WidgetId, String),
 
     // ── Tray / status-bar icon ──────────────────────────────────────────
@@ -1186,29 +1073,6 @@ pub enum UiEvent {
     /// Routing: broadcast, like [`Self::TrayClicked`] — a notification
     /// has no `WidgetId` of its own to route through (its *action*
     /// does, carried in the payload instead).
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
-    /// exhaustively `match`es every variant with no wildcard arm would
-    /// fail to compile the moment this variant landed. Blast-radius grep,
-    /// per CLAUDE.md's mandatory rule 1 (this covers the new
-    /// `Notification` builder methods and `notify_or_toast` helper as
-    /// well as this variant):
-    ///
-    /// ```text
-    /// $ grep -rn 'NotificationActivated\|send_notification\|backend::Notification' \
-    ///     ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both; neither consumer calls
-    /// PlatformServices::send_notification or constructs Notification today)
-    /// ```
-    /// Zero hits means neither consumer references this variant yet, but
-    /// the real question for a *new enum variant* is whether either
-    /// consumer's existing `match`es over `UiEvent` are exhaustive
-    /// (no wildcard arm). Both top-level `UiEvent` dispatches are large
-    /// multi-hundred-line matches that already end in a wildcard `_ =>`
-    /// arm. Adding `NotificationActivated` compiles clean with no
-    /// consumer changes required.
     NotificationActivated {
         tag: Option<String>,
         action: Option<WidgetId>,
@@ -1235,23 +1099,6 @@ pub enum UiEvent {
     /// layout/hit-test API every pixel backend's `tree_table_layout`
     /// already returns — so a binding resolves this without duplicating
     /// chevron-bounds math.
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
-    /// exhaustive consumer match would need a wildcard arm to survive.
-    /// Blast-radius grep:
-    ///
-    /// ```text
-    /// $ grep -rn 'UiEvent::TreeTable\|TreeTableEvent' \
-    ///     ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both; neither consumer references
-    /// TreeTable today)
-    /// ```
-    /// Zero hits means neither consumer's `match`es need a new arm; both
-    /// top-level `UiEvent` dispatches in each consumer already end in a
-    /// wildcard `_ =>` arm regardless. Adding `TreeTable` compiles clean
-    /// with no consumer changes required.
     TreeTable(WidgetId, TreeTableEvent),
     /// A [`crate::CellGrid`] cell was clicked, moving the cursor to its
     /// absolute `(row, col)` — see [`CellGridEvent::CursorMoved`]. Built
@@ -1262,23 +1109,6 @@ pub enum UiEvent {
     /// [`CellGridEvent::CellsRequested`], which a host builds directly
     /// from [`crate::CellGrid::cells_requested`] once per frame rather
     /// than from any particular `UiEvent` — see that method's doc.
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
-    /// exhaustive consumer match would need a wildcard arm to survive.
-    /// Blast-radius grep:
-    ///
-    /// ```text
-    /// $ grep -rn 'UiEvent::CellGrid\b\|CellGridEvent' \
-    ///     ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both; neither consumer references
-    /// CellGrid today)
-    /// ```
-    /// Both consumers' top-level `UiEvent` dispatch is a large match
-    /// ending in a wildcard `_ =>` arm (same precedent `NotificationActivated`'s
-    /// own doc above records), so this compiles clean with no consumer
-    /// changes required.
     CellGrid(WidgetId, CellGridEvent),
     /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
     /// Enter/Space while keyboard-focused — the id is the toolbar's own,
@@ -1286,21 +1116,6 @@ pub enum UiEvent {
     /// `ActivityBar`); the clicked/activated button's own id and new
     /// `is_active` state are carried in the [`ToolbarEvent`] payload. Built
     /// by [`crate::Toolbar::click`]/[`crate::Toolbar::activate_focused`].
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
-    /// exhaustive consumer match would need a wildcard arm to survive.
-    /// Blast-radius grep:
-    ///
-    /// ```text
-    /// $ grep -rn 'UiEvent::Toolbar\b' ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both)
-    /// ```
-    /// Both consumers' top-level `UiEvent` dispatch is a large match ending
-    /// in a wildcard `_ =>` arm (same precedent `NotificationActivated`'s
-    /// own doc above records), so this compiles clean with no consumer
-    /// changes required.
     Toolbar(WidgetId, ToolbarEvent),
     /// A [`crate::Canvas`]'s declared [`crate::CanvasRegion`] was clicked,
     /// double-clicked, or gained/lost pointer hover — the id is the
@@ -1309,24 +1124,6 @@ pub enum UiEvent {
     /// ever built against a hit resolved through
     /// [`crate::CanvasLayout::region_hit_test`] — see [`CanvasEvent`]'s own
     /// doc for when a `Canvas` click produces none of these at all.
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
-    /// exhaustive consumer match would need a wildcard arm to survive.
-    /// Blast-radius grep (per CLAUDE.md's mandatory rule 1):
-    ///
-    /// ```text
-    /// $ grep -rn 'UiEvent::Canvas\b' ~/src/coord-tui/src ~/src/vimcode/src
-    /// (no output — zero hits in both; mechanically guaranteed for a
-    /// brand-new symbol no code outside this change can reference yet)
-    /// ```
-    /// The real question for a *new enum variant* is whether either
-    /// consumer's existing `match`es over `UiEvent` are exhaustive (no
-    /// wildcard arm). Both top-level `UiEvent` dispatches are large
-    /// multi-hundred-line matches that already end in a wildcard `_ =>` arm
-    /// (same precedent [`Self::Toolbar`]'s own doc above records), so this
-    /// compiles clean with no consumer changes required.
     Canvas(WidgetId, CanvasEvent),
 
     // ── Escape hatch ───────────────────────────────────────────────────
