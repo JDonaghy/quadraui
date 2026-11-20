@@ -320,13 +320,14 @@ use quadraui_binding_core::{
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
     toast_corner, tree_table_controller_nodes_from_wire, update_apply_on_quit,
     update_check_for_update, update_download_and_stage, validate_style_set_name,
-    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
-    DialogContentSize, ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail,
-    InteractionEngine, OverrideError, RenderOutput, RowsRequestedEvent, ScriptWidget, ScriptedA11y,
-    ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
-    ScriptedSize, ScriptedState, ServiceError, StyleContext, TreeTableControllerNode,
-    TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON,
-    SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost,
+    CellGridControllerWireEvent, DecodeError, DialogContentSize, ErasedShellDriver, EventSink,
+    ExtraPaint, GuardedFailure, HitDetail, InteractionEngine, OverrideError, RenderOutput,
+    RowsRequestedEvent, ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent,
+    ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState, ServiceError,
+    StyleContext, TreeTableControllerNode, TreeTableControllerWireEvent, UpdateInfoWire,
+    WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
+    SLOT_TREE,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode};
@@ -1795,6 +1796,63 @@ impl EventSink for NodeEventSink<'_> {
             }
         };
         let wrapped = serde_json::json!({ "TreeTableController": [id.as_str(), event_value] });
+        let js_payload: Unknown<'static> = match self.env.to_js_value(&wrapped) {
+            Ok(value) => value,
+            Err(err) => {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+        };
+        let func = match self.handler.borrow_back(&self.env) {
+            Ok(func) => func,
+            Err(err) => {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+        };
+        match func.call(js_payload) {
+            Ok(result) => {
+                callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
+            }
+            Err(err) => {
+                record_error(self.pending_error, err);
+                Reaction::Exit
+            }
+        }
+    }
+
+    /// Delivers a `"cell_grid"` extra's cached [`CellGridControllerWireEvent`]
+    /// to the same registered handler [`Self::dispatch`] calls, as
+    /// `{"CellGridController": [id, event]}` -- `id` is the extra's own id
+    /// (a plain JS string), `event` the JSON encoding of the wire event
+    /// (e.g. `{"CursorMoved": {"row": 0, "col": 0}}`), mirroring
+    /// [`Self::dispatch_tree_table_controller`]'s `{"TreeTableController":
+    /// [...]}` shape. A `"CellsRequested"` here is answered by re-rendering
+    /// with that `"cell_grid"` extra's `cells`/`loaded_row_start`/
+    /// `loaded_col_start` covering exactly the named block -- there is no
+    /// separate `set_*` host call, unlike a `"tree_table_controller"`'s
+    /// `ChildrenRequested`: `InteractionEngine::sync_cell_grids` already
+    /// reconciles every windowing field straight off the descriptor on
+    /// every frame, so the next render call answers it the same way any
+    /// other extra's data changes.
+    fn dispatch_cell_grid_controller(
+        &mut self,
+        id: WidgetId,
+        event: CellGridControllerWireEvent,
+    ) -> Reaction {
+        let event_value = match serde_json::to_value(&event) {
+            Ok(value) => value,
+            Err(err) => {
+                record_error(
+                    self.pending_error,
+                    invalid_descriptor_error(format!(
+                        "failed to convert cell grid controller event to JSON: {err}"
+                    )),
+                );
+                return Reaction::Exit;
+            }
+        };
+        let wrapped = serde_json::json!({ "CellGridController": [id.as_str(), event_value] });
         let js_payload: Unknown<'static> = match self.env.to_js_value(&wrapped) {
             Ok(value) => value,
             Err(err) => {
