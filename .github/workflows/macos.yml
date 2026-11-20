@@ -194,6 +194,17 @@ jobs:
       # demo crates have no `macos` feature to lint here.
       - name: Clippy (macos feature)
         run: cargo clippy -p quadraui --features macos -- -D warnings
+      # Optional backend-neutral control channel (`quadraui::control`),
+      # macOS half. `tests/control_channel_macos.rs` is gated on
+      # `all(feature = "macos", feature = "control")`, so the plain
+      # `--features macos` steps above never compile it — this is the
+      # only runner in the fleet that does (same reasoning as
+      # `ci.yml`'s "control channel GTK wiring" steps; `tests/
+      # control_channel_tui.rs` runs on the `tui` job there instead).
+      - name: Test (control channel macOS wiring, macos + control features)
+        run: cargo test -p quadraui --features macos,control --test control_channel_macos
+      - name: Clippy (control channel macOS wiring, macos + control features)
+        run: cargo clippy -p quadraui --features macos,control --test control_channel_macos -- -D warnings
       # `quadraui-gallery`'s `macos` arm (`src/main.rs`) only ever gets
       # reached when `target_os = "macos"` *and* `--features macos` are
       # both true (see that file's `#[cfg]` priority order) — no step in

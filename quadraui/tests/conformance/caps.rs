@@ -1077,22 +1077,10 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // ── frame_capture / last_frame: the opt-in live-frame capture the
     // agent-control epic builds an accessibility tree from. A backend
     // joins by owning one `frame::FrameCapture` field and handing it out;
-    // `TuiBackend` and `GtkBackend` do. The other two take the trait
-    // defaults, so they report no frame rather than a wrong one — one
-    // backend per issue, and each remaining backend adopts capture in its
-    // own sibling issue.
-    (
-        "macos",
-        "frame_capture",
-        "live-frame capture is opt-in instrumentation, not a paint path; macOS adopts it in its \
-         own sibling issue and until then honestly reports no capture slot",
-    ),
-    (
-        "macos",
-        "last_frame",
-        "pairs with macOS's defaulted frame_capture — with no slot to record into there is no \
-         frame to report",
-    ),
+    // `TuiBackend`, `GtkBackend` and `MacBackend` do. Win still takes the
+    // trait defaults, so it reports no frame rather than a wrong one —
+    // one backend per issue, and it adopts capture in its own sibling
+    // issue.
     (
         "win",
         "frame_capture",
