@@ -258,6 +258,7 @@
 //! called, reusing both rather than building a separate delay mechanism.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
@@ -308,12 +309,12 @@ use quadraui_binding_core::register_scripted_widget as core_register_scripted_wi
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction_for_render,
-    caret_shape, clear_recent_documents, click_down_up_events, color_depth_name,
-    decode_extra_primitive, decode_layout_dialog, decode_popover, decode_render_output_with_styles,
-    decode_shell_config, decode_style_overrides, dialog_severity, draw_bands, end_power_save_block,
-    font_role, guarded as core_guarded, install_crash_handler, is_default_protocol_client,
-    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
-    message_dialog_options_from_buttons, paint_layout_windowed, pointer_shape,
+    caret_shape, clear_recent_documents, click_down_up_events, collect_leaf_tooltips,
+    color_depth_name, decode_extra_primitive, decode_layout_dialog, decode_popover,
+    decode_render_output_with_styles, decode_shell_config, decode_style_overrides, dialog_severity,
+    draw_bands, end_power_save_block, font_role, guarded as core_guarded, install_crash_handler,
+    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
+    merge_overrides, message_dialog_options_from_buttons, paint_layout_windowed, pointer_shape,
     record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
     resolve_layout_node_windowed, resolve_render_refs, set_app_identifier,
     set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
@@ -1404,6 +1405,11 @@ impl AppLogic for NodeAppLogic {
             let resolved =
                 resolve_render_refs(self.engine.widget_state(), backend, self.host.render_refs());
             draw_bands(backend, resolved.as_refs(), &mut hits, &chrome_interaction);
+            // No render callback: nothing painted through `paint_layout`
+            // this frame, so there is no layout-tree leaf tooltip to
+            // resolve -- clears out anything a previously registered
+            // callback's tree may have left behind.
+            self.host.set_leaf_tooltips(HashMap::new());
             render_overlays(&self.engine, backend, hits);
             return;
         };
@@ -1449,7 +1455,8 @@ impl AppLogic for NodeAppLogic {
             Some(RenderOutput::Flat(frame)) => {
                 let resolved =
                     resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
-                draw_bands(backend, resolved.as_refs(), &mut hits, &chrome_interaction)
+                draw_bands(backend, resolved.as_refs(), &mut hits, &chrome_interaction);
+                self.host.set_leaf_tooltips(HashMap::new());
             }
             Some(RenderOutput::Tree(mut node)) => {
                 let viewport = backend.viewport();
@@ -1477,6 +1484,13 @@ impl AppLogic for NodeAppLogic {
                     &chrome_interaction,
                     &windows,
                 );
+                // Refreshed every render so a hovered layout-tree button's
+                // tooltip resolves against this frame's tree, keyed by
+                // each leaf's own tree-address id -- see
+                // `collect_leaf_tooltips`'s own doc.
+                let mut leaf_tooltips = HashMap::new();
+                collect_leaf_tooltips(&node, &mut leaf_tooltips);
+                self.host.set_leaf_tooltips(leaf_tooltips);
             }
             None => {}
         }
