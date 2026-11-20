@@ -529,6 +529,14 @@ pub struct GtkBackend {
     /// no-op in that case, mirroring `RecordingBackend::waker`. Cleared
     /// again by this type's [`Drop`].
     wake_id: WakeId,
+    /// Opt-in retention of the frame this backend last painted, handed
+    /// out by [`Backend::frame_capture`] and read by
+    /// [`Backend::last_frame`]. Disabled and empty by default, so a live
+    /// runner that never opts in never pays for the clone
+    /// [`crate::frame::ScreenLayout::draw`] would otherwise build. Mirrors
+    /// `TuiBackend::frame_capture` exactly — see `crate::frame`'s module
+    /// doc, "Live-frame capture for accessibility".
+    frame_capture: crate::frame::FrameCapture,
 }
 
 /// Releases this backend's [`WAKE_CALLBACKS`] slot, so the
@@ -879,6 +887,7 @@ impl GtkBackend {
             user_events: crate::runtime::UserEventQueue::new(),
             tray: super::tray::GtkTrayState::default(),
             wake_id: WakeId::next(),
+            frame_capture: crate::frame::FrameCapture::default(),
         }
     }
 
@@ -2654,6 +2663,14 @@ impl Backend for GtkBackend {
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
         self.focus.set_focus(id)
+    }
+
+    fn frame_capture(&mut self) -> Option<&mut crate::frame::FrameCapture> {
+        Some(&mut self.frame_capture)
+    }
+
+    fn last_frame(&self) -> Option<&crate::frame::OwnedFrame> {
+        self.frame_capture.last_frame()
     }
 
     /// Strokes the generic tab-stop focus-ring convention around `rect`.
