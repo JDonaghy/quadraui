@@ -4196,31 +4196,42 @@ pub trait Backend: sealed::Sealed {
 
     /// Draw a [`RadioGroup`] (a vertical list of mutually-exclusive
     /// options). Returns the [`RadioGroupLayout`] so hosts can route
-    /// clicks. Same coordinate frame as [`Self::radio_group_layout`]
-    /// (ABSOLUTE).
+    /// clicks. A backend that tints hover/pressed state reads it
+    /// straight off each [`RadioOption::hovered`]/[`RadioOption::pressed`]
+    /// — the host sets those before calling, the same convention
+    /// [`RadioGroup::focused`] already follows. Same coordinate frame
+    /// as [`Self::radio_group_layout`] (ABSOLUTE).
     fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
 
-    /// [`Self::draw_radio_group`], reading hover/pressed state from a
+    /// Draw a [`RadioGroup`], resolving hover/pressed per option from a
     /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
-    /// — one entry per `RadioOption::id`, the same per-option
-    /// resolution a backend would read off
-    /// `interaction.is_hovered(&option.id)` / `is_pressed(&option.id)`.
+    /// instead of reading [`RadioOption::hovered`]/[`RadioOption::pressed`]
+    /// directly.
     ///
-    /// Additive over [`Self::draw_radio_group`], not a replacement —
-    /// the default forwards to it (ignoring `interaction`), so this
-    /// method is the one new backends/hosts adopt for hover feedback
-    /// while every existing call site and implementor keeps compiling
-    /// unchanged. No backend wires real hover/pressed painting through
-    /// this method yet — that per-backend work is tracked on the
-    /// epic, not this method's own addition. Same coordinate frame as
-    /// [`Self::radio_group_layout`] (ABSOLUTE).
+    /// # Deprecated
+    ///
+    /// Superseded by [`Self::draw_radio_group`] now that `RadioGroup`'s
+    /// own options carry `hovered`/`pressed`: set those fields on a
+    /// clone of the group (or in place) and call [`Self::draw_radio_group`]
+    /// directly — this method's default body does exactly that,
+    /// cloning `group` and copying `interaction.is_hovered`/`is_pressed`
+    /// per option before delegating.
+    #[deprecated(
+        since = "0.12.0",
+        note = "set `RadioOption::hovered`/`RadioOption::pressed` on each option and call `draw_radio_group` directly"
+    )]
     fn draw_radio_group_with_state(
         &mut self,
         rect: Rect,
         group: &RadioGroup,
-        _interaction: &InteractionState,
+        interaction: &InteractionState,
     ) -> RadioGroupLayout {
-        self.draw_radio_group(rect, group)
+        let mut group = group.clone();
+        for option in &mut group.options {
+            option.hovered = interaction.is_hovered(&option.id);
+            option.pressed = interaction.is_pressed(&option.id);
+        }
+        self.draw_radio_group(rect, &group)
     }
 
     /// Compute radio-group layout without painting. Each backend
@@ -4231,29 +4242,41 @@ pub trait Backend: sealed::Sealed {
     fn radio_group_layout(&self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
 
     /// Draw a [`Switch`] (a standalone on/off toggle). Returns the
-    /// [`SwitchLayout`] so hosts can route clicks. Same coordinate
-    /// frame as [`Self::switch_layout`] (ABSOLUTE).
+    /// [`SwitchLayout`] so hosts can route clicks. A backend that
+    /// tints hover/pressed state reads it straight off
+    /// [`Switch::hovered`]/[`Switch::pressed`] — the host sets those
+    /// before calling, the same convention [`Switch::focused`] already
+    /// follows. Same coordinate frame as [`Self::switch_layout`]
+    /// (ABSOLUTE).
     fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout;
 
-    /// [`Self::draw_switch`], reading hover/pressed state from a
-    /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
-    /// — `interaction.is_hovered(&switch.id)` / `is_pressed(&switch.id)`.
+    /// Draw a [`Switch`], resolving hover/pressed from a single
+    /// [`InteractionState`] keyed by [`crate::types::WidgetId`]
+    /// instead of reading [`Switch::hovered`]/[`Switch::pressed`]
+    /// directly.
     ///
-    /// Additive over [`Self::draw_switch`], not a replacement — the
-    /// default forwards to it (ignoring `interaction`), so this method
-    /// is the one new backends/hosts adopt for hover feedback while
-    /// every existing call site and implementor keeps compiling
-    /// unchanged. No backend wires real hover/pressed painting through
-    /// this method yet — that per-backend work is tracked on the
-    /// epic, not this method's own addition. Same coordinate frame as
-    /// [`Self::switch_layout`] (ABSOLUTE).
+    /// # Deprecated
+    ///
+    /// Superseded by [`Self::draw_switch`] now that `Switch` itself
+    /// carries `hovered`/`pressed`: set those fields on a clone of the
+    /// switch (or in place) and call [`Self::draw_switch`] directly —
+    /// this method's default body does exactly that, cloning `switch`
+    /// and copying `interaction.is_hovered`/`is_pressed` before
+    /// delegating.
+    #[deprecated(
+        since = "0.12.0",
+        note = "set `Switch::hovered`/`Switch::pressed` and call `draw_switch` directly"
+    )]
     fn draw_switch_with_state(
         &mut self,
         rect: Rect,
         switch: &Switch,
-        _interaction: &InteractionState,
+        interaction: &InteractionState,
     ) -> SwitchLayout {
-        self.draw_switch(rect, switch)
+        let mut switch = switch.clone();
+        switch.hovered = interaction.is_hovered(&switch.id);
+        switch.pressed = interaction.is_pressed(&switch.id);
+        self.draw_switch(rect, &switch)
     }
 
     /// Compute switch layout without painting.
