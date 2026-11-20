@@ -93,13 +93,20 @@
 //! straight from a test's own [`ScreenLayout`], with no backend
 //! involved. A live runner has no such scenario to ask — it only ever
 //! calls [`ScreenLayout::draw`] (or [`OwnedFrame::draw`]) against a real
-//! [`Backend`]. Both of those methods check
-//! [`Backend::frame_capture_enabled`] right after painting and, when
-//! `true`, hand the just-drawn [`OwnedFrame`] to [`Backend::capture_frame`]
-//! — so [`Backend::last_frame`] can answer with whatever the app actually
-//! had on screen. Capture is opt-in via [`Backend::set_frame_capture`] and
-//! costs nothing when left off (the default): the check is one virtual
-//! call, not a clone of every surface.
+//! [`Backend`]. Both of those methods, right after painting, ask the
+//! backend for its [`FrameCapture`] slot via [`Backend::frame_capture`]
+//! and, when [`FrameCapture::is_enabled`] says so, record the just-drawn
+//! [`OwnedFrame`] in it — so [`Backend::last_frame`] can answer with
+//! whatever the app actually had on screen. Capture is opt-in via
+//! [`FrameCapture::set_enabled`] (or [`set_frame_capture`]) and costs
+//! nothing when left off (the default): the check is one virtual call
+//! and a `bool`, not a clone of every surface.
+//!
+//! A backend joins in by owning one [`FrameCapture`] field and returning
+//! `Some(&mut …)` from [`Backend::frame_capture`] plus its
+//! [`FrameCapture::last_frame`] from [`Backend::last_frame`]; both trait
+//! methods default to `None`, so a backend that hasn't opted in reports
+//! no frames rather than wrong ones.
 //!
 //! This only works through the canonical [`ScreenLayout`] path (D-006,
 //! `docs/decisions/DECISIONS.md`) — an app that calls `backend.draw_*`
@@ -733,10 +740,9 @@ impl ScreenLayout {
     /// pass) purely to recover a hit map, use [`Self::hit_map`]
     /// instead — it skips every `backend.draw_*()` call.
     ///
-    /// After painting, hands `backend` an [`OwnedFrame`] of `self` via
-    /// [`Backend::capture_frame`] when [`Backend::frame_capture_enabled`]
-    /// says to — see the module doc's "Live-frame capture for
-    /// accessibility" section.
+    /// After painting, records an [`OwnedFrame`] of `self` in `backend`'s
+    /// [`FrameCapture`] slot when that slot exists and is enabled — see
+    /// the module doc's "Live-frame capture for accessibility" section.
     pub fn draw(&self, backend: &mut dyn Backend) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
 
@@ -920,9 +926,7 @@ impl ScreenLayout {
             hit_map.push(rect, zone);
         }
 
-        if backend.frame_capture_enabled() {
-            backend.capture_frame(OwnedFrame::from_layout(self));
-        }
+        record_captured_frame(backend, || OwnedFrame::from_layout(self));
 
         hit_map
     }
@@ -1362,6 +1366,82 @@ pub struct OwnedNode {
     pub content: OwnedContent,
 }
 
+/// A backend's opt-in slot for the frame it most recently painted — the
+/// state behind [`Backend::frame_capture`] and [`Backend::last_frame`].
+/// See the module doc's "Live-frame capture for accessibility" section.
+///
+/// A backend owns one of these as a field (`FrameCapture::default()` is
+/// disabled and empty) and hands it out from [`Backend::frame_capture`];
+/// [`ScreenLayout::draw`] and [`OwnedFrame::draw`] do the recording. The
+/// disabled state keeps no frame at all, so capture that is never turned
+/// on costs no memory and no clone.
+#[derive(Debug, Clone, Default)]
+pub struct FrameCapture {
+    enabled: bool,
+    last: Option<OwnedFrame>,
+}
+
+impl FrameCapture {
+    /// Turn capture on or off. Turning it off also drops the retained
+    /// frame: a consumer that opts out must not keep reading a stale
+    /// screen through [`Self::last_frame`].
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.last = None;
+        }
+    }
+
+    /// Whether [`Self::record`] should be fed. The paint path checks this
+    /// *before* building an [`OwnedFrame`], so the disabled case costs a
+    /// `bool`, never a clone of every surface drawn.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Retain `frame` as [`Self::last_frame`]'s answer, replacing any
+    /// earlier one. A no-op while disabled, so a caller that skipped the
+    /// [`Self::is_enabled`] check still cannot smuggle a frame in.
+    pub fn record(&mut self, frame: OwnedFrame) {
+        if self.enabled {
+            self.last = Some(frame);
+        }
+    }
+
+    /// The most recently recorded frame, or `None` when capture is
+    /// disabled or nothing has painted since it was enabled.
+    pub fn last_frame(&self) -> Option<&OwnedFrame> {
+        self.last.as_ref()
+    }
+}
+
+/// Turn live-frame capture on or off on `backend`, returning whether it
+/// supports capture at all (i.e. whether [`Backend::frame_capture`] gave
+/// a slot). The one-line form of
+/// `backend.frame_capture().map(|c| c.set_enabled(enabled))`, for a
+/// runner that just wants its backend to become agent-visible.
+pub fn set_frame_capture(backend: &mut dyn Backend, enabled: bool) -> bool {
+    match backend.frame_capture() {
+        Some(capture) => {
+            capture.set_enabled(enabled);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Record the frame `build` produces into `backend`'s [`FrameCapture`],
+/// but only when the backend has a slot and capture is enabled — `build`
+/// is never called otherwise, which is what keeps a disabled capture from
+/// cloning anything.
+fn record_captured_frame(backend: &mut dyn Backend, build: impl FnOnce() -> OwnedFrame) {
+    if let Some(capture) = backend.frame_capture() {
+        if capture.is_enabled() {
+            capture.record(build());
+        }
+    }
+}
+
 /// An owned, lifetime-free frame tree: the serializable counterpart of
 /// a [`ScreenLayout`]. Build one with [`Self::from_layout`], then call
 /// [`Self::draw`] to repaint it or [`Self::hit_map`] to derive a
@@ -1424,17 +1504,15 @@ impl OwnedFrame {
     /// variants are no-ops here (they still register a hit zone).
     ///
     /// Same opt-in capture as [`ScreenLayout::draw`]: a clone of `self`
-    /// goes to [`Backend::capture_frame`] when
-    /// [`Backend::frame_capture_enabled`] says to.
+    /// is recorded in `backend`'s [`FrameCapture`] when that slot exists
+    /// and is enabled.
     pub fn draw(&self, backend: &mut dyn Backend) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
         for node in &self.nodes {
             node.content.draw(node.rect, backend);
             hit_map.push(node.rect, node.content.zone(node.idx));
         }
-        if backend.frame_capture_enabled() {
-            backend.capture_frame(self.clone());
-        }
+        record_captured_frame(backend, || self.clone());
         hit_map
     }
 

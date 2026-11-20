@@ -1,5 +1,5 @@
 #![cfg(feature = "tui")]
-//! Live-runner a11y tree built from `Backend::last_frame()` (issue #2712).
+//! Live-runner a11y tree built from `Backend::last_frame()`.
 //!
 //! A real `AppLogic` paints a `ScreenLayout` (a list plus a form) through
 //! the TUI `Backend` with frame capture enabled. The resulting tree —
@@ -8,11 +8,12 @@
 //! identical surfaces, proving the live path and the test-only path agree.
 
 use quadraui::testing::a11y::A11yScenario;
+use quadraui::testing::RecordingBackend;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    backend_a11y_tree, Backend, ControlWidth, Decoration, FieldKind, Form, FormField, LabelAlign,
-    LabelPosition, ListItem, ListView, Reaction, Rect, ScreenLayout, StyledText, Surface, UiEvent,
-    WidgetId,
+    backend_a11y_tree, set_frame_capture, Backend, ControlWidth, Decoration, FieldKind, Form,
+    FormField, LabelAlign, LabelPosition, ListItem, ListView, Reaction, Rect, ScreenLayout,
+    StyledText, Surface, UiEvent, WidgetId,
 };
 
 fn list_surface() -> Surface {
@@ -109,7 +110,10 @@ fn last_frame_builds_the_same_a11y_tree_a_test_scenario_would() {
     let mut driver = TuiDriver::new(LiveApp, 40, 20);
     {
         let (backend, _app) = driver.parts_mut();
-        backend.set_frame_capture(true);
+        assert!(
+            set_frame_capture(backend, true),
+            "the TUI backend offers a frame-capture slot"
+        );
         backend.set_focus(Some(WidgetId::new("files")));
     }
     driver.render();
@@ -132,7 +136,53 @@ fn last_frame_is_none_until_capture_is_enabled() {
     driver.render();
 
     assert!(
+        driver.backend().last_frame().is_none(),
+        "capture defaults to off, so a backend that never opted in must never retain a frame"
+    );
+    assert!(
         backend_a11y_tree(driver.backend()).is_none(),
         "capture defaults to off, so a backend that never opted in must never report a frame"
+    );
+}
+
+/// A backend that doesn't override the capture accessors keeps the
+/// trait's `None` defaults: opting in fails, and painting a real
+/// `ScreenLayout` through it still reports no frame.
+#[test]
+fn a_backend_without_a_capture_slot_never_reports_a_frame() {
+    let mut backend = RecordingBackend::new();
+    assert!(
+        !set_frame_capture(&mut backend, true),
+        "a backend with no capture slot must report that capture is unavailable"
+    );
+
+    let mut layout = ScreenLayout::new();
+    layout.push(list_surface());
+    layout.draw(&mut backend);
+
+    assert!(backend.last_frame().is_none());
+    assert!(backend_a11y_tree(&backend).is_none());
+}
+
+#[test]
+fn opting_back_out_drops_the_retained_frame() {
+    let mut driver = TuiDriver::new(LiveApp, 40, 20);
+    set_frame_capture(driver.parts_mut().0, true);
+    driver.render();
+    assert!(
+        driver.backend().last_frame().is_some(),
+        "a paint with capture enabled retains the frame"
+    );
+
+    set_frame_capture(driver.parts_mut().0, false);
+    assert!(
+        driver.backend().last_frame().is_none(),
+        "opting out must drop the retained frame, not leave a stale screen readable"
+    );
+
+    driver.render();
+    assert!(
+        driver.backend().last_frame().is_none(),
+        "painting after opting out must not retain anything again"
     );
 }

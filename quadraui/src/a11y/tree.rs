@@ -747,9 +747,10 @@ pub fn frame_to_tree_with_modal(
 /// The accessibility tree for whatever `backend` most recently painted
 /// through the canonical [`crate::frame::ScreenLayout`] paint path
 /// (D-006), when live-frame capture is enabled on it — `None` when
-/// capture was never enabled, nothing has painted yet, or `backend`
-/// doesn't implement capture at all. See
-/// [`crate::Backend::last_frame`]'s doc for the opt-in contract and the
+/// capture is disabled, nothing has painted since it was enabled, or
+/// `backend` doesn't implement capture at all. Opt in first, via
+/// [`crate::frame::set_frame_capture`]. See
+/// [`crate::Backend::last_frame`]'s doc for the contract and the
 /// `crate::frame` module doc's "Live-frame capture for accessibility"
 /// section.
 ///
