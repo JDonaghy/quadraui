@@ -775,6 +775,10 @@ pub fn key_to_focus_string(key: &Key) -> String {
     match key {
         Key::Char(c) => c.to_string(),
         Key::Named(named) => named.name().into_owned(),
+        // `Key` is `#[non_exhaustive]`; no variant beyond `Char`/`Named`
+        // exists today, but a future one needs a string here too rather
+        // than silently losing the keystroke.
+        _ => String::new(),
     }
 }
 
