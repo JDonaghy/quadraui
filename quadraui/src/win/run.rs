@@ -311,13 +311,10 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 /// identical reasoning.
 ///
 /// Not itself `#[cfg(target_os = "windows")]`: same "compiles everywhere"
-/// posture as [`dispatch_event`] — its only caller (`mod win32`'s
-/// `WinRunner::run_one`, via the `service_control` helper) is itself
-/// windows-gated, so this stays `#[allow(dead_code)]` on every other host
-/// rather than `cfg`-gated, keeping it type-checked everywhere the
-/// `control` feature is on.
+/// posture as [`dispatch_event`] — `win::testing`'s `WinDriver::service_control`
+/// calls this on every host whenever the `control` feature is on, so it is
+/// genuinely used (not just type-checked) outside `target_os = "windows"` too.
 #[cfg(feature = "control")]
-#[allow(dead_code)]
 pub(crate) fn control_dispatch<A: AppLogic>(
     event: UiEvent,
     app: &mut A,
@@ -1788,6 +1785,15 @@ mod win32 {
         /// [`StepOutcome::Exited`] instead of touching the dangling
         /// pointer again.
         finished: bool,
+        /// Backend-neutral waker [`Self::attach_control`] hands to
+        /// [`control::channel`], captured in [`Self::new_with`] while
+        /// `state_ptr` is still provably live rather than re-derived from
+        /// it later — the same shape
+        /// [`crate::macos::run::MacRunner`]'s `_boot.waker` field uses.
+        /// Cloning an `Arc` is cheap enough to pay even when no caller
+        /// ever attaches a control channel.
+        #[cfg(feature = "control")]
+        waker: std::sync::Arc<dyn Fn(crate::UserPayload) + Send + Sync>,
         /// See [`Self::attach_control`]. `None` until a caller opts in —
         /// most apps never do, so this stays a plain `Option` rather than
         /// an always-constructed channel nobody drains. Drained once per
@@ -1817,11 +1823,25 @@ mod win32 {
             // (documented above) unchanged to `create_window`.
             let created = unsafe { create_window(app, &config.title, config.app_icon.as_ref())? };
             let (hwnd, state_ptr, smoke_failed) = created;
+            // Capture the waker now, while `state_ptr` is provably live
+            // (it was just returned by `create_window` above) — see
+            // `Self::waker`'s doc for why `attach_control` does not
+            // re-derive this from `state_ptr` itself.
+            #[cfg(feature = "control")]
+            let waker = {
+                // SAFETY: `state_ptr` was just produced by `create_window`
+                // on this same line and has not been freed or otherwise
+                // invalidated yet.
+                let ws: &WindowState<A> = unsafe { &*state_ptr };
+                ws.state.borrow().backend.waker()
+            };
             Ok(Self {
                 hwnd,
                 state_ptr,
                 smoke_failed,
                 finished: false,
+                #[cfg(feature = "control")]
+                waker,
                 #[cfg(feature = "control")]
                 control: None,
             })
@@ -1841,24 +1861,17 @@ mod win32 {
         /// [`crate::gtk::run::GtkRunner::attach_control`]/
         /// [`crate::macos::run::MacRunner::attach_control`]. Replaces any
         /// previously attached channel — only the most recently attached
-        /// one is serviced.
-        ///
-        /// # Safety
-        ///
-        /// Must be called before this runner has observed `WM_QUIT` (i.e.
-        /// before any `step`/`pump` call has returned
-        /// [`StepOutcome::Exited`]) — same `state_ptr` validity
-        /// requirement every other `&mut self` method on this type
-        /// carries, since [`Self::finish`] frees it.
+        /// one is serviced. Safe to call at any point in this runner's
+        /// lifetime, including after it has observed `WM_QUIT` — it only
+        /// clones [`Self::waker`], never touches `state_ptr`, so there is
+        /// no dangling-pointer concern even though [`Self::finish`] may
+        /// already have freed it. A channel attached that late is simply
+        /// never serviced, since nothing left calls [`Self::step`]/
+        /// [`Self::pump`].
         #[cfg(feature = "control")]
         #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
         pub fn attach_control(&mut self) -> ControlHandle {
-            // SAFETY: `state_ptr` is valid for the lifetime of this
-            // `WinRunner` — see this method's own `# Safety` doc above
-            // and `Self::finish`'s doc for when that stops being true.
-            let ws: &WindowState<A> = unsafe { &*self.state_ptr };
-            let waker = ws.state.borrow().backend.waker();
-            let (handle, port) = control::channel(waker);
+            let (handle, port) = control::channel(self.waker.clone());
             self.control = Some(port);
             handle
         }
@@ -2085,8 +2098,8 @@ mod win32 {
         reaction: Reaction,
     ) -> Reaction {
         // Arm the scheduled-wake timer and report `Continue` upward —
-        // same collapse `dispatch_with` always applied to
-        // `EventOutcome::RedrawAfter`, now shared with `service_control`.
+        // the collapse applied to `EventOutcome::RedrawAfter`, shared by
+        // `dispatch_with` and `service_control`.
         let reaction = match reaction {
             Reaction::RedrawAfter(delay) => {
                 ws.state.borrow().backend.request_frame_in(delay);
