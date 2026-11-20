@@ -1029,6 +1029,24 @@ jobs:
         if: matrix.os == 'windows-latest'
         timeout-minutes: 10
         run: cargo test -p quadraui --features win -- --test-threads=1
+      # Optional backend-neutral control channel (`quadraui::control`), Win
+      # half. `tests/control_channel_win.rs` is gated on `all(feature =
+      # "win", feature = "control", target_os = "windows")`, so the plain
+      # `--features win` step above compiles it away entirely (off a real
+      # Windows host, `WinDriver::new` cannot run at all — see `win::testing`'s
+      # module doc); the channel's own unit tests and the TUI wiring's
+      # driver test are the `tui` job's control steps. `-p quadraui` rather
+      # than `--workspace`: integration tests aren't workspace-wide.
+      # windows-latest-only (`if`): the real Direct2D/Win32 calls this test
+      # exercises have no non-Windows equivalent to run — same reasoning as
+      # every other `real Windows` step in this leg.
+      - name: Test (control channel Win wiring, win + control features, real Windows)
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 10
+        run: cargo test -p quadraui --features win,control --test control_channel_win -- --test-threads=1
+      - name: Clippy (control channel Win wiring, win + control features)
+        if: matrix.os == 'windows-latest'
+        run: cargo clippy -p quadraui --features win,control --test control_channel_win -- -D warnings
       # C0 + Tier-1 `win` burn-down tables, actually surfaced (quadraui#722
       # review). The step above already runs this same `conformance.rs`
       # binary under `--features win` — `c0_paint_smoke` registers a `win`

@@ -172,6 +172,8 @@ use crate::backend::Backend;
 use crate::event::{Point, Viewport};
 use crate::primitives::image::ImageSource;
 use crate::runner::AppLogic;
+#[cfg(feature = "control")]
+use crate::runner::Reaction;
 // `EventOutcome` — what the caller should do after `dispatch_event`
 // handles one event — is defined once in `crate::runtime` and shared by
 // every backend runner; re-exported (not just imported)
@@ -287,6 +289,45 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             );
             EventOutcome::Continue
         }
+    }
+}
+
+/// The dispatch callback [`control::ControlPort::service`] runs for every
+/// [`UiEvent`] a `ControlRequest` synthesizes — the same funnel real
+/// Win32 input goes through via [`dispatch_event`]. This is what makes a
+/// [`ControlHandle::act`]/`key`/`type_text` call behave like real input
+/// on Win-GUI — Tab focus cycling, declared accelerators, Ctrl-C/Ctrl-V/
+/// Ctrl-A — instead of a direct `AppLogic::handle` call that bypasses
+/// all of it, mirroring `gtk::run::control_dispatch`'s and
+/// `macos::run::control_dispatch`'s identical contract (see
+/// `quadraui::control`'s module doc).
+///
+/// Mouse routing (`route_mouse_down`/`route_mouse_move`/`route_mouse_up`,
+/// above) stays out of this funnel on purpose: no `ControlRequest`
+/// variant synthesizes a raw `MouseDown`/`MouseMoved`/`MouseUp` that
+/// would need it (`Key`/`Type` synthesize `KeyPressed`/`CharTyped`;
+/// `Act`'s routed events are already app-level, via
+/// `crate::a11y::route_action`) — mirrors `macos::run::control_dispatch`'s
+/// identical reasoning.
+///
+/// Not itself `#[cfg(target_os = "windows")]`: same "compiles everywhere"
+/// posture as [`dispatch_event`] — its only caller (`mod win32`'s
+/// `WinRunner::run_one`, via the `service_control` helper) is itself
+/// windows-gated, so this stays `#[allow(dead_code)]` on every other host
+/// rather than `cfg`-gated, keeping it type-checked everywhere the
+/// `control` feature is on.
+#[cfg(feature = "control")]
+#[allow(dead_code)]
+pub(crate) fn control_dispatch<A: AppLogic>(
+    event: UiEvent,
+    app: &mut A,
+    backend: &mut WinBackend,
+) -> Reaction {
+    match dispatch_event(event, backend, app) {
+        EventOutcome::Continue => Reaction::Continue,
+        EventOutcome::Redraw => Reaction::Redraw,
+        EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
+        EventOutcome::Exit => Reaction::Exit,
     }
 }
 
@@ -846,6 +887,8 @@ mod win32 {
     };
 
     use crate::backend::Backend;
+    #[cfg(feature = "control")]
+    use crate::control::{self, ControlHandle, ControlPort};
     use crate::desktop::{
         smoke_clipboard_round_trip_ok, smoke_size_ok, ModalPumpDepth, ModalPumpGuard, SmokeConfig,
     };
@@ -1745,6 +1788,12 @@ mod win32 {
         /// [`StepOutcome::Exited`] instead of touching the dangling
         /// pointer again.
         finished: bool,
+        /// See [`Self::attach_control`]. `None` until a caller opts in —
+        /// most apps never do, so this stays a plain `Option` rather than
+        /// an always-constructed channel nobody drains. Drained once per
+        /// [`Self::run_one`] iteration by `service_control`, above.
+        #[cfg(feature = "control")]
+        control: Option<ControlPort>,
     }
 
     impl<A: AppLogic + 'static> WinRunner<A> {
@@ -1773,7 +1822,45 @@ mod win32 {
                 state_ptr,
                 smoke_failed,
                 finished: false,
+                #[cfg(feature = "control")]
+                control: None,
             })
+        }
+
+        /// Attach a backend-neutral control channel (see
+        /// [`crate::control`]'s module doc) to this runner, returning the
+        /// cloneable [`ControlHandle`] a thread that does not own this
+        /// event loop uses to drive it — snapshot the current
+        /// [`crate::A11yTree`], route an assistive-technology-style
+        /// action against it, or synthesize key input through the same
+        /// pipeline real keyboard input goes through (see
+        /// [`super::control_dispatch`]'s doc). Serviced once per
+        /// [`Self::step`]/[`Self::pump`] call, in [`Self::run_one`] — the
+        /// Win-GUI counterpart of
+        /// [`crate::tui::run::TuiRunner::attach_control`]/
+        /// [`crate::gtk::run::GtkRunner::attach_control`]/
+        /// [`crate::macos::run::MacRunner::attach_control`]. Replaces any
+        /// previously attached channel — only the most recently attached
+        /// one is serviced.
+        ///
+        /// # Safety
+        ///
+        /// Must be called before this runner has observed `WM_QUIT` (i.e.
+        /// before any `step`/`pump` call has returned
+        /// [`StepOutcome::Exited`]) — same `state_ptr` validity
+        /// requirement every other `&mut self` method on this type
+        /// carries, since [`Self::finish`] frees it.
+        #[cfg(feature = "control")]
+        #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+        pub fn attach_control(&mut self) -> ControlHandle {
+            // SAFETY: `state_ptr` is valid for the lifetime of this
+            // `WinRunner` — see this method's own `# Safety` doc above
+            // and `Self::finish`'s doc for when that stops being true.
+            let ws: &WindowState<A> = unsafe { &*self.state_ptr };
+            let waker = ws.state.borrow().backend.waker();
+            let (handle, port) = control::channel(waker);
+            self.control = Some(port);
+            handle
         }
 
         /// Drain any Win32 messages already queued and return
@@ -1822,6 +1909,23 @@ mod win32 {
                 let peeked = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) };
                 let has_message = peeked.as_bool();
                 if !has_message {
+                    // Drain whatever a background thread queued via
+                    // `Self::attach_control`'s `ControlHandle` since the
+                    // last iteration — a no-op until something attaches.
+                    // Only reached once the native-message queue is
+                    // empty, same cadence as `TuiRunner::run_one`'s
+                    // control drain relative to its own native-event
+                    // batch.
+                    #[cfg(feature = "control")]
+                    if self.drain_control() == Reaction::Exit {
+                        // `apply_reaction`'s `DestroyWindow` call inside
+                        // `drain_control` already ran synchronously,
+                        // which posted `WM_QUIT` onto this thread's
+                        // queue via `WM_DESTROY`'s handler — loop back
+                        // to pick it up in this same call rather than
+                        // waiting for the next `step`/`pump`.
+                        continue;
+                    }
                     return Ok(StepOutcome::Continue);
                 }
                 if msg.message == WM_QUIT {
@@ -1838,6 +1942,22 @@ mod win32 {
                     DispatchMessageW(&msg);
                 }
             }
+        }
+
+        /// Service [`Self::control`] against this runner's live
+        /// `state_ptr`, applying the resulting [`Reaction`] through
+        /// [`service_control`] — a no-op returning [`Reaction::Continue`]
+        /// if nothing has attached via [`Self::attach_control`] yet.
+        #[cfg(feature = "control")]
+        fn drain_control(&self) -> Reaction {
+            let Some(port) = &self.control else {
+                return Reaction::Continue;
+            };
+            // SAFETY: `state_ptr` is valid — this is only reached from
+            // `run_one`, which already returns early for a `finished`
+            // runner above, so `state_ptr` has not yet been freed.
+            let ws: &WindowState<A> = unsafe { &*self.state_ptr };
+            service_control(ws, self.hwnd, port)
         }
 
         /// Idempotent: frees `state_ptr` (if not already freed) and
@@ -1947,30 +2067,51 @@ mod win32 {
         let reaction = match outcome {
             super::EventOutcome::Continue => Reaction::Continue,
             super::EventOutcome::Redraw => Reaction::Redraw,
-            // Arm the scheduled-wake timer. `guarded_call`
-            // above has already released its borrow of `ws.state` by
-            // this point, so a fresh `borrow_mut()` here is safe.
-            super::EventOutcome::RedrawAfter(delay) => {
+            super::EventOutcome::RedrawAfter(delay) => Reaction::RedrawAfter(delay),
+            super::EventOutcome::Exit => Reaction::Exit,
+        };
+        apply_reaction(ws, hwnd, reaction)
+    }
+
+    /// Act on a [`Reaction`] against the live window — the shared tail
+    /// [`dispatch_with`] above and [`service_control`] below both funnel
+    /// into, so a `Reaction` reaches the same `InvalidateRect`/
+    /// `request_frame_in`/`DestroyWindow` handling regardless of whether
+    /// it came from real Win32 input or a serviced
+    /// [`crate::control::ControlPort`] request.
+    fn apply_reaction<A: AppLogic>(
+        ws: &WindowState<A>,
+        hwnd: HWND,
+        reaction: Reaction,
+    ) -> Reaction {
+        // Arm the scheduled-wake timer and report `Continue` upward —
+        // same collapse `dispatch_with` always applied to
+        // `EventOutcome::RedrawAfter`, now shared with `service_control`.
+        let reaction = match reaction {
+            Reaction::RedrawAfter(delay) => {
                 ws.state.borrow().backend.request_frame_in(delay);
                 Reaction::Continue
             }
-            super::EventOutcome::Exit => Reaction::Exit,
+            other => other,
         };
         if reaction == Reaction::Redraw {
             // SAFETY: `hwnd` is a caller-supplied still-live window (every
             // call site passes the `hwnd` `wndproc` was itself invoked
-            // with); `InvalidateRect` takes only handles/rects, no raw
-            // pointer arithmetic.
+            // with, or — for `service_control` — the same `hwnd` the
+            // owning `WinRunner` created); `InvalidateRect` takes only
+            // handles/rects, no raw pointer arithmetic.
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
         }
         // This is the only place a `Reaction::Exit` gets acted on: every
-        // `wndproc` arm that routes through `dispatch`/`dispatch_with`
-        // gets the exit handled here, so an app returning `Exit` from
-        // any of them — a drawn-menu "Quit" click delivered as
-        // `WM_LBUTTONUP`, or `:q` via `WM_KEYDOWN`, just as much as
-        // `WM_CLOSE` — tears the window down the same way.
+        // `wndproc` arm that routes through `dispatch`/`dispatch_with`,
+        // and every serviced control request, gets the exit handled
+        // here, so an app returning `Exit` from any of them — a
+        // drawn-menu "Quit" click delivered as `WM_LBUTTONUP`, `:q` via
+        // `WM_KEYDOWN`, a control-channel `Act` routed to the same
+        // "Quit" button, just as much as `WM_CLOSE` — tears the window
+        // down the same way.
         if reaction == Reaction::Exit {
             // SAFETY: `hwnd` is a caller-supplied still-live window (see
             // above); `DestroyWindow` re-enters `wndproc` synchronously
@@ -1985,6 +2126,30 @@ mod win32 {
             }
         }
         reaction
+    }
+
+    /// Service whatever a background thread queued via
+    /// [`WinRunner::attach_control`]'s [`ControlHandle`] since the last
+    /// call — every [`UiEvent`] a request synthesizes dispatches through
+    /// [`super::control_dispatch`], the same pre-processing pipeline
+    /// real Win32 input goes through (see that function's doc), and the
+    /// resulting [`Reaction`] is applied through [`apply_reaction`], the
+    /// same tail `dispatch_with` uses for real input. Called from
+    /// [`WinRunner::run_one`] once per non-blocking drain, mirroring
+    /// `TuiRunner::attach_control`'s once-per-`step`/`pump` cadence and
+    /// `GtkRunner::attach_control`'s once-per-main-context-iteration one.
+    #[cfg(feature = "control")]
+    fn service_control<A: AppLogic>(
+        ws: &WindowState<A>,
+        hwnd: HWND,
+        port: &ControlPort,
+    ) -> Reaction {
+        let reaction = super::guarded_call(&ws.state, &ws.pump_depth, |run_state| {
+            let RunState { app, backend } = run_state;
+            port.service(app, backend, super::control_dispatch)
+        })
+        .unwrap_or(Reaction::Continue);
+        apply_reaction(ws, hwnd, reaction)
     }
 
     /// Fire [`AppLogic::tick`] — the target of both the

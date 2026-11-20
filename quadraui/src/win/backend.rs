@@ -817,6 +817,17 @@ pub struct WinBackend {
     /// Win-GUI twin of `MacBackend::scroll_fade_clock_override`. `None`
     /// (the default) uses real wall-clock time, as a live app does.
     scroll_fade_clock_override: Option<std::time::Instant>,
+    /// Opt-in retention of the frame this backend last painted, handed
+    /// out by [`Backend::frame_capture`] and read by
+    /// [`Backend::last_frame`]. Disabled and empty by default, so a live
+    /// app that never opts in never pays for the clone
+    /// [`crate::frame::ScreenLayout::draw`] would otherwise build. Mirrors
+    /// `TuiBackend::frame_capture`/`GtkBackend::frame_capture`/
+    /// `MacBackend::frame_capture` exactly — see `crate::frame`'s module
+    /// doc, "Live-frame capture for accessibility". Not `target_os`-gated:
+    /// a plain value with no WinAPI dependency, same rationale as
+    /// `zones`/`user_events` above.
+    frame_capture: crate::frame::FrameCapture,
 }
 
 impl WinBackend {
@@ -908,6 +919,7 @@ impl WinBackend {
             caret_blink: crate::caret_blink::CaretBlinkState::default(),
             scroll_fade_last_interaction: Some(std::time::Instant::now()),
             scroll_fade_clock_override: None,
+            frame_capture: crate::frame::FrameCapture::default(),
         }
     }
 
@@ -2542,6 +2554,14 @@ impl Backend for WinBackend {
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
         self.focus.set_focus(id)
+    }
+
+    fn frame_capture(&mut self) -> Option<&mut crate::frame::FrameCapture> {
+        Some(&mut self.frame_capture)
+    }
+
+    fn last_frame(&self) -> Option<&crate::frame::OwnedFrame> {
+        self.frame_capture.last_frame()
     }
 
     /// Strokes the generic tab-stop focus-ring convention around `rect`.

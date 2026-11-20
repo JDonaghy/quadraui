@@ -111,6 +111,8 @@ use crate::testing::{
 use crate::{ButtonMask, Color, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
 
 use super::backend::WinBackend;
+#[cfg(feature = "control")]
+use super::run::control_dispatch;
 use super::run::{
     dispatch_event, render_frame, route_mouse_down, route_mouse_move, route_mouse_up, EventOutcome,
 };
@@ -808,6 +810,45 @@ impl<A: AppLogic> WinDriver<A> {
     /// directly rather than through a scripted event.
     pub fn backend_mut(&mut self) -> &mut WinBackend {
         self.core.backend_mut()
+    }
+
+    /// Disjoint mutable access to both the backend and the `AppLogic` this
+    /// driver wraps — for a test that needs to call a `&mut dyn Backend`
+    /// method (e.g. [`crate::frame::set_frame_capture`]) and poke
+    /// app-owned state in the same scope. Mirrors
+    /// [`crate::tui::testing::TuiDriver::parts_mut`]/
+    /// [`crate::gtk::testing::GtkDriver::parts_mut`]/
+    /// [`crate::macos::testing::MacDriver::parts_mut`]'s identical shape.
+    pub fn parts_mut(&mut self) -> (&mut WinBackend, &mut A) {
+        self.core.parts_mut()
+    }
+
+    /// Service a [`crate::control::ControlPort`] against this driver — the
+    /// headless equivalent of what `win::run::WinRunner::run_one` does
+    /// once per [`crate::win::run::WinRunner::step`]/
+    /// [`crate::win::run::WinRunner::pump`] call for a channel attached
+    /// via [`crate::win::run::WinRunner::attach_control`]. Every
+    /// control-synthesized [`UiEvent`] goes through
+    /// [`super::run::control_dispatch`] — the same [`Self::dispatch`]
+    /// funnel — so a `ControlHandle::key`/`type_text`/`act` call behaves
+    /// identically in a test driven through this method and a live
+    /// `WinRunner`. Repaints on [`Reaction::Redraw`] via
+    /// [`Self::apply_outcome`]'s `EventOutcome` twin, applied inline here
+    /// since [`crate::control::ControlPort::service`] already returns a
+    /// [`Reaction`], not an [`EventOutcome`]; the caller observes a
+    /// [`Reaction::Exit`] (only reachable via `ControlRequest::Act`'s
+    /// routed events, like any other dispatched event) through the
+    /// returned `Reaction` rather than this method latching `exited`
+    /// itself.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    pub fn service_control(&mut self, port: &crate::control::ControlPort) -> Reaction {
+        let (backend, app) = self.core.parts_mut();
+        let reaction = port.service(app, backend, control_dispatch);
+        if reaction == Reaction::Redraw {
+            self.render();
+        }
+        reaction
     }
 
     /// Force the backend's surface back to the "not attached" state a
