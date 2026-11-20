@@ -59,6 +59,90 @@
 //! (`tools::definitions`), and `tools/call` routes any name outside
 //! those four straight to it (`tools::call`) — an app with no Level 2
 //! commands just keeps the four built-ins, zero behavior change.
+//!
+//! # Driving a quadraui app from an agent
+//!
+//! A step-by-step walkthrough of the four pieces above, tied together.
+//! `quadraui`'s `examples/tui_mcp_demo.rs` is the running example this
+//! section describes — a three-pane app (list, detail, text) with two
+//! Level 2 commands (`filter`, `clear_filter`) alongside the four
+//! built-ins; read its own module doc for the exact commands to run.
+//!
+//! ## 1. Enable it
+//!
+//! Build the app with `--features control` plus whatever backend
+//! feature it already uses (`tui`, `gtk`, `macos`, `win`), attach a
+//! control channel from the running runner once
+//! (`TuiRunner::attach_control`/`GtkRunner::attach_control`/
+//! `MacRunner::attach_control`), and hand the resulting
+//! `quadraui::control::ControlHandle` to [`serve`] on a background
+//! thread — see [`serve`]'s own doc for the exact call and why it needs
+//! its own thread on an app that also owns an event loop. Nothing else
+//! about the app changes: `snapshot`/`act`/`key`/`type` work the moment
+//! `control` is wired up, built entirely on `quadraui`'s accessibility
+//! tree.
+//!
+//! ## 2. Attach from an agent
+//!
+//! A TUI app owns the terminal's stdio for rendering, so an agent
+//! attaches from a *second* process over the socket the app bound
+//! ([`Transport::Unix`]/[`Transport::Tcp`] — see "Transports" above).
+//! Claude Code's own MCP client only speaks stdio to a command it
+//! spawns, not a raw socket directly, so bridge the two with a one-line
+//! `socat` command in its MCP config (`.mcp.json`, or `claude mcp add`):
+//!
+//! ```json
+//! {
+//!   "mcpServers": {
+//!     "quadraui-demo": {
+//!       "command": "socat",
+//!       "args": ["STDIO", "UNIX-CONNECT:/tmp/quadraui-mcp-demo-12345.sock"]
+//!     }
+//!   }
+//! }
+//! ```
+//!
+//! A headless or GUI app that uses [`Transport::Stdio`] instead needs no
+//! bridge at all: point `command`/`args` straight at the app's own
+//! binary, since it already shares this process's stdio with the MCP
+//! client.
+//!
+//! ## 3. Read a snapshot
+//!
+//! `tools/call` with `{"name": "snapshot"}` returns the stable JSON form
+//! [`quadraui::A11yTree`]'s own doc documents: a top-level `focus` field
+//! naming the node currently holding accessibility focus, and a `root`
+//! field holding the whole tree nested by `children`. Every node's `id`
+//! is the same stable value across snapshots for the same widget, so an
+//! id read from one snapshot stays valid to `act` on in a later call —
+//! as long as the node is still in the tree; see "Virtualised rows"
+//! below for the one case where it might not be yet.
+//!
+//! ## 4. `act` vs an app command
+//!
+//! `act` (Level 1) is the right tool whenever the goal has a direct UI
+//! equivalent an accessibility role already exposes: click a list row,
+//! type into a focused field, check a checkbox. It needs no cooperation
+//! from the app beyond the `control` feature itself. An app-defined
+//! command (Level 2 — every `tools/list` entry past the four built-ins)
+//! is the right tool for anything `act` has no node for: a multi-step
+//! model operation that should land atomically (`tui_mcp_demo`'s
+//! `filter`, which recomputes a derived list *and* resets a selection in
+//! one call), a query that reads state with no widget of its own
+//! (`tui_commands_demo`'s `count`), or anything that would otherwise
+//! need several `act` calls chained together by the agent itself with
+//! no atomicity between them.
+//!
+//! ## Virtualised rows
+//!
+//! A long list/tree/table does not materialise an accessibility node
+//! for every row — only a window of rows around the current scroll
+//! offset does. `act`ing on a row's `id` works only once that row is
+//! inside the window; a row far outside it has no node to act on yet,
+//! even though the snapshot still reports its true `position_in_set`/
+//! `set_size` in the full collection. Scroll the row into view first —
+//! an `act` call against a role that supports scrolling, or an
+//! app-defined Level 2 command — before trying to `act` on it directly.
 
 mod tools;
 mod transport;
