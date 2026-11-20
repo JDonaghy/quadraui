@@ -1477,6 +1477,8 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("value", bool_()),
             field_opt("disabled", bool_()),
             field_opt("focused", bool_()),
+            field_opt("hovered", bool_()),
+            field_opt("pressed", bool_()),
         ],
     ));
     let checkbox_descriptor = b.define(obj(
@@ -1612,6 +1614,8 @@ pub fn schema() -> Vec<DefJson> {
             field("id", re("WidgetId")),
             field("label", str_()),
             field_opt("disabled", bool_()),
+            field_opt("hovered", bool_()),
+            field_opt("pressed", bool_()),
         ],
     ));
     let radio_group_descriptor = b.define(obj(
@@ -4744,7 +4748,9 @@ mod coverage {
             id,
             value,
             disabled,
-            focused
+            focused,
+            hovered,
+            pressed
         }
     );
     fn assert_scroll_axis(a: ScrollAxis) {
@@ -4794,12 +4800,14 @@ mod coverage {
             search_label
         }
     );
-    assert_fields!(
+    assert_fields_non_exhaustive!(
         assert_radio_option_fields,
         RadioOption {
             id,
             label,
-            disabled
+            disabled,
+            hovered,
+            pressed
         }
     );
     assert_fields_non_exhaustive!(
@@ -5990,7 +5998,7 @@ mod coverage {
             "Switch",
             "SwitchDescriptor",
             Switch::new(WidgetId::new("test")),
-            ["id", "value", "disabled", "focused"]
+            ["id", "value", "disabled", "focused", "hovered", "pressed"]
         );
 
         value_shape_test!(
@@ -6040,6 +6048,14 @@ mod coverage {
                 vec![RadioOption::new(WidgetId::new("test:option"), "label")]
             ),
             ["id", "options", "selected", "focused"]
+        );
+
+        value_shape_test!(
+            radio_option_json_keys_match_the_schema_field_list,
+            "RadioOption",
+            "RadioOptionDescriptor",
+            RadioOption::new(WidgetId::new("test:option"), "label"),
+            ["id", "label", "disabled", "hovered", "pressed"]
         );
 
         value_shape_test!(
