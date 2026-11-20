@@ -1,18 +1,18 @@
-//! This crate's four built-in "Level 1" MCP tools (`snapshot`, `act`,
-//! `key`, `type`), plus "Level 2" — every app-defined named command
-//! surfaced as its own tool — and the JSON-RPC-independent glue that
-//! turns a `tools/call` request's `arguments` into a [`ControlHandle`]
-//! call. See [`quadraui::control`]'s "Levels" doc section for what each
-//! level means.
+//! This crate's five built-in "Level 1" MCP tools (`snapshot`, `act`,
+//! `key`, `type`, `screenshot`), plus "Level 2" — every app-defined named
+//! command surfaced as its own tool — and the JSON-RPC-independent glue
+//! that turns a `tools/call` request's `arguments` into a
+//! [`ControlHandle`] call. See [`quadraui::control`]'s "Levels" doc
+//! section for what each level means.
 //!
 //! Each built-in tool maps 1:1 onto a [`quadraui::control::ControlRequest`]
 //! variant. [`definitions`] is what a `tools/list` response answers
-//! with — the four built-ins followed by whatever Level 2 commands the
+//! with — the five built-ins followed by whatever Level 2 commands the
 //! live app behind `handle` has registered
 //! ([`ControlHandle::list_commands`]), each one surfaced using the
 //! command's own name/description/schema. [`call`] is what a
 //! `tools/call` request dispatches through: a name that isn't one of
-//! the four built-ins is forwarded to [`ControlHandle::command`]
+//! the five built-ins is forwarded to [`ControlHandle::command`]
 //! unchanged, so a Level 2 command "just works" as an MCP tool without
 //! this module needing to know its name ahead of time.
 
@@ -22,14 +22,14 @@ use quadraui::control::ControlHandle;
 use quadraui::{A11yAction, A11yActionValue, A11yNodeId, Key, Modifiers};
 
 /// Builds a `tools/list` response for the running app behind `handle`:
-/// this crate's four built-in Level 1 tools, followed by one tool per
+/// this crate's five built-in Level 1 tools, followed by one tool per
 /// Level 2 command the app has registered
 /// ([`ControlHandle::list_commands`]), using that command's own
 /// name/description/schema as the tool's `name`/`description`/
 /// `inputSchema`. An app with no Level 2 commands (the default) gets
-/// just the four built-ins. A [`ControlHandle::list_commands`] failure
+/// just the five built-ins. A [`ControlHandle::list_commands`] failure
 /// (the runner already gone) is silently treated as "no Level 2
-/// commands" here — `tools/list` always has at least the four built-ins
+/// commands" here — `tools/list` always has at least the five built-ins
 /// to answer with; a caller that cares finds out the runner is gone the
 /// moment it actually tries to call one.
 pub fn definitions(handle: &ControlHandle) -> Vec<Value> {
@@ -139,6 +139,22 @@ fn builtin_definitions() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        json!({
+            "name": "screenshot",
+            "description": "Returns the running app's current screen as JSON \
+                (quadraui::Screenshot's own `kind`-tagged JSON form) — a visual \
+                complement to `snapshot`'s structured accessibility tree, for an agent \
+                that needs to *see* the render. On TUI this is `{\"kind\": \"text\", \
+                \"rows\": [...], \"spans\": [[...]]}`: one string per rendered row plus \
+                each row's per-cell style, run-length encoded. Answers an error, not a \
+                crash, on a backend with no screen to capture (no cell grid or \
+                pixel-capture path, or live-frame capture not enabled yet).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -148,7 +164,7 @@ fn builtin_definitions() -> Vec<Value> {
 /// see `crate::rpc`); `Err` carries a human-readable message an MCP
 /// client should show to its model, not a JSON-RPC protocol error.
 ///
-/// `name` outside the four built-ins is forwarded to
+/// `name` outside the five built-ins is forwarded to
 /// [`ControlHandle::command`] unchanged — a Level 2 command the app
 /// registered, or [`quadraui::control::CommandError::NotFound`]'s
 /// message if nothing matches.
@@ -158,6 +174,7 @@ pub fn call(handle: &ControlHandle, name: &str, arguments: &Value) -> Result<Val
         "act" => call_act(handle, arguments),
         "key" => call_key(handle, arguments),
         "type" => call_type(handle, arguments),
+        "screenshot" => handle.screenshot().map_err(|e| e.to_string()),
         other => handle
             .command(other, arguments.clone())
             .map_err(|e| e.to_string()),
@@ -350,14 +367,14 @@ mod tests {
     }
 
     #[test]
-    fn definitions_cover_all_four_tools_with_no_app_commands() {
+    fn definitions_cover_all_five_tools_with_no_app_commands() {
         let names = with_serviced_handle(NoOpApp, |handle| {
             definitions(&handle)
                 .into_iter()
                 .map(|d| d["name"].as_str().unwrap().to_string())
                 .collect::<Vec<_>>()
         });
-        assert_eq!(names, vec!["snapshot", "act", "key", "type"]);
+        assert_eq!(names, vec!["snapshot", "act", "key", "type", "screenshot"]);
     }
 
     /// `definitions` appends one tool per registered Level 2 command,
@@ -367,7 +384,10 @@ mod tests {
     fn definitions_append_registered_level_2_commands() {
         let defs = with_serviced_handle(SelectApp::new(), |handle| definitions(&handle));
         let names: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["snapshot", "act", "key", "type", "select"]);
+        assert_eq!(
+            names,
+            vec!["snapshot", "act", "key", "type", "screenshot", "select"]
+        );
         let select = defs.last().unwrap();
         assert_eq!(select["description"], json!("Selects an item by index."));
         assert_eq!(

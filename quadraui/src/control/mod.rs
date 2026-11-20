@@ -28,13 +28,19 @@
 //! raw input the same way [`crate::tui::testing::TuiDriver`]'s
 //! `press`/`type_char` do — both end up going through
 //! [`crate::tui::testing::TuiDriver::dispatch`]'s pipeline when the owning
-//! runner is `TuiRunner`. [`ControlRequest::Command`] and
+//! runner is `TuiRunner`. [`ControlRequest::Screenshot`] is also Level 1:
+//! an optional, visual complement to `Snapshot`'s structured tree, for an
+//! agent that needs to *see* the render — [`crate::Backend::screenshot`]
+//! answers it (TUI's cell grid as plain text today; a future GUI backend
+//! answers with a PNG capture instead), and a backend with nothing to
+//! offer answers the documented error rather than panicking or failing
+//! the session. [`ControlRequest::Command`] and
 //! [`ControlRequest::ListCommands`] are "Level 2": app-defined named
 //! commands that act on the app's own model rather than its widgets —
 //! [`commands::CommandRegistry`] holds them, [`crate::AppLogic::run_command`]
 //! and [`crate::AppLogic::command_specs`] are how an app plugs its
 //! registry into this module, and `quadraui-mcp` lists every Level 2
-//! command in `tools/list` alongside its four built-in Level 1 tools. An
+//! command in `tools/list` alongside its five built-in Level 1 tools. An
 //! app that never registers a command gets [`CommandError::NotFound`]
 //! for every [`ControlRequest::Command`] — the same "unknown command"
 //! answer this module always gave before Level 2 existed.
@@ -127,6 +133,14 @@ pub enum ControlRequest {
     /// [`CommandSpec`]s — see [`ControlHandle::list_commands`]. Answered
     /// by [`crate::AppLogic::command_specs`].
     ListCommands,
+    /// The backend's current screen, for an agent that needs to *see* the
+    /// render rather than just its accessibility tree — see
+    /// [`ControlHandle::screenshot`]. [`crate::Backend::screenshot`]
+    /// answers it; a backend with nothing to offer (every backend without
+    /// a cell grid or pixel-capture path today, or a TUI backend with
+    /// live-frame capture not yet enabled) answers
+    /// [`ControlReply::Error`], never a panic.
+    Screenshot,
 }
 
 /// A reply to a [`ControlRequest`].
@@ -284,6 +298,23 @@ impl ControlHandle {
                 .map_err(|e| ControlError::Failed(format!("list_commands: {e}"))),
             ControlReply::Ack => Ok(Vec::new()),
             ControlReply::Error(e) => Err(ControlError::Failed(e)),
+        }
+    }
+
+    /// The running app's current screen — [`crate::Backend::screenshot`]'s
+    /// JSON form (`quadraui::backend::Screenshot`'s `serde::Serialize`
+    /// output: `{"kind": "text", "rows": [...], "spans": [[...]]}` on
+    /// TUI today). [`ControlError::Failed`] when the backend has nothing
+    /// to offer — no cell grid or pixel-capture path at all, or live-frame
+    /// capture ([`crate::frame::set_frame_capture`]) not enabled yet on a
+    /// backend that does.
+    pub fn screenshot(&self) -> Result<Value, ControlError> {
+        match self.send(ControlRequest::Screenshot)? {
+            ControlReply::Value(v) => Ok(v),
+            ControlReply::Error(e) => Err(ControlError::Failed(e)),
+            ControlReply::Ack => Err(ControlError::Failed(
+                "screenshot: runner answered Ack instead of a screen".into(),
+            )),
         }
     }
 
@@ -483,6 +514,23 @@ where
                 Reaction::Continue,
             ),
         },
+        ControlRequest::Screenshot => match backend.screenshot() {
+            Some(shot) => match serde_json::to_value(&shot) {
+                Ok(v) => (ControlReply::Value(v), Reaction::Continue),
+                Err(e) => (
+                    ControlReply::Error(format!("screenshot: failed to serialize: {e}")),
+                    Reaction::Continue,
+                ),
+            },
+            None => (
+                ControlReply::Error(
+                    "screenshot: unsupported on this backend, or no captured frame yet \
+                     — enable crate::frame::set_frame_capture first"
+                        .into(),
+                ),
+                Reaction::Continue,
+            ),
+        },
     }
 }
 
@@ -549,6 +597,26 @@ mod tests {
         let mut backend = RecordingBackend::new();
         let (reply, reaction) = service_one(
             ControlRequest::Snapshot,
+            &mut app,
+            &mut backend,
+            &mut handle_dispatch,
+        );
+        assert!(matches!(reply, ControlReply::Error(_)));
+        assert_eq!(reaction, Reaction::Continue);
+    }
+
+    /// [`ControlRequest::Screenshot`] against a backend with no
+    /// [`crate::Backend::screenshot`] override (every [`RecordingBackend`],
+    /// and the trait's own default) answers [`ControlReply::Error`], not
+    /// a panic — a backend with nothing to offer (e.g. a GUI backend with
+    /// no capture path) must answer this cleanly, same as a TUI backend
+    /// that hasn't enabled live-frame capture yet.
+    #[test]
+    fn screenshot_unsupported_on_a_plain_backend_is_a_clean_error() {
+        let mut app = CountingApp::default();
+        let mut backend = RecordingBackend::new();
+        let (reply, reaction) = service_one(
+            ControlRequest::Screenshot,
             &mut app,
             &mut backend,
             &mut handle_dispatch,

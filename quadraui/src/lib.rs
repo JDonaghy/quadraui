@@ -783,8 +783,8 @@ pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, Display,
     DrawsPrimitives, FileDialogOptions, InvalidationLog, MenuStyle, MessageDialogButton,
     MessageDialogChoice, MessageDialogOptions, Metrics, Notification, PlatformFontDefaults,
-    PlatformServices, PointerShape, ResizeEdge, ResolvedMenuStyle, RgbaImage, SecretStore,
-    ServiceResult, SystemTheme, WindowControl,
+    PlatformServices, PointerShape, ResizeEdge, ResolvedMenuStyle, RgbaImage, Screenshot,
+    ScreenshotRun, SecretStore, ServiceResult, SystemTheme, WindowControl,
 };
 // `PlatformServices::update_service`'s vended trait and types — same
 // service-seam shape as `Clipboard`/`SecretStore` above; see `update`'s

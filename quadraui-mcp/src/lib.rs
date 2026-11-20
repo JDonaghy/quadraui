@@ -6,11 +6,11 @@
 //! [`quadraui::control::ControlHandle`] once it opts into the `control`
 //! feature and wires `attach_control` into its own runner. This crate
 //! turns that handle into an MCP server: a JSON-RPC 2.0 endpoint an AI
-//! agent connects to and drives through four built-in tools, `snapshot`,
-//! `act`, `key` and `type`, each one a thin wrapper over the matching
-//! [`quadraui::control::ControlRequest`] variant, plus one tool per
-//! app-defined named command the app has registered (see the "Levels"
-//! section below).
+//! agent connects to and drives through five built-in tools, `snapshot`,
+//! `act`, `key`, `type` and `screenshot`, each one a thin wrapper over
+//! the matching [`quadraui::control::ControlRequest`] variant, plus one
+//! tool per app-defined named command the app has registered (see the
+//! "Levels" section below).
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -49,16 +49,18 @@
 //! # Levels
 //!
 //! "Level 1" per the control channel's own doc: UI-level `snapshot`/
-//! `act`, built entirely on `quadraui::a11y`, so any `AppLogic` app gets
-//! all four built-in tools for free the moment it wires up `control`.
-//! "Level 2": app-defined named commands that act on the app's own model
-//! rather than its UI, registered against a
+//! `act`, built entirely on `quadraui::a11y`, plus the optional
+//! `screenshot`, so any `AppLogic` app gets all five built-in tools for
+//! free the moment it wires up `control` (`screenshot` still answers an
+//! error on a backend with nothing to capture — see its own tool
+//! description). "Level 2": app-defined named commands that act on the
+//! app's own model rather than its UI, registered against a
 //! [`quadraui::control::CommandRegistry`] and wired into
 //! [`quadraui::AppLogic::command_specs`]/[`quadraui::AppLogic::run_command`].
-//! `tools/list` lists every Level 2 command alongside the four built-ins
+//! `tools/list` lists every Level 2 command alongside the five built-ins
 //! (`tools::definitions`), and `tools/call` routes any name outside
-//! those four straight to it (`tools::call`) — an app with no Level 2
-//! commands just keeps the four built-ins, zero behavior change.
+//! those five straight to it (`tools::call`) — an app with no Level 2
+//! commands just keeps the five built-ins, zero behavior change.
 //!
 //! # Driving a quadraui app from an agent
 //!
@@ -79,11 +81,12 @@
 //! thread — see [`serve`]'s own doc for the exact call and why it needs
 //! its own thread on an app that also owns an event loop. `key` and
 //! `type` work immediately, built entirely on the app's own event
-//! handling. `snapshot` and `act` additionally need a captured frame to
-//! read: call `quadraui::set_frame_capture(backend, true)` once, from
-//! `AppLogic::setup` (the hook every runner calls before the first
-//! render — see `tui_mcp_demo.rs`'s own `setup` impl), since neither the
-//! runner nor `attach_control` turns capture on by itself.
+//! handling. `snapshot`, `act` and `screenshot` additionally need a
+//! captured frame to read: call `quadraui::set_frame_capture(backend,
+//! true)` once, from `AppLogic::setup` (the hook every runner calls
+//! before the first render — see `tui_mcp_demo.rs`'s own `setup` impl),
+//! since neither the runner nor `attach_control` turns capture on by
+//! itself.
 //!
 //! ## 2. Attach from an agent
 //!
@@ -127,7 +130,7 @@
 //! equivalent an accessibility role already exposes: click a list row,
 //! type into a focused field, check a checkbox. It needs no cooperation
 //! from the app beyond the `control` feature itself. An app-defined
-//! command (Level 2 — every `tools/list` entry past the four built-ins)
+//! command (Level 2 — every `tools/list` entry past the five built-ins)
 //! is the right tool for anything `act` has no node for: a multi-step
 //! model operation that should land atomically (`tui_mcp_demo`'s
 //! `filter`, which recomputes a derived list *and* resets a selection in
@@ -328,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_names_all_four_tools() {
+    fn tools_list_names_all_five_tools() {
         // Dropping the port rather than leaving it unserviced:
         // `tools::definitions`'s `ControlHandle::list_commands` call
         // (querying Level 2 app commands) answers `RunnerGone`
@@ -347,7 +350,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["snapshot", "act", "key", "type"]);
+        assert_eq!(names, vec!["snapshot", "act", "key", "type", "screenshot"]);
     }
 
     /// A tool-level failure (here: the runner already gone, so

@@ -193,7 +193,10 @@ fn mcp_client_over_unix_socket_drives_a_headless_tui_app() {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(tool_names, vec!["snapshot", "act", "key", "type"]);
+        assert_eq!(
+            tool_names,
+            vec!["snapshot", "act", "key", "type", "screenshot"]
+        );
 
         let before = call(
             &mut stream,
