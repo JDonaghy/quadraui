@@ -19,6 +19,8 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 #[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
+#[cfg(target_os = "windows")]
+use crate::interaction::InteractionState;
 use crate::primitives::layout_metrics::TextMeasure;
 #[cfg(target_os = "windows")]
 use crate::primitives::menu_bar::native_surface_paint;
@@ -79,6 +81,31 @@ pub fn draw_menu_bar(
         dwrite: Some(dwrite),
     };
     native_surface_paint::paint(bar, &layout, &mut surface, theme);
+
+    layout
+}
+
+/// [`draw_menu_bar`], reading hover/pressed state from `interaction` —
+/// see [`crate::Backend::draw_menu_bar_with_state`]'s own doc. Paints
+/// through [`native_surface_paint::paint_interactive`] instead of that
+/// module's plain `paint`; every other step mirrors [`draw_menu_bar`]
+/// exactly.
+#[cfg(target_os = "windows")]
+pub fn draw_menu_bar_with_state(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    bar: &MenuBar,
+    theme: &Theme,
+    interaction: &InteractionState,
+) -> MenuBarLayout {
+    let layout = win_menu_bar_layout(dwrite, rect, bar);
+
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    native_surface_paint::paint_interactive(bar, &layout, &mut surface, theme, interaction);
 
     layout
 }

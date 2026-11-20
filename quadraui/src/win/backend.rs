@@ -3535,6 +3535,47 @@ impl Backend for WinBackend {
         });
     }
 
+    /// [`Self::draw_palette`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_palette_with_state`]'s own
+    /// doc. Routes through
+    /// [`crate::primitives::palette::native_surface_paint::paint_interactive`],
+    /// the interactive twin of the plain `paint` [`Self::draw_palette`]
+    /// calls.
+    fn draw_palette_with_state(
+        &mut self,
+        rect: Rect,
+        palette: &Palette,
+        interaction: &crate::InteractionState,
+    ) {
+        let line_height = self.current_line_height;
+        let theme = crate::theme::Theme::default();
+        let style = self.style();
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        self.with_chrome_surface(|surf| {
+            if rect.width < 20.0 || rect.height < line_height * 4.0 {
+                return;
+            }
+            let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
+                rect.width,
+                rect.height,
+                palette,
+                line_height,
+            );
+            crate::primitives::palette::native_surface_paint::paint_interactive(
+                palette,
+                rect,
+                &palette_layout,
+                rows_h,
+                line_height,
+                nerd_fonts_enabled,
+                surf,
+                &theme,
+                &style,
+                interaction,
+            );
+        });
+    }
+
     /// Pure geometry — needs no live surface, unlike
     /// [`Self::draw_palette`], so this doesn't gate on one being attached.
     /// `win::palette` itself is Windows-only (real `Direct2D`/`DirectWrite`
@@ -4571,6 +4612,49 @@ impl Backend for WinBackend {
         .unwrap_or_else(|| self.draw_context_menu(menu, layout))
     }
 
+    /// [`Self::draw_context_menu`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_context_menu_with_state`]'s
+    /// own doc. Routes through
+    /// [`crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive`]
+    /// (the same `paint_with_glyphs` pipeline as [`Self::draw_context_menu`],
+    /// plus the interactive hover/pressed tint), with `glyphs: None`
+    /// so this reproduces [`Self::draw_context_menu`]'s check-mark /
+    /// submenu-arrow glyphs exactly.
+    fn draw_context_menu_with_state(
+        &mut self,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        interaction: &crate::InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        let style = self.style();
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        self.with_chrome_surface(|surf| {
+            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive(
+                menu,
+                layout,
+                crate::accelerator::Platform::Windows,
+                surf,
+                &theme,
+                &style,
+                None,
+                nerd_fonts_enabled,
+                interaction,
+            )
+        })
+        // `layout` is already fully resolved, so a pure extraction from
+        // it needs no surface/DWrite at all when none is attached yet —
+        // same fallback as `Self::draw_context_menu`.
+        .unwrap_or_else(|| {
+            layout
+                .visible_items
+                .iter()
+                .filter(|vis| vis.clickable)
+                .filter_map(|vis| menu.items[vis.item_idx].id.map(|id| (vis.bounds, id)))
+                .collect()
+        })
+    }
+
     /// Real Direct2D/DirectWrite rasteriser via `win::dialog` once a
     /// surface is attached. `layout` is fully resolved upstream (see
     /// [`crate::primitives::dialog::Dialog::layout`]) — this only paints
@@ -5104,6 +5188,46 @@ impl Backend for WinBackend {
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `menu_bar_layout` falls back to, and paint
         // nothing.
+        let layout = super::menu_bar::win_menu_bar_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+        );
+        self.register_menu_bar_item_zones(&layout);
+        layout
+    }
+
+    /// [`Self::draw_menu_bar`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_menu_bar_with_state`]'s own
+    /// doc. Routes through [`super::menu_bar::draw_menu_bar_with_state`]
+    /// instead of [`super::menu_bar::draw_menu_bar`]; every other step
+    /// (zone registration, no-surface-yet fallback) mirrors
+    /// [`Self::draw_menu_bar`] exactly.
+    fn draw_menu_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &MenuBar,
+        interaction: &crate::InteractionState,
+    ) -> MenuBarLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let layout = super::menu_bar::draw_menu_bar_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &self.current_theme,
+                interaction,
+            );
+            self.register_menu_bar_item_zones(&layout);
+            return layout;
+        }
+        // No surface/DWrite yet — `interaction` only affects painting,
+        // same fallback posture as `Self::draw_menu_bar`'s own.
+        let _ = interaction;
         let layout = super::menu_bar::win_menu_bar_layout(
             &NominalTextMeasure {
                 char_width: self.current_char_width,
@@ -9785,6 +9909,251 @@ mod tests {
             (px.r, px.g, px.b),
             (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
             "hovered_tab: None must repaint tab 1 back to the untinted tab_bar_bg",
+        );
+    }
+
+    /// `draw_palette_with_state` must tint the pinned create-action
+    /// row — the one stable id a [`Palette`] carries (`palette.id`
+    /// itself) — toward `Theme::menu_item_hover_bg` when hovered and
+    /// `Theme::menu_item_pressed_bg` when pressed, matching
+    /// `Backend::draw_palette_with_state`'s own doc.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_palette_create_row_hover_and_pressed_tints() {
+        use crate::win::testing::HeadlessSurface;
+        use crate::{InteractionState, PaletteItem, PaletteMode};
+
+        const W: u32 = 200;
+        const H: u32 = 200;
+
+        let palette_id = WidgetId::new("test:palette");
+        let mut palette = Palette {
+            id: palette_id,
+            title: "Commands".into(),
+            create_label: Some("Create 'op'".into()),
+            show_query: true,
+            mode: PaletteMode::List,
+            ..Default::default()
+        };
+        palette.items = vec![PaletteItem {
+            text: crate::types::StyledText::plain("one".to_string()),
+            detail: None,
+            icon: None,
+            match_positions: vec![],
+            depth: 0,
+            expandable: false,
+            expanded: false,
+        }];
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        let paint_with = |interaction: &InteractionState| -> HeadlessSurface {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.draw_palette_with_state(rect, &palette, interaction);
+            backend.end_frame();
+            surface
+        };
+
+        let (layout, _rows_h) = crate::primitives::palette::native_surface_paint::layout(
+            rect.width,
+            rect.height,
+            &palette,
+            16.0,
+        );
+        let create_bounds = layout
+            .create_bounds
+            .expect("palette with create_label must report create_bounds");
+        let probe_x = (create_bounds.x + 4.0) as u32;
+        let probe_y = (create_bounds.y + create_bounds.height / 2.0) as u32;
+
+        // Win's `draw_palette`/`draw_palette_with_state` paint from
+        // `Theme::default()` rather than a live `self.current_theme`
+        // (see `Self::draw_palette`'s own doc) — the expected colours
+        // below match that, not a `set_theme` override.
+        let theme = crate::theme::Theme::default();
+
+        let resting = paint_with(&InteractionState::new());
+        let px = resting.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
+            "an un-hovered create row must keep its plain Theme::hover_bg fill",
+        );
+
+        let hover_interaction = InteractionState::from_parts(Some(palette_id), None);
+        let hovered = paint_with(&hover_interaction);
+        let px = hovered.pixel_at(probe_x, probe_y);
+        let hover_expected = theme.menu_item_hover_bg(theme.hover_bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "hovering the create row must tint it toward Theme::menu_item_hover_bg",
+        );
+
+        let pressed_interaction = InteractionState::from_parts(Some(palette_id), Some(palette_id));
+        let pressed = paint_with(&pressed_interaction);
+        let px = pressed.pixel_at(probe_x, probe_y);
+        let pressed_expected = theme.menu_item_pressed_bg(theme.hover_bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            "pressing the create row must tint it toward Theme::menu_item_pressed_bg",
+        );
+        assert_ne!(
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours",
+        );
+    }
+
+    /// `draw_context_menu_with_state` must tint a hovered item's row
+    /// toward `Theme::menu_item_hover_bg` and a pressed item's row
+    /// toward `Theme::menu_item_pressed_bg`, matching
+    /// `Backend::draw_context_menu_with_state`'s own doc.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_context_menu_item_hover_and_pressed_tints() {
+        use crate::win::testing::HeadlessSurface;
+        use crate::InteractionState;
+
+        const W: u32 = 300;
+        const H: u32 = 60;
+        const ITEM_H: f32 = 30.0;
+
+        let item_id = WidgetId::new("test:menu:item");
+        let menu = ContextMenu {
+            id: WidgetId::new("test:menu"),
+            items: vec![crate::primitives::context_menu::ContextMenuItem {
+                id: Some(item_id),
+                label: crate::types::StyledText::plain("Copy".to_string()),
+                ..Default::default()
+            }],
+            // Out of range so no item ever paints as keyboard-selected —
+            // the selection highlight isn't what this test measures.
+            selected_idx: 99,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        };
+        let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let menu_layout = menu.layout_at(Rect::new(0.0, 0.0, 0.0, 0.0), viewport, 200.0, |_| {
+            crate::primitives::context_menu::ContextMenuItemMeasure::new(ITEM_H)
+        });
+        let row = menu_layout.visible_items[0].bounds;
+        let probe_x = (row.x + 4.0) as u32;
+        let probe_y = (row.y + row.height / 2.0) as u32;
+
+        let paint_with = |interaction: &InteractionState| -> HeadlessSurface {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let _ = backend.draw_context_menu_with_state(&menu, &menu_layout, interaction);
+            backend.end_frame();
+            surface
+        };
+
+        let theme = crate::theme::Theme::default();
+        let bg = menu.bg.unwrap_or(theme.hover_bg);
+
+        let hover_interaction = InteractionState::from_parts(Some(item_id), None);
+        let hovered = paint_with(&hover_interaction);
+        let px = hovered.pixel_at(probe_x, probe_y);
+        let hover_expected = theme.menu_item_hover_bg(bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "hovering a context-menu item must tint its row toward Theme::menu_item_hover_bg",
+        );
+
+        let pressed_interaction = InteractionState::from_parts(Some(item_id), Some(item_id));
+        let pressed = paint_with(&pressed_interaction);
+        let px = pressed.pixel_at(probe_x, probe_y);
+        let pressed_expected = theme.menu_item_pressed_bg(bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            "pressing a context-menu item must tint its row toward Theme::menu_item_pressed_bg",
+        );
+        assert_ne!(
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours",
+        );
+    }
+
+    /// `draw_menu_bar_with_state` must tint a hovered top-level item
+    /// toward `Theme::menu_item_hover_bg` and a pressed one toward
+    /// `Theme::menu_item_pressed_bg`, matching
+    /// `Backend::draw_menu_bar_with_state`'s own doc.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_menu_bar_item_hover_and_pressed_tints() {
+        use crate::win::testing::HeadlessSurface;
+        use crate::InteractionState;
+
+        const W: u32 = 300;
+        const H: u32 = 24;
+
+        let item_id = WidgetId::new("test:bar:file");
+        let bar = MenuBar {
+            id: WidgetId::new("test:bar"),
+            items: vec![crate::primitives::menu_bar::MenuBarItem {
+                id: item_id,
+                label: "&File".into(),
+                disabled: false,
+                submenu: None,
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        let paint_with = |interaction: &InteractionState| -> (HeadlessSurface, MenuBarLayout) {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let layout = backend.draw_menu_bar_with_state(rect, &bar, interaction);
+            backend.end_frame();
+            (surface, layout)
+        };
+
+        let theme = crate::theme::Theme::default();
+
+        let hover_interaction = InteractionState::from_parts(Some(item_id), None);
+        let (hovered, layout) = paint_with(&hover_interaction);
+        let row = layout.visible_items[0].bounds;
+        let probe_x = (row.x + 4.0) as u32;
+        let probe_y = (row.y + row.height / 2.0) as u32;
+        let px = hovered.pixel_at(probe_x, probe_y);
+        let hover_expected = theme.menu_item_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "hovering a menu-bar item must tint its background toward Theme::menu_item_hover_bg",
+        );
+
+        let pressed_interaction = InteractionState::from_parts(Some(item_id), Some(item_id));
+        let (pressed, _) = paint_with(&pressed_interaction);
+        let px = pressed.pixel_at(probe_x, probe_y);
+        let pressed_expected = theme.menu_item_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            "pressing a menu-bar item must tint its background toward Theme::menu_item_pressed_bg",
+        );
+        assert_ne!(
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours",
         );
     }
 
