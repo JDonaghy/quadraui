@@ -1383,6 +1383,17 @@ jobs:
       # it: the lib's `#[cfg(test)]` modules must compile with `tui` off.
       - name: Compile check (gallery, gtk feature only)
         run: cargo check -p quadraui-gallery --features gtk --all-targets
+      # Optional backend-neutral control channel (`quadraui::control`), GTK
+      # half. `tests/control_channel_gtk.rs` is gated on `all(feature =
+      # "gtk", feature = "control")`, so the plain `--features gtk,tui`
+      # steps above compile it away entirely; the channel's own unit tests
+      # and the TUI wiring's driver test are the `tui` job's control steps.
+      # `-p quadraui` rather than `--workspace`: integration tests aren't
+      # workspace-wide.
+      - name: Test (control channel GTK wiring, gtk + control features)
+        run: cargo test -p quadraui --features gtk,control --test control_channel_gtk
+      - name: Clippy (control channel GTK wiring, gtk + control features)
+        run: cargo clippy -p quadraui --features gtk,control --test control_channel_gtk -- -D warnings
       # Both backends registered at once, so the artifact from this job is
       # the full cross-backend matrix rather than a single column.
       - name: Conformance matrix (gtk + tui)
