@@ -1868,6 +1868,13 @@ mod win32 {
         /// already have freed it. A channel attached that late is simply
         /// never serviced, since nothing left calls [`Self::step`]/
         /// [`Self::pump`].
+        ///
+        /// Repaint latency is one `step`/`pump` turn deeper than
+        /// [`crate::tui::run::TuiRunner::attach_control`]: a request that
+        /// yields [`Reaction::Redraw`] only calls `InvalidateRect` in the
+        /// servicing turn, so the actual repaint happens on `WM_PAINT` in
+        /// the *next* turn. A caller pairing an `Act` with a `Snapshot`
+        /// should pump twice, not once, before reading the fresh frame.
         #[cfg(feature = "control")]
         #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
         pub fn attach_control(&mut self) -> ControlHandle {
