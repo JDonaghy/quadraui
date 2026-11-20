@@ -275,16 +275,26 @@ impl AppLogic for McpDemo {
 /// Where this demo serves `quadraui-mcp`: `$QUADRAUI_MCP` if set and
 /// parseable (see [`quadraui_mcp::Transport::parse`] for the accepted
 /// spec strings), otherwise a per-process Unix-domain socket under the
-/// OS temp dir so the demo works with zero configuration.
+/// OS temp dir on Unix so the demo works with zero configuration there,
+/// or a fixed loopback TCP port on Windows (no `Transport::Unix` variant
+/// exists on a non-Unix target — see that type's own doc).
 fn mcp_transport() -> quadraui_mcp::Transport {
-    std::env::var("QUADRAUI_MCP")
+    if let Some(t) = std::env::var("QUADRAUI_MCP")
         .ok()
         .and_then(|spec| quadraui_mcp::Transport::parse(&spec))
-        .unwrap_or_else(|| {
-            quadraui_mcp::Transport::Unix(
-                std::env::temp_dir().join(format!("quadraui-mcp-demo-{}.sock", std::process::id())),
-            )
-        })
+    {
+        return t;
+    }
+    #[cfg(unix)]
+    {
+        quadraui_mcp::Transport::Unix(
+            std::env::temp_dir().join(format!("quadraui-mcp-demo-{}.sock", std::process::id())),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        quadraui_mcp::Transport::Tcp("127.0.0.1:7777".parse().expect("valid loopback address"))
+    }
 }
 
 fn main() -> std::io::Result<()> {
