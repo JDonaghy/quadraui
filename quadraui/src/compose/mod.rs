@@ -57,6 +57,11 @@
 //! - [`Handled`] — the shared "did you handle it" return type new
 //!   `handle_*` controller methods converge on: a semantic event to
 //!   route, a state-only consumption, or "not mine".
+//! - [`CellGridController`] — cursor movement and rectangular range
+//!   selection for a [`crate::primitives::cell_grid::CellGrid`]:
+//!   arrows/Tab/Enter/paging/Home-End/Ctrl-jumps, click and click-drag
+//!   range selection, header/corner "select all" clicks, and
+//!   keep-visible scrolling that respects frozen panes.
 //!
 //! [`crate::ScrollView`] is a `primitives` type, not a controller here —
 //! it is the generic seam for a host that scrolls content it lays out
@@ -69,6 +74,7 @@
 mod activity_bar_controller;
 pub mod app_shell;
 pub mod bottom_panel;
+pub mod cell_grid_controller;
 pub mod chat_controller;
 pub mod context_menu_controller;
 mod divider_drag;
@@ -109,6 +115,7 @@ pub use bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout,
     BottomPanelTab,
 };
+pub use cell_grid_controller::{CellGridController, CellGridControllerEvent};
 pub use chat_controller::{ChatController, ChatControllerAction, ChatRole, ChatTurn};
 // `ChatControllerEvent` is `#[deprecated]` (use `ChatController::handle_event`'s
 // `Handled<ChatControllerAction>` instead). Allow it here since `pub use` of a

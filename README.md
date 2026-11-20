@@ -84,7 +84,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 7,600 tests, including headless
+- **Heavily tested.** Around 7,700 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -250,6 +250,7 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `TreeController` | A keyboard-navigable tree: selection, expand/collapse, scroll-follow. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
 | `TreeNavCore` | The row-type-agnostic core `TreeController` is built on: selection by path, arrow/page/Home/End movement, scroll-follow and scrollbar drag over any flattened rows. |
+| `CellGridController` | A `CellGrid` navigated like a spreadsheet: cursor movement, rectangular range selection, header "select all" clicks, frozen-pane-aware scroll-follow. |
 | `FormController` | A form's focus, editing and validation. |
 | `FormDialogController` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
 | `DualModePaletteController` | A command palette that switches between modes. |
