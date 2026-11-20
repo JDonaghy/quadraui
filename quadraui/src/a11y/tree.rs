@@ -744,6 +744,24 @@ pub fn frame_to_tree_with_modal(
     build_tree(frame, focus, DEFAULT_ROOT_LABEL, modal_top, &HashMap::new())
 }
 
+/// The accessibility tree for whatever `backend` most recently painted
+/// through the canonical [`crate::frame::ScreenLayout`] paint path
+/// (D-006), when live-frame capture is enabled on it — `None` when
+/// capture was never enabled, nothing has painted yet, or `backend`
+/// doesn't implement capture at all. See
+/// [`crate::Backend::last_frame`]'s doc for the opt-in contract and the
+/// `crate::frame` module doc's "Live-frame capture for accessibility"
+/// section.
+///
+/// Combines [`crate::Backend::last_frame`] with
+/// [`crate::Backend::focus_manager`] — the same two inputs
+/// [`A11yTreeBuilder::tree`]/[`frame_to_tree`] already take explicitly,
+/// just read straight off the live backend instead of a test scenario.
+pub fn backend_a11y_tree(backend: &dyn crate::Backend) -> Option<A11yTree> {
+    let frame = backend.last_frame()?;
+    Some(frame_to_tree(frame, backend.focus_manager()))
+}
+
 /// The identity a modal stack entry is matched against. Overlay
 /// surfaces are captured without a hit-test widget id, so the
 /// descriptor's own id is the only thing a modal stack can name.
