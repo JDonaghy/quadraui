@@ -42,12 +42,17 @@
 //!   caret through `EditorCursorShape`'s three modes, calling
 //!   `Backend::set_caret_shape` on each change. Used by
 //!   `tui_caret_shape` / `gtk_caret_shape`.
-//! - [`CellGridDemo`] (in [`cell_grid_demo`]) — a quarterly-sales sheet
-//!   navigated through `quadraui::CellGridController`: cursor movement,
-//!   rectangular range selection, header/corner "select all" clicks and
-//!   frozen-pane-aware scroll-follow, with the cursor/selection extent
-//!   reported in A1 notation on a status bar. Used by `tui_cell_grid`;
-//!   `CellGrid` has a TUI rasteriser only so far.
+//! - [`CellGridDemo`] (in [`cell_grid_demo`]) — a virtual 100,000×200
+//!   quarterly-sales sheet navigated through `quadraui::CellGridController`:
+//!   cursor movement, rectangular range selection, header/corner
+//!   "select all" clicks and frozen-pane-aware scroll-follow, a
+//!   `TabBar` of independent sheet tabs, and a `TextField` formula bar
+//!   wired through `CellGridController::sync_formula_bar`/
+//!   `handle_formula_bar_key`, with the cursor/selection extent and
+//!   (when small enough to be worth summing) its numeric total reported
+//!   in A1 notation on a status bar. Everything is pushed through one
+//!   `ScreenLayout`, so the whole screen is agent-visible in the a11y
+//!   tree. Used by `tui_cell_grid` / `gtk_cell_grid`.
 //! - [`key_map`] — **not** an `AppLogic`, unlike everything else in this
 //!   list. `KeyMap`/`KeyContext` are a standalone copy-paste recipe, not
 //!   wired into any runner. See its own module doc.

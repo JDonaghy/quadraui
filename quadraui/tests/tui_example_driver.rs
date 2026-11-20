@@ -11641,7 +11641,7 @@ fn cell_grid_arrows_move_the_cursor_and_shift_arrows_extend_the_range() {
     press_with(&mut driver, NamedKey::Right, Modifiers::default());
     let moved = driver.screen();
     assert!(
-        moved.contains("Sel B2 (1 cell)"),
+        moved.contains("Sel B2 (1 cell, sum 321)"),
         "Down then Right should leave a single-cell cursor at B2:\n{moved}"
     );
 
@@ -11649,8 +11649,9 @@ fn cell_grid_arrows_move_the_cursor_and_shift_arrows_extend_the_range() {
     press_with(&mut driver, NamedKey::Right, shift_only());
     let extended = driver.screen();
     assert!(
-        extended.contains("Sel B2:C3 (4 cells)"),
-        "Shift+Down then Shift+Right should extend B2 into the 2x2 range B2:C3:\n{extended}"
+        extended.contains("Sel B2:C3 (4 cells, sum 1926)"),
+        "Shift+Down then Shift+Right should extend B2 into the 2x2 range B2:C3, and the \
+         status bar should sum its 4 numeric cells (321 + 342 + 621 + 642):\n{extended}"
     );
 }
 
@@ -11661,7 +11662,7 @@ fn cell_grid_tab_and_enter_walk_the_row_and_column_without_extending() {
     press_with(&mut driver, NamedKey::Enter, Modifiers::default());
     let screen = driver.screen();
     assert!(
-        screen.contains("Sel B2 (1 cell)"),
+        screen.contains("Sel B2 (1 cell, sum 321)"),
         "Tab then Enter should walk one column right and one row down, to B2:\n{screen}"
     );
 }
@@ -11679,8 +11680,9 @@ fn cell_grid_clicking_a_column_letter_selects_that_whole_column() {
     driver.click(x, y - line_height);
     let after = driver.screen();
     assert!(
-        after.contains("Sel C1:C48 (48 cells)"),
-        "clicking column C's letter should select all 48 of its rows:\n{after}"
+        after.contains("Sel C1:C100000 (100000 cells)"),
+        "clicking column C's letter should select all 100,000 of its rows — too many to \
+         sum every frame, so no sum is appended:\n{after}"
     );
 }
 
@@ -11700,8 +11702,9 @@ fn cell_grid_dragging_across_body_cells_selects_a_rectangle() {
     driver.drag(x0, y0, x1, y1);
     let after = driver.screen();
     assert!(
-        after.contains("Sel A2:D4 (12 cells)"),
-        "dragging from A2 across to D4 should select that 3x4 rectangle:\n{after}"
+        after.contains("Sel A2:D4 (12 cells, sum 5778)"),
+        "dragging from A2 across to D4 should select that 3x4 rectangle; the frozen region \
+         column (A) is text, so the sum covers only the 9 numeric B..D cells:\n{after}"
     );
 }
 
@@ -11715,8 +11718,8 @@ fn cell_grid_ctrl_a_selects_the_whole_sheet() {
     });
     let after = driver.screen();
     assert!(
-        after.contains("Sel A1:N48 (672 cells)"),
-        "Ctrl+A should select every cell in the 48x14 sheet:\n{after}"
+        after.contains("Sel A1:GR100000 (20000000 cells)"),
+        "Ctrl+A should select every cell in the 100,000x200 sheet:\n{after}"
     );
 }
 
@@ -11737,8 +11740,9 @@ fn cell_grid_frozen_panes_stay_put_while_the_body_scrolls_to_follow_the_cursor()
         "Ctrl+End should scroll the body to the sheet's last cell"
     );
     assert!(
-        after.contains("Sel N48 (1 cell)"),
-        "Ctrl+End should put the cursor on the bottom-right cell N48:\n{after}"
+        after.contains("Sel GR100000 (1 cell, sum 30003879)"),
+        "Ctrl+End should put the cursor on the bottom-right cell GR100000, far past any \
+         single page, and the status bar's row/column numbers should match it exactly:\n{after}"
     );
     assert!(
         !after.contains("North 1"),
@@ -11787,9 +11791,12 @@ fn cell_a1_line(driver: &TuiDriver<CellGridDemo>, y: f32) -> String {
 #[test]
 fn cell_grid_typing_a_formula_and_pressing_enter_commits_the_engines_evaluated_value() {
     let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    // "Region" also starts out mirrored in the formula bar (it's A1's
+    // own raw text), so anchor on "Q1 2024" instead — unique to the
+    // frozen header row A1 sits on — to get that row's screen `y`.
     let (_, y) = driver
-        .find("Region")
-        .expect("the frozen corner cell A1 starts out showing its placeholder \"Region\"");
+        .find("Q1 2024")
+        .expect("the frozen header row starts out showing its metric names");
 
     for ch in "=1+2".chars() {
         driver.type_char(ch);
@@ -11865,5 +11872,138 @@ fn cell_grid_tab_commits_and_moves_right_while_editing() {
     assert!(
         after.contains("Sel B1 (1 cell)"),
         "Tab should commit the edit and move the cursor one column right:\n{after}"
+    );
+}
+
+#[test]
+fn cell_grid_editing_through_the_formula_bar_updates_the_cell() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    // The formula bar starts out mirroring A1's own raw text — it's the
+    // *first* "Region" painted on screen (it sits above the grid), so
+    // this is the formula bar's own position, not the cell's.
+    let (x, y) = driver
+        .find("Region")
+        .expect("the formula bar mirrors the cursor cell's raw text at startup");
+    driver.click(x, y);
+
+    // Clicking the formula bar opens the edit the same way F2 does —
+    // seeded with the cell's existing text, cursor at its end — so
+    // select-all-then-type replaces it, the same as any text field.
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Char('a'),
+        modifiers: ctrl_only(),
+        repeat: false,
+    });
+    for ch in "hello".chars() {
+        driver.type_char(ch);
+    }
+    let editing = driver.screen();
+    assert!(
+        editing.contains("[hello"),
+        "typing after Ctrl+A in the formula bar should replace A1's old text in its own \
+         bracketed text field:\n{editing}"
+    );
+
+    press_with(&mut driver, NamedKey::Enter, Modifiers::default());
+    let after = driver.screen();
+    let (_, header_y) = driver
+        .find("Q1 2024")
+        .expect("the frozen header row is still painted after the edit commits");
+    let a1_line = cell_a1_line(&driver, header_y);
+    assert!(
+        a1_line.contains("hello") && !a1_line.contains("Region"),
+        "committing from the formula bar should write through to A1 the same way \
+         committing from the grid's own inline editor does:\n{a1_line:?}\nfull screen:\n{after}"
+    );
+}
+
+#[test]
+fn cell_grid_page_down_scrolls_far_into_the_sheet_with_contiguous_row_numbers() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    for _ in 0..20 {
+        press_with(&mut driver, NamedKey::PageDown, Modifiers::default());
+    }
+    let after = driver.screen();
+
+    // Each painted row's own number, read straight off the frozen
+    // gutter (the digits immediately before the frozen region-name
+    // cell's divider, e.g. the "47" in "47East 3 │"). The exact
+    // regression class a windowing bug produces is a gap or a repeat
+    // in this sequence, not a wrong absolute offset — so assert
+    // contiguity rather than hardcoding the page size's arithmetic.
+    let row_numbers: Vec<usize> = after
+        .lines()
+        .filter_map(|line| line.split('│').next())
+        .filter_map(|gutter| {
+            let digits: String = gutter
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            digits.parse::<usize>().ok()
+        })
+        .collect();
+
+    let mut iter = row_numbers.iter().copied();
+    assert_eq!(
+        iter.next(),
+        Some(1),
+        "the frozen header row's own number should still read 1 after scrolling the body:\n{after}\nrow numbers seen: {row_numbers:?}"
+    );
+    let body: Vec<usize> = iter.collect();
+    assert!(
+        body.len() >= 2,
+        "expected several body rows after paging deep into the sheet:\n{after}"
+    );
+    assert!(
+        body[0] > 1,
+        "20 Page Downs should have scrolled well past row 1:\n{after}\nrow numbers seen: {row_numbers:?}"
+    );
+    for pair in body.windows(2) {
+        assert_eq!(
+            pair[1],
+            pair[0] + 1,
+            "the gutter's row numbers should be contiguous after a deep scroll, with no \
+             gap or repeat — the exact symptom a windowed-cells-vs-scroll-offset bug \
+             produces:\n{after}\nrow numbers seen: {row_numbers:?}"
+        );
+    }
+}
+
+#[test]
+fn cell_grid_tabs_switch_between_independent_sheets() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+
+    // Edit A1 on the first ("Sales") sheet.
+    driver.type_char('x');
+    press_with(&mut driver, NamedKey::Enter, Modifiers::default());
+    let sales_edited = driver.screen();
+    assert!(
+        !sales_edited.contains("Region"),
+        "A1 on the Sales sheet should show the committed edit, not its placeholder:\n{sales_edited}"
+    );
+
+    // Switch to the second ("Inventory") tab — its own A1 is untouched.
+    let (ix, iy) = driver
+        .find(" Inventory ")
+        .expect("the Inventory tab should be painted in the tab bar");
+    driver.click(ix, iy);
+    let inventory = driver.screen();
+    assert!(
+        inventory.contains("Region"),
+        "switching tabs should show the Inventory sheet's own untouched A1, not the \
+         Sales sheet's edit:\n{inventory}"
+    );
+
+    // Switch back — the Sales sheet's edit is still there, independent
+    // per-sheet state, not clobbered by visiting another tab.
+    let (sx, sy) = driver
+        .find(" Sales ")
+        .expect("the Sales tab should still be painted in the tab bar");
+    driver.click(sx, sy);
+    let sales_again = driver.screen();
+    assert!(
+        !sales_again.contains("Region"),
+        "switching back to Sales should restore its own edit, not reset to the placeholder:\n{sales_again}"
     );
 }
