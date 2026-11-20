@@ -834,6 +834,63 @@ pub fn schema() -> Vec<DefJson> {
         ],
     ));
 
+    let cell_align = b.define(alias(
+        "CellAlign",
+        lit(&["Left", "Center", "Right", "General"]),
+    ));
+    let cell_style_descriptor = b.define(obj(
+        "CellStyleDescriptor",
+        vec![
+            field_opt("bold", nullable(bool_())),
+            field_opt("italic", nullable(bool_())),
+            field_opt("underline", nullable(bool_())),
+            field_opt("fg", nullable(color.clone())),
+            field_opt("bg", nullable(color.clone())),
+            field_opt("align", nullable(cell_align)),
+        ],
+    ));
+    let cell_descriptor = b.define(obj(
+        "CellDescriptor",
+        vec![
+            field("text", str_()),
+            field_opt("style", cell_style_descriptor),
+        ],
+    ));
+    let cell_grid_controller_descriptor = b.define(obj_doc(
+        "CellGridControllerDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("row_count", int_()),
+            field_opt("col_count", int_()),
+            field_opt("frozen_rows", int_()),
+            field_opt("frozen_cols", int_()),
+            field_opt("default_row_height", float_()),
+            field_opt("default_col_width", float_()),
+            field_opt("row_heights", dictt(str_(), float_())),
+            field_opt("col_widths", dictt(str_(), float_())),
+            field_opt("show_row_headers", bool_()),
+            field_opt("show_col_headers", bool_()),
+            field_opt("row_labels", dictt(str_(), str_())),
+            field_opt("col_labels", dictt(str_(), str_())),
+            with_doc(
+                field_opt("cells", list(list(cell_descriptor))),
+                "This frame's windowed cell text, reconciled every frame -- see `CellGridControllerDescriptor`'s own Rust doc.",
+            ),
+            field_opt("loaded_row_start", int_()),
+            field_opt("loaded_col_start", int_()),
+            with_doc(
+                field_opt("cursor", tup(vec![int_(), int_()])),
+                "Read once, when this id is first seen, then left alone forever after -- the cached `CellGridController` owns cursor navigation from then on.",
+            ),
+            field_opt("selection_anchor", nullable(tup(vec![int_(), int_()]))),
+            field_opt("row_scroll", int_()),
+            field_opt("col_scroll", int_()),
+            field_opt("has_focus", bool_()),
+            field_opt("show_scrollbar", bool_()),
+        ],
+        "The spreadsheet-shaped counterpart of `TreeTableControllerDescriptor` -- a `cell_grid` extra backed by a cached `CellGridController` rather than a stateless paint.",
+    ));
+
     let tab_item_descriptor = b.define(obj_doc(
         "TabItemDescriptor",
         vec![
@@ -2824,6 +2881,7 @@ pub fn schema() -> Vec<DefJson> {
             "tree_table" => tree_table_descriptor.clone(),
             "tree_table_controller" => tree_table_controller_descriptor.clone(),
             "icon_grid" => icon_grid_descriptor.clone(),
+            "cell_grid" => cell_grid_controller_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3735,22 +3793,22 @@ mod coverage {
         Accelerator, AcceleratorScope, ActivityBar, ActivityBarEvent, ActivityItem,
         BackendNativeEvent, Badge, BadgeStatus, BoardCard, BoardColumn, BoardModel, Button,
         ButtonIconPosition, ButtonMask, ButtonRowItem, ButtonSpec, ButtonVariant, CalendarDate,
-        Canvas, CanvasEvent, CardBadge, Chart, ChartEvent, ChartKind, Color, Column, ColumnAlign,
-        ColumnWidth, ComboBox, CommandCenter, CommandLine, ContextMenuItem, ControlWidth, DataRow,
-        DataTable, DataTableEvent, DateFormat, DateLocale, DatePicker, Decoration, DiagnosticMark,
-        DiagnosticSeverity, DiffEditability, DiffHunk, DiffLine, DiffMode, DiffPane, DiffRow,
-        DiffRowKind, DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos as CursorPos,
-        EditorCursorShape as CursorShape, EditorLine, EditorSelection,
-        EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan, EmptyBody, FieldKind,
-        FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField, FormSpacing,
-        FrHitRegion, GitLineStatus, HeaderAction, Icon, IconGrid, IconGridItem, Image, ImageFit,
-        ImageSource, InlineInput, Key, KeyBinding, LabelAlign, LabelPosition, ListItem, ListView,
-        ListViewEvent, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine,
-        MinimapSpan, Modifiers, MouseButton, MsvAxis, MultiSectionView, NamedKey, NumberInput,
-        Palette, PaletteEvent, PaletteItem, PaletteMode, PalettePreview, PipelineStage,
-        PipelineView, Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption, Rect, RowAlign,
-        ScrollAxis, ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section, SectionAux,
-        SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel,
+        Canvas, CanvasEvent, CardBadge, Cell, CellAlign, CellStyle, Chart, ChartEvent, ChartKind,
+        Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine,
+        ContextMenuItem, ControlWidth, DataRow, DataTable, DataTableEvent, DateFormat, DateLocale,
+        DatePicker, Decoration, DiagnosticMark, DiagnosticSeverity, DiffEditability, DiffHunk,
+        DiffLine, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DrawOp, Editor, EditorCursor,
+        EditorCursorPos as CursorPos, EditorCursorShape as CursorShape, EditorLine,
+        EditorSelection, EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan,
+        EmptyBody, FieldKind, FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField,
+        FormSpacing, FrHitRegion, GitLineStatus, HeaderAction, Icon, IconGrid, IconGridItem, Image,
+        ImageFit, ImageSource, InlineInput, Key, KeyBinding, LabelAlign, LabelPosition, ListItem,
+        ListView, ListViewEvent, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
+        MinimapLine, MinimapSpan, Modifiers, MouseButton, MsvAxis, MultiSectionView, NamedKey,
+        NumberInput, Palette, PaletteEvent, PaletteItem, PaletteMode, PalettePreview,
+        PipelineStage, PipelineView, Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption,
+        Rect, RowAlign, ScrollAxis, ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section,
+        SectionAux, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel,
         SortDirection, SpellMark, Spinner, StageStatus, StatusBar, StatusBarEvent,
         StatusBarSegment, StyledSpan, StyledText, Switch, SystemTheme, TabBar, TabBarEvent,
         TabBarSegment, TabItem, Terminal, TerminalCell, TerminalCursorShape, TerminalEvent,
@@ -4218,6 +4276,18 @@ mod coverage {
         }
     }
 
+    fn assert_cell_align(a: CellAlign) {
+        match a {
+            CellAlign::Left => {}
+            CellAlign::Center => {}
+            CellAlign::Right => {}
+            CellAlign::General => {}
+            // `CellAlign` is `#[non_exhaustive]` -- see
+            // `assert_chart_kind`'s matching comment.
+            _ => {}
+        }
+    }
+
     fn assert_sort_direction(d: SortDirection) {
         match d {
             SortDirection::Ascending => {}
@@ -4529,6 +4599,18 @@ mod coverage {
     );
     assert_fields!(assert_styled_text_fields, StyledText { spans });
     assert_fields!(assert_badge_fields, Badge { text, fg, bg });
+    assert_fields!(assert_cell_fields, Cell { text, style });
+    assert_fields!(
+        assert_cell_style_fields,
+        CellStyle {
+            bold,
+            italic,
+            underline,
+            fg,
+            bg,
+            align
+        }
+    );
     assert_fields!(
         assert_icon_fields,
         Icon {

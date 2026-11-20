@@ -274,12 +274,12 @@ where
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{
-    message_dialog_options_from_buttons, style_token, theme_token, DialogContentSize, EventSink,
-    InteractionEngine, TreeTableControllerWireEvent,
+    message_dialog_options_from_buttons, style_token, theme_token, CellGridControllerWireEvent,
+    DialogContentSize, EventSink, InteractionEngine, TreeTableControllerWireEvent,
 };
 pub use extra_paint::{
-    decode_extra_primitive, extra_as, ExtraPaint, TreeTableControllerDescriptor,
-    TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS,
+    decode_extra_primitive, extra_as, CellGridControllerDescriptor, ExtraPaint,
+    TreeTableControllerDescriptor, TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS,
 };
 pub use hit::tree_total_rows_and_viewport;
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};

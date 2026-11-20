@@ -332,6 +332,48 @@ export interface TreeTableControllerDescriptor {
   folders_first?: boolean;
 }
 
+export type CellAlign = "Left" | "Center" | "Right" | "General";
+
+export interface CellStyleDescriptor {
+  bold?: boolean | null;
+  italic?: boolean | null;
+  underline?: boolean | null;
+  fg?: Color | null;
+  bg?: Color | null;
+  align?: CellAlign | null;
+}
+
+export interface CellDescriptor {
+  text: string;
+  style?: CellStyleDescriptor;
+}
+
+/** The spreadsheet-shaped counterpart of `TreeTableControllerDescriptor` -- a `cell_grid` extra backed by a cached `CellGridController` rather than a stateless paint. */
+export interface CellGridControllerDescriptor {
+  id: WidgetId;
+  row_count?: number;
+  col_count?: number;
+  frozen_rows?: number;
+  frozen_cols?: number;
+  default_row_height?: number;
+  default_col_width?: number;
+  row_heights?: Record<string, number>;
+  col_widths?: Record<string, number>;
+  show_row_headers?: boolean;
+  show_col_headers?: boolean;
+  row_labels?: Record<string, string>;
+  col_labels?: Record<string, string>;
+  cells?: CellDescriptor[][]; // This frame's windowed cell text, reconciled every frame -- see `CellGridControllerDescriptor`'s own Rust doc.
+  loaded_row_start?: number;
+  loaded_col_start?: number;
+  cursor?: [number, number]; // Read once, when this id is first seen, then left alone forever after -- the cached `CellGridController` owns cursor navigation from then on.
+  selection_anchor?: [number, number] | null;
+  row_scroll?: number;
+  col_scroll?: number;
+  has_focus?: boolean;
+  show_scrollbar?: boolean;
+}
+
 /** The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`. */
 export interface TabItemDescriptor {
   label: string;
@@ -1846,6 +1888,7 @@ export interface LayoutLeafNode {
   diff_view?: DiffViewDescriptor;
   tree_table?: TreeTableDescriptor;
   tree_table_controller?: TreeTableControllerDescriptor;
+  cell_grid?: CellGridControllerDescriptor;
   activity_bar?: ActivityBarDescriptor;
   toolbar?: ToolbarDescriptor;
   menu_bar?: MenuBarDescriptor;
@@ -1905,6 +1948,7 @@ export interface RenderFrameDict {
   diff_view?: DiffViewDescriptor | null;
   tree_table?: TreeTableDescriptor | null;
   tree_table_controller?: TreeTableControllerDescriptor | null;
+  cell_grid?: CellGridControllerDescriptor | null;
   activity_bar?: ActivityBarDescriptor | null;
   toolbar?: ToolbarDescriptor | null;
   menu_bar?: MenuBarDescriptor | null;
