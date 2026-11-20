@@ -9,17 +9,26 @@
 //! by a timeout) for the matching [`ControlReply`]; [`ControlPort::service`]
 //! drains whatever is queued and answers each one against the app's
 //! current state — called once per loop iteration by the runner that
-//! holds it. See `tui::run::TuiRunner::attach_control` for the TUI wiring;
-//! GTK, macOS and Windows wire their own runners in their own issues.
+//! holds it. This module has no backend of its own, so `service` takes
+//! the owning runner's `dispatch` callback and threads every synthesized
+//! [`UiEvent`] through it rather than calling [`crate::AppLogic::handle`]
+//! directly — on TUI that callback is backend translation
+//! (`TuiBackend::translate_injected`) followed by the shared
+//! pre-processing pipeline (`crate::runtime::preprocess_event`), the exact
+//! two stages real crossterm input goes through. See
+//! `tui::run::TuiRunner::attach_control` for the TUI wiring; GTK, macOS
+//! and Windows wire their own runners in their own issues.
 //!
 //! # Levels
 //!
 //! [`ControlRequest::Snapshot`] and [`ControlRequest::Act`] are "Level 1":
-//! UI-level control built entirely on [`crate::a11y::tree`] and
-//! [`crate::a11y::route_action`], so every `AppLogic` app gets them for
+//! UI-level control built entirely on `crate::a11y::tree` and
+//! `crate::a11y::route_action`, so every `AppLogic` app gets them for
 //! free. [`ControlRequest::Key`] and [`ControlRequest::Type`] synthesize
 //! raw input the same way [`crate::tui::testing::TuiDriver`]'s
-//! `press`/`type_char` do. [`ControlRequest::Command`] is reserved for
+//! `press`/`type_char` do — both end up going through
+//! [`crate::tui::testing::TuiDriver::dispatch`]'s pipeline when the owning
+//! runner is `TuiRunner`. [`ControlRequest::Command`] is reserved for
 //! "Level 2" app-defined named commands — this module always answers it
 //! with an "unknown command" error; a later addition teaches
 //! [`ControlPort::service`] to look a name up in an app-supplied registry.
@@ -36,7 +45,7 @@
 //!
 //! # Errors, not panics
 //!
-//! A request against an id [`crate::a11y::route_action`] doesn't recognise
+//! A request against an id `crate::a11y::route_action` doesn't recognise
 //! is a logged no-op that still answers [`ControlReply::Ack`] — the same
 //! "safe, logged no-op" contract `route_action` itself documents. A
 //! request this module cannot service at all (no captured frame yet, an
@@ -69,7 +78,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ControlRequest {
-    /// The current [`crate::a11y::A11yTree`], as its stable JSON form —
+    /// The current [`crate::A11yTree`], as its stable JSON form —
     /// see [`ControlHandle::snapshot`].
     Snapshot,
     /// Route an assistive-technology-style action against `node` — see
@@ -180,7 +189,7 @@ impl ControlHandle {
         }
     }
 
-    /// The current [`crate::a11y::A11yTree`] — the same stable JSON form
+    /// The current [`crate::A11yTree`] — the same stable JSON form
     /// documented on that type — built from whatever the runner most
     /// recently painted. Fails if the backend has no captured frame yet
     /// (live-frame capture, [`crate::frame::set_frame_capture`], must be
@@ -197,8 +206,10 @@ impl ControlHandle {
 
     /// Route an assistive-technology-style `action` against `node` (a node
     /// id from a prior [`Self::snapshot`]'s JSON `id` field) and feed the
-    /// resulting [`UiEvent`]s through [`crate::AppLogic::handle`] — see
-    /// [`crate::a11y::route_action`] for exactly what each action/role
+    /// resulting [`UiEvent`]s through the owning runner's dispatch
+    /// pipeline (see [`ControlPort::service`]) — the same path real input
+    /// takes, ending in [`crate::AppLogic::handle`]. See
+    /// `crate::a11y::route_action` for exactly what each action/role
     /// combination produces. A `node`/`action` combination `route_action`
     /// doesn't recognise is a safe, logged no-op: this still answers `Ok`.
     pub fn act(
@@ -214,15 +225,21 @@ impl ControlHandle {
         })
     }
 
-    /// Synthesize one key press, delivered to [`crate::AppLogic::handle`]
-    /// as a [`UiEvent::KeyPressed`].
+    /// Synthesize one key press as a [`UiEvent::KeyPressed`], fed through
+    /// the owning runner's dispatch pipeline exactly like real keyboard
+    /// input — on `TuiRunner` that's
+    /// [`crate::tui::testing::TuiDriver::dispatch`]'s two stages (backend
+    /// translation, then the shared pre-processing pipeline), so Tab
+    /// focus cycling, declared accelerators, and Ctrl-C/V/A all fire the
+    /// same way they would for a user at the keyboard.
     pub fn key(&self, key: Key, modifiers: Modifiers) -> Result<(), ControlError> {
         self.ack(ControlRequest::Key { key, modifiers })
     }
 
     /// Synthesize a key press per character of `text`, left to right, no
     /// modifiers — the same thing [`crate::tui::testing::TuiDriver::type_char`]
-    /// does per call, batched into one request.
+    /// does per call, batched into one request and dispatched through the
+    /// same pipeline [`Self::key`] documents.
     pub fn type_text(&self, text: impl Into<String>) -> Result<(), ControlError> {
         self.ack(ControlRequest::Type(text.into()))
     }
@@ -296,15 +313,39 @@ pub fn channel(waker: Arc<dyn Fn(UserPayload) + Send + Sync>) -> (ControlHandle,
 
 impl ControlPort {
     /// Drain every request queued since the last call and answer each one
-    /// against `app`/`backend`'s current state, merging the
-    /// [`Reaction`]s [`crate::AppLogic::handle`] returns (via
-    /// [`Reaction::merge`]) into the one the caller's own loop iteration
-    /// should act on. Returns [`Reaction::Continue`] when nothing was
-    /// queued.
-    pub fn service<A: AppLogic>(&self, app: &mut A, backend: &mut dyn Backend) -> Reaction {
+    /// against `app`/`backend`'s current state, feeding every
+    /// [`UiEvent`] a request synthesizes through `dispatch` — the owning
+    /// runner's own event pipeline, not a hard-coded
+    /// [`crate::AppLogic::handle`] call, so a control-synthesized
+    /// [`ControlRequest::Key`]/[`ControlRequest::Type`] behaves exactly
+    /// like real input on whichever backend is running: on `TuiRunner`,
+    /// `dispatch` is backend translation
+    /// ([`crate::tui::testing::TuiDriver::dispatch`]'s first stage)
+    /// followed by the shared pre-processing pipeline, so Tab cycling,
+    /// accelerators and Ctrl-C/V/A all fire. Merges every [`Reaction`]
+    /// `dispatch` returns (via [`Reaction::merge`]) into the one the
+    /// caller's own loop iteration should act on. Returns
+    /// [`Reaction::Continue`] when nothing was queued.
+    ///
+    /// The whole batch queued so far is collected before any of it is
+    /// processed, so a request submitted *while* this call is draining
+    /// (e.g. a `snapshot` a requester sends right after an `act` it just
+    /// got acknowledged) lands in the *next* `service` call instead of
+    /// this one — after the runner's next repaint, not racing it.
+    pub fn service<A, B>(
+        &self,
+        app: &mut A,
+        backend: &mut B,
+        mut dispatch: impl FnMut(UiEvent, &mut A, &mut B) -> Reaction,
+    ) -> Reaction
+    where
+        A: AppLogic,
+        B: Backend,
+    {
         let mut reaction = Reaction::Continue;
-        while let Ok(envelope) = self.rx.try_recv() {
-            let (reply, r) = service_one(envelope.request, app, backend);
+        let batch: Vec<Envelope> = self.rx.try_iter().collect();
+        for envelope in batch {
+            let (reply, r) = service_one(envelope.request, app, backend, &mut dispatch);
             reaction = reaction.merge(r);
             // The requester may have already given up (timed out) — a
             // reply nobody is listening for isn't this loop's problem.
@@ -314,12 +355,19 @@ impl ControlPort {
     }
 }
 
-/// Answer one [`ControlRequest`] against `app`/`backend`'s current state.
-fn service_one<A: AppLogic>(
+/// Answer one [`ControlRequest`] against `app`/`backend`'s current state,
+/// feeding every synthesized [`UiEvent`] through `dispatch` — see
+/// [`ControlPort::service`]'s doc for what that is on each backend.
+fn service_one<A, B>(
     request: ControlRequest,
     app: &mut A,
-    backend: &mut dyn Backend,
-) -> (ControlReply, Reaction) {
+    backend: &mut B,
+    dispatch: &mut impl FnMut(UiEvent, &mut A, &mut B) -> Reaction,
+) -> (ControlReply, Reaction)
+where
+    A: AppLogic,
+    B: Backend,
+{
     match request {
         ControlRequest::Snapshot => match crate::backend_a11y_tree(backend) {
             Some(tree) => match serde_json::to_value(&tree) {
@@ -356,17 +404,18 @@ fn service_one<A: AppLogic>(
             let events = route_action(&tree, node, action, value);
             let mut reaction = Reaction::Continue;
             for event in events {
-                reaction = reaction.merge(app.handle(event, backend));
+                reaction = reaction.merge(dispatch(event, app, backend));
             }
             (ControlReply::Ack, reaction)
         }
         ControlRequest::Key { key, modifiers } => {
-            let reaction = app.handle(
+            let reaction = dispatch(
                 UiEvent::KeyPressed {
                     key,
                     modifiers,
                     repeat: false,
                 },
+                app,
                 backend,
             );
             (ControlReply::Ack, reaction)
@@ -374,12 +423,13 @@ fn service_one<A: AppLogic>(
         ControlRequest::Type(text) => {
             let mut reaction = Reaction::Continue;
             for c in text.chars() {
-                reaction = reaction.merge(app.handle(
+                reaction = reaction.merge(dispatch(
                     UiEvent::KeyPressed {
                         key: Key::Char(c),
                         modifiers: Modifiers::default(),
                         repeat: false,
                     },
+                    app,
                     backend,
                 ));
             }
@@ -417,6 +467,21 @@ mod tests {
         }
     }
 
+    /// `RecordingBackend` has no pre-processing pipeline of its own (no
+    /// `PreprocessBackend` impl — that only exists for the real backends),
+    /// so these unit tests dispatch straight to [`AppLogic::handle`], the
+    /// same thing a [`ControlPort::service`] caller on a backend with no
+    /// pipeline would pass. [`crate::tui::run::TuiRunner`] passes a
+    /// pipeline-aware dispatcher instead — see
+    /// `tests/control_channel_tui.rs` for that path.
+    fn handle_dispatch(
+        event: UiEvent,
+        app: &mut CountingApp,
+        backend: &mut RecordingBackend,
+    ) -> Reaction {
+        app.handle(event, backend)
+    }
+
     /// A request sent after the runner has dropped its [`ControlPort`]
     /// (simulating the runner having exited) comes back as
     /// [`ControlError::RunnerGone`] immediately, not a hang or a panic.
@@ -438,7 +503,12 @@ mod tests {
     fn snapshot_with_no_captured_frame_is_a_clean_error() {
         let mut app = CountingApp::default();
         let mut backend = RecordingBackend::new();
-        let (reply, reaction) = service_one(ControlRequest::Snapshot, &mut app, &mut backend);
+        let (reply, reaction) = service_one(
+            ControlRequest::Snapshot,
+            &mut app,
+            &mut backend,
+            &mut handle_dispatch,
+        );
         assert!(matches!(reply, ControlReply::Error(_)));
         assert_eq!(reaction, Reaction::Continue);
     }
@@ -458,6 +528,7 @@ mod tests {
             },
             &mut app,
             &mut backend,
+            &mut handle_dispatch,
         );
         assert!(matches!(reply, ControlReply::Error(_)));
         assert_eq!(reaction, Reaction::Continue);
@@ -478,11 +549,17 @@ mod tests {
             },
             &mut app,
             &mut backend,
+            &mut handle_dispatch,
         );
         assert!(matches!(reply, ControlReply::Ack));
         assert_eq!(reaction, Reaction::Redraw);
 
-        let (reply, _) = service_one(ControlRequest::Type("ab".into()), &mut app, &mut backend);
+        let (reply, _) = service_one(
+            ControlRequest::Type("ab".into()),
+            &mut app,
+            &mut backend,
+            &mut handle_dispatch,
+        );
         assert!(matches!(reply, ControlReply::Ack));
 
         let chars: Vec<char> = app
@@ -511,6 +588,7 @@ mod tests {
             },
             &mut app,
             &mut backend,
+            &mut handle_dispatch,
         );
         match reply {
             ControlReply::Error(msg) => assert!(msg.contains("do_thing")),
@@ -535,7 +613,7 @@ mod tests {
         let worker = thread::spawn(move || handle.type_text("hi"));
 
         loop {
-            port.service(&mut app, &mut backend);
+            port.service(&mut app, &mut backend, handle_dispatch);
             if worker.is_finished() {
                 break;
             }
@@ -557,5 +635,27 @@ mod tests {
             })
             .collect();
         assert_eq!(chars, vec!['h', 'i']);
+    }
+
+    /// A request against a runner that is still holding its
+    /// [`ControlPort`] but has stopped calling [`ControlPort::service`]
+    /// (e.g. stuck, or shut down without dropping the port yet) times out
+    /// cleanly rather than hanging forever — the other half of
+    /// [`request_after_runner_exits_is_a_clean_error`]'s "runner gone"
+    /// case above.
+    #[test]
+    fn request_against_an_unserviced_port_times_out_cleanly() {
+        let no_op_waker: Arc<dyn Fn(UserPayload) + Send + Sync> = Arc::new(|_payload| {});
+        let (handle, port) = channel(no_op_waker);
+        let handle = handle.with_timeout(Duration::from_millis(20));
+
+        let err = handle
+            .snapshot()
+            .expect_err("nothing ever services the port");
+        assert!(matches!(err, ControlError::Timeout));
+
+        // Keep `port` alive for the whole request so the failure really is
+        // a timeout, not a dropped-port race with `RunnerGone`.
+        drop(port);
     }
 }
