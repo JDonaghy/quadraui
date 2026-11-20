@@ -1545,11 +1545,10 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_radio_group(Rect::new(0.0, 0.0, area.width, lh * 2.0), &group);
         },
     },
-    // `draw_radio_group_with_state` is an additive trait default that forwards
-    // to `draw_radio_group`, ignoring the passed `InteractionState`, until a
-    // backend overrides it to tint the hovered/pressed option's marker. This
-    // row proves the default reaches a rasteriser and still paints observable
-    // content on every backend.
+    // `draw_radio_group_with_state` is `#[deprecated]`: its default body
+    // copies the `InteractionState` onto a clone's `RadioOption::hovered`/
+    // `pressed` and calls `draw_radio_group`. This row proves that shim still
+    // reaches a rasteriser and paints observable content on every backend.
     Case {
         method: "draw_radio_group_with_state",
         needle: Some("c0radiohv"),
@@ -1561,6 +1560,7 @@ pub const CASES: &[Case] = &[
                 vec![RadioOption::new(option_id, "c0radiohv")],
             );
             let interaction = InteractionState::from_parts(Some(option_id), None);
+            #[allow(deprecated)] // `draw_radio_group_with_state` is `#[deprecated]`
             let _ = b.draw_radio_group_with_state(
                 Rect::new(0.0, 0.0, area.width, lh * 2.0),
                 &group,
@@ -1577,11 +1577,11 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_switch(Rect::new(0.0, 0.0, area.width, lh), &switch);
         },
     },
-    // `draw_switch_with_state` is an additive trait default that forwards to
-    // `draw_switch`, ignoring the passed `InteractionState`, until a backend
-    // overrides it to tint the hovered/pressed track. This row proves the
-    // default reaches a rasteriser and still paints observable content on
-    // every backend. Chrome-only like `draw_switch`, so no text needle.
+    // `draw_switch_with_state` is `#[deprecated]`: its default body copies
+    // the `InteractionState` onto a clone's `Switch::hovered`/`pressed` and
+    // calls `draw_switch`. This row proves that shim still reaches a
+    // rasteriser and paints observable content on every backend.
+    // Chrome-only like `draw_switch`, so no text needle.
     Case {
         method: "draw_switch_with_state",
         needle: None,
@@ -1590,6 +1590,7 @@ pub const CASES: &[Case] = &[
             let switch_id = id("switch-hover");
             let switch = Switch::new(switch_id);
             let interaction = InteractionState::from_parts(Some(switch_id), None);
+            #[allow(deprecated)] // `draw_switch_with_state` is `#[deprecated]`
             let _ = b.draw_switch_with_state(
                 Rect::new(0.0, 0.0, area.width, lh),
                 &switch,

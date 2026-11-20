@@ -69,19 +69,38 @@ pub struct Switch {
     /// gate activation.
     #[serde(default)]
     pub focused: bool,
+    /// Whether the pointer currently sits over this switch. Set by the
+    /// host from its own hover tracking (an [`crate::interaction::InteractionState`]
+    /// keyed by [`Switch::id`], or any other source); read by
+    /// [`Backend::draw_switch`](crate::Backend::draw_switch) to tint the
+    /// track toward [`crate::Theme::button_hover_bg`] — the same
+    /// self-contained state convention [`Switch::focused`] already
+    /// follows.
+    #[serde(default)]
+    pub hovered: bool,
+    /// Whether the pointer currently holds this switch pressed. Same
+    /// host-set convention as [`Switch::hovered`]; read by
+    /// [`Backend::draw_switch`](crate::Backend::draw_switch) to tint the
+    /// track toward [`crate::Theme::button_pressed_bg`], which wins over
+    /// [`Switch::hovered`] when both are set.
+    #[serde(default)]
+    pub pressed: bool,
 }
 
 impl Switch {
-    /// An off, enabled, unfocused switch — set `value`/`disabled`/
-    /// `focused` directly afterwards (every field is `pub`) rather than
-    /// via a `with_*` chain — see `docs/PRIMITIVE_RULES.md`'s rule-8
-    /// history of why this crate stopped adding those.
+    /// An off, enabled, unfocused, unhovered, unpressed switch — set
+    /// `value`/`disabled`/`focused`/`hovered`/`pressed` directly
+    /// afterwards (every field is `pub`) rather than via a `with_*`
+    /// chain — see `docs/PRIMITIVE_RULES.md`'s rule-8 history of why
+    /// this crate stopped adding those.
     pub fn new(id: WidgetId) -> Self {
         Self {
             id,
             value: false,
             disabled: false,
             focused: false,
+            hovered: false,
+            pressed: false,
         }
     }
 
@@ -181,39 +200,21 @@ pub(crate) mod native_surface_paint {
     use super::{Switch, SwitchLayout};
     use crate::backend::PressableVisual;
     use crate::event::Rect;
-    use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Paint a [`Switch`] into `rect` on `surface`, returning
-    /// [`SwitchLayout`] for host click dispatch. Identical to calling
-    /// [`paint_with_state`] with an empty [`InteractionState`] — no
-    /// hover/pressed tint — which is what every existing call site
-    /// (none of which track hover yet) keeps getting.
+    /// [`SwitchLayout`] for host click dispatch. Tints the track toward
+    /// [`Theme::button_hover_bg`]/[`Theme::button_pressed_bg`] when
+    /// [`Switch::hovered`]/[`Switch::pressed`] is set — the same
+    /// [`PressableVisual`] priority (pressed beats hovered beats
+    /// resting) [`crate::primitives::button::native_surface_paint::paint`]
+    /// already resolves for [`crate::Button`].
     pub(crate) fn paint(
         switch: &Switch,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
-    ) -> SwitchLayout {
-        paint_with_state(switch, surface, theme, rect, &InteractionState::new())
-    }
-
-    /// [`paint`], additionally tinting the track toward
-    /// [`Theme::button_hover_bg`]/[`Theme::button_pressed_bg`] when
-    /// `interaction` reports [`Switch::id`] as hovered/pressed — the
-    /// same [`PressableVisual`] priority (pressed beats hovered beats
-    /// resting) [`crate::primitives::button::native_surface_paint::paint`]
-    /// already resolves for [`crate::Button`]. No backend calls this
-    /// yet (see [`crate::Backend::draw_switch_with_state`]); it exists
-    /// so a backend that starts resolving [`InteractionState`] for
-    /// `Switch` has one paint call site ready.
-    pub(crate) fn paint_with_state(
-        switch: &Switch,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        rect: Rect,
-        interaction: &InteractionState,
     ) -> SwitchLayout {
         let layout = switch.layout(rect);
         if rect.width <= 0.0 || rect.height <= 0.0 {
@@ -228,9 +229,7 @@ pub(crate) mod native_surface_paint {
         let track_color = if switch.disabled {
             theme.surface_bg
         } else {
-            let is_hovered = interaction.is_hovered(&switch.id);
-            let is_pressed = interaction.is_pressed(&switch.id);
-            match PressableVisual::resolve(is_pressed, false, is_hovered) {
+            match PressableVisual::resolve(switch.pressed, false, switch.hovered) {
                 PressableVisual::PressedOrActive => theme.button_pressed_bg(resting_track),
                 PressableVisual::Hovered => theme.button_hover_bg(resting_track),
                 PressableVisual::Resting => resting_track,
@@ -332,33 +331,24 @@ pub(crate) mod native_surface_paint {
         }
 
         #[test]
-        fn paint_matches_paint_with_state_against_an_empty_interaction() {
+        fn resting_switch_paints_the_plain_track() {
             let switch = switch();
             let theme = Theme::default();
-            let mut via_paint = RecordingSurface::default();
-            let mut via_with_state = RecordingSurface::default();
+            let mut surface = RecordingSurface::default();
 
-            paint(&switch, &mut via_paint, &theme, RECT);
-            paint_with_state(
-                &switch,
-                &mut via_with_state,
-                &theme,
-                RECT,
-                &InteractionState::new(),
-            );
+            paint(&switch, &mut surface, &theme, RECT);
 
-            assert_eq!(via_paint.fills, via_with_state.fills);
+            assert_eq!(track_fill(&surface), theme.surface_bg);
         }
 
         #[test]
         fn hovered_switch_tints_the_track_toward_button_hover_bg() {
-            let switch = switch();
+            let mut switch = switch();
+            switch.hovered = true;
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(switch.id));
             let mut surface = RecordingSurface::default();
 
-            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+            paint(&switch, &mut surface, &theme, RECT);
 
             assert_eq!(
                 track_fill(&surface),
@@ -368,13 +358,12 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn pressed_switch_tints_the_track_toward_button_pressed_bg() {
-            let switch = switch();
+            let mut switch = switch();
+            switch.pressed = true;
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_pressed(Some(switch.id));
             let mut surface = RecordingSurface::default();
 
-            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+            paint(&switch, &mut surface, &theme, RECT);
 
             assert_eq!(
                 track_fill(&surface),
@@ -386,14 +375,13 @@ pub(crate) mod native_surface_paint {
         /// also being hovered, and the deeper pressed tint must win.
         #[test]
         fn pressed_and_hovered_resolves_to_the_pressed_tint() {
-            let switch = switch();
+            let mut switch = switch();
+            switch.hovered = true;
+            switch.pressed = true;
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(switch.id));
-            interaction.set_pressed(Some(switch.id));
             let mut surface = RecordingSurface::default();
 
-            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+            paint(&switch, &mut surface, &theme, RECT);
 
             assert_eq!(
                 track_fill(&surface),
@@ -408,27 +396,11 @@ pub(crate) mod native_surface_paint {
         fn disabled_switch_does_not_tint_when_hovered() {
             let mut switch = switch();
             switch.disabled = true;
+            switch.hovered = true;
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(switch.id));
             let mut surface = RecordingSurface::default();
 
-            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
-
-            assert_eq!(track_fill(&surface), theme.surface_bg);
-        }
-
-        /// Interaction state keyed by a different widget id must not
-        /// bleed into this switch's tint.
-        #[test]
-        fn unrelated_hovered_id_does_not_tint_the_track() {
-            let switch = switch();
-            let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("some:other:widget")));
-            let mut surface = RecordingSurface::default();
-
-            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+            paint(&switch, &mut surface, &theme, RECT);
 
             assert_eq!(track_fill(&surface), theme.surface_bg);
         }
@@ -444,11 +416,13 @@ mod tests {
     }
 
     #[test]
-    fn new_defaults_to_off_enabled_and_unfocused() {
+    fn new_defaults_to_off_enabled_unfocused_and_untinted() {
         let s = switch();
         assert!(!s.value);
         assert!(!s.disabled);
         assert!(!s.focused);
+        assert!(!s.hovered);
+        assert!(!s.pressed);
     }
 
     #[test]
@@ -542,17 +516,21 @@ mod tests {
         let mut s = switch();
         s.value = true;
         s.focused = true;
+        s.hovered = true;
+        s.pressed = true;
         let json = serde_json::to_string(&s).unwrap();
         let back: Switch = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
     }
 
     #[test]
-    fn serde_defaults_value_disabled_focused_to_false_when_omitted() {
+    fn serde_defaults_value_disabled_focused_hovered_pressed_to_false_when_omitted() {
         let json = r#"{"id":"settings:wrap"}"#;
         let s: Switch = serde_json::from_str(json).unwrap();
         assert!(!s.value);
         assert!(!s.disabled);
         assert!(!s.focused);
+        assert!(!s.hovered);
+        assert!(!s.pressed);
     }
 }
