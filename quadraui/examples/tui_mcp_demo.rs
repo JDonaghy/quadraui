@@ -306,11 +306,17 @@ fn mcp_transport() -> quadraui_mcp::Transport {
 }
 
 fn main() -> std::io::Result<()> {
+    // Computed and printed before `TuiRunner::new`, which immediately
+    // enables raw mode and enters the alternate screen — anything
+    // written after that point lands on the alternate screen instead of
+    // the real terminal scrollback, and is gone the moment the first
+    // frame paints over it.
+    let transport = mcp_transport();
+    eprintln!("quadraui-mcp listening on {transport:?}");
+
     let mut runner = quadraui::tui::TuiRunner::new(McpDemo::new())?;
     let handle = runner.attach_control();
 
-    let transport = mcp_transport();
-    eprintln!("quadraui-mcp listening on {transport:?}");
     std::thread::spawn(move || {
         if let Err(e) = quadraui_mcp::serve(handle, transport) {
             eprintln!("quadraui-mcp server exited: {e}");
