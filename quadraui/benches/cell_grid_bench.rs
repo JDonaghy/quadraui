@@ -69,6 +69,12 @@ fn build_grid(
         cursor: (total_rows / 2, total_cols / 2),
         selection_anchor: None,
         cells,
+        // Matches `row_scroll`/`col_scroll` above (both clamped the same
+        // way `CellGrid::cells_window` clamps them) so `bench_cells_requested`
+        // exercises the "already covered, no request" fast path rather
+        // than always falling through to the allocating `Some` branch.
+        loaded_row_start: 1 + total_rows / 2,
+        loaded_col_start: 1 + total_cols / 2,
         has_focus: true,
         show_scrollbar: true,
     }
