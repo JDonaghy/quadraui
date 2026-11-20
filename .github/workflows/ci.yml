@@ -397,8 +397,9 @@ jobs:
     needs: bump-shape
     # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
     if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
-    # #1292: apt-get install + `cargo doc` across tui,gtk,win,terminal,layout,a11y,
-    # normally under 10 minutes with a warm cache.
+    # #1292: apt-get install + `cargo doc` across
+    # tui,gtk,win,terminal,layout,a11y,control, normally under 10 minutes
+    # with a warm cache.
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -408,10 +409,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal, layout, a11y)
+      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal, layout, a11y, control)
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal,layout,a11y
+        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal,layout,a11y,control
 
   example-coverage:
     # #311: block a PR that adds a new `examples/tui_*.rs` without the
@@ -1194,6 +1195,25 @@ jobs:
         run: 'cargo test -p quadraui --features tui-images --lib tui::image_decode'
       - name: Clippy (tui-images feature)
         run: cargo clippy -p quadraui --features tui-images -- -D warnings
+      # Optional backend-neutral control channel (`quadraui::control`).
+      # `lib.rs` gates the module on `feature = "control"` and
+      # `tests/control_channel_tui.rs` on `all(feature = "tui", feature =
+      # "control")`, so the plain `--features tui` steps above compile
+      # neither. The module itself pairs with any backend or none, hence a
+      # standalone `--features control` build/test for the channel's own
+      # unit tests, plus one `tui,control` run for the TUI runner wiring's
+      # black-box driver test. Same "own feature, own steps, same job"
+      # shape as `layout`/`a11y`/`tui-images` above.
+      - name: Build (control feature)
+        run: cargo build -p quadraui --features control
+      - name: Test (control feature)
+        run: 'cargo test -p quadraui --features control --lib control::'
+      - name: Clippy (control feature)
+        run: cargo clippy -p quadraui --features control -- -D warnings
+      - name: Test (control channel TUI wiring, tui + control features)
+        run: cargo test -p quadraui --features tui,control --test control_channel_tui
+      - name: Clippy (control channel TUI wiring, tui + control features)
+        run: cargo clippy -p quadraui --features tui,control --test control_channel_tui -- -D warnings
       # Conformance matrix (quadraui#491, epic #480). The suite runs as part
       # of `cargo test --features tui` above; this step re-runs just that
       # target with --nocapture so the scenario x backend table lands in the
