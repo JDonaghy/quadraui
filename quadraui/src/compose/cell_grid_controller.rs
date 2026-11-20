@@ -67,6 +67,7 @@ use crate::{
 /// What happened after [`CellGridController::handle`] processed an event,
 /// or after calling one of its navigation methods directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CellGridControllerEvent {
     /// The cursor moved and the selection is just that one cell (no
     /// [`CellGridController::selection_anchor`] beyond the cursor
@@ -450,8 +451,15 @@ impl CellGridController {
             cursor: self.cursor,
             selection_anchor: self.selection_anchor,
             cells,
-            loaded_row_start: self.row_scroll,
-            loaded_col_start: self.col_scroll,
+            // `row_scroll`/`col_scroll` are ranks *past* the frozen
+            // prefix (see `ensure_cursor_visible`'s `rank = cr -
+            // frozen_rows`), but `loaded_row_start`/`loaded_col_start`
+            // are absolute sheet indices (see `CellGrid::cells_window`'s
+            // doc) — add the frozen count back so the two conventions
+            // agree, or every windowed lookup past a frozen pane is off
+            // by `frozen_rows`/`frozen_cols`.
+            loaded_row_start: self.frozen_rows.min(self.row_count) + self.row_scroll,
+            loaded_col_start: self.frozen_cols.min(self.col_count) + self.col_scroll,
             has_focus: self.has_focus,
             show_scrollbar: self.show_scrollbar,
             editing: self.editing.as_ref().map(|e| CellEditState {
@@ -728,14 +736,17 @@ impl CellGridController {
     /// cell-filled [`CellGrid`] — never [`Self::geometry_grid`]'s empty
     /// one — since this controller owns no cell content itself.
     ///
-    /// `Ignored` on an empty sheet; otherwise always `Consumed`, even
-    /// for a single-cell "selection".
+    /// `Ignored` on an empty sheet, or while [`Self::is_editing`] — the
+    /// range to copy is the *selection*, which is a different cell range
+    /// than whatever's being edited inside one cell, so routing Ctrl+C
+    /// here mid-edit would copy the wrong thing. Otherwise always
+    /// `Consumed`, even for a single-cell "selection".
     pub fn copy_selection(
         &self,
         grid: &CellGrid,
         clipboard: &dyn Clipboard,
     ) -> CellGridControllerEvent {
-        if self.row_count == 0 || self.col_count == 0 {
+        if self.row_count == 0 || self.col_count == 0 || self.is_editing() {
             return CellGridControllerEvent::Ignored;
         }
         let (top, left, bottom, right) = self.selection_bounds();
@@ -743,19 +754,24 @@ impl CellGridController {
         CellGridControllerEvent::Consumed
     }
 
-    /// Ctrl/Cmd+X: [`Self::copy_selection`], then report
-    /// [`CellGridControllerEvent::CutRequested`] for the host to clear
-    /// through its engine — this controller has no cell content to
-    /// clear itself (module doc).
+    /// Ctrl/Cmd+X: the same copy [`Self::copy_selection`] does, then
+    /// report [`CellGridControllerEvent::CutRequested`] for the host to
+    /// clear through its engine — this controller has no cell content
+    /// to clear itself (module doc). Shares one [`Self::selection_bounds`]
+    /// call with the copy rather than calling through
+    /// [`Self::copy_selection`] and recomputing it — each call clones
+    /// every row-height/col-width/label `BTreeMap` via
+    /// [`Self::geometry_grid`].
     pub fn cut_selection(
         &self,
         grid: &CellGrid,
         clipboard: &dyn Clipboard,
     ) -> CellGridControllerEvent {
-        if self.copy_selection(grid, clipboard) == CellGridControllerEvent::Ignored {
+        if self.row_count == 0 || self.col_count == 0 || self.is_editing() {
             return CellGridControllerEvent::Ignored;
         }
         let (top, left, bottom, right) = self.selection_bounds();
+        clipboard.write_text(&grid.range_as_tsv(top, left, bottom, right));
         CellGridControllerEvent::CutRequested {
             top,
             left,
@@ -767,8 +783,16 @@ impl CellGridController {
     /// Ctrl/Cmd+V: read `clipboard`'s current text and report
     /// [`CellGridControllerEvent::PasteRequested`], anchored at the
     /// current selection's top-left corner. `Ignored` when the
-    /// clipboard holds no text.
+    /// clipboard holds no text, the sheet is empty (no cell for the
+    /// anchor to name), or [`Self::is_editing`] — [`Self::handle`]
+    /// already routes a paste into the in-progress edit itself in that
+    /// case (`UiEvent::ClipboardPaste`), so a host calling this
+    /// unconditionally on Ctrl+V must not also report a *range* paste
+    /// at the selection.
     pub fn paste(&self, clipboard: &dyn Clipboard) -> CellGridControllerEvent {
+        if self.row_count == 0 || self.col_count == 0 || self.is_editing() {
+            return CellGridControllerEvent::Ignored;
+        }
         let Some(text) = clipboard.read_text() else {
             return CellGridControllerEvent::Ignored;
         };
@@ -833,6 +857,20 @@ impl CellGridController {
 
             UiEvent::KeyPressed { key, modifiers, .. } => {
                 self.handle_key(key, modifiers, backend, rect)
+            }
+
+            // Terminal bracketed paste (and any other backend that
+            // delivers pasted text as a `UiEvent` rather than a literal
+            // Ctrl+V keypress) arrives here even with no active edit —
+            // unlike `Self::paste`, the text is already in the event,
+            // so no `Clipboard` handle is needed to report it.
+            UiEvent::ClipboardPaste(text) if self.row_count > 0 && self.col_count > 0 => {
+                let (top, left, ..) = self.selection_bounds();
+                CellGridControllerEvent::PasteRequested {
+                    anchor_row: top,
+                    anchor_col: left,
+                    text: text.clone(),
+                }
             }
 
             _ => CellGridControllerEvent::Ignored,
@@ -1983,6 +2021,39 @@ mod tests {
     }
 
     #[test]
+    fn copy_selection_reads_the_right_cells_with_a_frozen_pane_and_a_scroll() {
+        // Regression for `grid()`'s `loaded_row_start`/`loaded_col_start`:
+        // `row_scroll`/`col_scroll` are ranks *past* the frozen prefix
+        // (`ensure_cursor_visible`'s own convention), so `grid()` must
+        // add `frozen_rows`/`frozen_cols` back to land on an absolute
+        // index — otherwise every copied cell is shifted by the frozen
+        // count. `cells` is laid out positionally: row/col 0 is the
+        // frozen pane, rows/cols 1.. are the scrolled body starting at
+        // absolute `frozen + scroll` = 6.
+        let mut c = controller(20, 20);
+        c.set_frozen(1, 1);
+        c.row_scroll = 5;
+        c.col_scroll = 5;
+        c.set_selection((6, 6), Some((7, 7)));
+
+        let row = |label: &str| {
+            (0..3)
+                .map(|c| Cell::plain(format!("{label}{c}")))
+                .collect::<Vec<_>>()
+        };
+        let grid = c.grid(vec![row("frozen"), row("r6"), row("r7")]);
+        let clipboard = FakeClipboard::default();
+
+        let ev = c.copy_selection(&grid, &clipboard);
+
+        assert_eq!(ev, CellGridControllerEvent::Consumed);
+        assert_eq!(
+            clipboard.read_text(),
+            Some("r61\tr62\nr71\tr72".to_string())
+        );
+    }
+
+    #[test]
     fn paste_emits_the_selection_anchor_plus_the_clipboard_text() {
         let mut c = controller(5, 5);
         c.set_selection((2, 1), None);
@@ -2005,6 +2076,62 @@ mod tests {
     fn paste_is_ignored_when_the_clipboard_holds_no_text() {
         let c = controller(5, 5);
         let clipboard = FakeClipboard::default();
+        assert_eq!(c.paste(&clipboard), CellGridControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn handle_reports_a_clipboard_paste_event_even_with_no_active_edit() {
+        let mut c = controller(5, 5);
+        c.set_selection((2, 1), None);
+        let b = backend();
+
+        let ev = c.handle(&UiEvent::ClipboardPaste("a\tb".to_string()), &b, RECT);
+
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::PasteRequested {
+                anchor_row: 2,
+                anchor_col: 1,
+                text: "a\tb".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn handle_ignores_a_clipboard_paste_event_on_an_empty_sheet() {
+        let mut c = controller(0, 0);
+        let b = backend();
+        let ev = c.handle(&UiEvent::ClipboardPaste("a".to_string()), &b, RECT);
+        assert_eq!(ev, CellGridControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn copy_cut_and_paste_are_ignored_while_editing() {
+        let mut c = controller(3, 3);
+        c.set_selection((0, 0), Some((1, 2)));
+        c.start_editing("hello");
+        let grid = grid_3x3_with_text();
+        let clipboard = FakeClipboard::default();
+        clipboard.write_text("preexisting");
+
+        assert_eq!(
+            c.copy_selection(&grid, &clipboard),
+            CellGridControllerEvent::Ignored
+        );
+        assert_eq!(
+            c.cut_selection(&grid, &clipboard),
+            CellGridControllerEvent::Ignored
+        );
+        assert_eq!(c.paste(&clipboard), CellGridControllerEvent::Ignored);
+        // Nothing wrote over the clipboard's prior contents.
+        assert_eq!(clipboard.read_text(), Some("preexisting".to_string()));
+    }
+
+    #[test]
+    fn paste_is_ignored_on_an_empty_sheet_even_with_clipboard_text() {
+        let c = controller(0, 0);
+        let clipboard = FakeClipboard::default();
+        clipboard.write_text("a\tb");
         assert_eq!(c.paste(&clipboard), CellGridControllerEvent::Ignored);
     }
 }
