@@ -28,6 +28,17 @@ use shell_app_ex::ShellApp as ShellAppEx;
 mod hello_ex;
 use hello_ex::Hello;
 
+// `tui_commands_demo.rs` also has no `examples/common/` module: its
+// point is that one `AppLogic` serves the interactive runner, a live
+// control channel and the `--json` CLI helper with no per-entrypoint
+// code, so there is no second backend runner to share a shape with. It
+// needs the `control` feature for `quadraui::control::cli`, and its own
+// `fn main()` rides along unused under the `#[path]` include.
+#[cfg(feature = "control")]
+#[path = "../examples/tui_commands_demo.rs"]
+#[allow(dead_code)]
+mod tui_commands_demo_ex;
+
 #[path = "../examples/common/toolbar_app.rs"]
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
@@ -12005,5 +12016,174 @@ fn cell_grid_tabs_switch_between_independent_sheets() {
     assert!(
         !sales_again.contains("Region"),
         "switching back to Sales should restore its own edit, not reset to the placeholder:\n{sales_again}"
+    );
+}
+
+/// The style of the cell where `row`'s label starts, in
+/// `tui_commands_demo`'s list — the paint-level signal for "this row is
+/// the selected one", found by text so no coordinate is hardcoded.
+#[cfg(feature = "control")]
+fn commands_demo_row_style(
+    driver: &TuiDriver<tui_commands_demo_ex::CommandsDemo>,
+    row: &str,
+) -> quadraui::tui::testing::CellStyle {
+    let (x, y) = driver
+        .find(row)
+        .unwrap_or_else(|| panic!("row {row:?} should be painted:\n{}", driver.screen()));
+    driver
+        .style_at(x as u16, y as u16)
+        .unwrap_or_else(|| panic!("row {row:?}'s first cell should be on screen"))
+}
+
+/// `tui_commands_demo`'s "Level 2" commands act on the same model the
+/// keyboard does: `count` reports the real row count, `select` moves the
+/// painted selection highlight (the same visible effect `Down` has), and
+/// an out-of-range index is a clean error, not a silent clamp. These are
+/// the exact `command_specs`/`run_command` calls `quadraui-mcp`'s
+/// `tools/list`/`tools/call` and `control::cli::run` both route to.
+#[cfg(feature = "control")]
+#[test]
+fn tui_commands_demo_level_2_commands_move_the_painted_selection() {
+    use quadraui::AppLogic;
+    use tui_commands_demo_ex::CommandsDemo;
+
+    let mut driver = TuiDriver::new(CommandsDemo::new(), 60, 14);
+
+    let names: Vec<String> = driver
+        .app()
+        .command_specs()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["select".to_string(), "count".to_string()],
+        "the demo should advertise both Level 2 commands, in registration order"
+    );
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("alpha") && screen.contains("delta"),
+        "every row should be painted:\n{screen}"
+    );
+
+    // Row 0 starts selected, so its cells paint differently from a
+    // resting row's — that difference is what the assertions below
+    // track as the selection moves.
+    let selected_at_start = commands_demo_row_style(&driver, "alpha");
+    let resting_at_start = commands_demo_row_style(&driver, "delta");
+    assert_ne!(
+        selected_at_start,
+        resting_at_start,
+        "the selected row should paint distinctly from a resting row:\n{}",
+        driver.screen()
+    );
+
+    // `count` only reads the model, and answers the real row count.
+    assert_eq!(
+        driver
+            .app_mut()
+            .run_command("count", serde_json::json!({}))
+            .expect("count should succeed"),
+        serde_json::json!({"count": 4}),
+    );
+
+    // `select` mutates it, and the next frame shows the move.
+    assert_eq!(
+        driver
+            .app_mut()
+            .run_command("select", serde_json::json!({"index": 3}))
+            .expect("select should succeed"),
+        serde_json::json!({"selected": 3}),
+    );
+    driver.render();
+    assert_eq!(
+        commands_demo_row_style(&driver, "delta"),
+        selected_at_start,
+        "after select(3) the last row should carry the selection paint:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        commands_demo_row_style(&driver, "alpha"),
+        resting_at_start,
+        "after select(3) the first row should go back to resting paint:\n{}",
+        driver.screen()
+    );
+
+    // An out-of-range index is refused, and leaves the painted
+    // selection where it was.
+    let err = driver
+        .app_mut()
+        .run_command("select", serde_json::json!({"index": 99}))
+        .expect_err("select(99) should fail on a four-row list");
+    assert!(
+        err.to_string().contains("99"),
+        "the error should name the offending index, got {err}"
+    );
+    driver.render();
+    assert_eq!(
+        commands_demo_row_style(&driver, "delta"),
+        selected_at_start,
+        "a refused select must not move the selection:\n{}",
+        driver.screen()
+    );
+}
+
+/// The interactive path and the `--json` CLI path reach the same model:
+/// `Up`/`Down` move the painted selection, and
+/// `control::cli::run_result` answers the same JSON a command run
+/// against the live app does — the claim `tui_commands_demo`'s module
+/// doc makes about running "two ways with zero code difference".
+#[cfg(feature = "control")]
+#[test]
+fn tui_commands_demo_keyboard_and_json_cli_reach_the_same_commands() {
+    use quadraui::AppLogic;
+    use tui_commands_demo_ex::CommandsDemo;
+
+    let mut driver = TuiDriver::new(CommandsDemo::new(), 60, 14);
+    let selected_paint = commands_demo_row_style(&driver, "alpha");
+
+    driver.press_named(NamedKey::Down);
+    driver.render();
+    assert_eq!(
+        commands_demo_row_style(&driver, "beta"),
+        selected_paint,
+        "Down should move the painted selection to the second row:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Up);
+    driver.render();
+    assert_eq!(
+        commands_demo_row_style(&driver, "alpha"),
+        selected_paint,
+        "Up should move it back to the first row:\n{}",
+        driver.screen()
+    );
+
+    // 'q' exits, the same way the module doc advertises.
+    driver.press(Key::Char('q'));
+    assert!(driver.exited(), "'q' should exit the demo");
+
+    // The `--json` helper runs the same commands against a fresh
+    // instance, with no driver, no backend and no event loop.
+    let mut cli_app = CommandsDemo::new();
+    assert_eq!(
+        quadraui::control::cli::run_result(&mut cli_app, &["count".to_string()]),
+        Ok(serde_json::json!({"count": 4})),
+    );
+    assert_eq!(
+        quadraui::control::cli::run_result(
+            &mut cli_app,
+            &["select".to_string(), r#"{"index": 2}"#.to_string()],
+        ),
+        Ok(serde_json::json!({"selected": 2})),
+    );
+    assert_eq!(
+        cli_app
+            .run_command("select", serde_json::json!({"index": 2}))
+            .expect("select should succeed against the CLI-driven instance"),
+        serde_json::json!({"selected": 2}),
+        "the CLI helper and a direct run_command are the same call"
     );
 }

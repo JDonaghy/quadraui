@@ -35,14 +35,19 @@ use quadraui::{
 };
 use serde_json::{json, Value};
 
-struct CommandsDemo {
+/// The demo app: a four-row list whose selected index is the whole
+/// model, reachable from the UI (Up/Down), from a live control channel
+/// (`quadraui-mcp`'s `tools/call`) and from the `--json` CLI helper.
+pub struct CommandsDemo {
     items: Vec<&'static str>,
     selected: usize,
     commands: CommandRegistry<CommandsDemo>,
 }
 
 impl CommandsDemo {
-    fn new() -> Self {
+    /// A fresh instance with `select`/`count` registered and row 0
+    /// selected.
+    pub fn new() -> Self {
         let mut commands = CommandRegistry::new();
         commands.register(
             "select",
@@ -76,6 +81,12 @@ impl CommandsDemo {
             selected: 0,
             commands,
         }
+    }
+}
+
+impl Default for CommandsDemo {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
