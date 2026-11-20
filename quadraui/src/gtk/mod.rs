@@ -215,7 +215,7 @@ pub use image::draw_image;
 #[doc(hidden)]
 pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
 #[doc(hidden)]
-pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
+pub use menu_bar::{draw_menu_bar, draw_menu_bar_with_state, gtk_menu_bar_layout};
 #[doc(hidden)]
 pub use menu_overlay::MenuOverlay;
 #[doc(hidden)]

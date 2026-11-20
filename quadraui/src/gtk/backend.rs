@@ -3478,6 +3478,49 @@ impl Backend for GtkBackend {
         });
     }
 
+    /// [`Self::draw_palette`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_palette_with_state`]'s own
+    /// doc. Routes through
+    /// [`crate::primitives::palette::native_surface_paint::paint_interactive`],
+    /// the interactive twin of the plain `paint` [`Self::draw_palette`]
+    /// calls.
+    fn draw_palette_with_state(
+        &mut self,
+        rect: QRect,
+        palette: &Palette,
+        interaction: &crate::InteractionState,
+    ) {
+        self.modal_stack.borrow_mut().mark_painted(&palette.id);
+        let line_height = self.current_line_height;
+        let style = self.style();
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        self.with_chrome_surface("draw_palette_with_state", |surface| {
+            if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
+                return;
+            }
+            let (palette_layout, rows_h) = crate::gtk::gtk_palette_layout(
+                rect.width as f64,
+                rect.height as f64,
+                palette,
+                line_height,
+            );
+            let area = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
+            crate::primitives::palette::native_surface_paint::paint_interactive(
+                palette,
+                area,
+                &palette_layout,
+                rows_h as f32,
+                line_height as f32,
+                nerd_fonts_enabled,
+                surface,
+                &theme,
+                &style,
+                interaction,
+            );
+        });
+    }
+
     fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
         crate::gtk::gtk_palette_layout(
             rect.width as f64,
@@ -4825,6 +4868,40 @@ impl Backend for GtkBackend {
         })
     }
 
+    /// [`Self::draw_context_menu`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_context_menu_with_state`]'s
+    /// own doc. Routes through
+    /// [`crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive`]
+    /// (the same `paint_with_glyphs` pipeline as [`Self::draw_context_menu`],
+    /// plus the interactive hover/pressed tint), with `glyphs: None`
+    /// so this reproduces [`Self::draw_context_menu`]'s check-mark /
+    /// submenu-arrow glyphs exactly.
+    fn draw_context_menu_with_state(
+        &mut self,
+        menu: &crate::ContextMenu,
+        layout_arg: &crate::ContextMenuLayout,
+        interaction: &crate::InteractionState,
+    ) -> Vec<(QRect, crate::WidgetId)> {
+        // See draw_palette for why this happens before the frame borrow.
+        self.modal_stack.borrow_mut().mark_painted(&menu.id);
+        let style = self.style();
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        self.with_chrome_surface("draw_context_menu_with_state", |surface| {
+            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive(
+                menu,
+                layout_arg,
+                crate::accelerator::Platform::Linux,
+                surface,
+                &theme,
+                &style,
+                None,
+                nerd_fonts_enabled,
+                interaction,
+            )
+        })
+    }
+
     fn draw_dialog(
         &mut self,
         dialog: &crate::Dialog,
@@ -5246,6 +5323,46 @@ impl Backend for GtkBackend {
             rect.height as f64,
             bar,
             &self.current_theme,
+        );
+        layout.set_font_description(saved_font.as_ref());
+        // Stash the exact layout just painted with — see the field doc
+        // on `last_menu_bar_pango_layout` for why this is necessary
+        // rather than relying on `current_frame_refs()` alone.
+        let painted_layout = layout.clone();
+        self.last_menu_bar_pango_layout = Some(painted_layout);
+        result
+    }
+
+    /// [`Self::draw_menu_bar`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_menu_bar_with_state`]'s own
+    /// doc. Routes through
+    /// [`crate::primitives::menu_bar::native_surface_paint::paint_interactive`]
+    /// instead of that module's plain `paint`; every other step mirrors
+    /// [`Self::draw_menu_bar`] exactly.
+    fn draw_menu_bar_with_state(
+        &mut self,
+        rect: QRect,
+        bar: &MenuBar,
+        interaction: &crate::InteractionState,
+    ) -> crate::primitives::menu_bar::MenuBarLayout {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_menu_bar_with_state called outside enter_frame_scope");
+        // Menu bar item labels are chrome — save the editor font on the shared
+        // layout, paint in `ui_font`, then restore, matching `Self::draw_menu_bar`.
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        let result = crate::gtk::draw_menu_bar_with_state(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            &self.current_theme,
+            interaction,
         );
         layout.set_font_description(saved_font.as_ref());
         // Stash the exact layout just painted with — see the field doc
@@ -11505,6 +11622,245 @@ mod tests {
         let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
         assert_ne!(
             (expected.r, expected.g, expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours"
+        );
+    }
+
+    /// `draw_palette_with_state` must tint the pinned create-action
+    /// row — the one stable id a [`Palette`] carries (`palette.id`
+    /// itself) — toward `Theme::menu_item_hover_bg` when hovered and
+    /// `Theme::menu_item_pressed_bg` when pressed, exactly like
+    /// `Backend::draw_palette_with_state`'s own doc describes.
+    #[test]
+    fn gtk_backend_palette_create_row_hover_and_pressed_tints() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let palette_id = WidgetId::new("test:palette");
+        let mut palette = Palette {
+            id: palette_id,
+            title: "Commands".into(),
+            create_label: Some("Create 'op'".into()),
+            show_query: true,
+            mode: crate::PaletteMode::List,
+            ..Default::default()
+        };
+        palette.items = vec![crate::PaletteItem {
+            text: crate::types::StyledText::plain("one".to_string()),
+            detail: None,
+            icon: None,
+            match_positions: vec![],
+            depth: 0,
+            expandable: false,
+            expanded: false,
+        }];
+        let rect = QRect::new(0.0, 0.0, 200.0, 200.0);
+
+        let paint_with = |interaction: &crate::InteractionState| {
+            let surface =
+                ImageSurface::create(Format::ARgb32, 200, 200).expect("create ImageSurface");
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_palette_with_state(rect, &palette, interaction);
+            });
+            surface.flush();
+            surface
+        };
+
+        let (layout, _rows_h) =
+            crate::gtk::gtk_palette_layout(rect.width as f64, rect.height as f64, &palette, 16.0);
+        let create_bounds = layout
+            .create_bounds
+            .expect("palette with create_label must report create_bounds");
+        let probe_x = (create_bounds.x + 4.0) as i32;
+        let probe_y = (create_bounds.y + create_bounds.height / 2.0) as i32;
+
+        let theme = crate::Theme::default();
+
+        let mut resting = paint_with(&crate::InteractionState::new());
+        let resting_px = pixel_argb(&mut resting, probe_x, probe_y);
+        assert_eq!(
+            resting_px,
+            (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
+            "an un-hovered create row must keep its plain Theme::hover_bg fill"
+        );
+
+        let hover_interaction = crate::InteractionState::from_parts(Some(palette_id), None);
+        let mut hovered = paint_with(&hover_interaction);
+        let hovered_px = pixel_argb(&mut hovered, probe_x, probe_y);
+        let hover_expected = theme.menu_item_hover_bg(theme.hover_bg);
+        assert_eq!(
+            hovered_px,
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "hovering the create row must tint it toward Theme::menu_item_hover_bg"
+        );
+
+        let pressed_interaction =
+            crate::InteractionState::from_parts(Some(palette_id), Some(palette_id));
+        let mut pressed = paint_with(&pressed_interaction);
+        let pressed_px = pixel_argb(&mut pressed, probe_x, probe_y);
+        let pressed_expected = theme.menu_item_pressed_bg(theme.hover_bg);
+        assert_eq!(
+            pressed_px,
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            "pressing the create row must tint it toward Theme::menu_item_pressed_bg"
+        );
+        assert_ne!(
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours"
+        );
+    }
+
+    /// `draw_context_menu_with_state` must tint a hovered item's row
+    /// toward `Theme::menu_item_hover_bg` and a pressed item's row
+    /// toward `Theme::menu_item_pressed_bg`, matching
+    /// `Backend::draw_context_menu_with_state`'s own doc.
+    #[test]
+    fn gtk_backend_context_menu_item_hover_and_pressed_tints() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 300;
+        const H: i32 = 60;
+        const ITEM_H: f32 = 30.0;
+
+        let item_id = WidgetId::new("test:menu:item");
+        let menu = crate::ContextMenu {
+            id: WidgetId::new("test:menu"),
+            items: vec![crate::primitives::context_menu::ContextMenuItem {
+                id: Some(item_id),
+                label: crate::types::StyledText::plain("Copy".to_string()),
+                ..Default::default()
+            }],
+            // Out of range so no item ever paints as keyboard-selected —
+            // the selection highlight isn't what this test measures.
+            selected_idx: 99,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        };
+        let viewport = crate::event::Rect::new(0.0, 0.0, W as f32, H as f32);
+        let menu_layout = menu.layout_at(
+            crate::event::Rect::new(0.0, 0.0, 0.0, 0.0),
+            viewport,
+            200.0,
+            |_| crate::primitives::context_menu::ContextMenuItemMeasure::new(ITEM_H),
+        );
+        let row = menu_layout.visible_items[0].bounds;
+        let probe_x = (row.x + 4.0) as i32;
+        let probe_y = (row.y + row.height / 2.0) as i32;
+
+        let paint_with = |interaction: &crate::InteractionState| {
+            let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                let _ = b.draw_context_menu_with_state(&menu, &menu_layout, interaction);
+            });
+            surface.flush();
+            surface
+        };
+
+        let theme = crate::Theme::default();
+        let bg = menu.bg.unwrap_or(theme.hover_bg);
+
+        let hover_interaction = crate::InteractionState::from_parts(Some(item_id), None);
+        let mut hovered = paint_with(&hover_interaction);
+        let hovered_px = pixel_argb(&mut hovered, probe_x, probe_y);
+        let hover_expected = theme.menu_item_hover_bg(bg);
+        assert_eq!(
+            hovered_px,
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "hovering a context-menu item must tint its row toward Theme::menu_item_hover_bg"
+        );
+
+        let pressed_interaction = crate::InteractionState::from_parts(Some(item_id), Some(item_id));
+        let mut pressed = paint_with(&pressed_interaction);
+        let pressed_px = pixel_argb(&mut pressed, probe_x, probe_y);
+        let pressed_expected = theme.menu_item_pressed_bg(bg);
+        assert_eq!(
+            pressed_px,
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            "pressing a context-menu item must tint its row toward Theme::menu_item_pressed_bg"
+        );
+        assert_ne!(
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours"
+        );
+    }
+
+    /// `draw_menu_bar_with_state` must tint a hovered top-level item
+    /// toward `Theme::menu_item_hover_bg` and a pressed one toward
+    /// `Theme::menu_item_pressed_bg`, matching
+    /// `Backend::draw_menu_bar_with_state`'s own doc.
+    #[test]
+    fn gtk_backend_menu_bar_item_hover_and_pressed_tints() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 300;
+        const H: i32 = 24;
+
+        let item_id = WidgetId::new("test:bar:file");
+        let bar = MenuBar {
+            id: WidgetId::new("test:bar"),
+            items: vec![MenuBarItem {
+                id: item_id,
+                label: "&File".into(),
+                disabled: false,
+                submenu: None,
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+
+        let paint_with = |interaction: &crate::InteractionState| {
+            let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            let layout = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_menu_bar_with_state(
+                    QRect::new(0.0, 0.0, W as f32, H as f32),
+                    &bar,
+                    interaction,
+                )
+            });
+            surface.flush();
+            (surface, layout)
+        };
+
+        let theme = crate::Theme::default();
+
+        let hover_interaction = crate::InteractionState::from_parts(Some(item_id), None);
+        let (mut hovered, layout) = paint_with(&hover_interaction);
+        let row = layout.visible_items[0].bounds;
+        let probe_x = (row.x + 4.0) as i32;
+        let probe_y = (row.y + row.height / 2.0) as i32;
+        let hovered_px = pixel_argb(&mut hovered, probe_x, probe_y);
+        let hover_expected = theme.menu_item_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            hovered_px,
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "hovering a menu-bar item must tint its background toward Theme::menu_item_hover_bg"
+        );
+
+        let pressed_interaction = crate::InteractionState::from_parts(Some(item_id), Some(item_id));
+        let (mut pressed, _) = paint_with(&pressed_interaction);
+        let pressed_px = pixel_argb(&mut pressed, probe_x, probe_y);
+        let pressed_expected = theme.menu_item_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            pressed_px,
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
+            "pressing a menu-bar item must tint its background toward Theme::menu_item_pressed_bg"
+        );
+        assert_ne!(
+            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
             (hover_expected.r, hover_expected.g, hover_expected.b),
             "pressed and hover tints must read as visibly different colours"
         );

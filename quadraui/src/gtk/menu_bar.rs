@@ -12,6 +12,7 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::event::Rect;
+use crate::interaction::InteractionState;
 use crate::primitives::menu_bar::{
     native_surface_paint, MenuBar, MenuBarItemMeasure, MenuBarLayout,
 };
@@ -79,6 +80,46 @@ pub fn draw_menu_bar(
         translucent_fill: true,
     };
     native_surface_paint::paint(bar, &layout, &mut surface, theme);
+    pango_layout.set_attributes(None);
+
+    cr.restore().ok();
+
+    layout
+}
+
+/// [`draw_menu_bar`], reading hover/pressed state from `interaction` —
+/// see [`crate::Backend::draw_menu_bar_with_state`]'s own doc. Paints
+/// through [`native_surface_paint::paint_interactive`] instead of that
+/// module's plain `paint`; every other step mirrors [`draw_menu_bar`]
+/// exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_menu_bar_with_state(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    bar: &MenuBar,
+    theme: &Theme,
+    interaction: &InteractionState,
+) -> MenuBarLayout {
+    pango_layout.set_attributes(None);
+    pango_layout.set_width(-1);
+    pango_layout.set_ellipsize(pango::EllipsizeMode::None);
+
+    cr.save().ok();
+    cr.rectangle(x, y, width, height);
+    cr.clip();
+
+    let layout = gtk_menu_bar_layout(pango_layout, x, y, width, height, bar);
+
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
+    native_surface_paint::paint_interactive(bar, &layout, &mut surface, theme, interaction);
     pango_layout.set_attributes(None);
 
     cr.restore().ok();
