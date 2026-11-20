@@ -4323,6 +4323,12 @@ mod coverage {
         match k {
             Key::Char(_) => {}
             Key::Named(_) => {}
+            // `Key` is `#[non_exhaustive]` -- a new variant doesn't need a
+            // wildcard-arm migration here, so this guard can't catch one
+            // landing unnoticed; `variant_shape_test!`'s
+            // `key_variants_match_the_schema_tag_list` runtime probe below
+            // is the backstop for that case.
+            _ => {}
         }
     }
 
@@ -6218,7 +6224,7 @@ mod coverage {
     mod variant_shape {
         use std::collections::BTreeSet;
 
-        use quadraui::{ChartKind, DrawOp, TabBarEvent, ToolbarButton, ToolbarEvent, UiEvent};
+        use quadraui::{ChartKind, DrawOp, Key, TabBarEvent, ToolbarButton, ToolbarEvent, UiEvent};
 
         /// Deserializes a deliberately-unknown tag into `T` and parses the
         /// resulting serde error's "expected one of `A`, `B`, ..." variant
@@ -6424,6 +6430,14 @@ mod coverage {
                 "BackendNative",
                 "User",
             ]
+        );
+
+        variant_shape_test!(
+            key_variants_match_the_schema_tag_list,
+            Key,
+            "Key",
+            "Key",
+            ["Char", "Named"]
         );
     }
 }

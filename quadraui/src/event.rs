@@ -134,7 +134,13 @@ use crate::{
 /// on `Key`; apps that only want keybindings prefer [`UiEvent::Accelerator`]
 /// which already resolves the key + modifiers to a declared
 /// [`AcceleratorId`][crate::AcceleratorId].
+///
+/// `#[non_exhaustive]`: a downstream `match` on `Key` needs a wildcard arm.
+/// Construction (`Key::Char('x')`, `Key::Named(NamedKey::Enter)`) and
+/// single-variant destructuring (`if let Key::Char(c) = key`) are
+/// unaffected — only an exhaustive match with no catch-all breaks.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Key {
     /// Printable character (after keyboard layout resolution).
     Char(char),

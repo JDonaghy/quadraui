@@ -30,6 +30,7 @@ impl MiniApp {
         let last = match &self.last_key {
             Some(Key::Char(c)) => format!(" last: {c} "),
             Some(Key::Named(n)) => format!(" last: {n:?} "),
+            Some(_) => " last: ? ".to_string(),
             None => " press any key — q to quit ".to_string(),
         };
         StatusBar {
