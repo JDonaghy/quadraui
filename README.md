@@ -209,6 +209,12 @@ Pick the backends you ship; `terminal` is independent of them.
   [AccessKit](https://github.com/AccessKit/accesskit). The `A11yRole`/
   `A11yInfo` data model itself is always compiled; pairs with any
   backend above, or none.
+- `control` — optional backend-neutral control channel
+  (`quadraui::control`): a cloneable, `Send` handle a thread that does not
+  own the event loop uses to snapshot the a11y tree and synthesize
+  actions/keys against a running app, whichever backend is driving it. No
+  extra dependency (`std::sync::mpsc` plus the existing `Backend::waker`
+  seam); pairs with any backend above, or none.
 
 ## What's in the box
 

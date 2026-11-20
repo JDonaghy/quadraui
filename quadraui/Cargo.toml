@@ -267,7 +267,7 @@ union_now_doc_hidden = "allow"
 union_pub_field_now_doc_hidden = "allow"
 
 [package.metadata.docs.rs]
-features = ["tui", "gtk", "win", "terminal", "macos", "layout", "a11y"]
+features = ["tui", "gtk", "win", "terminal", "macos", "layout", "a11y", "control"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
