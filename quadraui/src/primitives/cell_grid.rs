@@ -761,6 +761,24 @@ fn windowed_abs_index(frozen: usize, scroll: usize, total: usize, pos: usize) ->
     }
 }
 
+/// Inverse of [`windowed_abs_index`], but keyed on the loaded window's
+/// own recorded origin (`loaded_start`, already clamped to
+/// `[frozen, total]`) rather than `row_scroll`/`col_scroll` — the two can
+/// diverge (see the module doc's "Two-axis virtualisation" section), and
+/// `Self::cell_text_at` needs to know what [`CellGrid::cells`] actually
+/// holds right now, not where the viewport is scrolled to. `None` when
+/// `abs` falls in the gap between the frozen prefix and `loaded_start` —
+/// not currently loaded.
+fn windowed_pos_for_abs(frozen: usize, loaded_start: usize, abs: usize) -> Option<usize> {
+    if abs < frozen {
+        Some(abs)
+    } else if abs >= loaded_start {
+        Some(frozen + (abs - loaded_start))
+    } else {
+        None
+    }
+}
+
 impl CellGrid {
     /// The absolute row index [`Self::cells`]' windowed row `pos` maps
     /// onto — see [`windowed_abs_index`].
@@ -862,6 +880,49 @@ impl CellGrid {
                 rows,
                 cols,
             })
+        }
+    }
+
+    /// The displayed text of every cell in the absolute, inclusive range
+    /// `[top, bottom] x [left, right]`, tab-joined within a row and
+    /// newline-joined across rows — the TSV a clipboard copy writes (see
+    /// [`crate::compose::CellGridController::copy_selection`]). A cell
+    /// outside [`Self::cells_window`]'s currently loaded block (the
+    /// frozen rows/columns are always "loaded") contributes an empty
+    /// string rather than panicking, so every row of the result still
+    /// has exactly `right - left + 1` tab-separated fields.
+    #[must_use]
+    pub fn range_as_tsv(&self, top: usize, left: usize, bottom: usize, right: usize) -> String {
+        (top..=bottom)
+            .map(|r| {
+                (left..=right)
+                    .map(|c| self.cell_text_at(r, c))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The displayed text at absolute `(row, col)`, or `""` when it
+    /// falls outside [`Self::cells`]'s currently loaded window — see
+    /// [`windowed_pos_for_abs`] for the inverse of [`Self::windowed_row`]/
+    /// [`Self::windowed_col`] this relies on.
+    fn cell_text_at(&self, row: usize, col: usize) -> &str {
+        let frozen_rows = self.frozen_rows.min(self.row_count);
+        let frozen_cols = self.frozen_cols.min(self.col_count);
+        let row_start = self.loaded_row_start.clamp(frozen_rows, self.row_count);
+        let col_start = self.loaded_col_start.clamp(frozen_cols, self.col_count);
+        let wr = windowed_pos_for_abs(frozen_rows, row_start, row);
+        let wc = windowed_pos_for_abs(frozen_cols, col_start, col);
+        match (wr, wc) {
+            (Some(wr), Some(wc)) => self
+                .cells
+                .get(wr)
+                .and_then(|row| row.get(wc))
+                .map(|cell| cell.text.as_str())
+                .unwrap_or(""),
+            _ => "",
         }
     }
 }
@@ -2142,6 +2203,74 @@ mod a11y_tests {
         assert_eq!(g.windowed_row(0), 0);
         assert_eq!(g.windowed_row(1), 6);
         assert_eq!(g.windowed_row(2), 7);
+    }
+}
+
+#[cfg(test)]
+mod range_as_tsv_tests {
+    use super::*;
+
+    /// A 3×3 grid, no frozen panes, no scroll, fully loaded — every
+    /// absolute `(row, col)` is loaded at the same position in
+    /// [`CellGrid::cells`], labelled `"r<row><col>"`.
+    fn grid_3x3() -> CellGrid {
+        let row = |label: &str| {
+            (0..3)
+                .map(|c| Cell::plain(format!("{label}{c}")))
+                .collect::<Vec<_>>()
+        };
+        CellGrid {
+            id: WidgetId::new("grid:tsv"),
+            row_count: 3,
+            col_count: 3,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 4.0,
+            row_heights: BTreeMap::new(),
+            col_widths: BTreeMap::new(),
+            show_row_headers: true,
+            show_col_headers: true,
+            row_labels: BTreeMap::new(),
+            col_labels: BTreeMap::new(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: vec![row("r0"), row("r1"), row("r2")],
+            loaded_row_start: 0,
+            loaded_col_start: 0,
+            has_focus: true,
+            show_scrollbar: false,
+            editing: None,
+        }
+    }
+
+    #[test]
+    fn a_2x3_range_joins_tabs_within_a_row_and_newlines_across_rows() {
+        let grid = grid_3x3();
+        assert_eq!(
+            grid.range_as_tsv(0, 0, 1, 2),
+            "r00\tr01\tr02\nr10\tr11\tr12"
+        );
+    }
+
+    #[test]
+    fn a_single_cell_range_has_no_separators() {
+        let grid = grid_3x3();
+        assert_eq!(grid.range_as_tsv(1, 1, 1, 1), "r11");
+    }
+
+    #[test]
+    fn a_column_in_the_gap_before_the_loaded_window_contributes_an_empty_field() {
+        let mut grid = grid_3x3();
+        // Only column 2 onward is loaded (`cells` holds just that one
+        // column); absolute column 1 — in range but in the unloaded gap
+        // between the frozen prefix and `loaded_col_start` — must not
+        // panic or pull in the wrong column.
+        grid.cells = vec![vec![Cell::plain("r02")], vec![Cell::plain("r12")]];
+        grid.loaded_col_start = 2;
+        assert_eq!(grid.range_as_tsv(0, 1, 1, 2), "\tr02\n\tr12");
     }
 }
 
