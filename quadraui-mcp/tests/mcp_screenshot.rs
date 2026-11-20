@@ -170,14 +170,26 @@ fn mcp_client_screenshot_tool_shows_the_row_an_act_changed() {
     let worker_done = client_done.clone();
     let socket_path_for_client = socket_path.clone();
     let client = thread::spawn(move || -> (Vec<String>, Vec<String>) {
+        // Dial the server's socket, retrying past both halves of its
+        // startup: the file not existing yet, and `bind()` creating the
+        // path a syscall before `listen()` puts it in a state that
+        // accepts connections — a connect in that gap fails with
+        // `ConnectionRefused` even though the path is already present.
+        // Retrying the connect itself (not just polling for the path)
+        // covers both.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !socket_path_for_client.exists() {
-            assert!(Instant::now() < deadline, "server never created its socket");
-            thread::sleep(Duration::from_millis(1));
-        }
-
-        let mut stream =
-            UnixStream::connect(&socket_path_for_client).expect("connect to the MCP socket");
+        let mut stream = loop {
+            match UnixStream::connect(&socket_path_for_client) {
+                Ok(stream) => break stream,
+                Err(e) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "never connected to the MCP socket: {e}"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+        };
         let mut reader = BufReader::new(stream.try_clone().expect("clone the connected stream"));
 
         call(
