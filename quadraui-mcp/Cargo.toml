@@ -1,0 +1,36 @@
+[package]
+name = "quadraui-mcp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP server exposing a running quadraui app's control channel (snapshot/act/key/type) over stdio or a Unix-domain socket"
+readme = "../README.md"
+keywords = ["mcp", "tui", "accessibility", "agent"]
+categories = ["gui", "command-line-interface"]
+rust-version = "1.92.0"
+
+[dependencies]
+# `control` is the only `quadraui` feature this crate needs: the control
+# channel is backend-neutral (built on `std::sync::mpsc` plus
+# `Backend::waker`), so this crate never has to know which backend —
+# TUI, GTK, macOS, Windows — produced the `ControlHandle` it was handed.
+quadraui = { path = "../quadraui", version = "0.11.0", features = ["control"] }
+# JSON-RPC 2.0 envelopes and MCP tool schemas/results. No MCP SDK crate:
+# the handshake this module implements (`initialize` / `tools/list` /
+# `tools/call`, four tools) is a few dozen lines of JSON over a
+# line-delimited socket or stdio — not enough surface to justify a third-
+# party dependency, and every MCP SDK on crates.io at the time of writing
+# pulls in `tokio` to get there, which would force an async runtime onto
+# every `quadraui` app that links this crate just to be driven by an
+# agent. Transports (`transport.rs`) use only `std::io`/`std::net`/
+# `std::os::unix::net` plus one thread per connection — no async runtime
+# at all.
+serde_json = "1.0"
+
+[dev-dependencies]
+# The round-trip test in `tests/mcp_tui_roundtrip.rs` drives a real
+# `AppLogic` app through `quadraui::tui::testing::TuiDriver`, so it needs
+# the `tui` feature on top of `control` — a test-only requirement, not a
+# library dependency: nothing in `src/` is TUI-specific.
+quadraui = { path = "../quadraui", features = ["tui", "control"] }

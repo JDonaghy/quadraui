@@ -3389,6 +3389,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quadraui-mcp"
+version = "0.1.0"
+dependencies = [
+ "quadraui",
+ "serde_json",
+]
+
+[[package]]
 name = "quadraui-node"
 version = "0.1.0"
 dependencies = [

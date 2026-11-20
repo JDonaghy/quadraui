@@ -1,0 +1,270 @@
+//! MCP (Model Context Protocol) server over a running [`quadraui`] app's
+//! [`quadraui::control`] channel.
+//!
+//! Any `quadraui` app — TUI, GTK, macOS, or Windows, whichever backend
+//! it's built against — already exposes a backend-neutral
+//! [`quadraui::control::ControlHandle`] once it opts into the `control`
+//! feature and wires `attach_control` into its own runner. This crate
+//! turns that handle into an MCP server: a JSON-RPC 2.0 endpoint an AI
+//! agent connects to and drives through four tools, `snapshot`, `act`,
+//! `key` and `type`, each one a thin wrapper over the matching
+//! [`quadraui::control::ControlRequest`] variant.
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use quadraui_mcp::Transport;
+//!
+//! # fn get_handle() -> quadraui::control::ControlHandle { unreachable!() }
+//! // `handle` comes from the app's own runner — e.g.
+//! // `TuiRunner::attach_control` on TUI.
+//! let handle = get_handle();
+//! quadraui_mcp::serve(handle, Transport::Stdio).unwrap();
+//! ```
+//!
+//! # Transports
+//!
+//! A headless or GUI app can share its own stdin/stdout with an MCP
+//! client ([`Transport::Stdio`]). A TUI app owns the terminal's stdio for
+//! rendering, so it needs a socket an agent can attach to from a second
+//! process instead: [`Transport::Unix`] on Unix, or the cross-platform
+//! [`Transport::Tcp`] fallback (also this crate's Windows story — see
+//! that variant's own doc). [`Transport::parse`] reads an env-var-style
+//! spec such as `QUADRAUI_MCP=unix:/tmp/app.sock` or `QUADRAUI_MCP=tcp:
+//! 127.0.0.1:7777`; see `transport`'s module doc for the on-the-wire
+//! framing every transport shares.
+//!
+//! # No MCP SDK, no async runtime
+//!
+//! The protocol surface this crate implements — the `initialize`
+//! handshake, `tools/list`, `tools/call`, four tool schemas — is small
+//! enough that hand-rolling it over `serde_json` keeps the dependency
+//! list to just `quadraui` and `serde_json`. Every MCP SDK on crates.io
+//! at the time of writing pulls in `tokio` to get there, which would
+//! force an async runtime onto every `quadraui` app that links this
+//! crate purely to be driven by an agent; this crate's transports
+//! (`transport.rs`) use one blocking OS thread per connection instead.
+//!
+//! # Levels
+//!
+//! This is "Level 1" per the control channel's own doc: UI-level
+//! `snapshot`/`act`, built entirely on `quadraui::a11y`, so any
+//! `AppLogic` app gets all four tools for free the moment it wires up
+//! `control`. "Level 2" — app-defined named commands that act on the
+//! app's own model rather than its UI — is `quadraui::control`'s
+//! reserved `ControlRequest::Command`, not yet wired to a tool here.
+
+mod tools;
+mod transport;
+
+use serde_json::{json, Value};
+
+use quadraui::control::ControlHandle;
+
+pub use transport::Transport;
+
+/// Runs an MCP server against `handle` over `transport`, blocking the
+/// calling thread until the transport's listener (or, for
+/// [`Transport::Stdio`], standard input) closes.
+///
+/// A caller that also owns an event loop on this thread (e.g. a TUI
+/// app's own `run()`) calls this from a background thread instead,
+/// exactly the way it would use [`ControlHandle`] itself from any other
+/// thread that doesn't own the loop — see that type's own doc.
+pub fn serve(handle: ControlHandle, transport: Transport) -> std::io::Result<()> {
+    transport::serve(handle, transport)
+}
+
+/// The MCP protocol version this server declares in `initialize` when
+/// the client's own request doesn't specify one to echo back.
+const PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Handles one line of input against `handle`, returning the line to
+/// write back (already framed, caller adds the trailing newline) or
+/// `None` for a notification (a request with no `id`), which JSON-RPC
+/// never answers.
+///
+/// Shared by every transport in `transport.rs` — this is the one place
+/// that understands JSON-RPC envelopes and the MCP methods layered over
+/// them; nothing transport-specific leaks in here, and nothing
+/// JSON-RPC-specific leaks into `transport.rs`.
+fn handle_line(handle: &ControlHandle, line: &str) -> Option<String> {
+    let request: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(error_response(
+                Value::Null,
+                -32700,
+                &format!("parse error: {e}"),
+            ))
+        }
+    };
+    let id = request.get("id").cloned();
+    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+
+    // A request with no `id` is a notification — JSON-RPC never replies
+    // to one, success or failure, so side effects (none of the methods
+    // below have any beyond answering) still run but nothing is ever
+    // written back.
+    let id = id?;
+
+    match dispatch(handle, method, &params) {
+        Ok(result) => Some(success_response(id, result)),
+        Err((code, message)) => Some(error_response(id, code, &message)),
+    }
+}
+
+/// Routes one JSON-RPC `method` to its MCP handling. `Err` is a
+/// JSON-RPC-level protocol error (unknown method, malformed params) —
+/// distinct from a tool's own failure, which `tools_call` reports inside
+/// a normal `tools/call` *result* via `isError`, per the MCP spec, not
+/// as a JSON-RPC error.
+fn dispatch(handle: &ControlHandle, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+    match method {
+        "initialize" => Ok(initialize_result(params)),
+        "ping" => Ok(json!({})),
+        "tools/list" => Ok(json!({ "tools": tools::definitions() })),
+        "tools/call" => tools_call(handle, params),
+        other => Err((-32601, format!("method not found: {other}"))),
+    }
+}
+
+fn initialize_result(params: &Value) -> Value {
+    let protocol_version = params
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .unwrap_or(PROTOCOL_VERSION);
+    json!({
+        "protocolVersion": protocol_version,
+        "capabilities": { "tools": {} },
+        "serverInfo": {
+            "name": "quadraui-mcp",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+    })
+}
+
+fn tools_call(handle: &ControlHandle, params: &Value) -> Result<Value, (i64, String)> {
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or((-32602, "tools/call: \"name\" is required".to_string()))?;
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
+    // A tool failure (bad arguments, the control channel answering an
+    // error) is reported *inside* a normal JSON-RPC success result via
+    // `isError: true` — the MCP spec's own distinction between a
+    // protocol-level error (this function's `Err`, e.g. an unknown
+    // method) and a tool-level one, which an agent should see as the
+    // tool's own output, not a transport failure.
+    let (text, is_error) = match tools::call(handle, name, &arguments) {
+        Ok(value) => (value.to_string(), false),
+        Err(message) => (message, true),
+    };
+    Ok(json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": is_error,
+    }))
+}
+
+fn success_response(id: Value, result: Value) -> String {
+    json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
+}
+
+fn error_response(id: Value, code: i64, message: &str) -> String {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quadraui::control::channel;
+    use quadraui::UserPayload;
+    use std::sync::Arc;
+
+    fn no_op_handle() -> (ControlHandle, quadraui::control::ControlPort) {
+        let waker: Arc<dyn Fn(UserPayload) + Send + Sync> = Arc::new(|_| {});
+        channel(waker)
+    }
+
+    #[test]
+    fn notification_gets_no_reply() {
+        let (handle, _port) = no_op_handle();
+        let reply = handle_line(
+            &handle,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        );
+        assert!(reply.is_none());
+    }
+
+    #[test]
+    fn malformed_json_is_a_parse_error() {
+        let (handle, _port) = no_op_handle();
+        let reply = handle_line(&handle, "not json").expect("parse error is still a reply");
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["error"]["code"], json!(-32700));
+    }
+
+    #[test]
+    fn unknown_method_is_method_not_found() {
+        let (handle, _port) = no_op_handle();
+        let reply = handle_line(&handle, r#"{"jsonrpc":"2.0","id":1,"method":"bogus"}"#)
+            .expect("a request with an id always gets a reply");
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["id"], json!(1));
+        assert_eq!(v["error"]["code"], json!(-32601));
+    }
+
+    #[test]
+    fn initialize_echoes_protocol_version_and_names_the_server() {
+        let (handle, _port) = no_op_handle();
+        let reply = handle_line(
+            &handle,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["result"]["protocolVersion"], json!("2024-11-05"));
+        assert_eq!(v["result"]["serverInfo"]["name"], json!("quadraui-mcp"));
+    }
+
+    #[test]
+    fn tools_list_names_all_four_tools() {
+        let (handle, _port) = no_op_handle();
+        let reply =
+            handle_line(&handle, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        let names: Vec<&str> = v["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["snapshot", "act", "key", "type"]);
+    }
+
+    /// A tool-level failure (here: the runner already gone, so
+    /// `snapshot` can't even reach it) is a normal JSON-RPC success
+    /// whose result has `isError: true` — never a JSON-RPC `error`
+    /// object. See `tools_call`'s own doc for why.
+    #[test]
+    fn tool_failure_is_iserror_not_a_protocol_error() {
+        let (handle, port) = no_op_handle();
+        drop(port); // simulate the owning runner having exited
+        let reply = handle_line(
+            &handle,
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"snapshot","arguments":{}}}"#,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert!(v.get("error").is_none());
+        assert_eq!(v["result"]["isError"], json!(true));
+        assert!(v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("control runner has exited"));
+    }
+}
