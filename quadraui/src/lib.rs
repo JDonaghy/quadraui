@@ -471,6 +471,15 @@ pub mod modal_stack;
 // runners (in `quadraui::tui::run`, `quadraui::gtk::run`) drive against.
 // See `docs/BACKEND_SETUP_AUDIT.md` for design rationale.
 pub mod runner;
+
+// Backend-neutral control channel: a cloneable, `Send` handle a thread
+// that does not own the event loop uses to drive a running `AppLogic` app
+// (snapshot/act/key/type) without knowing which backend is running it.
+// Gated behind the `control` feature so an app that never needs this
+// doesn't pay for it — see that module's doc.
+#[cfg(feature = "control")]
+#[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+pub mod control;
 // `ShellAdapter` is constructed only by the TUI/GTK/macOS/Win-GUI shell
 // runners. Gate the module on the features that actually consume it rather
 // than allowing dead code under `-D warnings`.
@@ -533,9 +542,9 @@ mod text_selection;
 mod backend_core;
 
 pub use a11y::{
-    backend_a11y_tree, frame_to_tree, frame_to_tree_with_modal, markdown_a11y_children,
-    A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive, A11yRole, A11yTree,
-    A11yTreeBuilder, A11yTreeNode, A11yUpdate, A11yValueRange,
+    backend_a11y_tree, frame_to_tree, frame_to_tree_with_modal, markdown_a11y_children, A11yAction,
+    A11yActionValue, A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive,
+    A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate, A11yValueRange,
 };
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;

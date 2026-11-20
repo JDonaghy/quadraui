@@ -14,3 +14,21 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
     let adapter = build_shell_adapter(app, config);
     let _ = super::run::run(adapter);
 }
+
+/// Build a [`ShellApp`] as a [`crate::tui::run::TuiRunner`] instead of
+/// entering [`run_with_shell`]'s blocking loop — for a host that wants
+/// the AppShell chrome but also needs
+/// [`crate::tui::run::TuiRunner::attach_control`] (see [`crate::control`]'s
+/// module doc) or the step/pump-level control `run_with_shell` (which owns
+/// the process for its whole lifetime) can't give. Mirrors
+/// [`crate::tui::testing::driver_with_shell`]'s identical shape for the
+/// headless test driver.
+#[cfg(feature = "control")]
+#[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+pub fn runner_with_shell<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+) -> std::io::Result<super::run::TuiRunner<impl crate::runner::AppLogic>> {
+    let adapter = build_shell_adapter(app, config);
+    super::run::TuiRunner::new(adapter)
+}

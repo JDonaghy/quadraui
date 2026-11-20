@@ -33,6 +33,16 @@
 //! via `AppShell::compute_layout` + `FrameHitMap` hit-testing, not
 //! multiple GTK DrawingAreas. The associated type is retained as a
 //! compatibility seam.
+//!
+//! # A fourth, optional loop phase: the control channel
+//!
+//! Behind the `control` feature, a runner may also service a
+//! [`crate::control::ControlPort`] once per loop iteration — a thread
+//! that does not own the event loop submits a request there and it comes
+//! back through [`AppLogic::handle`] exactly like real input, so an app
+//! written against this trait alone already supports it for free. See
+//! `crate::control`'s module doc and `tui::run::TuiRunner::attach_control`
+//! for the TUI wiring.
 
 use std::time::Duration;
 
