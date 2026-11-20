@@ -306,6 +306,41 @@ impl<A: AppLogic> MacDriver<A> {
         self.core.backend()
     }
 
+    /// Disjoint mutable access to both the backend and the `AppLogic` this
+    /// driver wraps — for a test that needs to call a `&mut dyn Backend`
+    /// method (e.g. [`crate::frame::set_frame_capture`]) and poke
+    /// app-owned state in the same scope. Mirrors
+    /// [`crate::tui::testing::TuiDriver::parts_mut`]/
+    /// [`crate::gtk::testing::GtkDriver::parts_mut`]'s identical shape.
+    pub fn parts_mut(&mut self) -> (&mut MacBackend, &mut A) {
+        self.core.parts_mut()
+    }
+
+    /// Service a [`crate::control::ControlPort`] against this driver — the
+    /// headless equivalent of what `macos::run::MacRunner::run_one` does
+    /// once per [`crate::macos::run::MacRunner::step`]/
+    /// [`crate::macos::run::MacRunner::pump`] call for a channel attached
+    /// via [`crate::macos::run::MacRunner::attach_control`]. Every
+    /// control-synthesized [`UiEvent`] goes through
+    /// [`super::run::control_dispatch`] — the same [`Self::dispatch`]
+    /// funnel — so a `ControlHandle::key`/`type_text`/`act` call behaves
+    /// identically in a test driven through this method and a live
+    /// `MacRunner`. Repaints on [`Reaction::Redraw`], same as
+    /// [`Self::dispatch`]; the caller observes a [`Reaction::Exit`] (only
+    /// reachable via `ControlRequest::Act`'s routed events, like any other
+    /// dispatched event) through the returned [`Reaction`] rather than
+    /// this method latching `exited` itself.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    pub fn service_control(&mut self, port: &crate::control::ControlPort) -> Reaction {
+        let (backend, app) = self.core.parts_mut();
+        let reaction = port.service(app, backend, super::run::control_dispatch);
+        if reaction == Reaction::Redraw {
+            self.render();
+        }
+        reaction
+    }
+
     /// Access the underlying offscreen surface, e.g. for
     /// [`BitmapSurface::write_ppm_and_open`]-based visual debugging.
     pub fn surface(&self) -> &BitmapSurface {

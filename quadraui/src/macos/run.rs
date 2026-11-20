@@ -63,6 +63,8 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::rc::Rc;
+#[cfg(feature = "control")]
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -102,6 +104,8 @@ use super::text::make_font;
 // rather than a second decoder.
 use super::tray::decode_ns_image;
 use crate::backend::Backend;
+#[cfg(feature = "control")]
+use crate::control::{self, ControlHandle};
 use crate::event::Viewport;
 use crate::primitives::image::ImageSource;
 use crate::runner::{AppLogic, Reaction};
@@ -363,6 +367,42 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     // clearing, TextSelectionChanged — is the shared pipeline. See this
     // function's doc.
     runtime::preprocess_event(event, backend, app)
+}
+
+/// The dispatch callback [`control::ControlPort::service`] runs for every
+/// [`UiEvent`] a `ControlRequest` synthesizes — the same funnel
+/// [`crate::macos::testing::MacDriver::dispatch`] runs for a scripted test
+/// event, [`dispatch_event`] above. This is what makes
+/// `ControlHandle::key`/`type_text` behave like real keyboard input on
+/// macOS — Tab focus cycling, declared accelerators, Ctrl-C/Cmd-V/Ctrl-A —
+/// instead of a direct `AppLogic::handle` call that bypasses all of it.
+///
+/// Like [`crate::gtk::run::control_dispatch`] and unlike
+/// [`crate::tui::run::control_dispatch`], there is no extra backend-
+/// translation stage to run first: macOS's mouse-routing (`route_pointer`)
+/// and double-click folding already happen inside [`dispatch_event`]
+/// itself, not as a shared step every event re-enters — and no
+/// `ControlRequest` variant synthesizes a raw `MouseDown`/`MouseMoved`/
+/// `MouseUp` that would need it (`Key`/`Type` synthesize `KeyPressed`;
+/// `Act`'s routed events are already app-level, via
+/// `crate::a11y::route_action`). Fetches fresh caret-blink handles from
+/// `backend` on every call rather than threading them through, mirroring
+/// [`crate::macos::testing::MacDriver::dispatch`]'s identical pattern —
+/// cheap `Rc` clones, not a reallocation.
+#[cfg(feature = "control")]
+pub(crate) fn control_dispatch<A: AppLogic>(
+    event: UiEvent,
+    app: &mut A,
+    backend: &mut MacBackend,
+) -> Reaction {
+    let caret_visible = backend.caret_visible_handle();
+    let caret_pause = backend.caret_blink_pause_handle();
+    match dispatch_event(event, backend, app, &caret_visible, &caret_pause) {
+        EventOutcome::Continue => Reaction::Continue,
+        EventOutcome::Redraw => Reaction::Redraw,
+        EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
+        EventOutcome::Exit => Reaction::Exit,
+    }
 }
 
 /// Render one frame: `begin_frame` + [`MacBackend::enter_frame_scope`] +
@@ -2365,6 +2405,43 @@ struct MacBootstrap {
     /// [`WindowCloseFlag`]'s doc for why this is a latch rather than a
     /// query on `_window` itself.
     window_closed: Rc<WindowCloseFlag>,
+    /// See [`ControlSlot`]. Filled by [`MacRunner::attach_control`];
+    /// serviced once per [`MacRunner::step`]/[`MacRunner::pump`] call via
+    /// `service_control` below — `run_with`'s blocking loop never attaches
+    /// anything to it, mirroring `gtk::run::ControlSlot`'s identical
+    /// "always constructed, usually empty" shape.
+    #[cfg_attr(not(feature = "control"), allow(dead_code))]
+    control_slot: ControlSlot,
+    /// Backend-neutral waker [`MacRunner::attach_control`] hands to
+    /// [`control::channel`], so a background thread's
+    /// [`ControlHandle::send`] wakes this app the same way any other
+    /// [`crate::Backend::waker`] call does.
+    #[cfg(feature = "control")]
+    waker: Arc<dyn Fn(crate::UserPayload) + Send + Sync>,
+    /// Type-erased closure servicing whatever [`control::ControlPort`] is
+    /// attached via [`MacRunner::attach_control`], applying the resulting
+    /// [`Reaction`] through the live `QuadraView` the same way a native
+    /// event's does — see [`MacRunner::run_one`]'s call site. A no-op when
+    /// the `control` feature is off or nothing has attached yet.
+    service_control: Rc<dyn Fn()>,
+}
+
+/// Shared slot a [`control::ControlPort`] gets dropped into once attached
+/// (see [`MacRunner::attach_control`]), and the one `service_control`
+/// checks on every [`MacRunner::run_one`] call to service it — see that
+/// field's doc for why servicing happens there rather than inside
+/// `QuadraView::dispatch_tick`. An `Rc<RefCell<_>>`-backed field rather
+/// than a plain one because [`bootstrap`] moves `app`/`backend` into
+/// several other closures before returning, so there is no struct left
+/// for a caller to reach into afterwards; this is the one piece of that
+/// state [`MacBootstrap`] keeps a handle to. Always constructible (not
+/// only when the `control` feature is on) so [`bootstrap`]'s return type
+/// doesn't need a second, `cfg`-gated shape — mirrors
+/// `gtk::run::ControlSlot` exactly.
+#[derive(Clone, Default)]
+struct ControlSlot {
+    #[cfg(feature = "control")]
+    port: Rc<RefCell<Option<control::ControlPort>>>,
 }
 
 fn bootstrap<A: AppLogic + 'static>(
@@ -2664,6 +2741,44 @@ fn bootstrap<A: AppLogic + 'static>(
         ns_app.activateIgnoringOtherApps(true);
     }
 
+    // `run`/`run_with` own the process end to end and return nothing a
+    // caller could later attach a control channel to — mirrors
+    // `tui::run`/`run_with`, which likewise never call
+    // `TuiRunner::attach_control`. `MacRunner::new_with` is the one path
+    // that threads a real slot through via `MacRunner::attach_control`.
+    let control_slot = ControlSlot::default();
+    #[cfg(feature = "control")]
+    let waker = backend.borrow().waker();
+
+    // Services whatever `control::ControlPort` a later
+    // `MacRunner::attach_control` call drops into `control_slot`, once
+    // per `MacRunner::run_one` iteration — see that call site and
+    // `ControlSlot`'s doc. `run_with`'s blocking loop builds this closure
+    // too (so `MacBootstrap`'s shape doesn't need a second, feature-gated
+    // version) but never calls it, since nothing can reach `control_slot`
+    // once `ns_app.run()` takes over.
+    #[cfg(feature = "control")]
+    let service_control: Rc<dyn Fn()> = {
+        let app = app.clone();
+        let backend = backend.clone();
+        let control_slot = control_slot.clone();
+        let view = view.clone();
+        Rc::new(move || {
+            let reaction = {
+                let port_guard = control_slot.port.borrow();
+                let Some(port) = port_guard.as_ref() else {
+                    return;
+                };
+                let mut backend_mut = backend.borrow_mut();
+                let mut app_mut = app.borrow_mut();
+                port.service(&mut *app_mut, &mut *backend_mut, control_dispatch)
+            };
+            view.apply_reaction(reaction);
+        })
+    };
+    #[cfg(not(feature = "control"))]
+    let service_control: Rc<dyn Fn()> = Rc::new(|| {});
+
     MacBootstrap {
         ns_app,
         _window: window,
@@ -2673,6 +2788,10 @@ fn bootstrap<A: AppLogic + 'static>(
         _blink_target,
         _blink_timer,
         window_closed,
+        control_slot,
+        #[cfg(feature = "control")]
+        waker,
+        service_control,
     }
 }
 
@@ -2787,6 +2906,27 @@ impl MacRunner {
         Self { _boot: boot }
     }
 
+    /// Attach a backend-neutral control channel (see [`crate::control`]'s
+    /// module doc) to this runner, returning the cloneable
+    /// [`ControlHandle`] a thread that does not own this event loop uses
+    /// to drive it — snapshot the current [`crate::A11yTree`], route an
+    /// assistive-technology-style action against it, or synthesize key
+    /// input through the same pipeline real keyboard input goes through
+    /// (see [`control_dispatch`]'s doc). Serviced once per
+    /// [`Self::step`]/[`Self::pump`] call, in [`Self::run_one`] — the
+    /// macOS counterpart of
+    /// [`crate::tui::run::TuiRunner::attach_control`]/
+    /// [`crate::gtk::run::GtkRunner::attach_control`]. Replaces any
+    /// previously attached channel — only the most recently attached one
+    /// is serviced.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    pub fn attach_control(&mut self) -> ControlHandle {
+        let (handle, port) = control::channel(self._boot.waker.clone());
+        *self._boot.control_slot.port.borrow_mut() = Some(port);
+        handle
+    }
+
     /// Whether the app's own window is still open — see the type-level
     /// doc's third and fourth paragraphs for why this reads a
     /// `windowWillClose:` latch scoped to the single window
@@ -2839,6 +2979,15 @@ impl MacRunner {
         if let Some(event) = event {
             self._boot.ns_app.sendEvent(&event);
         }
+
+        // Drain whatever a background thread queued via
+        // `Self::attach_control`'s `ControlHandle` since the last
+        // iteration — a no-op until something attaches. Runs before the
+        // `displayIfNeeded` sweep below so a `Reaction::Redraw` this
+        // produces (e.g. an `Act`-routed click) is painted in the same
+        // pass `step`/`pump` returns from, not deferred to the next call.
+        (self._boot.service_control)();
+
         self._boot.ns_app.updateWindows();
         self._boot._window.displayIfNeeded();
 

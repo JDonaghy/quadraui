@@ -49,3 +49,30 @@ pub fn run_with_shell<A: ShellApp + 'static>(
     let adapter = build_shell_adapter(app, config);
     super::run::run_with(adapter, run_config)
 }
+
+/// Build a [`ShellApp`] as a [`crate::macos::run::MacRunner`] instead of
+/// entering [`run_with_shell`]'s blocking `NSApplication::run()` loop —
+/// for a host that wants the AppShell chrome but also needs
+/// [`crate::macos::run::MacRunner::attach_control`] (see
+/// [`crate::control`]'s module doc), which `run_with_shell` (which owns
+/// the process for its whole lifetime) can't give. Mirrors
+/// [`crate::tui::shell_runner::runner_with_shell`]/
+/// [`crate::gtk::shell_runner::runner_with_shell`]'s identical shape for
+/// the TUI/GTK backends.
+///
+/// **Must be called from the main thread** — enforced transitively by
+/// [`super::run::MacRunner::new_with`].
+#[cfg(feature = "control")]
+#[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+pub fn runner_with_shell<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+) -> super::run::MacRunner {
+    let mut run_config =
+        RunConfig::new(config.title.clone()).with_client_side_titlebar(config.client_side_titlebar);
+    if let Some(app_icon) = config.app_icon.clone() {
+        run_config = run_config.with_app_icon(app_icon);
+    }
+    let adapter = build_shell_adapter(app, config);
+    super::run::MacRunner::new_with(adapter, run_config)
+}

@@ -433,6 +433,15 @@ pub struct MacBackend {
     /// entrance-only scoping as `toast_enter` above, since there is no
     /// hover-exit state to keep animating once the pointer has moved on.
     hover_fade: HashMap<WidgetId, Transition>,
+    /// Opt-in retention of the frame this backend last painted, handed
+    /// out by [`Backend::frame_capture`] and read by
+    /// [`Backend::last_frame`]. Disabled and empty by default, so a live
+    /// app that never opts in never pays for the clone
+    /// [`crate::frame::ScreenLayout::draw`] would otherwise build. Mirrors
+    /// `GtkBackend::frame_capture`/`TuiBackend::frame_capture` exactly —
+    /// see `crate::frame`'s module doc, "Live-frame capture for
+    /// accessibility".
+    frame_capture: crate::frame::FrameCapture,
 }
 
 /// The wake-target [`MacBackend::waker`] invokes — see
@@ -852,6 +861,7 @@ impl MacBackend {
             notification_events,
             toast_enter: HashMap::new(),
             hover_fade: HashMap::new(),
+            frame_capture: crate::frame::FrameCapture::default(),
         }
     }
 
@@ -2100,6 +2110,14 @@ impl Backend for MacBackend {
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
         self.focus.set_focus(id)
+    }
+
+    fn frame_capture(&mut self) -> Option<&mut crate::frame::FrameCapture> {
+        Some(&mut self.frame_capture)
+    }
+
+    fn last_frame(&self) -> Option<&crate::frame::OwnedFrame> {
+        self.frame_capture.last_frame()
     }
 
     /// Strokes the generic tab-stop focus-ring convention around `rect`.
