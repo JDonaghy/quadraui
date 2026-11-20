@@ -122,6 +122,13 @@ impl CellGridDemo {
             cursor: self.cursor,
             selection_anchor: self.selection_anchor,
             cells: self.cells.clone(),
+            // The whole sheet is loaded at once, so the scrolled body of
+            // `cells` starts at the first row below the frozen header
+            // (`frozen_rows`) and at column 0. A virtualised app would
+            // move these to track the block it last supplied in response
+            // to `CellGridEvent::CellsRequested`.
+            loaded_row_start: 1,
+            loaded_col_start: 0,
             has_focus: self.has_focus,
             show_scrollbar: false,
         }
