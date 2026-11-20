@@ -16,7 +16,11 @@
 //!   everything.
 //! - The frozen header row and region column stay put as the body
 //!   scrolls to follow the cursor.
-//! - Press `q` or Esc to quit.
+//! - Typing a character or pressing F2 opens an inline editor over the
+//!   cursor cell; Enter/Tab/the arrow keys commit and move, Esc cancels.
+//!   A leading `=` sums `+`-separated integers (e.g. `=1+2` → `3`).
+//! - Press `q` or Esc to quit (Esc cancels an edit first, if one is
+//!   active).
 #[path = "common/mod.rs"]
 mod common;
 

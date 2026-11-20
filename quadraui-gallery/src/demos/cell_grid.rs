@@ -131,6 +131,7 @@ impl CellGridDemo {
             loaded_col_start: 0,
             has_focus: self.has_focus,
             show_scrollbar: false,
+            editing: None,
         }
     }
 

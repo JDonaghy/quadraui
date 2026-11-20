@@ -550,6 +550,7 @@ window \"quadraui\" [focused]
             loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         };
         Surface::CellGrid {
             rect: Rect::new(0.0, 1.0, 30.0, 11.0),

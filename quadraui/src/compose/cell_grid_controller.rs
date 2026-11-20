@@ -55,13 +55,18 @@ use std::collections::BTreeMap;
 
 use crate::backend::Backend;
 use crate::primitive::{LayoutCtx, Primitive};
-use crate::primitives::cell_grid::{Cell, CellGrid, CellGridHit, CellGridPrimitiveLayout};
+use crate::primitives::cell_grid::{
+    Cell, CellEditState, CellGrid, CellGridHit, CellGridPrimitiveLayout,
+};
 use crate::primitives::scrollbar::scroll_by_clamped;
-use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, UiEvent, WidgetId};
+use crate::primitives::text_input::EditOp;
+use crate::{
+    ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, TextField, UiEvent, WidgetId,
+};
 
 /// What happened after [`CellGridController::handle`] processed an event,
 /// or after calling one of its navigation methods directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CellGridControllerEvent {
     /// The cursor moved and the selection is just that one cell (no
     /// [`CellGridController::selection_anchor`] beyond the cursor
@@ -79,6 +84,46 @@ pub enum CellGridControllerEvent {
     Consumed,
     /// Event not relevant to this controller.
     Ignored,
+    /// F2 (or any other host-chosen "edit this cell" trigger routed into
+    /// [`CellGridController::handle`]) was pressed at the cursor cell,
+    /// with no active edit yet. The controller has no cell content (see
+    /// the module doc) so it cannot seed the editor itself — the host
+    /// responds by calling [`CellGridController::start_editing`] with
+    /// that cell's current raw text.
+    CellEditRequested { row: usize, col: usize },
+    /// An inline edit began at `(row, col)` — either [`Self::start_editing`]
+    /// was called, or a plain character typed at the cursor with no
+    /// active edit started a fresh one seeded with just that character.
+    CellEditStarted { row: usize, col: usize },
+    /// The in-progress edit's text buffer changed (insert/delete/paste).
+    CellEditChanged {
+        row: usize,
+        col: usize,
+        text: String,
+    },
+    /// The user confirmed the in-progress edit — Enter, Tab or an arrow
+    /// key. The cursor has already moved to the next cell (as Excel
+    /// does); read [`CellGridController::cursor`] for where. The host
+    /// hands `text` to its engine (e.g. `cell.set`) for `(row, col)`.
+    CellEditCommitted {
+        row: usize,
+        col: usize,
+        text: String,
+    },
+    /// The user cancelled the in-progress edit (Escape). The cell's
+    /// value is unchanged; the cursor has not moved.
+    CellEditCancelled { row: usize, col: usize },
+}
+
+/// The active inline edit's text buffer — a [`TextField`] reused wholesale
+/// (per the module doc's "Reuse `TextField`" convention) rather than a
+/// second, hand-rolled line editor. Always at [`CellGridController::cursor`]:
+/// unlike [`crate::compose::tree_controller::TreeController`]'s renaming
+/// state (which carries its own `path`, independent of the tree's
+/// selection), a `CellGrid` edit has no identity apart from "the cursor
+/// cell", so there is nothing else to track here.
+struct CellEditing {
+    field: TextField,
 }
 
 /// Cursor-movement and rectangular-selection state for a single
@@ -108,6 +153,9 @@ pub struct CellGridController {
     /// release. `None` whenever no drag is active — [`Self::mouse_drag`]'s
     /// own guard.
     drag_anchor: Option<(usize, usize)>,
+    /// The active inline edit at [`Self::cursor`], if any — see
+    /// [`CellEditing`]'s own doc.
+    editing: Option<CellEditing>,
 }
 
 impl CellGridController {
@@ -133,6 +181,7 @@ impl CellGridController {
             has_focus: true,
             show_scrollbar: false,
             drag_anchor: None,
+            editing: None,
         }
     }
 
@@ -149,10 +198,21 @@ impl CellGridController {
     pub fn set_dimensions(&mut self, row_count: usize, col_count: usize) {
         self.row_count = row_count;
         self.col_count = col_count;
-        self.cursor = (
+        let new_cursor = (
             self.cursor.0.min(row_count.saturating_sub(1)),
             self.cursor.1.min(col_count.saturating_sub(1)),
         );
+        // An in-progress edit is always anchored to `self.cursor` (see
+        // `CellEditing`'s own doc) — if a shrink is about to move the
+        // cursor out from under it, the edit buffer would silently start
+        // describing a different cell's text. Drop it rather than carry
+        // that mismatch forward; same "collapse past the bound, leave an
+        // idempotent re-declaration alone" rule `selection_anchor` below
+        // already follows.
+        if new_cursor != self.cursor {
+            self.editing = None;
+        }
+        self.cursor = new_cursor;
         self.selection_anchor = self
             .selection_anchor
             .filter(|&(row, col)| row < row_count && col < col_count);
@@ -241,6 +301,103 @@ impl CellGridController {
         self.col_scroll = col_scroll;
     }
 
+    // ── Inline editing ───────────────────────────────────────────────
+
+    /// Whether [`Self::cursor`] is currently being edited.
+    pub fn is_editing(&self) -> bool {
+        self.editing.is_some()
+    }
+
+    /// The in-progress edit's text buffer, or `None` when not editing.
+    pub fn editing_text(&self) -> Option<&str> {
+        self.editing.as_ref().map(|e| e.field.value.as_str())
+    }
+
+    /// The in-progress edit's cursor, as a byte offset into
+    /// [`Self::editing_text`].
+    pub fn editing_cursor(&self) -> Option<usize> {
+        self.editing.as_ref().and_then(|e| e.field.cursor)
+    }
+
+    /// The in-progress edit's selection anchor, as a byte offset into
+    /// [`Self::editing_text`].
+    pub fn editing_selection_anchor(&self) -> Option<usize> {
+        self.editing.as_ref().and_then(|e| e.field.selection_anchor)
+    }
+
+    /// Start editing [`Self::cursor`], seeded with `text` (the cell's
+    /// current raw value) and the cursor placed at its end — the F2
+    /// convention. A host calls this in response to
+    /// [`CellGridControllerEvent::CellEditRequested`] (the controller
+    /// has no cell content of its own to seed with, see the module doc)
+    /// or whenever else it wants to open the editor programmatically
+    /// (e.g. the formula bar gaining focus — see [`Self::sync_formula_bar`]).
+    pub fn start_editing(&mut self, text: impl Into<String>) -> CellGridControllerEvent {
+        if self.row_count == 0 || self.col_count == 0 {
+            return CellGridControllerEvent::Ignored;
+        }
+        let text = text.into();
+        let cursor = text.len();
+        self.begin_edit(text, cursor);
+        let (row, col) = self.cursor;
+        CellGridControllerEvent::CellEditStarted { row, col }
+    }
+
+    /// Cancel the in-progress edit programmatically, discarding its text
+    /// — e.g. a host-level "click away" rule the controller's own
+    /// [`Self::handle`] doesn't implement (see that method's doc on why
+    /// mouse input is inert while editing).
+    pub fn cancel_editing(&mut self) -> CellGridControllerEvent {
+        match self.cancel_edit() {
+            Some((row, col)) => CellGridControllerEvent::CellEditCancelled { row, col },
+            None => CellGridControllerEvent::Ignored,
+        }
+    }
+
+    /// Mirror the in-progress edit's text/cursor/selection onto an
+    /// external `TextField` — the formula bar. Only `value`/`cursor`/
+    /// `selection_anchor` are touched; `id`/`placeholder`/`has_focus`/
+    /// the icon/clear-button fields stay whatever the host already set.
+    ///
+    /// When not editing, `cursor`/`selection_anchor` are cleared to
+    /// `None` (no stale caret/selection survives a previous edit) but
+    /// `value` is left untouched — the host sets it from its own lookup
+    /// of the cursor cell's raw text, which this controller doesn't
+    /// have. Call this once per frame before painting the formula bar.
+    pub fn sync_formula_bar(&self, field: &mut TextField) {
+        match &self.editing {
+            Some(editing) => {
+                field.value = editing.field.value.clone();
+                field.cursor = editing.field.cursor;
+                field.selection_anchor = editing.field.selection_anchor;
+            }
+            None => {
+                field.cursor = None;
+                field.selection_anchor = None;
+            }
+        }
+    }
+
+    /// Route one key event that arrived at the formula bar `TextField`
+    /// — not the grid itself — into the same in-progress edit
+    /// [`Self::handle`] would update, so typing there commits the same
+    /// way (Enter/Tab/arrows commit and move, Escape cancels). Returns
+    /// [`CellGridControllerEvent::Ignored`] when nothing is being
+    /// edited yet; a host opens the editor first (typically on the
+    /// formula bar gaining focus), via [`Self::start_editing`].
+    pub fn handle_formula_bar_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+        backend: &dyn Backend,
+        rect: Rect,
+    ) -> CellGridControllerEvent {
+        if self.editing.is_none() {
+            return CellGridControllerEvent::Ignored;
+        }
+        self.handle_edit_key(key, modifiers, backend, rect)
+    }
+
     // ── Rendering ─────────────────────────────────────────────────────
 
     /// Build the [`CellGrid`] this controller's current state describes,
@@ -273,6 +430,12 @@ impl CellGridController {
             loaded_col_start: self.col_scroll,
             has_focus: self.has_focus,
             show_scrollbar: self.show_scrollbar,
+            editing: self.editing.as_ref().map(|e| CellEditState {
+                text: e.field.value.clone(),
+                cursor: e.field.cursor.unwrap_or(0),
+                selection_anchor: e.field.selection_anchor,
+                placeholder: None,
+            }),
         }
     }
 
@@ -532,6 +695,28 @@ impl CellGridController {
         backend: &dyn Backend,
         rect: Rect,
     ) -> CellGridControllerEvent {
+        // An in-progress edit is always anchored to `self.cursor` (see
+        // `CellEditing`'s own doc) — a mouse click that moved the cursor
+        // without first committing or cancelling would leave the
+        // painted editor and the text buffer describing different
+        // cells. So while editing, only keyboard input (which this
+        // controller fully owns the semantics of — commit, cancel,
+        // insert, delete) is routed anywhere; mouse input is inert. A
+        // host that wants click-to-commit calls
+        // [`Self::cancel_editing`] or relies on [`Self::handle_edit_key`]'s
+        // own commit keys before ever routing a click here.
+        if self.editing.is_some() {
+            return match event {
+                UiEvent::KeyPressed { key, modifiers, .. } => {
+                    self.handle_edit_key(key, modifiers, backend, rect)
+                }
+                UiEvent::CharTyped(ch) => self.apply_edit_op(EditOp::InsertChar(*ch)),
+                UiEvent::ClipboardPaste(text) => {
+                    self.apply_edit_op(EditOp::InsertText(text.clone()))
+                }
+                _ => CellGridControllerEvent::Consumed,
+            };
+        }
         match event {
             UiEvent::MouseDown {
                 button: MouseButton::Left,
@@ -671,7 +856,184 @@ impl CellGridController {
 
             Key::Char('a') if jump => self.select_all(backend, rect),
 
+            // F2: the controller has no cell content to seed the editor
+            // with (see the module doc), so it only reports the
+            // request — the host calls `start_editing` with that cell's
+            // current raw text.
+            Key::Named(NamedKey::F(2)) => self.request_edit(),
+
+            // Any other plain character starts a fresh edit seeded with
+            // just that character, replacing whatever was there — the
+            // same "typing replaces" convention
+            // `TreeController::start_editing`'s own doc describes for a
+            // rename. Must come after the `Key::Char('a') if jump` arm
+            // above so Ctrl/Cmd+A still selects the whole sheet instead
+            // of starting an edit.
+            Key::Char(c) if !jump => self.begin_typing(*c),
+
             _ => CellGridControllerEvent::Ignored,
+        }
+    }
+
+    /// The controller has no cell content of its own (see the module
+    /// doc), so F2 only reports the request; see
+    /// [`CellGridControllerEvent::CellEditRequested`]'s own doc.
+    fn request_edit(&self) -> CellGridControllerEvent {
+        if self.row_count == 0 || self.col_count == 0 {
+            return CellGridControllerEvent::Ignored;
+        }
+        let (row, col) = self.cursor;
+        CellGridControllerEvent::CellEditRequested { row, col }
+    }
+
+    /// A plain character typed at the cursor with no edit in progress —
+    /// starts a fresh one seeded with just that character.
+    fn begin_typing(&mut self, c: char) -> CellGridControllerEvent {
+        if self.row_count == 0 || self.col_count == 0 {
+            return CellGridControllerEvent::Ignored;
+        }
+        let text = c.to_string();
+        let cursor = text.len();
+        self.begin_edit(text, cursor);
+        let (row, col) = self.cursor;
+        CellGridControllerEvent::CellEditStarted { row, col }
+    }
+
+    /// Open the editor at [`Self::cursor`], seeded with `text` and the
+    /// cursor placed at its end. Shared by [`Self::start_editing`]
+    /// (host-initiated, e.g. F2) and [`Self::begin_typing`]
+    /// (self-initiated, from a plain keypress).
+    fn begin_edit(&mut self, text: String, cursor: usize) {
+        let field = TextField::new(WidgetId::new(format!("{}:editor", self.id.as_str())))
+            .with_value(text)
+            .with_cursor(Some(cursor))
+            .with_has_focus(true);
+        self.editing = Some(CellEditing { field });
+    }
+
+    /// Take the in-progress edit's text, if any — `(row, col)` is
+    /// always [`Self::cursor`] (see `CellEditing`'s own doc), captured
+    /// *before* a caller moves it.
+    fn commit_edit(&mut self) -> Option<(usize, usize, String)> {
+        let editing = self.editing.take()?;
+        let (row, col) = self.cursor;
+        Some((row, col, editing.field.value))
+    }
+
+    /// Discard the in-progress edit, if any, returning the cell it was
+    /// editing.
+    fn cancel_edit(&mut self) -> Option<(usize, usize)> {
+        self.editing.take()?;
+        Some(self.cursor)
+    }
+
+    /// Apply one [`EditOp`] to the in-progress edit's text buffer —
+    /// insert/delete/move/select, reusing [`TextField::apply_edit_op`]
+    /// rather than re-deriving multibyte-safe cursor/selection math (see
+    /// the module doc's "Reuse `TextField`" convention).
+    fn apply_edit_op(&mut self, op: EditOp) -> CellGridControllerEvent {
+        let Some(editing) = self.editing.as_mut() else {
+            return CellGridControllerEvent::Ignored;
+        };
+        if !editing.field.apply_edit_op(op) {
+            return CellGridControllerEvent::Consumed;
+        }
+        let (row, col) = self.cursor;
+        CellGridControllerEvent::CellEditChanged {
+            row,
+            col,
+            text: editing.field.value.clone(),
+        }
+    }
+
+    fn commit_and_move_enter(
+        &mut self,
+        forward: bool,
+        backend: &dyn Backend,
+        rect: Rect,
+    ) -> CellGridControllerEvent {
+        let Some((row, col, text)) = self.commit_edit() else {
+            return CellGridControllerEvent::Ignored;
+        };
+        self.move_enter(forward, backend, rect);
+        CellGridControllerEvent::CellEditCommitted { row, col, text }
+    }
+
+    fn commit_and_move_tab(
+        &mut self,
+        forward: bool,
+        backend: &dyn Backend,
+        rect: Rect,
+    ) -> CellGridControllerEvent {
+        let Some((row, col, text)) = self.commit_edit() else {
+            return CellGridControllerEvent::Ignored;
+        };
+        self.move_tab(forward, backend, rect);
+        CellGridControllerEvent::CellEditCommitted { row, col, text }
+    }
+
+    fn commit_and_move_by(
+        &mut self,
+        d_row: isize,
+        d_col: isize,
+        backend: &dyn Backend,
+        rect: Rect,
+    ) -> CellGridControllerEvent {
+        let Some((row, col, text)) = self.commit_edit() else {
+            return CellGridControllerEvent::Ignored;
+        };
+        self.move_by(d_row, d_col, false, backend, rect);
+        CellGridControllerEvent::CellEditCommitted { row, col, text }
+    }
+
+    /// Dispatch one key event while an edit is in progress — Escape
+    /// cancels; Enter, Tab and the arrow keys commit and move (as in
+    /// Excel, per the module doc); everything else edits the text
+    /// buffer. Shared by [`Self::handle`] (typing directly into the
+    /// grid) and [`Self::handle_formula_bar_key`] (typing into the
+    /// formula bar), so both commit the same way.
+    fn handle_edit_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+        backend: &dyn Backend,
+        rect: Rect,
+    ) -> CellGridControllerEvent {
+        match key {
+            Key::Named(NamedKey::Escape) => match self.cancel_edit() {
+                Some((row, col)) => CellGridControllerEvent::CellEditCancelled { row, col },
+                None => CellGridControllerEvent::Ignored,
+            },
+
+            Key::Named(NamedKey::Enter) => {
+                self.commit_and_move_enter(!modifiers.shift, backend, rect)
+            }
+
+            Key::Named(NamedKey::Tab) if !modifiers.shift => {
+                self.commit_and_move_tab(true, backend, rect)
+            }
+            Key::Named(NamedKey::Tab) | Key::Named(NamedKey::BackTab) => {
+                self.commit_and_move_tab(false, backend, rect)
+            }
+
+            Key::Named(NamedKey::Up) => self.commit_and_move_by(-1, 0, backend, rect),
+            Key::Named(NamedKey::Down) => self.commit_and_move_by(1, 0, backend, rect),
+            Key::Named(NamedKey::Left) => self.commit_and_move_by(0, -1, backend, rect),
+            Key::Named(NamedKey::Right) => self.commit_and_move_by(0, 1, backend, rect),
+
+            Key::Named(NamedKey::Backspace) => self.apply_edit_op(EditOp::DeleteBackward),
+            Key::Named(NamedKey::Delete) => self.apply_edit_op(EditOp::DeleteForward),
+            Key::Named(NamedKey::Home) => {
+                self.apply_edit_op(EditOp::MoveLineStart { extend: false })
+            }
+            Key::Named(NamedKey::End) => self.apply_edit_op(EditOp::MoveLineEnd { extend: false }),
+
+            Key::Char('a') if modifiers.ctrl || modifiers.cmd => {
+                self.apply_edit_op(EditOp::SelectAll)
+            }
+            Key::Char(c) => self.apply_edit_op(EditOp::InsertChar(*c)),
+
+            _ => CellGridControllerEvent::Consumed,
         }
     }
 }
@@ -1170,5 +1532,250 @@ mod tests {
         c.set_dimensions(2, 2);
         assert_eq!(c.selection_anchor(), None);
         assert_eq!(c.cursor(), (1, 1));
+    }
+
+    // ── Inline editing ────────────────────────────────────────────────
+
+    fn char_key(c: char, modifiers: Modifiers) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Char(c),
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn typing_a_character_starts_an_edit_seeded_with_just_that_character() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        let ev = c.handle(&char_key('x', Modifiers::default()), &b, RECT);
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditStarted { row: 0, col: 0 }
+        );
+        assert!(c.is_editing());
+        assert_eq!(c.editing_text(), Some("x"));
+        assert_eq!(c.editing_cursor(), Some(1));
+    }
+
+    #[test]
+    fn f2_reports_a_request_instead_of_seeding_the_editor_itself() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        let ev = c.handle(&key(NamedKey::F(2), Modifiers::default()), &b, RECT);
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditRequested { row: 0, col: 0 }
+        );
+        assert!(!c.is_editing());
+    }
+
+    #[test]
+    fn start_editing_seeds_the_cursor_at_the_end_of_the_supplied_text() {
+        let mut c = controller(5, 5);
+        let ev = c.start_editing("existing");
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditStarted { row: 0, col: 0 }
+        );
+        assert_eq!(c.editing_text(), Some("existing"));
+        assert_eq!(c.editing_cursor(), Some("existing".len()));
+        assert_eq!(c.editing_selection_anchor(), None);
+    }
+
+    #[test]
+    fn escape_cancels_the_edit_and_leaves_the_cursor_untouched() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        c.handle(&char_key('x', Modifiers::default()), &b, RECT);
+        let ev = c.handle(&key(NamedKey::Escape, Modifiers::default()), &b, RECT);
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditCancelled { row: 0, col: 0 }
+        );
+        assert!(!c.is_editing());
+        assert_eq!(c.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn typed_characters_append_and_backspace_deletes() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        c.handle(&char_key('a', Modifiers::default()), &b, RECT);
+        c.handle(&char_key('b', Modifiers::default()), &b, RECT);
+        let ev = c.handle(&char_key('c', Modifiers::default()), &b, RECT);
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditChanged {
+                row: 0,
+                col: 0,
+                text: "abc".into(),
+            }
+        );
+        c.handle(&key(NamedKey::Backspace, Modifiers::default()), &b, RECT);
+        assert_eq!(c.editing_text(), Some("ab"));
+    }
+
+    #[test]
+    fn enter_commits_and_moves_down() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        c.handle(&char_key('=', Modifiers::default()), &b, RECT);
+        c.handle(&char_key('3', Modifiers::default()), &b, RECT);
+        let ev = c.handle(&key(NamedKey::Enter, Modifiers::default()), &b, RECT);
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditCommitted {
+                row: 0,
+                col: 0,
+                text: "=3".into(),
+            }
+        );
+        assert!(!c.is_editing());
+        assert_eq!(c.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn shift_enter_commits_and_moves_up() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        c.set_selection((2, 0), None);
+        c.handle(&char_key('y', Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Enter, shift()), &b, RECT);
+        assert_eq!(c.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn tab_commits_and_moves_right_shift_tab_moves_left() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        c.handle(&char_key('v', Modifiers::default()), &b, RECT);
+        let ev = c.handle(&key(NamedKey::Tab, Modifiers::default()), &b, RECT);
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditCommitted {
+                row: 0,
+                col: 0,
+                text: "v".into(),
+            }
+        );
+        assert_eq!(c.cursor(), (0, 1));
+
+        c.handle(&char_key('w', Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::BackTab, Modifiers::default()), &b, RECT);
+        assert_eq!(c.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn arrow_keys_commit_and_move_in_every_direction() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        c.set_selection((2, 2), None);
+
+        c.handle(&char_key('n', Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Up, Modifiers::default()), &b, RECT);
+        assert_eq!(c.cursor(), (1, 2));
+
+        c.handle(&char_key('s', Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Down, Modifiers::default()), &b, RECT);
+        assert_eq!(c.cursor(), (2, 2));
+
+        c.handle(&char_key('e', Modifiers::default()), &b, RECT);
+        let ev = c.handle(&key(NamedKey::Right, Modifiers::default()), &b, RECT);
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditCommitted {
+                row: 2,
+                col: 2,
+                text: "e".into(),
+            }
+        );
+        assert_eq!(c.cursor(), (2, 3));
+
+        c.handle(&char_key('w', Modifiers::default()), &b, RECT);
+        c.handle(&key(NamedKey::Left, Modifiers::default()), &b, RECT);
+        assert_eq!(c.cursor(), (2, 2));
+    }
+
+    #[test]
+    fn cancel_editing_discards_the_text_without_moving_the_cursor() {
+        let mut c = controller(5, 5);
+        c.start_editing("scratch");
+        let ev = c.cancel_editing();
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditCancelled { row: 0, col: 0 }
+        );
+        assert!(!c.is_editing());
+        assert_eq!(c.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn set_dimensions_drops_an_in_progress_edit_if_the_cursor_is_forced_to_move() {
+        let mut c = controller(5, 5);
+        c.set_selection((4, 4), None);
+        c.start_editing("stale");
+        assert!(c.is_editing());
+        // Shrinking past the cursor forces it to move, so the edit (which
+        // has no identity apart from "the cursor cell") can't survive —
+        // see `set_dimensions`'s own doc.
+        c.set_dimensions(2, 2);
+        assert!(!c.is_editing());
+    }
+
+    #[test]
+    fn mouse_input_is_inert_while_editing() {
+        let mut c = controller(20, 20);
+        let b = backend();
+        c.handle(&char_key('z', Modifiers::default()), &b, RECT);
+        let ev = c.handle(&mouse_down(5.0, 2.0, Modifiers::default()), &b, RECT);
+        assert_eq!(ev, CellGridControllerEvent::Consumed);
+        assert!(c.is_editing());
+        assert_eq!(c.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn formula_bar_sync_mirrors_the_in_progress_edit() {
+        let mut c = controller(5, 5);
+        c.start_editing("hello");
+        let mut field = TextField::new(WidgetId::new("formula-bar"));
+        c.sync_formula_bar(&mut field);
+        assert_eq!(field.value, "hello");
+        assert_eq!(field.cursor, Some(5));
+
+        let b = backend();
+        c.handle_formula_bar_key(&Key::Char('!'), &Modifiers::default(), &b, RECT);
+        c.sync_formula_bar(&mut field);
+        assert_eq!(field.value, "hello!");
+
+        let ev = c.handle_formula_bar_key(
+            &Key::Named(NamedKey::Enter),
+            &Modifiers::default(),
+            &b,
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CellEditCommitted {
+                row: 0,
+                col: 0,
+                text: "hello!".into(),
+            }
+        );
+        assert!(!c.is_editing());
+
+        // Once committed, syncing again clears the caret rather than
+        // leaving it pointed at the now-stale edit buffer.
+        c.sync_formula_bar(&mut field);
+        assert_eq!(field.cursor, None);
+    }
+
+    #[test]
+    fn handle_formula_bar_key_is_ignored_with_no_active_edit() {
+        let mut c = controller(5, 5);
+        let b = backend();
+        let ev = c.handle_formula_bar_key(&Key::Char('x'), &Modifiers::default(), &b, RECT);
+        assert_eq!(ev, CellGridControllerEvent::Ignored);
+        assert!(!c.is_editing());
     }
 }

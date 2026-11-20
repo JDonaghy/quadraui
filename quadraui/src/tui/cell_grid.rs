@@ -5,7 +5,12 @@
 //! frozen-pane boundary where the frozen rows/columns meet the scrolled
 //! body, the cursor cell highlighted, and the selection range tinted.
 //! Cell text never wraps — one line per row, same cell-granular
-//! convention as [`crate::tui::draw_data_table`].
+//! convention as [`crate::tui::draw_data_table`]. When
+//! [`CellGrid::editing`] is `Some`, an inline single-line text editor
+//! paints over the cursor cell in place of its plain text, through the
+//! same shared [`super::paint_inline_text_editor`]
+//! [`crate::tui::tree`]'s own inline rename editor uses — no second
+//! cursor/selection/placeholder rasteriser.
 //!
 //! The frozen-column boundary reserves its last column's right-edge
 //! cell for a `│` glyph, the same way [`crate::tui::data_table`]
@@ -227,6 +232,13 @@ pub fn draw_cell_grid(
     let sep_fg = ratatui_color(theme.separator);
     let cursor_bg = ratatui_color(theme.selection_bg);
     let selection_bg = ratatui_color(theme.background.blend(theme.selection_bg, 0.35));
+    let dim_fg = ratatui_color(theme.muted_fg);
+    // Within-text selection inside the inline editor: a stronger blend
+    // than `selection_bg`'s multi-cell tint above, so a byte range
+    // selected *inside* the edit buffer still reads as distinct from
+    // `cursor_bg`, the cell's own already-highlighted background it
+    // paints on top of.
+    let edit_sel_bg = ratatui_color(theme.background.blend(theme.selection_bg, 0.65));
 
     fill_band(buf, area.x, area.y, area.width, area.height, fg, bg);
 
@@ -338,6 +350,39 @@ pub fn draw_cell_grid(
         }
     }
 
+    // ── Inline cell editor overlay ──────────────────────────────────
+    // Painted after the body loop above, so it replaces the cursor
+    // cell's plain text rather than racing it, and before the
+    // frozen-pane boundaries below, so a divider still draws on top of
+    // it exactly as it would over any other cell's text.
+    if let Some(edit) = &grid.editing {
+        let cursor_row = layout.rows.iter().find(|r| r.index == grid.cursor.0);
+        let cursor_col = layout.cols.iter().position(|c| c.index == grid.cursor.1);
+        if let (Some(row), Some(ci)) = (cursor_row, cursor_col) {
+            let col = layout.cols[ci];
+            if let (Some((ry, rh)), Some((cx, cw))) = (
+                span_bounds(area.height, area.y, row),
+                span_bounds(area.width, area.x, &col),
+            ) {
+                let usable = frozen_col_usable_width(&layout, ci, cw);
+                super::paint_inline_text_editor(
+                    buf,
+                    Rect::new(cx, ry, usable, rh),
+                    ry,
+                    0,
+                    &edit.text,
+                    edit.cursor,
+                    edit.selection_anchor,
+                    edit.placeholder.as_deref(),
+                    fg,
+                    cursor_bg,
+                    edit_sel_bg,
+                    dim_fg,
+                );
+            }
+        }
+    }
+
     // ── Frozen-pane boundaries ───────────────────────────────────────
     // Column axis: the last frozen column already reserved its
     // right-edge cell above (`frozen_col_usable_width`), so the glyph
@@ -412,6 +457,7 @@ mod tests {
             loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         }
     }
 
@@ -646,5 +692,52 @@ mod tests {
         assert_eq!(buf[(x, y)].fg, ratatui_color(Color::rgb(10, 20, 30)));
         assert_eq!(buf[(x, y)].bg, ratatui_color(Color::rgb(200, 210, 220)));
         assert!(buf[(x, y)].modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn inline_editor_overlays_the_cursor_cell_replacing_its_plain_text() {
+        use crate::primitives::cell_grid::CellEditState;
+
+        let mut grid = grid();
+        grid.cursor = (3, 3);
+        grid.editing = Some(CellEditState {
+            text: "=1+2".into(),
+            cursor: 4,
+            selection_anchor: None,
+            placeholder: None,
+        });
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let layout = draw_cell_grid(&mut buf, area, &grid, &theme);
+
+        // The cell's own plain "R3C3" text must be gone, replaced by the
+        // editor's buffer.
+        assert!(find_text(&buf, "R3C3").is_none());
+        let cursor_row = layout.rows.iter().find(|r| r.index == 3).unwrap();
+        let cursor_col = layout.cols.iter().find(|c| c.index == 3).unwrap();
+        let (cx, _) =
+            span_bounds(area.width, area.x, cursor_col).expect("cursor column is visible");
+        let (cy, _) = span_bounds(area.height, area.y, cursor_row).expect("cursor row is visible");
+        for (i, ch) in "=1+2".chars().enumerate() {
+            assert_eq!(
+                buf[(cx + i as u16, cy)].symbol(),
+                ch.to_string(),
+                "glyph {i} of the editor's own text must be painted"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_editor_absent_leaves_the_cursor_cell_as_plain_text() {
+        let grid = grid();
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        draw_cell_grid(&mut buf, area, &grid, &theme);
+
+        // The cursor cell is (0, 0) by default — its plain "R0C0" text
+        // must survive when `editing` is `None`.
+        find_text(&buf, "R0C0").expect("cursor cell paints its own text with no active edit");
     }
 }

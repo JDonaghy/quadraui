@@ -1,17 +1,26 @@
 //! `CellGridController` demo: a quarterly-sales sheet navigated the way
 //! a spreadsheet user expects — arrows, Tab/Enter, Page Up/Down,
 //! Home/End, Ctrl+Home/End, Ctrl+Arrow, Shift to extend, click and
-//! click-drag range selection, row/column-header and corner clicks.
+//! click-drag range selection, row/column-header and corner clicks, plus
+//! in-cell editing (typing a character or F2 starts an edit at the
+//! cursor cell, Esc cancels, Enter/Tab/the arrow keys commit and move).
 //!
 //! The controller owns the cursor, the selection anchor, the scroll
-//! offsets and the frozen panes; this `AppLogic` owns the cell *content*
-//! and nothing else, which is the whole split `CellGrid` is built
-//! around (see `quadraui::primitives::cell_grid`'s module doc, "the grid
-//! only presents"). Each frame it asks the controller which absolute
-//! rows and columns are on screen (`CellGridController::layout`), fills
-//! only those cells, and paints the resulting descriptor through
+//! offsets, the frozen panes and (while active) the in-progress edit's
+//! text buffer; this `AppLogic` owns the cell *content* and nothing
+//! else, which is the whole split `CellGrid` is built around (see
+//! `quadraui::primitives::cell_grid`'s module doc, "the grid only
+//! presents"). Each frame it asks the controller which absolute rows and
+//! columns are on screen (`CellGridController::layout`), fills only
+//! those cells, and paints the resulting descriptor through
 //! `DrawsPrimitives::draw_primitive` — `CellGrid` has no bespoke
 //! `Backend::draw_cell_grid` method.
+//!
+//! Committing an edit hands the raw text to this demo's own toy "engine"
+//! (`Self::evaluate`): a leading `=` sums `+`-separated integers (e.g.
+//! `=1+2` → `3`); anything else is shown verbatim. A real spreadsheet
+//! app wires the same `CellEditCommitted` text into its own engine
+//! (`cell.set`) and supplies the resulting formatted value next frame.
 //!
 //! A status bar reports the cursor cell and the selection's extent in
 //! spreadsheet notation (`B3`, `B3:D7`), so the semantic outcome of
@@ -19,6 +28,7 @@
 //! highlight colours.
 
 use std::cell::Cell as StdCell;
+use std::collections::HashMap;
 
 use quadraui::primitives::cell_grid::{column_letters, Cell, CellAlign, CellStyle};
 use quadraui::{
@@ -49,6 +59,11 @@ pub struct CellGridDemo {
     /// — recomputing it from the backend viewport in `handle` would
     /// silently drift if `render`'s layout ever changed.
     last_grid_rect: StdCell<Rect>,
+    /// Raw text a user has committed for a given absolute cell,
+    /// overriding `Self::default_cell`'s deterministic placeholder. A
+    /// cell with no entry here still paints its placeholder — editing
+    /// one cell never requires having "loaded" any others.
+    edits: HashMap<(usize, usize), String>,
 }
 
 impl CellGridDemo {
@@ -61,13 +76,15 @@ impl CellGridDemo {
         Self {
             grid,
             last_grid_rect: StdCell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
+            edits: HashMap::new(),
         }
     }
 
-    /// Already-formatted text for one absolute cell. The frozen top row
-    /// holds metric names, the frozen first column holds region names,
-    /// and the body holds a deterministic currency figure.
-    fn cell_at(row: usize, col: usize) -> Cell {
+    /// Already-formatted placeholder text for one absolute cell, before
+    /// any user edit. The frozen top row holds metric names, the frozen
+    /// first column holds region names, and the body holds a
+    /// deterministic currency figure.
+    fn default_cell(row: usize, col: usize) -> Cell {
         match (row, col) {
             (0, 0) => Cell {
                 text: "Region".into(),
@@ -86,6 +103,44 @@ impl CellGridDemo {
             },
             (_, 0) => Cell::plain(format!("{} {row}", REGIONS[(row - 1) % REGIONS.len()])),
             _ => Cell::plain(format!("${}", (row * 100 + col * 7) * 3)),
+        }
+    }
+
+    /// The raw text [`Self::start_editing`] seeds F2/Enter editing with
+    /// — the user's own committed text if there is one, else the
+    /// placeholder's displayed text.
+    fn raw_text(&self, row: usize, col: usize) -> String {
+        self.edits
+            .get(&(row, col))
+            .cloned()
+            .unwrap_or_else(|| Self::default_cell(row, col).text)
+    }
+
+    /// A leading `=` sums the `+`-separated integers that follow (the
+    /// toy "engine" this demo stands in for GridCraft's own `cell.set`);
+    /// anything else displays verbatim. Non-numeric or malformed terms
+    /// are dropped rather than erroring — fine for a demo, not a real
+    /// spreadsheet's error-reporting contract.
+    fn evaluate(raw: &str) -> String {
+        match raw.strip_prefix('=') {
+            Some(expr) => {
+                let sum: i64 = expr
+                    .split('+')
+                    .filter_map(|term| term.trim().parse::<i64>().ok())
+                    .sum();
+                sum.to_string()
+            }
+            None => raw.to_string(),
+        }
+    }
+
+    /// The cell actually painted this frame: a user edit's evaluated
+    /// value if one was committed, else [`Self::default_cell`]'s own
+    /// placeholder (keeping its header/region styling).
+    fn formatted_cell(&self, row: usize, col: usize) -> Cell {
+        match self.edits.get(&(row, col)) {
+            Some(raw) => Cell::plain(Self::evaluate(raw)),
+            None => Self::default_cell(row, col),
         }
     }
 
@@ -133,7 +188,7 @@ impl CellGridDemo {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " arrows/Tab/Enter move | Shift extends | Ctrl+A all | q=quit ".into(),
+                text: " type/F2 edit | Enter/Tab/arrows commit+move | Esc cancel | q=quit ".into(),
                 fg,
                 bg,
                 bold: false,
@@ -167,7 +222,7 @@ impl AppLogic for CellGridDemo {
                 layout
                     .cols
                     .iter()
-                    .map(|c| Self::cell_at(r.index, c.index))
+                    .map(|c| self.formatted_cell(r.index, c.index))
                     .collect()
             })
             .collect();
@@ -185,14 +240,34 @@ impl AppLogic for CellGridDemo {
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::KeyPressed { key, .. } = &event {
-            if matches!(key, Key::Char('q') | Key::Named(NamedKey::Escape)) {
-                return Reaction::Exit;
+        // `q`/Escape quit only outside an active edit — while editing,
+        // both must reach the controller instead: `q` is a character to
+        // insert, and Escape cancels the edit rather than the app.
+        if !self.grid.is_editing() {
+            if let UiEvent::KeyPressed { key, .. } = &event {
+                if matches!(key, Key::Char('q') | Key::Named(NamedKey::Escape)) {
+                    return Reaction::Exit;
+                }
             }
         }
         let rect = self.last_grid_rect.get();
         match self.grid.handle(&event, backend, rect) {
             CellGridControllerEvent::Ignored => Reaction::Continue,
+            // The controller has no cell content of its own (see the
+            // module doc), so F2 only reports the request — seed the
+            // editor with this cell's current raw text ourselves.
+            CellGridControllerEvent::CellEditRequested { row, col } => {
+                self.grid.start_editing(self.raw_text(row, col));
+                Reaction::Redraw
+            }
+            // Hand the committed raw text to the toy "engine"
+            // (`Self::evaluate`) — a real app calls its own `cell.set`
+            // here and supplies the resulting formatted value next
+            // frame via `Self::formatted_cell`.
+            CellGridControllerEvent::CellEditCommitted { row, col, text } => {
+                self.edits.insert((row, col), text);
+                Reaction::Redraw
+            }
             _ => Reaction::Redraw,
         }
     }

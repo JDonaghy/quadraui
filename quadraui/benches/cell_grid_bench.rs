@@ -77,6 +77,7 @@ fn build_grid(
         loaded_col_start: 1 + total_cols / 2,
         has_focus: true,
         show_scrollbar: true,
+        editing: None,
     }
 }
 

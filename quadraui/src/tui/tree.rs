@@ -346,6 +346,9 @@ fn draw_tree_border(
     }
 }
 
+/// Thin wrapper over the shared [`super::paint_inline_text_editor`] —
+/// see that function's doc for the actual cursor/selection/placeholder
+/// rendering logic.
 #[allow(clippy::too_many_arguments)]
 fn paint_edit_input(
     buf: &mut Buffer,
@@ -358,54 +361,20 @@ fn paint_edit_input(
     sel_bg: ratatui::style::Color,
     dim_fg: ratatui::style::Color,
 ) {
-    if edit.text.is_empty() {
-        if let Some(ref ph) = edit.placeholder {
-            for (col, ch) in (start_col..).zip(ph.chars()) {
-                if col >= area.width as usize {
-                    break;
-                }
-                set_cell(buf, area.x + col as u16, y, ch, dim_fg, bg);
-            }
-        }
-        // Cursor at position 0 (inverted space).
-        if start_col < area.width as usize {
-            set_cell(buf, area.x + start_col as u16, y, ' ', bg, fg);
-        }
-        return;
-    }
-
-    let (sel_lo, sel_hi) = match edit.selection_anchor {
-        Some(a) if a != edit.cursor => (a.min(edit.cursor), a.max(edit.cursor)),
-        _ => (0, 0),
-    };
-    let has_selection = sel_hi > sel_lo;
-
-    let mut byte = 0usize;
-    for (col, ch) in (start_col..).zip(edit.text.chars()) {
-        if col >= area.width as usize {
-            break;
-        }
-        let in_sel = has_selection && byte >= sel_lo && byte < sel_hi;
-        let cell_bg = if in_sel { sel_bg } else { bg };
-        set_cell(buf, area.x + col as u16, y, ch, fg, cell_bg);
-        byte += ch.len_utf8();
-    }
-
-    // Block cursor: find char index for cursor byte offset, invert that cell.
-    let mut cursor_char_idx = 0usize;
-    let mut b = 0usize;
-    for ch in edit.text.chars() {
-        if b >= edit.cursor {
-            break;
-        }
-        b += ch.len_utf8();
-        cursor_char_idx += 1;
-    }
-    let cursor_col = start_col + cursor_char_idx;
-    if cursor_col < area.width as usize {
-        let ch = edit.text.chars().nth(cursor_char_idx).unwrap_or(' ');
-        set_cell(buf, area.x + cursor_col as u16, y, ch, bg, fg);
-    }
+    super::paint_inline_text_editor(
+        buf,
+        area,
+        y,
+        start_col,
+        &edit.text,
+        edit.cursor,
+        edit.selection_anchor,
+        edit.placeholder.as_deref(),
+        fg,
+        bg,
+        sel_bg,
+        dim_fg,
+    );
 }
 
 /// Compute the layout the TUI rasteriser would produce for `tree` in
