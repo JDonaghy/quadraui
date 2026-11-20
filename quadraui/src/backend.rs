@@ -4203,37 +4203,6 @@ pub trait Backend: sealed::Sealed {
     /// as [`Self::radio_group_layout`] (ABSOLUTE).
     fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
 
-    /// Draw a [`RadioGroup`], resolving hover/pressed per option from a
-    /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
-    /// instead of reading [`RadioOption::hovered`]/[`RadioOption::pressed`]
-    /// directly.
-    ///
-    /// # Deprecated
-    ///
-    /// Superseded by [`Self::draw_radio_group`] now that `RadioGroup`'s
-    /// own options carry `hovered`/`pressed`: set those fields on a
-    /// clone of the group (or in place) and call [`Self::draw_radio_group`]
-    /// directly — this method's default body does exactly that,
-    /// cloning `group` and copying `interaction.is_hovered`/`is_pressed`
-    /// per option before delegating.
-    #[deprecated(
-        since = "0.12.0",
-        note = "set `RadioOption::hovered`/`RadioOption::pressed` on each option and call `draw_radio_group` directly"
-    )]
-    fn draw_radio_group_with_state(
-        &mut self,
-        rect: Rect,
-        group: &RadioGroup,
-        interaction: &InteractionState,
-    ) -> RadioGroupLayout {
-        let mut group = group.clone();
-        for option in &mut group.options {
-            option.hovered = interaction.is_hovered(&option.id);
-            option.pressed = interaction.is_pressed(&option.id);
-        }
-        self.draw_radio_group(rect, &group)
-    }
-
     /// Compute radio-group layout without painting. Each backend
     /// supplies its own per-option measure (text extents, cell counts,
     /// or a nominal fallback) — see the implementation for the shape.
@@ -4249,35 +4218,6 @@ pub trait Backend: sealed::Sealed {
     /// follows. Same coordinate frame as [`Self::switch_layout`]
     /// (ABSOLUTE).
     fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout;
-
-    /// Draw a [`Switch`], resolving hover/pressed from a single
-    /// [`InteractionState`] keyed by [`crate::types::WidgetId`]
-    /// instead of reading [`Switch::hovered`]/[`Switch::pressed`]
-    /// directly.
-    ///
-    /// # Deprecated
-    ///
-    /// Superseded by [`Self::draw_switch`] now that `Switch` itself
-    /// carries `hovered`/`pressed`: set those fields on a clone of the
-    /// switch (or in place) and call [`Self::draw_switch`] directly —
-    /// this method's default body does exactly that, cloning `switch`
-    /// and copying `interaction.is_hovered`/`is_pressed` before
-    /// delegating.
-    #[deprecated(
-        since = "0.12.0",
-        note = "set `Switch::hovered`/`Switch::pressed` and call `draw_switch` directly"
-    )]
-    fn draw_switch_with_state(
-        &mut self,
-        rect: Rect,
-        switch: &Switch,
-        interaction: &InteractionState,
-    ) -> SwitchLayout {
-        let mut switch = switch.clone();
-        switch.hovered = interaction.is_hovered(&switch.id);
-        switch.pressed = interaction.is_pressed(&switch.id);
-        self.draw_switch(rect, &switch)
-    }
 
     /// Compute switch layout without painting.
     ///
