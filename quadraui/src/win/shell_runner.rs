@@ -42,3 +42,40 @@ pub fn run_with_shell<A: ShellApp + 'static>(
     let adapter = build_shell_adapter(app, config);
     super::run::run_with(adapter, run_config)
 }
+
+/// Build a [`ShellApp`] as a [`crate::win::run::WinRunner`] instead of
+/// entering [`run_with_shell`]'s blocking Win32 message loop — for a host
+/// that wants the AppShell chrome but also needs
+/// [`crate::win::run::WinRunner::attach_control`] (see [`crate::control`]'s
+/// module doc), which `run_with_shell` (which owns the process for its
+/// whole lifetime) can't give. Mirrors
+/// [`crate::tui::shell_runner::runner_with_shell`]/
+/// [`crate::gtk::shell_runner::runner_with_shell`]/
+/// [`crate::macos::shell_runner::runner_with_shell`]'s identical shape
+/// for the TUI/GTK/macOS backends.
+///
+/// `target_os = "windows"`-gated (unlike `run_with_shell` above, which
+/// has a no-op fallback on every other host): [`super::run::WinRunner`]
+/// itself only exists under `target_os = "windows"` — see that type's
+/// doc — so there is no non-Windows stand-in to return here.
+///
+/// # Safety
+///
+/// See [`super::run::WinRunner::new_with`]'s `# Safety` doc — must be
+/// called on, and the returned `WinRunner` must be stepped from, a
+/// single thread.
+#[cfg(all(feature = "control", target_os = "windows"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "control", target_os = "windows"))))]
+pub unsafe fn runner_with_shell<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+) -> windows::core::Result<super::run::WinRunner<impl crate::AppLogic>> {
+    let mut run_config = RunConfig::new(config.title.clone());
+    if let Some(app_icon) = config.app_icon.clone() {
+        run_config = run_config.with_app_icon(app_icon);
+    }
+    let adapter = build_shell_adapter(app, config);
+    // SAFETY: forwards this function's own `# Safety` contract
+    // (documented above) unchanged to `WinRunner::new_with`.
+    unsafe { super::run::WinRunner::new_with(adapter, &run_config) }
+}
