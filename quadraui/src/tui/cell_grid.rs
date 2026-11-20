@@ -328,8 +328,16 @@ pub fn draw_cell_grid(
 
             fill_band(buf, cx, ry, cw, rh, cell_fg, cell_bg);
 
+            // The cursor cell's plain text is skipped while `editing` is
+            // `Some`: the overlay below paints the inline editor over this
+            // same span instead, and the earlier `fill_band` call already
+            // cleared it to `cell_bg`. Painting the text here too would
+            // leave the cell's old glyphs (e.g. a right-aligned value's
+            // digits past the editor's cursor, or a truncated label's
+            // tail) visible around the shorter editor buffer.
+            let is_editing_this_cell = is_cursor && grid.editing.is_some();
             if let Some(cell) = cell {
-                if !cell.text.is_empty() {
+                if !cell.text.is_empty() && !is_editing_this_cell {
                     let mut modifier = Modifier::empty();
                     if style.and_then(|s| s.bold).unwrap_or(false) {
                         modifier |= Modifier::BOLD;
@@ -724,6 +732,63 @@ mod tests {
                 buf[(cx + i as u16, cy)].symbol(),
                 ch.to_string(),
                 "glyph {i} of the editor's own text must be painted"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_editor_clears_the_cursor_cells_leftover_glyphs_past_a_shorter_edit_buffer() {
+        use crate::primitives::cell_grid::CellEditState;
+
+        let mut grid = grid();
+        grid.cursor = (3, 3);
+        grid.cells[3][3] = Cell {
+            text: "$1,200.50".into(),
+            style: CellStyle {
+                align: Some(CellAlign::Right),
+                ..Default::default()
+            },
+        };
+        grid.editing = Some(CellEditState {
+            text: "=1".into(),
+            cursor: 2,
+            selection_anchor: None,
+            placeholder: None,
+        });
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let layout = draw_cell_grid(&mut buf, area, &grid, &theme);
+
+        let cursor_row = layout.rows.iter().find(|r| r.index == 3).unwrap();
+        let (ci, col) = layout
+            .cols
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.index == 3)
+            .unwrap();
+        let (cx, cw) = span_bounds(area.width, area.x, col).expect("cursor column is visible");
+        let (cy, _) = span_bounds(area.height, area.y, cursor_row).expect("cursor row is visible");
+        let usable = frozen_col_usable_width(&layout, ci, cw);
+
+        // The cell's own right-aligned "$1,200.50" must not survive
+        // anywhere in the cursor cell's span — the defect this guards
+        // against painted the editor flush left while the original
+        // right-aligned value kept sitting at the cell's right edge.
+        assert!(
+            find_text_in(&buf, Rect::new(cx, cy, usable, 1), "1,200").is_none(),
+            "the cell's own right-aligned text must not survive under the inline editor"
+        );
+
+        // "=1" plus one inverted cursor cell at offset 2 is everything
+        // the overlay paints; every cell past that, out to the column's
+        // usable width, must be blank rather than showing a leftover
+        // glyph from the body loop's unconditional `paint_text`.
+        for x in (cx + 3)..(cx + usable) {
+            assert_eq!(
+                buf[(x, cy)].symbol(),
+                " ",
+                "cell past the editor's own text/cursor span must be blank"
             );
         }
     }
