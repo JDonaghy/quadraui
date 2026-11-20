@@ -15,6 +15,8 @@
 //! is logged through [`crate::diagnostics::emit`] and produces no events.
 //! This module never panics on untrusted assistive-technology input.
 
+use serde::Serialize;
+
 use super::tree::{decode_tree_path, A11yOwnerKind};
 use crate::a11y::{A11yChecked, A11yNodeId, A11yRole, A11yTree};
 use crate::event::{Point, ScrollDelta, UiEvent};
@@ -30,8 +32,12 @@ use crate::types::WidgetId;
 /// Mirrors the subset of `accesskit::Action` [`route_action`] knows how to
 /// translate into a `UiEvent`. `#[non_exhaustive]` so a future variant
 /// (e.g. `ScrollLeft`/`ScrollRight`) does not break a consumer's `match`.
+/// Serializes as a lowercase snake_case string (e.g. `"scroll_into_view"`)
+/// — [`super::tree::A11yTreeNode::supported_actions`]'s JSON form, part of
+/// [`super::tree`]'s "Stable JSON form" section.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum A11yAction {
     /// A single click or tap — activates a button, list item, tree row,
     /// toggle or checkbox.

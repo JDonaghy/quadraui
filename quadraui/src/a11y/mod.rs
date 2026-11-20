@@ -63,7 +63,8 @@
 //! above). The state/structure fields alongside the typed role
 //! (`description`, `selected`, `expanded`, `checked`, `disabled`,
 //! `read_only`, `value`, `value_range`, `level`, `position_in_set`,
-//! `set_size`, `live`, `hidden`, `modal`) deliberately drop it: they live only on this sidecar struct,
+//! `set_size`, `live`, `hidden`, `modal`, `total_rows`) deliberately drop
+//! it: they live only on this sidecar struct,
 //! so the field name alone (`info.selected`, not `info.a11y_selected`)
 //! is already unambiguous, and decision #6's own rationale was to
 //! disambiguate `a11y_role`/`a11y_label` from a primitive's own
@@ -343,6 +344,16 @@ pub struct A11yInfo {
     /// asserted" rather than "non-modal".
     #[serde(default)]
     pub modal: Option<bool>,
+    /// True row count of a virtualised container whose [`tree::A11yChild`]
+    /// nodes are windowed (see `tree`'s module doc, "Virtualisation"
+    /// section) — the full count a primitive's own row-loading window
+    /// (e.g. `items_window`) reports, not the number of children actually
+    /// materialised. `None` means either the container isn't windowed at
+    /// all, or no primitive has populated this yet; see `tree`'s "Stable
+    /// JSON form" section for why a `snapshot` consumer needs this to
+    /// tell "every row is here" apart from "this is a window".
+    #[serde(default)]
+    pub total_rows: Option<u32>,
 }
 
 impl A11yInfo {
@@ -447,6 +458,13 @@ impl A11yInfo {
     /// Sets whether this element is a modal dialog.
     pub fn with_modal(mut self, modal: bool) -> Self {
         self.modal = Some(modal);
+        self
+    }
+
+    /// Sets a virtualised container's true row count, independent of how
+    /// many of its children are actually materialised.
+    pub fn with_total_rows(mut self, total_rows: u32) -> Self {
+        self.total_rows = Some(total_rows);
         self
     }
 }
@@ -600,6 +618,7 @@ mod tests {
         assert_eq!(info.live, None);
         assert_eq!(info.hidden, None);
         assert_eq!(info.modal, None);
+        assert_eq!(info.total_rows, None);
     }
 
     #[test]
@@ -620,7 +639,8 @@ mod tests {
             .with_set_size(10)
             .with_live(A11yLive::Polite)
             .with_hidden(true)
-            .with_modal(true);
+            .with_modal(true)
+            .with_total_rows(100_000);
 
         assert_eq!(info.a11y_role, Some(A11yRole::Button));
         assert_eq!(info.a11y_label.as_deref(), Some("Save"));
@@ -644,6 +664,7 @@ mod tests {
         assert_eq!(info.live, Some(A11yLive::Polite));
         assert_eq!(info.hidden, Some(true));
         assert_eq!(info.modal, Some(true));
+        assert_eq!(info.total_rows, Some(100_000));
     }
 
     /// `#[serde(default)]` allows JSON missing these fields (or `{}`) to
