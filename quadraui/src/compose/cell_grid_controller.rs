@@ -244,9 +244,10 @@ impl CellGridController {
     // ── Rendering ─────────────────────────────────────────────────────
 
     /// Build the [`CellGrid`] this controller's current state describes,
-    /// carrying `cells` (the host's windowed cell text for this frame —
-    /// see [`crate::primitives::cell_grid`]'s module doc for what that
-    /// window covers). What a host paints via
+    /// carrying `cells` (the host's windowed cell text for this frame,
+    /// loaded from the controller's current scroll position — see
+    /// [`crate::primitives::cell_grid`]'s module doc for what that window
+    /// covers). What a host paints via
     /// [`crate::backend::DrawsPrimitives::draw_primitive`].
     pub fn grid(&self, cells: Vec<Vec<Cell>>) -> CellGrid {
         CellGrid {
@@ -268,6 +269,8 @@ impl CellGridController {
             cursor: self.cursor,
             selection_anchor: self.selection_anchor,
             cells,
+            loaded_row_start: self.row_scroll,
+            loaded_col_start: self.col_scroll,
             has_focus: self.has_focus,
             show_scrollbar: self.show_scrollbar,
         }
