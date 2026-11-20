@@ -3921,9 +3921,15 @@ mod coverage {
             UiEvent::BackendNative(_) => {}
             // `User` carries an opaque `Arc<dyn Any>` -- deliberately
             // typed `Any`/`unknown` in the schema (see `UserPayload`'s own
-            // doc); still named here so a *new* variant after it still
-            // trips this match.
+            // doc).
             UiEvent::User(_) => {}
+            // `UiEvent` is `#[non_exhaustive]` -- a new variant doesn't
+            // need a wildcard-arm migration here, so this guard can't
+            // catch one landing unnoticed; `variant_shape_test!`'s
+            // `ui_event_variants_match_the_schema_tag_list` runtime probe
+            // below is the backstop for that case. Still worth naming
+            // every variant that exists today explicitly.
+            _ => {}
         }
     }
 
@@ -6212,7 +6218,7 @@ mod coverage {
     mod variant_shape {
         use std::collections::BTreeSet;
 
-        use quadraui::{ChartKind, DrawOp, TabBarEvent, ToolbarButton, ToolbarEvent};
+        use quadraui::{ChartKind, DrawOp, TabBarEvent, ToolbarButton, ToolbarEvent, UiEvent};
 
         /// Deserializes a deliberately-unknown tag into `T` and parses the
         /// resulting serde error's "expected one of `A`, `B`, ..." variant
@@ -6355,6 +6361,68 @@ mod coverage {
                 "DashedLine",
                 "StrokeRect",
                 "StyledTextRun",
+            ]
+        );
+
+        variant_shape_test!(
+            ui_event_variants_match_the_schema_tag_list,
+            UiEvent,
+            "UiEvent",
+            "_UiEventDict",
+            [
+                "Accelerator",
+                "GlobalShortcut",
+                "KeyPressed",
+                "CharTyped",
+                "MouseDown",
+                "MouseUp",
+                "MouseMoved",
+                "MouseEntered",
+                "MouseLeft",
+                "DoubleClick",
+                "Scroll",
+                "WindowResized",
+                "WindowClose",
+                "WindowFocused",
+                "DpiChanged",
+                "WindowStateChanged",
+                "FilesDropped",
+                "ClipboardPaste",
+                "OpenRequested",
+                "TextCopied",
+                "FocusChanged",
+                "SystemThemeChanged",
+                "DisplaysChanged",
+                "PowerStateChanged",
+                "ScrollOffsetChanged",
+                "TextSelectionChanged",
+                "SplitDividerDragged",
+                "MenuActivated",
+                "ContextMenuItemActivated",
+                "ContextMenuDismissed",
+                "MessageDialogResolved",
+                "ToastActionClicked",
+                "CompletionItemActivated",
+                "RichTextLinkClicked",
+                "TrayClicked",
+                "NotificationActivated",
+                "Tree",
+                "List",
+                "Form",
+                "Palette",
+                "TabBar",
+                "StatusBar",
+                "ActivityBar",
+                "Terminal",
+                "TextDisplay",
+                "Chart",
+                "DataTable",
+                "TreeTable",
+                "CellGrid",
+                "Toolbar",
+                "Canvas",
+                "BackendNative",
+                "User",
             ]
         );
     }
