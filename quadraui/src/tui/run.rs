@@ -52,6 +52,8 @@ use ratatui::crossterm::terminal::{
 use ratatui::Terminal;
 
 use crate::backend::Backend;
+#[cfg(feature = "control")]
+use crate::control::{self, ControlHandle, ControlPort};
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
 // Re-exported (not just imported) so `tui::testing` — and any other
@@ -466,6 +468,11 @@ pub struct TuiRunner<A: AppLogic> {
     sgr_pixel_mouse: bool,
     mouse: bool,
     finished: bool,
+    // See `Self::attach_control`. `None` until a caller opts in — most
+    // apps never do, so this stays a plain `Option` rather than an
+    // always-constructed channel nobody drains.
+    #[cfg(feature = "control")]
+    control: Option<ControlPort>,
 }
 
 impl<A: AppLogic> TuiRunner<A> {
@@ -515,7 +522,26 @@ impl<A: AppLogic> TuiRunner<A> {
             sgr_pixel_mouse,
             mouse,
             finished: false,
+            #[cfg(feature = "control")]
+            control: None,
         })
+    }
+
+    /// Attach a backend-neutral control channel (see [`crate::control`]'s
+    /// module doc) to this runner, returning the cloneable
+    /// [`ControlHandle`] a thread that does not own this event loop uses
+    /// to drive it — snapshot the current [`crate::a11y::A11yTree`],
+    /// route an assistive-technology-style action against it, or
+    /// synthesize key input, all serviced once per [`Self::step`]/
+    /// [`Self::pump`] iteration alongside native events. Replaces any
+    /// previously attached channel — only the most recently attached one
+    /// is serviced.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    pub fn attach_control(&mut self) -> ControlHandle {
+        let (handle, port) = control::channel(self.backend.waker());
+        self.control = Some(port);
+        handle
     }
 
     /// Shared access to the app — e.g. for a host inspecting state between
@@ -655,6 +681,21 @@ impl<A: AppLogic> TuiRunner<A> {
             Reaction::Redraw => self.needs_redraw = true,
             Reaction::RedrawAfter(d) => self.backend.request_frame_in(d),
             Reaction::Exit => return Ok(self.finish()),
+        }
+
+        // Service whatever a background thread queued via `attach_control`'s
+        // `ControlHandle` since the last iteration — snapshot/act/key/type
+        // requests dispatch through `self.app.handle` exactly like native
+        // input, so their `Reaction` is applied the same way the tick's is
+        // just above.
+        #[cfg(feature = "control")]
+        if let Some(port) = &self.control {
+            match port.service(&mut self.app, &mut self.backend) {
+                Reaction::Continue => {}
+                Reaction::Redraw => self.needs_redraw = true,
+                Reaction::RedrawAfter(d) => self.backend.request_frame_in(d),
+                Reaction::Exit => return Ok(self.finish()),
+            }
         }
 
         Ok(StepOutcome::Continue)

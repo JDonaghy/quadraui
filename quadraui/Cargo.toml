@@ -480,6 +480,19 @@ layout = ["dep:taffy"]
 # backend feature or none at all, same as `layout` above.
 a11y = ["dep:accesskit"]
 
+# Backend-neutral control channel (`quadraui::control`): a cloneable,
+# `Send` handle a thread that does not own the event loop uses to drive a
+# running `AppLogic` app the same way a user's mouse/keyboard would —
+# snapshot via `a11y::tree`, synthesize input via
+# `a11y::action::route_action` — without knowing which backend is running
+# it. No extra dependency: built entirely on `std::sync::mpsc` plus the
+# existing `Backend::waker` seam, so this only toggles whether
+# `quadraui::control` compiles, pairing with any backend feature or none,
+# same as `layout`/`a11y` above. `tui::run`/`tui::shell_runner` wire it
+# into the TUI runner; the other backends wire their own runners
+# separately.
+control = []
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 # Unconditional (not feature-gated): `Theme::from_vscode_json` (#775)
