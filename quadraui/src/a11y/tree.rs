@@ -111,10 +111,74 @@
 //! (computed before windowing, from the primitive's true row count) stays
 //! correct regardless: row 50,000 of a windowed 100k-row table still
 //! reports "row 50,000 of 100,000", not "of 200".
+//!
+//! # Stable JSON form
+//!
+//! [`A11yTree`] implements `serde::Serialize` as the `snapshot` MCP
+//! tool's wire shape: a top-level `focus` field naming the node currently
+//! holding accessibility focus, and a `root` field holding the whole
+//! tree, nested by `children` rather than flattened into a list. Every
+//! node carries `id`, `role`, `focused` and `actions` always; `widget_id`,
+//! `label`, `description`, `value`, `selected`, `expanded`, `checked`,
+//! `disabled`, `bounds` and `total_rows` are omitted — not emitted as
+//! `null` — whenever the node carries no such state. `widget_id` is
+//! present only when the node's owning widget is in the tree's
+//! crate-internal owner side-table (the same table [`super::route_action`]
+//! consults). `actions` is [`A11yTreeNode::supported_actions`]: exactly
+//! what [`super::route_action`] would accept for that node, serialized as
+//! lowercase snake_case strings.
+//!
+//! ```json
+//! {
+//!   "focus": 7823450981,
+//!   "root": {
+//!     "id": 42,
+//!     "role": "window",
+//!     "label": "quadraui",
+//!     "focused": false,
+//!     "actions": [],
+//!     "children": [
+//!       {
+//!         "id": 918273645,
+//!         "widget_id": "files",
+//!         "role": "list",
+//!         "label": "Files",
+//!         "focused": false,
+//!         "actions": ["focus"],
+//!         "children": [
+//!           {
+//!             "id": 7823450981,
+//!             "role": "list_item",
+//!             "label": "a.rs",
+//!             "focused": true,
+//!             "selected": true,
+//!             "actions": ["focus", "click"],
+//!             "children": []
+//!           }
+//!         ]
+//!       }
+//!     ]
+//!   }
+//! }
+//! ```
+//!
+//! Every `id` equals the real [`A11yNodeId::for_widget`]/[`A11yNodeId::child`]
+//! chain this builder produced for that node (serialized as the id's raw
+//! `u64`), so a caller that already has one — from a previous snapshot, or
+//! from walking this one — can hand it straight to [`super::route_action`]
+//! as the `target` for an `act` call; see [`A11yNodeId`]'s own doc for why
+//! the same widget always produces the same id. A virtualised container
+//! (see "Virtualisation" above) reports `total_rows` only once a
+//! primitive's row-loading window populates [`A11yInfo::total_rows`] with
+//! its true count; until a primitive does, it stays absent, which is also
+//! correct for a container that was never windowed at all.
 
 use std::collections::HashMap;
 
-use crate::a11y::{A11yChecked, A11yInfo, A11yLive, A11yRole};
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
+
+use crate::a11y::{A11yAction, A11yChecked, A11yInfo, A11yLive, A11yRole};
 use crate::event::Rect;
 use crate::focus::FocusManager;
 use crate::frame::{OwnedContent, OwnedFrame, OwnedNode};
@@ -210,6 +274,18 @@ impl A11yNodeId {
     #[cfg_attr(docsrs, doc(cfg(feature = "a11y")))]
     pub fn to_accesskit(self) -> accesskit::NodeId {
         accesskit::NodeId(self.0)
+    }
+}
+
+/// Serializes as the id's raw [`A11yNodeId::as_u64`] — the same number a
+/// `snapshot` JSON caller hands back to [`super::route_action`] as an
+/// `act` call's `target`. See [`super::tree`]'s "Stable JSON form" section.
+impl Serialize for A11yNodeId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(self.0)
     }
 }
 
@@ -313,9 +389,7 @@ impl A11yTreeNode {
     /// derived purely from its role and state, so assistive technology
     /// only ever offers an action [`crate::a11y::route_action`] can
     /// actually turn into a `UiEvent`. A disabled node supports none.
-    pub fn supported_actions(&self) -> Vec<crate::a11y::A11yAction> {
-        use crate::a11y::A11yAction;
-
+    pub fn supported_actions(&self) -> Vec<A11yAction> {
         if self.info.disabled == Some(true) {
             return Vec::new();
         }
@@ -555,6 +629,88 @@ impl A11yTree {
         out.push('\n');
         for child in &node.children {
             self.write_snapshot(*child, depth + 1, out);
+        }
+    }
+}
+
+/// [`A11yTree`]'s JSON form: a top-level `focus` id plus the whole tree,
+/// nested under `root`. See the module doc's "Stable JSON form" section
+/// for the full field list and an example.
+impl Serialize for A11yTree {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let root = self
+            .node(self.root)
+            .expect("A11yTree::root always names a node build_tree inserted");
+        let mut state = serializer.serialize_struct("A11yTree", 2)?;
+        state.serialize_field("focus", &self.focus)?;
+        state.serialize_field("root", &A11yNodeJson::new(self, root))?;
+        state.end()
+    }
+}
+
+/// One node of [`A11yTree`]'s JSON form. Built fresh per [`A11yTree`]
+/// serialization rather than stored on [`A11yTreeNode`] itself — the
+/// `widget_id` and `focused` fields depend on the whole tree (the owner
+/// side-table, and which node currently holds focus), not just the one
+/// node.
+#[derive(Serialize)]
+struct A11yNodeJson<'a> {
+    id: A11yNodeId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    widget_id: Option<&'a str>,
+    role: A11yRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<&'a str>,
+    focused: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expanded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checked: Option<A11yChecked>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bounds: Option<Rect>,
+    actions: Vec<A11yAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_rows: Option<u32>,
+    children: Vec<A11yNodeJson<'a>>,
+}
+
+impl<'a> A11yNodeJson<'a> {
+    fn new(tree: &'a A11yTree, node: &'a A11yTreeNode) -> Self {
+        let widget_id = tree
+            .owner(node.id)
+            .map(|(widget, _key, _kind)| widget.as_str());
+        Self {
+            id: node.id,
+            widget_id,
+            role: node.role(),
+            label: node.label(),
+            description: node.info.description.as_deref(),
+            value: node.info.value.as_deref(),
+            focused: tree.focus == node.id,
+            selected: node.info.selected,
+            expanded: node.info.expanded,
+            checked: node.info.checked,
+            disabled: node.info.disabled,
+            bounds: node.bounds,
+            actions: node.supported_actions(),
+            total_rows: node.info.total_rows,
+            children: node
+                .children
+                .iter()
+                .filter_map(|id| tree.node(*id))
+                .map(|child| A11yNodeJson::new(tree, child))
+                .collect(),
         }
     }
 }
@@ -1158,6 +1314,7 @@ fn merge(base: A11yInfo, over: &A11yInfo) -> A11yInfo {
     merged.live = over.live.or(merged.live);
     merged.hidden = over.hidden.or(merged.hidden);
     merged.modal = over.modal.or(merged.modal);
+    merged.total_rows = over.total_rows.or(merged.total_rows);
     merged
 }
 
