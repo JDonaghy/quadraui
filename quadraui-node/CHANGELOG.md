@@ -18,6 +18,13 @@ fragment step for this package (that mechanism, and
 
 ### Added
 
+- A `"cell_grid"` extra's `CellGridController` events now reach the
+  registered handler as `{"CellGridController": [id, event]}`, mirroring
+  `{"TreeTableController": [id, event]}`. `CellsRequested` (the
+  two-axis-virtualisation window request) needs no new host call to
+  answer -- re-render with that `"cell_grid"` extra's `cells`/
+  `loaded_row_start`/`loaded_col_start` covering the named block, same as
+  any other extra's per-frame data.
 - A `"grid"` layout node: `{grid: {columns: [...], rows: [...], cells:
   [...]}}` lays its cells out row-major across two independent track
   lists, each track one of `{Fixed: px}`/`{Percent: 0.0-1.0}`/`{Weight:
