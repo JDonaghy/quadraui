@@ -158,6 +158,8 @@ use super::events::{
     gdk_scroll_to_uievent_with_direction, gtk_drop_to_uievent, gtk_open_to_uievent,
 };
 use crate::backend::Backend;
+#[cfg(feature = "control")]
+use crate::control::{self, ControlHandle};
 use crate::desktop::{smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig};
 use crate::dispatch::route_pointer;
 use crate::runner::{AppLogic, Reaction};
@@ -398,6 +400,12 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
                 backend.clone(),
                 smoke.clone(),
                 smoke_failed.clone(),
+                // `run`/`run_with` own the process end to end and return
+                // nothing a caller could later attach a control channel
+                // to — mirrors `tui::run`/`run_with`, which likewise never
+                // call `TuiRunner::attach_control`. `GtkRunner::new_with`
+                // below is the one path that threads a real slot through.
+                ControlSlot::default(),
                 title.clone(),
                 icon_name.clone(),
             );
@@ -432,6 +440,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
                     backend.clone(),
                     smoke.clone(),
                     smoke_failed.clone(),
+                    ControlSlot::default(),
                     title.clone(),
                     icon_name.clone(),
                 );
@@ -538,6 +547,17 @@ pub struct GtkRunner {
     /// doc for why a caller needs this rather than reaching `backend`
     /// directly the way [`crate::tui::TuiRunner::backend`] does.
     waker: Arc<dyn Fn(crate::UserPayload) + Send + Sync>,
+    /// See [`ControlSlot`]. Filled by [`Self::attach_control`]; serviced by
+    /// [`setup_event_drain`]'s idle-tick closure on every GLib main-context
+    /// iteration, the same cadence `app.tick` already runs on — not by
+    /// `Self::step`/`Self::pump` directly, since this runner holds no
+    /// direct reference to `app`/`backend` to service it against. Without
+    /// the `control` feature this is `()` — kept as a field and not
+    /// dropped at the end of `Self::new_with` so `activate`'s signature
+    /// doesn't need a second, `cfg`-gated shape; unread in that
+    /// configuration since nothing can ever attach to it.
+    #[cfg_attr(not(feature = "control"), allow(dead_code))]
+    control_slot: ControlSlot,
 }
 
 /// Best-effort check for whether a GTK display is currently reachable,
@@ -649,12 +669,15 @@ impl GtkRunner {
         // [`Self::waker`]'s own doc for why a caller needs this.
         let waker = backend.borrow().waker();
 
+        let control_slot = ControlSlot::default();
+
         activate(
             &gapp,
             app,
             backend,
             smoke,
             smoke_failed,
+            control_slot.clone(),
             config.title,
             config.icon_name,
         );
@@ -664,7 +687,28 @@ impl GtkRunner {
             context: glib::MainContext::default(),
             smoke_failed: smoke_failed_handle,
             waker,
+            control_slot,
         }
+    }
+
+    /// Attach a backend-neutral control channel (see [`crate::control`]'s
+    /// module doc) to this runner, returning the cloneable
+    /// [`ControlHandle`] a thread that does not own this event loop uses
+    /// to drive it — snapshot the current [`crate::A11yTree`], route an
+    /// assistive-technology-style action against it, or synthesize key
+    /// input through the same pipeline real keyboard/pointer input goes
+    /// through (see [`control_dispatch`]'s doc). Serviced on every GLib
+    /// main-context iteration by the idle-tick closure
+    /// [`setup_event_drain`] already installs — the GTK counterpart of
+    /// [`crate::tui::run::TuiRunner::attach_control`], serviced there once
+    /// per `step`/`pump` instead. Replaces any previously attached
+    /// channel — only the most recently attached one is serviced.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    pub fn attach_control(&mut self) -> ControlHandle {
+        let (handle, port) = control::channel(self.waker.clone());
+        *self.control_slot.port.borrow_mut() = Some(port);
+        handle
     }
 
     /// Whether the app's window is still open — see the type-level doc's
@@ -928,12 +972,34 @@ fn schedule_macos_session_hint_check() {}
 #[cfg(target_os = "macos")]
 const MACOS_SESSION_HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// Shared slot a [`control::ControlPort`] gets dropped into once attached
+/// (see [`GtkRunner::attach_control`]), and the one [`setup_event_drain`]'s
+/// idle-tick closure checks on every iteration to service it — see that
+/// function's doc for why servicing happens there rather than in
+/// `GtkRunner::step`/`pump` directly. An `Rc<RefCell<_>>`-backed field
+/// rather than a plain one on `activate`'s caller because `activate`
+/// consumes `app`/`backend` into its own closures before returning, so
+/// there is no struct left for a caller to reach into afterwards; this is
+/// the one piece of that state `GtkRunner` keeps a handle to. Always
+/// constructible (not only when the `control` feature is on) so
+/// `activate`'s signature doesn't need a second, `cfg`-gated shape — a
+/// `GtkRunner` built via [`run`]/[`run_with`] simply never has anything
+/// attach to it, and without the feature this is a zero-field struct with
+/// nothing to hold.
+#[derive(Clone, Default)]
+struct ControlSlot {
+    #[cfg(feature = "control")]
+    port: Rc<RefCell<Option<control::ControlPort>>>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn activate<A: AppLogic + 'static>(
     gapp: &Application,
     app: Rc<RefCell<A>>,
     backend: Rc<RefCell<GtkBackend>>,
     smoke: Option<SmokeConfig>,
     smoke_failed: Rc<Cell<bool>>,
+    control_slot: ControlSlot,
     title: String,
     icon_name: Option<String>,
 ) {
@@ -1055,7 +1121,15 @@ fn activate<A: AppLogic + 'static>(
     setup_system_theme_controller(&da, &window, &app, &backend, &pump_depth);
     setup_file_drop_controller(&da, &window, &app, &backend, &pump_depth);
     setup_close_request(&window, &da, &app, &backend, &pump_depth, &events_handle);
-    setup_event_drain(&da, &window, &app, &backend, &pump_depth, &events_handle);
+    setup_event_drain(
+        &da,
+        &window,
+        &app,
+        &backend,
+        &pump_depth,
+        &events_handle,
+        control_slot,
+    );
     setup_caret_blink(&da, &backend);
 
     window.present();
@@ -1965,9 +2039,13 @@ fn setup_close_request<A: AppLogic + 'static>(
     });
 }
 
-/// Wires the low-rate idle drain of the backend's event queue, plus the
-/// periodic `AppLogic::tick` call. Signal handlers dispatch synchronously
-/// through `app.handle`; the backend's queue is drained here on idle.
+/// Wires the low-rate idle drain of the backend's event queue, the
+/// periodic `AppLogic::tick` call, and — once per iteration, right after
+/// `tick` — servicing whatever [`control::ControlPort`] is attached via
+/// [`GtkRunner::attach_control`] (see [`ControlSlot`]'s doc for why this
+/// closure, rather than `GtkRunner::step`/`pump`, is where that happens).
+/// Signal handlers dispatch synchronously through `app.handle`; the
+/// backend's queue is drained here on idle.
 fn setup_event_drain<A: AppLogic + 'static>(
     da: &DrawingArea,
     window: &ApplicationWindow,
@@ -1975,6 +2053,7 @@ fn setup_event_drain<A: AppLogic + 'static>(
     backend: &Rc<RefCell<GtkBackend>>,
     pump_depth: &crate::desktop::ModalPumpDepth,
     events_handle: &Rc<RefCell<std::collections::VecDeque<UiEvent>>>,
+    control_slot: ControlSlot,
 ) {
     let drain_da = da.clone();
     let drain_window = window.clone();
@@ -1982,6 +2061,8 @@ fn setup_event_drain<A: AppLogic + 'static>(
     let drain_backend = backend.clone();
     let drain_pump_depth = pump_depth.clone();
     let drain_events_handle = events_handle.clone();
+    #[cfg_attr(not(feature = "control"), allow(unused_variables))]
+    let drain_control_slot = control_slot;
     let drain_and_tick: Rc<dyn Fn()> = Rc::new(move || {
         // This is the callback that produces re-entrancy: a file dialog's
         // nested `pump_until_ready` loop (invoked from `app.handle`, while
@@ -2029,6 +2110,27 @@ fn setup_event_drain<A: AppLogic + 'static>(
                 &drain_da,
                 &drain_window,
             );
+        }
+
+        // Service whatever a background thread queued via
+        // `GtkRunner::attach_control`'s `ControlHandle` since the last
+        // iteration — snapshot/act/key/type requests dispatch through
+        // `control_dispatch`, the same `dispatch_event` funnel every
+        // native signal closure above routes through, so their `Reaction`
+        // is applied the same way the tick's is just above. Degrades
+        // instead of panicking if `backend`/`app` are already borrowed;
+        // the next idle tick (or the next `waker()` call, which a
+        // `ControlHandle::send` already triggers) picks up the request.
+        #[cfg(feature = "control")]
+        if let Some(port) = drain_control_slot.port.borrow().as_ref() {
+            if let Some((mut backend_mut, mut app_mut)) =
+                try_borrow_both(&drain_backend, &drain_app)
+            {
+                let reaction = port.service(&mut *app_mut, &mut *backend_mut, control_dispatch);
+                drop(backend_mut);
+                drop(app_mut);
+                apply_reaction(reaction, &drain_backend.borrow(), &drain_da, &drain_window);
+            }
         }
     });
 
@@ -2366,6 +2468,34 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         backend.note_caret_activity(std::time::Instant::now());
     }
     crate::runtime::preprocess_event(event, backend, app)
+}
+
+/// The dispatch callback [`control::ControlPort::service`] runs for every
+/// [`UiEvent`] a `ControlRequest` synthesizes — the same funnel
+/// [`crate::gtk::testing::GtkDriver::dispatch`] runs for a scripted test
+/// event, [`dispatch_event`] above. This is what makes
+/// `ControlHandle::key`/`type_text` behave like real keyboard input on
+/// GTK — Tab focus cycling, declared accelerators, Ctrl-C/V/A — instead
+/// of a direct `AppLogic::handle` call that bypasses all of it.
+///
+/// Unlike [`crate::tui::run::control_dispatch`], there is no extra
+/// backend-translation stage to run first: GTK's mouse-routing
+/// (`route_pointer`) and double-click folding happen inside each native
+/// signal closure *before* it calls `dispatch_event`, not as a shared
+/// step every event re-enters — and no `ControlRequest` variant
+/// synthesizes a raw `MouseDown`/`MouseMoved`/`MouseUp` that would need
+/// it (`Key`/`Type` synthesize `KeyPressed`; `Act`'s routed events are
+/// already app-level, via `crate::a11y::route_action`). `dispatch_event`
+/// alone is therefore the complete pipeline, exactly as
+/// [`crate::gtk::testing::GtkDriver::dispatch`] already proves for
+/// scripted key input.
+#[cfg(feature = "control")]
+pub(crate) fn control_dispatch<A: AppLogic>(
+    event: UiEvent,
+    app: &mut A,
+    backend: &mut GtkBackend,
+) -> Reaction {
+    dispatch_event(event, backend, app)
 }
 
 // ── Re-entrancy backstop ──────────────────────────────────────

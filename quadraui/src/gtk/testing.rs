@@ -244,6 +244,30 @@ impl<A: AppLogic> GtkDriver<A> {
         })
     }
 
+    /// Service a [`crate::control::ControlPort`] against this driver — the
+    /// headless equivalent of what the live `gtk::run::setup_event_drain`
+    /// idle-tick closure does once per GLib main-context iteration for a
+    /// channel attached via `gtk::run::GtkRunner::attach_control`. Every
+    /// control-synthesized [`UiEvent`] goes through
+    /// [`super::run::control_dispatch`] — the same [`Self::dispatch`]
+    /// funnel — so a `ControlHandle::key`/`type_text`/`act` call behaves
+    /// identically in a test driven through this method and a live
+    /// `GtkRunner`. Repaints on [`Reaction::Redraw`], same as
+    /// [`Self::dispatch`]; the caller observes a [`Reaction::Exit`] (only
+    /// reachable via `ControlRequest::Act`'s routed events, like any other
+    /// dispatched event) through the returned [`Reaction`] rather than
+    /// this method latching `exited` itself.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    pub fn service_control(&mut self, port: &crate::control::ControlPort) -> Reaction {
+        let (backend, app) = self.core.parts_mut();
+        let reaction = port.service(app, backend, super::run::control_dispatch);
+        if reaction == Reaction::Redraw {
+            self.render();
+        }
+        reaction
+    }
+
     /// Toggle whether [`Self::dispatch`] (and every click helper built on
     /// it) folds a `MouseDown` into `DoubleClick` when it lands at the
     /// same spot as the previous one within [`crate::dispatch::DoubleClickDetector`]'s
@@ -406,6 +430,16 @@ impl<A: AppLogic> GtkDriver<A> {
     /// state, drag state).
     pub fn backend(&self) -> &GtkBackend {
         self.core.backend()
+    }
+
+    /// Disjoint mutable access to both the backend and the `AppLogic` this
+    /// driver wraps — for a test that needs to call a `&mut dyn Backend`
+    /// method (e.g. [`crate::frame::set_frame_capture`]) and poke
+    /// app-owned state in the same scope. Mirrors
+    /// [`crate::tui::testing::TuiDriver::parts_mut`]'s identical shape for
+    /// the headless TUI driver.
+    pub fn parts_mut(&mut self) -> (&mut GtkBackend, &mut A) {
+        self.core.parts_mut()
     }
 
     /// Read an RGB triple from the rendered surface at pixel `(x, y)`.

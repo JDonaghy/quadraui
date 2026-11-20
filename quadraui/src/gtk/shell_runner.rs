@@ -25,3 +25,25 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
     let adapter = build_shell_adapter(app, config);
     super::run::run_with(adapter, run_config);
 }
+
+/// Build a [`ShellApp`] as a [`crate::gtk::run::GtkRunner`] instead of
+/// entering [`run_with_shell`]'s blocking loop — for a host that wants
+/// the AppShell chrome but also needs
+/// [`crate::gtk::run::GtkRunner::attach_control`] (see [`crate::control`]'s
+/// module doc) or the step/pump-level control `run_with_shell` (which owns
+/// the process for its whole lifetime) can't give. Mirrors
+/// [`crate::tui::shell_runner::runner_with_shell`]'s identical shape for
+/// the TUI backend.
+#[cfg(feature = "control")]
+#[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+pub fn runner_with_shell<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+) -> super::run::GtkRunner {
+    let mut run_config = RunConfig::new(config.app_id.clone(), config.title.clone());
+    if let Some(icon_name) = config.icon_name.clone() {
+        run_config = run_config.with_icon_name(icon_name);
+    }
+    let adapter = build_shell_adapter(app, config);
+    super::run::GtkRunner::new_with(adapter, run_config)
+}
