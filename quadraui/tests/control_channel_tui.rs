@@ -5,9 +5,22 @@
 //! background thread uses a [`quadraui::control::ControlHandle`] to
 //! snapshot the app's accessibility tree, act a click on a list row, and
 //! snapshot again — proving the control channel can both read and drive
-//! a running app from a thread that does not own its event loop, through
-//! the exact same `render_frame`/`dispatch_event` production path every
-//! other `TuiDriver` test exercises.
+//! a running app from a thread that does not own its event loop.
+//!
+//! This test's own thread plays the runner's role by calling
+//! [`TuiDriver::service_control`] in a loop, the headless equivalent of
+//! what `tui::run::TuiRunner::run_one` does once per `step`/`pump`
+//! iteration for a channel attached via `attach_control` — so it
+//! approximates, rather than drives, the issue's "runs on the TUI
+//! runner" acceptance bullet: `TuiRunner::new` negotiates a real
+//! terminal and can't run headlessly, so there is no way to exercise
+//! `attach_control`/`run_one` itself from `cargo test`.
+//! [`TuiDriver::service_control`] still dispatches every control-
+//! synthesized event through the exact same pipeline
+//! `TuiRunner::run_one` does (backend translation, then the shared
+//! pre-processing pipeline), so the dispatch behaviour this test
+//! exercises is the real production path, even though the loop around
+//! it is the driver's, not `TuiRunner`'s.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,8 +30,9 @@ use std::time::{Duration, Instant};
 use quadraui::control::{channel, ControlError};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    set_frame_capture, A11yAction, A11yNodeId, Backend, Decoration, ListItem, ListView,
-    ListViewEvent, Reaction, Rect, ScreenLayout, StyledText, Surface, UiEvent, WidgetId,
+    set_frame_capture, A11yAction, A11yNodeId, Accelerator, AcceleratorId, AcceleratorScope,
+    Backend, Decoration, Key, KeyBinding, ListItem, ListView, ListViewEvent, Modifiers, Reaction,
+    Rect, ScreenLayout, StyledText, Surface, UiEvent, WidgetId,
 };
 
 /// A minimal `AppLogic` whose entire model is a selected row index, so a
@@ -137,17 +151,12 @@ fn background_thread_drives_the_app_through_the_control_channel() {
         (before, after)
     });
 
-    // Play the runner's role: service the control port and repaint on
-    // `Reaction::Redraw`, in a loop, the same way
-    // `tui::run::TuiRunner::run_one` does once per iteration — until the
-    // worker reports it's done or a generous deadline passes.
+    // Play the runner's role: service the control port, in a loop, the
+    // same way `tui::run::TuiRunner::run_one` does once per iteration —
+    // until the worker reports it's done or a generous deadline passes.
     let deadline = Instant::now() + Duration::from_secs(5);
     while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
-        let (backend, app) = driver.parts_mut();
-        let reaction = port.service(app, backend);
-        if reaction == Reaction::Redraw {
-            driver.render();
-        }
+        driver.service_control(&port);
         thread::sleep(Duration::from_millis(1));
     }
     let (before, after) = worker.join().expect("worker thread panicked");
@@ -214,8 +223,7 @@ fn act_on_unknown_node_id_does_not_panic() {
 
     let worker = thread::spawn(move || handle.act(bogus, A11yAction::Click, None));
     loop {
-        let (backend, app) = driver.parts_mut();
-        port.service(app, backend);
+        driver.service_control(&port);
         if worker.is_finished() {
             break;
         }
@@ -225,4 +233,92 @@ fn act_on_unknown_node_id_does_not_panic() {
         .join()
         .expect("worker thread panicked")
         .expect("acting on an unknown node id is a safe no-op, not an error");
+}
+
+/// An `AppLogic` that registers one `Global`-scoped accelerator in
+/// `setup` and records every event it's handed, so a test can tell a
+/// resolved [`UiEvent::Accelerator`] apart from a raw
+/// [`UiEvent::KeyPressed`] that skipped accelerator resolution entirely.
+#[derive(Default)]
+struct AccelApp {
+    events: Vec<UiEvent>,
+}
+
+impl quadraui::AppLogic for AccelApp {
+    type AreaId = ();
+
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        backend.register_accelerator(&Accelerator {
+            id: AcceleratorId::new("test.save"),
+            binding: KeyBinding::Literal("<C-s>".into()),
+            scope: AcceleratorScope::Global,
+            label: None,
+        });
+    }
+
+    fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        self.events.push(event);
+        Reaction::Continue
+    }
+}
+
+/// The blocking review finding this module's wiring fixes: a
+/// [`quadraui::control::ControlHandle::key`] call must go through the
+/// same backend-translation + pre-processing pipeline real keyboard
+/// input does, not a bare `AppLogic::handle` call that bypasses it. A
+/// declared `Global` accelerator is the clearest proof — if `key` only
+/// reached `handle` directly, the app would see a raw
+/// `UiEvent::KeyPressed { key: Char('s'), modifiers: ctrl, .. }`; routed
+/// through the real pipeline, the backend's own accelerator resolution
+/// rewrites it to `UiEvent::Accelerator` first.
+#[test]
+fn key_request_resolves_a_declared_global_accelerator() {
+    let mut driver = TuiDriver::new(AccelApp::default(), 20, 5);
+
+    let waker = driver.backend().waker();
+    let (handle, port) = channel(waker);
+
+    let worker = thread::spawn(move || {
+        handle.key(
+            Key::Char('s'),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        )
+    });
+    loop {
+        driver.service_control(&port);
+        if worker.is_finished() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    worker
+        .join()
+        .expect("worker thread panicked")
+        .expect("key succeeds");
+
+    assert!(
+        driver
+            .app()
+            .events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Accelerator(id, _) if id.as_str() == "test.save")),
+        "expected a resolved UiEvent::Accelerator(\"test.save\", _), got {:?}",
+        driver.app().events
+    );
+    assert!(
+        !driver.app().events.iter().any(|e| matches!(
+            e,
+            UiEvent::KeyPressed {
+                key: Key::Char('s'),
+                ..
+            }
+        )),
+        "the raw KeyPressed must not also reach the app once the accelerator resolved it, got {:?}",
+        driver.app().events
+    );
 }

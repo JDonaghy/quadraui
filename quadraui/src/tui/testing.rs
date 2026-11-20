@@ -67,6 +67,8 @@ use crate::testing::{
     Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, TextRun,
 };
 use crate::tui::backend::TuiBackend;
+#[cfg(feature = "control")]
+use crate::tui::run::control_dispatch;
 use crate::tui::run::{dispatch_event, render_frame, EventOutcome};
 use crate::tui::text::char_cell_width;
 use crate::{
@@ -308,6 +310,30 @@ impl<A: AppLogic> TuiDriver<A> {
             result = result.merge(outcome);
         }
         result
+    }
+
+    /// Service a [`crate::control::ControlPort`] against this driver — the
+    /// headless equivalent of what `tui::run::TuiRunner::run_one` does
+    /// once per `step`/`pump` call for a channel attached via
+    /// `attach_control`. Every control-synthesized [`UiEvent`] goes
+    /// through [`control_dispatch`] — the same backend-translation +
+    /// pre-processing pipeline [`Self::dispatch`] runs — so a
+    /// `ControlHandle::key`/`type_text`/`act` call behaves identically in
+    /// a test driven through this method and a live `TuiRunner`. Repaints
+    /// on [`Reaction::Redraw`], same as [`Self::dispatch`]; the caller
+    /// observes an [`Reaction::Exit`] (only reachable via
+    /// `ControlRequest::Act`'s routed events, like any other dispatched
+    /// event) through the returned [`Reaction`] rather than this method
+    /// latching `exited` itself.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    pub fn service_control(&mut self, port: &crate::control::ControlPort) -> Reaction {
+        let (backend, app) = self.core.parts_mut();
+        let reaction = port.service(app, backend, control_dispatch);
+        if reaction == Reaction::Redraw {
+            self.render();
+        }
+        reaction
     }
 
     /// Deliver every [`UiEvent::User`] payload queued via

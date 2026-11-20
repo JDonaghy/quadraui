@@ -530,12 +530,13 @@ impl<A: AppLogic> TuiRunner<A> {
     /// Attach a backend-neutral control channel (see [`crate::control`]'s
     /// module doc) to this runner, returning the cloneable
     /// [`ControlHandle`] a thread that does not own this event loop uses
-    /// to drive it — snapshot the current [`crate::a11y::A11yTree`],
-    /// route an assistive-technology-style action against it, or
-    /// synthesize key input, all serviced once per [`Self::step`]/
-    /// [`Self::pump`] iteration alongside native events. Replaces any
-    /// previously attached channel — only the most recently attached one
-    /// is serviced.
+    /// to drive it — snapshot the current [`crate::A11yTree`], route an
+    /// assistive-technology-style action against it, or synthesize key
+    /// input through the same pipeline real keyboard input goes through
+    /// (see [`control_dispatch`]'s doc), all serviced once per
+    /// [`Self::step`]/[`Self::pump`] iteration alongside native events.
+    /// Replaces any previously attached channel — only the most recently
+    /// attached one is serviced.
     #[cfg(feature = "control")]
     #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
     pub fn attach_control(&mut self) -> ControlHandle {
@@ -685,12 +686,13 @@ impl<A: AppLogic> TuiRunner<A> {
 
         // Service whatever a background thread queued via `attach_control`'s
         // `ControlHandle` since the last iteration — snapshot/act/key/type
-        // requests dispatch through `self.app.handle` exactly like native
-        // input, so their `Reaction` is applied the same way the tick's is
-        // just above.
+        // requests dispatch through `control_dispatch`, the same backend
+        // translation + pre-processing pipeline real input goes through
+        // (see that function's doc), so their `Reaction` is applied the
+        // same way the tick's is just above.
         #[cfg(feature = "control")]
         if let Some(port) = &self.control {
-            match port.service(&mut self.app, &mut self.backend) {
+            match port.service(&mut self.app, &mut self.backend, control_dispatch) {
                 Reaction::Continue => {}
                 Reaction::Redraw => self.needs_redraw = true,
                 Reaction::RedrawAfter(d) => self.backend.request_frame_in(d),
@@ -972,6 +974,34 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     app: &mut A,
 ) -> EventOutcome {
     crate::runtime::preprocess_event(event, backend, app)
+}
+
+/// The dispatch callback [`crate::control::ControlPort::service`] runs for
+/// every [`UiEvent`] a [`ControlRequest`] synthesizes — the same two-stage
+/// pipeline [`crate::tui::testing::TuiDriver::dispatch`] runs for a
+/// scripted test event: backend translation
+/// ([`TuiBackend::translate_injected`] — drag state, accelerator
+/// matching, double-click folding) followed by [`dispatch_event`] per
+/// resulting event. This is what makes `ControlHandle::key`/`type_text`
+/// behave like real keyboard input — Tab focus cycling, declared
+/// accelerators, Ctrl-C/V/A — instead of a direct `AppLogic::handle` call
+/// that bypasses all of it. Shared by [`TuiRunner::run_one`]'s
+/// control-channel servicing and
+/// [`crate::tui::testing::TuiDriver::service_control`], so a control
+/// request behaves identically on a live and a headless runner.
+///
+/// [`ControlRequest`]: crate::control::ControlRequest
+#[cfg(feature = "control")]
+pub(crate) fn control_dispatch<A: AppLogic>(
+    event: UiEvent,
+    app: &mut A,
+    backend: &mut TuiBackend,
+) -> Reaction {
+    let mut reaction = Reaction::Continue;
+    for translated in backend.translate_injected(vec![event]) {
+        reaction = reaction.merge(dispatch_event(translated, backend, app));
+    }
+    reaction
 }
 
 /// Push kitty keyboard protocol flags (best-effort). Returns whether
