@@ -218,7 +218,15 @@ impl NamedKey {
 }
 
 /// Mouse button identity.
+///
+/// `#[non_exhaustive]`: a downstream `match` on `MouseButton` needs a
+/// wildcard arm. Construction (`MouseButton::Left`, `MouseButton::Other(3)`)
+/// and single-variant destructuring (`if let MouseButton::Left = button`)
+/// are unaffected — only an exhaustive match with no catch-all breaks. This
+/// closes off a future button identity (e.g. a sixth mouse button) from
+/// being a breaking change on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[non_exhaustive]
 pub enum MouseButton {
     #[default]
     Left,
