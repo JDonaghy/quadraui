@@ -181,6 +181,72 @@ mod tests {
         );
     }
 
+    /// Like [`paint_via_backend`], but through
+    /// `MacBackend::draw_palette_with_state` so a test can probe the
+    /// pinned create row's hover/pressed tinting.
+    fn paint_via_backend_with_state(
+        palette: &Palette,
+        interaction: &crate::InteractionState,
+    ) -> BitmapSurface {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_current_line_height(16.0);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_palette_with_state(
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                palette,
+                interaction,
+            );
+        });
+        backend.end_frame();
+        surface
+    }
+
+    #[test]
+    fn hovered_create_row_paints_hover_tint() {
+        let mut p = sample_palette();
+        p.create_label = Some("Create \"fo\"".into());
+        let theme = Theme::default();
+        let layout = mac_palette_layout(&p, 0.0, 0.0, W as f64, H as f64, 16.0);
+        let create = layout.create_bounds.expect("create row present");
+        let px = (create.x + 4.0) as u32;
+        let py = (create.y + create.height / 2.0) as u32;
+
+        let interaction = crate::InteractionState::from_parts(Some(p.id), None);
+        let surface = paint_via_backend_with_state(&p, &interaction);
+        let (r, g, b, _) = surface.pixel(px, py);
+        let expected = theme.menu_item_hover_bg(theme.hover_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "hovering the create row must tint it with menu_item_hover_bg",
+        );
+    }
+
+    #[test]
+    fn pressed_create_row_paints_pressed_tint() {
+        let mut p = sample_palette();
+        p.create_label = Some("Create \"fo\"".into());
+        let theme = Theme::default();
+        let layout = mac_palette_layout(&p, 0.0, 0.0, W as f64, H as f64, 16.0);
+        let create = layout.create_bounds.expect("create row present");
+        let px = (create.x + 4.0) as u32;
+        let py = (create.y + create.height / 2.0) as u32;
+
+        let interaction = crate::InteractionState::from_parts(Some(p.id), Some(p.id));
+        let surface = paint_via_backend_with_state(&p, &interaction);
+        let (r, g, b, _) = surface.pixel(px, py);
+        let expected = theme.menu_item_pressed_bg(theme.hover_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "pressing the create row must tint it with menu_item_pressed_bg",
+        );
+    }
+
     #[test]
     fn selected_item_paints_selected_bg() {
         let p = sample_palette();

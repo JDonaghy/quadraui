@@ -154,6 +154,10 @@ impl Demo for PaletteDemo {
                 self.picker
                     .handle_mouse_event(event, backend, popup_rect, visible_rows)
             }
+            UiEvent::MouseMoved { .. } => {
+                self.picker
+                    .handle_mouse_move_event(event, backend, popup_rect, visible_rows)
+            }
             _ => self.picker.handle_event(event, visible_rows),
         };
 
@@ -234,14 +238,13 @@ impl Demo for PaletteDemo {
     }
 
     fn hover_action(&self, _variant: usize) -> Option<CaptureAction> {
-        // `DualModePaletteController::handle_mouse_event` only matches
-        // `MouseDown` (see that method's own doc) — this primitive has
-        // no mouse-hover state distinct from `selected`, so a real
-        // `MouseMoved` would be a no-op capture. Clicking "develop" (not
-        // the default `selected == 0` "main" row) is this primitive's
-        // only way to move the highlighted row, so it stands in for
-        // "an item is highlighted" here.
-        Some(CaptureAction::ClickText("develop"))
+        // `DualModePaletteController::handle_mouse_move_event` moves the
+        // highlighted row (`selected`) the same way a click does — see
+        // that method's own doc for why this primitive has no hover
+        // channel distinct from `selected`. A real `MouseMoved` over
+        // "develop" (not the default `selected == 0` "main" row) is
+        // enough to tell this capture apart from the idle "rest" one.
+        Some(CaptureAction::HoverText("develop"))
     }
 }
 

@@ -34,6 +34,7 @@
 //! ```
 
 use crate::compose::Handled;
+use crate::interaction::InteractionState;
 use crate::{
     Backend, Key, Modifiers, MouseButton, NamedKey, Palette, PaletteHit, PaletteItem, PaletteMode,
     Rect, UiEvent, WidgetId,
@@ -226,9 +227,16 @@ impl DualModePaletteController {
     /// Paint the palette modal inside `rect`.
     ///
     /// Call this from `AppLogic::render` while the controller is open.
+    /// Routes through [`Backend::draw_palette_with_state`] (an empty
+    /// [`InteractionState`] today, since this controller has no pinned
+    /// create row of its own to hover) rather than
+    /// [`Backend::draw_palette`] directly — the same seam
+    /// [`crate::compose::ContextMenuController`]/[`crate::compose::MenuSystem`]
+    /// render through, so a future create-row hover only needs feeding a
+    /// non-empty `InteractionState` here, not a new paint call site.
     pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
         let palette = self.build_palette();
-        backend.draw_palette(rect, &palette);
+        backend.draw_palette_with_state(rect, &palette, &InteractionState::new());
     }
 
     // ── Handle ────────────────────────────────────────────────────────
@@ -318,6 +326,49 @@ impl DualModePaletteController {
 
         let result = match hit {
             PaletteHit::Item(idx) if idx < self.items.len() => {
+                self.selected = idx;
+                Handled::Consumed
+            }
+            _ => Handled::Ignored,
+        };
+        if matches!(result, Handled::Consumed) {
+            self.sync_scroll(visible_rows);
+        }
+        result
+    }
+
+    /// Drive the state machine with a `MouseMoved` `UiEvent` — the
+    /// hover-tracking twin of [`Self::handle_mouse_event`], which only
+    /// reacts to a left `MouseDown`. Moving the pointer over an item row
+    /// highlights it the same way a click does (there is no separate
+    /// hover-only visual: [`PaletteItem`] carries no [`WidgetId`] of its
+    /// own, so `theme.selected_bg` — [`Self::selected`]'s own paint — is
+    /// the one highlight channel [`Palette`]'s shared painter exposes for
+    /// an item row; see [`crate::Backend::draw_palette_with_state`]'s own
+    /// doc for why only the pinned create row gets a distinct hover tint).
+    /// A non-`MouseMoved` event, or one that misses every item row,
+    /// returns [`Handled::Ignored`] — including a move that re-hits the
+    /// already-selected row, so a stationary pointer doesn't churn a
+    /// redraw every frame.
+    ///
+    /// Same `rect`/`backend` contract as [`Self::handle_mouse_event`].
+    pub fn handle_mouse_move_event(
+        &mut self,
+        event: &UiEvent,
+        backend: &dyn Backend,
+        rect: Rect,
+        visible_rows: usize,
+    ) -> Handled<DualModePaletteAction> {
+        let UiEvent::MouseMoved { position, .. } = event else {
+            return Handled::Ignored;
+        };
+
+        let palette = self.build_palette();
+        let layout = backend.palette_layout(rect, &palette);
+        let hit = layout.hit_test(position.x - rect.x, position.y - rect.y);
+
+        let result = match hit {
+            PaletteHit::Item(idx) if idx < self.items.len() && idx != self.selected => {
                 self.selected = idx;
                 Handled::Consumed
             }
@@ -990,6 +1041,13 @@ mod tests {
         }
     }
 
+    fn mouse_moved(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseMoved {
+            position: crate::Point { x, y },
+            buttons: crate::event::ButtonMask::default(),
+        }
+    }
+
     /// `RecordingBackend::palette_layout` lays out with `line_height`
     /// (default `1.0`) rows: title at row 0, query at row 1, items from
     /// row 2 — same shape `RecordingBackend::new()` uses everywhere else
@@ -1047,6 +1105,65 @@ mod tests {
 
         assert_eq!(ev, Handled::Ignored);
         assert_eq!(ctrl.selected(), 0);
+    }
+
+    #[test]
+    fn mouse_moved_over_item_selects_it() {
+        let items = vec![item("a"), item("b"), item("c")];
+        let mut ctrl = DualModePaletteController::new("T", None, items);
+        assert_eq!(ctrl.selected(), 0);
+
+        let backend = recording_backend();
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        // Same row geometry as `mouse_click_on_item_selects_it`: item 2
+        // sits at row 4.
+        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 4.5), &backend, rect, 10);
+
+        assert_eq!(ev, Handled::Consumed);
+        assert_eq!(
+            ctrl.selected(),
+            2,
+            "hovering item 2's row must update the selection, same as a click"
+        );
+    }
+
+    #[test]
+    fn mouse_moved_over_the_already_selected_row_is_ignored() {
+        // A stationary pointer must not churn `Handled::Consumed` (and so
+        // a redraw) every frame it's polled.
+        let items = vec![item("a"), item("b"), item("c")];
+        let mut ctrl = DualModePaletteController::new("T", None, items);
+        assert_eq!(ctrl.selected(), 0);
+
+        let backend = recording_backend();
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        // Item 0's row is at local y=2 (title + query rows above it).
+        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 2.5), &backend, rect, 10);
+
+        assert_eq!(ev, Handled::Ignored);
+        assert_eq!(ctrl.selected(), 0);
+    }
+
+    #[test]
+    fn mouse_moved_outside_any_item_row_is_ignored() {
+        let items = vec![item("a"), item("b")];
+        let mut ctrl = DualModePaletteController::new("T", None, items);
+
+        let backend = recording_backend();
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 99.0), &backend, rect, 10);
+
+        assert_eq!(ev, Handled::Ignored);
+        assert_eq!(ctrl.selected(), 0);
+    }
+
+    #[test]
+    fn non_mouse_moved_event_is_ignored_by_handle_mouse_move() {
+        let mut ctrl = DualModePaletteController::new("T", None, vec![item("a")]);
+        let backend = recording_backend();
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let ev = ctrl.handle_mouse_move_event(&mouse_down(5.0, 4.5), &backend, rect, 10);
+        assert_eq!(ev, Handled::Ignored);
     }
 
     #[test]
