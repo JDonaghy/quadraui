@@ -810,10 +810,16 @@ impl CellGrid {
         let cols = body_cols.len();
 
         let window = self.cells_window();
-        let covers = window.row_start <= row_start
-            && window.row_start + window.rows >= row_start + rows
-            && window.col_start <= col_start
-            && window.col_start + window.cols >= col_start + cols;
+        // `cells` is indexed *positionally* against `layout.rows`/`layout.cols`
+        // (see the module doc's "fills `cells[r][c]` from `rows[r]`/`cols[c]`'s
+        // absolute indices"), so a loaded window whose origin merely *contains*
+        // the viewport — but starts earlier — still paints the wrong rows/columns
+        // under the viewport's headers. The only self-consistent check is exact
+        // origin equality plus enough loaded extent.
+        let covers = window.row_start == row_start
+            && window.rows >= rows
+            && window.col_start == col_start
+            && window.cols >= cols;
         if covers {
             None
         } else {
@@ -1905,9 +1911,8 @@ mod tests {
         assert_eq!(g.cells_requested(&small), None);
 
         // Resize to a much larger viewport without reloading `cells` —
-        // the loaded window no longer covers every visible row/column,
-        // so a fresh request names the bigger block the new viewport
-        // needs.
+        // the loaded window does not cover every visible row/column, so
+        // a fresh request names the bigger block the new viewport needs.
         let big = g.layout(400.0, 200.0, 1.0, 8.0, 0.0, 0.0);
         let event = g
             .cells_requested(&big)
@@ -1917,6 +1922,48 @@ mod tests {
         };
         assert!(rows > small.rows.len());
         assert!(cols > small.cols.len());
+    }
+
+    #[test]
+    fn cells_requested_fires_on_a_shrink_then_scroll_even_though_the_stale_window_contains_the_viewport(
+    ) {
+        // `cells` is indexed *positionally* against `layout.rows`/`layout.cols`
+        // (see the module doc), so a loaded window merely *containing* the
+        // viewport isn't enough — it must start at the same absolute row/col or
+        // the body paints shifted. A viewport shrink alone must stay `None`
+        // (the app legitimately kept its larger block and the origin still
+        // matches), but scrolling inside that stale block afterwards must
+        // fire a fresh request.
+        let mut g = virtual_grid(1_000_000, 16_384);
+        g.row_scroll = 500;
+        let tall = g.layout(400.0, 50.0, 0.0, 0.0, 0.0, 0.0);
+        load_cells_at(&mut g, 500, 0, tall.rows.len(), tall.cols.len());
+        assert_eq!(g.cells_requested(&tall), None);
+
+        // Viewport shrinks to 40 rows; the loaded 50-row block still starts
+        // at the same origin, so no request fires and `cells` stays as-is.
+        let short = g.layout(400.0, 40.0, 0.0, 0.0, 0.0, 0.0);
+        assert_eq!(g.cells_requested(&short), None);
+        assert_eq!(g.cells.len(), tall.rows.len());
+
+        // Scroll ten rows inside the stale (larger) loaded block. The old
+        // containment check would call this covered (500 <= 510 && 550 >=
+        // 550); the origin no longer matches the viewport's first row, so a
+        // fresh request must fire naming the new block.
+        g.row_scroll = 510;
+        let after = g.layout(400.0, 40.0, 0.0, 0.0, 0.0, 0.0);
+        let event = g
+            .cells_requested(&after)
+            .expect("a stale loaded window whose origin has drifted must be requested again");
+        assert_eq!(
+            event,
+            CellGridEvent::CellsRequested {
+                row_start: after.rows[0].index,
+                col_start: after.cols[0].index,
+                rows: after.rows.len(),
+                cols: after.cols.len(),
+            }
+        );
     }
 }
 
