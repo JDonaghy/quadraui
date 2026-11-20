@@ -2212,12 +2212,16 @@ name = "tui_form_spacing"
 path = "examples/tui_form_spacing.rs"
 required-features = ["tui"]
 
-# `CellGridController` spreadsheet-navigation demo. TUI only — `CellGrid`
-# has no pixel-backend rasteriser yet. Without an explicit `[[example]]`,
-# autodiscovery picks up `tui_cell_grid.rs` with no `required-features`,
-# and `cargo check -p quadraui --all-targets` (no `--features tui`) then
-# fails on `quadraui::tui` being configured out.
+# `CellGridController` spreadsheet-navigation demo. Without an explicit
+# `[[example]]`, autodiscovery picks up `tui_cell_grid.rs` with no
+# `required-features`, and `cargo check -p quadraui --all-targets` (no
+# `--features tui`) then fails on `quadraui::tui` being configured out.
 [[example]]
 name = "tui_cell_grid"
 path = "examples/tui_cell_grid.rs"
 required-features = ["tui"]
+
+[[example]]
+name = "gtk_cell_grid"
+path = "examples/gtk_cell_grid.rs"
+required-features = ["gtk"]
