@@ -2007,6 +2007,8 @@ Alias for `"Contain" | "Cover" | "Fill" | "None"`.
 | `value` | `boolean` | no |  |
 | `disabled` | `boolean` | no |  |
 | `focused` | `boolean` | no |  |
+| `hovered` | `boolean` | no |  |
+| `pressed` | `boolean` | no |  |
 
 <a id="wire-checkboxdescriptor"></a>
 #### `CheckboxDescriptor`
@@ -2143,6 +2145,8 @@ Alias for `"Vertical" | "Horizontal"`.
 | `id` | `WidgetId` | yes |  |
 | `label` | `string` | yes |  |
 | `disabled` | `boolean` | no |  |
+| `hovered` | `boolean` | no |  |
+| `pressed` | `boolean` | no |  |
 
 <a id="wire-radiogroupdescriptor"></a>
 #### `RadioGroupDescriptor`

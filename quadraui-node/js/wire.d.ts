@@ -856,6 +856,8 @@ export interface SwitchDescriptor {
   value?: boolean;
   disabled?: boolean;
   focused?: boolean;
+  hovered?: boolean;
+  pressed?: boolean;
 }
 
 export interface CheckboxDescriptor {
@@ -951,6 +953,8 @@ export interface RadioOptionDescriptor {
   id: WidgetId;
   label: string;
   disabled?: boolean;
+  hovered?: boolean;
+  pressed?: boolean;
 }
 
 export interface RadioGroupDescriptor {

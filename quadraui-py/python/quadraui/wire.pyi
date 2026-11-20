@@ -812,6 +812,8 @@ class SwitchDescriptor(TypedDict):
     value: NotRequired[bool]
     disabled: NotRequired[bool]
     focused: NotRequired[bool]
+    hovered: NotRequired[bool]
+    pressed: NotRequired[bool]
 
 class CheckboxDescriptor(TypedDict):
     id: WidgetId
@@ -895,6 +897,8 @@ class RadioOptionDescriptor(TypedDict):
     id: WidgetId
     label: str
     disabled: NotRequired[bool]
+    hovered: NotRequired[bool]
+    pressed: NotRequired[bool]
 
 class RadioGroupDescriptor(TypedDict):
     id: WidgetId
