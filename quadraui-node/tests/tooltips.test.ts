@@ -3,17 +3,17 @@
 // own `tooltip` text shows up as a real tooltip overlay once the pointer
 // has hovered it continuously for `tooltipDelayMs`, and hides again on
 // pointer leave, the next click, or the auto-dismiss timeout -- with no
-// JS-side wiring beyond `insertButton`/`setHandler`/`pushEvent`/`step`,
-// since the *host* (`BindingHost::drive_hover_tooltip`) drives
+// JS-side wiring beyond `setRender`/`setHandler`/`pushEvent`/`step`, since
+// the *host* (`BindingHost::drive_hover_tooltip`) drives
 // `HoverTooltipTracker` itself. Ports `quadraui-py/tests/test_tooltips.py`
 // to this binding.
 //
-// Deliberately still on the deprecated `insertButton` slot, not an inline
-// leaf: `NodeAppLogic::render`'s `RenderOutput::Tree` branch never calls
-// `BindingHost::set_leaf_tooltips` the way `quadraui-py`'s own `render`
-// does, so a `button` layout leaf's `tooltip` field has no host-driven
-// resolution path in this binding yet -- only the static `BindingHost::button`
-// slot does. See `makeApp`'s own comment below.
+// Every test here paints its `Button` through an inline layout leaf (a
+// `setRender` callback). "tooltip appears via a render callback layout
+// tree leaf" additionally covers the multi-leaf case (two `Button` leaves
+// inside a `"row"`), since `BindingHost::hover_tooltip_text` resolves a
+// leaf's tooltip the same way regardless of how many sibling leaves share
+// the tree.
 //
 // `setTestClockMs` pins the headless clock `BindingHost::now_ms()` reads
 // to an absolute value this file picks, so every assertion below is
@@ -84,16 +84,27 @@ function makeApp(autoDismissMs = 0): any {
     tooltip_auto_dismiss_ms: autoDismissMs,
   });
   app.setTestClockMs(0);
-  // Deliberately kept on the deprecated `insertButton` slot rather than
-  // an inline leaf: unlike `quadraui-py`'s `PyAppLogic::render`, this
-  // binding's `NodeAppLogic::render` never calls
-  // `BindingHost::set_leaf_tooltips` for its own `RenderOutput::Tree`
-  // branch, so a layout-tree `button` leaf's `tooltip` field is not
-  // host-resolvable here yet -- only `BindingHost::button` (the static
-  // slot `insertButton` populates) is. Migrating this file to a `render`
-  // callback would silently stop testing the host-driven delay/
-  // auto-dismiss/pointer-leave behaviour this file exists to cover.
-  app.insertButton({ id: "save", label: "Save", tooltip: "Save the file" });
+  // Wrapped in a `"row"` container (a layout tree, not the bare flat
+  // six-slot shape) so the leaf's hover tooltip is actually resolvable:
+  // only `paintLayoutWindowed`'s tree path refreshes
+  // `BindingHost::leaf_tooltips` every render (see `NodeAppLogic::render`'s
+  // own doc) -- the flat shape clears it instead, so a bare
+  // `{ button: {...} }` object here would leave this leaf with no
+  // host-driven tooltip at all. A lone leaf in a `"row"` fills the whole
+  // viewport, leaving no position outside its own bounds -- a second,
+  // tooltip-less leaf gives the pointer somewhere to "leave" to.
+  app.setRender(() => ({
+    row: [
+      {
+        id: "leaf:save",
+        button: { id: "save", label: "Save", tooltip: "Save the file" },
+      },
+      {
+        id: "leaf:other",
+        button: { id: "other", label: "Other" },
+      },
+    ],
+  }));
   assert.ok(app.screenContains("Save"));
   return app;
 }
@@ -183,7 +194,9 @@ test("a button with no tooltip never shows one", () => {
   app.setHandler(() => undefined);
   app.setStyle({ tooltip_delay_ms: DELAY_MS });
   app.setTestClockMs(0);
-  app.insertButton({ id: "plain", label: "Plain" });
+  app.setRender(() => ({
+    row: [{ id: "leaf:plain", button: { id: "plain", label: "Plain" } }],
+  }));
   const [row, col] = locate(app, "Plain");
 
   const before = app.screen();
@@ -197,6 +210,57 @@ test("a button with no tooltip never shows one", () => {
   // "the button's own label still paints somewhere", which would also
   // pass if a spurious tooltip appeared.
   assert.equal(app.screen(), before);
+});
+
+test("tooltip appears via a render callback layout tree leaf", () => {
+  // Same contract as "tooltip appears only after the hover delay", but the
+  // button reaches the screen through `setRender`'s layout-tree path (two
+  // `Button` leaves inside a `"row"`) instead of a single-leaf `row` with
+  // no sibling. A leaf must be wrapped in a container key (here `"row"`)
+  // to decode as a layout tree at all -- a bare `{ id: ..., button: {...} }`
+  // object decodes as the flat six-slot shape instead, see
+  // `quadraui_binding_core::wire::is_layout_tree`. The second,
+  // tooltip-less leaf gives the pointer somewhere to "leave" to -- a lone
+  // leaf in a `"row"` fills the whole viewport, leaving no position
+  // outside its own bounds.
+  const app = new QuiApp(40, 10);
+  app.setHandler(() => undefined);
+  app.setStyle({ tooltip_delay_ms: DELAY_MS, tooltip_auto_dismiss_ms: 0 });
+  app.setTestClockMs(0);
+
+  app.setRender(() => ({
+    row: [
+      {
+        id: "leaf:save",
+        button: { id: "save", label: "Save", tooltip: "Save the file" },
+      },
+      {
+        id: "leaf:other",
+        button: { id: "other", label: "Other" },
+      },
+    ],
+  }));
+  assert.ok(app.screenContains("Save"));
+  const [row, col] = locate(app, "Save");
+
+  // Landing on the leaf is not enough by itself.
+  moveTo(app, row, col);
+  assert.ok(!app.screenContains("Save the file"));
+
+  // Holding still past the delay shows it, resolved from this leaf's own
+  // tree-address id ("leaf:save"), not "save" -- the descriptor's own
+  // embedded `Button.id` -- since the host's `leaf_tooltips` map is keyed
+  // by the former.
+  app.setTestClockMs(DELAY_MS);
+  app.step();
+  assert.ok(app.screenContains("Save the file"));
+
+  // Moving onto the second leaf, which carries no tooltip, hides the
+  // first leaf's tooltip immediately, same contract as the single-leaf
+  // path above.
+  const [otherRow, otherCol] = locate(app, "Other");
+  moveTo(app, otherRow, otherCol);
+  assert.ok(!app.screenContains("Save the file"));
 });
 
 test("handler shows and hides its own tooltip via actions", () => {

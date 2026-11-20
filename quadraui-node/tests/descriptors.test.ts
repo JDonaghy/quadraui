@@ -1,11 +1,19 @@
 // Black-box coverage for the descriptor decode adapter (`quadraui-node/src/
-// lib.rs`'s "Descriptor decode adapter" module doc section): insert each of
+// lib.rs`'s "Descriptor decode adapter" module doc section): render each of
 // the six fixed primitive slots and the three built-in additive primitives
-// from a plain JS object, assert `screen()` shows it, and exercise the two
+// from a plain JS object through a render callback's flat `{"<kind>": {...}}`
+// object, assert `screenContains()` shows it, and exercise the two
 // audit-flagged pre-checks (`Buffer`-sourced `ImageSource::Bytes`, a
-// non-finite float) plus the bad-shape/already-occupied error cases --
-// ports the shape of `quadraui-ffi`'s `bad_json_reports_last_error_for_each_new_primitive`
-// and `quadraui-py/tests/test_descriptors.py` + `test_extra_primitives.py`.
+// non-finite float) via that same path. The deprecated slot API's own
+// occupancy/validation behaviour (`insertButton`'s `SlotOccupiedError`,
+// `insertExtra`'s "no dedicated method" entry point and
+// `UnknownVariantError`, `clearExtra`'s own return-value semantics) has no
+// render-callback equivalent -- a render callback has no notion of
+// "occupied", it just returns fresh data every frame -- so the handful of
+// tests below that exercise that behaviour specifically stay on the
+// deprecated calls. Ports the shape of `quadraui-ffi`'s
+// `bad_json_reports_last_error_for_each_new_primitive` and
+// `quadraui-py/tests/test_descriptors.py` + `test_extra_primitives.py`.
 //
 // Run against a built addon, e.g.:
 //
@@ -16,150 +24,165 @@ const assert = require("node:assert/strict");
 
 const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("../js/index.ts");
 
-test("insertButton renders its label", () => {
+test("button leaf renders its label", () => {
   const app = new QuiApp(40, 20);
-  const slot = app.insertButton({ id: "demo:ok", label: "OK" });
-  assert.equal(slot, 0);
+  app.setRender(() => ({ button: { id: "demo:ok", label: "OK" } }));
   assert.ok(app.screenContains("OK"));
 });
 
-test("insertButton accepts an optional tooltip", () => {
+test("button leaf accepts an optional tooltip", () => {
   const app = new QuiApp(40, 20);
-  app.insertButton({ id: "demo:ok", label: "OK", tooltip: "Confirm the action" });
+  app.setRender(() => ({
+    button: { id: "demo:ok", label: "OK", tooltip: "Confirm the action" },
+  }));
   assert.ok(app.screenContains("OK"));
 });
 
-test("insertButton rejects a non-string tooltip", () => {
+test("button leaf rejects a non-string tooltip", () => {
   // `Button::tooltip` is typed `Option<String>`, not merely ignored the
   // way an unrecognized key would be -- a non-string value must fail to
   // decode, proving the field is actually wired into `Button`'s own
   // `Deserialize` rather than silently dropped.
   const app = new QuiApp(40, 20);
-  assert.throws(
-    () => app.insertButton({ id: "demo:ok", label: "OK", tooltip: 123 }),
-    /InvalidDescriptorError/,
-  );
+  app.setRender(() => ({ button: { id: "demo:ok", label: "OK", tooltip: 123 } }));
+  // The generic render-callback decode path wraps a serde-level type
+  // mismatch as `DecodeFailedError`, not a plain `InvalidDescriptorError`
+  // -- still a match for `InvalidDescriptorError` callers via the
+  // subclass relationship, same as the missing-required-field case below.
+  assert.throws(() => app.screen(), (err: unknown) => err instanceof InvalidDescriptorError);
 });
 
-test("insertTextDisplay renders its line text", () => {
+test("text display leaf renders its line text", () => {
   const app = new QuiApp(40, 20);
-  app.insertTextDisplay({
-    id: "text:1",
-    lines: [{ spans: [{ text: "Hello", fg: null, bg: null }] }],
-  });
+  app.setRender(() => ({
+    text_display: {
+      id: "text:1",
+      lines: [{ spans: [{ text: "Hello", fg: null, bg: null }] }],
+    },
+  }));
   assert.ok(app.screenContains("Hello"));
 });
 
-test("insertList renders an item's text", () => {
+test("list leaf renders an item's text", () => {
   const app = new QuiApp(40, 20);
-  app.insertList({
-    id: "list:1",
-    items: [{ text: { spans: [{ text: "Row 1", fg: null, bg: null }] } }],
-    selected_idx: 0,
-  });
+  app.setRender(() => ({
+    list: {
+      id: "list:1",
+      items: [{ text: { spans: [{ text: "Row 1", fg: null, bg: null }] } }],
+      selected_idx: 0,
+    },
+  }));
   assert.ok(app.screenContains("Row 1"));
 });
 
-test("insertTree renders a row's text", () => {
+test("tree leaf renders a row's text", () => {
   const app = new QuiApp(40, 20);
-  app.insertTree({
-    id: "tree:1",
-    rows: [
-      {
-        path: [0],
-        indent: 0,
-        icon: null,
-        text: { spans: [{ text: "Alpha", fg: null, bg: null }] },
-        badge: null,
-        is_expanded: null,
+  app.setRender(() => ({
+    tree: {
+      id: "tree:1",
+      rows: [
+        {
+          path: [0],
+          indent: 0,
+          icon: null,
+          text: { spans: [{ text: "Alpha", fg: null, bg: null }] },
+          badge: null,
+          is_expanded: null,
+        },
+      ],
+      selection_mode: "Single",
+      selected_path: null,
+      style: {
+        indent: 2,
+        show_chevrons: true,
+        chevron_expanded: "v",
+        chevron_collapsed: ">",
       },
-    ],
-    selection_mode: "Single",
-    selected_path: null,
-    style: {
-      indent: 2,
-      show_chevrons: true,
-      chevron_expanded: "v",
-      chevron_collapsed: ">",
     },
-  });
+  }));
   assert.ok(app.screenContains("Alpha"));
 });
 
-test("insertTree accepts a codicon icon and renders its fallback text", () => {
+test("tree leaf accepts a codicon icon and renders its fallback text", () => {
   // A tree row's `icon` accepts `{codicon: "...", fallback: "..."}` in
   // place of `{glyph: "...", fallback: "..."}` -- the wire shape `Icon`'s
   // `Deserialize` impl resolves through the bundled codicon name table.
   // The headless driver defaults to nerd fonts off, so the rendered row
   // shows the icon's plain-text fallback.
   const app = new QuiApp(40, 20);
-  app.insertTree({
-    id: "tree:1",
-    rows: [
-      {
-        path: [0],
-        indent: 0,
-        icon: { codicon: "folder", fallback: "DIR" },
-        text: { spans: [{ text: "src", fg: null, bg: null }] },
-        badge: null,
-        is_expanded: null,
+  app.setRender(() => ({
+    tree: {
+      id: "tree:1",
+      rows: [
+        {
+          path: [0],
+          indent: 0,
+          icon: { codicon: "folder", fallback: "DIR" },
+          text: { spans: [{ text: "src", fg: null, bg: null }] },
+          badge: null,
+          is_expanded: null,
+        },
+      ],
+      selection_mode: "Single",
+      selected_path: null,
+      style: {
+        indent: 2,
+        show_chevrons: true,
+        chevron_expanded: "v",
+        chevron_collapsed: ">",
       },
-    ],
-    selection_mode: "Single",
-    selected_path: null,
-    style: {
-      indent: 2,
-      show_chevrons: true,
-      chevron_expanded: "v",
-      chevron_collapsed: ">",
     },
-  });
+  }));
   assert.ok(app.screenContains("DIR"));
   assert.ok(app.screenContains("src"));
 });
 
-test("insertTree with an unknown codicon name raises InvalidDescriptorError", () => {
+test("tree leaf with an unknown codicon name raises InvalidDescriptorError", () => {
   const app = new QuiApp(40, 20);
-  assert.throws(
-    () =>
-      app.insertTree({
-        id: "tree:1",
-        rows: [
-          {
-            path: [0],
-            indent: 0,
-            icon: { codicon: "not-a-real-codicon-name", fallback: "?" },
-            text: { spans: [{ text: "src", fg: null, bg: null }] },
-            badge: null,
-            is_expanded: null,
-          },
-        ],
-        selection_mode: "Single",
-        selected_path: null,
-        style: {
-          indent: 2,
-          show_chevrons: true,
-          chevron_expanded: "v",
-          chevron_collapsed: ">",
+  app.setRender(() => ({
+    tree: {
+      id: "tree:1",
+      rows: [
+        {
+          path: [0],
+          indent: 0,
+          icon: { codicon: "not-a-real-codicon-name", fallback: "?" },
+          text: { spans: [{ text: "src", fg: null, bg: null }] },
+          badge: null,
+          is_expanded: null,
         },
-      }),
-    /InvalidDescriptorError/,
-  );
+      ],
+      selection_mode: "Single",
+      selected_path: null,
+      style: {
+        indent: 2,
+        show_chevrons: true,
+        chevron_expanded: "v",
+        chevron_collapsed: ">",
+      },
+    },
+  }));
+  // See "button leaf rejects a non-string tooltip"'s own comment for why
+  // this checks the subclass relationship rather than a literal
+  // `InvalidDescriptorError` substring match.
+  assert.throws(() => app.screen(), (err: unknown) => err instanceof InvalidDescriptorError);
 });
 
-test("insertDataTable renders a cell's text", () => {
+test("data table leaf renders a cell's text", () => {
   const app = new QuiApp(40, 20);
-  app.insertDataTable({
-    id: "table:1",
-    columns: [{ title: "Name" }],
-    rows: [{ cells: [{ spans: [{ text: "Row1", fg: null, bg: null }] }] }],
-  });
+  app.setRender(() => ({
+    data_table: {
+      id: "table:1",
+      columns: [{ title: "Name" }],
+      rows: [{ cells: [{ spans: [{ text: "Row1", fg: null, bg: null }] }] }],
+    },
+  }));
   assert.ok(app.screenContains("Row1"));
 });
 
-test("insertTabBar renders a tab's label", () => {
+test("tab bar leaf renders a tab's label", () => {
   const app = new QuiApp(40, 20);
-  app.insertTabBar({ id: "tabbar:1", tabs: [{ label: "Tab 1" }] });
+  app.setRender(() => ({ tab_bar: { id: "tabbar:1", tabs: [{ label: "Tab 1" }] } }));
   assert.ok(app.screenContains("Tab 1"));
 });
 
@@ -178,72 +201,82 @@ test("insertButton raises SlotOccupiedError when the slot is already occupied", 
   assert.ok(app.screenContains("OK2"));
 });
 
-test("insertButton with a bad shape raises InvalidDescriptorError", () => {
+test("button leaf with a bad shape raises InvalidDescriptorError", () => {
   const app = new QuiApp(40, 20);
-  assert.throws(
-    () => app.insertButton({ not: "a button" }),
-    /InvalidDescriptorError/,
-  );
+  app.setRender(() => ({ button: { not: "a button" } }));
+  // See "button leaf rejects a non-string tooltip"'s own comment for why
+  // this checks the subclass relationship rather than a literal
+  // `InvalidDescriptorError` substring match.
+  assert.throws(() => app.screen(), (err: unknown) => err instanceof InvalidDescriptorError);
 });
 
-test("insertProgress renders its label", () => {
+test("progress leaf renders its label", () => {
   const app = new QuiApp(40, 20);
-  app.insertProgress({ id: "progress:download", label: "Downloading", value: 0.5 });
+  app.setRender(() => ({
+    progress: { id: "progress:download", label: "Downloading", value: 0.5 },
+  }));
   assert.ok(app.screenContains("Downloading"));
 });
 
-test("insertSpinner renders its label", () => {
+test("spinner leaf renders its label", () => {
   const app = new QuiApp(40, 20);
-  app.insertSpinner({ id: "spinner:lsp_boot", label: "Indexing" });
+  app.setRender(() => ({ spinner: { id: "spinner:lsp_boot", label: "Indexing" } }));
   assert.ok(app.screenContains("Indexing"));
 });
 
-test("insertImage with a Path source renders its fallback text", () => {
+test("image leaf with a Path source renders its fallback text", () => {
   const app = new QuiApp(40, 20);
-  app.insertImage({
-    id: "image:logo",
-    source: { Path: "assets/logo.png" },
-    intrinsic_size: null,
-    fit: "Contain",
-    fallback_text: "[LOGO]",
-  });
+  app.setRender(() => ({
+    image: {
+      id: "image:logo",
+      source: { Path: "assets/logo.png" },
+      intrinsic_size: null,
+      fit: "Contain",
+      fallback_text: "[LOGO]",
+    },
+  }));
   assert.ok(app.screenContains("[LOGO]"));
 });
 
-test("insertImage with a Buffer-sourced Bytes image renders its fallback text", () => {
+test("image leaf with a Buffer-sourced Bytes image renders its fallback text", () => {
   // The audit-flagged pre-check: a `Buffer` must fold into the same
   // array-of-numbers shape `quadraui::ImageSource::Bytes(Vec<u8>)` decodes
   // from, not the generic-object branch a bare `Array.isArray` check would
   // otherwise route it through (see `to_descriptor_value`'s doc).
   const app = new QuiApp(40, 20);
-  app.insertImage({
-    id: "image:logo",
-    source: { Bytes: Buffer.from([137, 80, 78, 71]) },
-    intrinsic_size: null,
-    fit: "Contain",
-    fallback_text: "[PNG]",
-  });
+  app.setRender(() => ({
+    image: {
+      id: "image:logo",
+      source: { Bytes: Buffer.from([137, 80, 78, 71]) },
+      intrinsic_size: null,
+      fit: "Contain",
+      fallback_text: "[PNG]",
+    },
+  }));
   assert.ok(app.screenContains("[PNG]"));
 });
 
-test("insertImage with a Uint8Array-sourced Bytes image renders its fallback text", () => {
+test("image leaf with a Uint8Array-sourced Bytes image renders its fallback text", () => {
   const app = new QuiApp(40, 20);
-  app.insertImage({
-    id: "image:logo",
-    source: { Bytes: new Uint8Array([137, 80, 78, 71]) },
-    intrinsic_size: null,
-    fit: "Contain",
-    fallback_text: "[PNG2]",
-  });
+  app.setRender(() => ({
+    image: {
+      id: "image:logo",
+      source: { Bytes: new Uint8Array([137, 80, 78, 71]) },
+      intrinsic_size: null,
+      fit: "Contain",
+      fallback_text: "[PNG2]",
+    },
+  }));
   assert.ok(app.screenContains("[PNG2]"));
 });
 
-test("insertImage with a missing required field raises InvalidDescriptorError", () => {
+test("image leaf with a missing required field raises InvalidDescriptorError", () => {
   const app = new QuiApp(40, 20);
   // A serde-level missing field surfaces as `DecodeFailedError`, which is
   // still an `InvalidDescriptorError` for callers catching the base class.
+  app.setRender(() => ({ image: { id: "image:logo" } }));
   assert.throws(
-    () => app.insertImage({ id: "image:logo" }),
+    () => app.screen(),
     (err: unknown) =>
       err instanceof DecodeFailedError &&
       err instanceof InvalidDescriptorError &&
@@ -251,64 +284,67 @@ test("insertImage with a missing required field raises InvalidDescriptorError", 
   );
 });
 
-test("insertExtra rejects a non-finite float with InvalidDescriptorError", () => {
+test("progress leaf rejects a non-finite float with InvalidDescriptorError", () => {
   // The other audit-flagged pre-check: NaN/Infinity must raise rather than
   // silently alias `null` (which `obj_get` treats as "field absent").
   const app = new QuiApp(40, 20);
-  assert.throws(
-    () => app.insertProgress({ id: "progress:download", label: "Downloading", value: NaN }),
-    /InvalidDescriptorError/,
-  );
-  assert.throws(
-    () =>
-      app.insertProgress({
-        id: "progress:download2",
-        label: "Downloading",
-        value: Infinity,
-      }),
-    /InvalidDescriptorError/,
-  );
+  app.setRender(() => ({
+    progress: { id: "progress:download", label: "Downloading", value: NaN },
+  }));
+  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+
+  app.setRender(() => ({
+    progress: { id: "progress:download2", label: "Downloading", value: Infinity },
+  }));
+  assert.throws(() => app.screen(), /InvalidDescriptorError/);
 });
 
 test("insertExtra reaches the screen by kind name with no dedicated method", () => {
+  // The generic entry point: a future additive primitive reaches the
+  // screen through this one method with no new binding method required --
+  // unlike a render callback, where every kind is already addressed
+  // generically by its object key with no distinct "by name" method to
+  // prove at all.
   const app = new QuiApp(40, 20);
   app.insertExtra("progress", { id: "progress:download", label: "Downloading" });
   assert.ok(app.screenContains("Downloading"));
 });
 
-test("insertExtra form with control_width and min_control_width renders without raising", () => {
+test("form leaf with control_width and min_control_width renders without raising", () => {
   // `Form`/`FormField`'s `control_width`/`min_control_width` are plain
   // additive `#[serde(default)]` fields, so they decode through the same
-  // generic `insertExtra("form", ...)` path as every other `Form`
+  // generic render-callback `{ form: {...} }` path as every other `Form`
   // descriptor -- no dedicated node binding code needed for this feature.
   // The narrow `Fixed(4.0)` control is too small for "exactwidth" (10
   // chars), so without `min_control_width` it would show truncated; the
   // 14-wide floor on the second field keeps its value intact.
   const app = new QuiApp(40, 20);
-  app.insertExtra("form", {
-    id: "settings",
-    fields: [
-      {
-        id: "clipped",
-        label: { spans: [{ text: "A", fg: null, bg: null }] },
-        kind: { TextInput: { value: "exactwidth" } },
-        control_width: { Fixed: 4.0 },
-      },
-      {
-        id: "floored",
-        label: { spans: [{ text: "B", fg: null, bg: null }] },
-        kind: { TextInput: { value: "exactwidth" } },
-        control_width: { Fixed: 4.0 },
-        min_control_width: 14.0,
-      },
-    ],
-  });
+  app.setRender(() => ({
+    form: {
+      id: "settings",
+      fields: [
+        {
+          id: "clipped",
+          label: { spans: [{ text: "A", fg: null, bg: null }] },
+          kind: { TextInput: { value: "exactwidth" } },
+          control_width: { Fixed: 4.0 },
+        },
+        {
+          id: "floored",
+          label: { spans: [{ text: "B", fg: null, bg: null }] },
+          kind: { TextInput: { value: "exactwidth" } },
+          control_width: { Fixed: 4.0 },
+          min_control_width: 14.0,
+        },
+      ],
+    },
+  }));
   assert.ok(app.screenContains("exactwidth"));
 });
 
-test("insertExtra text_field renders its value inside the bracket row", () => {
+test("text field leaf renders its value inside the bracket row", () => {
   const app = new QuiApp(40, 20);
-  app.insertExtra("text_field", { id: "tf:1", value: "hello" });
+  app.setRender(() => ({ text_field: { id: "tf:1", value: "hello" } }));
   assert.ok(app.screenContains("[hello"));
 });
 
@@ -322,8 +358,10 @@ test("insertExtra with an unknown kind raises UnknownVariantError", () => {
 
 test("extra primitives coexist with the fixed slots", () => {
   const app = new QuiApp(40, 20);
-  app.insertButton({ id: "demo:ok", label: "OK" });
-  app.insertProgress({ id: "progress:download", label: "Downloading" });
+  app.setRender(() => ({
+    button: { id: "demo:ok", label: "OK" },
+    progress: { id: "progress:download", label: "Downloading" },
+  }));
   assert.ok(app.screenContains("OK"));
   assert.ok(app.screenContains("Downloading"));
 });
@@ -1343,7 +1381,7 @@ test("clearExtra on an empty or unknown kind returns false, not an error", () =>
 
 test("pushEvent queues an event step consumes without raising", () => {
   const app = new QuiApp(40, 20);
-  app.insertButton({ id: "demo:ok", label: "OK" });
+  app.setRender(() => ({ button: { id: "demo:ok", label: "OK" } }));
   app.pushEvent({
     MouseDown: {
       button: "Left",
