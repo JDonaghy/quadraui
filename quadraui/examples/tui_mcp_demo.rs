@@ -161,6 +161,14 @@ fn plain_line(text: impl Into<String>) -> TextDisplayLine {
 impl AppLogic for McpDemo {
     type AreaId = ();
 
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        // `snapshot` and `act` read `Backend::last_frame`, which is only
+        // populated once capture is turned on — see `set_frame_capture`'s
+        // own doc. `key`/`type` don't need this; they inject input
+        // directly and never read a captured frame.
+        quadraui::set_frame_capture(backend, true);
+    }
+
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let list_w = (vp.width * 0.3).max(16.0);

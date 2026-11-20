@@ -71,16 +71,19 @@
 //! ## 1. Enable it
 //!
 //! Build the app with `--features control` plus whatever backend
-//! feature it already uses (`tui`, `gtk`, `macos`, `win`), attach a
-//! control channel from the running runner once
-//! (`TuiRunner::attach_control`/`GtkRunner::attach_control`/
+//! feature it already uses (`tui`, `gtk`, `macos` — `win`'s runner has
+//! no `attach_control` yet), attach a control channel from the running
+//! runner once (`TuiRunner::attach_control`/`GtkRunner::attach_control`/
 //! `MacRunner::attach_control`), and hand the resulting
 //! `quadraui::control::ControlHandle` to [`serve`] on a background
 //! thread — see [`serve`]'s own doc for the exact call and why it needs
-//! its own thread on an app that also owns an event loop. Nothing else
-//! about the app changes: `snapshot`/`act`/`key`/`type` work the moment
-//! `control` is wired up, built entirely on `quadraui`'s accessibility
-//! tree.
+//! its own thread on an app that also owns an event loop. `key` and
+//! `type` work immediately, built entirely on the app's own event
+//! handling. `snapshot` and `act` additionally need a captured frame to
+//! read: call `quadraui::set_frame_capture(backend, true)` once, from
+//! `AppLogic::setup` (the hook every runner calls before the first
+//! render — see `tui_mcp_demo.rs`'s own `setup` impl), since neither the
+//! runner nor `attach_control` turns capture on by itself.
 //!
 //! ## 2. Attach from an agent
 //!
@@ -141,8 +144,10 @@
 //! inside the window; a row far outside it has no node to act on yet,
 //! even though the snapshot still reports its true `position_in_set`/
 //! `set_size` in the full collection. Scroll the row into view first —
-//! an `act` call against a role that supports scrolling, or an
-//! app-defined Level 2 command — before trying to `act` on it directly.
+//! an `act` call with `scroll_up`/`scroll_down` (or `key` with
+//! `PageUp`/`PageDown`), or an app-defined Level 2 command — before
+//! trying to `act` on it directly. [`quadraui::A11yAction::ScrollIntoView`]
+//! is a logged no-op today, not a working shortcut for this.
 
 mod tools;
 mod transport;

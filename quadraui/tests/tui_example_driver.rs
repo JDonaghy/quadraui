@@ -12214,7 +12214,7 @@ fn tui_commands_demo_keyboard_and_json_cli_reach_the_same_commands() {
 #[test]
 fn tui_mcp_demo_filter_then_act_moves_the_painted_detail_pane() {
     use quadraui::control::channel;
-    use quadraui::{set_frame_capture, A11yNodeId, WidgetId};
+    use quadraui::{A11yNodeId, WidgetId};
     use quadraui_mcp::Transport;
     use serde_json::{json, Value};
     use std::io::{BufRead, BufReader, Write};
@@ -12255,12 +12255,17 @@ fn tui_mcp_demo_filter_then_act_moves_the_painted_detail_pane() {
             .find_map(|child| find_node(child, target))
     }
 
+    // `TuiDriver::new` calls `McpDemo::setup` exactly like a live
+    // `TuiRunner` does, so this exercises the example's own
+    // frame-capture wiring rather than the test turning it on itself:
+    // if the example ever stopped enabling capture, `snapshot`/`act`
+    // below would fail with the same error a real agent would see.
     let mut driver = TuiDriver::new(McpDemo::new(), 80, 20);
     {
         let (backend, _app) = driver.parts_mut();
         assert!(
-            set_frame_capture(backend, true),
-            "the TUI backend offers a frame-capture slot"
+            backend.last_frame().is_some(),
+            "McpDemo::setup should have enabled frame capture already"
         );
     }
     driver.render();
