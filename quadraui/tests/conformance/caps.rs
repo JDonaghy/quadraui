@@ -1079,6 +1079,34 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // joins by owning one `frame::FrameCapture` field and handing it out;
     // `TuiBackend`, `GtkBackend`, `MacBackend` and `WinBackend` all do —
     // every backend in the fleet has adopted capture.
+    // ── screenshot: the agent-visible capture of what is on screen.
+    // `TuiBackend` overrides it with `Screenshot::Text`, reading back its
+    // own cell grid. The GUI backends answer `None`: the only pixel
+    // read-back in the tree is `quadraui-gallery`'s headless `--capture`,
+    // which paints a fresh offscreen surface through a test driver rather
+    // than reading the live window a running runner is painting, so a
+    // `Screenshot` pixel variant is a per-backend issue of its own.
+    (
+        "gtk",
+        "screenshot",
+        "no live-window pixel read-back yet — GTK's only capture path is quadraui-gallery's \
+         headless offscreen Cairo ImageSurface, not the painted GtkDrawingArea a running runner \
+         owns; a Screenshot pixel variant is GTK's own screenshot issue",
+    ),
+    (
+        "macos",
+        "screenshot",
+        "no live-window pixel read-back yet — macOS's only capture path is quadraui-gallery's \
+         headless offscreen CGBitmapContext, not the painted NSView a running runner owns; a \
+         Screenshot pixel variant is macOS's own screenshot issue",
+    ),
+    (
+        "win",
+        "screenshot",
+        "no live-window pixel read-back yet — Win-GUI's only capture path is quadraui-gallery's \
+         headless Direct2D DC render target, not the painted HWND a running runner owns; a \
+         Screenshot pixel variant is Win-GUI's own screenshot issue",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.
