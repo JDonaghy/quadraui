@@ -47,7 +47,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout, ColorDepth};
+use crate::backend::{
+    activity_bar_hits, tab_bar_hits_from_layout, ColorDepth, Screenshot, ScreenshotRun,
+};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
@@ -63,6 +65,7 @@ use crate::{
 // check into `BackendCore` — so this file's non-test code no
 // longer names either type directly. Gate the import so a non-test
 // build doesn't flag it as unused.
+use super::text::char_cell_width;
 #[cfg(test)]
 use crate::{AcceleratorScope, DragTarget, KeyBinding};
 use ratatui::layout::Rect;
@@ -438,6 +441,14 @@ pub struct TuiBackend {
     /// `crate::frame`'s module doc, "Live-frame capture for
     /// accessibility".
     frame_capture: crate::frame::FrameCapture,
+    /// Opt-in retention of the cell grid this backend last painted, handed
+    /// out by [`Backend::screenshot`] — the text counterpart of
+    /// `frame_capture` above, read back by `quadraui::control`'s
+    /// `screenshot` tool. Same opt-in gate: built in
+    /// [`Self::enter_frame_scope`] only while `frame_capture.is_enabled()`,
+    /// so a runner that never opts into live-frame capture never pays for
+    /// this clone either.
+    last_screenshot: Option<Screenshot>,
 }
 
 /// One cell rect registered via [`TuiBackend::register_opaque_rect`] —
@@ -507,6 +518,7 @@ impl TuiBackend {
             editor_right_reserve_w: None,
             clip_stack: Vec::new(),
             frame_capture: crate::frame::FrameCapture::default(),
+            last_screenshot: None,
         }
     }
 
@@ -797,6 +809,17 @@ impl TuiBackend {
     ///      the inner call would overwrite the pointer with the
     ///      same `&mut` (already aliased) which Rust's borrow-checker
     ///      forbids at the caller side.
+    ///
+    /// Also where [`Backend::screenshot`]'s capture happens, gated behind
+    /// the same [`crate::frame::FrameCapture::is_enabled`] opt-in as
+    /// [`Backend::last_frame`]: once `f` has painted, this reads `frame`'s
+    /// buffer back into `self.last_screenshot` before clearing the
+    /// pointer. That is strictly *before* `tui::run::paint_frame`'s
+    /// post-render passes over the same buffer (selection highlight, the
+    /// focus ring) — both run directly against `frame.buffer_mut()` after
+    /// this call returns, so a screenshot taken immediately after an
+    /// `act`/`key` never shows either overlay, only the content
+    /// `AppLogic::render` itself painted.
     pub fn enter_frame_scope<R>(
         &mut self,
         frame: &mut Frame<'_>,
@@ -806,7 +829,71 @@ impl TuiBackend {
         let prev = self.current_frame_ptr.replace(ptr);
         let result = f(self);
         self.current_frame_ptr.set(prev);
+        if self.frame_capture.is_enabled() {
+            self.last_screenshot = Some(self.capture_screenshot(frame.buffer_mut()));
+        }
         result
+    }
+
+    /// Build a [`Screenshot::Text`] from `buf` — the same row/cell walk
+    /// [`crate::tui::testing::TuiDriver::screen`]/`style_at` do, folded
+    /// into one pass that also run-length-encodes same-styled cells into
+    /// [`ScreenshotRun`]s. An [`Self::is_opaque_cell`] cell (a Kitty
+    /// graphics placeholder) contributes a blank space with no style,
+    /// same as `screen()`'s treatment, so a screenshot never leaks a raw
+    /// placeholder codepoint or claims a style for content that isn't
+    /// really text.
+    fn capture_screenshot(&self, buf: &ratatui::buffer::Buffer) -> Screenshot {
+        let area = buf.area;
+        let mut rows = Vec::with_capacity(area.height as usize);
+        let mut spans = Vec::with_capacity(area.height as usize);
+        for y in area.top()..area.bottom() {
+            let mut row_text = String::new();
+            let mut row_spans: Vec<ScreenshotRun> = Vec::new();
+            let mut x = area.left();
+            while x < area.right() {
+                let cell = &buf[(x, y)];
+                let symbol = cell.symbol();
+                let ch = symbol.chars().next().unwrap_or(' ');
+                let opaque = self.is_opaque_cell(buf, x, y);
+                let (text, fg, bg, bold, italic, underline) = if opaque {
+                    (" ".to_string(), None, None, false, false, false)
+                } else {
+                    (
+                        symbol.to_string(),
+                        ratatui_color_to_string(cell.fg),
+                        ratatui_color_to_string(cell.bg),
+                        cell.modifier.contains(ratatui::style::Modifier::BOLD),
+                        cell.modifier.contains(ratatui::style::Modifier::ITALIC),
+                        cell.modifier.contains(ratatui::style::Modifier::UNDERLINED),
+                    )
+                };
+                row_text.push_str(&text);
+                let same_style = row_spans.last().is_some_and(|last: &ScreenshotRun| {
+                    last.fg == fg
+                        && last.bg == bg
+                        && last.bold == bold
+                        && last.italic == italic
+                        && last.underline == underline
+                });
+                if same_style {
+                    row_spans.last_mut().unwrap().text.push_str(&text);
+                } else {
+                    row_spans.push(ScreenshotRun {
+                        text,
+                        fg,
+                        bg,
+                        bold,
+                        italic,
+                        underline,
+                    });
+                }
+                x += char_cell_width(ch).max(1);
+            }
+            rows.push(row_text);
+            spans.push(row_spans);
+        }
+        Screenshot::Text { rows, spans }
     }
 
     /// Get the current frame inside [`Self::enter_frame_scope`], or
@@ -1532,6 +1619,35 @@ pub(crate) fn q_rect_to_ratatui(r: QRect) -> Rect {
     let w = r.width.max(0.0).round() as u16;
     let h = r.height.max(0.0).round() as u16;
     Rect::new(x, y, w, h)
+}
+
+/// A stable string form of a ratatui [`ratatui::style::Color`], for
+/// [`TuiBackend::capture_screenshot`]'s [`ScreenshotRun`]s — `None` for
+/// `Color::Reset`, matching [`ScreenshotRun::fg`]/[`ScreenshotRun::bg`]'s
+/// own "default colour" convention.
+fn ratatui_color_to_string(color: ratatui::style::Color) -> Option<String> {
+    use ratatui::style::Color;
+    match color {
+        Color::Reset => None,
+        Color::Black => Some("black".into()),
+        Color::Red => Some("red".into()),
+        Color::Green => Some("green".into()),
+        Color::Yellow => Some("yellow".into()),
+        Color::Blue => Some("blue".into()),
+        Color::Magenta => Some("magenta".into()),
+        Color::Cyan => Some("cyan".into()),
+        Color::Gray => Some("gray".into()),
+        Color::DarkGray => Some("dark_gray".into()),
+        Color::LightRed => Some("light_red".into()),
+        Color::LightGreen => Some("light_green".into()),
+        Color::LightYellow => Some("light_yellow".into()),
+        Color::LightBlue => Some("light_blue".into()),
+        Color::LightMagenta => Some("light_magenta".into()),
+        Color::LightCyan => Some("light_cyan".into()),
+        Color::White => Some("white".into()),
+        Color::Indexed(i) => Some(format!("indexed({i})")),
+        Color::Rgb(r, g, b) => Some(format!("rgb({r},{g},{b})")),
+    }
 }
 
 /// Shared tab-width measurement for [`TuiBackend::draw_tab_bar_with_chrome`]
@@ -2570,6 +2686,14 @@ impl Backend for TuiBackend {
 
     fn last_frame(&self) -> Option<&crate::frame::OwnedFrame> {
         self.frame_capture.last_frame()
+    }
+
+    /// `Some` of the text grid [`Self::enter_frame_scope`] most recently
+    /// captured while [`Self::frame_capture`] was enabled, `None`
+    /// otherwise — see that method's doc for exactly when the capture
+    /// runs relative to post-render overlays.
+    fn screenshot(&self) -> Option<Screenshot> {
+        self.last_screenshot.clone()
     }
 
     fn services(&self) -> &dyn PlatformServices {
@@ -9971,6 +10095,111 @@ mod tests {
                  {should_contain_sgr_58}, got {contains_sgr_58}"
             );
         }
+    }
+
+    /// A list app whose selected row paints a `▶ ` prefix no other row
+    /// has (`tui::list::draw_list`'s own tests document this) — enough
+    /// to tell one row's text apart from another's in a captured
+    /// screenshot without needing any style assertion.
+    struct ScreenshotListApp {
+        items: Vec<&'static str>,
+        selected: usize,
+    }
+
+    impl crate::AppLogic for ScreenshotListApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut layout = crate::ScreenLayout::new();
+            layout.push(crate::Surface::List {
+                rect: QRect::new(0.0, 0.0, 20.0, 5.0),
+                list: ListView {
+                    id: WidgetId::new("rows"),
+                    title: None,
+                    items: self
+                        .items
+                        .iter()
+                        .map(|text| ListItem {
+                            text: crate::StyledText::plain(*text),
+                            icon: None,
+                            detail: None,
+                            decoration: crate::Decoration::default(),
+                        })
+                        .collect(),
+                    selected_idx: self.selected,
+                    scroll_offset: 0,
+                    has_focus: true,
+                    bordered: false,
+                    h_scroll: 0,
+                    max_content_width: None,
+                    show_v_scrollbar: false,
+                },
+            });
+            layout.draw(backend);
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> crate::Reaction {
+            if let UiEvent::List(_, crate::ListViewEvent::ItemActivated { idx }) = event {
+                self.selected = idx;
+                return crate::Reaction::Redraw;
+            }
+            crate::Reaction::Continue
+        }
+    }
+
+    /// [`Backend::screenshot`] is `None` until live-frame capture is
+    /// enabled — same opt-in gate as [`Backend::last_frame`], never a
+    /// panic on an app that never calls `set_frame_capture`.
+    #[test]
+    fn screenshot_is_none_until_frame_capture_is_enabled() {
+        let app = ScreenshotListApp {
+            items: vec!["alpha", "beta"],
+            selected: 0,
+        };
+        let driver = crate::tui::testing::TuiDriver::new(app, 20, 5);
+        assert!(driver.backend().screenshot().is_none());
+    }
+
+    /// Once capture is enabled, [`Backend::screenshot`] answers
+    /// [`Screenshot::Text`] whose rows reflect whatever the app most
+    /// recently painted — and the row an app-level state change (here,
+    /// selecting "beta") altered shows up in the *next* capture, not the
+    /// one taken before the change.
+    #[test]
+    fn screenshot_text_shows_the_row_a_repaint_changed() {
+        let app = ScreenshotListApp {
+            items: vec!["alpha", "beta"],
+            selected: 0,
+        };
+        let mut driver = crate::tui::testing::TuiDriver::new(app, 20, 5);
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                crate::frame::set_frame_capture(backend, true),
+                "TuiBackend offers a frame-capture slot"
+            );
+        }
+        driver.render();
+
+        let Screenshot::Text { rows: before, .. } =
+            driver.backend().screenshot().expect("capture is enabled");
+        assert!(
+            before.iter().any(|r| r.trim_end() == "  beta"),
+            "row 1 must not be marked selected before the change: {before:?}"
+        );
+        assert!(!before.iter().any(|r| r.contains("▶ beta")));
+
+        driver.dispatch(UiEvent::List(
+            WidgetId::new("rows"),
+            crate::ListViewEvent::ItemActivated { idx: 1 },
+        ));
+
+        let Screenshot::Text { rows: after, .. } =
+            driver.backend().screenshot().expect("capture is enabled");
+        assert!(
+            after.iter().any(|r| r.contains("▶ beta")),
+            "row 1 must show the selection marker after the change: {after:?}"
+        );
     }
 }
 

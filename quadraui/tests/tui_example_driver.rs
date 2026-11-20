@@ -12333,8 +12333,16 @@ fn tui_mcp_demo_filter_then_act_moves_the_painted_detail_pane() {
             .collect();
         assert_eq!(
             tool_names,
-            vec!["snapshot", "act", "key", "type", "filter", "clear_filter"],
-            "the four built-ins plus both Level 2 app commands, in that order"
+            vec![
+                "snapshot",
+                "act",
+                "key",
+                "type",
+                "screenshot",
+                "filter",
+                "clear_filter"
+            ],
+            "the five built-ins plus both Level 2 app commands, in that order"
         );
 
         // Level 2: narrow the list down with the app-defined `filter`

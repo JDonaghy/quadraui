@@ -1090,6 +1090,49 @@ mod menu_style_tests {
     }
 }
 
+/// A backend's most recently painted screen, captured for
+/// `quadraui::control`'s `screenshot` tool — see [`Backend::screenshot`].
+///
+/// `#[non_exhaustive]`: a future GUI backend's pixel capture (reusing the
+/// gallery `--capture` path) is a new variant, not a breaking field add to
+/// an existing one, and a consumer's `match` can't be broken by it either.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Screenshot {
+    /// A cell-grid backend's screen: one string per row, left to right, no
+    /// trailing newline — the same text [`crate::tui::testing::TuiDriver::screen`]
+    /// returns. `spans` is the same rows' per-cell style, row-major and
+    /// run-length encoded; empty when the producing backend doesn't bother
+    /// (a caller that only wants the text can ignore it either way).
+    Text {
+        /// One entry per rendered row, top to bottom.
+        rows: Vec<String>,
+        /// One entry per rendered row, same order as `rows` — each row's
+        /// styled runs, left to right.
+        spans: Vec<Vec<ScreenshotRun>>,
+    },
+}
+
+/// One run of identically-styled cells within a [`Screenshot::Text`] row.
+///
+/// `fg`/`bg` are a stable string form (`"reset"`, `"indexed(7)"`,
+/// `"rgb(255,255,255)"`, …), not the rendering backend's own colour type —
+/// `quadraui::control` and `quadraui-mcp` depend on this crate, not on
+/// `ratatui`, so this type carries nothing from that crate's public API.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ScreenshotRun {
+    /// The run's text, concatenated left to right.
+    pub text: String,
+    /// `None` means the backend's default foreground.
+    pub fg: Option<String>,
+    /// `None` means the backend's default background.
+    pub bg: Option<String>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+}
+
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
 ///
 /// A new widget should implement [`crate::Primitive`] and reach every
@@ -2012,6 +2055,24 @@ pub trait Backend: sealed::Sealed {
     /// populates this: an app that calls `backend.draw_*` methods directly,
     /// without a `ScreenLayout`, gets `None` here even with capture enabled.
     fn last_frame(&self) -> Option<&OwnedFrame> {
+        None
+    }
+
+    /// This backend's most recently painted screen, captured for
+    /// `quadraui::control`'s `screenshot` tool — `None` when this backend
+    /// has no screen to offer a text/pixel capture of (the default, every
+    /// backend without a cell grid or a reusable pixel-capture path today)
+    /// or nothing has painted since [`Self::frame_capture`] was enabled.
+    ///
+    /// Same opt-in gate as [`Self::last_frame`]: a backend that overrides
+    /// this only populates it while its [`FrameCapture`] slot reports
+    /// [`FrameCapture::is_enabled`], so a runner that never opts in never
+    /// pays for the clone. [`crate::tui::backend::TuiBackend`] overrides
+    /// this with [`Screenshot::Text`] — its cell grid, read back the same
+    /// way [`crate::tui::testing::TuiDriver::screen`] does. A GUI backend
+    /// that reuses the gallery `--capture` PNG path is a future
+    /// [`Screenshot`] variant, not a breaking change to this method.
+    fn screenshot(&self) -> Option<Screenshot> {
         None
     }
 
