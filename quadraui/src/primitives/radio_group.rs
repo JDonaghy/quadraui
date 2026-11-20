@@ -42,7 +42,13 @@ use crate::types::{Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// A single option within a [`RadioGroup`].
+///
+/// `#[non_exhaustive]`: built via [`RadioOption::new`] plus direct field
+/// assignment (every field is `pub`), not an exhaustive struct literal —
+/// the same convention [`RadioGroup`] and [`crate::Switch`] already use,
+/// so a future field addition here stays additive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RadioOption {
     pub id: WidgetId,
     pub label: String,
