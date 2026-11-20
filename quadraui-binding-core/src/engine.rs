@@ -1421,6 +1421,8 @@ pub struct InteractionEngine {
 #[derive(Debug, Clone)]
 struct CellGridSyncContext {
     rect: Rect,
+    row_count: usize,
+    col_count: usize,
     frozen_rows: usize,
     frozen_cols: usize,
     loaded_row_start: usize,
@@ -2689,6 +2691,8 @@ impl InteractionEngine {
                 *id,
                 CellGridSyncContext {
                     rect: *area,
+                    row_count: descriptor.row_count,
+                    col_count: descriptor.col_count,
                     frozen_rows: descriptor.frozen_rows,
                     frozen_cols: descriptor.frozen_cols,
                     loaded_row_start: descriptor.loaded_row_start,
@@ -2994,16 +2998,21 @@ impl InteractionEngine {
             .borrow()
             .get(&id)?
             .layout(backend, ctx.rect);
-        // Every field below besides `frozen_rows`/`frozen_cols`/
-        // `loaded_row_start`/`loaded_col_start`/`cells` is irrelevant to
-        // `CellGrid::cells_requested` (it only reads those five through
-        // `CellGrid::cells_window`) — see that method's own doc — so the
-        // rest are filled with inert placeholders rather than threading
-        // the live geometry through just to satisfy the struct literal.
+        // Every field below besides `row_count`/`col_count`/`frozen_rows`/
+        // `frozen_cols`/`loaded_row_start`/`loaded_col_start`/`cells` is
+        // irrelevant to `CellGrid::cells_requested` (it only reads those
+        // seven through `CellGrid::cells_window`) — see that method's own
+        // doc — so the rest are filled with inert placeholders rather than
+        // threading the live geometry through just to satisfy the struct
+        // literal. `row_count`/`col_count` themselves are NOT inert:
+        // `cells_window` clamps `frozen_rows`/`frozen_cols` and
+        // `loaded_row_start`/`loaded_col_start` against them, so leaving
+        // them at `0` collapses every clamp to `0` regardless of the real
+        // loaded window.
         let probe = CellGrid {
             id,
-            row_count: 0,
-            col_count: 0,
+            row_count: ctx.row_count,
+            col_count: ctx.col_count,
             frozen_rows: ctx.frozen_rows,
             frozen_cols: ctx.frozen_cols,
             row_scroll: 0,
@@ -3842,10 +3851,14 @@ impl InteractionEngine {
         // above) because typing a bare character with no active edit
         // starts one, and a paste with no active edit becomes a
         // selection-anchored range paste — both only resolve from inside
-        // `CellGridController::handle` itself. No Tab/Shift-Tab special
-        // case either: `CellGridController::handle` never claims Tab/
-        // BackTab, so the generic cross-widget cycle already handles
-        // leaving it.
+        // `CellGridController::handle` itself. Unlike the tree-table
+        // block above, `CellGridController::handle` *does* claim Tab/
+        // BackTab (`move_tab`, and `handle_edit_key`'s own in-edit commit)
+        // — but `CellGridControllerDescriptor::tab_stop` always returns
+        // `true`, so `runtime::preprocess_event`'s global Tab cycle
+        // claims the key first and this block never sees it; `move_tab`
+        // is reachable only through a host that routes `KeyPressed`
+        // straight to this engine without going through that cycle.
         if matches!(
             event,
             UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_)
@@ -5842,7 +5855,7 @@ mod tests {
     /// Mirrors [`TreeTableControllerLogic`], for the `"cell_grid"` seam
     /// instead.
     struct CellGridControllerLogic {
-        descriptor: CellGridControllerDescriptor,
+        descriptor: RefCell<CellGridControllerDescriptor>,
         engine: InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
@@ -5852,9 +5865,10 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let area = viewport_rect(backend);
+            let descriptor = self.descriptor.borrow().clone();
             let content = LayoutNode::Leaf(LayoutLeaf {
-                id: self.descriptor.id.as_str().to_string(),
-                descriptor: LeafDescriptor::Extra(Rc::new(self.descriptor.clone())),
+                id: descriptor.id.as_str().to_string(),
+                descriptor: LeafDescriptor::Extra(Rc::new(descriptor)),
                 scroll_px: None,
             });
             let mut hits = Vec::new();
@@ -5917,7 +5931,7 @@ mod tests {
     #[test]
     fn cell_grid_controller_click_moves_cursor_and_focuses() {
         let logic = CellGridControllerLogic {
-            descriptor: small_window_cell_grid_descriptor(),
+            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -5958,7 +5972,7 @@ mod tests {
     #[test]
     fn cell_grid_controller_drag_extends_selection() {
         let logic = CellGridControllerLogic {
-            descriptor: small_window_cell_grid_descriptor(),
+            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -5994,7 +6008,7 @@ mod tests {
     #[test]
     fn cell_grid_controller_requests_cells_when_window_too_small() {
         let logic = CellGridControllerLogic {
-            descriptor: small_window_cell_grid_descriptor(),
+            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6022,6 +6036,164 @@ mod tests {
         );
     }
 
+    /// Mirrors [`small_window_cell_grid_descriptor`] but with `frozen_rows:
+    /// 1` and `cells`/`loaded_row_start` already covering the entire
+    /// sheet — regression coverage for [`InteractionEngine::cell_grid_cells_requested`]'s
+    /// probe `CellGrid` needing its own `row_count`/`col_count` set: with
+    /// those left at `0`, [`CellGrid::cells_window`]'s `frozen_rows =
+    /// self.frozen_rows.min(self.row_count)` collapsed to `0` and
+    /// `row_start = self.loaded_row_start.clamp(frozen_rows, self.row_count)`
+    /// collapsed to always-`0`, so a grid with any frozen rows reported
+    /// `CellsRequested` forever even when fully loaded.
+    fn frozen_rows_cell_grid_descriptor() -> CellGridControllerDescriptor {
+        let cells = (0..20)
+            .map(|r| (0..5).map(|c| Cell::plain(format!("r{r}c{c}"))).collect())
+            .collect();
+        CellGridControllerDescriptor {
+            id: WidgetId::new("cg"),
+            row_count: 20,
+            col_count: 5,
+            frozen_rows: 1,
+            frozen_cols: 0,
+            default_row_height: 1.0,
+            default_col_width: 8.0,
+            row_heights: Default::default(),
+            col_widths: Default::default(),
+            show_row_headers: true,
+            show_col_headers: true,
+            row_labels: Default::default(),
+            col_labels: Default::default(),
+            cells,
+            loaded_row_start: 1,
+            loaded_col_start: 0,
+            cursor: (0, 0),
+            selection_anchor: None,
+            row_scroll: 0,
+            col_scroll: 0,
+            has_focus: true,
+            show_scrollbar: false,
+        }
+    }
+
+    #[test]
+    fn cell_grid_controller_frozen_rows_fully_loaded_does_not_request_cells() {
+        let logic = CellGridControllerLogic {
+            descriptor: RefCell::new(frozen_rows_cell_grid_descriptor()),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+
+        driver.click(9.0, 1.5);
+        driver.render();
+
+        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        assert!(
+            !dispatched.iter().any(|(id, ev)| {
+                *id == WidgetId::new("cg")
+                    && matches!(ev, CellGridControllerWireEvent::CellsRequested { .. })
+            }),
+            "a `frozen_rows > 0` grid whose `cells`/`loaded_row_start` already cover the \
+             whole sheet must not request more cells: {:?}",
+            dispatched
+        );
+    }
+
+    /// After a host answers an initial [`CellGridControllerWireEvent::CellsRequested`]
+    /// by loading exactly the named block, a later event that moves the
+    /// cursor back onto the already-loaded window (same screen position,
+    /// now mapped to the scrolled block) must not see the request repeat
+    /// — the regression this covers is [`CellGrid::cells_window`]'s
+    /// `row_start`/`col_start` landing on `0` regardless of the
+    /// `loaded_row_start`/`loaded_col_start` the host just answered with,
+    /// which kept re-requesting the same block forever.
+    #[test]
+    fn cell_grid_controller_cells_requested_does_not_repeat_after_host_loads_window() {
+        let logic = CellGridControllerLogic {
+            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        // This test clicks the same screen position twice, with no real
+        // wall-clock delay between them — without this, `TuiBackend`'s
+        // own `DoubleClickDetector` would fold the second click into a
+        // `DoubleClick` (which `CellGridController::handle` has no arm
+        // for) instead of delivering the plain `MouseDown` this test
+        // means to send.
+        driver.set_double_click_folding(false);
+        driver.render();
+        driver.click(9.0, 1.5);
+        driver.render();
+        driver.app().sink.borrow_mut().cell_grid_dispatched.clear();
+
+        // Scroll past the 2 loaded rows so the visible window's absolute
+        // start moves away from 0.
+        driver.press_named(NamedKey::PageDown);
+        driver.render();
+
+        let (row_start, col_start, rows, cols) = {
+            let dispatched = driver.app().sink.borrow().cell_grid_dispatched.clone();
+            dispatched
+                .iter()
+                .find_map(|(id, ev)| {
+                    if *id != WidgetId::new("cg") {
+                        return None;
+                    }
+                    match ev {
+                        CellGridControllerWireEvent::CellsRequested {
+                            row_start,
+                            col_start,
+                            rows,
+                            cols,
+                        } => Some((*row_start, *col_start, *rows, *cols)),
+                        _ => None,
+                    }
+                })
+                .expect("paging down past the 2-row loaded window should request a new block")
+        };
+        assert!(
+            row_start > 0,
+            "paging down past a 2-row loaded window should request a block starting \
+             after row 0, got row_start={row_start}"
+        );
+
+        // The host answers with exactly the named block.
+        let cells = (0..rows)
+            .map(|r| {
+                (0..cols)
+                    .map(|c| Cell::plain(format!("r{}c{}", row_start + r, col_start + c)))
+                    .collect()
+            })
+            .collect();
+        {
+            let mut descriptor = driver.app().descriptor.borrow_mut();
+            descriptor.cells = cells;
+            descriptor.loaded_row_start = row_start;
+            descriptor.loaded_col_start = col_start;
+        }
+        driver.app().sink.borrow_mut().cell_grid_dispatched.clear();
+        driver.render();
+
+        // Clicking the same screen position again lands on the (now
+        // scrolled) already-loaded cell -- a cursor move with no further
+        // scroll change.
+        driver.click(9.0, 1.5);
+        driver.render();
+
+        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        assert!(
+            !dispatched.iter().any(|(id, ev)| {
+                *id == WidgetId::new("cg")
+                    && matches!(ev, CellGridControllerWireEvent::CellsRequested { .. })
+            }),
+            "once the host has loaded exactly the requested block, a follow-up event \
+             should not repeat the request: {:?}",
+            dispatched
+        );
+    }
+
     /// A terminal bracketed paste with no active edit and no engine focus
     /// elsewhere reports `PasteRequested` anchored at the current
     /// selection's top-left corner — the `KeyPressed`/`CharTyped`/
@@ -6031,7 +6203,7 @@ mod tests {
     #[test]
     fn cell_grid_controller_paste_with_no_active_edit_requests_range_paste() {
         let logic = CellGridControllerLogic {
-            descriptor: small_window_cell_grid_descriptor(),
+            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6069,7 +6241,7 @@ mod tests {
     #[test]
     fn cell_grid_controller_typed_edit_commits_on_enter() {
         let logic = CellGridControllerLogic {
-            descriptor: small_window_cell_grid_descriptor(),
+            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
