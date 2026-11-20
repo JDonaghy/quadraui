@@ -18,6 +18,7 @@ use core_text::font::CTFont;
 
 use super::text::measure_text;
 use crate::event::Rect as QRect;
+use crate::interaction::InteractionState;
 use crate::primitives::menu_bar::{
     native_surface_paint, MenuBar, MenuBarItemMeasure, MenuBarLayout,
 };
@@ -72,6 +73,48 @@ pub unsafe fn draw_menu_bar(
         font: Some(font),
     };
     native_surface_paint::paint_without_mnemonics(bar, &layout, &mut surface, theme);
+
+    CGContextRestoreGState(ctx);
+    layout
+}
+
+/// [`draw_menu_bar`], reading hover/pressed state from `interaction` —
+/// see [`crate::Backend::draw_menu_bar_with_state`]'s own doc. Paints
+/// through [`native_surface_paint::paint_without_mnemonics_interactive`]
+/// instead of [`native_surface_paint::paint_without_mnemonics`]; every
+/// other step mirrors [`draw_menu_bar`] exactly.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_menu_bar_with_state(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    bar: &MenuBar,
+    theme: &Theme,
+    interaction: &InteractionState,
+) -> MenuBarLayout {
+    CGContextSaveGState(ctx);
+
+    let layout = mac_menu_bar_layout(font, x, y, width, height, bar);
+
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    native_surface_paint::paint_without_mnemonics_interactive(
+        bar,
+        &layout,
+        &mut surface,
+        theme,
+        interaction,
+    );
 
     CGContextRestoreGState(ctx);
     layout
@@ -190,6 +233,74 @@ mod tests {
         assert_eq!(
             (r, g, b),
             (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+        );
+    }
+
+    /// Like [`paint_via_backend`], but through
+    /// `MacBackend::draw_menu_bar_with_state` so a test can probe
+    /// hover/pressed item tinting.
+    fn paint_via_backend_with_state(
+        bar: &MenuBar,
+        interaction: &crate::InteractionState,
+    ) -> (BitmapSurface, MenuBarLayout) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_menu_style(crate::backend::MenuStyle::Custom);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_menu_bar_with_state(
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                bar,
+                interaction,
+            );
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
+    #[test]
+    fn hovered_item_paints_hover_tint() {
+        // "Edit" (idx 1) is neither open nor disabled — a clean probe
+        // target for the hover tint.
+        let bar = sample_bar();
+        let theme = Theme::default();
+        let interaction =
+            crate::InteractionState::from_parts(Some(WidgetId::new("menu:edit")), None);
+        let (surface, layout) = paint_via_backend_with_state(&bar, &interaction);
+        let edit = &layout.visible_items[1];
+        let probe_x = (edit.bounds.x as u32) + 1;
+        let probe_y = H - 2;
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y);
+        let expected = theme.menu_item_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "hovering \"Edit\" must tint its background with menu_item_hover_bg",
+        );
+    }
+
+    #[test]
+    fn pressed_item_paints_pressed_tint() {
+        let bar = sample_bar();
+        let theme = Theme::default();
+        let interaction = crate::InteractionState::from_parts(
+            Some(WidgetId::new("menu:edit")),
+            Some(WidgetId::new("menu:edit")),
+        );
+        let (surface, layout) = paint_via_backend_with_state(&bar, &interaction);
+        let edit = &layout.visible_items[1];
+        let probe_x = (edit.bounds.x as u32) + 1;
+        let probe_y = H - 2;
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y);
+        let expected = theme.menu_item_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "pressing \"Edit\" must tint its background with menu_item_pressed_bg",
         );
     }
 

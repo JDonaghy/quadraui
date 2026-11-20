@@ -130,6 +130,82 @@ mod tests {
         );
     }
 
+    /// Like [`paint_via_backend`], but through
+    /// `MacBackend::draw_context_menu_with_state` so a test can probe
+    /// hover/pressed item tinting.
+    fn paint_via_backend_with_state(
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        interaction: &crate::InteractionState,
+    ) -> (BitmapSurface, Vec<(QRect, WidgetId)>) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(Vec::new());
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            *hits.borrow_mut() = b.draw_context_menu_with_state(menu, layout, interaction);
+        });
+        backend.end_frame();
+        (surface, hits.into_inner())
+    }
+
+    #[test]
+    fn hovered_item_paints_hover_tint() {
+        let menu = sample_menu();
+        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = layout_for(&menu, viewport, 20.0);
+        let theme = Theme::default();
+        // "cut" (idx 0) is neither the selected row nor hovered/pressed
+        // by default, so it's a clean probe target for the hover tint.
+        let row = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 0 && v.clickable)
+            .expect("cut row visible");
+        let px = (row.bounds.x + row.bounds.width - 4.0) as u32;
+        let py = (row.bounds.y + row.bounds.height / 2.0) as u32;
+
+        let interaction = crate::InteractionState::from_parts(Some(WidgetId::new("cut")), None);
+        let (surface, _hits) = paint_via_backend_with_state(&menu, &layout, &interaction);
+        let (r, g, b, _) = surface.pixel(px, py);
+        let expected = theme.menu_item_hover_bg(theme.hover_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "hovering \"cut\" must tint its row with menu_item_hover_bg",
+        );
+    }
+
+    #[test]
+    fn pressed_item_paints_pressed_tint() {
+        let menu = sample_menu();
+        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = layout_for(&menu, viewport, 20.0);
+        let theme = Theme::default();
+        let row = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 0 && v.clickable)
+            .expect("cut row visible");
+        let px = (row.bounds.x + row.bounds.width - 4.0) as u32;
+        let py = (row.bounds.y + row.bounds.height / 2.0) as u32;
+
+        let interaction = crate::InteractionState::from_parts(
+            Some(WidgetId::new("cut")),
+            Some(WidgetId::new("cut")),
+        );
+        let (surface, _hits) = paint_via_backend_with_state(&menu, &layout, &interaction);
+        let (r, g, b, _) = surface.pixel(px, py);
+        let expected = theme.menu_item_pressed_bg(theme.hover_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "pressing \"cut\" must tint its row with menu_item_pressed_bg, stronger than hover",
+        );
+    }
+
     #[test]
     fn selected_row_paints_selected_bg() {
         let menu = sample_menu();

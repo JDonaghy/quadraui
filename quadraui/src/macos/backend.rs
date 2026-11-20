@@ -1571,6 +1571,41 @@ impl MacBackend {
             )
         }
     }
+
+    /// [`Self::draw_menu_bar_painted`], reading hover/pressed state from
+    /// `interaction` — the `Custom`-style fallback
+    /// [`Backend::draw_menu_bar_with_state`] reaches, mirroring the
+    /// plain/interactive split [`Self::draw_menu_bar_painted`] and this
+    /// method share with [`Backend::draw_menu_bar`]/
+    /// [`Backend::draw_menu_bar_with_state`] themselves.
+    fn draw_menu_bar_painted_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &MenuBar,
+        interaction: &crate::InteractionState,
+    ) -> MenuBarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_menu_bar_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        // SAFETY: ctx non-null inside frame scope.
+        unsafe {
+            super::menu_bar::draw_menu_bar_with_state(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                interaction,
+            )
+        }
+    }
 }
 
 /// The in-window layout of a menu bar AppKit draws natively: zero
@@ -2974,6 +3009,46 @@ impl Backend for MacBackend {
             &style,
         );
     }
+    /// [`Self::draw_palette`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_palette_with_state`]'s own
+    /// doc. Routes through
+    /// [`crate::primitives::palette::native_surface_paint::paint_interactive`],
+    /// the interactive twin of the plain `paint` [`Self::draw_palette`]
+    /// calls.
+    fn draw_palette_with_state(
+        &mut self,
+        rect: Rect,
+        palette: &Palette,
+        interaction: &crate::InteractionState,
+    ) {
+        self.modal_stack.borrow_mut().mark_painted(&palette.id);
+        let theme = self.current_theme;
+        let style = self.style();
+        let line_height = self.current_line_height;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
+            return;
+        }
+        let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
+            rect.width,
+            rect.height,
+            palette,
+            line_height as f32,
+        );
+        let mut surface = self.chrome_surface("draw_palette_with_state");
+        crate::primitives::palette::native_surface_paint::paint_interactive(
+            palette,
+            rect,
+            &palette_layout,
+            rows_h,
+            line_height as f32,
+            nerd_fonts_enabled,
+            &mut surface,
+            &theme,
+            &style,
+            interaction,
+        );
+    }
 
     fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
         super::palette::mac_palette_layout(
@@ -3951,6 +4026,38 @@ impl Backend for MacBackend {
             nerd_fonts_enabled,
         )
     }
+    /// [`Self::draw_context_menu`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_context_menu_with_state`]'s
+    /// own doc. Routes through
+    /// [`crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive`]
+    /// (the same `paint_with_glyphs` pipeline as [`Self::draw_context_menu`],
+    /// plus the interactive hover/pressed tint), with `glyphs: None`
+    /// so this reproduces [`Self::draw_context_menu`]'s check-mark /
+    /// submenu-arrow glyphs exactly.
+    fn draw_context_menu_with_state(
+        &mut self,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        interaction: &crate::InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        // See draw_palette for why this happens before the CG borrow.
+        self.modal_stack.borrow_mut().mark_painted(&menu.id);
+        let theme = self.current_theme;
+        let style = self.style();
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let mut surface = self.chrome_surface("draw_context_menu_with_state");
+        crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive(
+            menu,
+            layout,
+            crate::accelerator::Platform::Macos,
+            &mut surface,
+            &theme,
+            &style,
+            None,
+            nerd_fonts_enabled,
+            interaction,
+        )
+    }
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
         // See draw_palette for why this happens before the CG borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
@@ -4308,6 +4415,30 @@ impl Backend for MacBackend {
                 native_menu_bar_layout(rect)
             }
             crate::backend::ResolvedMenuStyle::Custom => self.draw_menu_bar_painted(rect, bar),
+        }
+    }
+    /// [`Self::draw_menu_bar`], reading hover/pressed state from
+    /// `interaction` — see [`Backend::draw_menu_bar_with_state`]'s own
+    /// doc. The native-menu branch ignores `interaction`: AppKit's own
+    /// `NSMenu` highlights its items itself, so there is nothing for
+    /// this backend to tint. The `Custom` branch routes through
+    /// [`Self::draw_menu_bar_painted_with_state`] instead of
+    /// [`Self::draw_menu_bar_painted`] — the same split
+    /// [`Self::draw_menu_bar`] makes with its own two branches.
+    fn draw_menu_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &MenuBar,
+        interaction: &crate::InteractionState,
+    ) -> MenuBarLayout {
+        match self.effective_menu_style() {
+            crate::backend::ResolvedMenuStyle::Native => {
+                self.install_menu_bar_if_changed(bar);
+                native_menu_bar_layout(rect)
+            }
+            crate::backend::ResolvedMenuStyle::Custom => {
+                self.draw_menu_bar_painted_with_state(rect, bar, interaction)
+            }
         }
     }
     /// No-paint twin of [`Self::draw_menu_bar`] — must agree with what
