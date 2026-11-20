@@ -779,6 +779,32 @@ fn windowed_pos_for_abs(frozen: usize, loaded_start: usize, abs: usize) -> Optio
     }
 }
 
+/// The absolute indices within the closed range `[lo, hi]` that are
+/// actually loaded along one axis — the always-loaded frozen prefix
+/// (`0..frozen`) plus the scrolled window (`start..start+len`), merged
+/// and intersected with `[lo, hi]`. Used by [`CellGrid::range_as_tsv`]
+/// to bound its own cost by the loaded window's size rather than by
+/// `hi - lo`, which a caller like `select_all` can make sheet-sized.
+/// Returns at most `frozen + len` indices no matter how large `[lo,
+/// hi]` is, since each of the two source intervals is itself bounded.
+fn loaded_indices_in(frozen: usize, start: usize, len: usize, lo: usize, hi: usize) -> Vec<usize> {
+    let mut indices = Vec::new();
+    if frozen > 0 && lo <= hi {
+        let frozen_hi = (frozen - 1).min(hi);
+        if lo <= frozen_hi {
+            indices.extend(lo..=frozen_hi);
+        }
+    }
+    if len > 0 {
+        let window_lo = lo.max(start);
+        let window_hi = hi.min(start + len - 1);
+        if window_lo <= window_hi {
+            indices.extend(window_lo..=window_hi);
+        }
+    }
+    indices
+}
+
 impl CellGrid {
     /// The absolute row index [`Self::cells`]' windowed row `pos` maps
     /// onto — see [`windowed_abs_index`].
@@ -883,20 +909,33 @@ impl CellGrid {
         }
     }
 
-    /// The displayed text of every cell in the absolute, inclusive range
-    /// `[top, bottom] x [left, right]`, tab-joined within a row and
-    /// newline-joined across rows — the TSV a clipboard copy writes (see
-    /// [`crate::compose::CellGridController::copy_selection`]). A cell
-    /// outside [`Self::cells_window`]'s currently loaded block (the
-    /// frozen rows/columns are always "loaded") contributes an empty
-    /// string rather than panicking, so every row of the result still
-    /// has exactly `right - left + 1` tab-separated fields.
+    /// The displayed text of every *loaded* cell in the absolute,
+    /// inclusive range `[top, bottom] x [left, right]`, tab-joined
+    /// within a row and newline-joined across rows — the TSV a
+    /// clipboard copy writes (see
+    /// [`crate::compose::CellGridController::copy_selection`]).
+    ///
+    /// Rows and columns outside [`Self::cells_window`]'s currently
+    /// loaded block (the frozen rows/columns are always "loaded") are
+    /// dropped entirely rather than padded with an empty placeholder —
+    /// the result can have fewer than `bottom - top + 1` rows or
+    /// `right - left + 1` columns when the requested range reaches
+    /// beyond what's loaded. This keeps the method's cost bounded by
+    /// the *loaded* window's size, never the requested range's: Ctrl+A
+    /// then Ctrl+C on a virtualised million-row sheet must not
+    /// materialise the whole sheet, only whatever [`Self::cells`]
+    /// actually holds this frame.
     #[must_use]
     pub fn range_as_tsv(&self, top: usize, left: usize, bottom: usize, right: usize) -> String {
-        (top..=bottom)
-            .map(|r| {
-                (left..=right)
-                    .map(|c| self.cell_text_at(r, c))
+        let frozen_rows = self.frozen_rows.min(self.row_count);
+        let frozen_cols = self.frozen_cols.min(self.col_count);
+        let window = self.cells_window();
+        let rows = loaded_indices_in(frozen_rows, window.row_start, window.rows, top, bottom);
+        let cols = loaded_indices_in(frozen_cols, window.col_start, window.cols, left, right);
+        rows.iter()
+            .map(|&r| {
+                cols.iter()
+                    .map(|&c| self.cell_text_at(r, c))
                     .collect::<Vec<_>>()
                     .join("\t")
             })
@@ -2262,15 +2301,78 @@ mod range_as_tsv_tests {
     }
 
     #[test]
-    fn a_column_in_the_gap_before_the_loaded_window_contributes_an_empty_field() {
+    fn a_column_in_the_gap_before_the_loaded_window_is_dropped_not_padded() {
         let mut grid = grid_3x3();
         // Only column 2 onward is loaded (`cells` holds just that one
         // column); absolute column 1 — in range but in the unloaded gap
         // between the frozen prefix and `loaded_col_start` — must not
-        // panic or pull in the wrong column.
+        // panic, pull in the wrong column, or inflate the result with
+        // a placeholder field for a range that was never materialised.
         grid.cells = vec![vec![Cell::plain("r02")], vec![Cell::plain("r12")]];
         grid.loaded_col_start = 2;
-        assert_eq!(grid.range_as_tsv(0, 1, 1, 2), "\tr02\n\tr12");
+        assert_eq!(grid.range_as_tsv(0, 1, 1, 2), "r02\nr12");
+    }
+
+    #[test]
+    fn a_selection_far_beyond_the_loaded_window_still_returns_only_the_loaded_cells() {
+        // Simulates Ctrl+A on a sheet that's far larger than what's
+        // actually loaded this frame — the loaded block is a small
+        // 2x2 window starting at (1_000, 1_000), but the "selection"
+        // spans the whole million-row sheet. The method must bound its
+        // own cost by the loaded window, not by the requested range.
+        let mut grid = grid_3x3();
+        grid.row_count = 1_000_000;
+        grid.col_count = 1_000_000;
+        grid.cells = vec![
+            vec![Cell::plain("a"), Cell::plain("b")],
+            vec![Cell::plain("c"), Cell::plain("d")],
+        ];
+        grid.loaded_row_start = 1_000;
+        grid.loaded_col_start = 1_000;
+        assert_eq!(grid.range_as_tsv(0, 0, 999_999, 999_999), "a\tb\nc\td");
+    }
+
+    #[test]
+    fn frozen_pane_plus_scrolled_window_copies_the_right_absolute_cells() {
+        // `frozen_rows = frozen_cols = 1`, `row_scroll = col_scroll = 5`
+        // (the controller's own convention — a rank *past* the frozen
+        // prefix, see `windowed_index_passes_through_the_frozen_block_
+        // then_adds_scroll` above): absolute row/col 6 is the first
+        // scrolled position, so `loaded_row_start`/`loaded_col_start`
+        // must be `frozen + scroll` (= 6), the convention
+        // `CellGridController::grid` reconciles to. `cells` is laid
+        // out positionally: row/col 0 is the frozen row/column, rows/
+        // cols 1.. are the scrolled body starting at absolute 6.
+        let mut grid = grid_3x3();
+        grid.frozen_rows = 1;
+        grid.frozen_cols = 1;
+        grid.row_count = 20;
+        grid.col_count = 20;
+        grid.row_scroll = 5;
+        grid.col_scroll = 5;
+        grid.cells = vec![
+            vec![
+                Cell::plain("frozen_corner"),
+                Cell::plain("r0c6"),
+                Cell::plain("r0c7"),
+            ],
+            vec![
+                Cell::plain("r6_frozencol"),
+                Cell::plain("r6c6"),
+                Cell::plain("r6c7"),
+            ],
+            vec![
+                Cell::plain("r7_frozencol"),
+                Cell::plain("r7c6"),
+                Cell::plain("r7c7"),
+            ],
+        ];
+        grid.loaded_row_start = 6;
+        grid.loaded_col_start = 6;
+        assert_eq!(grid.range_as_tsv(6, 6, 7, 7), "r6c6\tr6c7\nr7c6\tr7c7");
+        // The frozen corner cell is still reachable at its own
+        // absolute index, independent of scroll.
+        assert_eq!(grid.range_as_tsv(0, 0, 0, 0), "frozen_corner");
     }
 }
 
