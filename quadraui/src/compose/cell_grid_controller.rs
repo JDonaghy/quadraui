@@ -53,7 +53,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Clipboard};
 use crate::primitive::{LayoutCtx, Primitive};
 use crate::primitives::cell_grid::{
     Cell, CellEditState, CellGrid, CellGridHit, CellGridPrimitiveLayout,
@@ -113,6 +113,30 @@ pub enum CellGridControllerEvent {
     /// The user cancelled the in-progress edit (Escape). The cell's
     /// value is unchanged; the cursor has not moved.
     CellEditCancelled { row: usize, col: usize },
+    /// [`CellGridController::paste`] found text on the clipboard.
+    /// `anchor_row`/`anchor_col` is the current selection's top-left
+    /// corner (the cursor itself when there's no multi-cell selection).
+    /// The controller has no cell content of its own (module doc) so it
+    /// never applies the paste itself: the host parses `text` — by
+    /// convention TSV, matching [`CellGridController::copy_selection`]'s
+    /// own output — and applies it through its engine starting at the
+    /// anchor.
+    PasteRequested {
+        anchor_row: usize,
+        anchor_col: usize,
+        text: String,
+    },
+    /// [`CellGridController::cut_selection`] copied the current
+    /// selection to the clipboard; the host additionally clears every
+    /// cell in `[top, bottom] x [left, right]` (all inclusive) through
+    /// its engine — this controller has no cell content to clear itself
+    /// (module doc).
+    CutRequested {
+        top: usize,
+        left: usize,
+        bottom: usize,
+        right: usize,
+    },
 }
 
 /// The active inline edit's text buffer — a [`TextField`] reused wholesale
@@ -685,6 +709,75 @@ impl CellGridController {
         self.selection_anchor = Some(self.clamp_cell((self.row_count - 1, col)));
         self.ensure_cursor_visible(backend, rect);
         self.result_for_current_selection()
+    }
+
+    // ── Clipboard ────────────────────────────────────────────────────
+    //
+    // None of these three go through `Self::handle`'s key dispatch:
+    // `Self::handle` only ever receives a `backend` and a `rect`, never
+    // the host's real, cell-filled `CellGrid` or a `Clipboard` — this
+    // controller has no cell content of its own (module doc), and
+    // clipboard IO is the one thing every other method on this
+    // controller never needed a platform handle for. A host calls these
+    // directly from its own Ctrl/Cmd+C/X/V key handling instead.
+
+    /// Ctrl/Cmd+C: copy the current selection's displayed text onto
+    /// `clipboard` as TSV (tab-separated within a row, newline-separated
+    /// across rows) — [`CellGrid::range_as_tsv`] does the actual
+    /// windowed-to-absolute text lookup. `grid` must be the host's real,
+    /// cell-filled [`CellGrid`] — never [`Self::geometry_grid`]'s empty
+    /// one — since this controller owns no cell content itself.
+    ///
+    /// `Ignored` on an empty sheet; otherwise always `Consumed`, even
+    /// for a single-cell "selection".
+    pub fn copy_selection(
+        &self,
+        grid: &CellGrid,
+        clipboard: &dyn Clipboard,
+    ) -> CellGridControllerEvent {
+        if self.row_count == 0 || self.col_count == 0 {
+            return CellGridControllerEvent::Ignored;
+        }
+        let (top, left, bottom, right) = self.selection_bounds();
+        clipboard.write_text(&grid.range_as_tsv(top, left, bottom, right));
+        CellGridControllerEvent::Consumed
+    }
+
+    /// Ctrl/Cmd+X: [`Self::copy_selection`], then report
+    /// [`CellGridControllerEvent::CutRequested`] for the host to clear
+    /// through its engine — this controller has no cell content to
+    /// clear itself (module doc).
+    pub fn cut_selection(
+        &self,
+        grid: &CellGrid,
+        clipboard: &dyn Clipboard,
+    ) -> CellGridControllerEvent {
+        if self.copy_selection(grid, clipboard) == CellGridControllerEvent::Ignored {
+            return CellGridControllerEvent::Ignored;
+        }
+        let (top, left, bottom, right) = self.selection_bounds();
+        CellGridControllerEvent::CutRequested {
+            top,
+            left,
+            bottom,
+            right,
+        }
+    }
+
+    /// Ctrl/Cmd+V: read `clipboard`'s current text and report
+    /// [`CellGridControllerEvent::PasteRequested`], anchored at the
+    /// current selection's top-left corner. `Ignored` when the
+    /// clipboard holds no text.
+    pub fn paste(&self, clipboard: &dyn Clipboard) -> CellGridControllerEvent {
+        let Some(text) = clipboard.read_text() else {
+            return CellGridControllerEvent::Ignored;
+        };
+        let (top, left, ..) = self.selection_bounds();
+        CellGridControllerEvent::PasteRequested {
+            anchor_row: top,
+            anchor_col: left,
+            text,
+        }
     }
 
     // ── Handle ────────────────────────────────────────────────────────
@@ -1777,5 +1870,141 @@ mod tests {
         let ev = c.handle_formula_bar_key(&Key::Char('x'), &Modifiers::default(), &b, RECT);
         assert_eq!(ev, CellGridControllerEvent::Ignored);
         assert!(!c.is_editing());
+    }
+
+    // ── Clipboard ───────────────────────────────────────────────────
+
+    /// A [`Clipboard`] test double backed by an in-process
+    /// `RefCell<Option<String>>` — `read_text`/`write_text` round-trip
+    /// through it so a test can assert exactly what a copy wrote,
+    /// without touching the real OS clipboard the way a `TuiBackend`'s
+    /// own [`crate::tui::services::TuiClipboard`] would.
+    #[derive(Default)]
+    struct FakeClipboard {
+        text: std::cell::RefCell<Option<String>>,
+    }
+
+    impl Clipboard for FakeClipboard {
+        fn read_text(&self) -> Option<String> {
+            self.text.borrow().clone()
+        }
+
+        fn write_text(&self, text: &str) {
+            *self.text.borrow_mut() = Some(text.to_string());
+        }
+    }
+
+    /// A 3×3 [`CellGrid`] with real, fully-loaded cell text — unlike
+    /// [`controller`]'s own geometry-only grid, copy needs real text to
+    /// put on the clipboard.
+    fn grid_3x3_with_text() -> CellGrid {
+        let row = |label: &str| {
+            (0..3)
+                .map(|c| Cell::plain(format!("{label}{c}")))
+                .collect::<Vec<_>>()
+        };
+        CellGrid {
+            id: WidgetId::new("grid"),
+            row_count: 3,
+            col_count: 3,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 4.0,
+            row_heights: BTreeMap::new(),
+            col_widths: BTreeMap::new(),
+            show_row_headers: true,
+            show_col_headers: true,
+            row_labels: BTreeMap::new(),
+            col_labels: BTreeMap::new(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: vec![row("r0"), row("r1"), row("r2")],
+            loaded_row_start: 0,
+            loaded_col_start: 0,
+            has_focus: true,
+            show_scrollbar: false,
+            editing: None,
+        }
+    }
+
+    #[test]
+    fn copy_selection_writes_a_2x3_range_to_the_clipboard_as_tsv() {
+        let mut c = controller(3, 3);
+        c.set_selection((0, 0), Some((1, 2)));
+        let grid = grid_3x3_with_text();
+        let clipboard = FakeClipboard::default();
+
+        let ev = c.copy_selection(&grid, &clipboard);
+
+        assert_eq!(ev, CellGridControllerEvent::Consumed);
+        assert_eq!(
+            clipboard.read_text(),
+            Some("r00\tr01\tr02\nr10\tr11\tr12".to_string())
+        );
+    }
+
+    #[test]
+    fn copy_selection_is_ignored_on_an_empty_sheet() {
+        let c = controller(0, 0);
+        let grid = grid_3x3_with_text();
+        let clipboard = FakeClipboard::default();
+
+        let ev = c.copy_selection(&grid, &clipboard);
+
+        assert_eq!(ev, CellGridControllerEvent::Ignored);
+        assert_eq!(clipboard.read_text(), None);
+    }
+
+    #[test]
+    fn cut_selection_copies_then_reports_the_range_to_clear() {
+        let mut c = controller(3, 3);
+        c.set_selection((0, 0), Some((1, 2)));
+        let grid = grid_3x3_with_text();
+        let clipboard = FakeClipboard::default();
+
+        let ev = c.cut_selection(&grid, &clipboard);
+
+        assert_eq!(
+            clipboard.read_text(),
+            Some("r00\tr01\tr02\nr10\tr11\tr12".to_string())
+        );
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::CutRequested {
+                top: 0,
+                left: 0,
+                bottom: 1,
+                right: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn paste_emits_the_selection_anchor_plus_the_clipboard_text() {
+        let mut c = controller(5, 5);
+        c.set_selection((2, 1), None);
+        let clipboard = FakeClipboard::default();
+        clipboard.write_text("a\tb\nc\td");
+
+        let ev = c.paste(&clipboard);
+
+        assert_eq!(
+            ev,
+            CellGridControllerEvent::PasteRequested {
+                anchor_row: 2,
+                anchor_col: 1,
+                text: "a\tb\nc\td".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn paste_is_ignored_when_the_clipboard_holds_no_text() {
+        let c = controller(5, 5);
+        let clipboard = FakeClipboard::default();
+        assert_eq!(c.paste(&clipboard), CellGridControllerEvent::Ignored);
     }
 }
