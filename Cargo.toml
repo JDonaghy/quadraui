@@ -6,6 +6,7 @@ members = [
     "quadraui-py",
     "quadraui-node",
     "quadraui-gallery",
+    "quadraui-mcp",
     "kubeui-core",
     "kubeui",
     "kubeui-gtk",

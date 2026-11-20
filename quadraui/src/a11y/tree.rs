@@ -269,6 +269,19 @@ impl A11yNodeId {
         self.0
     }
 
+    /// Rebuilds a node id from a prior [`Self::as_u64`] — the only form
+    /// an out-of-process caller ever sees (e.g. the `id` field of a
+    /// `quadraui::control::ControlRequest::Snapshot` reply, which
+    /// `quadraui-mcp`'s `act` tool round-trips back into an `act`
+    /// request's `node`). An in-process caller that already holds the
+    /// `WidgetId`/key that produced the id prefers
+    /// [`Self::for_key`]/[`Self::for_widget`]/[`Self::child`] instead,
+    /// which stay stable across frames by construction rather than by
+    /// copying a number around.
+    pub fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+
     /// The matching accesskit node id.
     #[cfg(feature = "a11y")]
     #[cfg_attr(docsrs, doc(cfg(feature = "a11y")))]
