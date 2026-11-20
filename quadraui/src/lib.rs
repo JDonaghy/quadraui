@@ -801,8 +801,9 @@ pub use login_item::LoginItemOptions;
 pub use paths::AppPathKind;
 // The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
-    check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
-    FrameZone, OwnedContent, OwnedFrame, OwnedNode, ScreenLayout, Surface,
+    check_frame_order, compose_frame, set_frame_capture, FrameCapture, FrameHitMap,
+    FrameOrderViolation, FramePresence, FrameRung, FrameZone, OwnedContent, OwnedFrame, OwnedNode,
+    ScreenLayout, Surface,
 };
 pub use paint_surface::{PaintSurface, PathVerb};
 // The `Primitive` trait — see that module's doc.

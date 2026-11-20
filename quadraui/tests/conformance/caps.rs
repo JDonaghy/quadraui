@@ -1074,6 +1074,48 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // save/clip/restore on GTK, Direct2D's clip stack on Win, Core
     // Graphics' save/clip/restore on macOS) instead of a second clip
     // stack.
+    // ── frame_capture / last_frame: the opt-in live-frame capture the
+    // agent-control epic builds an accessibility tree from. A backend
+    // joins by owning one `frame::FrameCapture` field and handing it out;
+    // `TuiBackend` does. The other three take the trait defaults, so they
+    // report no frame rather than a wrong one — one backend per issue, and
+    // each remaining backend adopts capture in its own sibling issue.
+    (
+        "gtk",
+        "frame_capture",
+        "live-frame capture is opt-in instrumentation, not a paint path; GTK adopts it in its own \
+         sibling issue and until then honestly reports no capture slot",
+    ),
+    (
+        "gtk",
+        "last_frame",
+        "pairs with GTK's defaulted frame_capture — with no slot to record into there is no frame \
+         to report",
+    ),
+    (
+        "macos",
+        "frame_capture",
+        "live-frame capture is opt-in instrumentation, not a paint path; macOS adopts it in its \
+         own sibling issue and until then honestly reports no capture slot",
+    ),
+    (
+        "macos",
+        "last_frame",
+        "pairs with macOS's defaulted frame_capture — with no slot to record into there is no \
+         frame to report",
+    ),
+    (
+        "win",
+        "frame_capture",
+        "live-frame capture is opt-in instrumentation, not a paint path; Win adopts it in its own \
+         sibling issue and until then honestly reports no capture slot",
+    ),
+    (
+        "win",
+        "last_frame",
+        "pairs with Win's defaulted frame_capture — with no slot to record into there is no frame \
+         to report",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.
