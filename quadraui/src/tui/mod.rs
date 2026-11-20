@@ -449,6 +449,82 @@ pub(crate) fn align_offset(
     }
 }
 
+/// Paint a single-line inline text editor — a text buffer, byte-offset
+/// cursor (rendered as an inverted-colour block), an optional selection
+/// highlight, and (when `text` is empty) a dim placeholder — starting at
+/// `start_col` cells into `area`, on row `y`, clipped to `area.width`.
+///
+/// Shared by every TUI inline-editing surface so there is exactly one
+/// cursor/selection/placeholder rasteriser rather than a per-primitive
+/// copy: [`crate::tui::tree::paint_edit_input`] (tree row rename) and
+/// [`crate::tui::cell_grid::draw_cell_grid`]'s cell editor overlay both
+/// call this directly instead of re-deriving the same multibyte-aware
+/// cursor/selection arithmetic.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_inline_text_editor(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    start_col: usize,
+    text: &str,
+    cursor: usize,
+    selection_anchor: Option<usize>,
+    placeholder: Option<&str>,
+    fg: RatatuiColor,
+    bg: RatatuiColor,
+    sel_bg: RatatuiColor,
+    dim_fg: RatatuiColor,
+) {
+    if text.is_empty() {
+        if let Some(ph) = placeholder {
+            for (col, ch) in (start_col..).zip(ph.chars()) {
+                if col >= area.width as usize {
+                    break;
+                }
+                set_cell(buf, area.x + col as u16, y, ch, dim_fg, bg);
+            }
+        }
+        // Cursor at position 0 (inverted space).
+        if start_col < area.width as usize {
+            set_cell(buf, area.x + start_col as u16, y, ' ', bg, fg);
+        }
+        return;
+    }
+
+    let (sel_lo, sel_hi) = match selection_anchor {
+        Some(a) if a != cursor => (a.min(cursor), a.max(cursor)),
+        _ => (0, 0),
+    };
+    let has_selection = sel_hi > sel_lo;
+
+    let mut byte = 0usize;
+    for (col, ch) in (start_col..).zip(text.chars()) {
+        if col >= area.width as usize {
+            break;
+        }
+        let in_sel = has_selection && byte >= sel_lo && byte < sel_hi;
+        let cell_bg = if in_sel { sel_bg } else { bg };
+        set_cell(buf, area.x + col as u16, y, ch, fg, cell_bg);
+        byte += ch.len_utf8();
+    }
+
+    // Block cursor: find char index for cursor byte offset, invert that cell.
+    let mut cursor_char_idx = 0usize;
+    let mut b = 0usize;
+    for ch in text.chars() {
+        if b >= cursor {
+            break;
+        }
+        b += ch.len_utf8();
+        cursor_char_idx += 1;
+    }
+    let cursor_col = start_col + cursor_char_idx;
+    if cursor_col < area.width as usize {
+        let ch = text.chars().nth(cursor_char_idx).unwrap_or(' ');
+        set_cell(buf, area.x + cursor_col as u16, y, ch, bg, fg);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -237,6 +237,7 @@ pub fn column_letters(index: usize) -> String {
 ///     loaded_col_start: 0,
 ///     has_focus: true,
 ///     show_scrollbar: false,
+///     editing: None,
 /// };
 ///
 /// let layout = grid.layout(80.0, 24.0, 1.0, 4.0, 1.0, 1.0);
@@ -331,6 +332,38 @@ pub struct CellGrid {
     /// scrollbars.
     #[serde(default)]
     pub show_scrollbar: bool,
+    /// Active inline edit of [`Self::cursor`], if any. `Some` paints a
+    /// single-line text editor over the cursor cell in place of its
+    /// plain text — see the module doc, "owns geometry, the cursor,
+    /// selection and ... editing UI". `None` paints the cursor cell like
+    /// every other cell. [`crate::compose::CellGridController`] owns
+    /// this state; a host never sets it directly, only reads it back off
+    /// [`crate::compose::CellGridController::grid`].
+    #[serde(default)]
+    pub editing: Option<CellEditState>,
+}
+
+/// Single-line inline edit state for [`CellGrid::editing`] — the text
+/// buffer, a byte-offset cursor into it, an optional byte-offset
+/// selection anchor, and a placeholder shown when `text` is empty.
+///
+/// Shape mirrors [`crate::primitives::tree::TreeRowEditState`] (that
+/// type's `path` has no equivalent here: a `CellGrid` edits exactly one
+/// cell at a time, always [`CellGrid::cursor`], so there is nothing to
+/// disambiguate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CellEditState {
+    pub text: String,
+    /// Byte offset into `text`.
+    #[serde(default)]
+    pub cursor: usize,
+    /// Byte offset into `text`. When `Some` and different from `cursor`,
+    /// the range between them paints with a selection highlight.
+    #[serde(default)]
+    pub selection_anchor: Option<usize>,
+    /// Shown in muted style when `text` is empty.
+    #[serde(default)]
+    pub placeholder: Option<String>,
 }
 
 impl CellGrid {
@@ -1405,6 +1438,7 @@ mod tests {
             loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         }
     }
 
@@ -2006,6 +2040,7 @@ mod a11y_tests {
             loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         }
     }
 
@@ -2237,6 +2272,7 @@ mod native_surface_paint_tests {
             loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         }
     }
 

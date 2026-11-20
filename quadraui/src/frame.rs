@@ -2548,6 +2548,7 @@ mod tests {
             loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         };
 
         let mut layout = ScreenLayout::new();
@@ -2601,6 +2602,7 @@ mod tests {
             loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         };
 
         struct ShowGrid(CellGrid);

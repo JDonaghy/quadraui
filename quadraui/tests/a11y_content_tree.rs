@@ -1109,6 +1109,7 @@ fn cell_grid_3x3_with_selection() -> CellGrid {
         loaded_col_start: 0,
         has_focus: true,
         show_scrollbar: false,
+        editing: None,
     }
 }
 

@@ -11768,3 +11768,102 @@ fn cell_grid_pressing_q_exits() {
     driver.type_char('q');
     assert!(driver.exited(), "'q' should make the app exit");
 }
+
+/// Cell A1's own portion of its row's screen line — everything before
+/// the frozen-column divider (`│`). A1 is the frozen corner cell, so the
+/// rest of that line is the frozen header row's *other* cells (e.g.
+/// `"Q3 2024"`), which would otherwise false-positive a bare digit
+/// search like `contains('3')`.
+fn cell_a1_line(driver: &TuiDriver<CellGridDemo>, y: f32) -> String {
+    driver
+        .screen()
+        .lines()
+        .nth(y as usize)
+        .and_then(|line| line.split('│').next())
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn cell_grid_typing_a_formula_and_pressing_enter_commits_the_engines_evaluated_value() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    let (_, y) = driver
+        .find("Region")
+        .expect("the frozen corner cell A1 starts out showing its placeholder \"Region\"");
+
+    for ch in "=1+2".chars() {
+        driver.type_char(ch);
+    }
+    let editing = driver.screen();
+    assert!(
+        editing.contains("=1+2"),
+        "the inline editor should paint the in-progress formula text:\n{editing}"
+    );
+
+    press_with(&mut driver, NamedKey::Enter, Modifiers::default());
+    let after = driver.screen();
+    assert!(
+        !after.contains("=1+2"),
+        "the raw formula text must not still be painted once committed:\n{after}"
+    );
+    let a1_line = cell_a1_line(&driver, y);
+    assert!(
+        !a1_line.contains("Region") && a1_line.contains('3'),
+        "the app's own evaluator should replace A1's placeholder \"Region\" with its evaluated result \"3\":\n{a1_line:?}\nfull screen:\n{after}"
+    );
+    assert!(
+        after.contains("Sel A2 (1 cell)"),
+        "Enter should commit and move the cursor down to A2, as in Excel:\n{after}"
+    );
+}
+
+#[test]
+fn cell_grid_escape_cancels_the_edit_and_leaves_the_original_cell_text() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    let before = driver.screen();
+    driver.type_char('x');
+    assert!(
+        driver.screen_contains("x"),
+        "typing should open the inline editor:\n{}",
+        driver.screen()
+    );
+
+    press_with(&mut driver, NamedKey::Escape, Modifiers::default());
+    let after = driver.screen();
+    assert_eq!(
+        before, after,
+        "Escape should cancel the edit and restore the cell's original text"
+    );
+    assert!(
+        !driver.exited(),
+        "Escape should cancel the in-progress edit, not quit the app"
+    );
+}
+
+#[test]
+fn cell_grid_f2_seeds_the_editor_with_the_cells_existing_text_not_empty() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    // The cursor starts on A1 ("Region"), the frozen corner cell. F2
+    // seeds the editor with that existing text and places the cursor at
+    // its end — appending '!' should read "Region!", not just "!" (a
+    // plain keypress's "typing replaces" behaviour).
+    press_with(&mut driver, NamedKey::F(2), Modifiers::default());
+    driver.type_char('!');
+    assert!(
+        driver.screen_contains("Region!"),
+        "F2 should seed the editor with the cell's existing text and place the cursor at its end, not start it empty:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn cell_grid_tab_commits_and_moves_right_while_editing() {
+    let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    driver.type_char('5');
+    press_with(&mut driver, NamedKey::Tab, Modifiers::default());
+    let after = driver.screen();
+    assert!(
+        after.contains("Sel B1 (1 cell)"),
+        "Tab should commit the edit and move the cursor one column right:\n{after}"
+    );
+}
