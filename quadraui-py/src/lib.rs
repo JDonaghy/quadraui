@@ -199,10 +199,11 @@ use quadraui_binding_core::{
     toast_corner, tree_rows_and_viewport, tree_table_controller_nodes_from_wire,
     tree_total_rows_and_viewport, update_apply_on_quit, update_check_for_update,
     update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
-    with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, ItemsWindow, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError,
-    PaintedHit, RenderFrame, RenderOutput, RowsRequestedEvent, ServiceError, StyleContext,
-    TreeTableControllerNode, TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
+    with_window, BindingHost, CellGridControllerWireEvent, DecodeError, ErasedShellDriver,
+    EventSink, GuardedFailure, HitDetail, InteractionEngine, ItemsWindow, LayoutLeaf, LayoutNode,
+    LeafDescriptor, OverrideError, PaintedHit, RenderFrame, RenderOutput, RowsRequestedEvent,
+    ServiceError, StyleContext, TreeTableControllerNode, TreeTableControllerWireEvent,
+    UpdateInfoWire, WindowCloseHandling,
 };
 use quadraui_binding_core::{decode_layout_dialog, decode_popover, DialogContentSize};
 use quadraui_binding_core::{validate_style_set_name, StyleOverride};
@@ -1575,6 +1576,53 @@ impl EventSink for PyEventSink<'_> {
             };
             let dict = PyDict::new(py);
             if let Err(err) = dict.set_item("TreeTableController", (id.as_str(), event_value)) {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+            match self.handler.call1(py, (dict,)) {
+                Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
+                Err(err) => {
+                    record_error(self.pending_error, err);
+                    Reaction::Exit
+                }
+            }
+        })
+    }
+
+    /// Delivers a `"cell_grid"` extra's [`CellGridControllerWireEvent`] to
+    /// the same registered Python handler [`Self::dispatch`] calls, as
+    /// `{"CellGridController": (id, event)}` — `id` is the extra's own id
+    /// (a plain `str`), `event` the pythonized wire event (e.g.
+    /// `{"CursorMoved": {"row": 0, "col": 0}}`), mirroring
+    /// [`Self::dispatch_tree_table_controller`]'s `{"TreeTableController":
+    /// ...}` shape. A `"CellsRequested"` here is answered by re-rendering
+    /// with that `"cell_grid"` extra's `cells`/`loaded_row_start`/
+    /// `loaded_col_start` covering exactly the named block — there is no
+    /// separate `set_*` host call, unlike a `"tree_table_controller"`'s
+    /// `ChildrenRequested`: `InteractionEngine::sync_cell_grids` already
+    /// reconciles every windowing field straight off the descriptor on
+    /// every frame (see that method's own doc), so the next render call
+    /// answers it the same way any other extra's data changes.
+    fn dispatch_cell_grid_controller(
+        &mut self,
+        id: WidgetId,
+        event: CellGridControllerWireEvent,
+    ) -> Reaction {
+        Python::attach(|py| {
+            let event_value = match pythonize::pythonize(py, &event) {
+                Ok(value) => value,
+                Err(err) => {
+                    record_error(
+                        self.pending_error,
+                        InternalError::new_err(format!(
+                            "failed to pythonize cell grid controller event: {err}"
+                        )),
+                    );
+                    return Reaction::Exit;
+                }
+            };
+            let dict = PyDict::new(py);
+            if let Err(err) = dict.set_item("CellGridController", (id.as_str(), event_value)) {
                 record_error(self.pending_error, err);
                 return Reaction::Exit;
             }
