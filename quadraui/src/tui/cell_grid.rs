@@ -408,6 +408,8 @@ mod tests {
             cursor: (0, 0),
             selection_anchor: None,
             cells,
+            loaded_row_start: 0,
+            loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
         }

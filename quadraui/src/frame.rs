@@ -2430,6 +2430,8 @@ mod tests {
             cursor: (0, 0),
             selection_anchor: None,
             cells: vec![vec![Cell::plain("hi")]],
+            loaded_row_start: 0,
+            loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
         };
@@ -2481,6 +2483,8 @@ mod tests {
             cursor: (0, 0),
             selection_anchor: None,
             cells: vec![vec![Cell::plain("ahoy")]],
+            loaded_row_start: 0,
+            loaded_col_start: 0,
             has_focus: true,
             show_scrollbar: false,
         };

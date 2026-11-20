@@ -1105,6 +1105,8 @@ fn cell_grid_3x3_with_selection() -> CellGrid {
         cursor: (1, 1),
         selection_anchor: Some((0, 0)),
         cells: vec![row("r0"), row("r1"), row("r2")],
+        loaded_row_start: 0,
+        loaded_col_start: 0,
         has_focus: true,
         show_scrollbar: false,
     }
