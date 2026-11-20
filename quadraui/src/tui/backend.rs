@@ -430,6 +430,18 @@ pub struct TuiBackend {
     /// lifecycle as `zones`): an unbalanced push from a previous frame
     /// must never narrow the next one's painting.
     clip_stack: Vec<super::canvas::TuiClipFrame>,
+    /// Whether [`Backend::capture_frame`] should retain anything — set via
+    /// [`Backend::set_frame_capture`]. `false` by default, so a live
+    /// runner that never opts in never pays for the clone
+    /// [`crate::frame::ScreenLayout::draw`] would otherwise build. See
+    /// `crate::frame`'s module doc, "Live-frame capture for
+    /// accessibility".
+    frame_capture_enabled: bool,
+    /// The [`crate::frame::OwnedFrame`] most recently handed to
+    /// [`Backend::capture_frame`], if any — [`Backend::last_frame`]'s
+    /// backing store. `None` until the first capture, and forever `None`
+    /// if `frame_capture_enabled` has never been set.
+    last_frame: Option<crate::frame::OwnedFrame>,
 }
 
 /// One cell rect registered via [`TuiBackend::register_opaque_rect`] —
@@ -498,6 +510,8 @@ impl TuiBackend {
             minimap_sizing: None,
             editor_right_reserve_w: None,
             clip_stack: Vec::new(),
+            frame_capture_enabled: false,
+            last_frame: None,
         }
     }
 
@@ -2553,6 +2567,25 @@ impl Backend for TuiBackend {
         // registered zone — mirrors `draw_terminal_divider`'s identical
         // registration above.
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
+    }
+
+    fn set_frame_capture(&mut self, enabled: bool) {
+        self.frame_capture_enabled = enabled;
+        if !enabled {
+            self.last_frame = None;
+        }
+    }
+
+    fn frame_capture_enabled(&self) -> bool {
+        self.frame_capture_enabled
+    }
+
+    fn capture_frame(&mut self, frame: crate::frame::OwnedFrame) {
+        self.last_frame = Some(frame);
+    }
+
+    fn last_frame(&self) -> Option<&crate::frame::OwnedFrame> {
+        self.last_frame.as_ref()
     }
 
     fn services(&self) -> &dyn PlatformServices {

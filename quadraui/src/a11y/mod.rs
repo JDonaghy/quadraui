@@ -80,8 +80,8 @@ pub mod tree;
 pub use action::{route_action, A11yAction, A11yActionValue};
 pub use content::markdown_a11y_children;
 pub use tree::{
-    frame_to_tree, frame_to_tree_with_modal, A11yChild, A11yNodeId, A11yPrimitive, A11yTree,
-    A11yTreeBuilder, A11yTreeNode, A11yUpdate,
+    backend_a11y_tree, frame_to_tree, frame_to_tree_with_modal, A11yChild, A11yNodeId,
+    A11yPrimitive, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate,
 };
 
 /// A typed accessibility role, replacing a free-form role string.

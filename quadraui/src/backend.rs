@@ -40,6 +40,7 @@ use crate::dispatch::DragState;
 use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusManager;
+use crate::frame::OwnedFrame;
 use crate::interaction::InteractionState;
 use crate::login_item::LoginItemOptions;
 use crate::modal_stack::ModalStack;
@@ -1974,6 +1975,53 @@ pub trait Backend: sealed::Sealed {
     /// `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
     /// portability risk, not a precedent to follow.
     fn draw_focus_ring(&mut self, rect: Rect);
+
+    // ─── Live-frame capture (opt-in, for the agent-control epic) ─────────
+    /// Opt in (or out) of retaining an [`OwnedFrame`] of every
+    /// [`crate::frame::ScreenLayout::draw`] / [`OwnedFrame::draw`] call made
+    /// against this backend, for later retrieval via [`Self::last_frame`].
+    /// Off by default.
+    ///
+    /// This is instrumentation for building an accessibility tree from
+    /// whatever a live runner actually painted (the agent-control epic's
+    /// Level 1), not a rendering capability every backend must offer — so,
+    /// unlike [`Self::draw_focus_ring`], a no-op default here is the right
+    /// shape: a backend that never overrides this (and [`Self::capture_frame`])
+    /// simply never captures, and [`Self::last_frame`] always answers `None`.
+    fn set_frame_capture(&mut self, _enabled: bool) {}
+
+    /// Whether the most recent [`Self::set_frame_capture`] call enabled
+    /// capture. [`crate::frame::ScreenLayout::draw`] / [`OwnedFrame::draw`]
+    /// check this *before* building an [`OwnedFrame`] to hand to
+    /// [`Self::capture_frame`] — so the common (disabled) case costs one
+    /// virtual-dispatch `bool` check per paint, never a clone of every
+    /// surface drawn. Defaults to `false`, matching [`Self::set_frame_capture`]'s
+    /// default no-op.
+    fn frame_capture_enabled(&self) -> bool {
+        false
+    }
+
+    /// Retain `frame` as [`Self::last_frame`]'s next answer. Called by
+    /// [`crate::frame::ScreenLayout::draw`] / [`OwnedFrame::draw`] right
+    /// after painting, only when [`Self::frame_capture_enabled`] is `true`.
+    /// Default no-op, pairing with the default `frame_capture_enabled`
+    /// returning `false` — never reached unless a backend overrides both.
+    fn capture_frame(&mut self, _frame: OwnedFrame) {}
+
+    /// The [`OwnedFrame`] most recently handed to [`Self::capture_frame`],
+    /// or `None` when capture was never enabled, nothing has painted yet,
+    /// or this backend doesn't implement capture at all.
+    ///
+    /// Combine with [`Self::focus_manager`] — e.g. via
+    /// [`crate::a11y::tree::backend_a11y_tree`] — to build an
+    /// [`crate::a11y::A11yTree`] from the real screen a live runner just
+    /// painted, not only from a test [`crate::testing::a11y::A11yScenario`].
+    /// Only the canonical [`crate::frame::ScreenLayout`] paint path (D-006)
+    /// populates this: an app that calls `backend.draw_*` methods directly,
+    /// without a `ScreenLayout`, gets `None` here even with capture enabled.
+    fn last_frame(&self) -> Option<&OwnedFrame> {
+        None
+    }
 
     // ─── Error reporting (D-009) ─────────────────────────────────────────
     /// The most recent [`BackendError`] this backend recorded, if any,

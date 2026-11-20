@@ -86,6 +86,26 @@
 //! fallbacks (and [`OwnedContent::Opaque`] as the generic one). Reach
 //! for `Surface`/`ScreenLayout` to describe and paint a frame; reach
 //! for `OwnedFrame` when that description has to be serialized.
+//!
+//! ## Live-frame capture for accessibility
+//!
+//! [`crate::testing::a11y::A11yScenario`] builds an [`OwnedFrame`]
+//! straight from a test's own [`ScreenLayout`], with no backend
+//! involved. A live runner has no such scenario to ask — it only ever
+//! calls [`ScreenLayout::draw`] (or [`OwnedFrame::draw`]) against a real
+//! [`Backend`]. Both of those methods check
+//! [`Backend::frame_capture_enabled`] right after painting and, when
+//! `true`, hand the just-drawn [`OwnedFrame`] to [`Backend::capture_frame`]
+//! — so [`Backend::last_frame`] can answer with whatever the app actually
+//! had on screen. Capture is opt-in via [`Backend::set_frame_capture`] and
+//! costs nothing when left off (the default): the check is one virtual
+//! call, not a clone of every surface.
+//!
+//! This only works through the canonical [`ScreenLayout`] path (D-006,
+//! `docs/decisions/DECISIONS.md`) — an app that calls `backend.draw_*`
+//! methods directly, bypassing `ScreenLayout`/`OwnedFrame`, never
+//! populates `last_frame`, so it stays invisible to an accessibility
+//! tree or an MCP agent built on top of one.
 
 //! ## Presence gating + the paint/hit-test order invariant
 //!
@@ -712,6 +732,11 @@ impl ScreenLayout {
     /// (e.g. at their natural call sites across an existing paint
     /// pass) purely to recover a hit map, use [`Self::hit_map`]
     /// instead — it skips every `backend.draw_*()` call.
+    ///
+    /// After painting, hands `backend` an [`OwnedFrame`] of `self` via
+    /// [`Backend::capture_frame`] when [`Backend::frame_capture_enabled`]
+    /// says to — see the module doc's "Live-frame capture for
+    /// accessibility" section.
     pub fn draw(&self, backend: &mut dyn Backend) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
 
@@ -893,6 +918,10 @@ impl ScreenLayout {
 
             let (rect, zone) = Self::zone_for(idx, surface);
             hit_map.push(rect, zone);
+        }
+
+        if backend.frame_capture_enabled() {
+            backend.capture_frame(OwnedFrame::from_layout(self));
         }
 
         hit_map
@@ -1393,11 +1422,18 @@ impl OwnedFrame {
     /// [`FrameHitMap`] — the owned-data counterpart of
     /// [`ScreenLayout::draw`]. See [`OwnedContent::draw`] for which
     /// variants are no-ops here (they still register a hit zone).
+    ///
+    /// Same opt-in capture as [`ScreenLayout::draw`]: a clone of `self`
+    /// goes to [`Backend::capture_frame`] when
+    /// [`Backend::frame_capture_enabled`] says to.
     pub fn draw(&self, backend: &mut dyn Backend) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
         for node in &self.nodes {
             node.content.draw(node.rect, backend);
             hit_map.push(node.rect, node.content.zone(node.idx));
+        }
+        if backend.frame_capture_enabled() {
+            backend.capture_frame(self.clone());
         }
         hit_map
     }
