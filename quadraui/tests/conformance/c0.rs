@@ -1545,27 +1545,22 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_radio_group(Rect::new(0.0, 0.0, area.width, lh * 2.0), &group);
         },
     },
-    // `draw_radio_group_with_state` is `#[deprecated]`: its default body
-    // copies the `InteractionState` onto a clone's `RadioOption::hovered`/
-    // `pressed` and calls `draw_radio_group`. This row proves that shim still
-    // reaches a rasteriser and paints observable content on every backend.
+    // A hovered-and-pressed group: `RadioOption::hovered`/`pressed` are
+    // ordinary descriptor fields, so `draw_radio_group` is the only entry
+    // point. This row proves a tinted option still paints observable
+    // content on every backend.
     Case {
-        method: "draw_radio_group_with_state",
+        method: "draw_radio_group",
         needle: Some("c0radiohv"),
         paint: |b, area| {
             let lh = b.line_height();
-            let option_id = id("radio-option-hover");
-            let group = RadioGroup::new(
+            let mut group = RadioGroup::new(
                 id("radio-group-hover"),
-                vec![RadioOption::new(option_id, "c0radiohv")],
+                vec![RadioOption::new(id("radio-option-hover"), "c0radiohv")],
             );
-            let interaction = InteractionState::from_parts(Some(option_id), None);
-            #[allow(deprecated)] // `draw_radio_group_with_state` is `#[deprecated]`
-            let _ = b.draw_radio_group_with_state(
-                Rect::new(0.0, 0.0, area.width, lh * 2.0),
-                &group,
-                &interaction,
-            );
+            group.options[0].hovered = true;
+            group.options[0].pressed = true;
+            let _ = b.draw_radio_group(Rect::new(0.0, 0.0, area.width, lh * 2.0), &group);
         },
     },
     Case {
@@ -1577,25 +1572,19 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_switch(Rect::new(0.0, 0.0, area.width, lh), &switch);
         },
     },
-    // `draw_switch_with_state` is `#[deprecated]`: its default body copies
-    // the `InteractionState` onto a clone's `Switch::hovered`/`pressed` and
-    // calls `draw_switch`. This row proves that shim still reaches a
-    // rasteriser and paints observable content on every backend.
-    // Chrome-only like `draw_switch`, so no text needle.
+    // A hovered-and-pressed switch: `Switch::hovered`/`pressed` are ordinary
+    // descriptor fields, so `draw_switch` is the only entry point. This row
+    // proves a tinted switch still paints observable content on every
+    // backend. Chrome-only like the resting row above, so no text needle.
     Case {
-        method: "draw_switch_with_state",
+        method: "draw_switch",
         needle: None,
         paint: |b, area| {
             let lh = b.line_height();
-            let switch_id = id("switch-hover");
-            let switch = Switch::new(switch_id);
-            let interaction = InteractionState::from_parts(Some(switch_id), None);
-            #[allow(deprecated)] // `draw_switch_with_state` is `#[deprecated]`
-            let _ = b.draw_switch_with_state(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &switch,
-                &interaction,
-            );
+            let mut switch = Switch::new(id("switch-hover"));
+            switch.hovered = true;
+            switch.pressed = true;
+            let _ = b.draw_switch(Rect::new(0.0, 0.0, area.width, lh), &switch);
         },
     },
     Case {
