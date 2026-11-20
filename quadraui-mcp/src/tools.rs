@@ -1,22 +1,54 @@
-//! The four MCP tools this crate exposes, and the JSON-RPC-independent
-//! glue that turns a `tools/call` request's `arguments` into a
-//! [`ControlHandle`] call.
+//! This crate's four built-in "Level 1" MCP tools (`snapshot`, `act`,
+//! `key`, `type`), plus "Level 2" — every app-defined named command
+//! surfaced as its own tool — and the JSON-RPC-independent glue that
+//! turns a `tools/call` request's `arguments` into a [`ControlHandle`]
+//! call. See [`quadraui::control`]'s "Levels" doc section for what each
+//! level means.
 //!
-//! Each tool maps 1:1 onto a [`quadraui::control::ControlRequest`]
-//! variant — see that module's "Levels" doc section for what each one
-//! does to the running app. [`definitions`] is what a `tools/list`
-//! response answers with; [`call`] is what a `tools/call` request
-//! dispatches through.
+//! Each built-in tool maps 1:1 onto a [`quadraui::control::ControlRequest`]
+//! variant. [`definitions`] is what a `tools/list` response answers
+//! with — the four built-ins followed by whatever Level 2 commands the
+//! live app behind `handle` has registered
+//! ([`ControlHandle::list_commands`]), each one surfaced using the
+//! command's own name/description/schema. [`call`] is what a
+//! `tools/call` request dispatches through: a name that isn't one of
+//! the four built-ins is forwarded to [`ControlHandle::command`]
+//! unchanged, so a Level 2 command "just works" as an MCP tool without
+//! this module needing to know its name ahead of time.
 
 use serde_json::{json, Value};
 
 use quadraui::control::ControlHandle;
 use quadraui::{A11yAction, A11yActionValue, A11yNodeId, Key, Modifiers};
 
-/// The JSON Schema `inputSchema` every tool declares its arguments
-/// against, plus a human-readable `description` — exactly the shape an
-/// MCP `tools/list` result's `tools` array holds per entry.
-pub fn definitions() -> Vec<Value> {
+/// Builds a `tools/list` response for the running app behind `handle`:
+/// this crate's four built-in Level 1 tools, followed by one tool per
+/// Level 2 command the app has registered
+/// ([`ControlHandle::list_commands`]), using that command's own
+/// name/description/schema as the tool's `name`/`description`/
+/// `inputSchema`. An app with no Level 2 commands (the default) gets
+/// just the four built-ins. A [`ControlHandle::list_commands`] failure
+/// (the runner already gone) is silently treated as "no Level 2
+/// commands" here — `tools/list` always has at least the four built-ins
+/// to answer with; a caller that cares finds out the runner is gone the
+/// moment it actually tries to call one.
+pub fn definitions(handle: &ControlHandle) -> Vec<Value> {
+    let mut defs = builtin_definitions();
+    if let Ok(specs) = handle.list_commands() {
+        defs.extend(specs.into_iter().map(|spec| {
+            json!({
+                "name": spec.name,
+                "description": spec.description,
+                "inputSchema": spec.schema,
+            })
+        }));
+    }
+    defs
+}
+
+/// This crate's four built-in Level 1 tools, independent of any running
+/// app.
+fn builtin_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "snapshot",
@@ -115,13 +147,20 @@ pub fn definitions() -> Vec<Value> {
 /// response wraps this as one `{"type": "text", ...}` content item —
 /// see `crate::rpc`); `Err` carries a human-readable message an MCP
 /// client should show to its model, not a JSON-RPC protocol error.
+///
+/// `name` outside the four built-ins is forwarded to
+/// [`ControlHandle::command`] unchanged — a Level 2 command the app
+/// registered, or [`quadraui::control::CommandError::NotFound`]'s
+/// message if nothing matches.
 pub fn call(handle: &ControlHandle, name: &str, arguments: &Value) -> Result<Value, String> {
     match name {
         "snapshot" => handle.snapshot().map_err(|e| e.to_string()),
         "act" => call_act(handle, arguments),
         "key" => call_key(handle, arguments),
         "type" => call_type(handle, arguments),
-        other => Err(format!("unknown tool: {other}")),
+        other => handle
+            .command(other, arguments.clone())
+            .map_err(|e| e.to_string()),
     }
 }
 
@@ -206,20 +245,154 @@ fn parse_action_value(value: Option<&Value>) -> Result<Option<A11yActionValue>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quadraui::control::{CommandError, CommandRegistry, CommandSpec};
+    use quadraui::tui::testing::TuiDriver;
+    use quadraui::{AppLogic, Backend, Reaction, UiEvent};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// An `AppLogic` with no Level 2 commands at all — the default every
+    /// `AppLogic` gets for free, so `definitions`/`call` against it
+    /// exercise exactly the "no app commands registered" path.
+    struct NoOpApp;
+
+    impl AppLogic for NoOpApp {
+        type AreaId = ();
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// An `AppLogic` whose model is a selected index, with `select(index)`
+    /// registered against a [`CommandRegistry`] stashed on itself — a
+    /// Level 2 command this module's `definitions`/`call` must surface
+    /// and route to, same as the four built-ins.
+    struct SelectApp {
+        selected: usize,
+        commands: CommandRegistry<SelectApp>,
+    }
+
+    impl SelectApp {
+        fn new() -> Self {
+            let mut commands = CommandRegistry::new();
+            commands.register(
+                "select",
+                "Selects an item by index.",
+                json!({"type": "object", "properties": {"index": {"type": "integer"}}}),
+                |app: &mut SelectApp, args: Value| {
+                    let index = args
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| CommandError::InvalidArgs("\"index\" required".into()))?
+                        as usize;
+                    app.selected = index;
+                    Ok(json!({"selected": index}))
+                },
+            );
+            Self {
+                selected: 0,
+                commands,
+            }
+        }
+    }
+
+    impl AppLogic for SelectApp {
+        type AreaId = ();
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+        fn command_specs(&self) -> Vec<CommandSpec> {
+            self.commands.specs()
+        }
+        fn run_command(&mut self, name: &str, args: Value) -> Result<Value, CommandError> {
+            let mut commands = std::mem::take(&mut self.commands);
+            let result = commands.run(self, name, args);
+            self.commands = commands;
+            result
+        }
+    }
+
+    /// Runs `body` against a [`ControlHandle`] backed by a
+    /// [`TuiDriver`]-driven `app`, servicing the control port on this
+    /// (the test's own) thread in a loop until `body` — run on a
+    /// background thread, since `body`'s calls block for a reply — is
+    /// done. `TuiDriver` is not `Send` (it owns an `Rc`-based ratatui
+    /// terminal), so it has to stay here rather than move into the
+    /// spawned thread; only the `ControlHandle` crosses threads.
+    fn with_serviced_handle<A, T>(
+        app: A,
+        body: impl FnOnce(ControlHandle) -> T + Send + 'static,
+    ) -> T
+    where
+        A: AppLogic,
+        T: Send + 'static,
+    {
+        let mut driver = TuiDriver::new(app, 20, 5);
+        let waker = driver.backend().waker();
+        let (handle, port) = quadraui::control::channel(waker);
+
+        let done = Arc::new(AtomicBool::new(false));
+        let worker_done = done.clone();
+        let worker = thread::spawn(move || {
+            let result = body(handle);
+            worker_done.store(true, Ordering::SeqCst);
+            result
+        });
+        while !done.load(Ordering::SeqCst) {
+            driver.service_control(&port);
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker.join().expect("worker thread panicked")
+    }
 
     #[test]
-    fn definitions_cover_all_four_tools() {
-        let defs = definitions();
-        let names: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
+    fn definitions_cover_all_four_tools_with_no_app_commands() {
+        let names = with_serviced_handle(NoOpApp, |handle| {
+            definitions(&handle)
+                .into_iter()
+                .map(|d| d["name"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        });
         assert_eq!(names, vec!["snapshot", "act", "key", "type"]);
+    }
+
+    /// `definitions` appends one tool per registered Level 2 command,
+    /// using that command's own description/schema as the tool's
+    /// `description`/`inputSchema`.
+    #[test]
+    fn definitions_append_registered_level_2_commands() {
+        let defs = with_serviced_handle(SelectApp::new(), |handle| definitions(&handle));
+        let names: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["snapshot", "act", "key", "type", "select"]);
+        let select = defs.last().unwrap();
+        assert_eq!(select["description"], json!("Selects an item by index."));
+        assert_eq!(
+            select["inputSchema"],
+            json!({"type": "object", "properties": {"index": {"type": "integer"}}})
+        );
+    }
+
+    /// A `tools/call` name that isn't one of the four built-ins is
+    /// forwarded to the app's own registered command and really mutates
+    /// its model — not just a passthrough that happens to return the
+    /// right shape.
+    #[test]
+    fn call_routes_an_unrecognised_name_to_a_registered_level_2_command() {
+        let value = with_serviced_handle(SelectApp::new(), |handle| {
+            call(&handle, "select", &json!({"index": 2})).expect("select succeeds")
+        });
+        assert_eq!(value, json!({"selected": 2}));
     }
 
     #[test]
     fn call_unknown_tool_is_a_clean_error() {
-        let no_op_waker: std::sync::Arc<dyn Fn(quadraui::UserPayload) + Send + Sync> =
-            std::sync::Arc::new(|_| {});
-        let (handle, _port) = quadraui::control::channel(no_op_waker);
-        let err = call(&handle, "bogus", &json!({})).expect_err("unknown tool");
+        let err = with_serviced_handle(NoOpApp, |handle| {
+            call(&handle, "bogus", &json!({})).expect_err("unknown tool")
+        });
         assert!(err.contains("bogus"));
     }
 

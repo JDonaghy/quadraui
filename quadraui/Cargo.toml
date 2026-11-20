@@ -2238,3 +2238,13 @@ required-features = ["tui"]
 name = "gtk_cell_grid"
 path = "examples/gtk_cell_grid.rs"
 required-features = ["gtk"]
+
+# "Level 2" named-command demo (`quadraui::control`). Without an explicit
+# `[[example]]`, autodiscovery picks up `tui_commands_demo.rs` with no
+# `required-features`, and `cargo check -p quadraui --all-targets` (no
+# `--features tui,control`) then fails on `quadraui::tui`/`quadraui::control`
+# being configured out.
+[[example]]
+name = "tui_commands_demo"
+path = "examples/tui_commands_demo.rs"
+required-features = ["tui", "control"]

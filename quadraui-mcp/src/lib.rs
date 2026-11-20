@@ -6,9 +6,11 @@
 //! [`quadraui::control::ControlHandle`] once it opts into the `control`
 //! feature and wires `attach_control` into its own runner. This crate
 //! turns that handle into an MCP server: a JSON-RPC 2.0 endpoint an AI
-//! agent connects to and drives through four tools, `snapshot`, `act`,
-//! `key` and `type`, each one a thin wrapper over the matching
-//! [`quadraui::control::ControlRequest`] variant.
+//! agent connects to and drives through four built-in tools, `snapshot`,
+//! `act`, `key` and `type`, each one a thin wrapper over the matching
+//! [`quadraui::control::ControlRequest`] variant, plus one tool per
+//! app-defined named command the app has registered (see the "Levels"
+//! section below).
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -46,12 +48,17 @@
 //!
 //! # Levels
 //!
-//! This is "Level 1" per the control channel's own doc: UI-level
-//! `snapshot`/`act`, built entirely on `quadraui::a11y`, so any
-//! `AppLogic` app gets all four tools for free the moment it wires up
-//! `control`. "Level 2" — app-defined named commands that act on the
-//! app's own model rather than its UI — is `quadraui::control`'s
-//! reserved `ControlRequest::Command`, not yet wired to a tool here.
+//! "Level 1" per the control channel's own doc: UI-level `snapshot`/
+//! `act`, built entirely on `quadraui::a11y`, so any `AppLogic` app gets
+//! all four built-in tools for free the moment it wires up `control`.
+//! "Level 2": app-defined named commands that act on the app's own model
+//! rather than its UI, registered against a
+//! [`quadraui::control::CommandRegistry`] and wired into
+//! [`quadraui::AppLogic::command_specs`]/[`quadraui::AppLogic::run_command`].
+//! `tools/list` lists every Level 2 command alongside the four built-ins
+//! (`tools::definitions`), and `tools/call` routes any name outside
+//! those four straight to it (`tools::call`) — an app with no Level 2
+//! commands just keeps the four built-ins, zero behavior change.
 
 mod tools;
 mod transport;
@@ -123,7 +130,7 @@ fn dispatch(handle: &ControlHandle, method: &str, params: &Value) -> Result<Valu
     match method {
         "initialize" => Ok(initialize_result(params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools::definitions() })),
+        "tools/list" => Ok(json!({ "tools": tools::definitions(handle) })),
         "tools/call" => tools_call(handle, params),
         other => Err((-32601, format!("method not found: {other}"))),
     }
@@ -233,7 +240,15 @@ mod tests {
 
     #[test]
     fn tools_list_names_all_four_tools() {
-        let (handle, _port) = no_op_handle();
+        // Dropping the port rather than leaving it unserviced:
+        // `tools::definitions`'s `ControlHandle::list_commands` call
+        // (querying Level 2 app commands) answers `RunnerGone`
+        // immediately this way, same as every other no-app-attached
+        // request below — an unserviced-but-still-held port would
+        // instead block for `ControlHandle`'s own multi-second timeout
+        // before `definitions` falls back to "no Level 2 commands".
+        let (handle, port) = no_op_handle();
+        drop(port);
         let reply =
             handle_line(&handle, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap();
         let v: Value = serde_json::from_str(&reply).unwrap();
