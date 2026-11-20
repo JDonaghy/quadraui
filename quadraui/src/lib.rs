@@ -153,11 +153,12 @@
 // break (the GTK headless-smoke harness in `gtk/run.rs`, the macOS
 // visual-confirmation dev tool in `macos/headless.rs`, a test-skip notice
 // in `gtk/services.rs`, the stale-GUI-session activation hint both macOS
-// backends print via `macos_session_hint::activation_hint`) carry their own
-// justified `#[allow(clippy::print_stderr)]` — they print to a human
-// running a tool directly, not into a host's live UI. `examples/*` and any
-// `bin/` are compiled as separate crates and are unaffected by this inner
-// attribute; they're expected to print freely.
+// backends print via `macos_session_hint::activation_hint`, the `--json`
+// Level 2 command helper in `control::cli::run`) carry their own justified
+// `#[allow(clippy::print_stdout, clippy::print_stderr)]` — they print to a
+// human running a tool directly, not into a host's live UI. `examples/*`
+// and any `bin/` are compiled as separate crates and are unaffected by
+// this inner attribute; they're expected to print freely.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 // `doc(cfg(..))` is a nightly-only rustdoc attribute; docs.rs builds with
 // `--cfg docsrs` so feature-gated items can be annotated. A plain build on

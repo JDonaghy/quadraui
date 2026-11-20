@@ -28,10 +28,16 @@
 //! raw input the same way [`crate::tui::testing::TuiDriver`]'s
 //! `press`/`type_char` do — both end up going through
 //! [`crate::tui::testing::TuiDriver::dispatch`]'s pipeline when the owning
-//! runner is `TuiRunner`. [`ControlRequest::Command`] is reserved for
-//! "Level 2" app-defined named commands — this module always answers it
-//! with an "unknown command" error; a later addition teaches
-//! [`ControlPort::service`] to look a name up in an app-supplied registry.
+//! runner is `TuiRunner`. [`ControlRequest::Command`] and
+//! [`ControlRequest::ListCommands`] are "Level 2": app-defined named
+//! commands that act on the app's own model rather than its widgets —
+//! [`commands::CommandRegistry`] holds them, [`crate::AppLogic::run_command`]
+//! and [`crate::AppLogic::command_specs`] are how an app plugs its
+//! registry into this module, and `quadraui-mcp` lists every Level 2
+//! command in `tools/list` alongside its four built-in Level 1 tools. An
+//! app that never registers a command gets [`CommandError::NotFound`]
+//! for every [`ControlRequest::Command`] — the same "unknown command"
+//! answer this module always gave before Level 2 existed.
 //!
 //! # Waking the loop
 //!
@@ -51,6 +57,11 @@
 //! request this module cannot service at all (no captured frame yet, an
 //! unknown command) answers [`ControlReply::Error`] instead. Nothing here
 //! ever panics on untrusted input.
+
+pub mod cli;
+mod commands;
+
+pub use commands::{CommandError, CommandRegistry, CommandSpec};
 
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -102,15 +113,20 @@ pub enum ControlRequest {
     /// Synthesize a key press per character, left to right — see
     /// [`ControlHandle::type_text`].
     Type(String),
-    /// An app-defined named command — see [`ControlHandle::command`].
-    /// Reserved: [`ControlPort::service`] always answers this with
-    /// [`ControlReply::Error`] today.
+    /// An app-defined "Level 2" named command — see
+    /// [`ControlHandle::command`]. Answered by
+    /// [`crate::AppLogic::run_command`]; [`CommandError::NotFound`] if
+    /// the app never registered anything under `name`.
     Command {
         /// The command's name.
         name: String,
         /// Arbitrary JSON arguments, shape defined by the command.
         args: Value,
     },
+    /// Every Level 2 command the app has registered, as
+    /// [`CommandSpec`]s — see [`ControlHandle::list_commands`]. Answered
+    /// by [`crate::AppLogic::command_specs`].
+    ListCommands,
 }
 
 /// A reply to a [`ControlRequest`].
@@ -244,9 +260,10 @@ impl ControlHandle {
         self.ack(ControlRequest::Type(text.into()))
     }
 
-    /// An app-defined named command. Reserved: every runner answers this
-    /// with [`ControlError::Failed`] ("unknown command") today — no
-    /// command registry exists yet.
+    /// Runs an app-defined "Level 2" named command against the app's own
+    /// model — see [`crate::AppLogic::run_command`] for how an app wires
+    /// one up. [`ControlError::Failed`] (wrapping [`CommandError`]'s
+    /// `Display`) if the app never registered anything under `name`.
     pub fn command(&self, name: impl Into<String>, args: Value) -> Result<Value, ControlError> {
         match self.send(ControlRequest::Command {
             name: name.into(),
@@ -254,6 +271,18 @@ impl ControlHandle {
         })? {
             ControlReply::Value(v) => Ok(v),
             ControlReply::Ack => Ok(Value::Null),
+            ControlReply::Error(e) => Err(ControlError::Failed(e)),
+        }
+    }
+
+    /// Every "Level 2" command the app has registered — see
+    /// [`crate::AppLogic::command_specs`]. Empty for an app that never
+    /// registers any.
+    pub fn list_commands(&self) -> Result<Vec<CommandSpec>, ControlError> {
+        match self.send(ControlRequest::ListCommands)? {
+            ControlReply::Value(v) => serde_json::from_value(v)
+                .map_err(|e| ControlError::Failed(format!("list_commands: {e}"))),
+            ControlReply::Ack => Ok(Vec::new()),
             ControlReply::Error(e) => Err(ControlError::Failed(e)),
         }
     }
@@ -435,10 +464,25 @@ where
             }
             (ControlReply::Ack, reaction)
         }
-        ControlRequest::Command { name, .. } => (
-            ControlReply::Error(format!("unknown command: {name}")),
-            Reaction::Continue,
-        ),
+        ControlRequest::Command { name, args } => match app.run_command(&name, args) {
+            // A command acts on the app's own model directly (it isn't a
+            // `UiEvent` the `dispatch` callback above routes), so nothing
+            // upstream already knows a repaint is due — ask for one
+            // unconditionally on success. Cheap and idempotent even for a
+            // command that only reads (`count()`), and it's what makes a
+            // `select`-style command's effect visible in the next
+            // `Snapshot` without a caller having to also submit an
+            // unrelated `Key`/`Act` just to force a repaint.
+            Ok(value) => (ControlReply::Value(value), Reaction::Redraw),
+            Err(e) => (ControlReply::Error(e.to_string()), Reaction::Continue),
+        },
+        ControlRequest::ListCommands => match serde_json::to_value(app.command_specs()) {
+            Ok(v) => (ControlReply::Value(v), Reaction::Continue),
+            Err(e) => (
+                ControlReply::Error(format!("list_commands: failed to serialize: {e}")),
+                Reaction::Continue,
+            ),
+        },
     }
 }
 
@@ -575,10 +619,11 @@ mod tests {
         assert_eq!(chars, vec!['x', 'a', 'b']);
     }
 
-    /// `Command` always answers "unknown command" today — no registry
-    /// exists yet — and never touches `app`/`backend`.
+    /// An app that never overrides [`AppLogic::run_command`] answers
+    /// every `Command` with "unknown command" via the trait's own
+    /// default, and never touches `app`/`backend`.
     #[test]
-    fn command_is_reserved_and_answers_unknown() {
+    fn command_with_no_registered_commands_answers_unknown() {
         let mut app = CountingApp::default();
         let mut backend = RecordingBackend::new();
         let (reply, reaction) = service_one(
@@ -596,6 +641,145 @@ mod tests {
         }
         assert_eq!(reaction, Reaction::Continue);
         assert!(app.events.is_empty());
+    }
+
+    /// An app whose model is just a selected index, with `select(index)`
+    /// and `count()` registered against a [`CommandRegistry`] stashed on
+    /// the app itself — [`CommandRegistry::run`]'s doc "swap it out, call,
+    /// swap it back" dance, wired into [`AppLogic::run_command`].
+    struct CommandApp {
+        items: Vec<&'static str>,
+        selected: usize,
+        commands: CommandRegistry<CommandApp>,
+    }
+
+    impl CommandApp {
+        fn new() -> Self {
+            let mut commands = CommandRegistry::new();
+            commands.register(
+                "select",
+                "Selects an item by index.",
+                serde_json::json!({"type": "object"}),
+                |app: &mut CommandApp, args: Value| {
+                    let index = args
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| CommandError::InvalidArgs("\"index\" required".into()))?
+                        as usize;
+                    app.selected = index;
+                    Ok(serde_json::json!({"selected": index}))
+                },
+            );
+            commands.register(
+                "count",
+                "Returns the number of items.",
+                serde_json::json!({"type": "object"}),
+                |app: &mut CommandApp, _args: Value| {
+                    Ok(serde_json::json!({"count": app.items.len()}))
+                },
+            );
+            Self {
+                items: vec!["alpha", "beta", "gamma"],
+                selected: 0,
+                commands,
+            }
+        }
+    }
+
+    impl AppLogic for CommandApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+
+        fn command_specs(&self) -> Vec<CommandSpec> {
+            self.commands.specs()
+        }
+
+        fn run_command(&mut self, name: &str, args: Value) -> Result<Value, CommandError> {
+            let mut commands = std::mem::take(&mut self.commands);
+            let result = commands.run(self, name, args);
+            self.commands = commands;
+            result
+        }
+    }
+
+    fn command_app_dispatch(
+        event: UiEvent,
+        app: &mut CommandApp,
+        backend: &mut RecordingBackend,
+    ) -> Reaction {
+        app.handle(event, backend)
+    }
+
+    /// [`ControlRequest::Command`] against an app with a registered
+    /// command runs it against the app's real model (not a copy) and
+    /// answers its JSON result, asking for a redraw so the effect is
+    /// visible on the next [`ControlRequest::Snapshot`].
+    #[test]
+    fn command_runs_a_registered_command_against_the_real_app() {
+        let mut app = CommandApp::new();
+        let mut backend = RecordingBackend::new();
+
+        let (reply, reaction) = service_one(
+            ControlRequest::Command {
+                name: "select".into(),
+                args: serde_json::json!({"index": 2}),
+            },
+            &mut app,
+            &mut backend,
+            &mut command_app_dispatch,
+        );
+        assert!(matches!(reply, ControlReply::Value(v) if v == serde_json::json!({"selected": 2})));
+        assert_eq!(reaction, Reaction::Redraw);
+        assert_eq!(app.selected, 2, "the command must mutate the real app");
+    }
+
+    /// An unknown command name against an app that *does* have a
+    /// registry still answers [`CommandError::NotFound`], not a panic or
+    /// a silent no-op.
+    #[test]
+    fn command_unknown_name_against_a_registry_is_not_found() {
+        let mut app = CommandApp::new();
+        let mut backend = RecordingBackend::new();
+        let (reply, reaction) = service_one(
+            ControlRequest::Command {
+                name: "bogus".into(),
+                args: serde_json::json!({}),
+            },
+            &mut app,
+            &mut backend,
+            &mut command_app_dispatch,
+        );
+        match reply {
+            ControlReply::Error(msg) => assert!(msg.contains("bogus")),
+            other => panic!("expected an error reply, got {other:?}"),
+        }
+        assert_eq!(reaction, Reaction::Continue);
+    }
+
+    /// [`ControlRequest::ListCommands`] answers every registered
+    /// command's [`CommandSpec`], in registration order.
+    #[test]
+    fn list_commands_answers_every_registered_spec() {
+        let mut app = CommandApp::new();
+        let mut backend = RecordingBackend::new();
+        let (reply, reaction) = service_one(
+            ControlRequest::ListCommands,
+            &mut app,
+            &mut backend,
+            &mut command_app_dispatch,
+        );
+        let ControlReply::Value(v) = reply else {
+            panic!("expected a value reply, got {reply:?}");
+        };
+        let specs: Vec<CommandSpec> = serde_json::from_value(v).unwrap();
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["select", "count"]);
+        assert_eq!(reaction, Reaction::Continue);
     }
 
     /// End-to-end over the real channel: a background thread submits a

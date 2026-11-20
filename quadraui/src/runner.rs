@@ -43,6 +43,13 @@
 //! written against this trait alone already supports it for free. See
 //! `crate::control`'s module doc and `tui::run::TuiRunner::attach_control`
 //! for the TUI wiring.
+//!
+//! [`AppLogic::command_specs`]/[`AppLogic::run_command`] are the same
+//! control feature's "Level 2": named commands that act on the app's own
+//! model, independent of any widget. Both default to "nothing
+//! registered" so overriding them is opt-in; see
+//! `crate::control::CommandRegistry`'s doc for the usual way an app
+//! implements them.
 
 use std::time::Duration;
 
@@ -293,6 +300,47 @@ pub trait AppLogic {
     /// [`crate::Backend::draw_focus_ring`].
     fn tab_stops(&self, _area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
         Vec::new()
+    }
+
+    /// This app's "Level 2" named-command specs (see
+    /// [`crate::control`]'s "Levels" doc section) — what `quadraui-mcp`'s
+    /// `tools/list` appends after its four built-in Level 1 tools, and
+    /// what [`crate::control::cli`]'s `--json` helper lists.
+    ///
+    /// Defaults to empty: an app that never registers a
+    /// [`crate::control::CommandRegistry`] gets no Level 2 commands, zero
+    /// behavior change.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    fn command_specs(&self) -> Vec<crate::control::CommandSpec> {
+        Vec::new()
+    }
+
+    /// Runs one Level 2 named command against this app's own model — see
+    /// [`Self::command_specs`]. [`crate::control::ControlRequest::Command`]
+    /// calls this for a request arriving over an attached
+    /// [`crate::control::ControlPort`]; [`crate::control::cli::run`] calls
+    /// it directly, with no control channel, no event loop, and no
+    /// backend at all.
+    ///
+    /// The usual implementation stashes a
+    /// `crate::control::CommandRegistry<Self>` as a field and swaps it
+    /// out for the call so the registered closures can take `&mut Self`
+    /// without aliasing the field that holds them — see
+    /// [`crate::control::CommandRegistry::run`]'s doc for that exact
+    /// dance.
+    ///
+    /// Defaults to [`crate::control::CommandError::NotFound`] for every
+    /// name — the same "unknown command" answer the control channel
+    /// always gave before Level 2 existed.
+    #[cfg(feature = "control")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+    fn run_command(
+        &mut self,
+        name: &str,
+        _args: serde_json::Value,
+    ) -> Result<serde_json::Value, crate::control::CommandError> {
+        Err(crate::control::CommandError::NotFound(name.to_string()))
     }
 }
 
