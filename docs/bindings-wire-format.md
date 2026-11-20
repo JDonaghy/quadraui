@@ -421,6 +421,10 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`TreeTableDescriptor`](#wire-treetabledescriptor)
 - [`TreeTableControllerNodeDescriptor`](#wire-treetablecontrollernodedescriptor)
 - [`TreeTableControllerDescriptor`](#wire-treetablecontrollerdescriptor)
+- [`CellAlign`](#wire-cellalign)
+- [`CellStyleDescriptor`](#wire-cellstyledescriptor)
+- [`CellDescriptor`](#wire-celldescriptor)
+- [`CellGridControllerDescriptor`](#wire-cellgridcontrollerdescriptor)
 - [`TabItemDescriptor`](#wire-tabitemdescriptor)
 - [`TabBarSegmentDescriptor`](#wire-tabbarsegmentdescriptor)
 - [`TabBarDescriptor`](#wire-tabbardescriptor)
@@ -1281,6 +1285,61 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `show_scrollbar` | `boolean` | no |  |
 | `bordered` | `boolean` | no |  |
 | `folders_first` | `boolean` | no |  |
+
+<a id="wire-cellalign"></a>
+#### `CellAlign`
+
+Alias for `"Left" | "Center" | "Right" | "General"`.
+
+<a id="wire-cellstyledescriptor"></a>
+#### `CellStyleDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bold` | `boolean \| null` | no |  |
+| `italic` | `boolean \| null` | no |  |
+| `underline` | `boolean \| null` | no |  |
+| `fg` | `Color \| null` | no |  |
+| `bg` | `Color \| null` | no |  |
+| `align` | `CellAlign \| null` | no |  |
+
+<a id="wire-celldescriptor"></a>
+#### `CellDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `text` | `string` | yes |  |
+| `style` | `CellStyleDescriptor` | no |  |
+
+<a id="wire-cellgridcontrollerdescriptor"></a>
+#### `CellGridControllerDescriptor`
+
+The spreadsheet-shaped counterpart of `TreeTableControllerDescriptor` -- a `cell_grid` extra backed by a cached `CellGridController` rather than a stateless paint.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `row_count` | `number` | no |  |
+| `col_count` | `number` | no |  |
+| `frozen_rows` | `number` | no |  |
+| `frozen_cols` | `number` | no |  |
+| `default_row_height` | `number` | no |  |
+| `default_col_width` | `number` | no |  |
+| `row_heights` | `Record<string, number>` | no |  |
+| `col_widths` | `Record<string, number>` | no |  |
+| `show_row_headers` | `boolean` | no |  |
+| `show_col_headers` | `boolean` | no |  |
+| `row_labels` | `Record<string, string>` | no |  |
+| `col_labels` | `Record<string, string>` | no |  |
+| `cells` | `CellDescriptor[][]` | no | This frame's windowed cell text, reconciled every frame -- see `CellGridControllerDescriptor`'s own Rust doc. |
+| `loaded_row_start` | `number` | no |  |
+| `loaded_col_start` | `number` | no |  |
+| `cursor` | `[number, number]` | no | Read once, when this id is first seen, then left alone forever after -- the cached `CellGridController` owns cursor navigation from then on. |
+| `selection_anchor` | `[number, number] \| null` | no |  |
+| `row_scroll` | `number` | no |  |
+| `col_scroll` | `number` | no |  |
+| `has_focus` | `boolean` | no |  |
+| `show_scrollbar` | `boolean` | no |  |
 
 <a id="wire-tabitemdescriptor"></a>
 #### `TabItemDescriptor`
@@ -3518,6 +3577,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `diff_view` | `DiffViewDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
+| `cell_grid` | `CellGridControllerDescriptor` | no |  |
 | `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
@@ -3585,6 +3645,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `diff_view` | `DiffViewDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
+| `cell_grid` | `CellGridControllerDescriptor \| null` | no |  |
 | `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |

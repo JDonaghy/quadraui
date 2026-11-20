@@ -308,6 +308,45 @@ class TreeTableControllerDescriptor(TypedDict):
     bordered: NotRequired[bool]
     folders_first: NotRequired[bool]
 
+CellAlign = Literal['Left', 'Center', 'Right', 'General']
+
+class CellStyleDescriptor(TypedDict):
+    bold: NotRequired[Optional[bool]]
+    italic: NotRequired[Optional[bool]]
+    underline: NotRequired[Optional[bool]]
+    fg: NotRequired[Optional[Color]]
+    bg: NotRequired[Optional[Color]]
+    align: NotRequired[Optional[CellAlign]]
+
+class CellDescriptor(TypedDict):
+    text: str
+    style: NotRequired[CellStyleDescriptor]
+
+class CellGridControllerDescriptor(TypedDict):
+    """The spreadsheet-shaped counterpart of `TreeTableControllerDescriptor` -- a `cell_grid` extra backed by a cached `CellGridController` rather than a stateless paint."""
+    id: WidgetId
+    row_count: NotRequired[int]
+    col_count: NotRequired[int]
+    frozen_rows: NotRequired[int]
+    frozen_cols: NotRequired[int]
+    default_row_height: NotRequired[float]
+    default_col_width: NotRequired[float]
+    row_heights: NotRequired[Dict[str, float]]
+    col_widths: NotRequired[Dict[str, float]]
+    show_row_headers: NotRequired[bool]
+    show_col_headers: NotRequired[bool]
+    row_labels: NotRequired[Dict[str, str]]
+    col_labels: NotRequired[Dict[str, str]]
+    cells: NotRequired[List[List[CellDescriptor]]]  # This frame's windowed cell text, reconciled every frame -- see `CellGridControllerDescriptor`'s own Rust doc.
+    loaded_row_start: NotRequired[int]
+    loaded_col_start: NotRequired[int]
+    cursor: NotRequired[Tuple[int, int]]  # Read once, when this id is first seen, then left alone forever after -- the cached `CellGridController` owns cursor navigation from then on.
+    selection_anchor: NotRequired[Optional[Tuple[int, int]]]
+    row_scroll: NotRequired[int]
+    col_scroll: NotRequired[int]
+    has_focus: NotRequired[bool]
+    show_scrollbar: NotRequired[bool]
+
 class TabItemDescriptor(TypedDict):
     """The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`."""
     label: str
@@ -1715,6 +1754,7 @@ LayoutLeafNode = TypedDict(
         "diff_view": NotRequired[DiffViewDescriptor],
         "tree_table": NotRequired[TreeTableDescriptor],
         "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
+        "cell_grid": NotRequired[CellGridControllerDescriptor],
         "activity_bar": NotRequired[ActivityBarDescriptor],
         "toolbar": NotRequired[ToolbarDescriptor],
         "menu_bar": NotRequired[MenuBarDescriptor],
@@ -1776,6 +1816,7 @@ class RenderFrameDict(TypedDict):
     diff_view: NotRequired[Optional[DiffViewDescriptor]]
     tree_table: NotRequired[Optional[TreeTableDescriptor]]
     tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
+    cell_grid: NotRequired[Optional[CellGridControllerDescriptor]]
     activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
