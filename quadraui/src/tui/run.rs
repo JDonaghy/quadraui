@@ -897,6 +897,12 @@ where
             if let Some(pos) = backend.take_last_cursor_position() {
                 frame.set_cursor_position(pos);
             }
+            // Same handoff as the editor cursor above, for whatever last
+            // called `CellSurface::set_cursor` this frame — runs second,
+            // so it wins if a frame somehow drives both (today nothing
+            // does; `draw_primitive`'s default body never calls
+            // `CellSurface::set_cursor`, only `ratatui_buffer`).
+            backend.apply_last_cell_surface_cursor(frame);
         })
         .map_err(|e| io::Error::other(e.to_string()))?;
     backend.end_frame();
@@ -1566,6 +1572,64 @@ mod tests {
             Some(Point::new(3.0, 0.0)),
             "cursor_position_native must carry the cell-rounded (x, y) pair widened to f32"
         );
+    }
+
+    /// Calls `Backend::cell_surface()` then `CellSurface::set_cursor`
+    /// directly — the one seam verb `DrawsPrimitives::draw_primitive`'s
+    /// default body never drives (it only reaches `CellSurface::ratatui_buffer`),
+    /// so this is the only exerciser of the raw-pointer round trip
+    /// `TuiBackend::cell_surface` sets up: the pointer surviving a
+    /// `&mut self` reborrow and the per-frame scratch-field rebuild.
+    struct CellSurfaceCursorApp {
+        pos: std::cell::Cell<(u16, u16)>,
+    }
+
+    impl CellSurfaceCursorApp {
+        fn new(x: u16, y: u16) -> Self {
+            Self {
+                pos: std::cell::Cell::new((x, y)),
+            }
+        }
+    }
+
+    impl AppLogic for CellSurfaceCursorApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let (x, y) = self.pos.get();
+            if let Some(surface) = backend.cell_surface() {
+                surface.set_cursor(x, y, crate::CursorShape::Bar);
+            }
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// `CellSurface::set_cursor` must reach `Frame::set_cursor_position`
+    /// through `TuiBackend::last_cell_surface_cursor`, the same
+    /// buffer-only-paint-to-frame-level-side-effect handoff
+    /// `draw_editor`'s cached cursor uses.
+    #[test]
+    fn cell_surface_set_cursor_reaches_the_terminal_frame() {
+        let mut driver = TuiDriver::new(CellSurfaceCursorApp::new(5, 2), 40, 10);
+        assert_eq!(driver.terminal_cursor_position(), Some((5, 2)));
+    }
+
+    /// Re-rendering with a new position updates the applied terminal
+    /// cursor — confirms the handoff survives `TuiBackend::cell_surface`
+    /// rebuilding its scratch `TuiCellSurface` on every call, not just the
+    /// first.
+    #[test]
+    fn cell_surface_set_cursor_updates_across_frames() {
+        let mut driver = TuiDriver::new(CellSurfaceCursorApp::new(5, 2), 40, 10);
+        assert_eq!(driver.terminal_cursor_position(), Some((5, 2)));
+
+        driver.app_mut().pos.set((9, 4));
+        driver.render();
+
+        assert_eq!(driver.terminal_cursor_position(), Some((9, 4)));
     }
 }
 
