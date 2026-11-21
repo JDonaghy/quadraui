@@ -331,6 +331,7 @@ mod paint_state_tests {
         assert_eq!(PaintState::pressed_idx(&state), None);
         assert_eq!(PaintState::scroll_px(&state), None);
         assert!(!PaintState::striped(&state));
+        assert!(!PaintState::focus_ring_visible(&state));
     }
 }
 
@@ -2246,24 +2247,14 @@ impl crate::primitive::Primitive for ListView {
     type Event = ListViewEvent;
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
-        // TUI's row height is architecturally always exactly `1.0` cell
-        // (see `crate::primitives::layout_metrics::tree_row_pitch`'s own
-        // `is_cell_grid = line_height <= 1.0` convention); every pixel
-        // backend passes a real measured line height, always well above
-        // one. Naming that convention as a `crate::primitive::Units`
-        // value makes `units` a reliable *runtime* discriminator between
-        // a TUI caller and a pixel-backend one even when both features
-        // are compiled into the same binary (`cargo build --features
+        // `ctx.units()` is a reliable *runtime* discriminator between a
+        // TUI caller and a pixel-backend one even when both features are
+        // compiled into the same binary (`cargo build --features
         // gtk,tui`), where a compile-time `cfg` alone could not tell
         // them apart.
         #[cfg(feature = "tui")]
         {
-            let units = if ctx.line_height <= 1.0 {
-                crate::primitive::Units::Cells
-            } else {
-                crate::primitive::Units::Pixels
-            };
-            if units == crate::primitive::Units::Cells {
+            if matches!(ctx.units(), crate::primitive::Units::Cells) {
                 // Route through the exact resolver `crate::tui::draw_list`
                 // itself calls (`tui_list_layout`) so this layout can
                 // never drift from what TUI actually paints —
@@ -2279,12 +2270,13 @@ impl crate::primitive::Primitive for ListView {
                 };
             }
         }
-        // Matches `crate::gtk::gtk_list_layout`'s own border-inset math:
-        // a bordered list's rows must leave room for the 1px frame
-        // `Self::paint`'s `supports_border: self.bordered` below
-        // strokes, or layout and paint disagree on row width whenever
-        // `self.bordered` is true.
-        let border_inset: f64 = if self.bordered { 1.0 } else { 0.0 };
+        // `Self::paint`'s shared `native_surface_paint::paint_with_state`
+        // call strokes no frame of its own (see that module's doc, "Note:
+        // `bordered`'s frame stroke remains backend-specific") — each
+        // backend's thin wrapper strokes its own frame around this call
+        // instead. `border_inset` therefore stays `0.0` here regardless
+        // of `self.bordered`, matching `supports_border: false` below.
+        let border_inset: f64 = 0.0;
         let layout = crate::primitives::layout_metrics::list_layout(
             self,
             rect.width as f64,
@@ -2322,10 +2314,13 @@ impl crate::primitive::Primitive for ListView {
             // defaults every `PaintState` method already falls back to,
             // naming the gap through the shared trait rather than a
             // bare `None`/`None`/`false`/`false` literal tuple.
-            // `focus_ring_visible` has no `PaintState` counterpart (it
-            // is a single widget-level flag a focus-ring controller
-            // supplies, not row/scroll/stripe state), so it stays its
-            // own hardcoded `false` for the same reason.
+            //
+            // `supports_border: false` below: this shared paint strokes
+            // no frame of its own (see `native_surface_paint`'s module
+            // doc, "Note: `bordered`'s frame stroke remains
+            // backend-specific") — only a backend wrapper that strokes
+            // its own frame around this call should pass `true`, and
+            // none of them do yet through this `Primitive` seam.
             let paint_state = ListPaintState::default();
             native_surface_paint::paint_with_state(
                 self,
@@ -2333,14 +2328,14 @@ impl crate::primitive::Primitive for ListView {
                 &layout.layout,
                 layout.line_height,
                 layout.nerd_fonts_enabled,
-                /* supports_border */ self.bordered,
+                /* supports_border */ false,
                 /* supports_hscrollbar */ true,
                 surface,
                 theme,
                 style,
                 paint_state.hovered_idx(),
                 paint_state.pressed_idx(),
-                /* focus_ring_visible */ false,
+                paint_state.focus_ring_visible(),
                 paint_state.scroll_px(),
                 paint_state.striped(),
             );
@@ -2821,18 +2816,22 @@ mod primitive_parity_tests {
     }
 
     /// A bordered `ListView`'s [`Primitive::layout`] + [`Primitive::paint`]
-    /// must match [`crate::primitives::layout_metrics::list_layout`]
-    /// (called with the same `self.bordered`-derived `border_inset`
-    /// [`crate::gtk::gtk_list_layout`] itself computes) +
-    /// [`native_surface_paint::paint_with_state`] called with
-    /// `supports_border: true` — the real production pairing a
-    /// bordered list's border-inset layout and border-stroking paint
-    /// use together, derived from [`ListView::bordered`] rather than
-    /// hardcoded independently of it.
+    /// strokes no frame of its own — [`native_surface_paint::paint`]
+    /// contains no frame-drawing verb, so `Primitive::layout` must pass
+    /// `border_inset: 0.0` and `Primitive::paint` must pass
+    /// `supports_border: false` to [`crate::primitives::layout_metrics::list_layout`]
+    /// / [`native_surface_paint::paint_with_state`] regardless of
+    /// [`ListView::bordered`], matching [`crate::macos::list`]'s
+    /// pre-migration `draw_list`, which never strokes a frame either.
     #[test]
-    fn bordered_list_primitive_paint_strokes_a_border_like_the_gtk_pairing() {
+    fn bordered_list_primitive_seam_strokes_no_frame_of_its_own() {
         let list = ListView {
             bordered: true,
+            // No h-scrollbar thumb to confound the "no frame stroke"
+            // assertion below — `sample_list`'s `max_content_width:
+            // Some(60)` would otherwise paint one via
+            // `fill_rounded_rect`, unrelated to `bordered`.
+            max_content_width: None,
             ..sample_list()
         };
         let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
@@ -2860,7 +2859,7 @@ mod primitive_parity_tests {
             rect.height as f64,
             ctx.line_height as f64,
             ctx.char_width as f64,
-            /* border_inset */ 1.0,
+            /* border_inset */ 0.0,
         );
         let mut direct_surface = LogSurface::default();
         native_surface_paint::paint_with_state(
@@ -2869,7 +2868,7 @@ mod primitive_parity_tests {
             &direct_layout,
             ctx.line_height,
             ctx.nerd_fonts_enabled,
-            /* supports_border */ true,
+            /* supports_border */ false,
             true,
             &mut direct_surface,
             &theme,
@@ -2882,12 +2881,13 @@ mod primitive_parity_tests {
         );
 
         assert!(
-            direct_surface
+            !direct_surface
                 .calls
                 .iter()
                 .any(|call| call.starts_with("fill_rounded_rect") || call.starts_with("draw_line")),
-            "a bordered list's own border-drawing call must actually stroke a frame for \
-             this comparison to be meaningful, got {:?}",
+            "a bordered list's own paint must not stroke a frame through this seam — \
+             each backend's thin wrapper strokes its own frame around this call instead, \
+             got {:?}",
             direct_surface.calls
         );
         assert_eq!(via_primitive_surface.calls, direct_surface.calls);

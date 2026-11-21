@@ -416,6 +416,16 @@ pub trait PaintState {
     fn striped(&self) -> bool {
         false
     }
+    /// Whether a focus ring should be stroked around the focused row.
+    ///
+    /// Unlike the other methods on this trait, no built-in `*PaintState`
+    /// stores this as a field — it is a single widget-level flag a
+    /// focus-ring controller supplies, not per-row/scroll/stripe state —
+    /// so every implementor gets `false` ("no ring") from this default
+    /// unless it overrides the method to read its own controller.
+    fn focus_ring_visible(&self) -> bool {
+        false
+    }
 }
 
 /// A widget a pixel [`crate::Backend`] can paint without a bespoke
@@ -580,6 +590,25 @@ mod tests {
         assert_ne!(Units::Pixels, Units::Cells);
     }
 
+    /// `line_height <= 1.0` (TUI's whole-cell convention) reports
+    /// [`Units::Cells`]; anything above it (a pixel backend's real font
+    /// metric) reports [`Units::Pixels`].
+    #[test]
+    fn layout_ctx_units_follows_the_line_height_convention() {
+        let cells = LayoutCtx {
+            line_height: 1.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: false,
+        };
+        let pixels = LayoutCtx {
+            line_height: 22.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: false,
+        };
+        assert_eq!(cells.units(), Units::Cells);
+        assert_eq!(pixels.units(), Units::Pixels);
+    }
+
     /// [`PrimitiveLayout::new`] pairs `area` with the primitive-local
     /// layout verbatim — no coordinate transform of either field, the
     /// same contract every hand-rolled `*PrimitiveLayout` already
@@ -692,6 +721,7 @@ mod tests {
         assert_eq!(state.pressed_idx(), None);
         assert_eq!(state.scroll_px(), None);
         assert!(!state.striped());
+        assert!(!state.focus_ring_visible());
     }
 
     /// A real override only changes the one method it defines — proves
