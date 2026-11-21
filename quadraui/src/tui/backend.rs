@@ -2401,14 +2401,10 @@ impl Backend for TuiBackend {
         self.last_cursor_position = None;
         // Clear the cached cell-surface cursor for the same reason — a
         // frame that stops calling `CellSurface::set_cursor` must stop
-        // showing the terminal cursor at the last-known spot. Also clears
-        // the scratch `TuiCellSurface` the previous frame's `cell_surface()`
-        // calls left behind; its buffer pointer is only valid inside the
-        // `enter_frame_scope` call that produced it, so letting it dangle
-        // until the next `cell_surface()` call overwrote it (rather than
-        // clearing it here) left the one per-frame field without the
-        // "cleared at frame start" invariant every other field on this
-        // list documents.
+        // showing the terminal cursor at the last-known spot. Also drops
+        // the previous frame's scratch `TuiCellSurface`, whose buffer
+        // pointer is only valid inside the `enter_frame_scope` call that
+        // produced it.
         self.last_cell_surface_cursor = None;
         self.cell_surface_scratch = None;
         // Clear per-frame tab-bar layout cache for the same reason as
