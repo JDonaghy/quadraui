@@ -135,7 +135,8 @@ test("showContextMenu with a nested submenu opens by Right arrow and activates t
 test("showContextMenu item with a codicon icon renders its fallback glyph", () => {
   // `ContextMenuItem.icon` accepts the same `{codicon: "...", fallback:
   // "..."}` wire shape a tree row's `icon` does (see
-  // `descriptors.test.ts`'s `tree leaf accepts a codicon icon` case),
+  // `descriptors.test.ts`'s `tree leaf accepts a codicon icon and
+  // renders its fallback text` case),
   // but paints into the single-cell gutter `checked`'s checkmark shares
   // (only the fallback's first character renders) rather than a
   // measured-width slot -- the headless driver defaults to nerd fonts
