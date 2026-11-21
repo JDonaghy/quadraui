@@ -517,8 +517,12 @@ impl ContextMenuController {
             return;
         }
         let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        // The app-supplied `selected_idx` can point at a separator or a
+        // disabled item; counting `current` as navigable keeps the move
+        // stepping to the next selectable item in list order from there
+        // instead of seeding at either end of the menu.
         let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
-            !items[i].is_separator() && !items[i].disabled
+            i == current || (!items[i].is_separator() && !items[i].disabled)
         })
         .unwrap_or(current);
         self.set_selected_at_depth(depth, new_sel);
@@ -763,6 +767,47 @@ mod tests {
             &mut backend,
         );
         assert_eq!(outcome, ContextMenuOutcome::Ignored);
+    }
+
+    #[test]
+    fn arrows_from_a_separator_selection_step_to_the_neighbouring_items() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        // An app-supplied `selected_idx` pointing at the separator: the
+        // arrows step to the item either side of it rather than seeding at
+        // an end of the menu.
+        let m = ContextMenu {
+            id: WidgetId::new("ctx"),
+            items: vec![
+                item("copy", "Copy"),
+                ContextMenuItem::default(),
+                item("paste", "Paste"),
+            ],
+            selected_idx: 1,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        };
+        ctl.open(m.clone(), Point::new(0.0, 0.0), &mut backend);
+        ctl.handle(&key_pressed(NamedKey::Down), &mut backend);
+        assert_eq!(
+            ctl.handle(&key_pressed(NamedKey::Enter), &mut backend),
+            ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(WidgetId::new("paste")))
+        );
+
+        ctl.open(m, Point::new(0.0, 0.0), &mut backend);
+        ctl.handle(&key_pressed(NamedKey::Up), &mut backend);
+        assert_eq!(
+            ctl.handle(&key_pressed(NamedKey::Enter), &mut backend),
+            ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(WidgetId::new("copy")))
+        );
+    }
+
+    fn key_pressed(key: NamedKey) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Named(key),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
     }
 
     #[test]

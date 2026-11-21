@@ -262,14 +262,17 @@ impl IconGrid {
         };
 
         // Keep `selected_idx`'s row inside the viewport before resolving
-        // `scroll_px`, via the same [`crate::behaviour::scroll::ensure_visible`]
-        // call `TreeController` uses for `TreeView`, baked into this layout
-        // call instead of left to a separate controller (see
+        // `scroll_px`, via the same `behaviour::scroll::ensure_visible` call
+        // `TreeController` uses for `TreeView`, baked into this layout call
+        // instead of left to a separate controller (see
         // `IconGridLayout::resolved_scroll_offset`'s own doc).
-        let scroll_offset_rows = self.scroll_offset.min(total_rows - 1);
         let selected = self.selected_idx.min(self.items.len() - 1);
         let selected_row = selected / columns;
-        let scroll_offset_rows = ensure_visible(scroll_offset_rows, viewport_rows, selected_row);
+        let scroll_offset_rows = ensure_visible(
+            self.scroll_offset.min(total_rows - 1),
+            viewport_rows,
+            selected_row,
+        );
 
         let stack = row_stack::layout_row_stack(
             scroll_offset_rows,

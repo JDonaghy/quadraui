@@ -220,10 +220,12 @@ impl ComboBox {
 
     /// Resolve which filtered-list index a buffered keystroke sequence
     /// should highlight, continuing the search from the current
-    /// [`ComboBox::highlighted`] position with wraparound — the same
-    /// case-insensitive matching convention [`ComboBox::filtered_indices`]
-    /// uses, driven by [`Typeahead`]'s debounced keystroke buffer instead
-    /// of the live `text` query. The host owns `typeahead` across
+    /// [`ComboBox::highlighted`] position with wraparound, driven by
+    /// [`Typeahead`]'s debounced keystroke buffer instead of the live
+    /// `text` query. Matching is case-insensitive like
+    /// [`ComboBox::filtered_indices`], but on an option's *prefix* (the
+    /// type-to-jump semantic) where `filtered_indices` matches a substring
+    /// (the filter-as-you-type semantic). The host owns `typeahead` across
     /// keystrokes the same way it owns every other piece of input-timing
     /// state this crate exposes, rather than `ComboBox` carrying it on
     /// the wire.
@@ -769,6 +771,33 @@ mod tests {
 
         c.highlighted = Some(0);
         // Up from 0 wraps to the last filtered index.
+        assert_eq!(
+            c.handle_key(&Key::Named(NamedKey::Up), &Modifiers::default()),
+            Some(ComboBoxEvent::HighlightChanged {
+                id: c.id.clone(),
+                index: 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_highlight_left_past_the_end_of_a_narrowed_filter_reseeds_at_an_end() {
+        let mut c = combo();
+        c.focused = true;
+        // A host that carried `highlighted` across a `TextChanged` which
+        // narrowed the filter can hold an index past the filtered list; the
+        // next move seeds at the end the direction implies rather than
+        // stepping from an index outside that list.
+        c.highlighted = Some(2);
+        c.text = "ap".into(); // filtered: [0, 1]
+
+        assert_eq!(
+            c.handle_key(&Key::Named(NamedKey::Down), &Modifiers::default()),
+            Some(ComboBoxEvent::HighlightChanged {
+                id: c.id.clone(),
+                index: 0
+            })
+        );
         assert_eq!(
             c.handle_key(&Key::Named(NamedKey::Up), &Modifiers::default()),
             Some(ComboBoxEvent::HighlightChanged {

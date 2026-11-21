@@ -19,7 +19,9 @@ use super::scroll::ensure_visible;
 /// [`KeyEvent`] becomes one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavKey {
+    /// Move one step backward.
     Up,
+    /// Move one step forward.
     Down,
     /// Move `n` steps backward. [`NavKey::from_key`] can't know a list's
     /// page size (that's the caller's viewport, not the keystroke), so it
@@ -30,7 +32,9 @@ pub enum NavKey {
     /// Move `n` steps forward — see [`NavKey::PageUp`]'s doc for the same
     /// placeholder-vs-real-page-size caveat.
     PageDown(usize),
+    /// Move to the first item.
     Home,
+    /// Move to the last item.
     End,
 }
 
@@ -66,6 +70,14 @@ impl NavKey {
 pub struct FlatNav;
 
 impl FlatNav {
+    /// Resolve `key` against a `len`-item list and return the index it
+    /// moves to, skipping every item `is_enabled` rejects.
+    ///
+    /// `Home`/`End` land on the first/last *enabled* item. A zero-magnitude
+    /// `PageUp(0)`/`PageDown(0)` moves one step, so a caller that hasn't
+    /// resolved its page size yet still makes progress rather than
+    /// no-opping. `None` means no item is enabled (including `len == 0`),
+    /// which callers typically fold back to their current index.
     pub fn mv(
         len: usize,
         current: Option<usize>,
@@ -99,11 +111,13 @@ impl FlatNav {
     fn step(pos: Option<usize>, delta: isize, last: isize, wrap: bool) -> isize {
         match pos {
             Some(p) => {
-                let target = p as isize + delta;
                 if wrap {
-                    target.rem_euclid(last + 1)
+                    // `crate::focus::cycle_index` is the crate's one
+                    // wrapping-index helper; reuse it rather than
+                    // re-deriving the same `rem_euclid` here.
+                    crate::focus::cycle_index(p, delta, last as usize + 1) as isize
                 } else {
-                    target.clamp(0, last)
+                    (p as isize + delta).clamp(0, last)
                 }
             }
             None if delta > 0 => 0,

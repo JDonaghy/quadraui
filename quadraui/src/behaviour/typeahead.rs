@@ -7,10 +7,12 @@
 //! 2 seconds later, "b" searches for "b", not "ab"). [`Typeahead::push`]
 //! resolves the current buffer against a caller-supplied `len`-item list
 //! (`items(i)` names item `i`'s text), searching forward from `from` with
-//! wraparound, case-insensitively — the same case-insensitive convention
+//! wraparound, case-insensitively — the same case-insensitivity
 //! [`crate::ComboBox::filtered_indices`] matches its own `text` query
 //! with, applied here to a debounced keystroke buffer instead of a live,
-//! continuously-edited query.
+//! continuously-edited query. The match itself is a *prefix* match, which
+//! is the type-to-jump semantic; `filtered_indices` matches a substring,
+//! which is the filter-as-you-type semantic.
 
 /// A debounced keystroke buffer for typeahead ("type to jump") navigation.
 /// Stateless aside from the buffer itself — the caller owns one `Typeahead`
@@ -28,6 +30,7 @@ pub struct Typeahead {
 const RESET_AFTER_MS: u64 = 500;
 
 impl Typeahead {
+    /// An empty buffer, as if no key had been typed yet.
     pub fn new() -> Self {
         Self::default()
     }
@@ -54,7 +57,7 @@ impl Typeahead {
         len: usize,
         from: usize,
     ) -> Option<usize> {
-        if self.buffer.is_empty() || now_ms.saturating_sub(self.last_ms) > RESET_AFTER_MS {
+        if now_ms.saturating_sub(self.last_ms) > RESET_AFTER_MS {
             self.buffer.clear();
         }
         for lower in ch.to_lowercase() {
