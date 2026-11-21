@@ -21,14 +21,12 @@
 //!
 //! # Scroll-to-follow and frozen panes
 //!
-//! [`Self::ensure_cursor_visible`] mirrors
-//! [`crate::compose::tree_nav::TreeNavCore::scroll_to_visible`]'s
-//! "if before the window, snap to top; if after, snap to bottom" rule,
-//! run independently on the row and column axis, and skipped entirely
-//! for a cursor inside the frozen rows/columns — those are always
-//! visible by construction, scrolled or not. The final clamp into
-//! `[0, max]` reuses [`scroll_by_clamped`] rather than hand-rolling the
-//! same arithmetic a third time.
+//! [`Self::ensure_cursor_visible`] calls
+//! [`crate::behaviour::scroll::ensure_visible`] independently on the row
+//! and column axis, skipped entirely for a cursor inside the frozen
+//! rows/columns — those are always visible by construction, scrolled or
+//! not. The final clamp into `[0, max]` reuses [`scroll_by_clamped`]
+//! rather than hand-rolling the same arithmetic a third time.
 //!
 //! # No shared key classifier
 //!
@@ -36,7 +34,7 @@
 //! closest existing "which navigation key is this" helper, but its shape
 //! doesn't fit a 2-D grid: it has no Left/Right (a tree spends those on
 //! expand/collapse, routed through
-//! [`crate::compose::tree_nav::TreeNavCore::horizontal_nav`] instead), no
+//! [`crate::behaviour::nav::TreeNavCore::horizontal_nav`] instead), no
 //! Tab/Shift+Tab, and no Ctrl-modified "jump to an edge" variant. This
 //! controller classifies its own keys in [`Self::handle_key`] instead of
 //! forcing tree-shaped navigation onto cells.
@@ -54,6 +52,7 @@
 use std::collections::BTreeMap;
 
 use crate::backend::{Backend, Clipboard};
+use crate::behaviour::scroll::ensure_visible;
 use crate::primitive::{LayoutCtx, Primitive};
 use crate::primitives::cell_grid::{
     Cell, CellEditState, CellGrid, CellGridHit, CellGridPrimitiveLayout,
@@ -541,22 +540,14 @@ impl CellGridController {
 
         if cr >= frozen_rows {
             let rank = cr - frozen_rows;
-            if rank < self.row_scroll {
-                self.row_scroll = rank;
-            } else if body_rows > 0 && rank >= self.row_scroll + body_rows {
-                self.row_scroll = rank + 1 - body_rows;
-            }
+            self.row_scroll = ensure_visible(self.row_scroll, body_rows, rank);
             let max_scroll = (self.row_count.saturating_sub(frozen_rows)).saturating_sub(body_rows);
             self.row_scroll = scroll_by_clamped(self.row_scroll, 0, max_scroll);
         }
 
         if cc >= frozen_cols {
             let rank = cc - frozen_cols;
-            if rank < self.col_scroll {
-                self.col_scroll = rank;
-            } else if body_cols > 0 && rank >= self.col_scroll + body_cols {
-                self.col_scroll = rank + 1 - body_cols;
-            }
+            self.col_scroll = ensure_visible(self.col_scroll, body_cols, rank);
             let max_scroll = (self.col_count.saturating_sub(frozen_cols)).saturating_sub(body_cols);
             self.col_scroll = scroll_by_clamped(self.col_scroll, 0, max_scroll);
         }

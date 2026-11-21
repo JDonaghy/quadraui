@@ -308,6 +308,7 @@
 //! id the cached cursor/scrub position resuming is the desired behaviour
 //! rather than a reset.
 
+use crate::behaviour::scroll::ensure_visible;
 use crate::compose::Handled;
 use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
@@ -665,14 +666,7 @@ impl FormController {
     }
 
     pub fn scroll_to_field(&mut self, field_idx: usize, viewport_rows: usize) {
-        if viewport_rows == 0 {
-            return;
-        }
-        if field_idx < self.scroll_offset {
-            self.scroll_offset = field_idx;
-        } else if field_idx >= self.scroll_offset + viewport_rows {
-            self.scroll_offset = field_idx.saturating_sub(viewport_rows.saturating_sub(1));
-        }
+        self.scroll_offset = ensure_visible(self.scroll_offset, viewport_rows, field_idx);
     }
 
     pub fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {

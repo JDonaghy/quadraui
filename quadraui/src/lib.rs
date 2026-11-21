@@ -488,6 +488,14 @@ pub mod interactive;
 pub mod frame_tree;
 pub mod widget_state;
 
+// ── Behaviour ─────────────────────────────────────────────────────────────
+// The single shared implementation of scroll-into-view, list/tree
+// navigation and typeahead every widget's `Interactive` impl builds from —
+// `behaviour::scroll`, `behaviour::nav`, `behaviour::typeahead`. Compiled
+// unconditionally, same rationale as `primitive`/`interactive` above: pure
+// arithmetic with no native dependency, so every backend gets it for free.
+pub mod behaviour;
+
 // Host-independent paint-geometry helpers — pure rect/inset
 // arithmetic pulled out from behind `src/macos/`'s whole-module
 // `target_os = "macos"` gate (mirrors `src/win/msg.rs`'s equivalent split

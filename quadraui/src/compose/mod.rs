@@ -12,13 +12,13 @@
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
 //! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
-//! - [`tree_nav`] — row-agnostic navigation/selection core (`TreeNavCore`)
-//!   [`TreeController`] is a thin layer over; reusable by any flattened row
-//!   source that implements `tree_nav::NavRow`.
-//! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar.
+//! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar,
+//!   over [`crate::behaviour::nav::TreeNavCore`]'s row-agnostic
+//!   navigation/selection core; reusable by any flattened row source that
+//!   implements [`crate::behaviour::nav::NavRow`].
 //! - [`TreeTableController`] — hierarchical model (lazy children,
 //!   sibling-scoped sort) flattened into a `TreeTable`, over the same
-//!   `tree_nav::TreeNavCore` [`TreeController`] uses.
+//!   `behaviour::nav::TreeNavCore` [`TreeController`] uses.
 //! - [`AppShell`] — ActivityBar + sidebar panel container composition.
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
 //! - [`FilePickerController`] — cross-backend file open/save modal.
@@ -104,7 +104,6 @@ pub mod tab_group;
 pub mod toast_stack;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
-pub mod tree_nav;
 pub mod tree_table_controller;
 pub mod workspace;
 
