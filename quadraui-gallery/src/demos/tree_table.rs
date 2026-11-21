@@ -355,6 +355,11 @@ mod tests {
 
 #[cfg(all(test, feature = "tui"))]
 mod tui_tests {
+    // Tests exercise the deprecated `Backend::tree_table_layout` directly
+    // alongside its `DrawsPrimitives::draw_primitive` replacement — this
+    // deprecation targets callers, not this file's own coverage of the
+    // method it deprecates.
+    #![allow(deprecated)]
     use super::*;
 
     #[test]

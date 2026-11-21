@@ -311,6 +311,7 @@ impl DataTableApp {
 
     /// Public so driver tests can locate real hit-test targets (e.g. a
     /// column divider) instead of hardcoding per-backend coordinates.
+    #[allow(deprecated)]
     pub fn table_layout(&self, backend: &dyn Backend) -> DataTableLayout {
         let vp = backend.viewport();
         let lh = backend.line_height();
@@ -368,6 +369,7 @@ impl Default for DataTableApp {
 impl AppLogic for DataTableApp {
     type AreaId = ();
 
+    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let lh = backend.line_height();

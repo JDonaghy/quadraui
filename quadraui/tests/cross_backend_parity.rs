@@ -627,6 +627,7 @@ trait ColumnUnitProbe {
 }
 
 impl ColumnUnitProbe for TuiDriver<DataTableApp> {
+    #[allow(deprecated)]
     fn probe_column_width(&self, table: &DataTable) -> f32 {
         // Same viewport the shared `DataTableDriverCtor` builds, in cells.
         self.backend()
@@ -641,6 +642,7 @@ impl ColumnUnitProbe for TuiDriver<DataTableApp> {
 }
 
 impl ColumnUnitProbe for GtkDriver<DataTableApp> {
+    #[allow(deprecated)]
     fn probe_column_width(&self, table: &DataTable) -> f32 {
         // Same viewport the shared `DataTableDriverCtor` builds, in pixels.
         self.backend()

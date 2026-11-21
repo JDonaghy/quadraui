@@ -128,6 +128,7 @@ impl Default for CodiconTreeDemo {
 impl AppLogic for CodiconTreeDemo {
     type AreaId = ();
 
+    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         backend.set_nerd_fonts(self.nerd_fonts_enabled);
 

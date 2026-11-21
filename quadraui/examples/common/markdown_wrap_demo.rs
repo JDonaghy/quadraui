@@ -89,6 +89,7 @@ impl Default for MarkdownWrapDemo {
 impl AppLogic for MarkdownWrapDemo {
     type AreaId = ();
 
+    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let theme = quadraui::Theme::default();
         let width = Self::content_cols(backend);

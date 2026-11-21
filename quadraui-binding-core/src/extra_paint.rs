@@ -1401,6 +1401,7 @@ impl ExtraPaint for DiffView {
 }
 
 impl ExtraPaint for TreeTable {
+    #[allow(deprecated)]
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_tree_table(area, self, None);
     }

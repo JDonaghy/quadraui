@@ -1426,6 +1426,7 @@ impl FfiRtApp {
     /// paint and hit-test. Returns `None` (meaning: fall back to forwarding
     /// the raw event) when there is no active list or the click landed on
     /// the title/empty area rather than an item row.
+    #[allow(deprecated)]
     fn handle_mouse_down(&mut self, backend: &dyn Backend, position: Point) -> Option<Reaction> {
         let id = self.active?;
         let handle = *self.handles.get(id as usize)?;
@@ -1495,6 +1496,7 @@ impl FfiRtApp {
 impl AppLogic for FfiRtApp {
     type AreaId = ();
 
+    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
         let rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);

@@ -792,9 +792,11 @@ impl ScreenLayout {
                 Surface::MultiSectionView { rect, view } => {
                     backend.draw_multi_section_view(*rect, view);
                 }
+                #[allow(deprecated)]
                 Surface::Tree { rect, tree } => {
                     backend.draw_tree(*rect, tree);
                 }
+                #[allow(deprecated)]
                 Surface::List { rect, list } => {
                     backend.draw_list(*rect, list);
                 }
@@ -840,6 +842,7 @@ impl ScreenLayout {
                 Surface::Toast { rect, stack } => {
                     backend.draw_toast_overlay(*rect, stack);
                 }
+                #[allow(deprecated)]
                 Surface::DataTable {
                     rect,
                     table,
@@ -1204,7 +1207,9 @@ impl OwnedContent {
             OwnedContent::Terminal(term) => backend.draw_terminal(rect, term),
             OwnedContent::TextDisplay(td) => backend.draw_text_display(rect, td),
             OwnedContent::MultiSectionView(view) => backend.draw_multi_section_view(rect, view),
+            #[allow(deprecated)]
             OwnedContent::Tree(tree) => backend.draw_tree(rect, tree),
+            #[allow(deprecated)]
             OwnedContent::List(list) => backend.draw_list(rect, list),
             OwnedContent::Form(form) => backend.draw_form(rect, form),
             OwnedContent::MenuBar(bar) => {
@@ -1218,6 +1223,7 @@ impl OwnedContent {
             OwnedContent::Toast(stack) => {
                 backend.draw_toast_overlay(rect, stack);
             }
+            #[allow(deprecated)]
             OwnedContent::DataTable(table) => {
                 backend.draw_data_table(rect, table, None);
             }

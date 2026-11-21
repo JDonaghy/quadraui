@@ -170,6 +170,7 @@ pub(crate) fn next_band(
 /// a chrome-bar extra (`Toolbar`'s buttons, `StatusBar`'s segments) paints
 /// with, keyed by that extra's own id — a binding with no such bookkeeping
 /// (or a test with no extras at all) passes `&|_| InteractionState::default()`.
+#[allow(deprecated)]
 pub fn draw_bands(
     backend: &mut dyn Backend,
     refs: RenderRefs<'_>,
@@ -315,6 +316,7 @@ pub fn draw_bands(
 /// WidgetId)>` return shape has no room for the resolved layout) so its
 /// chevron can be hit-tested precisely later without a live `Backend` —
 /// see [`PaintedHit::Extra::tree_table_hit`]'s own doc.
+#[allow(deprecated)]
 fn paint_extra(
     backend: &mut dyn Backend,
     extra: &Rc<dyn ExtraPaint>,
@@ -2051,6 +2053,7 @@ pub fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
 /// `visible_rows.len()` at the tree's ACTUAL offset, which can be shorter
 /// near the end of a long list. Paints into a scratch clone rather than
 /// `tree` itself, so computing this never disturbs the real paint below.
+#[allow(deprecated)]
 pub fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView) -> usize {
     let mut shadow = tree.clone();
     shadow.scroll_offset = 0;
@@ -2063,6 +2066,7 @@ pub fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView
 /// ACTUAL offset can be shorter near the end of a long list. Paints into
 /// no backend at all — only queries `Backend::list_layout` against a
 /// scratch clone — so computing this never disturbs the real paint.
+#[allow(deprecated)]
 pub fn list_viewport_rows(backend: &mut dyn Backend, rect: Rect, list: &ListView) -> usize {
     let mut shadow = list.clone();
     shadow.scroll_offset = 0;
@@ -2076,6 +2080,7 @@ pub fn list_viewport_rows(backend: &mut dyn Backend, rect: Rect, list: &ListView
 /// Paints into no backend at all — only queries `Backend::data_table_layout`
 /// against a scratch clone — so computing this never disturbs the real
 /// paint.
+#[allow(deprecated)]
 pub fn data_table_viewport_rows(backend: &mut dyn Backend, rect: Rect, table: &DataTable) -> usize {
     let mut shadow = table.clone();
     shadow.scroll_offset = 0;
@@ -2840,6 +2845,7 @@ pub fn paint_leaf_windowed(
             let painted_list = painted.as_ref();
             let state = quadraui::ListPaintState::default().with_scroll_px(scroll_px);
             backend.draw_list_with_state(area, painted_list, &state, false);
+            #[allow(deprecated)]
             let mut layout = backend.list_layout(area, painted_list);
             let viewport_rows = list_viewport_rows(backend, area, painted_list);
             // The collection's own numbers, not the painted band's — see
@@ -2889,6 +2895,7 @@ pub fn paint_leaf_windowed(
                         scroll_offset: windowed.scroll_offset,
                     }),
                 );
+            #[allow(deprecated)]
             let mut layout = backend.tree_layout(content_rect, painted_tree);
             if let Some(windowed) = windowed {
                 shift_tree_layout(&mut layout, windowed.band.start);

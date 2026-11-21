@@ -140,6 +140,7 @@ impl Default for HitMapRecoverDemo {
 impl AppLogic for HitMapRecoverDemo {
     type AreaId = ();
 
+    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let (tab_rect, list_rect, status_rect) = self.rects(backend);
         let tab_bar = self.tab_bar();

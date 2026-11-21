@@ -90,6 +90,7 @@ fn grouped_rows() -> Vec<TreeRow> {
 struct TreeBody(TreeView);
 
 impl BackendWidget for TreeBody {
+    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, rect: Rect) {
         backend.draw_tree(rect, &self.0);
     }

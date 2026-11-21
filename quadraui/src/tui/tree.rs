@@ -1386,6 +1386,7 @@ mod multi_select_driver_tests {
     impl AppLogic for TreeApp {
         type AreaId = ();
 
+        #[allow(deprecated)]
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             backend.draw_tree(
                 Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),

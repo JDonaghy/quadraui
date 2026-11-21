@@ -803,6 +803,7 @@ impl TreeController {
 
         if tree_rect.contains(Point::new(x, y)) {
             let tree = self.build_tree_view(tree_rect);
+            #[allow(deprecated)]
             let layout = backend.tree_layout(tree_rect, &tree);
             match layout.hit_test(x - tree_rect.x, y - tree_rect.y) {
                 TreeViewHit::Row(idx) => {
@@ -834,6 +835,7 @@ impl TreeController {
             return TreeControllerEvent::Ignored;
         }
         let tree = self.build_tree_view(tree_rect);
+        #[allow(deprecated)]
         let layout = backend.tree_layout(tree_rect, &tree);
         match layout.hit_test(x - tree_rect.x, y - tree_rect.y) {
             TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
@@ -870,6 +872,7 @@ impl TreeController {
             return TreeControllerEvent::Ignored;
         }
         let tree = self.build_tree_view(tree_rect);
+        #[allow(deprecated)]
         let layout = backend.tree_layout(tree_rect, &tree);
         match layout.hit_test(position.x - tree_rect.x, position.y - tree_rect.y) {
             TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
@@ -951,6 +954,7 @@ impl TreeController {
         let tree = self.build_tree_view(rect);
         let mut shadow = tree;
         shadow.scroll_offset = 0;
+        #[allow(deprecated)]
         let layout = backend.tree_layout(rect, &shadow);
         layout.visible_rows.len()
     }

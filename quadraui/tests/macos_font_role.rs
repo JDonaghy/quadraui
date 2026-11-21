@@ -307,6 +307,7 @@ fn draw_diff_view_paints_in_editor_font() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn draw_data_table_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_data_table", |b, area| {
         let table = DataTable {
