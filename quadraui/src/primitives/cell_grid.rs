@@ -1378,11 +1378,11 @@ pub(crate) mod native_surface_paint {
 ///
 /// Unlike [`crate::DataTable`]/[`crate::ListView`]/[`crate::IconGrid`]'s
 /// own `Primitive::Layout` types, not feature-gated: `CellGrid` has no
-/// bespoke `Backend::draw_cell_grid` method, so [`crate::frame::Surface::CellGrid`]
-/// paints exclusively through [`crate::backend::DrawsPrimitives::draw_primitive`],
-/// which `ScreenLayout::draw` calls unconditionally — gating this type
-/// behind a backend feature would make `frame.rs` fail to compile in a
-/// zero-backend build.
+/// bespoke `Backend::draw_cell_grid` method, so it paints through
+/// [`crate::frame::Surface::Widget`] via
+/// [`crate::backend::DrawsPrimitives::draw_dyn`], which `ScreenLayout::draw`
+/// calls unconditionally — gating this type behind a backend feature would
+/// make `frame.rs` fail to compile in a zero-backend build.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct CellGridPrimitiveLayout {
@@ -1408,11 +1408,10 @@ impl crate::primitive::Primitive for CellGrid {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::CellGrid`] —
-    /// the same variant [`crate::frame::capture_surface`] produced when
-    /// `CellGrid` had its own `Surface::CellGrid` variant, now reached
-    /// via [`crate::primitive::DynWidget::capture`] through
-    /// `Surface::Widget` instead.
+    /// Round-trips through [`crate::frame::OwnedContent::CellGrid`], the
+    /// variant [`crate::frame::capture_surface`] produces for a
+    /// `CellGrid` reached through [`crate::frame::Surface::Widget`] via
+    /// [`crate::primitive::DynWidget::capture`].
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::CellGrid(self.clone())
     }

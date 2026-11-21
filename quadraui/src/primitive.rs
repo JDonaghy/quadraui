@@ -441,8 +441,8 @@ pub struct PaintServices<'a> {
 /// [`crate::backend::DrawsPrimitives::draw_dyn`] builds one of these per
 /// call; [`crate::backend::DrawsPrimitives::draw_primitive`]'s
 /// [`Primitive::paint`] path still takes `theme`/`style` as loose
-/// parameters instead, since widening that signature to accept a
-/// `PaintEnv` is a future widget re-port, not this change.
+/// parameters instead — widening that signature to accept a `PaintEnv`
+/// is scoped to a widget's own re-port onto this trait.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct PaintEnv<'a> {
@@ -461,12 +461,12 @@ pub struct PaintEnv<'a> {
 /// `ListPaintState`/`TreePaintState`/`DataTablePaintState` aliases)
 /// already repeats structurally.
 ///
-/// Not required by [`Primitive::paint`] today (adopting it crate-wide is
-/// a future widget re-port, not this change) — defined now so that
-/// re-port has a named trait to implement against instead of inventing
-/// one per widget again. Every method defaults to "no such state", so
-/// implementing this trait for a type that doesn't track one of these
-/// concepts costs nothing.
+/// Not required by [`Primitive::paint`] today — adopting it crate-wide is
+/// scoped to each widget's own re-port onto this trait, which then has a
+/// named trait to implement against instead of inventing one per widget
+/// again. Every method defaults to "no such state", so implementing this
+/// trait for a type that doesn't track one of these concepts costs
+/// nothing.
 pub trait PaintState {
     /// Index of the row currently hovered, if any.
     fn hovered_idx(&self) -> Option<usize> {

@@ -1144,21 +1144,24 @@ impl ScreenLayout {
     /// [`Self::tab_stops`]'s [`Surface::Widget`] arm: every other
     /// `Surface` variant above contributes at most one stop, hard-coded
     /// per variant, but a [`Surface::Widget`] consults [`DynWidget::focus`]
-    /// instead — `FocusSpec::None` contributes none, `FocusSpec::Stop`
-    /// contributes one (the whole widget's `rect`), and
-    /// `FocusSpec::Children` contributes one per declared child, each
-    /// still addressed by the widget's own id since [`DynWidget::focus`]'s
-    /// per-child [`crate::interactive::FocusStop`] carries no rect of its
-    /// own for a host built purely off `Surface` to resolve.
+    /// instead — `FocusSpec::None` contributes none, and both
+    /// `FocusSpec::Stop` and `FocusSpec::Children` contribute exactly one
+    /// (the whole widget's `rect`, addressed by the widget's own id).
+    /// `(WidgetId, Rect)`'s shape has no field for a per-child sub-target,
+    /// so `FocusSpec::Children` cannot yet contribute one stop per declared
+    /// child without emitting indistinguishable duplicate entries that trap
+    /// [`crate::focus::FocusManager::step`] on the first child forever;
+    /// collapsing to a single stop keeps Tab/Shift+Tab able to leave the
+    /// widget until `tab_stops`'s return type can carry
+    /// [`crate::interactive::FocusStop::sub`].
     fn widget_tab_stops(rect: Rect, widget: &dyn DynWidget) -> Vec<(WidgetId, Rect)> {
         let Some(&id) = widget.id() else {
             return Vec::new();
         };
         match widget.focus() {
             crate::interactive::FocusSpec::None => Vec::new(),
-            crate::interactive::FocusSpec::Stop => vec![(id, rect)],
-            crate::interactive::FocusSpec::Children(children) => {
-                children.iter().map(|_| (id, rect)).collect()
+            crate::interactive::FocusSpec::Stop | crate::interactive::FocusSpec::Children(_) => {
+                vec![(id, rect)]
             }
         }
     }
@@ -2654,9 +2657,9 @@ mod tests {
     /// doc promises.
     ///
     /// `tab_stops()` reports none for it: `CellGrid` is
-    /// `crate::non_interactive!`-tagged (no real `Interactive` behaviour
-    /// ported yet — see that macro's call site in `cell_grid.rs`), so
-    /// its `DynWidget::focus()` answers `FocusSpec::None` by that macro's
+    /// `crate::non_interactive!`-tagged (see that macro's call site in
+    /// `cell_grid.rs`), so its `DynWidget::focus()` answers
+    /// `FocusSpec::None` by that macro's
     /// own default, same as every other `non_interactive!` widget. This
     /// is the correct, focus()-driven answer for `Surface::Widget` —
     /// unlike every hard-coded `Surface` variant above (which contribute
@@ -2875,7 +2878,10 @@ mod tests {
             col_labels: Default::default(),
             cursor: (0, 0),
             selection_anchor: None,
-            cells: vec![vec![Cell::plain("hi")]],
+            cells: vec![
+                vec![Cell::plain("hi"), Cell::plain("there")],
+                vec![Cell::plain("a"), Cell::plain("b")],
+            ],
             loaded_row_start: 0,
             loaded_col_start: 0,
             has_focus: true,
@@ -2933,6 +2939,127 @@ mod tests {
             .downcast_ref::<BadgeLayout>()
             .expect("Badge's own layout downcasts back to BadgeLayout");
         assert_eq!(badge_layout.area, badge_rect);
+    }
+
+    /// A widget whose [`Interactive::focus`] answers [`FocusSpec::Children`]
+    /// with more than one declared child — standing in for the
+    /// `DataTable`/`TreeTable` ports [`FocusSpec::Children`] exists for.
+    #[derive(Debug, Clone)]
+    struct MultiCellWidget {
+        id: WidgetId,
+    }
+
+    impl crate::a11y::A11yPrimitive for MultiCellWidget {
+        fn a11y_info(&self) -> crate::a11y::A11yInfo {
+            crate::a11y::A11yInfo::default()
+        }
+    }
+
+    impl crate::primitive::Primitive for MultiCellWidget {
+        type Layout = BadgeLayout;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+            BadgeLayout { area: rect }
+        }
+
+        fn paint(
+            &self,
+            _layout: &Self::Layout,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _theme: &crate::theme::Theme,
+            _style: &crate::style::Style,
+        ) {
+        }
+    }
+
+    impl crate::interactive::Interactive for MultiCellWidget {
+        type State = ();
+        type Action = crate::interactive::Never;
+
+        fn focus(&self) -> crate::interactive::FocusSpec {
+            crate::interactive::FocusSpec::Children(vec![
+                crate::interactive::FocusStop {
+                    sub: crate::interactive::SubTarget(0),
+                },
+                crate::interactive::FocusStop {
+                    sub: crate::interactive::SubTarget(1),
+                },
+                crate::interactive::FocusStop {
+                    sub: crate::interactive::SubTarget(2),
+                },
+            ])
+        }
+
+        fn handle(
+            &self,
+            _state: &mut Self::State,
+            _event: &crate::interactive::RoutedEvent,
+            _layout: &Self::Layout,
+            _cx: &mut crate::interactive::EventCx,
+        ) -> crate::Handled<Self::Action> {
+            crate::Handled::Ignored
+        }
+    }
+
+    /// [`ScreenLayout::widget_tab_stops`]'s [`FocusSpec::Children`] arm must
+    /// contribute exactly one `(WidgetId, Rect)` entry regardless of how
+    /// many children the widget declares: `tab_stops()`'s tuple shape has
+    /// nowhere to carry a per-child [`crate::interactive::FocusStop::sub`],
+    /// so one entry per child would be a run of byte-identical duplicates.
+    /// [`crate::focus::FocusManager::step`] resolves `tab_order.position()`
+    /// to the *first* matching entry and compares the *next* slot against
+    /// the currently focused id — with duplicates, that next slot is the
+    /// same id, so `set_focus` sees no change and Tab/Shift+Tab can never
+    /// leave the widget. A single stop keeps the widget reachable and
+    /// leavable by keyboard until a richer return shape exists.
+    #[test]
+    fn widget_tab_stops_collapses_focus_spec_children_to_one_stop() {
+        let widget = MultiCellWidget {
+            id: WidgetId::new("multicell:1"),
+        };
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+
+        let stops = ScreenLayout::widget_tab_stops(rect, &widget);
+        assert_eq!(
+            stops,
+            vec![(widget.id, rect)],
+            "FocusSpec::Children must collapse to exactly one tab stop, not one per child"
+        );
+
+        // Exercised end-to-end through a real `ScreenLayout` too: pushing
+        // the widget and reading `tab_stops()` must still show only one
+        // stop, and `FocusManager` must therefore be able to step off it.
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(widget.clone()),
+        });
+        let other_id = WidgetId::new("other:1");
+        layout.push(Surface::Widget {
+            rect: Rect::new(0.0, 11.0, 10.0, 1.0),
+            widget: Box::new(Badge { id: other_id }),
+        });
+
+        let all_stops = layout.tab_stops();
+        assert_eq!(
+            all_stops.iter().filter(|(id, _)| *id == widget.id).count(),
+            1,
+            "a Children-focus widget must appear exactly once in tab_stops()"
+        );
+
+        let mut focus = crate::focus::FocusManager::new();
+        focus.sync_tab_order(&all_stops);
+        focus.set_focus(Some(widget.id));
+        assert!(
+            focus.focus_next(),
+            "Tab must be able to leave a FocusSpec::Children widget"
+        );
+        assert_eq!(focus.focused(), Some(&other_id));
     }
 
     /// `FrameHitMap` is serializable: round-trips through JSON
