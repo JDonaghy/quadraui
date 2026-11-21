@@ -2054,10 +2054,11 @@ impl crate::primitive::Primitive for TreeView {
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         // Same TUI-vs-pixel-backend discriminator `ListView`'s own
         // `Primitive::layout` uses — see that impl's doc for why
-        // `ctx.line_height` is reliable even when both features are
-        // compiled into the same binary.
+        // `ctx.units()` (TUI's whole-cell `line_height` convention vs. a
+        // real pixel font metric) is reliable even when both features
+        // are compiled into the same binary.
         #[cfg(feature = "tui")]
-        if ctx.line_height <= 1.0 {
+        if ctx.units() == crate::primitive::Units::Cells {
             let area = crate::tui::backend::q_rect_to_ratatui(rect);
             let layout = crate::tui::tui_tree_layout(self, area);
             return TreeViewPrimitiveLayout {
@@ -2100,6 +2101,18 @@ impl crate::primitive::Primitive for TreeView {
             all(feature = "macos", target_os = "macos")
         ))]
         {
+            // No live hover/press tracking reaches `Primitive::paint`
+            // (its signature carries only `Self::Layout`, `PaintSurface`,
+            // `Theme` and `Style` — see `crate::primitive::PaintState`'s
+            // own doc for why that's a future widget-contract step, not
+            // this one), so this paints the same "nothing hovered/pressed"
+            // state a bare `TreePaintState::default()` always reports.
+            // Reading it through the `PaintState` trait rather than
+            // inline `None`/`None` literals is what lets a future
+            // `Primitive::paint` revision thread a real, backend-tracked
+            // `TreePaintState` through this exact call site unchanged.
+            use crate::primitive::PaintState;
+            let paint_state = TreePaintState::default();
             native_surface_paint::paint(
                 self,
                 layout.area,
@@ -2109,8 +2122,8 @@ impl crate::primitive::Primitive for TreeView {
                 surface,
                 theme,
                 style,
-                /* hovered_idx */ None,
-                /* pressed_idx */ None,
+                paint_state.hovered_idx(),
+                paint_state.pressed_idx(),
                 /* focus_ring_visible */ false,
             );
         }

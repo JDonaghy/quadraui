@@ -209,6 +209,21 @@ impl LayoutCtx {
             units,
         }
     }
+
+    /// Which [`Units`] this ctx's metrics are expressed in, derived from
+    /// [`Self::line_height`] — `<= 1.0` is TUI's whole-cell convention
+    /// ([`Units::Cells`]), anything taller is a real pixel font metric
+    /// ([`Units::Pixels`]). The same runtime discriminator every
+    /// `Primitive::layout` impl's TUI-vs-pixel-backend branch already
+    /// checks by hand (`ctx.line_height <= 1.0`); this names it instead
+    /// of repeating the bare float comparison at each call site.
+    pub fn units(&self) -> Units {
+        if self.line_height <= 1.0 {
+            Units::Cells
+        } else {
+            Units::Pixels
+        }
+    }
 }
 
 /// Which unit system a measurement is expressed in — sub-pixel-precise
@@ -517,6 +532,26 @@ mod tests {
     fn resolve_row_height_passes_through_the_tui_cell_convention() {
         let style = Style::default().with_row_height(22.0);
         assert_eq!(LayoutCtx::resolve_row_height(1.0, &style), 1.0);
+    }
+
+    /// [`LayoutCtx::units`] reports [`Units::Cells`] for TUI's whole-cell
+    /// `line_height` convention and [`Units::Pixels`] for a real pixel
+    /// font metric, matching [`Units::Pixels`]/[`Units::Cells`]'s own
+    /// doc.
+    #[test]
+    fn layout_ctx_units_discriminates_cells_from_pixels() {
+        let cells = LayoutCtx {
+            line_height: 1.0,
+            char_width: 1.0,
+            nerd_fonts_enabled: false,
+        };
+        let pixels = LayoutCtx {
+            line_height: 22.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: false,
+        };
+        assert_eq!(cells.units(), Units::Cells);
+        assert_eq!(pixels.units(), Units::Pixels);
     }
 
     /// [`LayoutCtx::measure`] bundles the ctx's own metrics plus the

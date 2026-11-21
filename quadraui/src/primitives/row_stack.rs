@@ -266,6 +266,33 @@ impl RowPaintState {
     }
 }
 
+/// [`RowPaintState`] already carries exactly the four concepts
+/// [`crate::primitive::PaintState`] names, so this impl is a direct
+/// field read-through — no primitive-specific logic lives here. Shared
+/// by every alias of this type
+/// ([`crate::primitives::list::ListPaintState`],
+/// [`crate::primitives::tree::TreePaintState`],
+/// [`crate::primitives::data_table::DataTablePaintState`]), so a caller
+/// that only knows it has "a `Primitive`'s paint state" can reach these
+/// through the trait instead of needing the concrete alias name.
+impl crate::primitive::PaintState for RowPaintState {
+    fn hovered_idx(&self) -> Option<usize> {
+        self.hovered_idx
+    }
+
+    fn pressed_idx(&self) -> Option<usize> {
+        self.pressed_idx
+    }
+
+    fn scroll_px(&self) -> Option<f32> {
+        self.scroll_px
+    }
+
+    fn striped(&self) -> bool {
+        self.striped
+    }
+}
+
 // ── Shared icon + detail row-content painting ───────────────────────────
 //
 // `ListView::native_surface_paint` and `Palette::native_surface_paint`
@@ -1209,5 +1236,24 @@ mod tests {
         assert_eq!(state.hovered_idx, Some(1));
         assert_eq!(state.pressed_idx, Some(2));
         assert_eq!(state.scroll_px, Some(3.0));
+    }
+
+    /// [`crate::primitive::PaintState`]'s accessor methods read straight
+    /// through to [`RowPaintState`]'s own fields — no transformation,
+    /// so every alias (`ListPaintState`/`TreePaintState`/
+    /// `DataTablePaintState`) gets the trait's contract for free.
+    #[test]
+    fn row_paint_state_implements_the_paint_state_trait() {
+        use crate::primitive::PaintState;
+
+        let state = RowPaintState::default()
+            .with_hovered_idx(Some(4))
+            .with_pressed_idx(Some(5))
+            .with_scroll_px(Some(6.0))
+            .with_striped(true);
+        assert_eq!(PaintState::hovered_idx(&state), Some(4));
+        assert_eq!(PaintState::pressed_idx(&state), Some(5));
+        assert_eq!(PaintState::scroll_px(&state), Some(6.0));
+        assert!(PaintState::striped(&state));
     }
 }
