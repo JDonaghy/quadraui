@@ -36,7 +36,11 @@
 //! dropdown — the host sets `open = true` alongside updating `text`.
 //! `Up`/`Down` move [`ComboBox::highlighted`] through the *filtered*
 //! list with wraparound, mirroring [`crate::RadioGroup`]'s cursor
-//! movement.
+//! movement, via [`crate::behaviour::nav::FlatNav`].
+//! [`ComboBox::typeahead_highlight`] offers a second, debounced way to
+//! reach the same `highlighted` field — a buffered keystroke sequence via
+//! [`crate::behaviour::typeahead::Typeahead`] — for a host that wants
+//! type-to-jump instead of (or alongside) the live `text` filter.
 //!
 //! # Focus and activation
 //!
@@ -47,6 +51,8 @@
 //! [`crate::Switch::click`]'s "a pointer click doesn't require prior
 //! keyboard focus" contract.
 
+use crate::behaviour::nav::{FlatNav, NavKey};
+use crate::behaviour::typeahead::Typeahead;
 use crate::event::{Key, NamedKey, Point, Rect};
 use crate::primitives::completions::{
     CompletionItem, CompletionItemMeasure, CompletionKind, Completions, CompletionsHit,
@@ -203,18 +209,42 @@ impl ComboBox {
     /// list with wraparound, mirroring
     /// [`crate::RadioGroup`]'s cursor movement: `None` seeds at index 0
     /// moving forward or the last index moving backward, so the first
-    /// step lands correctly.
+    /// step lands correctly. Delegates to [`FlatNav`] for the
+    /// clamped/wrapping index arithmetic — `delta` is always `±1` here
+    /// (`Up`/`Down`), so it maps straight onto [`NavKey::Up`]/[`NavKey::Down`].
     fn move_highlight(&self, delta: isize) -> Option<usize> {
         let len = self.filtered_indices().len();
-        if len == 0 {
+        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        FlatNav::mv(len, self.highlighted, key, true, |_| true)
+    }
+
+    /// Resolve which filtered-list index a buffered keystroke sequence
+    /// should highlight, continuing the search from the current
+    /// [`ComboBox::highlighted`] position with wraparound — the same
+    /// case-insensitive matching convention [`ComboBox::filtered_indices`]
+    /// uses, driven by [`Typeahead`]'s debounced keystroke buffer instead
+    /// of the live `text` query. The host owns `typeahead` across
+    /// keystrokes the same way it owns every other piece of input-timing
+    /// state this crate exposes, rather than `ComboBox` carrying it on
+    /// the wire.
+    pub fn typeahead_highlight(
+        &self,
+        typeahead: &mut Typeahead,
+        ch: char,
+        now_ms: u64,
+    ) -> Option<usize> {
+        let filtered = self.filtered_indices();
+        if filtered.is_empty() {
             return None;
         }
-        let next = match self.highlighted {
-            None if delta > 0 => 0,
-            None => len - 1,
-            Some(i) => (i as isize + delta).rem_euclid(len as isize) as usize,
-        };
-        Some(next)
+        let from = self.highlighted.unwrap_or(0).min(filtered.len() - 1);
+        typeahead.push(
+            ch,
+            now_ms,
+            |i| self.options[filtered[i]].as_str(),
+            filtered.len(),
+            from,
+        )
     }
 
     /// `Up`/`Down` move the highlighted dropdown cursor; `Enter`
@@ -641,6 +671,28 @@ mod tests {
 
         c.text = "zzz".into();
         assert_eq!(c.filtered_indices(), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn typeahead_highlight_jumps_to_the_matching_option() {
+        let c = combo();
+        let mut typeahead = Typeahead::new();
+        // "Apple" (0), "Apricot" (1), "Banana" (2) — typing "b" jumps to
+        // "Banana".
+        assert_eq!(c.typeahead_highlight(&mut typeahead, 'b', 0), Some(2));
+    }
+
+    #[test]
+    fn typeahead_highlight_accumulates_and_resets_like_combo_box_matching() {
+        let mut c = combo();
+        let mut typeahead = Typeahead::new();
+        assert_eq!(c.typeahead_highlight(&mut typeahead, 'a', 0), Some(0));
+        c.highlighted = Some(0);
+        // "ap" still matches "Apple" before "Apricot".
+        assert_eq!(c.typeahead_highlight(&mut typeahead, 'p', 100), Some(0));
+        c.highlighted = Some(0);
+        // "apr" skips "Apple", matches "Apricot".
+        assert_eq!(c.typeahead_highlight(&mut typeahead, 'r', 200), Some(1));
     }
 
     #[test]

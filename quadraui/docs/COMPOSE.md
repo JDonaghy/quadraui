@@ -837,7 +837,7 @@ module in `tree_controller.rs` is the direct-use reference.
 
 ---
 
-## `TreeNavCore` — `src/compose/tree_nav.rs`
+## `TreeNavCore` — `src/behaviour/nav.rs`
 
 **Owns:** the row-type-agnostic half of tree navigation — selection by
 `TreePath`, Up/Down/PageUp/PageDown/Home/End movement, the Left/Right
@@ -869,7 +869,7 @@ let first_visible = nav.scroll_offset();
 **Example:** no standalone demo — it is reached through
 `TreeController`, which every tree example drives via `SidebarSystem`
 (`examples/msv_multi_tree.rs`). Its own `#[cfg(test)]` module in
-`tree_nav.rs` is the direct-use reference.
+`behaviour/nav.rs` is the direct-use reference.
 
 ---
 

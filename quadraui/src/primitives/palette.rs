@@ -30,6 +30,7 @@
 //! backend, the very first check should be "is a palette / dialog
 //! open? If yes, route here instead."
 
+use crate::behaviour::scroll::ensure_visible;
 use crate::event::Rect;
 use crate::primitives::row_stack;
 use crate::primitives::scrollbar::fit_thumb;
@@ -339,18 +340,11 @@ impl Palette {
     /// internally so every backend gets it for free; backends can also
     /// call it directly with their own `visible_rows`.
     pub fn resolved_scroll_offset(&self, visible_rows: usize) -> usize {
-        let total = self.items.len();
-        let max_offset = total.saturating_sub(visible_rows);
-        let effective = if visible_rows == 0 {
-            0
-        } else if self.selected_idx < self.scroll_offset {
-            self.selected_idx
-        } else if self.selected_idx >= self.scroll_offset + visible_rows {
-            self.selected_idx + 1 - visible_rows
-        } else {
-            self.scroll_offset
-        };
-        effective.min(max_offset)
+        if visible_rows == 0 {
+            return 0;
+        }
+        let max_offset = self.items.len().saturating_sub(visible_rows);
+        ensure_visible(self.scroll_offset, visible_rows, self.selected_idx).min(max_offset)
     }
 
     /// Compute the full rendering + hit-test layout.
