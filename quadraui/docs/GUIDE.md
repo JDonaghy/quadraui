@@ -64,7 +64,7 @@ cargo new two-pane && cd two-pane
 ```toml
 # Cargo.toml
 [dependencies]
-quadraui = { version = "0.1", features = ["tui"] }
+quadraui = { version = "0.11", features = ["tui"] }
 ```
 
 [`INSTALL.md`](INSTALL.md) lists every backend feature and the system

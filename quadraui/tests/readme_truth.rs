@@ -148,6 +148,14 @@ fn canvas_rs() -> String {
     read(crate_root().join("src/primitives/canvas.rs"))
 }
 
+fn guide_md() -> String {
+    read(crate_root().join("docs/GUIDE.md"))
+}
+
+fn install_md() -> String {
+    read(crate_root().join("docs/INSTALL.md"))
+}
+
 /// Number of primitive modules declared in `src/primitives/mod.rs`. This is
 /// the crate's own definition of "how many primitives exist" — the same
 /// thing a `pub mod` grep would show a human, just automated so the docs
@@ -259,6 +267,55 @@ fn readme_leads_with_a_resolvable_published_version() {
          features = [...] }}` dependency snippet, not a git-rev pin.",
         env!("CARGO_PKG_VERSION")
     );
+}
+
+#[test]
+fn guide_leads_with_a_resolvable_published_version() {
+    // GUIDE.md's "Step 1: project setup" Cargo.toml snippet is a reader's
+    // first `cargo add`-able dependency line — same shape as the root
+    // README's Getting started snippet, same drift risk (#2806 found it
+    // still said `version = "0.1"` against a 0.11.0 crate).
+    let want = major_minor();
+    let guide = guide_md();
+    let needle = format!("quadraui = {{ version = \"{want}\"");
+    assert!(
+        guide.contains(&needle),
+        "quadraui/docs/GUIDE.md's Step 1 Cargo.toml snippet doesn't contain \
+         \"{needle}\" (derived from CARGO_PKG_VERSION = {}). Update the \
+         snippet to the real minor version.",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+#[test]
+fn install_leads_with_a_resolvable_published_version() {
+    // INSTALL.md's "Add the dependency" section has several
+    // `quadraui = { version = "...", features = [...] }` snippets (the bare
+    // example plus one per target-cfg block). Every one of them must name
+    // the real resolvable minor version, not a stale one a reader's
+    // `cargo build` cannot resolve against this crate's actual history.
+    let want = major_minor();
+    let install = install_md();
+    let needle = format!("version = \"{want}\"");
+    assert!(
+        install.contains(&needle),
+        "quadraui/docs/INSTALL.md doesn't contain \"{needle}\" anywhere \
+         (derived from CARGO_PKG_VERSION = {}). Update its dependency \
+         snippets to the real minor version.",
+        env!("CARGO_PKG_VERSION")
+    );
+    let stale_needle = "version = \"0.1\"";
+    if want != "0.1" {
+        assert!(
+            !install.contains(stale_needle),
+            "quadraui/docs/INSTALL.md still contains a literal \
+             \"{stale_needle}\" dependency snippet, but CARGO_PKG_VERSION = \
+             {} resolves to minor version \"{want}\" — this is the exact \
+             drift #2806 fixed (six snippets still said `version = \"0.1\"` \
+             against a 0.11.0 crate). Update every snippet to \"{want}\".",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
 }
 
 // ── Consumer pin shape ─────────────────────────────────────────────────

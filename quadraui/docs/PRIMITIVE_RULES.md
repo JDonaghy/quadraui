@@ -41,21 +41,28 @@ Read this when adding or changing a primitive.
    instead of computed from scroll_offset"). Verify empirically by
    mutating the formula and observing the test fail. See *Coverage
    taxonomy* under *Testing* for the full bug-class breakdown.
-7. **Add the primitive to the `Backend` trait.** Every primitive MUST
-   have a `Backend::draw_<name>` (and where applicable, `Backend::<name>_layout`)
-   method. Per `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` section 4, adding a primitive is
-   an intentional breaking change to the trait — every backend
-   implementer sees the new method as a compile error and fills in
-   their rasteriser. **No primitive ships with TUI/GTK free-function
-   rasterisers but no trait coverage.** That's how the
-   *Cross-backend portability commitment* stays load-bearing —
-   if a primitive isn't on the trait, downstream consumer code has to
-   pick a backend explicitly. **If the new primitive is composed into
-   top-level screens (most are), add its `Surface`/`FrameZone` variant
-   in the same PR** — see "One primitive, one canonical paint path"
-   below (issue #456).
+7. **Draw it through `Primitive`, not a new `Backend` method.** A new
+   widget implements `quadraui::primitive::Primitive` (+ `A11yPrimitive`)
+   and reaches every backend through
+   `quadraui::backend::DrawsPrimitives::draw_primitive` — see
+   `quadraui/src/primitive.rs`'s module doc and
+   `quadraui/tests/primitive_public_api.rs` for a worked third-party
+   example. `Backend` is sealed, and `tests/backend_method_ratchet.rs`
+   freezes its trait-body method count at a baseline that may only
+   shrink (quadraui#2608): a PR that adds a `Backend::draw_<name>` /
+   `<name>_layout` pair for a *new* widget fails that test and is a
+   review reject — implement `Primitive` instead. The pre-#2608
+   `ListView`/`DataTable`/`TreeView`/`TreeTable` bespoke `Backend`
+   pairs are grandfathered (they predate the ratchet and every
+   existing caller already goes through them); that grandfathering is
+   not an invitation to add a fifth. See "Adding a widget" below for
+   the full checklist a new widget ships with.
 
-   **Which `<name>_layout` shape to pick (issue #506):**
+   **Which `<name>_layout` shape to pick (issue #506) — for the
+   grandfathered primitives above, which still carry bespoke `Backend`
+   pairs; a new `Primitive` impl has no `Backend::<name>_layout` to
+   choose a shape for, since `Primitive::layout` already is that
+   method:**
 
    | Primitive class | Convention | Examples |
    |---|---|---|
@@ -100,6 +107,42 @@ Read this when adding or changing a primitive.
    a driver test proving it.** See rule 9 in full below — it is the rule
    the Electron-parity push (`GOAL.md`) will lean on hardest, since that
    is where most of the new capabilities land.
+
+## Adding a widget — the short checklist
+
+Rule 7 above is the "why" and the one hard constraint (no new `Backend`
+method). This is the "what ships in the PR", in order:
+
+1. **`Primitive` impl.** `layout()` resolves every geometry decision up
+   front into a `Self::Layout` that bakes in the absolute area, per
+   rule 1's "declarative description first"; `paint()` issues the
+   drawing calls through `&mut dyn PaintSurface`.
+2. **`A11yPrimitive` impl.** `Primitive` requires it — report the
+   widget's accessibility info through the same `a11y` machinery every
+   built-in primitive uses, not a parallel opt-in.
+3. **TUI `paint_cells` override.** `PaintSurface` has no TUI
+   implementation today (`Backend::paint_surface` answers `None` on
+   `TuiBackend`), so `draw_primitive`'s default `paint()` path never
+   reaches a terminal. Override `Primitive::paint_cells` to paint into
+   the `ratatui::buffer::Buffer` `Backend::cell_buffer` hands back —
+   see `quadraui/tests/primitive_public_api.rs`'s `CellSwatch` for the
+   worked example. Skipping this is a *Cross-backend portability
+   commitment* violation ("TUI is a first-class backend") the same way
+   a missing `Backend::draw_<name>` used to be.
+4. **`Surface`/`FrameZone` variant**, if the widget is composed into
+   top-level screens alongside other primitives (most are) — until a
+   type-erased `Surface::Primitive(Box<dyn Primitive>)` variant exists,
+   this is a per-widget variant the same shape as "One primitive, one
+   canonical paint path" below asks for `Backend`-based primitives.
+5. **Gallery entry** in `quadraui-gallery` demonstrating the widget
+   painted through every backend it claims to support.
+6. **Tests**: layout tests on the descriptor (rule 1), a paint/click
+   round-trip test on the TUI `paint_cells` path (rule 4's harness
+   still applies — it's keyed on "has clicks", not on which trait
+   method paints), and state-derived paint geometry tests (rule 6)
+   where the widget has any.
+7. **Changelog fragment** — `changelog.d/<issue>.added.md` per
+   `changelog.d/README.md`'s format.
 
 ## Rule 8 — public-API lifecycle
 
