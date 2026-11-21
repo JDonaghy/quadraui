@@ -497,7 +497,10 @@ impl CellGridController {
     /// "`cells` is a viewport-sized window".
     pub fn layout(&self, backend: &dyn Backend, rect: Rect) -> CellGridPrimitiveLayout {
         let ctx = LayoutCtx {
-            line_height: backend.chrome_line_height(),
+            line_height: LayoutCtx::resolve_row_height(
+                backend.chrome_line_height(),
+                &backend.style(),
+            ),
             char_width: backend.char_width(),
             nerd_fonts_enabled: backend.nerd_fonts_enabled(),
         };
@@ -515,7 +518,10 @@ impl CellGridController {
         probe.row_scroll = 0;
         probe.col_scroll = 0;
         let ctx = LayoutCtx {
-            line_height: backend.chrome_line_height(),
+            line_height: LayoutCtx::resolve_row_height(
+                backend.chrome_line_height(),
+                &backend.style(),
+            ),
             char_width: backend.char_width(),
             nerd_fonts_enabled: backend.nerd_fonts_enabled(),
         };
@@ -2133,5 +2139,37 @@ mod tests {
         let clipboard = FakeClipboard::default();
         clipboard.write_text("a\tb");
         assert_eq!(c.paste(&clipboard), CellGridControllerEvent::Ignored);
+    }
+
+    // ── Layout parity with `DrawsPrimitives::draw_primitive` ───────────
+    //
+    // `GtkBackend::new()`'s default `chrome_line_height` (16.0) is
+    // shorter than `Style::default().row_height` (22.0), so this pins
+    // `Self::layout`'s `col_header_height` against the same
+    // `LayoutCtx::resolve_row_height` floor
+    // `crate::backend::DrawsPrimitives::draw_primitive` applies — a
+    // regression here means a host's hit-test/body-row window
+    // disagrees with what `draw_primitive` actually paints.
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn layout_floors_the_col_header_height_at_the_style_row_height_token() {
+        use crate::gtk::backend::GtkBackend;
+
+        let backend = GtkBackend::new();
+        let style = crate::Backend::style(&backend);
+        assert!(
+            crate::Backend::chrome_line_height(&backend) < style.row_height,
+            "this test needs a backend whose raw chrome metric is shorter than the style \
+             token to be a meaningful check"
+        );
+
+        let c = controller(5, 5);
+        let layout = c.layout(&backend, RECT);
+
+        assert_eq!(
+            layout.layout.col_header_height, style.row_height,
+            "col_header_height must match the same floored row pitch draw_primitive \
+             resolves, not the raw chrome_line_height"
+        );
     }
 }

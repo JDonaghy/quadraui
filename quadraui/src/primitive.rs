@@ -222,6 +222,7 @@ impl LayoutCtx {
 /// without a caller having to remember which boolean value means which
 /// regime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Units {
     /// Sub-pixel-precise float units — a GTK/macOS/Win backend's native
     /// coordinate space.
@@ -242,6 +243,7 @@ pub enum Units {
 /// contract can thread through instead, without every existing
 /// `Primitive` implementor changing in the same change.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct LayoutMeasure {
     /// See [`LayoutCtx::line_height`].
     pub line_height: f32,
@@ -265,6 +267,7 @@ pub struct LayoutMeasure {
 /// of writing that same two-field struct from scratch; no existing
 /// implementor is re-ported onto it by this change.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct PrimitiveLayout<L> {
     /// The absolute rect the primitive was laid out into — what
     /// [`Primitive::layout`] received as `rect`.
@@ -288,6 +291,7 @@ impl<L> PrimitiveLayout<L> {
 /// ratatui::buffer::Buffer` in hand to match on, e.g. for logging or a
 /// capability check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SubTarget {
     /// A pixel backend's [`PaintSurface`] — GTK, macOS, Win. Reached via
     /// [`crate::Backend::paint_surface`].
@@ -306,6 +310,7 @@ pub enum SubTarget {
 /// two-way choice between [`crate::Backend::paint_surface`] and
 /// [`crate::Backend::cell_surface`], named as one value instead of two
 /// `Option`s a caller has to check in sequence.
+#[non_exhaustive]
 pub enum PaintTarget<'a> {
     /// A pixel backend's [`PaintSurface`].
     Surface(&'a mut dyn PaintSurface),
@@ -332,6 +337,7 @@ impl PaintTarget<'_> {
 /// today — that still takes `theme`/`style` as the two loose parameters
 /// it always has.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct PaintServices<'a> {
     /// The active theme — see [`crate::Backend::theme`].
     pub theme: &'a Theme,
@@ -351,6 +357,7 @@ pub struct PaintServices<'a> {
 /// widget re-port this change deliberately does not make. It is defined
 /// now as the named shape that re-port has to converge on, instead of
 /// each primitive inventing its own paint-environment bundle piecemeal.
+#[non_exhaustive]
 pub struct PaintEnv<'a> {
     /// Where to paint.
     pub target: PaintTarget<'a>,

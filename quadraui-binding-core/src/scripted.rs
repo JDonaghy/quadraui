@@ -604,10 +604,10 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
         layout: &ScriptedLayout,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
-        _style: &Style,
+        style: &Style,
     ) {
         let ctx = LayoutCtx {
-            line_height: surface.surface_line_height(),
+            line_height: LayoutCtx::resolve_row_height(surface.surface_line_height(), style),
             char_width: surface.surface_char_width(),
             nerd_fonts_enabled: false,
         };
