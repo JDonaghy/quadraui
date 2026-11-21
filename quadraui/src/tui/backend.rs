@@ -448,17 +448,10 @@ pub struct TuiBackend {
     /// so a runner that never opts into live-frame capture never pays for
     /// this clone either.
     last_screenshot: Option<Screenshot>,
-    /// Scratch storage [`Self::cell_surface`] stores its one-call
-    /// `TuiCellSurface` wrapper in, so that method can hand back
-    /// `&mut dyn CellSurface` borrowed from `self` rather than a local
-    /// that would dangle past the call. `TuiCellSurface` carries no
-    /// lifetime parameter (see that type's own doc for why) specifically
-    /// so a plain `Option<TuiCellSurface>` field like this one can host
-    /// it; the buffer pointer it wraps is only ever actually valid for as
-    /// long as the enclosing [`Self::enter_frame_scope`] call is still on
-    /// the stack — the same invariant [`Self::cell_surface`] already has
-    /// to uphold to call `current_frame_mut` at all.
-    cell_surface_scratch: Option<super::TuiCellSurface>,
+    /// Scratch slot for the wrapper [`Self::cell_surface`] hands back, so
+    /// that `&mut dyn CellSurface` borrows from `self` instead of a local.
+    /// Its buffer pointer is live only inside [`Self::enter_frame_scope`].
+    cell_surface_scratch: Option<super::cell_surface::TuiCellSurface>,
 }
 
 /// One cell rect registered via [`TuiBackend::register_opaque_rect`] —
@@ -2814,18 +2807,11 @@ impl Backend for TuiBackend {
     /// same way [`Self::paint_surface`] (always `None` here —
     /// `PaintSurface`'s module doc, "Why TUI stays out") feeds
     /// [`crate::primitive::Primitive::paint`] on a pixel backend.
-    ///
-    /// Builds a fresh [`super::TuiCellSurface`] every call and stows it
-    /// in `cell_surface_scratch` so the `&mut dyn CellSurface` handed
-    /// back can borrow from `self` — see that field's own doc for the
-    /// raw-pointer validity invariant this relies on.
     fn cell_surface(&mut self) -> Option<&mut dyn crate::CellSurface> {
-        let color_depth = self.color_depth;
+        let depth = self.color_depth;
         let buf = self.current_frame_mut()?.buffer_mut();
-        self.cell_surface_scratch = Some(super::TuiCellSurface::new(buf, color_depth));
-        self.cell_surface_scratch
-            .as_mut()
-            .map(|surface| surface as &mut dyn crate::CellSurface)
+        let surface = super::cell_surface::TuiCellSurface::new(buf, depth);
+        Some(self.cell_surface_scratch.insert(surface))
     }
 
     fn line_height(&self) -> f32 {
