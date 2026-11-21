@@ -12,6 +12,6 @@
 #[path = "common/modal_occlusion_demo.rs"]
 mod modal_occlusion_demo;
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::tui::run(modal_occlusion_demo::ModalOcclusionDemo::new())
 }

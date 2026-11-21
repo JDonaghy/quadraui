@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use quadraui::tui::{StepOutcome, TuiRunner};
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), quadraui::RunError> {
     let mut runner = TuiRunner::new(common::SplitApp::new())?;
     loop {
         // A real embedding host would do its own work here between turns

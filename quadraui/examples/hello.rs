@@ -84,6 +84,6 @@ impl ShellApp for Hello {
     }
 }
 
-fn main() {
-    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config());
+fn main() -> Result<(), quadraui::RunError> {
+    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config())
 }

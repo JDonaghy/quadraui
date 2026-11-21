@@ -21,9 +21,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::tui::shell_runner::run_with_shell(
         common::SelectionDemo::new(),
         common::SelectionDemo::config(),
-    );
+    )
 }
