@@ -1,16 +1,13 @@
-"""Black-box coverage for the remaining in-canvas modal-overlay primitives
-wired onto `InteractionEngine`'s own anchored-overlay slot (the one
-`show_message_dialog` / `show_context_menu` already use):
-`show_toast`/`dismiss_toast`, `show_tooltip`/`hide_tooltip`,
-`show_completions`/`dismiss_completions`, `show_float`/`dismiss_float`, and
-`show_rich_text_popup`/`dismiss_rich_text_popup` -- plus the generic
-`show_overlay`/`dismiss_overlay` pair every one of those 13 methods is a
-one-line forward onto.
+"""Black-box coverage for `QuiApp.show_overlay`/`dismiss_overlay` -- the
+generic entry point for every in-canvas modal-overlay kind wired onto
+`InteractionEngine`'s own anchored-overlay slot: `"context_menu"`,
+`"message_dialog"`, `"toast"`, `"tooltip"`, `"completions"`, `"float"`,
+`"rich_text_popup"`, `"popover"`, `"layout_dialog"`.
 
-Follows `test_extra_primitives.py`'s `show_message_dialog`/
-`show_context_menu` tests as the pattern: a real Python `dict` decoded
-straight into the matching `quadraui` primitive, painted immediately, and
-routed through `push_event`/`run` exactly like any other input.
+Follows `test_extra_primitives.py`'s `"message_dialog"`/`"context_menu"`
+overlay tests as the pattern: a real Python `dict` decoded straight into
+the matching `quadraui` primitive, painted immediately, and routed through
+`push_event`/`run` exactly like any other input.
 
 Run against a built wheel/extension, e.g.:
 
@@ -57,11 +54,11 @@ def _escape(app):
 # ── Toast ────────────────────────────────────────────────────────────────
 
 
-def test_show_toast_paints_over_base_content_and_action_click_routes():
-    # The acceptance scenario: a toast painted via `show_toast` shows up
-    # over whatever the app already painted (z-order/stacking above the
-    # base layer), and clicking its action button dispatches
-    # `ToastActionClicked` carrying that action's own id.
+def test_show_overlay_toast_paints_over_base_content_and_action_click_routes():
+    # The acceptance scenario: a toast painted via `show_overlay("toast",
+    # ...)` shows up over whatever the app already painted (z-order/
+    # stacking above the base layer), and clicking its action button
+    # dispatches `ToastActionClicked` carrying that action's own id.
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -69,13 +66,14 @@ def test_show_toast_paints_over_base_content_and_action_click_routes():
     app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
     assert app.screen_contains("OK")
 
-    app.show_toast(
+    app.show_overlay(
+        "toast",
         {
             "id": "toast:saved",
             "title": "Saved",
             "body": "",
             "actions": [{"id": "undo", "label": "Undo"}],
-        }
+        },
     )
     # Both the base content and the overlay painted on top of it are
     # visible at once -- the overlay never replaces the base layer.
@@ -88,7 +86,7 @@ def test_show_toast_paints_over_base_content_and_action_click_routes():
 
     assert received == [{"ToastActionClicked": "undo"}]
     # The action click doesn't itself close the toast -- the app's own
-    # action handler decides whether to call `dismiss_toast`.
+    # action handler decides whether to call `dismiss_overlay`.
     assert app.screen_contains("Saved")
 
 
@@ -99,7 +97,7 @@ def test_toast_dismiss_click_closes_with_no_event():
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_toast({"id": "toast:saved", "title": "Saved", "body": ""})
+    app.show_overlay("toast", {"id": "toast:saved", "title": "Saved", "body": ""})
     row, col = _locate(app, "×")
 
     _click(app, row, col)
@@ -108,31 +106,31 @@ def test_toast_dismiss_click_closes_with_no_event():
     assert not app.screen_contains("Saved")
 
 
-def test_dismiss_toast_by_id_closes_without_input():
+def test_dismiss_overlay_toast_by_id_closes_without_input():
     app = QuiApp(40, 20)
-    app.show_toast({"id": "toast:a", "title": "A", "body": ""})
-    app.show_toast({"id": "toast:b", "title": "B", "body": ""})
+    app.show_overlay("toast", {"id": "toast:a", "title": "A", "body": ""})
+    app.show_overlay("toast", {"id": "toast:b", "title": "B", "body": ""})
     assert app.screen_contains("A")
     assert app.screen_contains("B")
 
-    assert app.dismiss_toast("toast:a") is True
+    assert app.dismiss_overlay("toast:a") is True
     assert not app.screen_contains("A")
     assert app.screen_contains("B")
 
     # Dismissing an id that isn't showing is a no-op, not an error.
-    assert app.dismiss_toast("toast:a") is False
+    assert app.dismiss_overlay("toast:a") is False
 
 
-def test_show_toast_rejects_malformed_descriptor():
+def test_show_overlay_toast_rejects_malformed_descriptor():
     app = QuiApp(40, 20)
     with pytest.raises(InvalidDescriptorError):
-        app.show_toast({"id": "toast:bad"})  # missing required `title`
+        app.show_overlay("toast", {"id": "toast:bad"})  # missing required `title`
 
 
 # ── Tooltip ──────────────────────────────────────────────────────────────
 
 
-def test_show_tooltip_paints_over_base_content_then_auto_dismisses_on_click():
+def test_show_overlay_tooltip_paints_over_base_content_then_auto_dismisses_on_click():
     # The acceptance scenario's other half: a tooltip shows up over the
     # base layer, and -- since it's non-interactive, per
     # `Backend::draw_tooltip`'s own doc -- the next click anywhere
@@ -141,7 +139,7 @@ def test_show_tooltip_paints_over_base_content_then_auto_dismisses_on_click():
     app.set_handler(lambda event: None)
 
     app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
-    app.show_tooltip({"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0))
+    app.show_overlay("tooltip", {"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0))
 
     assert app.screen_contains("OK")
     assert app.screen_contains("Hello tip")
@@ -154,14 +152,14 @@ def test_show_tooltip_paints_over_base_content_then_auto_dismisses_on_click():
     assert not app.screen_contains("Hello tip")
 
 
-def test_hide_tooltip_closes_explicitly():
+def test_dismiss_overlay_tooltip_closes_explicitly():
     app = QuiApp(40, 20)
-    app.show_tooltip({"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0))
+    app.show_overlay("tooltip", {"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0))
     assert app.screen_contains("Hello tip")
 
-    assert app.hide_tooltip() is True
+    assert app.dismiss_overlay("tooltip") is True
     assert not app.screen_contains("Hello tip")
-    assert app.hide_tooltip() is False
+    assert app.dismiss_overlay("tooltip") is False
 
 
 # ── Completions ──────────────────────────────────────────────────────────
@@ -174,14 +172,15 @@ def _completion_items():
     ]
 
 
-def test_show_completions_then_clicking_an_item_activates_it():
+def test_show_overlay_completions_then_clicking_an_item_activates_it():
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_completions(
+    app.show_overlay(
+        "completions",
         {"id": "completions:editor", "selected_idx": 0, "items": _completion_items()},
-        (2.0, 2.0),
+        (2.0, 2.0, 0.0, 0.0),
     )
     assert app.screen_contains("map")
     assert app.screen_contains("filter")
@@ -198,9 +197,10 @@ def test_completions_escape_dismisses_without_activation():
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_completions(
+    app.show_overlay(
+        "completions",
         {"id": "completions:editor", "selected_idx": 0, "items": _completion_items()},
-        (2.0, 2.0),
+        (2.0, 2.0, 0.0, 0.0),
     )
     _escape(app)
 
@@ -208,15 +208,16 @@ def test_completions_escape_dismisses_without_activation():
     assert not app.screen_contains("map")
 
 
-def test_dismiss_completions_closes_without_input():
+def test_dismiss_overlay_completions_closes_without_input():
     app = QuiApp(40, 20)
-    app.show_completions(
+    app.show_overlay(
+        "completions",
         {"id": "completions:editor", "selected_idx": 0, "items": _completion_items()},
-        (2.0, 2.0),
+        (2.0, 2.0, 0.0, 0.0),
     )
-    assert app.dismiss_completions() is True
+    assert app.dismiss_overlay("completions") is True
     assert not app.screen_contains("map")
-    assert app.dismiss_completions() is False
+    assert app.dismiss_overlay("completions") is False
 
 
 # ── Float ────────────────────────────────────────────────────────────────
@@ -230,13 +231,15 @@ def _anchor(x, y, width=1.0, height=1.0, side="Bottom"):
     }
 
 
-def test_show_float_paints_chrome_then_escape_dismisses():
+def test_show_overlay_float_paints_chrome_then_escape_dismisses():
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
 
     app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
-    app.show_float({"id": "float:hints", "anchor": _anchor(2.0, 2.0)}, 10.0, 4.0)
+    app.show_overlay(
+        "float", {"id": "float:hints", "anchor": _anchor(2.0, 2.0)}, (10.0, 4.0, 0.0, 0.0)
+    )
 
     # Chrome-only -- no app content of its own, but the border it paints
     # shows up on top of the base layer.
@@ -249,11 +252,13 @@ def test_show_float_paints_chrome_then_escape_dismisses():
     assert not app.screen_contains("┌")
 
 
-def test_dismiss_float_closes_without_input():
+def test_dismiss_overlay_float_closes_without_input():
     app = QuiApp(40, 20)
-    app.show_float({"id": "float:hints", "anchor": _anchor(2.0, 2.0)}, 10.0, 4.0)
-    assert app.dismiss_float() is True
-    assert app.dismiss_float() is False
+    app.show_overlay(
+        "float", {"id": "float:hints", "anchor": _anchor(2.0, 2.0)}, (10.0, 4.0, 0.0, 0.0)
+    )
+    assert app.dismiss_overlay("float") is True
+    assert app.dismiss_overlay("float") is False
 
 
 def test_non_focusable_float_does_not_claim_escape():
@@ -265,7 +270,7 @@ def test_non_focusable_float_does_not_claim_escape():
     app.set_handler(lambda event: received.append(event))
 
     float_descriptor = {"id": "float:hint", "anchor": _anchor(2.0, 2.0), "focusable": False}
-    app.show_float(float_descriptor, 10.0, 4.0)
+    app.show_overlay("float", float_descriptor, (10.0, 4.0, 0.0, 0.0))
 
     _escape(app)
 
@@ -278,12 +283,13 @@ def test_non_focusable_float_does_not_claim_escape():
 # ── RichTextPopup ────────────────────────────────────────────────────────
 
 
-def test_show_rich_text_popup_then_clicking_a_link_routes():
+def test_show_overlay_rich_text_popup_then_clicking_a_link_routes():
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_rich_text_popup(
+    app.show_overlay(
+        "rich_text_popup",
         {
             "id": "popup:hover",
             "lines": [{"spans": [{"text": "See docs", "fg": None, "bg": None}]}],
@@ -293,7 +299,7 @@ def test_show_rich_text_popup_then_clicking_a_link_routes():
                 {"line": 0, "start_byte": 4, "end_byte": 8, "url": "https://example.com"}
             ],
         },
-        (2.0, 2.0),
+        (2.0, 2.0, 0.0, 0.0),
     )
     assert app.screen_contains("See docs")
 
@@ -306,14 +312,15 @@ def test_show_rich_text_popup_then_clicking_a_link_routes():
 def test_rich_text_popup_escape_dismisses():
     app = QuiApp(40, 20)
     app.set_handler(lambda event: None)
-    app.show_rich_text_popup(
+    app.show_overlay(
+        "rich_text_popup",
         {
             "id": "popup:hover",
             "lines": [{"spans": [{"text": "Hello", "fg": None, "bg": None}]}],
             "line_text": ["Hello"],
             "max_visible_rows": 3,
         },
-        (2.0, 2.0),
+        (2.0, 2.0, 0.0, 0.0),
     )
     assert app.screen_contains("Hello")
 
@@ -322,26 +329,28 @@ def test_rich_text_popup_escape_dismisses():
     assert not app.screen_contains("Hello")
 
 
-def test_dismiss_rich_text_popup_closes_without_input():
+def test_dismiss_overlay_rich_text_popup_closes_without_input():
     app = QuiApp(40, 20)
-    app.show_rich_text_popup(
+    app.show_overlay(
+        "rich_text_popup",
         {
             "id": "popup:hover",
             "lines": [{"spans": [{"text": "Hello", "fg": None, "bg": None}]}],
             "line_text": ["Hello"],
             "max_visible_rows": 3,
         },
-        (2.0, 2.0),
+        (2.0, 2.0, 0.0, 0.0),
     )
-    assert app.dismiss_rich_text_popup() is True
-    assert app.dismiss_rich_text_popup() is False
+    assert app.dismiss_overlay("rich_text_popup") is True
+    assert app.dismiss_overlay("rich_text_popup") is False
 
 
-# ── Generic show_overlay/dismiss_overlay ──────────────────────────────────
+# ── show_overlay/dismiss_overlay's own cross-kind contract ─────────────────
 #
-# All 13 kind-specific methods above are one-line forwards onto these two;
-# this section exercises the generic pair directly rather than re-covering
-# every behavior already pinned above.
+# The sections above each pin one kind's own event-routing/paint behavior;
+# this one covers what `show_overlay`/`dismiss_overlay` guarantee across
+# every kind instead -- the returned id's shape, unknown-kind/missing-anchor
+# rejection, and an unknown dismiss id being a no-op.
 
 
 def test_show_overlay_toast_returns_its_own_id_and_dismiss_overlay_closes_it():
@@ -393,20 +402,14 @@ def test_show_overlay_context_menu_then_dismiss_overlay_closes_it():
     assert app.dismiss_overlay("context_menu") is False
 
 
-def test_show_overlay_tooltip_matches_show_tooltip_screen_output():
-    # `show_tooltip` is itself a one-line forward onto `show_overlay`; this
-    # pins that the generic entry point paints identically to the
-    # kind-specific one it replaces.
-    direct = QuiApp(40, 20)
-    direct.show_tooltip({"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0))
-
-    generic = QuiApp(40, 20)
-    returned_id = generic.show_overlay(
+def test_show_overlay_tooltip_returns_the_descriptors_own_id():
+    app = QuiApp(40, 20)
+    returned_id = app.show_overlay(
         "tooltip", {"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0)
     )
 
     assert returned_id == "tip:hint"
-    assert generic.screen() == direct.screen()
+    assert app.screen_contains("Hello tip")
 
 
 def test_show_overlay_rejects_unknown_kind():

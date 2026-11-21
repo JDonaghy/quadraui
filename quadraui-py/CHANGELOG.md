@@ -74,7 +74,7 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 - `App.confirm(title, body, buttons, severity=None, *, on_resolve=None)` /
   `App.alert(title, body, *, id="ok", label="OK", severity=None,
-  on_resolve=None)`: wrap `show_message_dialog` +
+  on_resolve=None)`: wrap `show_overlay("message_dialog", ...)` +
   `MessageDialogResolved` into a single call that reports the clicked
   button's id back to the caller -- through a sync or `async def`
   `on_resolve` callback, or, with `on_resolve` omitted, an `asyncio.Future`
@@ -125,6 +125,36 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   0.11.0: the six fixed primitive slots and every additive primitive now
   reach the screen only through a `render` callback's descriptor dict.
   `SlotOccupiedError`/`UnknownSlotError` are removed with them.
+- The 13 legacy per-kind overlay methods on `QuiApp`, and their 5
+  duplicates on `QuiAppActions`, now that `show_overlay`/`dismiss_overlay`
+  cover every kind each one forwarded onto:
+
+  | Removed | `QuiApp` replacement | `QuiAppActions` replacement |
+  | --- | --- | --- |
+  | `show_context_menu(items, position)` | `show_overlay("context_menu", {"items": items}, (*position, 0.0, 0.0))` | same, via `actions.show_overlay` |
+  | `show_message_dialog(title, body, buttons, severity=None)` | `show_overlay("message_dialog", {"title": title, "body": body, "buttons": buttons, "severity": severity})` | same, via `actions.show_overlay` |
+  | `dismiss_message_dialog()` | `dismiss_overlay("message_dialog")` | n/a (`QuiAppActions` never had one) |
+  | `show_toast(toast, corner=None)` | `show_overlay("toast", {**toast, "corner": corner})` | same, via `actions.show_overlay` |
+  | `dismiss_toast(id)` | `dismiss_overlay(id)` | n/a (`QuiAppActions` never had one) |
+  | `show_tooltip(tooltip, anchor)` | `show_overlay("tooltip", tooltip, anchor)` | same, via `actions.show_overlay` |
+  | `hide_tooltip()` | `dismiss_overlay("tooltip")` | `dismiss_overlay("tooltip")` |
+  | `show_completions(completions, cursor)` | `show_overlay("completions", completions, (*cursor, 0.0, 0.0))` | n/a (`QuiAppActions` never had one) |
+  | `dismiss_completions()` | `dismiss_overlay("completions")` | n/a (`QuiAppActions` never had one) |
+  | `show_float(float, width, height)` | `show_overlay("float", float, (width, height, 0.0, 0.0))` | n/a (`QuiAppActions` never had one) |
+  | `dismiss_float()` | `dismiss_overlay("float")` | n/a (`QuiAppActions` never had one) |
+  | `show_rich_text_popup(popup, anchor)` | `show_overlay("rich_text_popup", popup, (*anchor, 0.0, 0.0))` | n/a (`QuiAppActions` never had one) |
+  | `dismiss_rich_text_popup()` | `dismiss_overlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
+
+### Fixed
+
+- `QuiApp.show_overlay`/`dismiss_overlay`, called reentrantly from inside
+  the registered event handler or render callback, now raise
+  `ReentrantCallError` -- the same restricted-method contract every other
+  `QuiApp` method with a `QuiAppActions` counterpart has -- instead of
+  PyO3's raw `RuntimeError: Already borrowed`. The removed per-kind methods
+  masked this: each ran the `ReentrantCallError` guard itself before
+  forwarding to the shared overlay logic, so the gap was unreachable until
+  `show_overlay`/`dismiss_overlay` became the only way in.
 
 ## [0.11.0] - 2026-11-14
 

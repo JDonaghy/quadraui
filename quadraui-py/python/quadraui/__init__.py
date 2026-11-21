@@ -18,7 +18,7 @@ Python callback raised, which passes through unchanged) is a
 ``NativeAlreadyRunError``, ``NoDisplayError``, ``NotOnMainThreadError``,
 ``InvalidAppIdError``, ``InvalidFontRoleError``, ``UnsupportedError``, and
 ``ReentrantCallError`` (a restricted ``QuiApp`` method -- one with a
-matching ``QuiAppActions`` method, e.g. ``show_message_dialog`` --  called
+matching ``QuiAppActions`` method, e.g. ``show_overlay`` --  called
 from inside that same app's own registered handler/tick/render callback;
 use the ``actions()`` handle passed to the handler instead).
 A descriptor-decode failure (``quadraui_binding_core::DecodeError``) raises

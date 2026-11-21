@@ -620,9 +620,9 @@ class App:
         like any other unclaimed one, per `_pending_dialog_resolve`'s own
         assignment sites) when no `confirm`/`alert` call is waiting on
         this dialog -- a dialog opened some other way (a raw
-        `actions.show_message_dialog`/`qui.show_message_dialog`/
-        `actions.show_overlay("message_dialog", ...)`/`qui.show_overlay`
-        call `confirm`/`alert` never wrapped) resolves nothing here."""
+        `actions.show_overlay("message_dialog", ...)`/
+        `qui.show_overlay("message_dialog", ...)` call `confirm`/`alert`
+        never wrapped) resolves nothing here."""
         resolve = self._pending_dialog_resolve
         if resolve is None:
             return False

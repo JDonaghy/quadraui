@@ -1,7 +1,7 @@
 """Black-box coverage for the shared binding host's hover-tooltip driving
 (`quadraui_binding_core::BindingHost::drive_hover_tooltip`): a `Button`'s
-own `tooltip` text shows up as a real `show_tooltip`-equivalent overlay
-once the pointer has hovered it continuously for `tooltip_delay_ms`, and
+own `tooltip` text shows up as a real `"tooltip"` overlay once the pointer
+has hovered it continuously for `tooltip_delay_ms`, and
 hides again on pointer leave, the next click, or the auto-dismiss timeout
 -- with no Python-side wiring beyond
 `set_render`/`set_handler`/`push_event`/`step`, since the *host*
@@ -18,9 +18,11 @@ half of the contract: a tooltip source with no `Button.tooltip` to carry it
 (a toolbar action, or a tree/data-table row) has no host-driven tooltip at
 all, so the handler itself shows/hides one from the hit-tested
 `MouseEntered`/`MouseLeft` it already gets, via `QuiApp.actions()`'s
-`show_tooltip`/`hide_tooltip` -- the only way to do either from inside a
-handler, since a direct `app.show_tooltip`/`app.hide_tooltip` call there
-raises `ReentrantCallError` the same way `test_deferred_actions.py` describes.
+`show_overlay("tooltip", ...)`/`dismiss_overlay("tooltip")` -- the only way
+to do either from inside a handler, since a direct
+`app.show_overlay("tooltip", ...)`/`app.dismiss_overlay("tooltip")` call
+there raises `ReentrantCallError` the same way `test_deferred_actions.py`
+describes.
 
 `set_test_clock_ms` pins the headless clock `BindingHost::now_ms()` reads
 to an absolute value this file picks, so every assertion below is driven
@@ -277,34 +279,34 @@ def test_handler_shows_and_hides_its_own_tooltip_via_actions():
     # host's own `drive_hover_tooltip` never shows anything here -- the
     # same situation a toolbar action's own `tooltip`, or a tree/data-table
     # row with no `Button` to carry one, is in. Every assertion below is
-    # driven entirely by the handler's own `actions.show_tooltip`/
-    # `actions.hide_tooltip` calls on the hit-tested `MouseEntered`/
-    # `MouseLeft` it gets for the button.
+    # driven entirely by the handler's own `actions.show_overlay("tooltip",
+    # ...)`/`actions.dismiss_overlay("tooltip")` calls on the hit-tested
+    # `MouseEntered`/`MouseLeft` it gets for the button.
     app = QuiApp(40, 10)
     actions = app.actions()
 
     def on_event(event):
         if "MouseEntered" in event:
-            actions.show_tooltip(
-                {"id": "tip:act", "text": "Row action"}, (0.0, 2.0, 10.0, 1.0)
+            actions.show_overlay(
+                "tooltip", {"id": "tip:act", "text": "Row action"}, (0.0, 2.0, 10.0, 1.0)
             )
         elif "MouseLeft" in event:
-            actions.hide_tooltip()
+            actions.dismiss_overlay("tooltip")
 
     app.set_handler(on_event)
     app.set_render(lambda: {"button": {"id": "act", "label": "Act"}})
     row, col = _locate(app, "Act")
 
     # Entering the button dispatches the hit-tested `MouseEntered`; the
-    # handler queues `show_tooltip` from inside it, same "already
-    # borrowed" wall `test_deferred_actions.py` describes for a direct
-    # `app.show_tooltip(...)` call from there.
+    # handler queues `show_overlay("tooltip", ...)` from inside it, same
+    # "already borrowed" wall `test_deferred_actions.py` describes for a
+    # direct `app.show_overlay("tooltip", ...)` call from there.
     _move_to(app, row, col)
     assert app.screen_contains("Row action")
 
     # Leaving dispatches the matching `MouseLeft`; the handler's
-    # `actions.hide_tooltip()` call dismisses it immediately -- there is
-    # no `Button.tooltip` for the host's own auto-hide to lean on here, so
-    # without this the tooltip would stay on screen forever.
+    # `actions.dismiss_overlay("tooltip")` call dismisses it immediately --
+    # there is no `Button.tooltip` for the host's own auto-hide to lean on
+    # here, so without this the tooltip would stay on screen forever.
     _move_to(app, 9, 39)
     assert not app.screen_contains("Row action")

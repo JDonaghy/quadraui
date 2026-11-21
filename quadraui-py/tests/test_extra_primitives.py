@@ -3350,17 +3350,27 @@ def _dialog_buttons():
     ]
 
 
-def test_show_message_dialog_called_from_python_then_clicking_a_button_round_trips():
-    # Exercises `QuiApp.show_message_dialog` through PyO3's own argument
-    # conversion (real Python `list`s of `dict`s), not a direct in-process
-    # Rust call -- the dialog opens, paints its buttons, and clicking one
-    # dispatches `MessageDialogResolved` carrying the clicked button's id,
-    # then dismisses.
+def _message_dialog(title, body, buttons, severity=None):
+    descriptor = {"title": title, "body": body, "buttons": buttons}
+    if severity is not None:
+        descriptor["severity"] = severity
+    return descriptor
+
+
+def test_show_overlay_message_dialog_called_from_python_then_clicking_a_button_round_trips():
+    # Exercises `QuiApp.show_overlay("message_dialog", ...)` through PyO3's
+    # own argument conversion (a real Python `dict` of `list`s of `dict`s),
+    # not a direct in-process Rust call -- the dialog opens, paints its
+    # buttons, and clicking one dispatches `MessageDialogResolved` carrying
+    # the clicked button's id, then dismisses.
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons())
+    app.show_overlay(
+        "message_dialog",
+        _message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons()),
+    )
     assert app.screen_contains("Save")
 
     row, col = _locate(app, "Save")
@@ -3379,12 +3389,15 @@ def test_show_message_dialog_called_from_python_then_clicking_a_button_round_tri
     assert not app.screen_contains("Save")
 
 
-def test_show_message_dialog_enter_resolves_the_default_button():
+def test_show_overlay_message_dialog_enter_resolves_the_default_button():
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons())
+    app.show_overlay(
+        "message_dialog",
+        _message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons()),
+    )
     app.push_event(
         {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
     )
@@ -3393,12 +3406,15 @@ def test_show_message_dialog_enter_resolves_the_default_button():
     assert received == [{"MessageDialogResolved": "save"}]
 
 
-def test_show_message_dialog_escape_resolves_the_cancel_button():
+def test_show_overlay_message_dialog_escape_resolves_the_cancel_button():
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons())
+    app.show_overlay(
+        "message_dialog",
+        _message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons()),
+    )
     app.push_event(
         {"KeyPressed": {"key": {"Named": "Escape"}, "modifiers": {}, "repeat": False}}
     )
@@ -3407,28 +3423,31 @@ def test_show_message_dialog_escape_resolves_the_cancel_button():
     assert received == [{"MessageDialogResolved": "cancel"}]
 
 
-def test_show_message_dialog_with_severity_paints_and_rejects_unknown_severity():
+def test_show_overlay_message_dialog_with_severity_paints_and_rejects_unknown_severity():
     app = QuiApp(40, 20)
-    app.show_message_dialog(
-        "Unsaved changes", "Do you want to save?", _dialog_buttons(), "warning"
+    app.show_overlay(
+        "message_dialog",
+        _message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons(), "warning"),
     )
     assert app.screen_contains("Save")
 
     with pytest.raises(InvalidDescriptorError):
-        app.show_message_dialog("Title", "Body", _dialog_buttons(), "critical")
+        app.show_overlay(
+            "message_dialog", _message_dialog("Title", "Body", _dialog_buttons(), "critical")
+        )
 
 
-def test_show_context_menu_called_from_python_then_clicking_an_item_round_trips():
-    # Exercises `QuiApp.show_context_menu` through PyO3's own argument
-    # conversion (a real Python `list` of `dict`s and a `tuple` position),
-    # not a direct in-process Rust call -- the popup opens, paints its
-    # first item, and clicking it dispatches `ContextMenuItemActivated`
-    # carrying the clicked item's id.
+def test_show_overlay_context_menu_called_from_python_then_clicking_an_item_round_trips():
+    # Exercises `QuiApp.show_overlay("context_menu", ...)` through PyO3's
+    # own argument conversion (a real Python `dict` wrapping a `list` of
+    # `dict`s and a `tuple` anchor), not a direct in-process Rust call --
+    # the popup opens, paints its first item, and clicking it dispatches
+    # `ContextMenuItemActivated` carrying the clicked item's id.
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_context_menu(_popup_items(), (2.0, 2.0))
+    app.show_overlay("context_menu", {"items": _popup_items()}, (2.0, 2.0, 0.0, 0.0))
     assert app.screen_contains("Copy")
 
     row, col = _locate(app, "Copy")
@@ -3440,23 +3459,24 @@ def test_show_context_menu_called_from_python_then_clicking_an_item_round_trips(
     assert received == [{"ContextMenuItemActivated": "copy"}]
 
 
-def test_show_context_menu_accepts_integer_position():
-    # `position` is typed `(f32, f32)`; a Python caller passing a tuple of
-    # `int`s (the natural thing to write for a `MouseDown`'s integer-ish
-    # cell coordinates) must convert cleanly rather than raising.
+def test_show_overlay_context_menu_accepts_integer_anchor():
+    # `anchor` is typed `(f32, f32, f32, f32)`; a Python caller passing a
+    # tuple of `int`s (the natural thing to write for a `MouseDown`'s
+    # integer-ish cell coordinates) must convert cleanly rather than
+    # raising.
     app = QuiApp(40, 20)
-    app.show_context_menu(_popup_items(), (2, 2))
+    app.show_overlay("context_menu", {"items": _popup_items()}, (2, 2, 0, 0))
     assert app.screen_contains("Copy")
 
 
-def test_right_click_then_show_context_menu_activation_round_trip():
+def test_right_click_then_show_overlay_context_menu_activation_round_trip():
     # The acceptance path: a raw right-click `MouseDown` reaches the
     # registered handler undisturbed (there is no built-in right-click ->
     # popup wiring), top-level script code sees it and calls
-    # `show_context_menu` itself -- per the method's own doc, never from
-    # inside the handler -- and the resulting popup's item-click round
-    # trips through `ContextMenuItemActivated` exactly like the
-    # directly-opened case above.
+    # `show_overlay("context_menu", ...)` itself -- per that method's own
+    # doc, never from inside the handler -- and the resulting popup's
+    # item-click round trips through `ContextMenuItemActivated` exactly
+    # like the directly-opened case above.
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -3477,7 +3497,7 @@ def test_right_click_then_show_context_menu_activation_round_trip():
     ]
     received.clear()
 
-    app.show_context_menu(_popup_items(), (3.0, 3.0))
+    app.show_overlay("context_menu", {"items": _popup_items()}, (3.0, 3.0, 0.0, 0.0))
     row, col = _locate(app, "Copy")
     app.push_event(
         {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
@@ -3487,7 +3507,7 @@ def test_right_click_then_show_context_menu_activation_round_trip():
     assert received == [{"ContextMenuItemActivated": "copy"}]
 
 
-def test_show_context_menu_escape_dismisses_without_item_activation():
+def test_show_overlay_context_menu_escape_dismisses_without_item_activation():
     # Escape closes the popup via `ContextMenuDismissed` -- the other half
     # of the method's documented dismissal contract, distinct from an item
     # activation and carrying no payload (pythonizes to the bare variant
@@ -3496,7 +3516,7 @@ def test_show_context_menu_escape_dismisses_without_item_activation():
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.show_context_menu(_popup_items(), (2.0, 2.0))
+    app.show_overlay("context_menu", {"items": _popup_items()}, (2.0, 2.0, 0.0, 0.0))
     app.push_event(
         {"KeyPressed": {"key": {"Named": "Escape"}, "modifiers": {}, "repeat": False}}
     )
@@ -3505,12 +3525,13 @@ def test_show_context_menu_escape_dismisses_without_item_activation():
     assert received == ["ContextMenuDismissed"]
 
 
-def test_show_context_menu_with_nested_submenu_opens_by_right_arrow_and_activates():
-    # `ContextMenuItem.submenu` nests through the same `show_context_menu`
-    # call -- opening the parent's child popup by Right arrow and
-    # activating a nested leaf reports that leaf's own id via
-    # `ContextMenuItemActivated`, the same shape a flat menu's activation
-    # already carries (`nesting depth is transparent to the caller`).
+def test_show_overlay_context_menu_with_nested_submenu_opens_by_right_arrow_and_activates():
+    # `ContextMenuItem.submenu` nests through the same
+    # `show_overlay("context_menu", ...)` call -- opening the parent's
+    # child popup by Right arrow and activating a nested leaf reports that
+    # leaf's own id via `ContextMenuItemActivated`, the same shape a flat
+    # menu's activation already carries (`nesting depth is transparent to
+    # the caller`).
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -3529,7 +3550,7 @@ def test_show_context_menu_with_nested_submenu_opens_by_right_arrow_and_activate
             ],
         },
     ]
-    app.show_context_menu(items, (2.0, 2.0))
+    app.show_overlay("context_menu", {"items": items}, (2.0, 2.0, 0.0, 0.0))
     assert app.screen_contains("View")
 
     app.push_event(
@@ -3548,7 +3569,7 @@ def test_show_context_menu_with_nested_submenu_opens_by_right_arrow_and_activate
     assert not app.screen_contains("Toggle Sidebar"), "activation must close the popup"
 
 
-def test_show_context_menu_item_with_codicon_icon_renders_fallback():
+def test_show_overlay_context_menu_item_with_codicon_icon_renders_fallback():
     # `ContextMenuItem::icon` accepts the same `{"codicon": "...",
     # "fallback": "..."}` wire shape a tree row's `icon` does (see
     # `test_descriptors.py::test_tree_leaf_with_codicon_icon`), but
@@ -3565,12 +3586,12 @@ def test_show_context_menu_item_with_codicon_icon_renders_fallback():
             "icon": {"codicon": "new-file", "fallback": "NF"},
         },
     ]
-    app.show_context_menu(items, (2.0, 2.0))
+    app.show_overlay("context_menu", {"items": items}, (2.0, 2.0, 0.0, 0.0))
     assert app.screen_contains("N New File")
     assert not app.screen_contains("NNew File")
 
 
-def test_show_context_menu_item_with_unknown_codicon_name_raises():
+def test_show_overlay_context_menu_item_with_unknown_codicon_name_raises():
     app = QuiApp(40, 20)
     items = [
         {
@@ -3580,59 +3601,63 @@ def test_show_context_menu_item_with_unknown_codicon_name_raises():
         },
     ]
     with pytest.raises(InvalidDescriptorError):
-        app.show_context_menu(items, (2.0, 2.0))
+        app.show_overlay("context_menu", {"items": items}, (2.0, 2.0, 0.0, 0.0))
 
 
-def test_show_message_dialog_rejects_empty_buttons():
+def test_show_overlay_message_dialog_rejects_empty_buttons():
     # A dialog with no buttons can never be resolved by Enter or Escape,
     # and would swallow every click forever with no dismiss surface.
     app = QuiApp(40, 20)
     with pytest.raises(InvalidDescriptorError):
-        app.show_message_dialog("Title", "Body", [])
+        app.show_overlay("message_dialog", _message_dialog("Title", "Body", []))
 
 
-def test_show_message_dialog_rejects_button_tint():
+def test_show_overlay_message_dialog_rejects_button_tint():
     # `tint` is part of the in-canvas `Dialog.buttons` shape this surface
-    # otherwise mirrors, but `show_message_dialog` doesn't honor it yet --
-    # a caller setting it must get a loud error, not a silently ignored
-    # field.
+    # otherwise mirrors, but `show_overlay("message_dialog", ...)` doesn't
+    # honor it yet -- a caller setting it must get a loud error, not a
+    # silently ignored field.
     app = QuiApp(40, 20)
     with pytest.raises(InvalidDescriptorError):
-        app.show_message_dialog(
-            "Title",
-            "Body",
-            [
-                {
-                    "id": "delete",
-                    "label": "Delete",
-                    "is_default": True,
-                    "tint": {"r": 255, "g": 0, "b": 0, "a": 255},
-                }
-            ],
+        app.show_overlay(
+            "message_dialog",
+            _message_dialog(
+                "Title",
+                "Body",
+                [
+                    {
+                        "id": "delete",
+                        "label": "Delete",
+                        "is_default": True,
+                        "tint": {"r": 255, "g": 0, "b": 0, "a": 255},
+                    }
+                ],
+            ),
         )
 
 
-def test_dismiss_message_dialog_closes_without_resolving():
+def test_dismiss_overlay_message_dialog_closes_without_resolving():
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    assert app.dismiss_message_dialog() is False
+    assert app.dismiss_overlay("message_dialog") is False
 
-    app.show_message_dialog("Title", "Body", _dialog_buttons())
+    app.show_overlay("message_dialog", _message_dialog("Title", "Body", _dialog_buttons()))
     assert app.screen_contains("Save")
 
-    assert app.dismiss_message_dialog() is True
+    assert app.dismiss_overlay("message_dialog") is True
     assert not app.screen_contains("Save")
     assert received == []
 
 
-def test_show_message_dialog_closes_an_open_menu_bar_dropdown():
+def test_show_overlay_message_dialog_closes_an_open_menu_bar_dropdown():
     # Paint order puts the dialog on top of the menu bar's dropdown
     # (`render_dialog` runs after `sync_menu_bar`); `handle` now routes
-    # the dialog ahead of the menu bar too, and `show_message_dialog`
-    # closes any open dropdown so nothing is left underneath holding
-    # input precedence it no longer has paint precedence for.
+    # the dialog ahead of the menu bar too, and
+    # `show_overlay("message_dialog", ...)` closes any open dropdown so
+    # nothing is left underneath holding input precedence it no longer has
+    # paint precedence for.
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -3668,9 +3693,12 @@ def test_show_message_dialog_closes_an_open_menu_bar_dropdown():
     app.run(1)
     assert app.screen_contains("Open"), "the dropdown must be open before the dialog opens"
 
-    app.show_message_dialog("Heads up", "Something happened.", [
-        {"id": "ok", "label": "OK", "is_default": True},
-    ])
+    app.show_overlay(
+        "message_dialog",
+        _message_dialog(
+            "Heads up", "Something happened.", [{"id": "ok", "label": "OK", "is_default": True}]
+        ),
+    )
 
     assert not app.screen_contains("Open"), "the dialog must close the dropdown underneath it"
     assert app.screen_contains("OK")
