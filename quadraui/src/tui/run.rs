@@ -56,15 +56,14 @@ use crate::backend::Backend;
 use crate::control::{self, ControlHandle, ControlPort};
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
-use crate::RunError;
 // Re-exported (not just imported) so `tui::testing` — and any other
-// in-crate caller that historically reached `EventOutcome` through this
-// module — keeps working unchanged after the type moved to
+// in-crate caller that reaches `EventOutcome` through this module —
+// resolves it here even though the type itself lives in
 // `crate::runtime`.
 pub(crate) use crate::runtime::EventOutcome;
 use crate::tui::backend::TuiBackend;
 use crate::tui::color::DepthLimitedBackend;
-use crate::UiEvent;
+use crate::{RunError, UiEvent};
 
 /// The concrete backend the live runner paints through: a real
 /// `CrosstermBackend` over stdout, wrapped in [`DepthLimitedBackend`] so
@@ -138,11 +137,10 @@ impl RunConfig {
 /// [`RunConfig`] (mouse capture enabled). See [`run_with`] for a version
 /// that takes an explicit config, e.g. to opt into `no-mouse` mode.
 ///
-/// Returns `Ok(())` on graceful exit (the app returned
-/// [`Reaction::Exit`] from its `handle` method), or a
-/// [`RunError::Io`] from terminal setup / tear-down. Panics inside the
-/// app propagate after the runner restores the terminal so the user
-/// doesn't end up with a broken terminal state.
+/// Returns `Ok(())` on graceful exit (the app returned [`Reaction::Exit`]
+/// from its `handle` method), or [`RunError::Io`] from terminal setup /
+/// tear-down. Panics inside the app propagate after the runner restores
+/// the terminal so the user doesn't end up with a broken terminal state.
 ///
 /// # Single-frame contract
 ///
