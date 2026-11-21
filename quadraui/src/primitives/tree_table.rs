@@ -1073,10 +1073,11 @@ impl crate::primitive::Primitive for TreeTable {
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         // Same TUI-vs-pixel-backend discriminator `ListView`'s own
         // `Primitive::layout` uses — see that impl's doc for why
-        // `ctx.line_height` is reliable even when both features are
-        // compiled into the same binary.
+        // `ctx.units()` (TUI's whole-cell `line_height` convention vs. a
+        // real pixel font metric) is reliable even when both features
+        // are compiled into the same binary.
         #[cfg(feature = "tui")]
-        if ctx.line_height <= 1.0 {
+        if ctx.units() == crate::primitive::Units::Cells {
             let area = crate::tui::backend::q_rect_to_ratatui(rect);
             let layout = crate::tui::tree_table_layout(area, self);
             return TreeTablePrimitiveLayout {
@@ -1127,6 +1128,13 @@ impl crate::primitive::Primitive for TreeTable {
             all(feature = "macos", target_os = "macos")
         ))]
         {
+            // No per-call interaction-state channel reaches this far —
+            // `Primitive::paint`'s fixed signature carries none (see
+            // that trait's own doc) — so `native_surface_paint::paint`
+            // (which already takes a whole `&DataTablePaintState` rather
+            // than individual hover/press literals) is handed the "no
+            // such state" default every `PaintState` method already
+            // falls back to.
             let state = DataTablePaintState::default();
             native_surface_paint::paint(
                 self,
@@ -1165,13 +1173,23 @@ impl crate::primitive::Primitive for TreeTable {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
+        use crate::primitive::PaintState;
+        use crate::primitives::data_table::DataTablePaintState;
+
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        // `crate::tui::draw_tree_table` takes a bare `hovered_idx`, with
+        // no `*_with_state` counterpart that takes a whole
+        // `DataTablePaintState` (unlike `crate::tui::draw_list_with_state`) —
+        // reading it through `PaintState::hovered_idx` off the "no such
+        // state" default names the gap the same way `Self::paint`'s
+        // pixel-surface path above does, instead of a bare `None` literal.
+        let paint_state = DataTablePaintState::default();
         crate::tui::draw_tree_table(
             buf,
             area,
             self,
             theme,
-            /* hovered_idx */ None,
+            paint_state.hovered_idx(),
             layout.nerd_fonts_enabled,
         );
     }
