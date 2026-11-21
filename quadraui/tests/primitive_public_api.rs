@@ -93,12 +93,19 @@ impl Primitive for Swatch {
 /// Draw a `Swatch` through `&mut dyn Backend`, returning the layout
 /// `draw_primitive` handed back, the areas `paint` was called with, and the
 /// metrics read off the same backend for comparison.
+///
+/// `measured.line_height` runs the same backend-measured
+/// `chrome_line_height` through [`LayoutCtx::resolve_row_height`] that
+/// `draw_primitive` itself applies before building the `LayoutCtx` a
+/// `Primitive::layout` call receives, so this matches `draw_primitive`'s
+/// real row-pitch resolution rather than the raw, unfloored font metric.
 fn draw_through_the_seam(
     backend: &mut dyn Backend,
     area: Rect,
 ) -> (SwatchLayout, Vec<Rect>, LayoutCtx) {
+    let style = backend.style();
     let measured = LayoutCtx {
-        line_height: backend.chrome_line_height(),
+        line_height: LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),
         char_width: backend.char_width(),
         nerd_fonts_enabled: backend.nerd_fonts_enabled(),
     };
@@ -220,14 +227,30 @@ fn tui_draw_primitive_paints_cells_through_dyn_backend() {
     );
 }
 
+/// `draw_primitive` now clips its [`quadraui::Backend::paint_surface`]
+/// path to `rect` via a real
+/// `PaintSurface::surface_push_clip`/`surface_pop_clip` pair, which on
+/// `GtkBackend` requires a live Cairo context — same as every other
+/// `GtkBackend::draw_*` method, each of which panics if called outside
+/// `GtkBackend::enter_frame_scope`. An off-screen `ImageSurface` + a
+/// throwaway `pango::Layout` give this test that live context without a
+/// real window.
 #[cfg(feature = "gtk")]
 #[test]
 fn gtk_draw_primitive_paints_the_resolved_layout() {
+    use gtk4::cairo::{Context as CairoContext, Format, ImageSurface};
     use quadraui::gtk::backend::GtkBackend;
+
+    let surface = ImageSurface::create(Format::ARgb32, 200, 80).expect("create ImageSurface");
+    let cr = CairoContext::new(&surface).expect("Context::new");
+    let pango_layout = pangocairo::functions::create_layout(&cr);
 
     let mut backend = GtkBackend::new();
     let area = Rect::new(4.0, 8.0, 120.0, 40.0);
-    let (layout, painted, measured) = draw_through_the_seam(&mut backend, area);
+    let (layout, painted, measured) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+        let b: &mut dyn Backend = b;
+        draw_through_the_seam(b, area)
+    });
 
     assert_layout_is_resolved(layout, area, measured);
     assert_eq!(
