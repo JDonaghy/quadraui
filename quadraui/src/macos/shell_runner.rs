@@ -1,5 +1,5 @@
-//! macOS shell runner: `run_with_shell()` wraps a [`ShellApp`] in an
-//! AppShell and drives it through the standard macOS (AppKit) event loop.
+//! macOS shell runner: `run_with_shell()` wraps a [`ShellApp`] in an AppShell and
+//! drives it through the AppKit event loop, forwarding its `Result<(), RunError>`.
 //!
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
 //! (bottom-panel init, panel routing, resize recalc, click dispatch), and
@@ -26,9 +26,7 @@ use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
 use crate::{shell_adapter::build_shell_adapter, RunError};
 
-/// Run a [`ShellApp`] with AppShell chrome on the macOS backend. Returns
-/// `Result<(), RunError>` — see [`super::run::run_with`]'s doc for why
-/// this backend's `Result` resolves `Ok(())` today.
+/// Run a [`ShellApp`] with AppShell chrome on the macOS backend.
 ///
 /// `config.app_icon` (set via [`ShellConfig::with_app_icon`])
 /// reaches [`RunConfig::app_icon`] the same way `config.title` /
