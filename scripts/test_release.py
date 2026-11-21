@@ -109,18 +109,26 @@ class ReleaseFixtureRepo:
         node_version: str = "0.1.0",
         with_binding_core: bool = False,
         binding_core_version: str = "0.1.0",
+        with_mcp: bool = False,
+        mcp_pins_version: bool = False,
+        with_py_changelog: bool = False,
+        with_node_changelog: bool = False,
+        with_node_package_lock: bool = False,
     ):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.with_py = with_py
         self.with_node = with_node
         self.with_binding_core = with_binding_core
+        self.with_mcp = with_mcp
         (self.root / "quadraui" / "src").mkdir(parents=True)
         members = '"quadraui"'
         if with_py:
             members += ', "quadraui-py"'
         if with_binding_core:
             members += ', "quadraui-binding-core"'
+        if with_mcp:
+            members += ', "quadraui-mcp"'
         (self.root / "Cargo.toml").write_text(
             f'[workspace]\nmembers = [{members}]\nresolver = "2"\n'
         )
@@ -146,11 +154,43 @@ class ReleaseFixtureRepo:
                 'name = "quadraui"\n'
                 f'version = "{py_version}"\n'
             )
+            if with_py_changelog:
+                (self.root / "quadraui-py" / "CHANGELOG.md").write_text(
+                    "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- a py thing\n"
+                )
         if with_node:
             (self.root / "quadraui-node").mkdir(parents=True)
             (self.root / "quadraui-node" / "package.json").write_text(
                 json.dumps({"name": "@quadraui/node", "version": node_version}) + "\n"
             )
+            if with_node_changelog:
+                (self.root / "quadraui-node" / "CHANGELOG.md").write_text(
+                    "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- a node thing\n"
+                )
+            if with_node_package_lock:
+                (self.root / "quadraui-node" / "package-lock.json").write_text(
+                    json.dumps(
+                        {
+                            "name": "@quadraui/node",
+                            "version": node_version,
+                            "lockfileVersion": 3,
+                            "requires": True,
+                            "packages": {
+                                "": {
+                                    "name": "@quadraui/node",
+                                    "version": node_version,
+                                    "license": "MIT OR Apache-2.0",
+                                },
+                                "node_modules/some-dep": {
+                                    "name": "some-dep",
+                                    "version": "9.9.9",
+                                },
+                            },
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
         if with_binding_core:
             (self.root / "quadraui-binding-core" / "src").mkdir(parents=True)
             (self.root / "quadraui-binding-core" / "Cargo.toml").write_text(
@@ -161,6 +201,32 @@ class ReleaseFixtureRepo:
             )
             (self.root / "quadraui-binding-core" / "src" / "lib.rs").write_text(
                 "pub fn b() {}\n"
+            )
+        if with_mcp:
+            (self.root / "quadraui-mcp" / "src").mkdir(parents=True)
+            # `mcp_pins_version=True` models a workspace member whose path
+            # dependency on `quadraui` carries a `version` requirement
+            # that doesn't move with a `prepare` bump, so `cargo update -p
+            # quadraui --offline` fails to select a version once the
+            # crate's own version outgrows it. `mcp_pins_version=False`
+            # mirrors the fixed shape: no `version` key on an unpublished
+            # path dependency.
+            quadraui_dep = (
+                'quadraui = { path = "../quadraui", version = "0.1.0" }'
+                if mcp_pins_version
+                else 'quadraui = { path = "../quadraui" }'
+            )
+            (self.root / "quadraui-mcp" / "Cargo.toml").write_text(
+                "[package]\n"
+                'name = "quadraui-mcp"\n'
+                'version = "0.1.0"\n'
+                'edition = "2021"\n'
+                + ("publish = false\n" if not mcp_pins_version else "")
+                + "\n[dependencies]\n"
+                f"{quadraui_dep}\n"
+            )
+            (self.root / "quadraui-mcp" / "src" / "lib.rs").write_text(
+                "pub fn m() {}\n"
             )
         (self.root / "quadraui" / "src" / "lib.rs").write_text(
             "//! ## Status\n"
@@ -230,6 +296,20 @@ class ReleaseFixtureRepo:
 
     def binding_core_cargo_toml_text(self) -> str:
         return (self.root / "quadraui-binding-core" / "Cargo.toml").read_text(
+            encoding="utf-8"
+        )
+
+    def mcp_cargo_toml_text(self) -> str:
+        return (self.root / "quadraui-mcp" / "Cargo.toml").read_text(encoding="utf-8")
+
+    def py_changelog_text(self) -> str:
+        return (self.root / "quadraui-py" / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    def node_changelog_text(self) -> str:
+        return (self.root / "quadraui-node" / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    def node_package_lock_text(self) -> str:
+        return (self.root / "quadraui-node" / "package-lock.json").read_text(
             encoding="utf-8"
         )
 
@@ -780,6 +860,23 @@ class PrepareWithPyTests(unittest.TestCase):
             self.assertIn('version = "0.1.0"', repo.py_cargo_toml_text())
             self.assertNotIn("py-v", result.stdout)
 
+    def test_with_py_retitles_wheel_changelog(self):
+        with ReleaseFixtureRepo(with_py=True, with_py_changelog=True) as repo:
+            result = run_release(
+                [
+                    "prepare", "0.2.0",
+                    "--repo-dir", str(repo.root),
+                    "--date", "2026-10-11",
+                    "--with-py",
+                ],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            changelog = repo.py_changelog_text()
+            self.assertIn("## [0.2.0] - 2026-10-11", changelog)
+            self.assertIn("## [Unreleased]", changelog)
+            self.assertIn("- a py thing", changelog)
+
     def test_with_py_refuses_when_wheel_missing(self):
         with ReleaseFixtureRepo(with_py=False) as repo:
             result = run_release(
@@ -846,6 +943,52 @@ class PrepareBindingVersionTrackingTests(unittest.TestCase):
             self.assertIn('version = "0.1.3"', repo.binding_core_cargo_toml_text())
             self.assertNotIn("Also bumped", result.stdout)
 
+    def test_prepare_bumps_node_changelog_and_package_lock_on_minor_release(self):
+        with ReleaseFixtureRepo(
+            with_node=True,
+            with_node_changelog=True,
+            with_node_package_lock=True,
+        ) as repo:
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('"version": "0.2.0"', repo.node_package_json_text())
+
+            changelog = repo.node_changelog_text()
+            self.assertIn("## [0.2.0] - 2026-10-11", changelog)
+            self.assertIn("## [Unreleased]", changelog)
+            self.assertIn("- a node thing", changelog)
+
+            lock = json.loads(repo.node_package_lock_text())
+            self.assertEqual(lock["version"], "0.2.0")
+            self.assertEqual(lock["packages"][""]["version"], "0.2.0")
+            # An unrelated dependency's own version line is untouched.
+            self.assertEqual(
+                lock["packages"]["node_modules/some-dep"]["version"], "9.9.9"
+            )
+
+    def test_prepare_leaves_node_changelog_and_package_lock_untouched_on_patch_release(
+        self,
+    ):
+        with ReleaseFixtureRepo(
+            with_node=True,
+            node_version="0.1.7",
+            with_node_changelog=True,
+            with_node_package_lock=True,
+        ) as repo:
+            result = run_release(
+                ["prepare", "0.1.9", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Same minor before and after -- neither file moves.
+            self.assertIn("## [Unreleased]", repo.node_changelog_text())
+            self.assertNotIn("## [0.1.9]", repo.node_changelog_text())
+            lock = json.loads(repo.node_package_lock_text())
+            self.assertEqual(lock["version"], "0.1.7")
+
     def test_prepare_skips_missing_binding_manifests(self):
         with ReleaseFixtureRepo() as repo:
             result = run_release(
@@ -884,6 +1027,34 @@ class PrepareBindingVersionTrackingTests(unittest.TestCase):
             self.assertEqual(
                 decide_result.returncode, 0, decide_result.stderr
             )
+
+
+class PrepareWorkspaceResolutionTests(unittest.TestCase):
+    """A workspace member's path dependency on `quadraui` with a pinned
+    `version` requirement (quadraui-mcp's original shape, #2800) breaks
+    `prepare`'s `cargo update -p quadraui --offline` lock refresh on any
+    bump that outgrows that pin; dropping the `version` key (and marking
+    the member `publish = false`, since it's never released) fixes it."""
+
+    def test_unpinned_mcp_member_resolves_on_minor_bump(self):
+        with ReleaseFixtureRepo(with_mcp=True, mcp_pins_version=False) as repo:
+            result = run_release(
+                ["prepare", "0.12.0", "--repo-dir", str(repo.root), "--date", "2026-11-20"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('version = "0.12.0"', repo.cargo_toml_text())
+            lock = repo.lock_text()
+            self.assertIn('name = "quadraui-mcp"', lock)
+
+    def test_pinned_mcp_member_fails_lock_refresh_on_minor_bump(self):
+        with ReleaseFixtureRepo(with_mcp=True, mcp_pins_version=True) as repo:
+            result = run_release(
+                ["prepare", "0.12.0", "--repo-dir", str(repo.root), "--date", "2026-11-20"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("cargo update", result.stderr)
 
 
 class PromoteCommandTests(unittest.TestCase):

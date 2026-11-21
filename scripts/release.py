@@ -59,7 +59,12 @@ Two subcommands:
       to track the crate's at all times, and `release_decide.py
       check-binding-versions` enforces it on every `develop` -> `main`
       promotion regardless of which `prepare` flags produced that
-      promotion's bump commit, so this step is not gated behind `--with-py`;
+      promotion's bump commit, so this step is not gated behind `--with-py`.
+      When `quadraui-node/package.json` is bumped this way, its
+      `CHANGELOG.md` is retitled the same as step 8 (no fragments — this
+      package has no `changelog.d/` step) and
+      `quadraui-node/package-lock.json`'s two root `"version"` fields move
+      to the same `X.Y.Z`;
   11. commits the version-string files plus the deleted fragments;
   12. prints the `git push` and `gh pr create --base develop` commands for
       a human to run.
@@ -67,13 +72,15 @@ Two subcommands:
 `--with-py` additionally releases the `quadraui` PyPI wheel (`quadraui-py`)
 in lockstep, in the same branch/commit: it bumps
 `quadraui-py/pyproject.toml`'s `[project] version` and
-`quadraui-py/Cargo.toml`'s `[package] version` to the same `X.Y.Z`, and the
-lock refresh in step 6 also passes `-p quadraui-py`. It refuses if `X.Y.Z`
-is not greater than the current wheel version (PyPI is append-only — a wheel
-version can never go down). Without the flag the wheel is untouched: the two
-artifacts version independently by design (the binding surface is a
-narrower, slower-moving subset of the crate), so most crate releases do not
-ship a wheel. The wheel's own release trigger is a `py-v<version>` tag, which
+`quadraui-py/Cargo.toml`'s `[package] version` to the same `X.Y.Z`, retitles
+`quadraui-py/CHANGELOG.md` the same way step 8 retitles the root one (no
+fragments), and the lock refresh in step 6 also passes `-p quadraui-py`. It
+refuses if `X.Y.Z` is not greater than the current wheel version (PyPI is
+append-only — a wheel version can never go down). Without the flag the wheel
+is untouched: the two artifacts version independently by design (the binding
+surface is a narrower, slower-moving subset of the crate), so most crate
+releases do not ship a wheel. The wheel's own release trigger is a
+`py-v<version>` tag, which
 `promote` prints (see below) — not this bump PR.
 
 All refusals exit 1 before touching the working tree (step 4 is the first
@@ -366,6 +373,30 @@ def set_package_json_version(text: str, new_version: str, *, label: str) -> str:
     return new_text
 
 
+PACKAGE_LOCK_ROOT_VERSION_RE = re.compile(
+    r'("name":\s*"@quadraui/node",\n\s*"version":\s*)"[^"]*"'
+)
+
+
+def set_package_lock_root_version(text: str, new_version: str, *, label: str) -> str:
+    """Rewrite `quadraui-node/package-lock.json`'s two root-level
+    `"version"` fields -- the top-level lockfile version and its matching
+    `packages[""]` entry, each immediately following a `"name":
+    "@quadraui/node"` line -- to `new_version`. Matched by that preceding
+    `"name"` line rather than position, so none of the lockfile's many
+    other, unrelated `"version"` fields (one per resolved dependency) are
+    ever touched.
+    """
+    new_text, count = PACKAGE_LOCK_ROOT_VERSION_RE.subn(
+        rf'\1"{new_version}"', text
+    )
+    if count != 2:
+        raise ReleaseError(
+            f'expected exactly two root "version" fields in {label}, found {count}'
+        )
+    return new_text
+
+
 def minor_pair(version: str) -> tuple[int, int]:
     """`(major, minor)` of an `X.Y.Z` version string -- what
     `BINDING_VERSION_POLICY.md`'s minor-tracking comparison is keyed on."""
@@ -575,14 +606,19 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     lib_rs_path = repo_dir / "quadraui" / "src" / "lib.rs"
     py_pyproject_path = repo_dir / "quadraui-py" / "pyproject.toml"
     py_cargo_toml_path = repo_dir / "quadraui-py" / "Cargo.toml"
+    py_changelog_path = repo_dir / "quadraui-py" / "CHANGELOG.md"
     binding_core_cargo_toml_path = repo_dir / "quadraui-binding-core" / "Cargo.toml"
     node_package_json_path = repo_dir / "quadraui-node" / "package.json"
+    node_changelog_path = repo_dir / "quadraui-node" / "CHANGELOG.md"
+    node_package_lock_path = repo_dir / "quadraui-node" / "package-lock.json"
 
     try:
         if not git_is_clean(repo_dir):
             raise ReleaseError(
                 "working tree is dirty; commit or stash before running `prepare`"
             )
+
+        date = args.date or datetime.date.today().isoformat()
 
         target = parse_version(args.version)
         cargo_toml_text = cargo_toml_path.read_text(encoding="utf-8")
@@ -676,6 +712,15 @@ def cmd_prepare(args: argparse.Namespace) -> int:
                 ),
                 encoding="utf-8",
             )
+            if py_changelog_path.exists():
+                py_changelog_path.write_text(
+                    retitle_changelog(
+                        py_changelog_path.read_text(encoding="utf-8"),
+                        args.version,
+                        date,
+                    ),
+                    encoding="utf-8",
+                )
             lock_packages = ("quadraui", "quadraui-py")
 
         # Unconditional (no flag gates this, unlike quadraui-py above):
@@ -725,6 +770,24 @@ def cmd_prepare(args: argparse.Namespace) -> int:
                     ),
                     encoding="utf-8",
                 )
+                if node_changelog_path.exists():
+                    node_changelog_path.write_text(
+                        retitle_changelog(
+                            node_changelog_path.read_text(encoding="utf-8"),
+                            args.version,
+                            date,
+                        ),
+                        encoding="utf-8",
+                    )
+                if node_package_lock_path.exists():
+                    node_package_lock_path.write_text(
+                        set_package_lock_root_version(
+                            node_package_lock_path.read_text(encoding="utf-8"),
+                            args.version,
+                            label="quadraui-node/package-lock.json",
+                        ),
+                        encoding="utf-8",
+                    )
 
         refresh_lock(repo_dir, lock_packages)
         verify_lock_diff_is_version_lines_only(repo_dir)
@@ -744,7 +807,6 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         )
         lib_rs_path.write_text(lib_rs_text, encoding="utf-8")
 
-        date = args.date or datetime.date.today().isoformat()
         fragment_triples = [
             (issue, kind, content) for issue, kind, content, _path in fragments
         ]
@@ -771,10 +833,16 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         ]
         if args.with_py:
             paths_to_add += ["quadraui-py/pyproject.toml", "quadraui-py/Cargo.toml"]
+            if py_changelog_path.exists():
+                paths_to_add.append("quadraui-py/CHANGELOG.md")
         if bump_binding_core:
             paths_to_add.append("quadraui-binding-core/Cargo.toml")
         if bump_node:
             paths_to_add.append("quadraui-node/package.json")
+            if node_changelog_path.exists():
+                paths_to_add.append("quadraui-node/CHANGELOG.md")
+            if node_package_lock_path.exists():
+                paths_to_add.append("quadraui-node/package-lock.json")
         run_git(["add", *paths_to_add], repo_dir)
 
         commit_subject = (

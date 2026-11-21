@@ -3,6 +3,14 @@
   "version": "0.11.0",
   "description": "napi-rs bindings: insert quadraui descriptors from JavaScript/TypeScript and render them headlessly.",
   "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JDonaghy/quadraui.git",
+    "directory": "quadraui-node"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -26,6 +34,8 @@
   },
   "files": [
     "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
     "dist/",
     "js/index.ts",
     "js/testing.ts",

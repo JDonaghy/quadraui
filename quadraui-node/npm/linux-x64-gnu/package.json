@@ -6,10 +6,20 @@
   ],
   "main": "quadraui-node.linux-x64-gnu.node",
   "files": [
-    "quadraui-node.linux-x64-gnu.node"
+    "quadraui-node.linux-x64-gnu.node",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "description": "napi-rs bindings: insert quadraui descriptors from JavaScript/TypeScript and render them headlessly.",
   "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JDonaghy/quadraui.git",
+    "directory": "quadraui-node/npm/linux-x64-gnu"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "publishConfig": {
     "access": "public"
   },
