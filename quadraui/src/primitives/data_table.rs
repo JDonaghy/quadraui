@@ -2435,7 +2435,7 @@ impl crate::primitive::Primitive for DataTable {
         // A `tui`-only build has no `PaintSurface` to paint into at all —
         // `self` reaching the screen on TUI goes through `Self::paint_cells`
         // instead, which `DrawsPrimitives::draw_primitive`'s default body
-        // calls in place of this method whenever `Backend::cell_buffer`
+        // calls in place of this method whenever `Backend::cell_surface`
         // answers `Some`.
         #[cfg(not(any(
             feature = "gtk",

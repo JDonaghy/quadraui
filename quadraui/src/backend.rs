@@ -2146,9 +2146,10 @@ pub trait Backend: sealed::Sealed {
         None
     }
 
-    /// This backend's cell grid — [`crate::tui::backend::TuiBackend`]'s
-    /// counterpart to [`Self::paint_surface`], for the one rasteriser
-    /// that has a cell buffer instead of a pixel canvas.
+    /// This backend's [`crate::CellSurface`] —
+    /// [`crate::tui::backend::TuiBackend`]'s counterpart to
+    /// [`Self::paint_surface`], for the one rasteriser that paints a cell
+    /// grid instead of a pixel canvas.
     ///
     /// Same `Option`-not-required shape as [`Self::paint_surface`] and
     /// for the same reason: `None` here is structural (GTK/macOS/Win
@@ -2161,11 +2162,10 @@ pub trait Backend: sealed::Sealed {
     /// concrete `&mut TuiBackend`.
     ///
     /// Default: `None`. [`crate::tui::backend::TuiBackend`] overrides
-    /// this to return `Some` of its current frame's `ratatui::buffer::Buffer`
-    /// while inside [`crate::tui::backend::TuiBackend::enter_frame_scope`],
+    /// this to return `Some` of its current frame's cell surface while
+    /// inside [`crate::tui::backend::TuiBackend::enter_frame_scope`],
     /// `None` outside it.
-    #[cfg(feature = "tui")]
-    fn cell_buffer(&mut self) -> Option<&mut ratatui::buffer::Buffer> {
+    fn cell_surface(&mut self) -> Option<&mut dyn crate::CellSurface> {
         None
     }
 
@@ -4730,7 +4730,10 @@ pub trait DrawsPrimitives: Backend {
             primitive.paint(&layout, surface, &theme, &style);
         }
         #[cfg(feature = "tui")]
-        if let Some(buf) = self.cell_buffer() {
+        if let Some(buf) = self
+            .cell_surface()
+            .and_then(crate::CellSurface::ratatui_buffer)
+        {
             primitive.paint_cells(&layout, buf, &theme);
         }
         layout

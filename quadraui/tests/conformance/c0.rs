@@ -2097,7 +2097,7 @@ mod tests {
     /// once on a sibling trait blanket-implemented for every `Backend`,
     /// which no backend can override, and its body paints only through
     /// whichever of `Backend::paint_surface` (GTK/macOS/Win) or
-    /// `Backend::cell_buffer` (TUI) the receiving backend answers `Some`
+    /// `Backend::cell_surface` (TUI) the receiving backend answers `Some`
     /// from — and even then, only for a `Primitive` whose own `paint`/
     /// `paint_cells` impl does something observable, which `CASES`' fixed
     /// set of built-in primitives has no entry for. So there is no

@@ -448,6 +448,17 @@ pub struct TuiBackend {
     /// so a runner that never opts into live-frame capture never pays for
     /// this clone either.
     last_screenshot: Option<Screenshot>,
+    /// Scratch storage [`Self::cell_surface`] stores its one-call
+    /// `TuiCellSurface` wrapper in, so that method can hand back
+    /// `&mut dyn CellSurface` borrowed from `self` rather than a local
+    /// that would dangle past the call. `TuiCellSurface` carries no
+    /// lifetime parameter (see that type's own doc for why) specifically
+    /// so a plain `Option<TuiCellSurface>` field like this one can host
+    /// it; the buffer pointer it wraps is only ever actually valid for as
+    /// long as the enclosing [`Self::enter_frame_scope`] call is still on
+    /// the stack — the same invariant [`Self::cell_surface`] already has
+    /// to uphold to call `current_frame_mut` at all.
+    cell_surface_scratch: Option<super::TuiCellSurface>,
 }
 
 /// One cell rect registered via [`TuiBackend::register_opaque_rect`] —
@@ -518,6 +529,7 @@ impl TuiBackend {
             clip_stack: Vec::new(),
             frame_capture: crate::frame::FrameCapture::default(),
             last_screenshot: None,
+            cell_surface_scratch: None,
         }
     }
 
@@ -2791,20 +2803,29 @@ impl Backend for TuiBackend {
         }
     }
 
-    /// `Some` of the current frame's cell buffer while inside
+    /// `Some` of the current frame's [`crate::CellSurface`] while inside
     /// [`Self::enter_frame_scope`], `None` outside it — the shape
-    /// [`crate::backend::Backend::cell_buffer`]'s own doc describes.
+    /// [`crate::backend::Backend::cell_surface`]'s own doc describes.
     /// Reached through `&mut dyn Backend` from
     /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s default
     /// body, this is TUI's half of the `Primitive` paint seam:
     /// [`crate::primitive::Primitive::paint_cells`] runs against
-    /// whatever this returns, the same way [`Self::paint_surface`]
-    /// (always `None` here — `PaintSurface`'s module doc, "Why TUI
-    /// stays out") feeds [`crate::primitive::Primitive::paint`] on a
-    /// pixel backend.
-    #[cfg(feature = "tui")]
-    fn cell_buffer(&mut self) -> Option<&mut ratatui::buffer::Buffer> {
-        self.current_frame_mut().map(Frame::buffer_mut)
+    /// whatever `CellSurface::ratatui_buffer` recovers from this, the
+    /// same way [`Self::paint_surface`] (always `None` here —
+    /// `PaintSurface`'s module doc, "Why TUI stays out") feeds
+    /// [`crate::primitive::Primitive::paint`] on a pixel backend.
+    ///
+    /// Builds a fresh [`super::TuiCellSurface`] every call and stows it
+    /// in `cell_surface_scratch` so the `&mut dyn CellSurface` handed
+    /// back can borrow from `self` — see that field's own doc for the
+    /// raw-pointer validity invariant this relies on.
+    fn cell_surface(&mut self) -> Option<&mut dyn crate::CellSurface> {
+        let color_depth = self.color_depth;
+        let buf = self.current_frame_mut()?.buffer_mut();
+        self.cell_surface_scratch = Some(super::TuiCellSurface::new(buf, color_depth));
+        self.cell_surface_scratch
+            .as_mut()
+            .map(|surface| surface as &mut dyn crate::CellSurface)
     }
 
     fn line_height(&self) -> f32 {
@@ -8488,7 +8509,7 @@ mod tests {
 
     /// `ListView` painted through `crate::primitive::Primitive`
     /// (via [`crate::backend::DrawsPrimitives::draw_primitive`]'s default
-    /// body, which calls [`crate::backend::Backend::cell_buffer`] then
+    /// body, which calls [`crate::backend::Backend::cell_surface`] then
     /// `Primitive::paint_cells`) must match `TuiBackend::draw_list`'s own
     /// output byte-for-byte — the `Primitive` pilot's TUI story. Routed
     /// through `&mut dyn Backend`, not a concrete `&mut TuiBackend` — the
@@ -8606,7 +8627,7 @@ mod tests {
 
     /// `TreeView` painted through `crate::primitive::Primitive` (via
     /// [`DrawsPrimitives::draw_primitive`]'s default body, which calls
-    /// [`Backend::cell_buffer`] then `Primitive::paint_cells`) must match
+    /// [`Backend::cell_surface`] then `Primitive::paint_cells`) must match
     /// `TuiBackend::draw_tree`'s own output byte-for-byte — the same TUI
     /// parity story [`list_primitive_paint_cells_matches_draw_list`]
     /// proves for `ListView`. Routed through `&mut dyn Backend`, the
