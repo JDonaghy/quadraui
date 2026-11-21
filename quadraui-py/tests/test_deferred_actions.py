@@ -1,13 +1,14 @@
 """Black-box coverage for `QuiApp.actions()`'s `QuiAppActions` handle: the
 way a registered event handler queues `show_message_dialog`/`show_toast`/
-`show_tooltip`/`send_notification`/`open_path`/`reveal_in_file_manager`/
-`move_to_trash`/`restore_from_trash`/`define_style` (the methods `QuiApp`
-itself restricts to top-level script code, since a handler already holds
-this app's one mutable borrow for the whole dispatch that invoked it) and
-has it applied right after that dispatch finishes, instead of raising
-`ReentrantCallError` the way calling the matching `QuiApp` method directly
-from inside the handler would. `apply_tab_activated` is the one method here
-with no restricted `QuiApp` counterpart at all -- see its own doc.
+`show_tooltip`/`show_overlay`/`dismiss_overlay`/`send_notification`/
+`open_path`/`reveal_in_file_manager`/`move_to_trash`/`restore_from_trash`/
+`define_style` (the methods `QuiApp` itself restricts to top-level script
+code, since a handler already holds this app's one mutable borrow for the
+whole dispatch that invoked it) and has it applied right after that
+dispatch finishes, instead of raising `ReentrantCallError` the way calling
+the matching `QuiApp` method directly from inside the handler would.
+`apply_tab_activated` is the one method here with no restricted `QuiApp`
+counterpart at all -- see its own doc.
 
 Run against a built wheel/extension, e.g.:
 
@@ -82,6 +83,125 @@ def test_show_tooltip_queued_from_a_handler_is_painted_after_step():
     app.run(1)
 
     assert app.screen_contains("Hello tip")
+
+
+def test_show_overlay_and_dismiss_overlay_open_and_close_every_kind_from_a_handler():
+    """`actions.show_overlay(kind, descriptor, anchor)` queues the matching
+    `DeferredAction` for every one of `QuiApp.show_overlay`'s nine kinds,
+    and `actions.dismiss_overlay(id)` queues its close -- both from inside
+    a handler, where the matching `QuiApp.show_overlay`/
+    `QuiApp.dismiss_overlay` call would raise `ReentrantCallError`."""
+    app = QuiApp(60, 30)
+    actions = app.actions()
+
+    def _anchor(x, y, width=1.0, height=1.0, side="Bottom"):
+        return {
+            "rect": {"x": x, "y": y, "width": width, "height": height},
+            "preferred": side,
+            "margin": 0.0,
+        }
+
+    cases = [
+        (
+            "context_menu",
+            {
+                "items": [
+                    {"id": "a", "label": {"spans": [{"text": "A", "fg": None, "bg": None}]}}
+                ]
+            },
+            (2.0, 2.0, 0.0, 0.0),
+            "A",
+        ),
+        (
+            "message_dialog",
+            {"title": "Confirm", "body": "Really?", "buttons": [{"id": "ok", "label": "OK"}]},
+            None,
+            "Confirm",
+        ),
+        ("toast", {"id": "toast:1", "title": "Saved", "body": ""}, None, "Saved"),
+        ("tooltip", {"id": "tip:1", "text": "Hint"}, (0.0, 2.0, 10.0, 1.0), "Hint"),
+        (
+            "completions",
+            {
+                "id": "comp:1",
+                "selected_idx": 0,
+                "items": [{"label": {"spans": [{"text": "X", "fg": None, "bg": None}]}}],
+            },
+            (0.0, 2.0, 0.0, 0.0),
+            "X",
+        ),
+        (
+            "float",
+            {"id": "float:1", "anchor": _anchor(2.0, 2.0)},
+            (10.0, 3.0, 0.0, 0.0),
+            "┌",
+        ),
+        (
+            "rich_text_popup",
+            {
+                "id": "rtp:1",
+                "lines": [{"spans": [{"text": "Rich", "fg": None, "bg": None}]}],
+                "line_text": ["Rich"],
+                "max_visible_rows": 3,
+            },
+            (0.0, 2.0, 0.0, 0.0),
+            "Rich",
+        ),
+        (
+            "popover",
+            {
+                "float": {"id": "popover:1", "anchor": _anchor(1.0, 2.0)},
+                "content": {"id": "p-btn", "button": {"id": "p-btn", "label": "PopBtn"}},
+            },
+            (24.0, 8.0, 0.0, 0.0),
+            "PopBtn",
+        ),
+        (
+            "layout_dialog",
+            {
+                "dialog": {"id": "dialog:1", "title": "Prefs"},
+                "content": {"id": "d-btn", "button": {"id": "d-btn", "label": "DlgBtn"}},
+            },
+            (40.0, 6.0, 0.0, 0.0),
+            "Prefs",
+        ),
+    ]
+
+    for kind, descriptor, anchor, needle in cases:
+        queued_id = []
+
+        # Queued from `set_tick_handler` rather than `set_handler` +
+        # `push_key_event`: several of these kinds (`"layout_dialog"`,
+        # `"popover"`) seed keyboard focus onto their own content and
+        # swallow an unmapped key before it ever reaches a registered
+        # `UiEvent` handler, which would leave `on_event`/`on_dismiss`
+        # below never actually called. An idle tick carries no event at
+        # all, so it always runs regardless of what currently holds focus.
+        def on_open(kind=kind, descriptor=descriptor, anchor=anchor, queued_id=queued_id):
+            queued_id.append(actions.show_overlay(kind, descriptor, anchor))
+
+        app.set_tick_handler(on_open)
+        app.run(1)
+
+        if needle is not None:
+            assert app.screen_contains(needle), f"{kind!r} overlay did not paint {needle!r}"
+
+        # `dismiss_overlay`'s own vocabulary: `kind` itself is the
+        # recognized sentinel for every kind but `"toast"` (which has no
+        # fixed slot -- its sentinel is the toast's own returned id,
+        # `queued_id[0]`, same as `QuiApp.dismiss_overlay`'s own doc).
+        dismiss_id = queued_id[0] if kind == "toast" else kind
+
+        def on_dismiss(dismiss_id=dismiss_id):
+            actions.dismiss_overlay(dismiss_id)
+
+        app.set_tick_handler(on_dismiss)
+        app.run(1)
+
+        if needle is not None:
+            assert not app.screen_contains(
+                needle
+            ), f"{kind!r} overlay still painted {needle!r} after dismiss_overlay"
 
 
 def test_send_notification_queued_from_a_handler_does_not_raise():

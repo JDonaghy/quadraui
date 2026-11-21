@@ -396,7 +396,8 @@ class App {
    * The resolver for a pending `confirm`/`alert` promise, waiting on
    * `UiEvent::MessageDialogResolved` -- `null` when none is outstanding. A
    * dialog opened some other way (a raw `actions.showMessageDialog`/
-   * `qui.showMessageDialog` call `confirm`/`alert` never wrapped a promise
+   * `qui.showMessageDialog`/`actions.showOverlay("message_dialog", ...)`/
+   * `qui.showOverlay` call `confirm`/`alert` never wrapped a promise
    * around) resolves nothing here; its event falls through `_dispatch` to
    * `onEvent` like any other unclaimed one.
    */
@@ -458,17 +459,17 @@ class App {
    * Opens an in-canvas confirm/alert/prompt dialog and resolves with
    * whichever button's `id` the user picked -- a click, or Enter/Escape
    * activating the button marked `is_default`/`is_cancel` respectively.
-   * Queues through `actions` rather than calling `qui.showMessageDialog`
+   * Queues through `actions` rather than calling `qui.showOverlay`
    * directly, so this is safe to call from inside a node callback (a
    * `Button`'s `onClick`, say) as well as from top-level script code --
    * see {@link actions}'s own doc for why.
    *
    * Calling `confirm`/`alert` again while an earlier call's dialog is
    * still open replaces it silently, the same "replaces any dialog
-   * already open" behaviour `showMessageDialog` itself documents: the
-   * earlier call's promise is then abandoned, never resolved or
-   * rejected. Only one `confirm`/`alert` call should be outstanding at a
-   * time.
+   * already open" behaviour `showOverlay("message_dialog", ...)` itself
+   * documents: the earlier call's promise is then abandoned, never
+   * resolved or rejected. Only one `confirm`/`alert` call should be
+   * outstanding at a time.
    */
   confirm(
     title: string,
@@ -478,7 +479,11 @@ class App {
   ): Promise<string> {
     return new Promise<string>((resolve) => {
       this._pendingDialogResolve = resolve;
-      this.actions.showMessageDialog(title, body, buttons as unknown[], severity);
+      const descriptor: Record<string, unknown> = { title, body, buttons };
+      if (severity !== undefined) {
+        descriptor.severity = severity;
+      }
+      this.actions.showOverlay("message_dialog", descriptor, null);
     });
   }
 

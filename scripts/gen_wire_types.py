@@ -952,6 +952,7 @@ PARAM_OVERRIDES: Dict[Tuple[Optional[str], str, str], str] = {
     (None, "install_crash_handler", "cfg"): "Mapping[str, Any]",
     ("QuiApp", "run_shell", "config"): "ShellConfigDescriptor",
     ("QuiApp", "push_event", "descriptor"): "UiEvent",
+    ("QuiApp", "show_overlay", "kind"): "OverlayKind",
     ("QuiApp", "show_context_menu", "items"): "Sequence[ContextMenuItem]",
     ("QuiApp", "show_message_dialog", "buttons"): "Sequence[Mapping[str, Any]]",
     ("QuiApp", "show_toast", "toast"): "Mapping[str, Any]",
@@ -966,6 +967,7 @@ PARAM_OVERRIDES: Dict[Tuple[Optional[str], str, str], str] = {
     ("QuiApp", "queue_dialog_events", "events"): "Sequence[UiEvent]",
     ("QuiApp", "set_dock_menu", "items"): "Sequence[Mapping[str, Any]]",
     ("QuiApp", "set_jump_list", "items"): "Sequence[Mapping[str, Any]]",
+    ("QuiAppActions", "show_overlay", "kind"): "OverlayKind",
     ("QuiAppActions", "show_message_dialog", "buttons"): "Sequence[Mapping[str, Any]]",
     ("QuiAppActions", "show_context_menu", "items"): "Sequence[ContextMenuItem]",
     ("QuiAppActions", "show_toast", "toast"): "Mapping[str, Any]",
@@ -1159,7 +1161,7 @@ stub for module", before it even reaches application code.
 {STUB_GENERATED_BANNER}
 """
 
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
 from .wire import (
     Accelerator,
@@ -1178,6 +1180,18 @@ from .wire import (
     TreeViewDescriptor,
     UiEvent,
 )
+
+OverlayKind = Literal[
+    "context_menu",
+    "message_dialog",
+    "toast",
+    "tooltip",
+    "completions",
+    "float",
+    "rich_text_popup",
+    "popover",
+    "layout_dialog",
+]
 '''
 
 

@@ -623,6 +623,196 @@ impl QuiApp {
     }
 }
 
+/// Reads `value[chrome_key]["id"]` out of a `showOverlay` descriptor
+/// already converted to JSON, without running the rest of
+/// [`decode_popover`]/[`decode_layout_dialog`]'s own validation --
+/// [`QuiAppActions::show_overlay`]'s only way to return a `"popover"`/
+/// `"layout_dialog"` overlay's id synchronously, since the full decode
+/// needs a live backend's theme that only exists once
+/// [`flush_deferred_actions`] runs (see [`DeferredAction::Popover`]'s own
+/// doc).
+fn peek_overlay_content_id(what: &str, value: &JsonValue, chrome_key: &str) -> Result<String> {
+    value
+        .get(chrome_key)
+        .and_then(|chrome| chrome.get("id"))
+        .and_then(|id| id.as_str())
+        .map(|id| id.to_string())
+        .ok_or_else(|| {
+            invalid_descriptor_error(format!("{what}: missing {chrome_key:?}.\"id\" string"))
+        })
+}
+
+#[napi]
+impl QuiAppActions {
+    /// Queues one of [`DeferredAction::ContextMenu`]/
+    /// [`DeferredAction::MessageDialog`]/[`DeferredAction::Toast`]/
+    /// [`DeferredAction::Tooltip`]/[`DeferredAction::Completions`]/
+    /// [`DeferredAction::Float`]/[`DeferredAction::RichTextPopup`]/
+    /// [`DeferredAction::Popover`]/[`DeferredAction::LayoutDialog`],
+    /// depending on `kind` -- same `kind` vocabulary, same `descriptor`/
+    /// `anchor` shapes, as [`QuiApp::show_overlay`]; see that method's own
+    /// doc for the full per-kind contract.
+    ///
+    /// Returns the same id [`QuiApp::show_overlay`] would return. For
+    /// `"popover"`/`"layout_dialog"`, that id is read straight off
+    /// `descriptor`'s own `"float"`/`"dialog"` chrome key -- the rest of
+    /// the decode [`QuiApp::show_overlay`] runs eagerly instead waits for
+    /// `flush_deferred_actions`, the only place a live backend's theme
+    /// (needed to resolve the content subtree's own `"class"` keys)
+    /// exists -- see [`DeferredAction::Popover`]'s own doc.
+    #[napi(js_name = "showOverlay")]
+    pub fn show_overlay(
+        &self,
+        env: Env,
+        kind: String,
+        descriptor: Unknown,
+        anchor: Option<Unknown>,
+    ) -> Result<String> {
+        let overlay_kind = OverlayKind::parse("showOverlay", &kind)?;
+        match overlay_kind {
+            OverlayKind::ContextMenu => {
+                let parsed: ContextMenuDescriptor = decode_direct(env, "showOverlay", descriptor)?;
+                let anchor = require_anchor("showOverlay", &kind, anchor)?;
+                let position: Point = decode_direct(env, "showOverlay", anchor)?;
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::ContextMenu(parsed.items, position));
+                Ok(kind)
+            }
+            OverlayKind::MessageDialog => {
+                let parsed: MessageDialogDescriptor =
+                    decode_direct(env, "showOverlay", descriptor)?;
+                let severity = parsed
+                    .severity
+                    .map(|s| {
+                        dialog_severity(&s)
+                            .map_err(|err| invalid_descriptor_error(format!("showOverlay: {err}")))
+                    })
+                    .transpose()?;
+                let opts = message_dialog_options_from_buttons(
+                    parsed.title,
+                    parsed.body,
+                    parsed.buttons,
+                    severity,
+                )
+                .map_err(|err| invalid_descriptor_error(format!("showOverlay: {err}")))?;
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::MessageDialog(opts));
+                Ok(kind)
+            }
+            OverlayKind::Toast => {
+                let toast: Toast = decode_direct(env, "showOverlay", descriptor)?;
+                let corner: ToastCornerField = decode_direct(env, "showOverlay", descriptor)?;
+                let corner = corner
+                    .corner
+                    .map(|c| {
+                        toast_corner(&c)
+                            .map_err(|err| invalid_descriptor_error(format!("showOverlay: {err}")))
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                let id = toast.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::Toast(toast, corner));
+                Ok(id)
+            }
+            OverlayKind::Tooltip => {
+                let tooltip: quadraui::Tooltip = decode_direct(env, "showOverlay", descriptor)?;
+                let anchor = require_anchor("showOverlay", &kind, anchor)?;
+                let anchor: Rect = decode_direct(env, "showOverlay", anchor)?;
+                let id = tooltip.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::Tooltip(tooltip, anchor));
+                Ok(id)
+            }
+            OverlayKind::Completions => {
+                let completions: quadraui::Completions =
+                    decode_direct(env, "showOverlay", descriptor)?;
+                let anchor = require_anchor("showOverlay", &kind, anchor)?;
+                let cursor: Point = decode_direct(env, "showOverlay", anchor)?;
+                let id = completions.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::Completions(completions, cursor));
+                Ok(id)
+            }
+            OverlayKind::Float => {
+                let float: quadraui::Float = decode_direct(env, "showOverlay", descriptor)?;
+                let anchor = require_anchor("showOverlay", &kind, anchor)?;
+                let size: FloatSize = decode_direct(env, "showOverlay", anchor)?;
+                let measure = FloatMeasure::new(size.width as f32, size.height as f32);
+                let id = float.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::Float(float, measure));
+                Ok(id)
+            }
+            OverlayKind::RichTextPopup => {
+                let popup: quadraui::RichTextPopup = decode_direct(env, "showOverlay", descriptor)?;
+                let anchor = require_anchor("showOverlay", &kind, anchor)?;
+                let anchor: Point = decode_direct(env, "showOverlay", anchor)?;
+                let id = popup.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::RichTextPopup(popup, anchor));
+                Ok(id)
+            }
+            OverlayKind::Popover => {
+                let anchor = require_anchor("showOverlay", &kind, anchor)?;
+                let size: FloatSize = decode_direct(env, "showOverlay", anchor)?;
+                let measure = FloatMeasure::new(size.width as f32, size.height as f32);
+                let value = to_descriptor_value(descriptor)
+                    .map_err(|detail| invalid_descriptor_error(format!("showOverlay: {detail}")))?;
+                let id = peek_overlay_content_id("showOverlay", &value, "float")?;
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::Popover(value, measure));
+                Ok(id)
+            }
+            OverlayKind::LayoutDialog => {
+                // Unlike every other anchored kind, the anchor is
+                // optional here: it sizes the dialog's content slot, and
+                // omitting it takes `DialogContentSize`'s own
+                // viewport-relative defaults.
+                let size = match anchor {
+                    Some(anchor) => {
+                        let size: FloatSize = decode_direct(env, "showOverlay", anchor)?;
+                        DialogContentSize {
+                            width: Some(size.width as f32),
+                            height: Some(size.height as f32),
+                        }
+                    }
+                    None => DialogContentSize::default(),
+                };
+                let value = to_descriptor_value(descriptor)
+                    .map_err(|detail| invalid_descriptor_error(format!("showOverlay: {detail}")))?;
+                let id = peek_overlay_content_id("showOverlay", &value, "dialog")?;
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::LayoutDialog(value, size));
+                Ok(id)
+            }
+        }
+    }
+
+    /// Queues a [`DeferredAction::DismissOverlay`] -- same `id` vocabulary
+    /// as [`QuiApp::dismiss_overlay`]. Unlike that method, there is
+    /// nothing open yet to report closing -- `flush_deferred_actions`
+    /// applies this only after the current dispatch returns -- so this
+    /// returns nothing, the same shape [`Self::hide_tooltip`] (defined in
+    /// `quadraui-node/src/lib.rs`) already uses for the same reason.
+    #[napi(js_name = "dismissOverlay")]
+    pub fn dismiss_overlay(&self, id: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::DismissOverlay(id));
+        Ok(())
+    }
+}
+
 impl QuiApp {
     /// Shared body of every [`Self::show_overlay`] match arm: runs `open`
     /// against this app's live `(TuiBackend, NodeAppLogic)` pair, then
