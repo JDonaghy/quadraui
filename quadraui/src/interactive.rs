@@ -40,10 +40,26 @@
 
 use crate::a11y::A11yAction;
 use crate::backend::PointerShape;
-use crate::event::{Key, Point, UiEvent};
-use crate::primitive::{Primitive, SubTarget, Units};
+use crate::event::{Key, MouseButton, Point, UiEvent};
+use crate::primitive::{Primitive, Units};
 use crate::types::{Modifiers, WidgetId};
 use crate::Handled;
+
+/// Opaque address of one sub-part inside a composite widget's own
+/// internal structure — a cell, a row, a column, whichever shape this
+/// widget's own [`Interactive::focus`]/[`Interactive::handle`] needs.
+///
+/// Not to be confused with [`crate::primitive::SubTarget`], the *paint*
+/// module's unrelated pixel-surface/cell-grid tag — same short name,
+/// different concept, different module. This `SubTarget` is never
+/// interpreted by the host that walks tab order or dispatches
+/// [`RoutedEvent`]s: it is produced by one widget's own [`FocusStop`]/
+/// hit-test and handed back to that same widget's [`Interactive::handle`]
+/// verbatim, so a `DataTable` can pack a `(row, col)` pair into it and a
+/// `TreeTable` can pack a row index, without either shape leaking into
+/// this module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubTarget(pub u64);
 
 /// A widget's `Interactive::Action` payload turns itself into the
 /// [`UiEvent`] the app routes further.
@@ -102,9 +118,9 @@ pub struct FocusStop {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerKind {
     /// A button went down.
-    Down(crate::event::MouseButton),
+    Down(MouseButton),
     /// A button was released.
-    Up(crate::event::MouseButton),
+    Up(MouseButton),
     /// The pointer moved with no button transition.
     Move,
     /// The pointer entered this widget's bounds.
@@ -112,7 +128,7 @@ pub enum PointerKind {
     /// The pointer left this widget's bounds.
     Leave,
     /// A double-click resolved on this button.
-    DoubleClick(crate::event::MouseButton),
+    DoubleClick(MouseButton),
 }
 
 /// A keystroke, carried by [`RoutedEvent::Key`] — the same `key` /
@@ -120,8 +136,12 @@ pub enum PointerKind {
 /// one value so [`RoutedEvent`] doesn't need three loose fields of its own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyEvent {
+    /// The key pressed.
     pub key: Key,
+    /// Modifier keys held during the keystroke.
     pub modifiers: Modifiers,
+    /// Whether this is an auto-repeat of a held key, not its initial
+    /// press.
     pub repeat: bool,
 }
 
@@ -136,16 +156,25 @@ pub struct KeyEvent {
 pub enum RoutedEvent {
     /// A mouse/touch gesture.
     Pointer {
+        /// Which gesture resolved.
         kind: PointerKind,
+        /// Which part of a composite widget the gesture landed on, when
+        /// the runtime's hit-test could tell.
         sub: Option<SubTarget>,
+        /// Position relative to this widget's own area.
         local: Point,
+        /// Modifier keys held during the gesture.
         mods: Modifiers,
     },
     /// A scroll-wheel gesture.
     Wheel {
+        /// Horizontal scroll delta.
         dx: f32,
+        /// Vertical scroll delta.
         dy: f32,
+        /// Position relative to this widget's own area.
         local: Point,
+        /// Modifier keys held during the gesture.
         mods: Modifiers,
     },
     /// A raw keystroke, routed because this widget held focus.
@@ -331,7 +360,7 @@ macro_rules! non_interactive {
 mod tests {
     use super::*;
     use crate::a11y::{A11yInfo, A11yPrimitive};
-    use crate::event::MouseButton;
+    use crate::event::NamedKey;
     use crate::primitive::LayoutCtx;
     use crate::Rect;
 
@@ -398,7 +427,7 @@ mod tests {
         ) -> Handled<CounterActivated> {
             match event {
                 RoutedEvent::Key(KeyEvent {
-                    key: Key::Named(crate::event::NamedKey::Up),
+                    key: Key::Named(NamedKey::Up),
                     ..
                 }) => {
                     state.count += 1;
@@ -406,7 +435,7 @@ mod tests {
                     Handled::Consumed
                 }
                 RoutedEvent::Key(KeyEvent {
-                    key: Key::Named(crate::event::NamedKey::Down),
+                    key: Key::Named(NamedKey::Down),
                     ..
                 }) => {
                     state.count -= 1;
@@ -414,7 +443,7 @@ mod tests {
                     Handled::Consumed
                 }
                 RoutedEvent::Key(KeyEvent {
-                    key: Key::Named(crate::event::NamedKey::Enter),
+                    key: Key::Named(NamedKey::Enter),
                     ..
                 }) => Handled::Event(CounterActivated(state.count)),
                 _ => Handled::Ignored,
@@ -461,7 +490,7 @@ mod tests {
         }
     }
 
-    fn key(named: crate::event::NamedKey) -> RoutedEvent {
+    fn key(named: NamedKey) -> RoutedEvent {
         RoutedEvent::Key(KeyEvent {
             key: Key::Named(named),
             modifiers: Modifiers::default(),
@@ -474,6 +503,34 @@ mod tests {
         assert_eq!(Counter.focus(), FocusSpec::Stop);
     }
 
+    /// A composite widget (a `DataTable`-shaped `focus()`) names one
+    /// [`FocusStop`] per cell, packing `(row, col)` into [`SubTarget`]'s
+    /// opaque `u64` — proving the type actually carries per-cell/per-row
+    /// addresses rather than just the two paint-target tags of
+    /// [`crate::primitive::SubTarget`].
+    #[test]
+    fn focus_children_names_one_stop_per_cell() {
+        fn cell(row: u64, col: u64) -> SubTarget {
+            SubTarget((row << 32) | col)
+        }
+
+        let spec = FocusSpec::Children(vec![
+            FocusStop { sub: cell(0, 0) },
+            FocusStop { sub: cell(0, 1) },
+            FocusStop { sub: cell(1, 0) },
+        ]);
+
+        match spec {
+            FocusSpec::Children(stops) => {
+                assert_eq!(stops.len(), 3);
+                assert_eq!(stops[0].sub, cell(0, 0));
+                assert_eq!(stops[2].sub, cell(1, 0));
+                assert_ne!(stops[0].sub, stops[1].sub);
+            }
+            other => panic!("expected FocusSpec::Children, got {other:?}"),
+        }
+    }
+
     #[test]
     fn arrow_keys_change_state_and_request_a_redraw() {
         let widget = Counter;
@@ -482,23 +539,13 @@ mod tests {
         let id = WidgetId::new("counter:1");
 
         let mut cx = EventCx::new(id, &mut host);
-        let outcome = widget.handle(
-            &mut state,
-            &key(crate::event::NamedKey::Up),
-            &Rect::default(),
-            &mut cx,
-        );
+        let outcome = widget.handle(&mut state, &key(NamedKey::Up), &Rect::default(), &mut cx);
         assert_eq!(outcome, Handled::Consumed);
         assert_eq!(state.count, 1);
         assert_eq!(host.redraws, 1);
 
         let mut cx = EventCx::new(id, &mut host);
-        let outcome = widget.handle(
-            &mut state,
-            &key(crate::event::NamedKey::Down),
-            &Rect::default(),
-            &mut cx,
-        );
+        let outcome = widget.handle(&mut state, &key(NamedKey::Down), &Rect::default(), &mut cx);
         assert_eq!(outcome, Handled::Consumed);
         assert_eq!(state.count, 0);
         assert_eq!(host.redraws, 2);
@@ -512,12 +559,7 @@ mod tests {
         let id = WidgetId::new("counter:2");
         let mut cx = EventCx::new(id, &mut host);
 
-        let outcome = widget.handle(
-            &mut state,
-            &key(crate::event::NamedKey::Enter),
-            &Rect::default(),
-            &mut cx,
-        );
+        let outcome = widget.handle(&mut state, &key(NamedKey::Enter), &Rect::default(), &mut cx);
         assert_eq!(outcome, Handled::Event(CounterActivated(3)));
     }
 
@@ -566,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn never_has_no_values_and_cannot_be_constructed() {
+    fn never_implements_widget_action() {
         fn _assert_into_ui_event_exists<T: WidgetAction>() {}
         _assert_into_ui_event_exists::<Never>();
     }
