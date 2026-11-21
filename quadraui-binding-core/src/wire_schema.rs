@@ -3968,6 +3968,13 @@ mod coverage {
             FormEvent::NumberCommitted { id: _, value: _ } => {}
             FormEvent::NumberCancelled { id: _ } => {}
             FormEvent::RadioChanged { id: _, selected: _ } => {}
+            // `FormEvent` is `#[non_exhaustive]` -- a new variant doesn't
+            // need a wildcard-arm migration here, so this guard can't
+            // catch one landing unnoticed; `variant_shape_test!`'s
+            // `form_event_variants_match_the_schema_tag_list` runtime probe
+            // below is the backstop for that case. Still worth naming
+            // every variant that exists today explicitly.
+            _ => {}
         }
     }
 
@@ -6231,7 +6238,8 @@ mod coverage {
         use std::collections::BTreeSet;
 
         use quadraui::{
-            ChartKind, DrawOp, Key, MouseButton, TabBarEvent, ToolbarButton, ToolbarEvent, UiEvent,
+            ChartKind, DrawOp, FormEvent, Key, MouseButton, TabBarEvent, ToolbarButton,
+            ToolbarEvent, UiEvent,
         };
 
         /// Deserializes a deliberately-unknown tag into `T` and parses the
@@ -6454,6 +6462,36 @@ mod coverage {
             "MouseButton",
             "MouseButton",
             ["Left", "Right", "Middle", "X1", "X2", "Other"]
+        );
+
+        variant_shape_test!(
+            form_event_variants_match_the_schema_tag_list,
+            FormEvent,
+            "FormEvent",
+            "FormEvent",
+            [
+                "ToggleChanged",
+                "TextInputChanged",
+                "TextInputCommitted",
+                "SliderChanged",
+                "ColorChanged",
+                "DropdownChanged",
+                "SegmentedControlChanged",
+                "DateChanged",
+                "FocusChanged",
+                "ButtonClicked",
+                "ToolbarButtonClicked",
+                "KeyPressed",
+                "ComboBoxTextChanged",
+                "ComboBoxHighlightChanged",
+                "ComboBoxCommitted",
+                "ComboBoxCancelled",
+                "NumberChanged",
+                "NumberDraftChanged",
+                "NumberCommitted",
+                "NumberCancelled",
+                "RadioChanged",
+            ]
         );
     }
 }
