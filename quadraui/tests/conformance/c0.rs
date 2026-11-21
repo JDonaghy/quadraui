@@ -2105,7 +2105,17 @@ mod tests {
     /// `tests/primitive_public_api.rs` covers the method's own contract
     /// instead, and `src/primitives/list.rs`'s parity tests cover the
     /// pilot `Primitive` impl's pixel output.
-    const NON_TRAIT_DRAW_FNS: &[&str] = &["draw_primitive"];
+    ///
+    /// `DrawsPrimitives::draw_dyn` is the `&dyn DynWidget` counterpart of
+    /// the same method on the same blanket-implemented sibling trait, so it
+    /// is exempt for the same reasons: no backend can override it, and what
+    /// it paints comes entirely from the erased widget handed to it rather
+    /// than from the receiving backend, so `CASES`' fixed set of built-in
+    /// primitives gives C0 nothing observable to assert on every backend.
+    /// Its own contract — layout resolution, the shared `ctx`, and the
+    /// single `PaintTarget` paint call per resolved target — is covered by
+    /// the `DynWidget` tests in `src/primitive.rs` and `src/frame.rs`.
+    const NON_TRAIT_DRAW_FNS: &[&str] = &["draw_dyn", "draw_primitive"];
 
     /// The `Backend` trait body's own source lines, from the `pub trait
     /// Backend:` declaration to its closing brace in column 0.

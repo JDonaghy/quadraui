@@ -269,6 +269,27 @@ fn bare_type_ident(ty: &Type) -> Option<String> {
     }
 }
 
+/// Whether `ty` is a smart pointer wrapping a trait object
+/// (`Box<dyn DynWidget>`) — the shape a type-erased `Surface` variant
+/// carries in place of a concrete widget type.
+fn wraps_trait_object(ty: &Type) -> bool {
+    let Type::Path(p) = ty else {
+        return false;
+    };
+    if p.qself.is_some() {
+        return false;
+    }
+    let Some(seg) = p.path.segments.last() else {
+        return false;
+    };
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return false;
+    };
+    args.args
+        .iter()
+        .any(|arg| matches!(arg, syn::GenericArgument::Type(Type::TraitObject(_))))
+}
+
 /// Find the one field in a `Surface` variant whose type is its actual
 /// widget (as opposed to `rect: Rect`, a `*Layout` the variant carries
 /// instead of a bare `rect`, or a plain `Option<...>`/`usize` piece of
@@ -279,10 +300,18 @@ fn bare_type_ident(ty: &Type) -> Option<String> {
 /// own resolved `*Layout`, which otherwise also matches this substring
 /// rule and makes the match ambiguous).
 ///
-/// Panics if zero or more than one field matches — every `Surface` variant
-/// has exactly one widget field today; an enum shape this can't resolve
-/// needs a human to extend the rule, not a silent guess.
-fn surface_widget_type(variant: &syn::Variant) -> String {
+/// `None` for a type-erased variant — one carrying a trait object
+/// (`Box<dyn DynWidget>`) instead of a named widget type. Such a variant
+/// has no single widget to resolve: it stands in for every widget reached
+/// through `DrawsPrimitives::draw_dyn`, which is the dispatch path the
+/// coverage census below exists to push widgets onto, so it is counted
+/// neither as covered nor as a gap.
+///
+/// Panics if zero or more than one *named* field matches — every concrete
+/// `Surface` variant has exactly one widget field today; an enum shape
+/// this can't resolve needs a human to extend the rule, not a silent
+/// guess.
+fn surface_widget_type(variant: &syn::Variant) -> Option<String> {
     let Fields::Named(fields) = &variant.fields else {
         panic!(
             "Surface::{} has no named fields — this ratchet only knows how to resolve the \
@@ -290,6 +319,9 @@ fn surface_widget_type(variant: &syn::Variant) -> String {
             variant.ident
         );
     };
+    if fields.named.iter().any(|f| wraps_trait_object(&f.ty)) {
+        return None;
+    }
     let variant_name = variant.ident.to_string();
     let candidates: Vec<String> = fields
         .named
@@ -299,7 +331,7 @@ fn surface_widget_type(variant: &syn::Variant) -> String {
         .filter(|ident| ident.contains(&variant_name) || variant_name.contains(ident.as_str()))
         .collect();
     match candidates.as_slice() {
-        [one] => one.clone(),
+        [one] => Some(one.clone()),
         [] => panic!(
             "Surface::{variant_name} has no field whose type name relates to its own — extend \
              `surface_widget_type` in tests/per_backend_file_ratchet.rs to resolve it"
@@ -365,7 +397,9 @@ fn primitive_coverage_gap_may_only_grow_smaller() {
 
     let mut gaps: BTreeMap<String, String> = BTreeMap::new();
     for variant in &surface_enum.variants {
-        let widget_type = surface_widget_type(variant);
+        let Some(widget_type) = surface_widget_type(variant) else {
+            continue;
+        };
         if !primitive_types.contains(&widget_type) {
             gaps.insert(variant.ident.to_string(), widget_type);
         }
@@ -425,7 +459,7 @@ mod tests {
             rect: Rect,
             tree: TreeView
         });
-        assert_eq!(surface_widget_type(&variant), "TreeView");
+        assert_eq!(surface_widget_type(&variant).as_deref(), Some("TreeView"));
     }
 
     #[test]
@@ -434,7 +468,7 @@ mod tests {
             tooltip: Tooltip,
             layout: TooltipLayout
         });
-        assert_eq!(surface_widget_type(&variant), "Tooltip");
+        assert_eq!(surface_widget_type(&variant).as_deref(), Some("Tooltip"));
     }
 
     #[test]
@@ -443,7 +477,36 @@ mod tests {
             rect: Rect,
             panel: FindReplacePanel
         });
-        assert_eq!(surface_widget_type(&variant), "FindReplacePanel");
+        assert_eq!(
+            surface_widget_type(&variant).as_deref(),
+            Some("FindReplacePanel")
+        );
+    }
+
+    /// The type-erased variant resolves to no widget type at all, so the
+    /// coverage census skips it instead of panicking on a `Box<dyn …>`
+    /// field it cannot name.
+    #[test]
+    fn surface_widget_type_skips_a_type_erased_variant() {
+        let variant: syn::Variant = syn::parse_quote!(Widget {
+            rect: Rect,
+            widget: Box<dyn DynWidget>
+        });
+        assert_eq!(surface_widget_type(&variant), None);
+    }
+
+    /// A concrete widget behind a smart pointer is still a named widget
+    /// type — only a trait object makes the variant type-erased.
+    #[test]
+    fn surface_widget_type_resolves_a_boxed_concrete_widget() {
+        let variant: syn::Variant = syn::parse_quote!(Tree {
+            rect: Rect,
+            tree: TreeView
+        });
+        assert_eq!(surface_widget_type(&variant).as_deref(), Some("TreeView"));
+        assert!(!wraps_trait_object(
+            &syn::parse_quote!(Box<TreeView>) as &Type
+        ));
     }
 
     #[test]
@@ -453,6 +516,6 @@ mod tests {
             rect: Rect,
             hovered: bool
         });
-        surface_widget_type(&variant);
+        let _ = surface_widget_type(&variant);
     }
 }
