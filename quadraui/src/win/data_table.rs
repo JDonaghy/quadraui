@@ -594,6 +594,10 @@ mod tests {
 /// intended row without tripping the shared `DoubleClickDetector`.
 #[cfg(all(test, target_os = "windows"))]
 mod multi_select_driver_tests {
+    // Drives `AppLogic::render` through the deprecated
+    // `Backend::draw_data_table` directly — this deprecation targets
+    // callers, not this file's own coverage of the method it deprecates.
+    #![allow(deprecated)]
     use crate::primitives::data_table::ColumnMeasure;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::testing::WinDriver;

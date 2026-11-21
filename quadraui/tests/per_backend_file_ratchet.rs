@@ -83,7 +83,7 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "tui",
         file_count: 65,
-        non_test_lines: 28658,
+        non_test_lines: 28165,
     },
     BackendBaseline {
         dir: "gtk",
@@ -98,21 +98,36 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "win",
         file_count: 55,
-        non_test_lines: 27749,
+        non_test_lines: 25035,
     },
 ];
 
-/// Whether an attribute is exactly `#[cfg(test)]` — the one shape every
-/// backend file's embedded unit-test module(s) use (`CLAUDE.md`'s "Tests
-/// in `#[cfg(test)] mod tests` at file bottom" convention, and the
-/// occasional extra `#[cfg(test)] mod <driver>_tests` alongside it).
+/// Whether an attribute is `#[cfg(test)]` or `#[cfg(all(test, …))]` — the
+/// shapes a backend file's embedded unit-test module(s) use (`CLAUDE.md`'s
+/// "Tests in `#[cfg(test)] mod tests` at file bottom" convention, plus the
+/// extra `target_os = "windows"` conjunct the `win/` modules that compile
+/// everywhere need). Deliberately does **not** recurse into `not(…)` or
+/// `any(…)` — `cfg(not(test))` is active in non-test builds, and
+/// `cfg(any(test, …))` can be true without `test`, so neither is a
+/// test-only item. Only a direct `test` conjunct inside `all(…)` counts.
 fn is_cfg_test(attr: &syn::Attribute) -> bool {
     if !attr.path().is_ident("cfg") {
         return false;
     }
-    attr.parse_args::<syn::Path>()
-        .map(|p| p.is_ident("test"))
-        .unwrap_or(false)
+    match attr.parse_args::<syn::Meta>() {
+        Ok(syn::Meta::Path(p)) => p.is_ident("test"),
+        Ok(syn::Meta::List(list)) if list.path.is_ident("all") => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .map(|metas| {
+                metas
+                    .iter()
+                    .any(|m| matches!(m, syn::Meta::Path(p) if p.is_ident("test")))
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 /// A top-level item's own attributes, for the handful of `Item` variants
@@ -130,12 +145,14 @@ fn item_attrs(item: &Item) -> &[syn::Attribute] {
     }
 }
 
-/// A file's total line count minus every top-level `#[cfg(test)]`-gated
-/// item's own line span (start..=end, via `proc-macro2`'s span-locations
-/// feature) — the "non-test line count" this ratchet pins. Line-based
-/// rather than a full semantic strip, but every embedded test module in
-/// `src/{tui,gtk,macos,win}/` is itself a single top-level item (a `mod`),
-/// so this is exact for the real shape these files use.
+/// A file's total line count minus every top-level `#[cfg(test)]`- or
+/// `#[cfg(all(test, …))]`-gated item's own line span (start..=end, via
+/// `proc-macro2`'s span-locations feature) — the "non-test line count"
+/// this ratchet pins. Line-based rather than a full semantic strip:
+/// every embedded test module in `src/{tui,gtk,macos,win}/` is a
+/// top-level `mod`, which this resolves, but a `#[cfg(test)]` helper
+/// nested inside a non-test top-level item (rather than at the file's
+/// top level) is still counted as non-test.
 fn non_test_line_count(path: &Path, file: &syn::File) -> usize {
     let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let total_lines = src.lines().count();
@@ -372,9 +389,20 @@ mod tests {
         let bare: syn::Attribute = syn::parse_quote!(#[cfg(test)]);
         let not_test: syn::Attribute = syn::parse_quote!(#[cfg(not(test))]);
         let windows: syn::Attribute = syn::parse_quote!(#[cfg(target_os = "windows")]);
+        let any_test: syn::Attribute = syn::parse_quote!(#[cfg(any(test, feature = "x"))]);
         assert!(is_cfg_test(&bare));
         assert!(!is_cfg_test(&not_test));
         assert!(!is_cfg_test(&windows));
+        assert!(!is_cfg_test(&any_test));
+    }
+
+    #[test]
+    fn is_cfg_test_matches_the_all_test_conjunction() {
+        let win_test: syn::Attribute = syn::parse_quote!(#[cfg(all(test, target_os = "windows"))]);
+        let no_test: syn::Attribute =
+            syn::parse_quote!(#[cfg(all(target_os = "windows", feature = "tui-images"))]);
+        assert!(is_cfg_test(&win_test));
+        assert!(!is_cfg_test(&no_test));
     }
 
     #[test]
