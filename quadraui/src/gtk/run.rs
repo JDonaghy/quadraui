@@ -71,10 +71,9 @@
 //!   operator-run wrapper uses Xvfb.
 //!
 //! Any assertion failure is printed to stderr and flips [`run`]'s return
-//! value to `Err(RunError::Code(..))`, overriding GLib's own exit code —
-//! see the end of [`run`]. Disabled (zero runtime cost)
-//! unless `QUADRAUI_GTK_SMOKE_MS` is set, so ordinary interactive
-//! launches are unaffected.
+//! value to `Err(RunError::Code(..))`, overriding GLib's own exit code
+//! (see the end of [`run`]). Disabled — zero runtime cost — unless
+//! `QUADRAUI_GTK_SMOKE_MS` is set, so interactive launches are unaffected.
 //!
 //! The size/text assertion *logic* is unit-tested below with no display
 //! required.
@@ -216,12 +215,11 @@ const SMOKE_PASTE_VAR: &str = "QUADRAUI_GTK_SMOKE_PASTE";
 /// #     fn render(&self, _b: &mut dyn quadraui::Backend, _a: ()) {}
 /// #     fn handle(&mut self, _e: quadraui::UiEvent, _b: &mut dyn quadraui::Backend) -> quadraui::Reaction { quadraui::Reaction::Continue }
 /// # }
-/// # fn main() -> Result<(), quadraui::RunError> {
 /// use quadraui::gtk::RunConfig;
 ///
 /// let config = RunConfig::new("io.github.jdonaghy.kubeui-gtk", "kubeui");
-/// quadraui::gtk::run_with(MyApp, config)
-/// # }
+/// quadraui::gtk::run_with(MyApp, config)?;
+/// # Ok::<(), quadraui::RunError>(())
 /// ```
 ///
 /// ## Downstream impact (CLAUDE.md rule 8): `single_instance` field
@@ -344,12 +342,11 @@ impl Default for RunConfig {
 /// loop polls the queue and dispatches via
 /// [`AppLogic::handle`][crate::AppLogic::handle].
 ///
-/// Returns `Result<(), RunError>` so apps can `fn main() -> Result<(),
-/// quadraui::RunError> { quadraui::gtk::run(app) }`, mirroring the
-/// ergonomic shape of `quadraui::tui::run`. A non-success GLib exit code
-/// (or a headless `QUADRAUI_GTK_SMOKE_MS` self-check failure) surfaces as
-/// [`RunError::Code`] — see that variant's doc for why this backend falls
-/// back to a bare code rather than a richer cause.
+/// Returns `Result<(), RunError>` so an app's `main` stays a one-liner
+/// (`fn main() -> Result<(), quadraui::RunError>`), mirroring
+/// `quadraui::tui::run`. A non-success GLib exit code — or a headless
+/// `QUADRAUI_GTK_SMOKE_MS` self-check failure — surfaces as
+/// [`RunError::Code`], the bare-code variant this backend falls back to.
 pub fn run<A: AppLogic + 'static>(app: A) -> Result<(), RunError> {
     run_with(app, RunConfig::default())
 }
@@ -473,11 +470,8 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Result<(), 
     if smoke_failed.get() {
         return Err(RunError::Code(glib::ExitCode::FAILURE.get()));
     }
-    if glib_code == glib::ExitCode::SUCCESS {
-        Ok(())
-    } else {
-        Err(RunError::Code(glib_code.get()))
-    }
+    let code = glib_code.get();
+    (code == 0).then_some(()).ok_or(RunError::Code(code))
 }
 
 pub use crate::runner::StepOutcome;
@@ -735,15 +729,14 @@ impl GtkRunner {
 
     /// Whether headless smoke mode (`QUADRAUI_GTK_SMOKE_MS`) detected a
     /// failure — a tiny-window regression or a clipboard round-trip
-    /// mismatch, set by `schedule_smoke_check`. Mirrors `run_with`'s own
-    /// post-`gapp.run()` `smoke_failed.get()` check. [`run`]/[`run_with`]
-    /// fold this into their returned `Result<(), RunError>` automatically,
-    /// but `step`/`pump` return a [`StepOutcome`] with no room for a failure
-    /// signal, so an embedding host must poll this explicitly once the runner
-    /// reaches [`StepOutcome::Exited`] (headless smoke mode always forces the
-    /// window closed after `QUADRAUI_GTK_SMOKE_MS`, so `Exited` is guaranteed
-    /// to arrive) and set its own process exit code from it — see
-    /// `examples/gtk_embedded.rs` for the pairing with `scripts/gtk_smoke.sh`.
+    /// mismatch, set by `schedule_smoke_check`. `run_with` folds it into
+    /// [`run`]/[`run_with`]'s returned `Result<(), RunError>`, but
+    /// `step`/`pump` return a [`StepOutcome`] with no room for a failure
+    /// signal, so an embedding host must poll this once the runner reaches
+    /// [`StepOutcome::Exited`] (smoke mode always forces the window closed
+    /// after `QUADRAUI_GTK_SMOKE_MS`, so `Exited` is guaranteed to arrive)
+    /// and set its own exit code from it — see `examples/gtk_embedded.rs`
+    /// paired with `scripts/gtk_smoke.sh`.
     pub fn smoke_failed(&self) -> bool {
         self.smoke_failed.get()
     }

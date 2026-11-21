@@ -1,5 +1,5 @@
-//! GTK shell runner: `run_with_shell()` wraps a [`ShellApp`] in an
-//! AppShell and drives it through the standard GTK event loop.
+//! GTK shell runner: `run_with_shell()` wraps a [`ShellApp`] in an AppShell and
+//! drives it through the GTK event loop, forwarding its `Result<(), RunError>`.
 //!
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
 //! (bottom-panel init, panel routing, resize recalc, click dispatch), and
@@ -10,10 +10,7 @@ use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
 use crate::{shell_adapter::build_shell_adapter, RunError};
 
-/// Run a [`ShellApp`] with AppShell chrome on the GTK backend, returning
-/// [`RunError::Code`] if the GLib main loop exits non-zero or a headless
-/// `QUADRAUI_GTK_SMOKE_MS` self-check fails — see [`super::run::run_with`]'s
-/// doc for the full contract.
+/// Run a [`ShellApp`] with AppShell chrome on the GTK backend.
 ///
 /// The GTK window's identity (Wayland `xdg_toplevel.set_app_id`; X11 `WM_CLASS`)
 /// comes from `RunConfig::app_id`, which the window manager uses to match the
