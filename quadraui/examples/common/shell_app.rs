@@ -230,6 +230,7 @@ impl AppLogic for ShellApp {
             }
             AppShellEvent::Consumed => return Reaction::Redraw,
             AppShellEvent::Ignored => {}
+            _ => {}
         }
 
         // ── Activity-bar keyboard navigation ─────────────────────────────
