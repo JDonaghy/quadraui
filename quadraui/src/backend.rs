@@ -810,7 +810,15 @@ pub(crate) mod sealed {
 /// logs/error UI, not a machine-matched code — backend authors compose it
 /// from whatever the native API gave them (`HRESULT`, `GError`, `errno`)
 /// with `format!`.
+///
+/// `#[non_exhaustive]`: a downstream `match` with no wildcard arm fails to
+/// compile, so a future variant (e.g. distinguishing a user-cancelled
+/// native dialog from an actual platform failure) is additive, not
+/// breaking. Variant construction (`BackendError::Unsupported`,
+/// `BackendError::PlatformFailure { context }`) and single-variant
+/// destructuring are unaffected.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BackendError {
     /// This backend has no implementation of the surface being asked
     /// for. Prefer a [`BackendCaps`] field where the gap is a whole

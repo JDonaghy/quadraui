@@ -49,12 +49,13 @@ use crate::host::{app_path_kind, menu_for_surface, power_save_kind};
 use crate::{decode_value, DecodeError};
 
 /// The shared error shape every function in this module returns —
-/// collapses `quadraui::BackendError`'s three variants into the two a
-/// binding's own exception taxonomy actually distinguishes
-/// ([`Self::Unsupported`]: nothing implemented; [`Self::Failure`]: this
-/// backend tried and it broke, or its render surface was lost), plus a
-/// third, [`Self::InvalidArgument`], for a wire argument that never
-/// reached a service call at all.
+/// collapses `quadraui::BackendError`'s variants into the two a binding's
+/// own exception taxonomy actually distinguishes ([`Self::Unsupported`]:
+/// nothing implemented; [`Self::Failure`]: this backend tried and it
+/// broke, its render surface was lost, or (`BackendError` is
+/// `#[non_exhaustive]`) some future variant this binding doesn't know
+/// about yet), plus a third, [`Self::InvalidArgument`], for a wire
+/// argument that never reached a service call at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ServiceError {
@@ -91,6 +92,11 @@ impl From<BackendError> for ServiceError {
             BackendError::Unsupported => ServiceError::Unsupported,
             BackendError::PlatformFailure { context } => ServiceError::Failure(context),
             BackendError::SurfaceLost => ServiceError::Failure("render surface lost".to_string()),
+            // `BackendError` is `#[non_exhaustive]`: a future variant this
+            // binding doesn't know about yet still needs somewhere to go,
+            // so it collapses to `Failure` with its `Debug` form rather
+            // than failing to compile.
+            other => ServiceError::Failure(format!("{other:?}")),
         }
     }
 }
@@ -409,6 +415,30 @@ mod tests {
         Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
         ServiceResult,
     };
+
+    /// `BackendError` is `#[non_exhaustive]`, so this `From` impl's match
+    /// carries a wildcard arm for a future variant it doesn't know about
+    /// yet — this covers every variant that exists today, plus that
+    /// wildcard, so a new variant silently falling through to the wrong
+    /// `ServiceError` case would show up here before any binding leaf
+    /// notices it.
+    #[test]
+    fn service_error_from_backend_error_covers_every_known_variant() {
+        assert_eq!(
+            ServiceError::from(BackendError::Unsupported),
+            ServiceError::Unsupported
+        );
+        assert_eq!(
+            ServiceError::from(BackendError::PlatformFailure {
+                context: "CreateNotifyIcon".to_string(),
+            }),
+            ServiceError::Failure("CreateNotifyIcon".to_string())
+        );
+        assert_eq!(
+            ServiceError::from(BackendError::SurfaceLost),
+            ServiceError::Failure("render surface lost".to_string())
+        );
+    }
 
     /// Serialises this module's [`install_crash_handler`] tests: that
     /// function mutates the process-global panic hook, and two tests
