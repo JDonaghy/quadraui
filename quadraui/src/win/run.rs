@@ -163,10 +163,9 @@
 //!
 //! Any assertion failure is printed to stderr (`win32::run_smoke_check`
 //! is exempted from the crate-wide `print_stderr` deny for the same
-//! reason `gtk::run`'s equivalent is) and flips [`run`]'s
-//! [`std::process::ExitCode`] to [`std::process::ExitCode::FAILURE`].
-//! Disabled (zero runtime cost — no timer is ever armed) unless
-//! `QUADRAUI_WIN_SMOKE_MS` is set.
+//! reason `gtk::run`'s equivalent is) and flips [`run`]'s return value to
+//! `Err(`[`crate::RunError::Code`]`(1))`. Disabled (zero runtime cost —
+//! no timer is ever armed) unless `QUADRAUI_WIN_SMOKE_MS` is set.
 
 use crate::backend::Backend;
 use crate::event::{Point, Viewport};
@@ -920,7 +919,7 @@ mod win32 {
         dpi_scale_from_wparam, is_repeat_from_lparam, point_from_lparam, size_from_lparam,
         wheel_delta_from_wparam,
     };
-    use crate::{ButtonMask, Key, Modifiers};
+    use crate::{BackendError, ButtonMask, Key, Modifiers, RunError};
 
     use super::RunConfig;
 
@@ -1255,7 +1254,7 @@ mod win32 {
     pub(super) fn run<A: AppLogic + 'static>(
         app: A,
         config: super::RunConfig,
-    ) -> std::process::ExitCode {
+    ) -> Result<(), RunError> {
         // DPI scale factor plumbed to Viewport::scale. Without
         // per-monitor-v2 awareness, Windows silently bitmap-scales the
         // whole window on HiDPI displays and `GetDpiForWindow` always
@@ -1302,7 +1301,7 @@ mod win32 {
         // (dropped unused) or opening a `WNDCLASSEXW` of its own.
         if config.single_instance && !is_primary_instance(&config.title) {
             forward_argv_to_existing_instance(&config.title);
-            return std::process::ExitCode::SUCCESS;
+            return Ok(());
         }
 
         // SAFETY: `run_inner`'s contract (its `# Safety` doc above) is
@@ -1321,18 +1320,21 @@ mod win32 {
             // smoke mode" section. Always `true` when smoke mode is off.
             Ok(smoke_ok) => {
                 if smoke_ok {
-                    std::process::ExitCode::SUCCESS
+                    Ok(())
                 } else {
-                    std::process::ExitCode::FAILURE
+                    Err(RunError::Code(1))
                 }
             }
-            Err(_) => {
-                // `Backend`'s frame/window lifecycle has no error
-                // channel and this crate denies `clippy::print_stderr`
-                // crate-wide, so the `windows::core::Error`'s message
-                // has nowhere to go beyond the process exit code.
-                std::process::ExitCode::FAILURE
-            }
+            // `windows::core::Error` already carries an HRESULT plus a
+            // human-readable message, folded into
+            // `BackendError::PlatformFailure`'s `context` the same way
+            // every other Win32 call site in this backend does (see
+            // `win::backend`'s `SetWindowPos`/`GetWindowRect` call sites)
+            // so the cause survives into the caller's `RunError` instead
+            // of being summarized away into a bare exit code.
+            Err(e) => Err(RunError::Backend(BackendError::PlatformFailure {
+                context: format!("win::run: {e}"),
+            })),
         }
     }
 
@@ -5209,7 +5211,7 @@ mod win32 {
 pub use win32::WinRunner;
 
 #[cfg(target_os = "windows")]
-pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
+pub fn run<A: AppLogic + 'static>(app: A) -> Result<(), crate::RunError> {
     win32::run(app, RunConfig::default())
 }
 
@@ -5217,12 +5219,12 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 /// of the hardcoded `"quadraui"` default. `run(app)` is equivalent to
 /// `run_with(app, RunConfig::default())`.
 #[cfg(target_os = "windows")]
-pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::process::ExitCode {
+pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Result<(), crate::RunError> {
     win32::run(app, config)
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn run<A: AppLogic + 'static>(_app: A) -> std::process::ExitCode {
+pub fn run<A: AppLogic + 'static>(_app: A) -> Result<(), crate::RunError> {
     todo!(
         "Win32 message loop: RegisterClassEx, CreateWindowEx, \
          Direct2D render target, translate WM_* → UiEvent, \
@@ -5233,7 +5235,7 @@ pub fn run<A: AppLogic + 'static>(_app: A) -> std::process::ExitCode {
 /// Like [`run`], but with a custom window title via [`RunConfig`] — see
 /// [`run`]'s non-Windows stub for why this is `todo!()` off Windows too.
 #[cfg(not(target_os = "windows"))]
-pub fn run_with<A: AppLogic + 'static>(_app: A, _config: RunConfig) -> std::process::ExitCode {
+pub fn run_with<A: AppLogic + 'static>(_app: A, _config: RunConfig) -> Result<(), crate::RunError> {
     todo!(
         "Win32 message loop: RegisterClassEx, CreateWindowEx, \
          Direct2D render target, translate WM_* → UiEvent, \
