@@ -73,16 +73,11 @@ pub const SLOT_DATA_TABLE: i64 = 4;
 pub const SLOT_TAB_BAR: i64 = 5;
 
 /// The host-side half of a binding's `AppLogic`: a bag of optional
-/// descriptors, one per core primitive, plus any number of additive
-/// primitives keyed by kind name, plus the backend-settings replay store a
-/// `run_tui`/`run_native`-style call needs to carry onto a freshly
+/// descriptors, one per core primitive, plus the backend-settings replay
+/// store a `run_tui`/`run_native`-style call needs to carry onto a freshly
 /// constructed backend. A binding's own `AppLogic` impl holds one of these
 /// alongside its own callback fields and [`InteractionEngine`] — nothing
 /// here is host-language-specific.
-///
-/// Adding a further additive primitive kind to [`Self::extra_slots`] never
-/// touches the six fixed fields or their [`Self::slot_occupied`]/
-/// [`Self::is_known_slot`]/[`Self::clear_slot`] machinery.
 #[derive(Default)]
 pub struct BindingHost {
     pub button: Option<Button>,
@@ -91,10 +86,11 @@ pub struct BindingHost {
     pub tree: Option<TreeView>,
     pub data_table: Option<DataTable>,
     pub tab_bar: Option<TabBar>,
-    /// Additive primitive slots, keyed by kind name (`"progress"`,
-    /// `"spinner"`, `"image"`, ...). Painted after the six fixed bands, in
-    /// a binding's own additive-primitive registry order.
-    pub extra_slots: HashMap<String, Rc<dyn ExtraPaint>>,
+    /// Always empty: no binding populates an additive primitive slot
+    /// through this host any more, but [`Self::render_refs`] still needs a
+    /// same-lifetime-as-`self` map to hand [`RenderRefs::extra`] its
+    /// reference.
+    extra: HashMap<String, Rc<dyn ExtraPaint>>,
     /// Set via a binding's own `register_accelerator`/`unregister_accelerator`
     /// surface. Kept here (not just applied directly to the live backend)
     /// so this whole host — moved by value into a real
@@ -185,23 +181,10 @@ pub struct BindingHost {
     /// doc and this crate's `#[cfg(test)]` module already use directly —
     /// rather than sleeping past them in real wall-clock time.
     pub test_clock_ms: Cell<Option<u64>>,
-    /// Deprecated slot/extra-API method names (`"insert_button"`/
-    /// `"insertButton"`, ...) this host has already reported deprecated
-    /// once -- consulted by [`Self::first_deprecation_report`]. Per-app
-    /// (not process-wide) on purpose: a binding's own one-time warning
-    /// surface exists so a render loop re-inserting the same slot every
-    /// frame (the pattern the slot/extra API forces, since a descriptor is
-    /// immutable once inserted) reports it exactly once per *app*, rather
-    /// than flooding every call with the same warning -- and a fresh
-    /// `QuiApp` in a fresh test case gets a clean slate for free, with no
-    /// process-wide state to reset between tests.
-    pub warned_deprecations: RefCell<HashSet<String>>,
     /// The session this host's own render-callback/`run_shell`-config
     /// decode calls report an unknown optional wire key through — warn
-    /// (the default; once per key for this host's whole lifetime, the same
-    /// per-session dedup [`Self::warned_deprecations`] already gives a
-    /// deprecated method name) unless a binding's own `strict`
-    /// constructor argument/setter has called
+    /// (the default; once per key for this host's whole lifetime) unless a
+    /// binding's own `strict` constructor argument/setter has called
     /// [`crate::wire::DecodeDiagnostics::set_strict`]`(true)` on it. A
     /// binding registers its own `on_unknown_key`-style callable via
     /// [`crate::wire::DecodeDiagnostics::set_hook`].
@@ -248,119 +231,6 @@ impl BindingHost {
         }
     }
 
-    /// Whether `kind` names a currently-occupied additive primitive slot.
-    pub fn extra_occupied(&self, kind: &str) -> bool {
-        self.extra_slots.contains_key(kind)
-    }
-
-    /// Empties one additive primitive slot, returning whether it held
-    /// anything.
-    pub fn clear_extra_slot(&mut self, kind: &str) -> bool {
-        self.extra_slots.remove(kind).is_some()
-    }
-
-    /// The shared deprecation message for the slot/extra API, naming `what`
-    /// (a binding's own idiomatic spelling of the deprecated method --
-    /// `"insert_list"` for `quadraui-py`, `"insertList"` for
-    /// `quadraui-node`) and `guidance` (a clause naming the inline
-    /// replacement, e.g. ``"render an inline `list` layout leaf from a
-    /// `render` callback instead"`` -- see [`Self::slot_kind_name`] for the
-    /// fixed-slot leaf-kind names a `slot_clear` caller doesn't otherwise
-    /// have on hand). Every one of a binding's own
-    /// `insert_*`/`store_extra`/`slot_clear`/`clear_extra_slot` leaves calls
-    /// this rather than building its own wording, so the shared "deprecated
-    /// and scheduled for removal" framing is written down exactly once
-    /// instead of copy-pasted per binding.
-    pub fn slot_deprecation_message(what: &str, guidance: &str) -> String {
-        format!(
-            "{what} is deprecated and scheduled for removal in a future \
-             breaking release; {guidance}."
-        )
-    }
-
-    /// [`Self::slot_deprecation_message`] for inserting primitive
-    /// `leaf_kind` via the deprecated `what` method -- the one call every
-    /// binding's own `insert_*`/`insert_extra` leaf makes, naming the
-    /// inline layout leaf of that same kind as the replacement. Shared here
-    /// (rather than built up by each binding's own `warn_insert_deprecated`
-    /// forward) so the exact wording lives in one place instead of being
-    /// copy-pasted per binding. Note this only names the *first* `leaf_kind`
-    /// a given app warns about for a dynamic `what` like `insert_extra` --
-    /// see [`Self::first_deprecation_report`]'s own doc for why the dedup
-    /// key is `what` alone.
-    pub fn insert_deprecation_message(what: &str, leaf_kind: &str) -> String {
-        Self::slot_deprecation_message(
-            what,
-            &format!("render an inline `{leaf_kind}` layout leaf from a `render` callback instead"),
-        )
-    }
-
-    /// [`Self::slot_deprecation_message`] for `clear_extra`/`clearExtra`,
-    /// naming omitting `kind`'s layout leaf from the next `render`
-    /// callback's returned layout as the replacement.
-    pub fn clear_extra_deprecation_message(what: &str, kind: &str) -> String {
-        Self::slot_deprecation_message(
-            what,
-            &format!(
-                "omit the `{kind}` layout leaf from the next `render` callback's \
-                 returned layout instead of calling `{what}`"
-            ),
-        )
-    }
-
-    /// [`Self::slot_deprecation_message`] for `slot_clear`/`slotClear`,
-    /// naming omitting `slot`'s fixed-primitive layout leaf from the next
-    /// `render` callback's returned layout as the replacement. Falls back
-    /// to the generic `"fixed-slot"` name for an unrecognized `slot` --
-    /// see [`Self::slot_kind_name`]'s own doc for when that fallback
-    /// actually fires.
-    pub fn slot_clear_deprecation_message(what: &str, slot: i64) -> String {
-        let kind = Self::slot_kind_name(slot).unwrap_or("fixed-slot");
-        Self::slot_deprecation_message(
-            what,
-            &format!(
-                "omit the `{kind}` layout leaf from the next `render` callback's \
-                 returned layout instead of calling `{what}`"
-            ),
-        )
-    }
-
-    /// The layout-leaf kind name for fixed slot id `slot` -- `"button"` for
-    /// [`SLOT_BUTTON`], `"text_display"` for [`SLOT_TEXT_DISPLAY`], and so
-    /// on through [`SLOT_TAB_BAR`] -- or `None` if `slot` doesn't name one
-    /// of the six (see [`Self::is_known_slot`]). A binding's own
-    /// `slot_clear` leaf uses this to name the inline replacement in its
-    /// own [`Self::slot_deprecation_message`] call without needing to track
-    /// which primitive it originally inserted into `slot`.
-    pub fn slot_kind_name(slot: i64) -> Option<&'static str> {
-        match slot {
-            SLOT_BUTTON => Some("button"),
-            SLOT_TEXT_DISPLAY => Some("text_display"),
-            SLOT_LIST => Some("list"),
-            SLOT_TREE => Some("tree"),
-            SLOT_DATA_TABLE => Some("data_table"),
-            SLOT_TAB_BAR => Some("tab_bar"),
-            _ => None,
-        }
-    }
-
-    /// Whether this is the first time this host has reported `what`
-    /// deprecated -- `true` only the first call for a given `what` on this
-    /// host, `false` on every call after. `quadraui-node`'s own one-time
-    /// `process.emitWarning` convention consults this before emitting, so a
-    /// render loop calling the same deprecated method every frame reports
-    /// it exactly once per app instead of flooding stderr -- see
-    /// [`Self::warned_deprecations`]'s own doc for why the dedup is
-    /// per-host. `quadraui-py` ignores this and raises a Python
-    /// `DeprecationWarning` on every call unconditionally, since that is
-    /// already a per-call-site event CPython's own `warnings` filter
-    /// machinery decides whether to print.
-    pub fn first_deprecation_report(&self, what: &str) -> bool {
-        self.warned_deprecations
-            .borrow_mut()
-            .insert(what.to_string())
-    }
-
     /// Replays every accelerator and backend-settings field this host has
     /// recorded onto `backend` — call from a binding's own
     /// [`AppLogic::setup`] so a chord/theme/style/font set before
@@ -397,8 +267,9 @@ impl BindingHost {
         }
     }
 
-    /// Borrows this host's six fixed slots (plus [`Self::extra_slots`]) as
-    /// the [`RenderRefs`] shape [`crate::render::draw_bands`] paints from.
+    /// Borrows this host's six fixed slots as the [`RenderRefs`] shape
+    /// [`crate::render::draw_bands`] paints from. [`RenderRefs::extra`]
+    /// always borrows [`Self::extra`], which this host never populates.
     pub fn render_refs(&self) -> RenderRefs<'_> {
         RenderRefs {
             button: self.button.as_ref(),
@@ -407,7 +278,7 @@ impl BindingHost {
             tree: self.tree.as_ref(),
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
-            extra: &self.extra_slots,
+            extra: &self.extra,
             // `BindingHost`'s slots are set directly from Rust fields, not
             // decoded from a raw dict, so there is no `scroll_px` key to
             // lift out here — a host that wants pixel-precise scrolling
@@ -6070,55 +5941,5 @@ mod tests {
         let snapshot = widget_state_snapshot(&widget_state, id).expect("tree state stored");
         assert_eq!(snapshot.expanded, Some(vec![path.clone()]));
         assert_eq!(snapshot.selected_path, Some(path));
-    }
-
-    /// The shared slot/extra deprecation message names both the deprecated
-    /// method and the inline-leaf guidance a binding's own leaf passes in.
-    #[test]
-    fn slot_deprecation_message_names_the_method_and_the_guidance() {
-        let message = BindingHost::slot_deprecation_message(
-            "insert_list",
-            "render an inline `list` layout leaf instead",
-        );
-        assert!(message.contains("insert_list"));
-        assert!(message.contains("render an inline `list` layout leaf instead"));
-    }
-
-    /// Every fixed `SLOT_*` constant resolves to its own layout-leaf kind
-    /// name; an id outside the six resolves to `None`.
-    #[test]
-    fn slot_kind_name_covers_every_fixed_slot() {
-        assert_eq!(BindingHost::slot_kind_name(SLOT_BUTTON), Some("button"));
-        assert_eq!(
-            BindingHost::slot_kind_name(SLOT_TEXT_DISPLAY),
-            Some("text_display")
-        );
-        assert_eq!(BindingHost::slot_kind_name(SLOT_LIST), Some("list"));
-        assert_eq!(BindingHost::slot_kind_name(SLOT_TREE), Some("tree"));
-        assert_eq!(
-            BindingHost::slot_kind_name(SLOT_DATA_TABLE),
-            Some("data_table")
-        );
-        assert_eq!(BindingHost::slot_kind_name(SLOT_TAB_BAR), Some("tab_bar"));
-        assert_eq!(BindingHost::slot_kind_name(999), None);
-    }
-
-    /// [`BindingHost::first_deprecation_report`] reports `true` only the
-    /// first time a given method name is passed for this host, `false` on
-    /// every call after -- and independently per method name.
-    #[test]
-    fn first_deprecation_report_is_true_only_once_per_method_per_host() {
-        let host = BindingHost::default();
-        assert!(host.first_deprecation_report("insert_list"));
-        assert!(!host.first_deprecation_report("insert_list"));
-        assert!(!host.first_deprecation_report("insert_list"));
-        // A different method name on the same host still reports `true`
-        // its own first time.
-        assert!(host.first_deprecation_report("slot_clear"));
-        assert!(!host.first_deprecation_report("slot_clear"));
-
-        // A fresh host starts with a clean slate.
-        let other_host = BindingHost::default();
-        assert!(other_host.first_deprecation_report("insert_list"));
     }
 }
