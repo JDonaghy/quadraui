@@ -4,14 +4,7 @@
 // from a plain JS object through a render callback's flat `{"<kind>": {...}}`
 // object, assert `screenContains()` shows it, and exercise the two
 // audit-flagged pre-checks (`Buffer`-sourced `ImageSource::Bytes`, a
-// non-finite float) via that same path. The deprecated slot API's own
-// occupancy/validation behaviour (`insertButton`'s `SlotOccupiedError`,
-// `insertExtra`'s "no dedicated method" entry point and
-// `UnknownVariantError`, `clearExtra`'s own return-value semantics) has no
-// render-callback equivalent -- a render callback has no notion of
-// "occupied", it just returns fresh data every frame -- so the handful of
-// tests below that exercise that behaviour specifically stay on the
-// deprecated calls. Ports the shape of `quadraui-ffi`'s
+// non-finite float) via that same path. Ports the shape of `quadraui-ffi`'s
 // `bad_json_reports_last_error_for_each_new_primitive` and
 // `quadraui-py/tests/test_descriptors.py` + `test_extra_primitives.py`.
 //
@@ -186,21 +179,6 @@ test("tab bar leaf renders a tab's label", () => {
   assert.ok(app.screenContains("Tab 1"));
 });
 
-test("insertButton raises SlotOccupiedError when the slot is already occupied", () => {
-  const app = new QuiApp(40, 20);
-  app.insertButton({ id: "demo:ok", label: "OK" });
-  assert.throws(
-    () => app.insertButton({ id: "demo:ok2", label: "OK2" }),
-    /SlotOccupiedError/,
-  );
-
-  assert.equal(app.slotClear(0), true);
-  assert.ok(!app.screenContains("OK"));
-  const slot = app.insertButton({ id: "demo:ok2", label: "OK2" });
-  assert.equal(slot, 0);
-  assert.ok(app.screenContains("OK2"));
-});
-
 test("button leaf with a bad shape raises InvalidDescriptorError", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({ button: { not: "a button" } }));
@@ -299,17 +277,6 @@ test("progress leaf rejects a non-finite float with InvalidDescriptorError", () 
   assert.throws(() => app.screen(), /InvalidDescriptorError/);
 });
 
-test("insertExtra reaches the screen by kind name with no dedicated method", () => {
-  // The generic entry point: a future additive primitive reaches the
-  // screen through this one method with no new binding method required --
-  // unlike a render callback, where every kind is already addressed
-  // generically by its object key with no distinct "by name" method to
-  // prove at all.
-  const app = new QuiApp(40, 20);
-  app.insertExtra("progress", { id: "progress:download", label: "Downloading" });
-  assert.ok(app.screenContains("Downloading"));
-});
-
 test("form leaf with control_width and min_control_width renders without raising", () => {
   // `Form`/`FormField`'s `control_width`/`min_control_width` are plain
   // additive `#[serde(default)]` fields, so they decode through the same
@@ -348,14 +315,6 @@ test("text field leaf renders its value inside the bracket row", () => {
   assert.ok(app.screenContains("[hello"));
 });
 
-test("insertExtra with an unknown kind raises UnknownVariantError", () => {
-  const app = new QuiApp(40, 20);
-  assert.throws(
-    () => app.insertExtra("not_a_real_kind", { id: "x" }),
-    /UnknownVariantError/,
-  );
-});
-
 test("extra primitives coexist with the fixed slots", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
@@ -366,24 +325,13 @@ test("extra primitives coexist with the fixed slots", () => {
   assert.ok(app.screenContains("Downloading"));
 });
 
-test("clearExtra empties a slot and a later insert can reuse it", () => {
-  const app = new QuiApp(40, 20);
-  app.insertSpinner({ id: "spinner:lsp_boot", label: "Indexing" });
-  assert.equal(app.clearExtra("spinner"), true);
-  assert.ok(!app.screenContains("Indexing"));
-
-  app.insertSpinner({ id: "spinner:lsp_boot", label: "Booting" });
-  assert.ok(app.screenContains("Booting"));
-});
-
 // Table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry that has a
 // dedicated `FormEvent` round-trips through a literal inline layout-tree
 // leaf -- a `{ row: [{ id, <kind>: {...} }] }` object, the exact shape a
-// render callback returns -- not just through `insertExtra`'s flat-slot
-// path. Each case dispatches the events a real app would push (a focusing
-// click, then a key/char where the kind needs one) and asserts the final
-// event the handler receives. `progress`/`spinner`/`image` have no event
-// at all, so neither appears here.
+// render callback returns. Each case dispatches the events a real app
+// would push (a focusing click, then a key/char where the kind needs one)
+// and asserts the final event the handler receives. `progress`/`spinner`/
+// `image` have no event at all, so neither appears here.
 const INLINE_LEAF_CASES: Array<{
   name: string;
   tree: unknown;
@@ -657,8 +605,8 @@ for (const { name, tree, events, expected } of INLINE_LEAF_CASES) {
 // menu_bar) that doesn't fit `INLINE_LEAF_CASES`' generic "one Form event
 // per pushed event" shape above, so each gets its own test here instead of
 // a table row -- proving the same semantic event a flat-slot chrome bar
-// dispatches from an `insertExtra`-based flat slot still reaches the
-// handler when the bar is painted as a literal inline
+// dispatches from a render callback's flat `{"<kind>": {...}}` object
+// still reaches the handler when the bar is painted as a literal inline
 // `{ row: [{ id, <kind>: {...} }] }` leaf.
 
 test("inline tree leaf toolbar click emits Toolbar(ButtonClicked)", () => {
@@ -886,8 +834,8 @@ test("inline tree leaf find_replace renders its query text", () => {
   // (`tui::draw_find_replace` walks it to place the find/replace input
   // text) -- a real host builds it via `compute_find_replace_hit_regions`;
   // this test supplies just the one entry it needs directly. An inline
-  // leaf gets the full 40-column viewport rather than a narrower
-  // `insertExtra` band, so a `width` of 20 keeps the region inside it.
+  // leaf gets the full 40-column viewport rather than a narrower flat-slot
+  // band, so a `width` of 20 keeps the region inside it.
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
     row: [
@@ -937,8 +885,9 @@ test("inline tree leaf command_center renders its search label", () => {
 
 test("inline tree leaf palette renders its item text", () => {
   // Palette's TUI rasteriser refuses to paint anything below a 4x4 area,
-  // and `insertExtra` only ever gives an additive primitive a fixed 3-row
-  // band, so this one routes through a render-callback `row` leaf instead,
+  // and a render callback's flat `{"<kind>": {...}}` object only ever
+  // gives an additive primitive a fixed 3-row band, so this one routes
+  // through a render-callback `row` leaf instead,
   // which hands the leaf the full viewport -- mirrors
   // `test_palette_renders_item_text` in `quadraui-py/tests/test_extra_primitives.py`.
   const app = new QuiApp(40, 20);
@@ -962,8 +911,8 @@ test("inline tree leaf palette renders its item text", () => {
 
 // The data-view kinds below (`message_list`, `board`, `diff_view`,
 // `minimap`, `multi_section_view`, `chart`, `pipeline_view`) are pure
-// display -- no `insertExtra` method or dedicated semantic event of their
-// own -- so each gets a paint-only inline leaf proof: a literal
+// display -- no dedicated semantic event of their own -- so each gets a
+// paint-only inline leaf proof: a literal
 // `{ row: [{ id, <kind>: {...} }] }` object, the exact shape a render
 // callback returns, decodes through `layout_leaf_from_value`'s generic
 // `EXTRA_PRIMITIVE_KINDS` loop and paints through the matching
@@ -1164,7 +1113,7 @@ test("inline tree leaf chart renders its x_label", () => {
 // bare hit target (`canvas`, which `ExtraPaint::tab_stop` leaves
 // non-focusable) with no dedicated semantic event of their own -- a click
 // reaches the handler as the raw `MouseDown` with `widget` resolved to the
-// leaf's id, same as `insertExtra`'s flat-slot path.
+// leaf's id, same as a render callback's flat-slot path.
 test("inline tree leaf editor focuses it and routes the hit", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
@@ -1371,12 +1320,6 @@ test("canvas region hover emits RegionHovered alongside MouseEntered/MouseLeft",
     MouseEntered: { widget: "canvas:regions" },
     hit: { kind: "extra_body" },
   });
-});
-
-test("clearExtra on an empty or unknown kind returns false, not an error", () => {
-  const app = new QuiApp(40, 20);
-  assert.equal(app.clearExtra("progress"), false);
-  assert.equal(app.clearExtra("not_a_real_kind"), false);
 });
 
 test("pushEvent queues an event step consumes without raising", () => {

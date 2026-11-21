@@ -48,16 +48,3 @@ test("resize changes the rendered grid's row count", () => {
   const lines = screenLines(app.screen());
   assert.equal(lines.length, 6);
 });
-
-test("slotClear on an unknown slot id raises", () => {
-  const app = new QuiApp(5, 5);
-  assert.throws(() => app.slotClear(999));
-});
-
-test("slotClear on a never-occupied known slot returns false", () => {
-  const app = new QuiApp(5, 5);
-  // Slot 0 is `SLOT_BUTTON` -- see `quadraui-node/src/lib.rs`'s doc; a
-  // never-populated app has nothing in it yet, so this is a no-op. See
-  // `tests/descriptors.test.ts` for `insertButton` occupying/clearing it.
-  assert.equal(app.slotClear(0), false);
-});

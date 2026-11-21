@@ -81,10 +81,6 @@ export declare class VersionMismatchError extends InvalidDescriptorError {
 export declare class DecodeFailedError extends InvalidDescriptorError {
   readonly code: "borrow";
 }
-/** A fixed slot or additive-primitive kind that already holds a descriptor. */
-export declare class SlotOccupiedError extends QuadrauiError {}
-/** A slot id that is not one of the documented `SLOT_*` constants. */
-export declare class UnknownSlotError extends QuadrauiError {}
 /** A zero width/height, or a byte buffer whose length doesn't match the width/height it encodes. */
 export declare class InvalidDimensionsError extends QuadrauiError {}
 /** A `pushKeyEvent` code point that is not a valid Unicode scalar value. */

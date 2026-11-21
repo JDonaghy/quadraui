@@ -8,17 +8,15 @@
 //!
 //! [`QuiApp`] wraps a `quadraui::tui::testing::TuiDriver` running an
 //! in-crate [`NodeAppLogic`] that holds one [`quadraui_binding_core::BindingHost`]
-//! (the six fixed primitive slots, any additive slots, and the
-//! backend-settings replay store) plus a [`quadraui_binding_core::InteractionEngine`],
+//! (the backend-settings replay store) plus a [`quadraui_binding_core::InteractionEngine`],
 //! the registered-callback bridge, and a pending-error slot -- the napi-rs
 //! analog of `quadraui-py`'s `PyAppLogic`. The surface is the headless
 //! driver loop (`new`, `step`, `run`, `screen`, `screen_contains`, `resize`,
-//! `push_key_event`, `slot_clear`), the callback bridge (`setHandler`,
-//! `setTickHandler`, `setRender`, `actions`), and the descriptor decode
-//! adapter below: the six fixed `insert*` methods, `pushEvent`, and the
-//! additive-primitive `insertExtra`/`insertProgress`/`insertSpinner`/
-//! `insertImage`/`clearExtra`. The remaining mechanical method groups each
-//! get their own sibling module, every one a thin leaf over the same
+//! `push_key_event`), the callback bridge (`setHandler`, `setTickHandler`,
+//! `setRender`, `actions`), and the descriptor decode adapter below:
+//! `pushEvent` and the `render` callback's own descriptor decode. The
+//! remaining mechanical method groups each get their own sibling module,
+//! every one a thin leaf over the same
 //! `BindingHost`/`InteractionEngine`/`Backend`/`PlatformServices` surface
 //! `quadraui-py` already wraps: `clipboard` (`Clipboard`), `overlays`
 //! (`InteractionEngine`'s toast/tooltip/completions/float/rich-text-popup
@@ -115,8 +113,7 @@
 //!   custom-exception-class mechanism at the FFI boundary the way PyO3's
 //!   `create_exception!` does, so the tag lives in the message instead of a
 //!   distinct JS class (`assert.throws(fn, /InvalidDescriptorError/)` on the
-//!   JS side). An already-occupied slot/kind raises [`slot_occupied_error`]
-//!   (tagged `SlotOccupiedError`) before any decode is attempted.
+//!   JS side).
 //!
 //! A Rust panic reaching a driver call is caught at the [`QuiApp::guarded`]
 //! boundary, raised as a JS `Error` instead of unwinding into Node, and
@@ -172,7 +169,7 @@
 //! driver's own `step_driver`, exactly as fit for a JS `setInterval`/
 //! `setImmediate` loop (see `js/index.ts`'s `pump` helper) as the headless
 //! path already was. [`QuiApp::check_not_live`] rejects every configuration
-//! method (`setHandler`, `insertButton`, `actions`, ...) once a live
+//! method (`setHandler`, `setRender`, `actions`, ...) once a live
 //! session is running, the same "configure once, up front, before
 //! starting" discipline `quadraui-py`'s own doc describes for
 //! `run_tui`/`run_native` -- there, Python's blocking call makes that
@@ -279,10 +276,9 @@ use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiRunner};
 use quadraui::{
     A11yChild, A11yInfo, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
-    BottomPanelEvent, Button, CanvasRegion, ContextMenuItem, DataTable, DialogButton, DrawOp,
-    FloatMeasure, ImageSource, LayoutCtx, ListView, Notification, Point, PointerShape, Reaction,
-    Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar, TextDisplay, Toast, ToastCorner,
-    Tooltip, TreeView, UiEvent, UserPayload, WidgetId,
+    BottomPanelEvent, CanvasRegion, ContextMenuItem, DialogButton, DrawOp, FloatMeasure,
+    ImageSource, LayoutCtx, Notification, Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp,
+    ShellConfig, ShellContext, Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
@@ -310,11 +306,11 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction_for_render,
     caret_shape, clear_recent_documents, click_down_up_events, collect_leaf_tooltips,
-    color_depth_name, decode_extra_primitive, decode_layout_dialog, decode_popover,
-    decode_render_output_with_styles, decode_shell_config, decode_style_overrides, dialog_severity,
-    draw_bands, end_power_save_block, font_role, guarded as core_guarded, install_crash_handler,
-    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
-    merge_overrides, message_dialog_options_from_buttons, paint_layout_windowed, pointer_shape,
+    color_depth_name, decode_layout_dialog, decode_popover, decode_render_output_with_styles,
+    decode_shell_config, decode_style_overrides, dialog_severity, draw_bands, end_power_save_block,
+    font_role, guarded as core_guarded, install_crash_handler, is_default_protocol_client,
+    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
+    message_dialog_options_from_buttons, paint_layout_windowed, pointer_shape,
     record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
     resolve_layout_node_windowed, resolve_render_refs, set_app_identifier,
     set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
@@ -327,8 +323,7 @@ use quadraui_binding_core::{
     RowsRequestedEvent, ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent,
     ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState, ServiceError,
     StyleContext, TreeTableControllerNode, TreeTableControllerWireEvent, UpdateInfoWire,
-    WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
-    SLOT_TREE,
+    WindowCloseHandling,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode};
@@ -739,32 +734,6 @@ struct NodeAppLogic {
 }
 
 impl NodeAppLogic {
-    /// Whether `slot` names one of this app's six fixed primitive slots.
-    fn is_known_slot(slot: i64) -> bool {
-        BindingHost::is_known_slot(slot)
-    }
-
-    /// Whether `slot` currently holds a descriptor.
-    fn slot_occupied(&self, slot: i64) -> bool {
-        self.host.slot_occupied(slot)
-    }
-
-    /// Empties one slot, returning whether it held anything.
-    fn clear_slot(&mut self, slot: i64) -> bool {
-        self.host.clear_slot(slot)
-    }
-
-    /// Whether `kind` names a currently-occupied additive primitive slot.
-    fn extra_occupied(&self, kind: &str) -> bool {
-        self.host.extra_occupied(kind)
-    }
-
-    /// Empties one additive primitive slot, returning whether it held
-    /// anything.
-    fn clear_extra_slot(&mut self, kind: &str) -> bool {
-        self.host.clear_extra_slot(kind)
-    }
-
     /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
     /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
     /// own real wall clock, or a test-pinned value once
@@ -2284,100 +2253,6 @@ fn decode_error_to_js(err: DecodeError) -> Error {
     Error::from_reason(format!("{tag}: {message}\u{0}{path}"))
 }
 
-/// Mirrors [`invalid_descriptor_error`] for an already-occupied fixed slot
-/// or additive-primitive kind -- the napi-rs analog of `quadraui-py`'s
-/// `SlotOccupiedError` exception subclass.
-fn slot_occupied_error(detail: impl std::fmt::Display) -> Error {
-    Error::from_reason(format!("SlotOccupiedError: {detail}"))
-}
-
-/// Reports a deprecated slot/extra-API call to Node via
-/// `process.emitWarning(message, "DeprecationWarning")` -- the host
-/// language's own one-time deprecation channel (`util.deprecate`'s own
-/// convention). Called only when `host.first_deprecation_report(what)` says
-/// this is the first time this app has reported `what` -- see
-/// [`BindingHost::first_deprecation_report`]'s own doc for why the dedup is
-/// per-app rather than process-wide.
-///
-/// A missing or replaced `process.emitWarning` (an embedder, an unusual
-/// host, a test stubbing `process`) is swallowed rather than propagated: a
-/// deprecation notice must never turn a previously-working call into a hard
-/// error just because the notice itself couldn't be delivered.
-fn emit_slot_deprecation_warning(env: Env, message: &str) {
-    let report = || -> Result<()> {
-        let global = env.get_global()?;
-        let process: Object = global.get_named_property_unchecked("process")?;
-        let emit_warning: Function<FnArgs<(String, String)>, Unknown> =
-            process.get_named_property_unchecked("emitWarning")?;
-        emit_warning.call(FnArgs {
-            data: (message.to_string(), "DeprecationWarning".to_string()),
-        })?;
-        Ok(())
-    };
-    let _ = report();
-}
-
-/// The shared slot/extra-API deprecation report every `QuiApp` slot/extra
-/// method calls before doing its own work: -- only on the first call for
-/// `what` this app has made, per [`BindingHost::first_deprecation_report`]
-/// -- reports `message` via [`emit_slot_deprecation_warning`]. `message` is
-/// built by the caller from a `BindingHost::*_deprecation_message` call, so
-/// the wording lives once, shared with `quadraui-py`'s own forward.
-fn warn_slot_deprecated(host: &BindingHost, env: Env, what: &str, message: String) {
-    if !host.first_deprecation_report(what) {
-        return;
-    }
-    emit_slot_deprecation_warning(env, &message)
-}
-
-/// [`warn_slot_deprecated`] for inserting primitive `leaf_kind` via the
-/// deprecated `what` method -- the one call every `insert*`/`insertExtra`
-/// method makes, naming the inline layout leaf of that same kind as the
-/// replacement. Builds the shared message via
-/// [`BindingHost::insert_deprecation_message`].
-///
-/// The dedup key passed to [`BindingHost::first_deprecation_report`] is
-/// `what` alone, so for `insertExtra` specifically -- where `leaf_kind` is
-/// a caller-supplied `kind` string, not fixed by `what` -- only the first
-/// `kind` a given app passes is ever named: `insertExtra("progress", ...)`
-/// followed by `insertExtra("spinner", ...)` warns once, naming only
-/// `progress`.
-fn warn_insert_deprecated(host: &BindingHost, env: Env, what: &str, leaf_kind: &str) {
-    warn_slot_deprecated(
-        host,
-        env,
-        what,
-        BindingHost::insert_deprecation_message(what, leaf_kind),
-    )
-}
-
-/// [`warn_slot_deprecated`] for `clearExtra`, naming omitting `kind`'s
-/// layout leaf from the next `render` callback as the replacement. Builds
-/// the shared message via [`BindingHost::clear_extra_deprecation_message`].
-fn warn_clear_extra_deprecated(host: &BindingHost, env: Env, kind: &str) {
-    warn_slot_deprecated(
-        host,
-        env,
-        "clearExtra",
-        BindingHost::clear_extra_deprecation_message("clearExtra", kind),
-    )
-}
-
-/// [`warn_slot_deprecated`] for `slotClear`, naming omitting `slot`'s
-/// fixed-primitive layout leaf from the next `render` callback as the
-/// replacement. `slot` is assumed already validated by
-/// [`NodeAppLogic::is_known_slot`] -- see [`BindingHost::slot_kind_name`]'s
-/// own doc for why this never actually sees an unrecognized slot. Builds
-/// the shared message via [`BindingHost::slot_clear_deprecation_message`].
-fn warn_slot_clear_deprecated(host: &BindingHost, env: Env, slot: i64) {
-    warn_slot_deprecated(
-        host,
-        env,
-        "slotClear",
-        BindingHost::slot_clear_deprecation_message("slotClear", slot),
-    )
-}
-
 /// Mirrors [`invalid_descriptor_error`] for a failure internal to this
 /// binding rather than caused by caller input -- e.g. a deferred OS-service
 /// action ([`flush_deferred_actions`]) failing -- the napi-rs analog of
@@ -2513,14 +2388,6 @@ fn no_display_error(detail: impl std::fmt::Display) -> Error {
 #[cfg(feature = "gtk")]
 fn invalid_app_id_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("InvalidAppIdError: {detail}"))
-}
-
-/// Mirrors [`invalid_descriptor_error`] for a slot id argument that is not
-/// one of the `SLOT_*` constants -- [`QuiApp::slot_clear`]'s own check --
-/// the napi-rs analog of `quadraui-py`'s `UnknownSlotError` exception
-/// subclass.
-fn unknown_slot_error(detail: impl std::fmt::Display) -> Error {
-    Error::from_reason(format!("UnknownSlotError: {detail}"))
 }
 
 /// Mirrors [`invalid_descriptor_error`] for a `u32` code point argument
@@ -2775,8 +2642,8 @@ fn bytes_to_value(bytes: &[u8]) -> JsonValue {
 /// napi-rs analog of `quadraui-py`'s own `QuiAppActions`, exposing the
 /// subset of its methods [`DeferredAction`]'s own doc names. A registered
 /// event handler already holds this `QuiApp`'s one `&mut self` for the
-/// whole dispatch that invoked it, so calling, say, `app.insertButton(...)`
-/// straight from inside it raises `ReentrantCallError` -- see
+/// whole dispatch that invoked it, so calling, say, `app.screen()` straight
+/// from inside it raises `ReentrantCallError` -- see
 /// `QuiApp::check_not_dispatching`. Calling the matching method here
 /// instead touches no borrow of `QuiApp` itself: each method below decodes
 /// and validates its arguments immediately (so a malformed descriptor still
@@ -3273,17 +3140,14 @@ impl QuiAppWaker {
 
 /// A headless quadraui app, driven entirely from JavaScript/TypeScript.
 ///
-/// Construct it with a `width`/`height` cell grid, insert descriptors with
-/// `insertButton`/`insertTextDisplay`/`insertList`/`insertTree`/
-/// `insertDataTable`/`insertTabBar`/`insertExtra` (and its typed
-/// convenience wrappers `insertProgress`/`insertSpinner`/`insertImage`),
-/// register `setHandler`/`setTickHandler`/`setRender` callbacks, and
-/// inspect the rendered frame with `screen()`/`screenContains()`.
+/// Construct it with a `width`/`height` cell grid, register
+/// `setHandler`/`setTickHandler`/`setRender` callbacks, and inspect the
+/// rendered frame with `screen()`/`screenContains()`.
 ///
 /// A registered handler runs while `step`/`run` holds this app's one `&mut
 /// self` for the whole step. napi-rs's own per-instance native-borrow
 /// tracking (`napi::bindgen_runtime`'s internal `NativeBorrowState`) already
-/// rejects a handler calling straight back into, say, `insertButton` on the
+/// rejects a handler calling straight back into, say, `screen()` on the
 /// same instance mid-dispatch, at the FFI boundary, before any of this
 /// crate's own code runs -- but that rejection carries a generic napi-rs
 /// message ("the same native value cannot be borrowed mutably while another
@@ -3476,33 +3340,6 @@ impl QuiApp {
         })
     }
 
-    /// Empties a slot (one of the six fixed primitive slot ids
-    /// `quadraui_binding_core` defines -- `SLOT_BUTTON` etc.), re-rendering
-    /// so `screen()` no longer shows it. Returns whether the slot held
-    /// anything. Raises if `slot` doesn't name one of the six, or
-    /// `LiveRunnerActiveError` while `startTui` is active.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming
-    /// omitting the relevant fixed-slot layout leaf from the next `render`
-    /// callback as the replacement; removal is a later breaking release.
-    #[napi(js_name = "slotClear")]
-    pub fn slot_clear(&mut self, env: Env, slot: i64) -> Result<bool> {
-        self.check_not_dispatching()?;
-        self.check_not_live()?;
-        if !NodeAppLogic::is_known_slot(slot) {
-            return Err(unknown_slot_error(format!("unknown slot id: {slot}")));
-        }
-        warn_slot_clear_deprecated(&self.driver.app().host, env, slot);
-        self.guarded(env, |app| {
-            let cleared = app.driver.app_mut().clear_slot(slot);
-            if cleared {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(cleared)
-        })
-    }
-
     /// Registers `handler` as this app's event handler, called with the
     /// JS-converted payload for every dispatched `UiEvent` -- see
     /// [`NodeEventSink`]'s doc for the payload shape and return-value
@@ -3543,8 +3380,8 @@ impl QuiApp {
     /// frame and expected to return a plain object decodable the same way a
     /// `pushEvent` descriptor is -- a flat map of slot names to descriptors,
     /// or a layout tree (see `quadraui_binding_core::decode_render_output`'s
-    /// doc for the flat-vs-tree sniff). Overrides the six fixed `insert*`
-    /// slots for every subsequent render. Raises if called re-entrantly, or
+    /// doc for the flat-vs-tree sniff). This is the only way to show a
+    /// descriptor. Raises if called re-entrantly, or
     /// `LiveRunnerActiveError` once `startTui` is active -- see
     /// [`Self::set_handler`]'s doc.
     #[napi(js_name = "setRender")]
@@ -3746,223 +3583,6 @@ impl QuiApp {
                 .engine
                 .set_tree_table_sort_override(WidgetId::new(id), nodes);
             Ok(())
-        })
-    }
-
-    /// Inserts a `Button` descriptor from a JS object, returning its slot
-    /// handle. Raises `SlotOccupiedError` if the button slot is already
-    /// occupied -- call `slotClear` first.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `button` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    #[napi(js_name = "insertButton")]
-    pub fn insert_button(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        self.check_not_live()?;
-        warn_insert_deprecated(&self.driver.app().host, env, "insertButton", "button");
-        self.insert_fixed(
-            env,
-            SLOT_BUTTON,
-            "insertButton",
-            |app, value: Button| app.host.button = Some(value),
-            descriptor,
-        )
-    }
-
-    /// Inserts a `TextDisplay` descriptor from a JS object, returning its
-    /// slot handle. Raises `SlotOccupiedError` if the text-display slot is
-    /// already occupied -- call `slotClear` first.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `text_display` layout leaf as the replacement; removal is a
-    /// later breaking release.
-    #[napi(js_name = "insertTextDisplay")]
-    pub fn insert_text_display(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        self.check_not_live()?;
-        warn_insert_deprecated(
-            &self.driver.app().host,
-            env,
-            "insertTextDisplay",
-            "text_display",
-        );
-        self.insert_fixed(
-            env,
-            SLOT_TEXT_DISPLAY,
-            "insertTextDisplay",
-            |app, value: TextDisplay| app.host.text_display = Some(value),
-            descriptor,
-        )
-    }
-
-    /// Inserts a `ListView` descriptor from a JS object, returning its slot
-    /// handle. Raises `SlotOccupiedError` if the list slot is already
-    /// occupied -- call `slotClear` first.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `list` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    #[napi(js_name = "insertList")]
-    pub fn insert_list(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        self.check_not_live()?;
-        warn_insert_deprecated(&self.driver.app().host, env, "insertList", "list");
-        self.insert_fixed(
-            env,
-            SLOT_LIST,
-            "insertList",
-            |app, value: ListView| app.host.list = Some(value),
-            descriptor,
-        )
-    }
-
-    /// Inserts a `TreeView` descriptor from a JS object, returning its slot
-    /// handle. Raises `SlotOccupiedError` if the tree slot is already
-    /// occupied -- call `slotClear` first.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `tree` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    #[napi(js_name = "insertTree")]
-    pub fn insert_tree(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        self.check_not_live()?;
-        warn_insert_deprecated(&self.driver.app().host, env, "insertTree", "tree");
-        self.insert_fixed(
-            env,
-            SLOT_TREE,
-            "insertTree",
-            |app, value: TreeView| app.host.tree = Some(value),
-            descriptor,
-        )
-    }
-
-    /// Inserts a `DataTable` descriptor from a JS object, returning its
-    /// slot handle. Raises `SlotOccupiedError` if the data-table slot is
-    /// already occupied -- call `slotClear` first.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `data_table` layout leaf as the replacement; removal is a
-    /// later breaking release.
-    #[napi(js_name = "insertDataTable")]
-    pub fn insert_data_table(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        self.check_not_live()?;
-        warn_insert_deprecated(
-            &self.driver.app().host,
-            env,
-            "insertDataTable",
-            "data_table",
-        );
-        self.insert_fixed(
-            env,
-            SLOT_DATA_TABLE,
-            "insertDataTable",
-            |app, value: DataTable| app.host.data_table = Some(value),
-            descriptor,
-        )
-    }
-
-    /// Inserts a `TabBar` descriptor from a JS object, returning its slot
-    /// handle. Raises `SlotOccupiedError` if the tab-bar slot is already
-    /// occupied -- call `slotClear` first.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `tab_bar` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    #[napi(js_name = "insertTabBar")]
-    pub fn insert_tab_bar(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
-        self.check_not_live()?;
-        warn_insert_deprecated(&self.driver.app().host, env, "insertTabBar", "tab_bar");
-        self.insert_fixed(
-            env,
-            SLOT_TAB_BAR,
-            "insertTabBar",
-            |app, value: TabBar| app.host.tab_bar = Some(value),
-            descriptor,
-        )
-    }
-
-    /// Inserts a `ProgressBar` descriptor from a JS object, returning
-    /// `"progress"` back. Raises `SlotOccupiedError` if `"progress"` is
-    /// already occupied -- call `clearExtra("progress")` first. A thin,
-    /// typed-descriptor convenience over [`Self::insert_extra`].
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `progress` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    #[napi(js_name = "insertProgress")]
-    pub fn insert_progress(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
-        self.check_not_live()?;
-        warn_insert_deprecated(&self.driver.app().host, env, "insertProgress", "progress");
-        self.store_extra(env, "progress", "insertProgress", descriptor)
-    }
-
-    /// Inserts a `Spinner` descriptor from a JS object, returning
-    /// `"spinner"` back. Raises `SlotOccupiedError` if `"spinner"` is
-    /// already occupied -- call `clearExtra("spinner")` first. A thin,
-    /// typed-descriptor convenience over [`Self::insert_extra`].
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `spinner` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    #[napi(js_name = "insertSpinner")]
-    pub fn insert_spinner(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
-        self.check_not_live()?;
-        warn_insert_deprecated(&self.driver.app().host, env, "insertSpinner", "spinner");
-        self.store_extra(env, "spinner", "insertSpinner", descriptor)
-    }
-
-    /// Inserts an `Image` descriptor from a JS object, returning `"image"`
-    /// back. Raises `SlotOccupiedError` if `"image"` is already occupied --
-    /// call `clearExtra("image")` first. A thin, typed-descriptor
-    /// convenience over [`Self::insert_extra`].
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `image` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    #[napi(js_name = "insertImage")]
-    pub fn insert_image(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
-        self.check_not_live()?;
-        warn_insert_deprecated(&self.driver.app().host, env, "insertImage", "image");
-        self.store_extra(env, "image", "insertImage", descriptor)
-    }
-
-    /// Inserts a descriptor for any additive primitive `kind` registered in
-    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table (an
-    /// `InvalidDescriptorError` raised for an unknown `kind` names every
-    /// registered one), returning `kind` back. Raises `SlotOccupiedError`
-    /// if `kind` is already occupied -- call `clearExtra(kind)` first. Lets
-    /// a consumer insert a future additive primitive by name alone, with no
-    /// new napi method needed on this class.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming the
-    /// inline `kind` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    #[napi(js_name = "insertExtra")]
-    pub fn insert_extra(&mut self, env: Env, kind: String, descriptor: Unknown) -> Result<String> {
-        self.check_not_live()?;
-        warn_insert_deprecated(&self.driver.app().host, env, "insertExtra", &kind);
-        self.store_extra(env, &kind, "insertExtra", descriptor)
-    }
-
-    /// Empties an additive primitive slot (one registered in
-    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table),
-    /// re-rendering so `screen()` no longer shows it. Returns whether the
-    /// slot held anything; an unrecognized `kind` simply has nothing to
-    /// clear (unlike `slotClear`, this never raises for an unknown key).
-    /// Raises `LiveRunnerActiveError` once `startTui` is active.
-    ///
-    /// @deprecated Reports a one-time `process.emitWarning` naming omitting
-    /// `kind`'s layout leaf from the next `render` callback as the
-    /// replacement; removal is a later breaking release.
-    #[napi(js_name = "clearExtra")]
-    pub fn clear_extra(&mut self, env: Env, kind: String) -> Result<bool> {
-        self.check_not_live()?;
-        warn_clear_extra_deprecated(&self.driver.app().host, env, &kind);
-        self.guarded(env, |app| {
-            let cleared = app.driver.app_mut().clear_extra_slot(&kind);
-            if cleared {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(cleared)
         })
     }
 
@@ -4357,8 +3977,7 @@ impl QuiApp {
     /// alternate screen) runs as this app's [`Self::live`] is replaced with
     /// `None`. Returns whether a live session was actually running (`false`
     /// is not an error -- calling this with no live session active is a
-    /// harmless no-op, matching `slotClear`'s own "nothing to do" shape
-    /// rather than `insertButton`'s "state already there" one). This app's
+    /// harmless no-op). This app's
     /// prior configuration (handlers/descriptors `startTui` moved out) does
     /// not come back -- see [`Self::live_exited`]'s own doc, which this
     /// also sets, so a later `step()`/`run()` raises `LiveRunnerExitedError`
@@ -4443,73 +4062,6 @@ impl QuiApp {
         return Some("win".to_string());
         #[cfg(not(any(feature = "gtk", feature = "macos", feature = "win")))]
         return None;
-    }
-}
-
-impl QuiApp {
-    /// Shared body of every fixed-slot `insert*` method: reject an
-    /// occupied slot, decode `descriptor` into `T` via [`decode_direct`],
-    /// store it with `store`, then re-render -- the napi-rs analog of
-    /// `quadraui-py`'s own `insert` helper. Raises `LiveRunnerActiveError`
-    /// once `startTui` is active -- see this module's doc's "Live run
-    /// loop" section.
-    fn insert_fixed<T: DeserializeOwned>(
-        &mut self,
-        env: Env,
-        slot: i64,
-        what: &str,
-        store: impl FnOnce(&mut NodeAppLogic, T),
-        descriptor: Unknown,
-    ) -> Result<i64> {
-        self.check_not_live()?;
-        if self.driver.app().slot_occupied(slot) {
-            return Err(slot_occupied_error(format!(
-                "{what}: slot already occupied; call slotClear({slot}) first"
-            )));
-        }
-        let value: T = decode_direct(env, what, descriptor)?;
-        self.guarded(env, |app| {
-            store(app.driver.app_mut(), value);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(slot)
-        })
-    }
-
-    /// Shared body of every additive-primitive `insert*` method (including
-    /// the public `insertExtra` method above): reject an already-occupied
-    /// `kind`, decode the JS object through [`decode_extra_primitive`] via
-    /// [`decode_via_core`], store it, then re-render, returning `kind` back
-    /// for symmetry with the fixed `insert*` methods' slot-handle return
-    /// value -- the napi-rs analog of `quadraui-py`'s own `store_extra`
-    /// helper. Raises `LiveRunnerActiveError` once `startTui` is active --
-    /// see [`Self::insert_fixed`]'s doc.
-    fn store_extra(
-        &mut self,
-        env: Env,
-        kind: &str,
-        what: &str,
-        descriptor: Unknown,
-    ) -> Result<String> {
-        self.check_not_live()?;
-        if self.driver.app().extra_occupied(kind) {
-            return Err(slot_occupied_error(format!(
-                "{what}: {kind:?} already occupied; call clearExtra({kind:?}) first"
-            )));
-        }
-        let value = decode_via_core(what, descriptor, |value| {
-            decode_extra_primitive(what, kind, value)
-        })?;
-        self.guarded(env, |app| {
-            app.driver
-                .app_mut()
-                .host
-                .extra_slots
-                .insert(kind.to_string(), value);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(kind.to_string())
-        })
     }
 }
 
@@ -5407,23 +4959,6 @@ mod tests {
     fn push_key_event_rejects_invalid_code_point() {
         let mut app = QuiApp::new(5, 5).expect("valid dimensions");
         assert!(app.push_key_event(0xD800).is_err());
-    }
-
-    /// `slotClear` raises on an id outside the six fixed primitive slots.
-    #[test]
-    fn slot_clear_rejects_unknown_slot() {
-        let mut app = QuiApp::new(5, 5).expect("valid dimensions");
-        assert!(app.slot_clear(null_env_for_test(), 999).is_err());
-    }
-
-    /// `slotClear` on a never-occupied slot is a no-op that reports
-    /// `false`, not an error.
-    #[test]
-    fn slot_clear_on_empty_slot_reports_false() {
-        let mut app = QuiApp::new(5, 5).expect("valid dimensions");
-        assert!(!app
-            .slot_clear(null_env_for_test(), quadraui_binding_core::SLOT_BUTTON)
-            .expect("a known slot id must not raise"));
     }
 
     /// A Rust panic raised from inside `guarded`'s body is caught and
