@@ -273,8 +273,8 @@ fn readme_leads_with_a_resolvable_published_version() {
 fn guide_leads_with_a_resolvable_published_version() {
     // GUIDE.md's "Step 1: project setup" Cargo.toml snippet is a reader's
     // first `cargo add`-able dependency line — same shape as the root
-    // README's Getting started snippet, same drift risk (#2806 found it
-    // still said `version = "0.1"` against a 0.11.0 crate).
+    // README's Getting started snippet, same drift risk: it must track
+    // the real published minor version, not a stale literal.
     let want = major_minor();
     let guide = guide_md();
     let needle = format!("quadraui = {{ version = \"{want}\"");
