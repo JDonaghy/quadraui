@@ -355,11 +355,15 @@ test("a handler calling back into QuiApp (e.g. setRender) mid-dispatch raises in
   assert.ok(!app.screenContains("OK"), "the reentrant setRender call must not have applied");
 });
 
-test("actions().showMessageDialog queues a dialog a handler cannot open directly mid-dispatch", () => {
+test("actions().showOverlay queues a dialog a handler cannot open directly mid-dispatch", () => {
   const app = new QuiApp(40, 20);
   const actions = app.actions();
   app.setHandler(() => {
-    actions.showMessageDialog("Title", "Body", [{ id: "ok", label: "OK" }], null);
+    actions.showOverlay(
+      "message_dialog",
+      { title: "Title", body: "Body", buttons: [{ id: "ok", label: "OK" }] },
+      null,
+    );
   });
   app.pushKeyEvent("a".codePointAt(0));
   app.step();

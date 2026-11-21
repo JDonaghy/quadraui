@@ -671,8 +671,8 @@ impl QuiApp {
 
     /// Attaches (or replaces) the tray icon's right-click/click menu --
     /// [`quadraui::backend::TrayService::set_menu`]. `items` decodes the
-    /// same way [`QuiApp::show_context_menu`]'s own `items` argument does
-    /// -- an array of [`ContextMenuItem`] objects; an activated entry
+    /// same way [`QuiApp::show_overlay`]'s own `"context_menu"` `items`
+    /// field does -- an array of [`ContextMenuItem`] objects; an activated entry
     /// fires `UiEvent::ContextMenuItemActivated` the same way a
     /// right-click context menu's does. Same tray-less-on-TUI story as
     /// [`Self::set_tray_icon`].

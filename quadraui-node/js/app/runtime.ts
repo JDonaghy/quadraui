@@ -291,7 +291,7 @@ const FORM_FIELD_EVENT_MAP: Record<string, [string, (payload: Record<string, unk
 
 /**
  * One button `App.confirm`/`App.alert` offers -- the same shape
- * `showMessageDialog`'s own `buttons` argument takes. Kept local rather
+ * `showOverlay`'s own `"message_dialog"` `buttons` field takes. Kept local rather
  * than imported from `../wire`: that generated module has no standalone
  * name for this shape, only `DialogButtonDescriptor`'s `tint`/`spec`
  * extras this layer's own two helpers don't expose.
@@ -395,11 +395,11 @@ class App {
   /**
    * The resolver for a pending `confirm`/`alert` promise, waiting on
    * `UiEvent::MessageDialogResolved` -- `null` when none is outstanding. A
-   * dialog opened some other way (a raw `actions.showMessageDialog`/
-   * `qui.showMessageDialog`/`actions.showOverlay("message_dialog", ...)`/
-   * `qui.showOverlay` call `confirm`/`alert` never wrapped a promise
-   * around) resolves nothing here; its event falls through `_dispatch` to
-   * `onEvent` like any other unclaimed one.
+   * dialog opened some other way (a raw
+   * `actions.showOverlay("message_dialog", ...)`/
+   * `qui.showOverlay("message_dialog", ...)` call `confirm`/`alert` never
+   * wrapped a promise around) resolves nothing here; its event falls
+   * through `_dispatch` to `onEvent` like any other unclaimed one.
    */
   private _pendingDialogResolve: ((id: string) => void) | null = null;
   /** The exception a failed reload recorded, or `null` after a successful one. */

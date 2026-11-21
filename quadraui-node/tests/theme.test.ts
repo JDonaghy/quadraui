@@ -96,9 +96,10 @@ test("setTheme error_fg recolours the derived toast danger background", () => {
   // `Error`-severity toast paints -- a port of
   // `quadraui-py/tests/test_theme.py`'s equivalent test.
   const app = new QuiApp(40, 20);
-  app.showToast(
-    { id: "toast:before", title: "Boom", body: "", severity: "Error" },
-    "top_left",
+  app.showOverlay(
+    "toast",
+    { id: "toast:before", title: "Boom", body: "", severity: "Error", corner: "top_left" },
+    null,
   );
   // Sample the toast box's top-left border cell -- every cell in the
   // box shares the same background fill regardless of row/column (see
@@ -107,9 +108,10 @@ test("setTheme error_fg recolours the derived toast danger background", () => {
   const [, beforeBg] = app.cellColors(1, 1) as [number[], number[]];
 
   app.setTheme({ error_fg: "#ff0000" });
-  app.showToast(
-    { id: "toast:after", title: "Boom", body: "", severity: "Error" },
-    "top_left",
+  app.showOverlay(
+    "toast",
+    { id: "toast:after", title: "Boom", body: "", severity: "Error", corner: "top_left" },
+    null,
   );
   const [, afterBg] = app.cellColors(1, 1) as [number[], number[]];
 

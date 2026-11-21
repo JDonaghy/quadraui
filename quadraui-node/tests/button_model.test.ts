@@ -72,7 +72,7 @@ test("an inline button leaf without variant keeps the default primary look", () 
   assert.notDeepEqual(labelFg, rgb(theme.error_fg));
 });
 
-test("showToast action with a Danger spec colours its row in error_fg", () => {
+test("showOverlay toast action with a Danger spec colours its row in error_fg", () => {
   // `Toast.actions` decodes straight to `ToastButton[]`, and
   // `ToastButton.spec` -- the same `ButtonSpec` `Button.icon`'s own
   // sibling fields live on -- is honoured by `tui::toast::paint_toast`
@@ -81,19 +81,23 @@ test("showToast action with a Danger spec colours its row in error_fg", () => {
   // foreground to `Theme.error_fg`, dropping any `accent_bg`/`link_fg`
   // look the legacy `primary` flag would otherwise give it.
   const app = new QuiApp(40, 20);
-  app.showToast({
-    id: "toast:confirm",
-    title: "Delete file?",
-    body: "",
-    actions: [
-      { id: "keep", label: "Keep" },
-      {
-        id: "discard",
-        label: "Discard",
-        spec: { label: "Discard", variant: "Danger" },
-      },
-    ],
-  });
+  app.showOverlay(
+    "toast",
+    {
+      id: "toast:confirm",
+      title: "Delete file?",
+      body: "",
+      actions: [
+        { id: "keep", label: "Keep" },
+        {
+          id: "discard",
+          label: "Discard",
+          spec: { label: "Discard", variant: "Danger" },
+        },
+      ],
+    },
+    null,
+  );
 
   assert.ok(app.screenContains("Keep"));
   assert.ok(app.screenContains("Discard"));
@@ -111,7 +115,7 @@ test("showToast action with a Danger spec colours its row in error_fg", () => {
   assert.notDeepEqual(keepFg, discardFg);
 });
 
-test("showMessageDialog accepts a dialog button with a Danger spec", () => {
+test("showOverlay message_dialog accepts a dialog button with a Danger spec", () => {
   // `DialogButton.spec` decodes fine through the same decode path the
   // other two scenarios use -- a dialog button naming `spec` never
   // raises. It has no visible rendering effect on *this* surface yet:
@@ -127,15 +131,23 @@ test("showMessageDialog accepts a dialog button with a Danger spec", () => {
   // scope -- the toast scenario above is the one that proves the B3b
   // vocabulary paints.
   const app = new QuiApp(60, 20);
-  app.showMessageDialog("Unsaved changes", "Delete the file permanently?", [
+  app.showOverlay(
+    "message_dialog",
     {
-      id: "discard",
-      label: "Delete",
-      is_default: true,
-      spec: { label: "Delete", variant: "Danger" },
+      title: "Unsaved changes",
+      body: "Delete the file permanently?",
+      buttons: [
+        {
+          id: "discard",
+          label: "Delete",
+          is_default: true,
+          spec: { label: "Delete", variant: "Danger" },
+        },
+        { id: "cancel", label: "Cancel", is_cancel: true },
+      ],
     },
-    { id: "cancel", label: "Cancel", is_cancel: true },
-  ]);
+    null,
+  );
 
   assert.ok(app.screenContains("Delete"));
   assert.ok(app.screenContains("Cancel"));

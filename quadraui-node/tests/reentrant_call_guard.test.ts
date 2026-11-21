@@ -2,7 +2,7 @@
 // surface:
 //
 // 1. Every `QuiApp` method restricted to top-level script code (the ones
-//    with a matching `QuiAppActions` method -- `showMessageDialog`,
+//    with a matching `QuiAppActions` method -- `showOverlay`,
 //    `setTitle`, ...) throws `ReentrantCallError`, with a message naming
 //    the method and pointing at `actions()`, instead of napi-rs's own
 //    generic "cannot be borrowed mutably" rejection, when called from
@@ -33,11 +33,6 @@ const { InvalidDescriptorError, QuiApp, ReentrantCallError } = require("../js/in
 const RESTRICTED_METHOD_CALLS: Array<[string, unknown[]]> = [
   ["showOverlay", ["message_dialog", { title: "Title", body: "Body", buttons: [{ id: "ok", label: "OK" }] }, null]],
   ["dismissOverlay", ["message_dialog"]],
-  ["showMessageDialog", ["Title", "Body", [{ id: "ok", label: "OK" }], null]],
-  ["showContextMenu", [[{ id: "a", label: "A" }], { x: 0, y: 0 }]],
-  ["showToast", [{ id: "t1", title: "Hi", body: "there" }, null]],
-  ["showTooltip", [{ id: "tip", text: "hint" }, { x: 0, y: 0, width: 1, height: 1 }]],
-  ["hideTooltip", []],
   ["sendNotification", ["Title", "Body", null, null, null]],
   ["openPath", ["/tmp"]],
   ["revealInFileManager", ["/tmp"]],
@@ -88,7 +83,7 @@ for (const [method, args] of RESTRICTED_METHOD_CALLS) {
 test("a restricted method still works normally from top-level script code", () => {
   const app = new QuiApp(40, 20);
   app.setCursor("default", null);
-  app.showMessageDialog("Confirm", "Really?", [{ id: "ok", label: "OK" }], null);
+  app.showOverlay("message_dialog", { title: "Confirm", body: "Really?", buttons: [{ id: "ok", label: "OK" }] }, null);
   assert.ok(app.screenContains("Confirm"));
 });
 

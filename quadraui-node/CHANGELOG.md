@@ -103,3 +103,22 @@ fragment step for this package (that mechanism, and
   primitive slots and every additive primitive now reach the screen only
   through a `setRender` callback's descriptor object. `SlotOccupiedError`/
   `UnknownSlotError` are removed with them.
+- The 13 legacy per-kind overlay methods on `QuiApp`, and their 5
+  duplicates on `QuiAppActions`, now that `showOverlay`/`dismissOverlay`
+  cover every kind each one forwarded onto:
+
+  | Removed | `QuiApp` replacement | `QuiAppActions` replacement |
+  | --- | --- | --- |
+  | `showContextMenu(items, position)` | `showOverlay("context_menu", {items}, position)` | same, via `actions.showOverlay` |
+  | `showMessageDialog(title, body, buttons, severity?)` | `showOverlay("message_dialog", {title, body, buttons, severity}, null)` | same, via `actions.showOverlay` |
+  | `dismissMessageDialog()` | `dismissOverlay("message_dialog")` | n/a (`QuiAppActions` never had one) |
+  | `showToast(toast, corner?)` | `showOverlay("toast", {...toast, corner}, null)` | same, via `actions.showOverlay` |
+  | `dismissToast(id)` | `dismissOverlay(id)` | n/a (`QuiAppActions` never had one) |
+  | `showTooltip(tooltip, anchor)` | `showOverlay("tooltip", tooltip, anchor)` | same, via `actions.showOverlay` |
+  | `hideTooltip()` | `dismissOverlay("tooltip")` | `dismissOverlay("tooltip")` |
+  | `showCompletions(completions, cursor)` | `showOverlay("completions", completions, cursor)` | n/a (`QuiAppActions` never had one) |
+  | `dismissCompletions()` | `dismissOverlay("completions")` | n/a (`QuiAppActions` never had one) |
+  | `showFloat(float, width, height)` | `showOverlay("float", float, {width, height})` | n/a (`QuiAppActions` never had one) |
+  | `dismissFloat()` | `dismissOverlay("float")` | n/a (`QuiAppActions` never had one) |
+  | `showRichTextPopup(popup, anchor)` | `showOverlay("rich_text_popup", popup, anchor)` | n/a (`QuiAppActions` never had one) |
+  | `dismissRichTextPopup()` | `dismissOverlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
