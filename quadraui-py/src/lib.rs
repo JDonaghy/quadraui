@@ -488,14 +488,21 @@ create_exception!(
 /// validated, waiting for [`flush_deferred_actions`] to apply it. Each
 /// variant mirrors one of the `QuiApp` methods [`QuiAppActions`]'s own
 /// doc names (`show_message_dialog`, `show_context_menu`, `show_toast`,
-/// `show_tooltip`, `hide_tooltip`, `send_notification`, `open_path`,
+/// `show_tooltip`, `hide_tooltip`, `show_overlay`, `dismiss_overlay`,
+/// `send_notification`, `open_path`,
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
 /// `set_theme`, `define_style`) — carrying exactly the already-decoded arguments the
 /// matching `QuiApp` method passes to the same underlying
 /// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
-/// with no further decoding or validation left to do.
+/// with no further decoding or validation left to do. `show_overlay`
+/// pushes one of [`Self::ContextMenu`]/[`Self::MessageDialog`]/
+/// [`Self::Toast`]/[`Self::Tooltip`]/[`Self::Completions`]/[`Self::Float`]/
+/// [`Self::RichTextPopup`]/[`Self::Popover`]/[`Self::LayoutDialog`]
+/// depending on its own `kind` argument — the same nine-way split
+/// `QuiApp::show_overlay`'s own match makes; `dismiss_overlay` always
+/// pushes [`Self::DismissOverlay`].
 ///
 /// [`DeferredAction::HideTooltip`] is the one variant with no matching
 /// `QuiApp` method argument to carry — `QuiApp::hide_tooltip` itself takes
@@ -551,12 +558,41 @@ create_exception!(
 /// answered — both only ever arrive inside that handler's own dispatch,
 /// where `QuiApp::set_tree_table_children`/`set_tree_table_sort_override`
 /// would raise [`ReentrantCallError`].
+///
+/// [`DeferredAction::Popover`]/[`DeferredAction::LayoutDialog`] are a
+/// fourth exception, for the same reason `Theme`'s is: decoding either
+/// one's `"content"` subtree needs the live backend's current theme (for
+/// `"class"` style-token lookups) that only exists once
+/// [`flush_deferred_actions`] runs, so each stores its raw
+/// [`serde_json::Value`] descriptor unchanged and `flush_deferred_actions`
+/// decodes it via [`decode_popover`]/[`decode_layout_dialog`] itself,
+/// surfacing a decode failure through `pending_error` the same way a
+/// failing `OpenPath`/`MoveToTrash` already is.
 enum DeferredAction {
     MessageDialog(MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
     Toast(Toast, ToastCorner),
     Tooltip(Tooltip, Rect),
     HideTooltip,
+    Completions(Completions, Point),
+    Float(Float, FloatMeasure),
+    RichTextPopup(RichTextPopup, Point),
+    /// `kind, descriptor, measure` for `QuiAppActions::show_overlay("popover", ...)`
+    /// -- unlike every other overlay kind, a popover's descriptor can only
+    /// be decoded once a live backend (for its current theme) and
+    /// `BindingHost::style_sets` are both in hand, so [`flush_deferred_actions`]
+    /// decodes `descriptor` via [`decode_popover`] itself rather than at
+    /// queue time -- see that function's own doc.
+    Popover(serde_json::Value, FloatMeasure),
+    /// `descriptor, size` for `QuiAppActions::show_overlay("layout_dialog", ...)`
+    /// -- [`Self::Popover`]'s own reason for deferring the decode applies
+    /// identically here.
+    LayoutDialog(serde_json::Value, DialogContentSize),
+    /// Queued by `QuiAppActions::dismiss_overlay` -- same `id` vocabulary
+    /// (the six `show_overlay` sentinels, or any other string read as a
+    /// toast id) as `QuiApp::dismiss_overlay`, applied via the identical
+    /// match [`flush_deferred_actions`] runs.
+    DismissOverlay(String),
     Notification(Notification),
     OpenPath(PathBuf),
     RevealInFileManager(PathBuf),
@@ -1090,6 +1126,29 @@ fn require_anchor(
     anchor.ok_or_else(|| {
         InvalidDescriptorError::new_err(format!("{what}: {kind:?} overlay needs an anchor"))
     })
+}
+
+/// Reads `value[chrome_key]["id"]` out of a `show_overlay` descriptor
+/// already converted to JSON, without running the rest of
+/// [`decode_popover`]/[`decode_layout_dialog`]'s own validation —
+/// [`QuiAppActions::show_overlay`]'s only way to return a `"popover"`/
+/// `"layout_dialog"` overlay's id synchronously, since the full decode
+/// needs a live backend's theme that only exists once
+/// [`flush_deferred_actions`] runs (see [`DeferredAction::Popover`]'s own
+/// doc).
+fn peek_overlay_content_id(
+    what: &str,
+    value: &serde_json::Value,
+    chrome_key: &str,
+) -> PyResult<String> {
+    value
+        .get(chrome_key)
+        .and_then(|chrome| chrome.get("id"))
+        .and_then(|id| id.as_str())
+        .map(|id| id.to_string())
+        .ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!("{what}: missing {chrome_key:?}.\"id\" string"))
+        })
 }
 
 /// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
@@ -3227,6 +3286,172 @@ impl QuiAppActions {
         Ok(())
     }
 
+    /// Queues one of [`DeferredAction::ContextMenu`]/
+    /// [`DeferredAction::MessageDialog`]/[`DeferredAction::Toast`]/
+    /// [`DeferredAction::Tooltip`]/[`DeferredAction::Completions`]/
+    /// [`DeferredAction::Float`]/[`DeferredAction::RichTextPopup`]/
+    /// [`DeferredAction::Popover`]/[`DeferredAction::LayoutDialog`],
+    /// depending on `kind` — same `kind` vocabulary, same `descriptor`/
+    /// `anchor` shapes, as `QuiApp::show_overlay`; see that method's own
+    /// doc for the full per-kind contract.
+    ///
+    /// Returns the same id `QuiApp::show_overlay` would return. For
+    /// `"popover"`/`"layout_dialog"`, that id is read straight off
+    /// `descriptor`'s own `"float"`/`"dialog"` chrome key — the rest of
+    /// the decode `QuiApp::show_overlay` runs eagerly instead waits for
+    /// [`flush_deferred_actions`], the only place a live backend's theme
+    /// (needed to resolve the content subtree's own `"class"` keys)
+    /// exists — see [`DeferredAction::Popover`]'s own doc.
+    #[pyo3(signature = (kind, descriptor, anchor=None))]
+    fn show_overlay(
+        &self,
+        kind: &str,
+        descriptor: &Bound<'_, PyDict>,
+        anchor: Option<(f32, f32, f32, f32)>,
+    ) -> PyResult<String> {
+        let overlay_kind = OverlayKind::parse("show_overlay", kind)?;
+        match overlay_kind {
+            OverlayKind::ContextMenu => {
+                let items: Vec<ContextMenuItem> =
+                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "items")?)
+                        .map_err(|err| {
+                            InvalidDescriptorError::new_err(format!(
+                                "show_overlay: invalid items: {err}"
+                            ))
+                        })?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::ContextMenu(items, Point::new(x, y)));
+                Ok(kind.to_string())
+            }
+            OverlayKind::MessageDialog => {
+                let title: String = dict_item("show_overlay", descriptor, "title")?.extract()?;
+                let body: String = dict_item("show_overlay", descriptor, "body")?.extract()?;
+                let buttons: Vec<DialogButton> =
+                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "buttons")?)
+                        .map_err(|err| {
+                            InvalidDescriptorError::new_err(format!(
+                                "show_overlay: invalid buttons: {err}"
+                            ))
+                        })?;
+                let severity: Option<String> = descriptor
+                    .get_item("severity")?
+                    .map(|v| v.extract())
+                    .transpose()?;
+                let severity = severity
+                    .map(|s| parse_dialog_severity("show_overlay", &s))
+                    .transpose()?;
+                let opts = message_dialog_options_from_buttons(title, body, buttons, severity)
+                    .map_err(|err| {
+                        InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
+                    })?;
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::MessageDialog(opts));
+                Ok(kind.to_string())
+            }
+            OverlayKind::Toast => {
+                let toast: Toast = decode("show_overlay", descriptor)?;
+                let corner: Option<String> = descriptor
+                    .get_item("corner")?
+                    .map(|v| v.extract())
+                    .transpose()?;
+                let corner = corner
+                    .map(|c| parse_toast_corner("show_overlay", &c))
+                    .transpose()?;
+                let id = toast.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::Toast(toast, corner.unwrap_or_default()));
+                Ok(id)
+            }
+            OverlayKind::Tooltip => {
+                let tooltip: Tooltip = decode("show_overlay", descriptor)?;
+                let (x, y, w, h) = require_anchor("show_overlay", kind, anchor)?;
+                let id = tooltip.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::Tooltip(tooltip, Rect::new(x, y, w, h)));
+                Ok(id)
+            }
+            OverlayKind::Completions => {
+                let completions: Completions = decode("show_overlay", descriptor)?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let id = completions.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::Completions(completions, Point::new(x, y)));
+                Ok(id)
+            }
+            OverlayKind::Float => {
+                let float: Float = decode("show_overlay", descriptor)?;
+                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let id = float.id.to_string();
+                self.queue.borrow_mut().push_back(DeferredAction::Float(
+                    float,
+                    FloatMeasure::new(width, height),
+                ));
+                Ok(id)
+            }
+            OverlayKind::RichTextPopup => {
+                let popup: RichTextPopup = decode("show_overlay", descriptor)?;
+                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let id = popup.id.to_string();
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::RichTextPopup(popup, Point::new(x, y)));
+                Ok(id)
+            }
+            OverlayKind::Popover => {
+                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
+                let value = pyany_to_json(descriptor.as_any()).map_err(|err| {
+                    InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
+                })?;
+                let id = peek_overlay_content_id("show_overlay", &value, "float")?;
+                self.queue.borrow_mut().push_back(DeferredAction::Popover(
+                    value,
+                    FloatMeasure::new(width, height),
+                ));
+                Ok(id)
+            }
+            OverlayKind::LayoutDialog => {
+                // Unlike every other anchored kind, the anchor is
+                // optional here: it sizes the dialog's content slot, and
+                // omitting it takes `DialogContentSize`'s own
+                // viewport-relative defaults.
+                let size = match anchor {
+                    Some((width, height, ..)) => DialogContentSize {
+                        width: Some(width),
+                        height: Some(height),
+                    },
+                    None => DialogContentSize::default(),
+                };
+                let value = pyany_to_json(descriptor.as_any()).map_err(|err| {
+                    InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
+                })?;
+                let id = peek_overlay_content_id("show_overlay", &value, "dialog")?;
+                self.queue
+                    .borrow_mut()
+                    .push_back(DeferredAction::LayoutDialog(value, size));
+                Ok(id)
+            }
+        }
+    }
+
+    /// Queues a [`DeferredAction::DismissOverlay`] — same `id` vocabulary
+    /// as `QuiApp::dismiss_overlay`. Unlike that method, there is nothing
+    /// open yet to report closing — [`flush_deferred_actions`] applies
+    /// this only after the current dispatch returns — so this returns
+    /// nothing, the same shape [`Self::hide_tooltip`] already uses for the
+    /// same reason.
+    fn dismiss_overlay(&self, id: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::DismissOverlay(id.to_string()));
+        Ok(())
+    }
+
     /// Queues a [`DeferredAction::Notification`] — same arguments, same
     /// decoding, as `QuiApp::send_notification`.
     #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
@@ -3649,6 +3874,89 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
             DeferredAction::HideTooltip => {
                 app_logic.engine.hide_tooltip();
             }
+            DeferredAction::Completions(completions, cursor) => {
+                app_logic.engine.show_completions(completions, cursor);
+            }
+            DeferredAction::Float(float, measure) => {
+                app_logic.engine.show_float(float, measure, backend);
+            }
+            DeferredAction::RichTextPopup(popup, anchor) => {
+                app_logic.engine.show_rich_text_popup(popup, anchor);
+            }
+            DeferredAction::Popover(value, measure) => {
+                let decoded = {
+                    let theme = backend.theme();
+                    let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
+                    decode_popover(
+                        "show_overlay",
+                        &value,
+                        styles,
+                        &app_logic.host.wire_diagnostics,
+                    )
+                };
+                match decoded {
+                    Ok(decoded) => {
+                        app_logic.engine.show_popover_layout(
+                            decoded.chrome,
+                            measure,
+                            decoded.content,
+                            backend,
+                        );
+                    }
+                    Err(err) => record_error(&app_logic.pending_error, decode_error_to_py(err)),
+                }
+            }
+            DeferredAction::LayoutDialog(value, size) => {
+                let decoded = {
+                    let theme = backend.theme();
+                    let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
+                    decode_layout_dialog(
+                        "show_overlay",
+                        &value,
+                        styles,
+                        &app_logic.host.wire_diagnostics,
+                    )
+                };
+                match decoded {
+                    Ok(decoded) => {
+                        app_logic.engine.open_layout_dialog(
+                            decoded.chrome,
+                            decoded.content,
+                            size,
+                            backend,
+                        );
+                    }
+                    Err(err) => record_error(&app_logic.pending_error, decode_error_to_py(err)),
+                }
+            }
+            DeferredAction::DismissOverlay(id) => match id.as_str() {
+                "context_menu" => {
+                    app_logic.engine.dismiss_context_menu(backend);
+                }
+                "message_dialog" => {
+                    app_logic.engine.close_message_dialog(backend);
+                }
+                "tooltip" => {
+                    app_logic.engine.hide_tooltip();
+                }
+                "completions" => {
+                    app_logic.engine.dismiss_completions();
+                }
+                // A `"popover"` *is* a float (one this engine paints content
+                // into), so either sentinel closes it.
+                "float" | "popover" => {
+                    app_logic.engine.dismiss_float(backend);
+                }
+                "layout_dialog" => {
+                    app_logic.engine.close_layout_dialog(backend);
+                }
+                "rich_text_popup" => {
+                    app_logic.engine.dismiss_rich_text_popup();
+                }
+                toast_id => {
+                    app_logic.engine.dismiss_toast(WidgetId::new(toast_id));
+                }
+            },
             DeferredAction::Notification(notification) => {
                 if let Err(err) = backend.services().send_notification(notification) {
                     record_error(

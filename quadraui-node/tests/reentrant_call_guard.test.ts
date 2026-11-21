@@ -31,6 +31,8 @@ const assert = require("node:assert/strict");
 const { InvalidDescriptorError, QuiApp, ReentrantCallError } = require("../js/index.ts");
 
 const RESTRICTED_METHOD_CALLS: Array<[string, unknown[]]> = [
+  ["showOverlay", ["message_dialog", { title: "Title", body: "Body", buttons: [{ id: "ok", label: "OK" }] }, null]],
+  ["dismissOverlay", ["message_dialog"]],
   ["showMessageDialog", ["Title", "Body", [{ id: "ok", label: "OK" }], null]],
   ["showContextMenu", [[{ id: "a", label: "A" }], { x: 0, y: 0 }]],
   ["showToast", [{ id: "t1", title: "Hi", body: "there" }, null]],

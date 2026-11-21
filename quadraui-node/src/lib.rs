@@ -623,12 +623,50 @@ fn request_exit_before_drop(live: &mut LiveRunner) {
 /// `QuiApp::hideTooltip` itself takes none -- so [`flush_deferred_actions`]
 /// applies it via the same [`InteractionEngine::hide_tooltip`] call that
 /// method makes directly.
+///
+/// `QuiAppActions::showOverlay` pushes one of [`Self::ContextMenu`]/
+/// [`Self::MessageDialog`]/[`Self::Toast`]/[`Self::Tooltip`]/
+/// [`Self::Completions`]/[`Self::Float`]/[`Self::RichTextPopup`]/
+/// [`Self::Popover`]/[`Self::LayoutDialog`], depending on its own `kind`
+/// argument -- the same nine-way split `QuiApp::show_overlay`'s own match
+/// (`quadraui-node/src/overlays.rs`) makes; `QuiAppActions::dismissOverlay`
+/// always pushes [`Self::DismissOverlay`]. [`Self::Popover`]/
+/// [`Self::LayoutDialog`] are a second exception to the "no further
+/// decoding left to do" rule above, for the same underlying reason
+/// `SetDockMenu`/`SetJumpList` are: decoding either one's `"content"`
+/// subtree needs the live backend's current theme that only exists once
+/// [`flush_deferred_actions`] runs, so each stores its raw [`JsonValue`]
+/// descriptor unchanged and `flush_deferred_actions` decodes it via
+/// [`decode_popover`]/[`decode_layout_dialog`] itself, surfacing a decode
+/// failure through `pending_error` the same way a failing `OpenPath`/
+/// `MoveToTrash` already is.
 enum DeferredAction {
     MessageDialog(quadraui::MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
     Toast(Toast, ToastCorner),
     Tooltip(Tooltip, Rect),
     HideTooltip,
+    Completions(quadraui::Completions, Point),
+    Float(quadraui::Float, FloatMeasure),
+    RichTextPopup(quadraui::RichTextPopup, Point),
+    /// `descriptor, measure` for `QuiAppActions.showOverlay("popover", ...)`
+    /// -- unlike every other overlay kind, a popover's descriptor can only
+    /// be decoded once a live backend (for its current theme) and
+    /// `BindingHost::style_sets` are both in hand, so
+    /// [`flush_deferred_actions`] decodes `descriptor` via
+    /// [`decode_popover`] itself rather than at queue time, the same
+    /// reason `QuiApp::show_overlay`'s own `"popover"` arm defers its
+    /// decode to a live `self.driver` closure.
+    Popover(JsonValue, FloatMeasure),
+    /// `descriptor, size` for `QuiAppActions.showOverlay("layout_dialog", ...)`
+    /// -- [`Self::Popover`]'s own reason for deferring the decode applies
+    /// identically here.
+    LayoutDialog(JsonValue, DialogContentSize),
+    /// Queued by `QuiAppActions.dismissOverlay` -- same `id` vocabulary
+    /// (the six `showOverlay` sentinels, or any other string read as a
+    /// toast id) as `QuiApp.dismissOverlay`, applied via the identical
+    /// match [`flush_deferred_actions`] runs.
+    DismissOverlay(String),
     Notification(Notification),
     OpenPath(PathBuf),
     RevealInFileManager(PathBuf),
@@ -2006,6 +2044,79 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
             DeferredAction::HideTooltip => {
                 app.engine.hide_tooltip();
             }
+            DeferredAction::Completions(completions, cursor) => {
+                app.engine.show_completions(completions, cursor);
+            }
+            DeferredAction::Float(float, measure) => {
+                app.engine.show_float(float, measure, backend);
+            }
+            DeferredAction::RichTextPopup(popup, anchor) => {
+                app.engine.show_rich_text_popup(popup, anchor);
+            }
+            DeferredAction::Popover(value, measure) => {
+                let decoded = {
+                    let theme = backend.theme();
+                    let styles = StyleContext::new(&app.host.style_sets, &theme);
+                    decode_popover("showOverlay", &value, styles, &app.host.wire_diagnostics)
+                };
+                match decoded {
+                    Ok(decoded) => {
+                        app.engine.show_popover_layout(
+                            decoded.chrome,
+                            measure,
+                            decoded.content,
+                            backend,
+                        );
+                    }
+                    Err(err) => record_error(&app.pending_error, decode_error_to_js(err)),
+                }
+            }
+            DeferredAction::LayoutDialog(value, size) => {
+                let decoded = {
+                    let theme = backend.theme();
+                    let styles = StyleContext::new(&app.host.style_sets, &theme);
+                    decode_layout_dialog("showOverlay", &value, styles, &app.host.wire_diagnostics)
+                };
+                match decoded {
+                    Ok(decoded) => {
+                        app.engine.open_layout_dialog(
+                            decoded.chrome,
+                            decoded.content,
+                            size,
+                            backend,
+                        );
+                    }
+                    Err(err) => record_error(&app.pending_error, decode_error_to_js(err)),
+                }
+            }
+            DeferredAction::DismissOverlay(id) => match id.as_str() {
+                "context_menu" => {
+                    app.engine.dismiss_context_menu(backend);
+                }
+                "message_dialog" => {
+                    app.engine.close_message_dialog(backend);
+                }
+                "tooltip" => {
+                    app.engine.hide_tooltip();
+                }
+                "completions" => {
+                    app.engine.dismiss_completions();
+                }
+                // A `"popover"` *is* a float (one this engine paints content
+                // into), so either sentinel closes it.
+                "float" | "popover" => {
+                    app.engine.dismiss_float(backend);
+                }
+                "layout_dialog" => {
+                    app.engine.close_layout_dialog(backend);
+                }
+                "rich_text_popup" => {
+                    app.engine.dismiss_rich_text_popup();
+                }
+                toast_id => {
+                    app.engine.dismiss_toast(WidgetId::new(toast_id));
+                }
+            },
             DeferredAction::Notification(notification) => {
                 if let Err(err) = service_result(
                     "send_notification",

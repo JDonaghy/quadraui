@@ -18,6 +18,13 @@ fragment step for this package (that mechanism, and
 
 ### Added
 
+- `QuiAppActions.showOverlay(kind, descriptor, anchor)`/
+  `.dismissOverlay(id)` -- the same nine `kind`s and anchor semantics as
+  `QuiApp.showOverlay`/`QuiApp.dismissOverlay`, callable from inside a
+  registered handler (where the `QuiApp` methods themselves raise
+  `ReentrantCallError`). `App.confirm`/`App.alert` now queue through
+  `showOverlay("message_dialog", ...)` instead of `showMessageDialog`.
+
 - A `"cell_grid"` extra's `CellGridController` events now reach the
   registered handler as `{"CellGridController": [id, event]}`, mirroring
   `{"TreeTableController": [id, event]}`. `CellsRequested` (the

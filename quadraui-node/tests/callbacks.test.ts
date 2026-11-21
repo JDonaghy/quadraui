@@ -366,6 +366,109 @@ test("actions().showMessageDialog queues a dialog a handler cannot open directly
   assert.ok(app.screenContains("Title"), "the deferred dialog must be painted once step applies the queue");
 });
 
+// `anchor`'s own `{rect, preferred, margin}` shape for a content-bearing
+// `showOverlay("popover"/"layout_dialog", ...)` chrome -- mirrors
+// `quadraui-py`'s own `_anchor` test helper.
+function anchor(x: number, y: number, width = 1.0, height = 1.0, preferred = "Bottom") {
+  return { rect: { x, y, width, height }, preferred, margin: 0.0 };
+}
+
+test("actions().showOverlay/dismissOverlay open and close every kind from a handler", () => {
+  const app = new QuiApp(60, 30);
+  const actions = app.actions();
+
+  const cases: Array<[string, unknown, unknown, string | null]> = [
+    [
+      "context_menu",
+      { items: [{ id: "a", label: { spans: [{ text: "A", fg: null, bg: null }] } }] },
+      { x: 2.0, y: 2.0 },
+      "A",
+    ],
+    [
+      "message_dialog",
+      { title: "Confirm", body: "Really?", buttons: [{ id: "ok", label: "OK" }] },
+      null,
+      "Confirm",
+    ],
+    ["toast", { id: "toast:1", title: "Saved", body: "" }, null, "Saved"],
+    ["tooltip", { id: "tip:1", text: "Hint" }, { x: 0.0, y: 2.0, width: 10.0, height: 1.0 }, "Hint"],
+    [
+      "completions",
+      {
+        id: "comp:1",
+        selected_idx: 0,
+        items: [{ label: { spans: [{ text: "X", fg: null, bg: null }] } }],
+      },
+      { x: 0.0, y: 2.0 },
+      "X",
+    ],
+    ["float", { id: "float:1", anchor: anchor(2.0, 2.0) }, { width: 10.0, height: 3.0 }, "┌"],
+    [
+      "rich_text_popup",
+      {
+        id: "rtp:1",
+        lines: [{ spans: [{ text: "Rich", fg: null, bg: null }] }],
+        line_text: ["Rich"],
+        max_visible_rows: 3,
+      },
+      { x: 0.0, y: 2.0 },
+      "Rich",
+    ],
+    [
+      "popover",
+      {
+        float: { id: "popover:1", anchor: anchor(1.0, 2.0) },
+        content: { id: "p-btn", button: { id: "p-btn", label: "PopBtn" } },
+      },
+      { width: 24.0, height: 8.0 },
+      "PopBtn",
+    ],
+    [
+      "layout_dialog",
+      {
+        dialog: { id: "dialog:1", title: "Prefs" },
+        content: { id: "d-btn", button: { id: "d-btn", label: "DlgBtn" } },
+      },
+      { width: 40.0, height: 6.0 },
+      "Prefs",
+    ],
+  ];
+
+  for (const [kind, descriptor, overlayAnchor, needle] of cases) {
+    // Queued from `setTickHandler` rather than `setHandler` +
+    // `pushKeyEvent`: `"layout_dialog"`/`"popover"` seed keyboard focus
+    // onto their own content and swallow an unmapped key before it ever
+    // reaches a registered `UiEvent` handler -- an idle tick carries no
+    // event at all, so it always runs regardless of what currently holds
+    // focus (mirrors `quadraui-py`'s own version of this test).
+    let queuedId = "";
+    app.setTickHandler(() => {
+      queuedId = actions.showOverlay(kind, descriptor, overlayAnchor as any);
+    });
+    app.step();
+
+    if (needle !== null) {
+      assert.ok(app.screenContains(needle), `${kind} overlay did not paint ${JSON.stringify(needle)}`);
+    }
+
+    // `dismissOverlay`'s own vocabulary: `kind` itself is the recognized
+    // sentinel for every kind but `"toast"` (whose sentinel is the
+    // toast's own returned id).
+    const dismissId = kind === "toast" ? queuedId : kind;
+    app.setTickHandler(() => {
+      actions.dismissOverlay(dismissId);
+    });
+    app.step();
+
+    if (needle !== null) {
+      assert.ok(
+        !app.screenContains(needle),
+        `${kind} overlay still painted ${JSON.stringify(needle)} after dismissOverlay`,
+      );
+    }
+  }
+});
+
 test("actions() raises if called re-entrantly from inside a handler", () => {
   const app = new QuiApp(10, 5);
   let threw = false;

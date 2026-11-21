@@ -299,6 +299,8 @@ exports.toQuadrauiError = toQuadrauiError;
  * counterpart to point a caller at.
  */
 const REENTRANT_RESTRICTED_METHODS: ReadonlySet<string> = new Set([
+  "showOverlay",
+  "dismissOverlay",
   "showMessageDialog",
   "showContextMenu",
   "showToast",
@@ -621,9 +623,10 @@ export type QuiAppWaker = InstanceType<typeof native.QuiAppWaker>;
  * the matching `QuiApp` method itself would raise `ReentrantCallError`
  * (see {@link REENTRANT_RESTRICTED_METHODS} above for the full method
  * list this mirrors). See the native binding's own doc comment
- * (`quadraui-node/src/lib.rs`'s `QuiAppActions`) for the full method
- * list; `app/runtime.ts`'s `App.confirm`/`App.alert` build on
- * `showMessageDialog` through this type.
+ * (`quadraui-node/src/lib.rs`'s `QuiAppActions`, `showOverlay`/
+ * `dismissOverlay` in `quadraui-node/src/overlays.rs`) for the full
+ * method list; `app/runtime.ts`'s `App.confirm`/`App.alert` build on
+ * `showOverlay` through this type.
  */
 export type QuiAppActions = InstanceType<typeof native.QuiAppActions>;
 

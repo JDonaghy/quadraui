@@ -247,11 +247,11 @@ class App:
     Both can also be changed later, after construction, by calling
     `app.qui.set_strict(...)`/`app.qui.set_on_unknown_key(...)` directly.
 
-    `confirm`/`alert` wrap `show_message_dialog` + `MessageDialogResolved`
-    into a single call that reports the clicked button's id back to the
-    caller, either through an `on_resolve` callback (sync or `async def`)
-    or, when `on_resolve` is omitted, an awaitable future -- see `confirm`'s
-    own doc for the full contract.
+    `confirm`/`alert` wrap `show_overlay("message_dialog", ...)` +
+    `MessageDialogResolved` into a single call that reports the clicked
+    button's id back to the caller, either through an `on_resolve` callback
+    (sync or `async def`) or, when `on_resolve` is omitted, an awaitable
+    future -- see `confirm`'s own doc for the full contract.
 
     `view` may declare an optional `ctx` parameter (`def view(ctx):` or
     `def view(ctx=None):`) to receive this frame's `quadraui.RenderCtx` --
@@ -326,9 +326,9 @@ class App:
         *,
         on_resolve: Optional[Callable[[str], Any]] = None,
     ) -> "Optional[asyncio.Future[str]]":
-        """Opens an in-canvas confirm dialog (`show_message_dialog` under
-        the hood) and reports whichever button's `id` the user picked -- a
-        click, or Enter/Escape activating the button marked
+        """Opens an in-canvas confirm dialog (`show_overlay("message_dialog",
+        ...)` under the hood) and reports whichever button's `id` the user
+        picked -- a click, or Enter/Escape activating the button marked
         `is_default`/`is_cancel` respectively.
 
         With `on_resolve` given, it is called with the clicked button's id
@@ -346,18 +346,22 @@ class App:
         directly.
 
         Queues through `self.actions` rather than calling
-        `self.qui.show_message_dialog` directly, so this is safe to call
-        from inside a node callback (a `Button`'s `on_click`, say) as well
-        as from top-level script code -- see `QuiAppActions`'s own doc for
+        `self.qui.show_overlay` directly, so this is safe to call from
+        inside a node callback (a `Button`'s `on_click`, say) as well as
+        from top-level script code -- see `QuiAppActions`'s own doc for
         why.
 
         Calling `confirm`/`alert` again while an earlier call's dialog is
         still open replaces it silently, the same "replaces any dialog
-        already open" behaviour `show_message_dialog` itself documents:
-        the earlier call's `on_resolve`/future is then abandoned, never
-        called or resolved. Only one `confirm`/`alert` call should be
-        outstanding at a time.
+        already open" behaviour `show_overlay("message_dialog", ...)`
+        itself documents: the earlier call's `on_resolve`/future is then
+        abandoned, never called or resolved. Only one `confirm`/`alert`
+        call should be outstanding at a time.
         """
+        descriptor: Dict[str, Any] = {"title": title, "body": body, "buttons": list(buttons)}
+        if severity is not None:
+            descriptor["severity"] = severity
+
         if on_resolve is not None:
 
             def _resolve(button_id: str) -> None:
@@ -366,7 +370,7 @@ class App:
                 _aio.schedule_callback(self._waker, on_resolve, button_id)
 
             self._pending_dialog_resolve = _resolve
-            self.actions.show_message_dialog(title, body, list(buttons), severity)
+            self.actions.show_overlay("message_dialog", descriptor, None)
             return None
 
         future: "asyncio.Future[str]" = asyncio.get_running_loop().create_future()
@@ -379,7 +383,7 @@ class App:
                 future.set_result(button_id)
 
         self._pending_dialog_resolve = _resolve_future
-        self.actions.show_message_dialog(title, body, list(buttons), severity)
+        self.actions.show_overlay("message_dialog", descriptor, None)
         return future
 
     def alert(
@@ -616,8 +620,9 @@ class App:
         like any other unclaimed one, per `_pending_dialog_resolve`'s own
         assignment sites) when no `confirm`/`alert` call is waiting on
         this dialog -- a dialog opened some other way (a raw
-        `actions.show_message_dialog`/`qui.show_message_dialog` call
-        `confirm`/`alert` never wrapped) resolves nothing here."""
+        `actions.show_message_dialog`/`qui.show_message_dialog`/
+        `actions.show_overlay("message_dialog", ...)`/`qui.show_overlay`
+        call `confirm`/`alert` never wrapped) resolves nothing here."""
         resolve = self._pending_dialog_resolve
         if resolve is None:
             return False

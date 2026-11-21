@@ -12,6 +12,13 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiAppActions.show_overlay(kind, descriptor, anchor=None)`/
+  `.dismiss_overlay(id)` -- the same nine `kind`s and anchor semantics as
+  `QuiApp.show_overlay`/`QuiApp.dismiss_overlay`, callable from inside a
+  registered handler (where the `QuiApp` methods themselves raise
+  `ReentrantCallError`). `App.confirm`/`App.alert` now queue through
+  `show_overlay("message_dialog", ...)` instead of `show_message_dialog`.
+
 - A `"cell_grid"` extra's `CellGridController` events now reach the
   registered handler as `{"CellGridController": (id, event)}`, mirroring
   `{"TreeTableController": (id, event)}`. `CellsRequested` (the
