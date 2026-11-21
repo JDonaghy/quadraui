@@ -255,7 +255,6 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeController` | A keyboard-navigable tree: selection, expand/collapse, scroll-follow. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
-| `TreeNavCore` | The row-type-agnostic core `TreeController` is built on: selection by path, arrow/page/Home/End movement, scroll-follow and scrollbar drag over any flattened rows. |
 | `CellGridController` | A `CellGrid` navigated like a spreadsheet: cursor movement, rectangular range selection, header "select all" clicks, frozen-pane-aware scroll-follow. |
 | `FormController` | A form's focus, editing and validation. |
 | `FormDialogController` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
@@ -276,6 +275,16 @@ has one and shows a toast where it does not.
 See [`quadraui/docs/COMPOSE.md`](quadraui/docs/COMPOSE.md) for what each
 controller owns, the events it emits, the smallest wiring snippet, and
 which example file demonstrates it.
+
+**Shared behaviour** in `quadraui::behaviour` is the single
+implementation of the interaction rules widgets and controllers have in
+common, so none of them re-derives its own: `ensure_visible` /
+`ensure_visible_px` (scroll the minimum amount to bring a target back
+into view), `FlatNav` (clamped or wrapping index movement with
+disabled-item skipping) and `TreeNavCore` (the row-type-agnostic core
+`TreeController` is built on: selection by path, arrow/page/Home/End
+movement, scroll-follow and scrollbar drag over any flattened rows), and
+`Typeahead` (debounced type-to-jump).
 
 **Platform services:** clipboard, file open/save and folder dialogs,
 message dialogs, notifications, `open_url`, reveal-in-file-manager, move

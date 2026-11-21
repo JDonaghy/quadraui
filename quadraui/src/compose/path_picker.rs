@@ -487,4 +487,59 @@ mod tests {
             Some(NavKey::Char('x'))
         );
     }
+
+    // ── Selection movement ───────────────────────────────────────────
+
+    fn core_with(entries: usize) -> PathPickerCore {
+        let all = (0..entries)
+            .map(|i| PathBuf::from(format!("f{i}.rs")))
+            .collect();
+        PathPickerCore::new(PathBuf::from("/root"), all)
+    }
+
+    #[test]
+    fn move_down_walks_the_filtered_list_and_clamps_at_the_last_row() {
+        let mut core = core_with(3);
+        core.move_down();
+        assert_eq!(core.selected, 1);
+        for _ in 0..5 {
+            core.move_down();
+        }
+        assert_eq!(core.selected, 2, "clamps instead of running off the end");
+    }
+
+    #[test]
+    fn move_up_walks_back_and_clamps_at_the_first_row() {
+        let mut core = core_with(3);
+        core.move_down();
+        core.move_down();
+        core.move_up();
+        assert_eq!(core.selected, 1);
+        core.move_up();
+        core.move_up();
+        assert_eq!(core.selected, 0, "clamps instead of wrapping to the end");
+    }
+
+    #[test]
+    fn moving_an_empty_filtered_list_leaves_the_selection_alone() {
+        let mut core = core_with(0);
+        core.move_down();
+        assert_eq!(core.selected, 0);
+        core.move_up();
+        assert_eq!(core.selected, 0);
+    }
+
+    #[test]
+    fn sync_scroll_pulls_the_selection_back_into_the_window() {
+        let mut core = core_with(20);
+        core.selected = 12;
+        core.sync_scroll(5);
+        assert_eq!(core.scroll_top, 8, "selection becomes the last visible row");
+        core.selected = 3;
+        core.sync_scroll(5);
+        assert_eq!(
+            core.scroll_top, 3,
+            "selection becomes the first visible row"
+        );
+    }
 }

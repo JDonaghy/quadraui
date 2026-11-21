@@ -839,6 +839,11 @@ module in `tree_controller.rs` is the direct-use reference.
 
 ## `TreeNavCore` — `src/behaviour/nav.rs`
 
+Not a compose controller: it lives in `quadraui::behaviour` alongside the
+other shared interaction rules (`ensure_visible`, `FlatNav`,
+`Typeahead`), and is documented here because `TreeController` — which is
+one — is built on it.
+
 **Owns:** the row-type-agnostic half of tree navigation — selection by
 `TreePath`, Up/Down/PageUp/PageDown/Home/End movement, the Left/Right
 collapse-else-select-parent / expand-else-select-first-child rule,

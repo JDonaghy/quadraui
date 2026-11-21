@@ -76,8 +76,14 @@ impl ActivityBarKeyboard {
     /// Move the cursor to the next item. Saturates at `total - 1` —
     /// does not wrap. No-op when `total == 0`.
     pub(crate) fn select_next(&mut self, total: usize) {
-        self.cursor = FlatNav::mv(total, Some(self.cursor), NavKey::Down, false, |_| true)
-            .unwrap_or(self.cursor);
+        // A cursor past `total` (reachable via `set_cursor_raw` when the
+        // item count shrinks afterwards) is clamped into range first, so a
+        // forward move lands on the last item rather than seeding at the
+        // first one — `FlatNav` treats an out-of-range `current` as "no
+        // selection yet".
+        let current = self.cursor.min(total.saturating_sub(1));
+        self.cursor =
+            FlatNav::mv(total, Some(current), NavKey::Down, false, |_| true).unwrap_or(self.cursor);
     }
 
     /// Move the cursor to the previous item. Saturates at index 0 —
@@ -133,6 +139,17 @@ mod tests {
         let mut k = ActivityBarKeyboard::new();
         k.select_next(0);
         assert_eq!(k.cursor(), 0);
+    }
+
+    #[test]
+    fn select_next_from_a_cursor_past_the_end_lands_on_the_last_item() {
+        let mut k = ActivityBarKeyboard::new();
+        // `set_cursor_raw` does not clamp, so a shrunk item count can leave
+        // the cursor past the end; a forward move pulls it to the last item
+        // rather than jumping back to the first.
+        k.set_cursor_raw(9);
+        k.select_next(3);
+        assert_eq!(k.cursor(), 2);
     }
 
     #[test]
