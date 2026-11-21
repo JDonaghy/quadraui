@@ -23,8 +23,8 @@
 use {{crate_name}} as app;
 
 #[cfg(feature = "tui")]
-fn main() {
-    quadraui::tui::shell_runner::run_with_shell(app::App::new(), app::App::config());
+fn main() -> Result<(), quadraui::RunError> {
+    quadraui::tui::shell_runner::run_with_shell(app::App::new(), app::App::config())
 }
 
 #[cfg(all(feature = "gtk", not(feature = "tui")))]
