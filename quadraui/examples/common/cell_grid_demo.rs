@@ -40,7 +40,7 @@
 //! presents"). Each frame it asks the controller which absolute rows
 //! and columns are on screen (`CellGridController::layout`), fills only
 //! those cells, and paints the resulting descriptor through
-//! `Surface::CellGrid` — `CellGrid` has no bespoke `Backend::draw_cell_grid`
+//! `Surface::Widget` — `CellGrid` has no bespoke `Backend::draw_cell_grid`
 //! method on any backend, pixel or terminal.
 //!
 //! Committing an edit hands the raw text to this demo's own toy "engine"
@@ -439,9 +439,9 @@ impl AppLogic for CellGridDemo {
             rect: bands.formula,
             tf: self.formula_field(),
         });
-        frame.push(Surface::CellGrid {
+        frame.push(Surface::Widget {
             rect: bands.grid,
-            grid,
+            widget: Box::new(grid),
         });
         frame.push(Surface::StatusBar {
             rect: bands.status,

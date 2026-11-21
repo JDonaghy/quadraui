@@ -1,7 +1,8 @@
 //! `CellGrid` demo — a tiny budget sheet: a bold, frozen header row
 //! ("Item"/"Qty"/"Price"/"Total") plus four data rows, painted entirely
-//! through [`quadraui::DrawsPrimitives::draw_primitive`] — no
-//! `Backend::draw_cell_grid` method exists or is needed.
+//! through [`quadraui::DrawsPrimitives::draw_dyn`] via
+//! [`quadraui::primitive::DynWidget`] — no `Backend::draw_cell_grid`
+//! method exists or is needed.
 //!
 //! A click on a cell moves the cursor there; the four arrow keys move it
 //! by one row/column, clamped to the sheet's edges; Shift+arrow extends
@@ -222,7 +223,7 @@ impl Demo for CellGridDemo {
     fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::grid_rect(area, backend);
         let grid = self.grid(backend);
-        backend.draw_primitive(rect, &grid);
+        backend.draw_dyn(rect, &grid, &());
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_status_bar_interactive(
