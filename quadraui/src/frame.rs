@@ -196,6 +196,7 @@ use std::collections::{HashMap, HashSet};
 use crate::backend::DrawsPrimitives;
 use crate::descriptor_store::{DescriptorStore, Handle};
 use crate::event::Rect;
+use crate::primitive::DynWidget;
 use crate::primitives::activity_bar::ActivityBar;
 use crate::primitives::board::BoardModel;
 use crate::primitives::canvas::Canvas;
@@ -360,15 +361,18 @@ pub enum Surface {
         table: DataTable,
         hovered: Option<usize>,
     },
-    /// Paints through [`crate::backend::DrawsPrimitives::draw_primitive`]
-    /// — `CellGrid` has no bespoke `Backend::draw_cell_grid` method, so
-    /// this is its only `Surface` paint path, on every backend
-    /// including a zero-feature build (see
-    /// [`crate::primitives::cell_grid::CellGridPrimitiveLayout`]'s doc
-    /// for why that impl isn't feature-gated).
-    CellGrid {
+    /// Any type-erased [`DynWidget`] — paints through
+    /// [`crate::backend::DrawsPrimitives::draw_dyn`] rather than a
+    /// bespoke `Backend::draw_*` method, on every backend including a
+    /// zero-feature build. [`crate::primitives::cell_grid::CellGrid`]
+    /// paints this way (it has no bespoke `Backend::draw_cell_grid`
+    /// method at all), and any future widget built against
+    /// [`crate::interactive::Interactive`] gets this variant for free via
+    /// [`DynWidget`]'s blanket impl, with no new `Surface` variant of its
+    /// own.
+    Widget {
         rect: Rect,
-        grid: CellGrid,
+        widget: Box<dyn DynWidget>,
     },
     Chart {
         rect: Rect,
@@ -491,48 +495,138 @@ pub enum Surface {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum FrameZone {
-    Editor { idx: usize },
-    TabBar { idx: usize },
-    StatusBar { idx: usize },
-    ActivityBar { idx: usize },
-    CommandLine { idx: usize },
-    Terminal { idx: usize },
-    TextDisplay { idx: usize },
-    MultiSectionView { idx: usize },
-    Tree { idx: usize },
-    List { idx: usize },
-    Form { idx: usize },
-    MenuBar { idx: usize },
-    Split { idx: usize },
-    Scrollbar { idx: usize },
-    Palette { idx: usize },
-    Tooltip { idx: usize },
-    ContextMenu { idx: usize },
-    Dialog { idx: usize },
-    Float { idx: usize },
-    Completions { idx: usize },
-    FindReplace { idx: usize },
-    RichTextPopup { idx: usize },
-    Toast { idx: usize },
-    DataTable { idx: usize },
-    CellGrid { idx: usize },
-    Chart { idx: usize },
-    Canvas { idx: usize },
-    Board { idx: usize },
-    CommandCenter { idx: usize },
-    DiffView { idx: usize },
-    DropOverlay { idx: usize },
-    Image { idx: usize },
-    MessageList { idx: usize },
-    Minimap { idx: usize },
-    PipelineView { idx: usize },
-    Progress { idx: usize },
-    SidebarPanel { idx: usize },
-    Spinner { idx: usize },
-    SplitTree { idx: usize },
-    TextInput { idx: usize },
-    TextField { idx: usize },
-    Toolbar { idx: usize },
+    Editor {
+        idx: usize,
+    },
+    TabBar {
+        idx: usize,
+    },
+    StatusBar {
+        idx: usize,
+    },
+    ActivityBar {
+        idx: usize,
+    },
+    CommandLine {
+        idx: usize,
+    },
+    Terminal {
+        idx: usize,
+    },
+    TextDisplay {
+        idx: usize,
+    },
+    MultiSectionView {
+        idx: usize,
+    },
+    Tree {
+        idx: usize,
+    },
+    List {
+        idx: usize,
+    },
+    Form {
+        idx: usize,
+    },
+    MenuBar {
+        idx: usize,
+    },
+    Split {
+        idx: usize,
+    },
+    Scrollbar {
+        idx: usize,
+    },
+    Palette {
+        idx: usize,
+    },
+    Tooltip {
+        idx: usize,
+    },
+    ContextMenu {
+        idx: usize,
+    },
+    Dialog {
+        idx: usize,
+    },
+    Float {
+        idx: usize,
+    },
+    Completions {
+        idx: usize,
+    },
+    FindReplace {
+        idx: usize,
+    },
+    RichTextPopup {
+        idx: usize,
+    },
+    Toast {
+        idx: usize,
+    },
+    DataTable {
+        idx: usize,
+    },
+    /// The zone for a [`Surface::Widget`] — carries the widget's own id
+    /// (from [`DynWidget::id`]), since there is no per-variant field name
+    /// (`grid.id`, `bar.id`, ...) for a caller to read it off `Surface`
+    /// itself the way every other variant's id-bearing field still
+    /// allows.
+    Widget {
+        idx: usize,
+        id: Option<WidgetId>,
+    },
+    Chart {
+        idx: usize,
+    },
+    Canvas {
+        idx: usize,
+    },
+    Board {
+        idx: usize,
+    },
+    CommandCenter {
+        idx: usize,
+    },
+    DiffView {
+        idx: usize,
+    },
+    DropOverlay {
+        idx: usize,
+    },
+    Image {
+        idx: usize,
+    },
+    MessageList {
+        idx: usize,
+    },
+    Minimap {
+        idx: usize,
+    },
+    PipelineView {
+        idx: usize,
+    },
+    Progress {
+        idx: usize,
+    },
+    SidebarPanel {
+        idx: usize,
+    },
+    Spinner {
+        idx: usize,
+    },
+    SplitTree {
+        idx: usize,
+    },
+    TextInput {
+        idx: usize,
+    },
+    TextField {
+        idx: usize,
+    },
+    Toolbar {
+        idx: usize,
+    },
     Empty,
 }
 
@@ -850,8 +944,8 @@ impl ScreenLayout {
                 } => {
                     backend.draw_data_table(*rect, table, *hovered);
                 }
-                Surface::CellGrid { rect, grid } => {
-                    backend.draw_primitive(*rect, grid);
+                Surface::Widget { rect, widget } => {
+                    backend.draw_dyn(*rect, widget.as_ref(), &());
                 }
                 Surface::Chart {
                     rect,
@@ -985,38 +1079,42 @@ impl ScreenLayout {
     ///   worth reaching by keyboard. `Minimap` stays included even
     ///   though it is also mostly visual, because it is click-to-scroll
     ///   and so has a real interaction to land on.
+    ///
+    /// `Widget` doesn't fit the per-variant allow/exclude list above — it
+    /// consults [`DynWidget::focus`] directly instead; see
+    /// [`Self::widget_tab_stops`].
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
         let mut stops: Vec<(WidgetId, Rect)> = self
             .surfaces
             .iter()
-            .filter_map(|s| match s {
-                Surface::Editor { rect, editor } => Some((editor.id, *rect)),
-                Surface::TabBar { rect, bar, .. } => Some((bar.id, *rect)),
-                Surface::StatusBar { rect, bar, .. } => Some((bar.id, *rect)),
-                Surface::ActivityBar { rect, bar, .. } => Some((bar.id, *rect)),
-                Surface::CommandLine { rect, cmd } => Some((cmd.id, *rect)),
-                Surface::Terminal { rect, term } => Some((term.id, *rect)),
-                Surface::TextDisplay { rect, td } => Some((td.id, *rect)),
-                Surface::MultiSectionView { rect, view } => Some((view.id, *rect)),
-                Surface::Tree { rect, tree } => Some((tree.id, *rect)),
-                Surface::List { rect, list } => Some((list.id, *rect)),
-                Surface::Form { rect, form } => Some((form.id, *rect)),
-                Surface::MenuBar { rect, bar } => Some((bar.id, *rect)),
-                Surface::Palette { rect, palette } => Some((palette.id, *rect)),
-                Surface::DataTable { rect, table, .. } => Some((table.id, *rect)),
-                Surface::CellGrid { rect, grid } => Some((grid.id, *rect)),
-                Surface::Chart { rect, chart, .. } => Some((chart.id, *rect)),
-                Surface::Board { rect, model } => Some((model.id, *rect)),
-                Surface::CommandCenter { rect, cc } => Some((cc.id, *rect)),
-                Surface::DiffView { rect, view } => Some((view.id, *rect)),
-                Surface::MessageList { rect, list } => Some((list.id, *rect)),
-                Surface::Minimap { rect, minimap } => Some((minimap.id, *rect)),
-                Surface::PipelineView { rect, view } => Some((view.id, *rect)),
-                Surface::Progress { rect, bar } if bar.cancellable => Some((bar.id, *rect)),
-                Surface::SidebarPanel { rect, panel, .. } => Some((panel.id, *rect)),
-                Surface::TextInput { rect, ti } => Some((ti.id, *rect)),
-                Surface::TextField { rect, tf } => Some((tf.id, *rect)),
-                Surface::Toolbar { rect, bar, .. } => Some((bar.id, *rect)),
+            .flat_map(|s| match s {
+                Surface::Editor { rect, editor } => vec![(editor.id, *rect)],
+                Surface::TabBar { rect, bar, .. } => vec![(bar.id, *rect)],
+                Surface::StatusBar { rect, bar, .. } => vec![(bar.id, *rect)],
+                Surface::ActivityBar { rect, bar, .. } => vec![(bar.id, *rect)],
+                Surface::CommandLine { rect, cmd } => vec![(cmd.id, *rect)],
+                Surface::Terminal { rect, term } => vec![(term.id, *rect)],
+                Surface::TextDisplay { rect, td } => vec![(td.id, *rect)],
+                Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
+                Surface::Tree { rect, tree } => vec![(tree.id, *rect)],
+                Surface::List { rect, list } => vec![(list.id, *rect)],
+                Surface::Form { rect, form } => vec![(form.id, *rect)],
+                Surface::MenuBar { rect, bar } => vec![(bar.id, *rect)],
+                Surface::Palette { rect, palette } => vec![(palette.id, *rect)],
+                Surface::DataTable { rect, table, .. } => vec![(table.id, *rect)],
+                Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
+                Surface::Chart { rect, chart, .. } => vec![(chart.id, *rect)],
+                Surface::Board { rect, model } => vec![(model.id, *rect)],
+                Surface::CommandCenter { rect, cc } => vec![(cc.id, *rect)],
+                Surface::DiffView { rect, view } => vec![(view.id, *rect)],
+                Surface::MessageList { rect, list } => vec![(list.id, *rect)],
+                Surface::Minimap { rect, minimap } => vec![(minimap.id, *rect)],
+                Surface::PipelineView { rect, view } => vec![(view.id, *rect)],
+                Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
+                Surface::SidebarPanel { rect, panel, .. } => vec![(panel.id, *rect)],
+                Surface::TextInput { rect, ti } => vec![(ti.id, *rect)],
+                Surface::TextField { rect, tf } => vec![(tf.id, *rect)],
+                Surface::Toolbar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::Image { .. }
                 | Surface::Spinner { .. }
                 | Surface::Canvas { .. }
@@ -1032,7 +1130,7 @@ impl ScreenLayout {
                 | Surface::RichTextPopup { .. }
                 | Surface::DropOverlay { .. }
                 | Surface::SplitTree { .. }
-                | Surface::Toast { .. } => None,
+                | Surface::Toast { .. } => Vec::new(),
             })
             .collect();
         stops.sort_by(|(_, a), (_, b)| {
@@ -1041,6 +1139,28 @@ impl ScreenLayout {
                 .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
         });
         stops
+    }
+
+    /// [`Self::tab_stops`]'s [`Surface::Widget`] arm: every other
+    /// `Surface` variant above contributes at most one stop, hard-coded
+    /// per variant, but a [`Surface::Widget`] consults [`DynWidget::focus`]
+    /// instead — `FocusSpec::None` contributes none, `FocusSpec::Stop`
+    /// contributes one (the whole widget's `rect`), and
+    /// `FocusSpec::Children` contributes one per declared child, each
+    /// still addressed by the widget's own id since [`DynWidget::focus`]'s
+    /// per-child [`crate::interactive::FocusStop`] carries no rect of its
+    /// own for a host built purely off `Surface` to resolve.
+    fn widget_tab_stops(rect: Rect, widget: &dyn DynWidget) -> Vec<(WidgetId, Rect)> {
+        let Some(&id) = widget.id() else {
+            return Vec::new();
+        };
+        match widget.focus() {
+            crate::interactive::FocusSpec::None => Vec::new(),
+            crate::interactive::FocusSpec::Stop => vec![(id, rect)],
+            crate::interactive::FocusSpec::Children(children) => {
+                children.iter().map(|_| (id, rect)).collect()
+            }
+        }
     }
 
     /// Compute the hit-test rect/zone for a single surface at index `idx`.
@@ -1074,7 +1194,13 @@ impl ScreenLayout {
             }
             Surface::Toast { rect, .. } => (*rect, FrameZone::Toast { idx }),
             Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
-            Surface::CellGrid { rect, .. } => (*rect, FrameZone::CellGrid { idx }),
+            Surface::Widget { rect, widget } => (
+                *rect,
+                FrameZone::Widget {
+                    idx,
+                    id: widget.id().copied(),
+                },
+            ),
             Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
             Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
             Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
@@ -1319,7 +1445,10 @@ impl OwnedContent {
             OwnedContent::RichTextPopup(_) => FrameZone::RichTextPopup { idx },
             OwnedContent::Toast(_) => FrameZone::Toast { idx },
             OwnedContent::DataTable(_) => FrameZone::DataTable { idx },
-            OwnedContent::CellGrid(_) => FrameZone::CellGrid { idx },
+            OwnedContent::CellGrid(grid) => FrameZone::Widget {
+                idx,
+                id: Some(grid.id),
+            },
             OwnedContent::Chart(_) => FrameZone::Chart { idx },
             OwnedContent::Canvas(_) => FrameZone::Canvas { idx },
             OwnedContent::Board(_) => FrameZone::Board { idx },
@@ -1613,9 +1742,7 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
             Some(table.id),
             OwnedContent::DataTable(table.clone()),
         ),
-        Surface::CellGrid { rect, grid } => {
-            (*rect, Some(grid.id), OwnedContent::CellGrid(grid.clone()))
-        }
+        Surface::Widget { rect, widget } => (*rect, widget.id().copied(), widget.capture()),
         Surface::Chart { rect, chart, .. } => {
             (*rect, Some(chart.id), OwnedContent::Chart(chart.clone()))
         }
@@ -2514,19 +2641,29 @@ mod tests {
         assert_eq!(stops[0].0.as_str(), "search");
     }
 
-    /// `Surface::CellGrid` has no bespoke `Backend::draw_cell_grid`
-    /// method — it paints exclusively through
-    /// `DrawsPrimitives::draw_primitive` (see that `Surface` variant's
-    /// own doc) — so unlike every `assert!(backend.calls.contains(...))`
-    /// check above, there is no named call to assert on here. What this
-    /// still proves: `zone_for`/`tab_stops` wire a `draw_primitive`-only
-    /// `Surface` variant exactly like every bespoke-method one, and
-    /// `ScreenLayout::draw` never panics calling it through a backend
-    /// (`RecordingBackend`) with no `PaintSurface`/cell-buffer of its
-    /// own — the exact "resolve layout, maybe paint" degrade
-    /// `DrawsPrimitives::draw_primitive`'s own doc promises.
+    /// `CellGrid` has no bespoke `Backend::draw_cell_grid` method — it
+    /// paints exclusively through `DrawsPrimitives::draw_dyn` via
+    /// `Surface::Widget` (see that `Surface` variant's own doc) — so
+    /// unlike every `assert!(backend.calls.contains(...))` check above,
+    /// there is no named call to assert on here. What this still proves:
+    /// `zone_for` wires a `draw_dyn`-only `Surface` variant exactly like
+    /// every bespoke-method one, and `ScreenLayout::draw` never panics
+    /// calling it through a backend (`RecordingBackend`) with no
+    /// `PaintSurface`/cell-buffer of its own — the exact "resolve
+    /// layout, maybe paint" degrade `DrawsPrimitives::draw_dyn`'s own
+    /// doc promises.
+    ///
+    /// `tab_stops()` reports none for it: `CellGrid` is
+    /// `crate::non_interactive!`-tagged (no real `Interactive` behaviour
+    /// ported yet — see that macro's call site in `cell_grid.rs`), so
+    /// its `DynWidget::focus()` answers `FocusSpec::None` by that macro's
+    /// own default, same as every other `non_interactive!` widget. This
+    /// is the correct, focus()-driven answer for `Surface::Widget` —
+    /// unlike every hard-coded `Surface` variant above (which contribute
+    /// a tab stop unconditionally, by field presence alone), a widget
+    /// that truthfully declares no keyboard story gets no stop.
     #[test]
-    fn surface_cell_grid_dispatches_through_draw_primitive_and_is_a_tab_stop() {
+    fn surface_widget_dispatches_through_draw_dyn_and_is_not_yet_a_tab_stop() {
         use crate::primitives::cell_grid::{Cell, CellGrid};
         use crate::testing::RecordingBackend;
 
@@ -2558,29 +2695,33 @@ mod tests {
         };
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::CellGrid {
+        layout.push(Surface::Widget {
             rect,
-            grid: grid.clone(),
+            widget: Box::new(grid.clone()),
         });
 
         let mut backend = RecordingBackend::new();
         let hit_map = layout.draw(&mut backend);
         assert_eq!(hit_map.zones()[0].0, rect);
-        assert_eq!(hit_map.zones()[0].1, FrameZone::CellGrid { idx: 0 });
+        assert_eq!(
+            hit_map.zones()[0].1,
+            FrameZone::Widget {
+                idx: 0,
+                id: Some(grid.id)
+            }
+        );
 
-        let stops = layout.tab_stops();
-        assert_eq!(stops.len(), 1);
-        assert_eq!(stops[0].0, grid.id);
+        assert_eq!(layout.tab_stops(), Vec::new());
     }
 
     /// The TUI side of the same wiring: `ScreenLayout::draw` through a
     /// real `TuiBackend` paints the grid's actual cell text, not just an
-    /// empty reserved rect — proving `Surface::CellGrid` →
-    /// `draw_primitive` → `Primitive::paint_cells` →
+    /// empty reserved rect — proving `Surface::Widget` → `draw_dyn` →
+    /// `DynWidget::paint` → `Primitive::paint_cells` →
     /// `crate::tui::draw_cell_grid` end to end.
     #[test]
     #[cfg(feature = "tui")]
-    fn surface_cell_grid_paints_real_cell_text_through_tui_backend() {
+    fn surface_widget_paints_real_cell_text_through_tui_backend() {
         use crate::primitives::cell_grid::{Cell, CellGrid};
         use crate::runner::{AppLogic, Reaction};
         use crate::tui::testing::TuiDriver;
@@ -2616,9 +2757,9 @@ mod tests {
             type AreaId = ();
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 let mut layout = ScreenLayout::new();
-                layout.push(Surface::CellGrid {
+                layout.push(Surface::Widget {
                     rect: Rect::new(0.0, 0.0, 20.0, 5.0),
-                    grid: self.0.clone(),
+                    widget: Box::new(self.0.clone()),
                 });
                 layout.draw(backend);
             }
@@ -2633,6 +2774,165 @@ mod tests {
             "the grid's own cell text must appear on screen: {}",
             driver.screen()
         );
+    }
+
+    /// A tiny second [`Interactive`] widget, distinct from
+    /// [`crate::primitives::cell_grid::CellGrid`] in every way that
+    /// matters for proving [`Surface::Widget`] is generic rather than
+    /// quietly special-cased for one type: its own [`Primitive::Layout`]
+    /// shape, its own [`Primitive::Event`], and a real [`FocusSpec::Stop`]
+    /// rather than [`crate::non_interactive!`]'s `FocusSpec::None`.
+    #[derive(Debug, Clone)]
+    struct Badge {
+        id: WidgetId,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct BadgeLayout {
+        area: Rect,
+    }
+
+    impl crate::a11y::A11yPrimitive for Badge {
+        fn a11y_info(&self) -> crate::a11y::A11yInfo {
+            crate::a11y::A11yInfo::default()
+        }
+    }
+
+    impl crate::primitive::Primitive for Badge {
+        type Layout = BadgeLayout;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+            BadgeLayout { area: rect }
+        }
+
+        fn paint(
+            &self,
+            _layout: &Self::Layout,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _theme: &crate::theme::Theme,
+            _style: &crate::style::Style,
+        ) {
+        }
+    }
+
+    impl crate::interactive::Interactive for Badge {
+        type State = ();
+        type Action = crate::interactive::Never;
+
+        fn focus(&self) -> crate::interactive::FocusSpec {
+            crate::interactive::FocusSpec::Stop
+        }
+
+        fn handle(
+            &self,
+            _state: &mut Self::State,
+            _event: &crate::interactive::RoutedEvent,
+            _layout: &Self::Layout,
+            _cx: &mut crate::interactive::EventCx,
+        ) -> crate::Handled<Self::Action> {
+            crate::Handled::Ignored
+        }
+    }
+
+    /// Two different [`Surface::Widget`]s — [`CellGrid`] (routed through
+    /// [`crate::non_interactive!`], so `FocusSpec::None`) and the
+    /// test-local [`Badge`] (a real [`Interactive`] impl declaring
+    /// `FocusSpec::Stop`) — pushed into one [`ScreenLayout`] and drawn
+    /// through [`crate::testing::RecordingBackend`]. Proves the single
+    /// `Surface::Widget` arm in `draw`/`zone_for` handles both without
+    /// caring which concrete widget it erased (each gets its own zone,
+    /// with its own id, and — via a direct `draw_dyn` call outside
+    /// `ScreenLayout` — its own correctly downcast [`PrimitiveLayout`]),
+    /// while `tab_stops` tells them apart correctly by consulting each
+    /// one's own `DynWidget::focus()` rather than treating every
+    /// `Surface::Widget` alike.
+    #[test]
+    fn two_different_surface_widgets_get_distinct_zones_tab_stops_and_layouts() {
+        use crate::primitives::cell_grid::{Cell, CellGrid};
+        use crate::testing::RecordingBackend;
+
+        let grid_rect = Rect::new(0.0, 0.0, 20.0, 5.0);
+        let grid = CellGrid {
+            id: WidgetId::new("grid:sheet"),
+            row_count: 2,
+            col_count: 2,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 6.0,
+            row_heights: Default::default(),
+            col_widths: Default::default(),
+            show_row_headers: false,
+            show_col_headers: false,
+            row_labels: Default::default(),
+            col_labels: Default::default(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: vec![vec![Cell::plain("hi")]],
+            loaded_row_start: 0,
+            loaded_col_start: 0,
+            has_focus: true,
+            show_scrollbar: false,
+            editing: None,
+        };
+        let badge_rect = Rect::new(0.0, 6.0, 4.0, 1.0);
+        let badge = Badge {
+            id: WidgetId::new("badge:1"),
+        };
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Widget {
+            rect: grid_rect,
+            widget: Box::new(grid.clone()),
+        });
+        layout.push(Surface::Widget {
+            rect: badge_rect,
+            widget: Box::new(badge.clone()),
+        });
+
+        let mut backend = RecordingBackend::new();
+        let hit_map = layout.draw(&mut backend);
+
+        assert_eq!(hit_map.zones()[0].0, grid_rect);
+        assert_eq!(
+            hit_map.zones()[0].1,
+            FrameZone::Widget {
+                idx: 0,
+                id: Some(grid.id)
+            }
+        );
+        assert_eq!(hit_map.zones()[1].0, badge_rect);
+        assert_eq!(
+            hit_map.zones()[1].1,
+            FrameZone::Widget {
+                idx: 1,
+                id: Some(badge.id)
+            }
+        );
+
+        // Only `badge` is a tab stop: its `Interactive::focus()` answers
+        // `FocusSpec::Stop`, while `grid`'s `non_interactive!`-tagged
+        // `Interactive` impl answers `FocusSpec::None`.
+        assert_eq!(layout.tab_stops(), vec![(badge.id, badge_rect)]);
+
+        let grid_layout = backend.draw_dyn(grid_rect, &grid, &());
+        let grid_layout = grid_layout
+            .downcast_ref::<crate::primitives::cell_grid::CellGridPrimitiveLayout>()
+            .expect("CellGrid's own layout downcasts back to CellGridPrimitiveLayout");
+        assert_eq!(grid_layout.area, grid_rect);
+
+        let badge_layout = backend.draw_dyn(badge_rect, &badge, &());
+        let badge_layout = badge_layout
+            .downcast_ref::<BadgeLayout>()
+            .expect("Badge's own layout downcasts back to BadgeLayout");
+        assert_eq!(badge_layout.area, badge_rect);
     }
 
     /// `FrameHitMap` is serializable: round-trips through JSON

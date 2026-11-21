@@ -1123,9 +1123,9 @@ fn cell_grid_exposes_a_table_with_header_row_and_selected_cells() {
     let grid = cell_grid_3x3_with_selection();
     let widget = grid.id;
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::CellGrid {
+        .with_surface(Surface::Widget {
             rect: rect(4.0),
-            grid,
+            widget: Box::new(grid),
         })
         .with_focus(widget)
         .snapshot();

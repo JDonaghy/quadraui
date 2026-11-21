@@ -1404,6 +1404,19 @@ impl crate::primitive::Primitive for CellGrid {
     type Layout = CellGridPrimitiveLayout;
     type Event = CellGridEvent;
 
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// Round-trips through [`crate::frame::OwnedContent::CellGrid`] —
+    /// the same variant [`crate::frame::capture_surface`] produced when
+    /// `CellGrid` had its own `Surface::CellGrid` variant, now reached
+    /// via [`crate::primitive::DynWidget::capture`] through
+    /// `Surface::Widget` instead.
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::CellGrid(self.clone())
+    }
+
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         // Same runtime discriminator `ListView`/`IconGrid`'s own
         // `Primitive::layout` use — see `LayoutCtx::units`'s own doc for

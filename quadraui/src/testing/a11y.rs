@@ -552,9 +552,9 @@ window \"quadraui\" [focused]
             show_scrollbar: false,
             editing: None,
         };
-        Surface::CellGrid {
+        Surface::Widget {
             rect: Rect::new(0.0, 1.0, 30.0, 11.0),
-            grid,
+            widget: Box::new(grid),
         }
     }
 

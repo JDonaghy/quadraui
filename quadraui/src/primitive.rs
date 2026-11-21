@@ -133,11 +133,15 @@
 //! swatch.paint(&layout, &mut surface, &Theme::default(), &Style::default());
 //! ```
 
-use crate::a11y::A11yPrimitive;
+use crate::a11y::{A11yAction, A11yPrimitive};
 use crate::event::Rect;
+use crate::frame::OwnedContent;
+use crate::interactive::{EventCx, FocusSpec, Interactive, RoutedEvent, WidgetAction};
 use crate::paint_surface::PaintSurface;
 use crate::style::Style;
 use crate::theme::Theme;
+use crate::types::WidgetId;
+use crate::Handled;
 
 /// Backend-measured geometry a [`Primitive::layout`] call needs that a
 /// bare [`Rect`] doesn't carry.
@@ -269,6 +273,26 @@ pub struct LayoutMeasure {
     pub units: Units,
 }
 
+/// Available space a [`DynWidget::measure`] call sizes against, in
+/// [`LayoutCtx`]'s own units (pixels or whole cells — see
+/// [`LayoutCtx::units`]) — a plain width/height pair with no origin,
+/// since measuring never needs a position the way [`Primitive::layout`]'s
+/// `rect` does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Size {
+    /// Available width.
+    pub width: f32,
+    /// Available height.
+    pub height: f32,
+}
+
+impl Size {
+    /// Pair `width` and `height` into a [`Size`].
+    pub const fn new(width: f32, height: f32) -> Self {
+        Self { width, height }
+    }
+}
+
 /// Generic pairing of a [`Primitive::Layout`]'s absolute paint area with
 /// its primitive-local layout — the shape every built-in primitive's own
 /// hand-rolled `*PrimitiveLayout` (e.g.
@@ -280,10 +304,12 @@ pub struct LayoutMeasure {
 ///
 /// A future `Primitive` implementor can reach for this directly instead
 /// of writing that same two-field struct from scratch; no existing
-/// implementor is re-ported onto it by this change.
+/// implementor is re-ported onto it by this change. Named `AreaLayout`
+/// rather than `PrimitiveLayout` so that name is free for the
+/// object-safe [`PrimitiveLayout`] trait [`DynWidget::layout`] returns.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
-pub struct PrimitiveLayout<L> {
+pub struct AreaLayout<L> {
     /// The absolute rect the primitive was laid out into — what
     /// [`Primitive::layout`] received as `rect`.
     pub area: Rect,
@@ -292,10 +318,55 @@ pub struct PrimitiveLayout<L> {
     pub layout: L,
 }
 
-impl<L> PrimitiveLayout<L> {
+impl<L> AreaLayout<L> {
     /// Pair `area` with the primitive-local `layout` resolved for it.
     pub fn new(area: Rect, layout: L) -> Self {
         Self { area, layout }
+    }
+}
+
+/// Object-safe view of any `'static` [`Primitive::Layout`]/
+/// [`Interactive::Layout`][crate::interactive::Interactive::Layout] value
+/// — what [`DynWidget::layout`] returns in place of an associated type, so
+/// a type-erased widget can still hand its layout to [`DynWidget::paint`]/
+/// [`DynWidget::handle`] for the blanket [`DynWidget`] impl to downcast
+/// back to the concrete layout type via [`Self::as_any`].
+///
+/// Blanket-implemented for every `'static` type, mirroring how
+/// `std::any::Any` itself is usable through `&dyn Any` for any `'static`
+/// value — a concrete `*Layout` type never implements this by hand.
+pub trait PrimitiveLayout: std::any::Any {
+    /// This value's `&dyn Any` view, for downcasting back to the
+    /// concrete layout type.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl<L: std::any::Any> PrimitiveLayout for L {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl dyn PrimitiveLayout {
+    /// Downcast back to a concrete layout type `T` — `self.as_any()`
+    /// plus [`std::any::Any::downcast_ref`] in one call.
+    ///
+    /// Prefer this over calling [`Self::as_any`] directly on a
+    /// `Box<dyn PrimitiveLayout>`: because [`PrimitiveLayout`] is
+    /// blanket-implemented for every `'static` type (this module's own
+    /// `impl<L: Any> PrimitiveLayout for L` above), `Box<dyn
+    /// PrimitiveLayout>` — an owned, `'static` value in its own right —
+    /// *also* matches that blanket impl. Rust's method resolution finds
+    /// that impl on the `Box` itself before it ever autoderefs to the
+    /// trait object underneath, so `boxed_layout.as_any()` erases the
+    /// `Box` rather than the layout inside it, and the downcast that
+    /// follows silently fails. This method is inherent to `dyn
+    /// PrimitiveLayout` itself (not part of the [`PrimitiveLayout`]
+    /// trait), so it has no such competing impl at the `Box` level —
+    /// `boxed_layout.downcast_ref::<T>()` resolves through exactly one
+    /// autoderef step, to the trait object's own vtable.
+    pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.as_any().downcast_ref::<T>()
     }
 }
 
@@ -360,22 +431,21 @@ pub struct PaintServices<'a> {
     pub style: &'a Style,
 }
 
-/// Everything a [`Primitive::paint`]/[`Primitive::paint_cells`] call
-/// needs beyond its own `Layout`: which [`PaintTarget`] to paint onto,
-/// the [`PaintServices`] (theme + style), and the row pitch
-/// [`LayoutCtx::resolve_row_height`] resolved for this frame.
+/// Everything a [`DynWidget::paint`] call needs beyond its own `Layout`
+/// and [`PaintTarget`] (passed as that method's own separate parameter,
+/// since a `PaintTarget` borrows exclusively and [`PaintEnv`] itself is
+/// taken by shared reference): the [`PaintServices`] (theme + style) and
+/// the row pitch [`LayoutCtx::resolve_row_height`] resolved for this
+/// frame.
 ///
-/// Like [`LayoutMeasure`] and [`PrimitiveLayout`], this is a pure
-/// addition: [`crate::backend::DrawsPrimitives::draw_primitive`]'s
-/// default body does not build one today, since doing so for real would
-/// mean changing [`Primitive::paint`]'s signature to accept it — a
-/// widget re-port this change deliberately does not make. It is defined
-/// now as the named shape that re-port has to converge on, instead of
-/// each primitive inventing its own paint-environment bundle piecemeal.
+/// [`crate::backend::DrawsPrimitives::draw_dyn`] builds one of these per
+/// call; [`crate::backend::DrawsPrimitives::draw_primitive`]'s
+/// [`Primitive::paint`] path still takes `theme`/`style` as loose
+/// parameters instead, since widening that signature to accept a
+/// `PaintEnv` is a future widget re-port, not this change.
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct PaintEnv<'a> {
-    /// Where to paint.
-    pub target: PaintTarget<'a>,
     /// What to paint with.
     pub services: PaintServices<'a>,
     /// This frame's resolved row pitch — see
@@ -428,6 +498,15 @@ pub trait PaintState {
     }
 }
 
+/// `()` carries no paint-time state at all — the value
+/// [`crate::backend::DrawsPrimitives::draw_dyn`] callers pass when the
+/// widget being drawn has nothing [`PaintState`] would describe (e.g.
+/// [`crate::primitives::cell_grid::CellGrid`] through
+/// [`crate::frame::Surface::Widget`], which already keeps its
+/// hover/selection/cursor state as persistent fields on itself — see
+/// that widget's own [`Primitive::paint`] doc).
+impl PaintState for () {}
+
 /// A widget a pixel [`crate::Backend`] can paint without a bespoke
 /// `draw_*`/`*_layout` method pair. See the module doc for the full
 /// contract.
@@ -444,6 +523,47 @@ pub trait Primitive: A11yPrimitive {
     /// hit-testing, the same way every built-in primitive's
     /// compose-layer controller already does.
     type Event;
+
+    /// This instance's own [`crate::types::WidgetId`], when it carries
+    /// one. Default: `None` — most `Primitive` implementors are purely
+    /// local values (a `Swatch`, a one-off `Divider`) with no identity a
+    /// host needs to address; a widget that does carry an id (every
+    /// built-in primitive has one as a plain field) overrides this to
+    /// return it, which is what lets [`DynWidget`]'s blanket impl (and,
+    /// through it, [`crate::frame::Surface::Widget`]) recover the id
+    /// generically instead of needing a bespoke accessor per widget.
+    fn id(&self) -> Option<&crate::types::WidgetId> {
+        None
+    }
+
+    /// Which font the implementor paints in — see [`crate::FontRole`]'s
+    /// module doc for the chrome-by-default rule this mirrors. Default:
+    /// [`crate::FontRole::Chrome`], correct for every `Primitive`
+    /// implementor outside [`crate::EditorClassPrimitive::ALL`]'s
+    /// opt-out list.
+    fn font_role(&self) -> crate::FontRole {
+        crate::FontRole::Chrome
+    }
+
+    /// The implementor's best-effort intrinsic size within `avail`, for
+    /// a layout container that sizes a child to its own content on a
+    /// non-stretch cross axis. Default: [`crate::NaturalSize::NONE`] —
+    /// "no cheap measurement, stretch to fill", the same always-stretch
+    /// behaviour every `Primitive` implementor has without overriding
+    /// this method.
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        let _ = (ctx, avail);
+        crate::NaturalSize::NONE
+    }
+
+    /// Clone the implementor's content into a serializable
+    /// [`OwnedContent`] — see [`DynWidget::capture`]. Default:
+    /// [`OwnedContent::Opaque`]; a widget whose content type implements
+    /// `serde::{Serialize, Deserialize}` overrides this to return its own
+    /// [`OwnedContent`] variant.
+    fn capture(&self) -> OwnedContent {
+        OwnedContent::Opaque
+    }
 
     /// Resolve this primitive's layout for `rect`.
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout;
@@ -510,6 +630,180 @@ pub trait Primitive: A11yPrimitive {
     #[cfg(feature = "tui")]
     fn paint_cells(&self, layout: &Self::Layout, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let _ = (layout, buf, theme);
+    }
+}
+
+/// Type-erased view of any [`Interactive`] widget — the one shape
+/// [`crate::frame::Surface::Widget`] and
+/// [`crate::backend::DrawsPrimitives::draw_dyn`] paint, hit-test and
+/// route events to, so the frame/runtime/binding layers each need
+/// exactly one code path for every widget instead of one hand-written
+/// `Surface` variant (and matching `Backend` paint/layout pair) per
+/// primitive. See `crate::interactive`'s module doc for the `Interactive`
+/// half this erases, and this module's own doc for why `Primitive` alone
+/// — generic `Layout`/`Event` associated types — cannot be a trait
+/// object.
+///
+/// Never implemented by hand: the blanket `impl<W: Interactive> DynWidget
+/// for W` below covers every [`Interactive`] widget automatically,
+/// downcasting [`PrimitiveLayout`]/`dyn Any` state back to `W::Layout`/
+/// `W::State` via [`PrimitiveLayout::as_any`]/[`std::any::Any::downcast_mut`]
+/// and mapping `W::Action` to a [`crate::UiEvent`] via
+/// [`WidgetAction::into_ui_event`].
+pub trait DynWidget: A11yPrimitive {
+    /// This widget's own id, if it carries one — see [`Primitive::id`].
+    fn id(&self) -> Option<&WidgetId>;
+
+    /// Which font this widget paints in — see [`Primitive::font_role`].
+    fn font_role(&self) -> crate::FontRole;
+
+    /// This widget's best-effort intrinsic size — see [`Primitive::measure`].
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize;
+
+    /// Resolve this widget's layout for `rect`, erased behind
+    /// [`PrimitiveLayout`] — see [`Primitive::layout`].
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Box<dyn PrimitiveLayout>;
+
+    /// Paint `layout` (as produced by [`Self::layout`]) onto `target`.
+    /// Replaces [`Primitive::paint`]/[`Primitive::paint_cells`]'s split
+    /// with a single method that matches on [`PaintTarget`] itself, since
+    /// a type-erased caller (e.g.
+    /// [`crate::backend::DrawsPrimitives::draw_dyn`]) has exactly one
+    /// paint call to make regardless of which target it resolved.
+    fn paint(
+        &self,
+        layout: &dyn PrimitiveLayout,
+        target: PaintTarget<'_>,
+        env: &PaintEnv,
+        state: &dyn PaintState,
+    );
+
+    /// How this widget participates in keyboard tab order — see
+    /// [`Interactive::focus`].
+    fn focus(&self) -> FocusSpec;
+
+    /// A fresh, default-valued interaction state for this widget — the
+    /// type-erased counterpart of [`Interactive::State::default`].
+    fn new_state(&self) -> Box<dyn std::any::Any>;
+
+    /// Handle one [`RoutedEvent`] — the type-erased counterpart of
+    /// [`Interactive::handle`], with `state`/`layout` erased behind `dyn
+    /// Any`/[`PrimitiveLayout`] and the returned action already turned
+    /// into a [`crate::UiEvent`] via [`WidgetAction::into_ui_event`]. A
+    /// `state`/`layout` that fails to downcast back to this widget's own
+    /// `W::State`/`W::Layout` (a caller handing in the wrong pairing) is
+    /// a programmer error reported as [`Handled::Ignored`] rather than a
+    /// panic, mirroring every other "not mine" outcome this method can
+    /// return.
+    fn handle(
+        &self,
+        state: &mut dyn std::any::Any,
+        event: &RoutedEvent,
+        layout: &dyn PrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<crate::UiEvent>;
+
+    /// Assistive-technology actions this widget currently supports — see
+    /// [`Interactive::a11y_actions`].
+    fn a11y_actions(&self, state: &dyn std::any::Any) -> Vec<A11yAction>;
+
+    /// Clone this widget's content into a serializable [`OwnedContent`]
+    /// for [`crate::frame::OwnedFrame::from_layout`]. Default:
+    /// [`OwnedContent::Opaque`] — correct for a widget with no
+    /// serializable capture of its own; a widget that does implement
+    /// `serde::{Serialize, Deserialize}` (every built-in primitive)
+    /// overrides this to return its own [`OwnedContent`] variant, the
+    /// same way [`crate::frame::capture_surface`] already does per
+    /// `Surface` variant.
+    fn capture(&self) -> OwnedContent {
+        OwnedContent::Opaque
+    }
+}
+
+impl<W> DynWidget for W
+where
+    W: Interactive,
+    W::Layout: 'static,
+    W::State: 'static,
+{
+    fn id(&self) -> Option<&WidgetId> {
+        Primitive::id(self)
+    }
+
+    fn font_role(&self) -> crate::FontRole {
+        Primitive::font_role(self)
+    }
+
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        Primitive::measure(self, ctx, avail)
+    }
+
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Box<dyn PrimitiveLayout> {
+        Box::new(Primitive::layout(self, ctx, rect))
+    }
+
+    fn paint(
+        &self,
+        layout: &dyn PrimitiveLayout,
+        target: PaintTarget<'_>,
+        env: &PaintEnv,
+        state: &dyn PaintState,
+    ) {
+        let _ = state;
+        let Some(layout) = layout.downcast_ref::<W::Layout>() else {
+            return;
+        };
+        match target {
+            PaintTarget::Surface(surface) => {
+                Primitive::paint(
+                    self,
+                    layout,
+                    surface,
+                    env.services.theme,
+                    env.services.style,
+                );
+            }
+            #[cfg(feature = "tui")]
+            PaintTarget::Cells(buf) => {
+                Primitive::paint_cells(self, layout, buf, env.services.theme);
+            }
+        }
+    }
+
+    fn focus(&self) -> FocusSpec {
+        Interactive::focus(self)
+    }
+
+    fn new_state(&self) -> Box<dyn std::any::Any> {
+        Box::new(W::State::default())
+    }
+
+    fn handle(
+        &self,
+        state: &mut dyn std::any::Any,
+        event: &RoutedEvent,
+        layout: &dyn PrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<crate::UiEvent> {
+        let id = cx.id;
+        let (Some(state), Some(layout)) = (
+            state.downcast_mut::<W::State>(),
+            layout.downcast_ref::<W::Layout>(),
+        ) else {
+            return Handled::Ignored;
+        };
+        Interactive::handle(self, state, event, layout, cx).map(|action| action.into_ui_event(id))
+    }
+
+    fn a11y_actions(&self, state: &dyn std::any::Any) -> Vec<A11yAction> {
+        match state.downcast_ref::<W::State>() {
+            Some(state) => Interactive::a11y_actions(self, state),
+            None => Vec::new(),
+        }
+    }
+
+    fn capture(&self) -> OwnedContent {
+        Primitive::capture(self)
     }
 }
 
@@ -609,16 +903,30 @@ mod tests {
         assert_eq!(pixels.units(), Units::Pixels);
     }
 
-    /// [`PrimitiveLayout::new`] pairs `area` with the primitive-local
-    /// layout verbatim — no coordinate transform of either field, the
-    /// same contract every hand-rolled `*PrimitiveLayout` already
-    /// follows.
+    /// [`AreaLayout::new`] pairs `area` with the primitive-local layout
+    /// verbatim — no coordinate transform of either field, the same
+    /// contract every hand-rolled `*PrimitiveLayout` already follows.
     #[test]
-    fn primitive_layout_new_pairs_area_and_layout_verbatim() {
+    fn area_layout_new_pairs_area_and_layout_verbatim() {
         let area = Rect::new(1.0, 2.0, 3.0, 4.0);
-        let layout = PrimitiveLayout::new(area, 42_u32);
+        let layout = AreaLayout::new(area, 42_u32);
         assert_eq!(layout.area, area);
         assert_eq!(layout.layout, 42);
+    }
+
+    /// The blanket [`PrimitiveLayout`] impl lets any `'static` value
+    /// (here a plain [`AreaLayout`]) be reached through `&dyn
+    /// PrimitiveLayout` and downcast back to its concrete type — the
+    /// round-trip [`DynWidget`]'s blanket impl relies on.
+    #[test]
+    fn primitive_layout_as_any_downcasts_back_to_the_concrete_type() {
+        let area = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let layout = AreaLayout::new(area, 7_u32);
+        let erased: Box<dyn PrimitiveLayout> = Box::new(layout);
+        let back = erased
+            .downcast_ref::<AreaLayout<u32>>()
+            .expect("downcasts back to AreaLayout<u32>");
+        assert_eq!(*back, layout);
     }
 
     /// A no-op [`PaintSurface`] mock, just to construct a real
@@ -693,19 +1001,17 @@ mod tests {
     }
 
     #[test]
-    fn paint_env_bundles_target_services_and_row_height() {
-        let mut surface = NullSurface;
+    fn paint_env_bundles_services_and_row_height() {
         let theme = Theme::default();
         let style = Style::default();
         let env = PaintEnv {
-            target: PaintTarget::Surface(&mut surface),
             services: PaintServices {
                 theme: &theme,
                 style: &style,
             },
             row_height: 22.0,
         };
-        assert_eq!(env.target.kind(), SubTarget::Surface);
+        assert_eq!(*env.services.theme, theme);
         assert_eq!(env.row_height, 22.0);
     }
 

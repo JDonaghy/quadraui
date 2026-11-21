@@ -46,7 +46,10 @@ use crate::login_item::LoginItemOptions;
 use crate::modal_stack::ModalStack;
 use crate::paths::AppPathKind;
 use crate::power::{BlockerId, PowerSaveKind, ThermalState};
-use crate::primitive::{LayoutCtx, Primitive};
+use crate::primitive::{
+    DynWidget, LayoutCtx, PaintEnv, PaintServices, PaintState, PaintTarget, Primitive,
+    PrimitiveLayout,
+};
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::button::{Button, ButtonLayout};
@@ -4739,21 +4742,13 @@ pub trait DrawsPrimitives: Backend {
     /// if layout.hit_test(click_x, click_y) { /* ... */ }
     /// ```
     fn draw_primitive<P: Primitive>(&mut self, rect: Rect, primitive: &P) -> P::Layout {
-        let style = self.style();
-        let ctx = LayoutCtx {
-            line_height: LayoutCtx::resolve_row_height(self.chrome_line_height(), &style),
-            char_width: self.char_width(),
-            nerd_fonts_enabled: self.nerd_fonts_enabled(),
-        };
+        let ctx = primitive_layout_ctx(self);
         let layout = primitive.layout(&ctx, rect);
+        let style = self.style();
         let theme = self.theme();
-        let services = crate::primitive::PaintServices {
-            theme: &theme,
-            style: &style,
-        };
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(rect);
-            primitive.paint(&layout, surface, services.theme, services.style);
+            primitive.paint(&layout, surface, &theme, &style);
             surface.surface_pop_clip();
         }
         #[cfg(feature = "tui")]
@@ -4763,9 +4758,73 @@ pub trait DrawsPrimitives: Backend {
                  answered None — DrawsPrimitives::draw_primitive must run inside a frame \
                  scope (TuiBackend::enter_frame_scope)",
             );
-            primitive.paint_cells(&layout, buf, services.theme);
+            primitive.paint_cells(&layout, buf, &theme);
         }
         layout
+    }
+
+    /// The [`DynWidget`] counterpart of [`Self::draw_primitive`] —
+    /// resolves `w`'s layout for `rect` and, when this backend implements
+    /// [`crate::PaintSurface`] or [`Backend::cell_surface`], paints it
+    /// too, exactly as [`Self::draw_primitive`] does for a [`Primitive`].
+    /// Shares the `ctx` resolution step with [`Self::draw_primitive`]
+    /// via the private [`primitive_layout_ctx`] helper, so the font role,
+    /// frame scope, clip and units policy exist in exactly one place for
+    /// both entry points.
+    ///
+    /// Unlike [`Self::draw_primitive`], which calls [`Primitive::paint`]
+    /// and [`Primitive::paint_cells`] separately, [`DynWidget::paint`] is
+    /// one method taking a [`PaintTarget`] — there is exactly one paint
+    /// call to make here regardless of which target [`Backend::paint_surface`]/
+    /// [`Backend::cell_surface`] resolved.
+    fn draw_dyn(
+        &mut self,
+        rect: Rect,
+        w: &dyn DynWidget,
+        state: &dyn PaintState,
+    ) -> Box<dyn PrimitiveLayout> {
+        let ctx = primitive_layout_ctx(self);
+        let layout = w.layout(&ctx, rect);
+        let style = self.style();
+        let theme = self.theme();
+        let env = PaintEnv {
+            services: PaintServices {
+                theme: &theme,
+                style: &style,
+            },
+            row_height: ctx.line_height,
+        };
+        if let Some(surface) = self.paint_surface() {
+            surface.surface_push_clip(rect);
+            w.paint(layout.as_ref(), PaintTarget::Surface(surface), &env, state);
+            surface.surface_pop_clip();
+        }
+        #[cfg(feature = "tui")]
+        if let Some(cell_surface) = self.cell_surface() {
+            let buf = cell_surface.ratatui_buffer().expect(
+                "Backend::cell_surface answered Some but CellSurface::ratatui_buffer \
+                 answered None — DrawsPrimitives::draw_dyn must run inside a frame \
+                 scope (TuiBackend::enter_frame_scope)",
+            );
+            w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
+        }
+        layout
+    }
+}
+
+/// Shared `ctx` resolution for [`DrawsPrimitives::draw_primitive`] and
+/// [`DrawsPrimitives::draw_dyn`]: the same
+/// [`Backend::chrome_line_height`]/[`Backend::char_width`]/
+/// [`Backend::nerd_fonts_enabled`] lookups, with `line_height` floored at
+/// the active [`Backend::style`]'s row-height token via
+/// [`LayoutCtx::resolve_row_height`] — see [`DrawsPrimitives::draw_primitive`]'s
+/// own doc for why that floor matters.
+fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCtx {
+    let style = backend.style();
+    LayoutCtx {
+        line_height: LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),
+        char_width: backend.char_width(),
+        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
     }
 }
 
