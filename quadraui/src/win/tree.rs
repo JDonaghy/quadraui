@@ -266,6 +266,11 @@ pub fn draw_tree_with_state(
 
 #[cfg(test)]
 mod tests {
+    // Tests exercise the deprecated `Backend::draw_tree`/`tree_layout`
+    // directly alongside their `DrawsPrimitives::draw_primitive`
+    // replacement — this deprecation targets callers, not
+    // this file's own coverage of the methods it deprecates.
+    #![allow(deprecated)]
     use super::*;
     use crate::primitives::tree::{TreeRow, TreeViewHit};
     use crate::style::Style;
@@ -1207,6 +1212,10 @@ mod tests {
 /// compile everywhere and need the extra `target_os` gate on this block.
 #[cfg(test)]
 mod multi_select_driver_tests {
+    // Drives `AppLogic::render` through the deprecated `Backend::draw_tree`
+    // directly — this deprecation targets callers, not this file's own
+    // coverage of the method it deprecates.
+    #![allow(deprecated)]
     use super::super::testing::WinDriver;
     use crate::primitives::tree::{selected_paths_for_indices, TreeEvent, TreeRow, TreeRowMeasure};
     use crate::runner::{AppLogic, Reaction};
