@@ -91,9 +91,9 @@ def test_set_theme_error_fg_recolours_the_derived_toast_danger_background():
     # set directly. Overriding the field it derives from must still
     # change what an `Error`-severity `Toast` paints.
     app = QuiApp(40, 20)
-    app.show_toast(
-        {"id": "toast:before", "title": "Boom", "body": "", "severity": "Error"},
-        "top_left",
+    app.show_overlay(
+        "toast",
+        {"id": "toast:before", "title": "Boom", "body": "", "severity": "Error", "corner": "top_left"},
     )
     # Sample the toast box's top-left border cell -- every cell in the
     # box shares the same background fill regardless of row/column (see
@@ -102,9 +102,9 @@ def test_set_theme_error_fg_recolours_the_derived_toast_danger_background():
     _, before_bg = app.cell_colors(1, 1)
 
     app.set_theme({"error_fg": "#ff0000"})
-    app.show_toast(
-        {"id": "toast:after", "title": "Boom", "body": "", "severity": "Error"},
-        "top_left",
+    app.show_overlay(
+        "toast",
+        {"id": "toast:after", "title": "Boom", "body": "", "severity": "Error", "corner": "top_left"},
     )
     _, after_bg = app.cell_colors(1, 1)
 

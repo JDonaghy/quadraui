@@ -12,12 +12,12 @@ Three scenarios:
   (label + icon fallback text on screen, and the `Danger` variant's
   `Theme.error_fg` foreground actually painted -- not just accepted
   without raising).
-- `show_toast`'s action buttons, which carry an optional `ButtonSpec`
-  override (`ToastButton::spec`) painted by `tui::toast::paint_toast`
-  with no stripping in between -- the sibling of `DialogButton::spec`
-  that is actually wired end to end, so this is where the B3b vocabulary's
-  *colour* can be proven on screen via `cell_colors`.
-- `show_message_dialog`'s buttons, which decode as `DialogButton` --
+- `show_overlay("toast", ...)`'s action buttons, which carry an optional
+  `ButtonSpec` override (`ToastButton::spec`) painted by
+  `tui::toast::paint_toast` with no stripping in between -- the sibling of
+  `DialogButton::spec` that is actually wired end to end, so this is where
+  the B3b vocabulary's *colour* can be proven on screen via `cell_colors`.
+- `show_overlay("message_dialog", ...)`'s buttons, which decode as `DialogButton` --
   including its own `spec` field -- through the exact same
   `pythonize::depythonize` call the two scenarios above use. A dialog
   button's `spec` decodes without raising (this is the literal "dialog
@@ -110,7 +110,8 @@ def test_show_toast_danger_spec_action_colours_its_row_in_error_fg():
     # foreground to `Theme.error_fg` and drops any `accent_bg`/`link_fg`
     # look the legacy `primary` flag would otherwise give it.
     app = QuiApp(40, 20)
-    app.show_toast(
+    app.show_overlay(
+        "toast",
         {
             "id": "toast:confirm",
             "title": "Delete file?",
@@ -123,7 +124,7 @@ def test_show_toast_danger_spec_action_colours_its_row_in_error_fg():
                     "spec": {"label": "Discard", "variant": "Danger"},
                 },
             ],
-        }
+        },
     )
 
     assert app.screen_contains("Keep")
@@ -139,7 +140,7 @@ def test_show_toast_danger_spec_action_colours_its_row_in_error_fg():
     assert keep_fg != discard_fg
 
 
-def test_show_message_dialog_accepts_a_dialog_button_with_a_danger_spec():
+def test_show_overlay_message_dialog_accepts_a_dialog_button_with_a_danger_spec():
     # `DialogButton::spec` decodes fine through the same
     # `pythonize::depythonize` call the other two scenarios use -- a
     # dialog button naming `spec` never raises `InvalidDescriptorError`.
@@ -149,18 +150,21 @@ def test_show_message_dialog_accepts_a_dialog_button_with_a_danger_spec():
     # before painting, the same native-OS-compatible shape that already
     # rejects `tint` for the identical reason).
     app = QuiApp(60, 20)
-    app.show_message_dialog(
-        "Unsaved changes",
-        "Delete the file permanently?",
-        [
-            {
-                "id": "discard",
-                "label": "Delete",
-                "is_default": True,
-                "spec": {"label": "Delete", "variant": "Danger"},
-            },
-            {"id": "cancel", "label": "Cancel", "is_cancel": True},
-        ],
+    app.show_overlay(
+        "message_dialog",
+        {
+            "title": "Unsaved changes",
+            "body": "Delete the file permanently?",
+            "buttons": [
+                {
+                    "id": "discard",
+                    "label": "Delete",
+                    "is_default": True,
+                    "spec": {"label": "Delete", "variant": "Danger"},
+                },
+                {"id": "cancel", "label": "Cancel", "is_cancel": True},
+            ],
+        },
     )
 
     assert app.screen_contains("Delete")

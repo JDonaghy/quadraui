@@ -140,9 +140,10 @@ control.
 
 ### Confirm / alert dialogs
 
-Don't build a `show_message_dialog` call plus a hand-written
-`MessageDialogResolved` branch in `on_event`. `App.confirm`/`.alert` wrap
-both into one call that reports the clicked button's id back directly:
+Don't build a `show_overlay("message_dialog", ...)` call plus a
+hand-written `MessageDialogResolved` branch in `on_event`. `App.confirm`/
+`.alert` wrap both into one call that reports the clicked button's id back
+directly:
 
 ```python
 DELETE_BUTTONS = [

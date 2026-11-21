@@ -1,8 +1,7 @@
 """Black-box coverage for `QuiApp.actions()`'s `QuiAppActions` handle: the
-way a registered event handler queues `show_message_dialog`/`show_toast`/
-`show_tooltip`/`show_overlay`/`dismiss_overlay`/`send_notification`/
-`open_path`/`reveal_in_file_manager`/`move_to_trash`/`restore_from_trash`/
-`define_style` (the methods `QuiApp` itself restricts to top-level script
+way a registered event handler queues `show_overlay`/`dismiss_overlay`/
+`send_notification`/`open_path`/`reveal_in_file_manager`/`move_to_trash`/
+`restore_from_trash`/`define_style` (the methods `QuiApp` itself restricts to top-level script
 code, since a handler already holds this app's one mutable borrow for the
 whole dispatch that invoked it) and has it applied right after that
 dispatch finishes, instead of raising `ReentrantCallError` the way calling
@@ -29,21 +28,22 @@ def _key_char(ch):
     }
 
 
-def test_show_message_dialog_queued_from_a_handler_is_painted_after_step():
+def test_show_overlay_message_dialog_queued_from_a_handler_is_painted_after_step():
     app = QuiApp(40, 20)
     actions = app.actions()
 
     def on_event(_event):
-        actions.show_message_dialog(
-            "Confirm", "Really?", [{"id": "ok", "label": "OK"}]
+        actions.show_overlay(
+            "message_dialog",
+            {"title": "Confirm", "body": "Really?", "buttons": [{"id": "ok", "label": "OK"}]},
         )
 
     app.set_handler(on_event)
     assert not app.screen_contains("Confirm")
 
     # Nothing in this app's own dispatch raises -- a direct
-    # `app.show_message_dialog(...)` call from inside `on_event` would raise
-    # `ReentrantCallError` instead.
+    # `app.show_overlay("message_dialog", ...)` call from inside `on_event`
+    # would raise `ReentrantCallError` instead.
     app.push_key_event(ord("a"))
     app.run(1)
 
@@ -51,12 +51,12 @@ def test_show_message_dialog_queued_from_a_handler_is_painted_after_step():
     assert app.screen_contains("OK")
 
 
-def test_show_toast_queued_from_a_handler_is_painted_after_step():
+def test_show_overlay_toast_queued_from_a_handler_is_painted_after_step():
     app = QuiApp(40, 20)
     actions = app.actions()
 
     def on_event(_event):
-        actions.show_toast({"id": "toast:saved", "title": "Saved", "body": ""})
+        actions.show_overlay("toast", {"id": "toast:saved", "title": "Saved", "body": ""})
 
     app.set_handler(on_event)
     app.push_key_event(ord("a"))
@@ -65,20 +65,20 @@ def test_show_toast_queued_from_a_handler_is_painted_after_step():
     assert app.screen_contains("Saved")
 
 
-def test_show_tooltip_queued_from_a_handler_is_painted_after_step():
+def test_show_overlay_tooltip_queued_from_a_handler_is_painted_after_step():
     app = QuiApp(40, 20)
     actions = app.actions()
 
     def on_event(_event):
-        actions.show_tooltip(
-            {"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0)
+        actions.show_overlay(
+            "tooltip", {"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0)
         )
 
     app.set_handler(on_event)
     assert not app.screen_contains("Hello tip")
 
-    # A direct `app.show_tooltip(...)` call from inside `on_event` would
-    # raise `ReentrantCallError` instead.
+    # A direct `app.show_overlay("tooltip", ...)` call from inside
+    # `on_event` would raise `ReentrantCallError` instead.
     app.push_key_event(ord("a"))
     app.run(1)
 
@@ -267,8 +267,8 @@ def test_multiple_actions_queued_from_one_dispatch_all_apply():
     actions = app.actions()
 
     def on_event(_event):
-        actions.show_toast({"id": "toast:a", "title": "Alpha", "body": ""})
-        actions.show_toast({"id": "toast:b", "title": "Bravo", "body": ""})
+        actions.show_overlay("toast", {"id": "toast:a", "title": "Alpha", "body": ""})
+        actions.show_overlay("toast", {"id": "toast:b", "title": "Bravo", "body": ""})
 
     app.set_handler(on_event)
     app.push_key_event(ord("a"))

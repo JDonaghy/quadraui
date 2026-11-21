@@ -765,16 +765,20 @@ def test_alert_default_button_id_and_label_are_overridable():
 
 
 def test_a_message_dialog_resolved_with_no_pending_confirm_falls_through_to_on_event():
-    """A dialog opened through the lower-level `actions.show_message_dialog`
-    escape hatch directly, not through `confirm`/`alert`: its resolution
-    must not be swallowed by `_dispatch_message_dialog_resolved`."""
+    """A dialog opened through the lower-level
+    `actions.show_overlay("message_dialog", ...)` escape hatch directly, not
+    through `confirm`/`alert`: its resolution must not be swallowed by
+    `_dispatch_message_dialog_resolved`."""
     fallback = []
 
     def view():
         return TextDisplay([], id="t:text")
 
     app = App(20, 5, view=view, on_event=lambda event: fallback.append(event))
-    app.actions.show_message_dialog("Title", "Body", [{"id": "ok", "label": "OK", "is_default": True}])
+    app.actions.show_overlay(
+        "message_dialog",
+        {"title": "Title", "body": "Body", "buttons": [{"id": "ok", "label": "OK", "is_default": True}]},
+    )
     app.step()
     app.push_event(_key_event({"Named": "Enter"}))
     app.step()

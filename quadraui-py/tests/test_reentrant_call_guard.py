@@ -3,7 +3,7 @@ surface, all exercised through `pytest.raises`/direct assertions rather
 than inspecting any Rust-internal state:
 
 1. Every `QuiApp` method restricted to top-level script code (the ones
-   `QuiAppActions` mirrors -- `show_message_dialog`, `set_title`, ...)
+   `QuiAppActions` mirrors -- `show_overlay`, `set_title`, ...)
    raises `ReentrantCallError`, with a message naming the method and
    pointing at `actions()`, instead of PyO3's raw
    `RuntimeError: Already borrowed`, when called from inside this app's
@@ -42,11 +42,11 @@ def _key_char(ch):
 @pytest.mark.parametrize(
     ("method", "args"),
     [
-        ("show_message_dialog", ("Title", "Body", [{"id": "ok", "label": "OK"}])),
-        ("show_context_menu", ([{"id": "a", "label": "A"}], (0.0, 0.0))),
-        ("show_toast", ({"id": "t1", "title": "Hi", "body": "there"},)),
-        ("show_tooltip", ({"id": "tip", "text": "hint"}, (0.0, 0.0, 1.0, 1.0))),
-        ("hide_tooltip", ()),
+        (
+            "show_overlay",
+            ("message_dialog", {"title": "Title", "body": "Body", "buttons": [{"id": "ok", "label": "OK"}]}),
+        ),
+        ("dismiss_overlay", ("message_dialog",)),
         ("send_notification", ("Title", "Body")),
         ("open_path", ("/tmp",)),
         ("reveal_in_file_manager", ("/tmp",)),
@@ -102,7 +102,10 @@ def test_restricted_method_still_works_normally_from_top_level_script_code():
     # non-reentrant call every other test in this package relies on.
     app = QuiApp(40, 20)
     app.set_title("hello")
-    app.show_message_dialog("Confirm", "Really?", [{"id": "ok", "label": "OK"}])
+    app.show_overlay(
+        "message_dialog",
+        {"title": "Confirm", "body": "Really?", "buttons": [{"id": "ok", "label": "OK"}]},
+    )
     assert app.screen_contains("Confirm")
 
 
