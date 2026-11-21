@@ -87,3 +87,12 @@ fragment step for this package (that mechanism, and
   `js/testing.ts`'s `Widget.press()` now drives a focused scripted
   widget's own key handling directly. See `examples/rating.ts` for a
   runnable 5-star rating control.
+
+### Removed
+
+- `QuiApp.insertButton`/`insertTextDisplay`/`insertList`/`insertTree`/
+  `insertDataTable`/`insertTabBar`/`insertProgress`/`insertSpinner`/
+  `insertImage`/`insertExtra`/`clearExtra`/`slotClear`: the six fixed
+  primitive slots and every additive primitive now reach the screen only
+  through a `setRender` callback's descriptor object. `SlotOccupiedError`/
+  `UnknownSlotError` are removed with them.

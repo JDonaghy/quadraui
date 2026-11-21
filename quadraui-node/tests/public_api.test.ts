@@ -55,9 +55,9 @@ test("toQuadrauiError is exported and is a function", () => {
 });
 
 test("toQuadrauiError converts a tagged plain Error into the matching subclass, preserving message and stack", () => {
-  const tagged = new Error("SlotOccupiedError: slot 0 already holds a descriptor");
+  const tagged = new Error("PanicError: boom");
   const converted = quadraui.toQuadrauiError(tagged) as Error;
-  assert.ok(converted instanceof quadraui.SlotOccupiedError);
+  assert.ok(converted instanceof quadraui.PanicError);
   assert.ok(converted instanceof quadraui.QuadrauiError);
   assert.equal(converted.message, tagged.message);
   assert.equal(converted.stack, tagged.stack);

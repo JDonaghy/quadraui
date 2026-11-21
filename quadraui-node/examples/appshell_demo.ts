@@ -2,15 +2,14 @@
 // smoothly from JavaScript/TypeScript. Mirrors
 // `quadraui-py/examples/appshell_demo.py` 1:1.
 //
-// `QuiApp` has no in-place "update a slot" call -- a descriptor is immutable
-// once inserted, so advancing the scroll position means clearing the slot
-// and re-inserting the list with a new `scroll_offset`/`selected_idx` on
-// every "frame". `AppShellDemo` below owns that dance; the scroll loop
-// itself is a plain `for` loop driving it one page at a time, standing in
-// for whatever drives real key/scroll-wheel events (a bound handler must
-// not call back into the same `QuiApp` it was invoked from -- `QuiApp`
-// rejects that reentrant borrow -- so this demo calls `scroll()` directly
-// rather than through `setHandler`).
+// `AppShellDemo` holds `scrollOffset`/`selectedIdx` as plain instance
+// fields and registers a `render` callback that rebuilds the `list` layout
+// leaf from them on every frame. The scroll loop itself is a plain `for`
+// loop driving it one page at a time, standing in for whatever drives real
+// key/scroll-wheel events (a bound handler must not call back into the
+// same `QuiApp` it was invoked from -- `QuiApp` rejects that reentrant
+// borrow -- so this demo calls `scroll()` directly rather than through
+// `setHandler`).
 //
 // Run headless:
 //
@@ -34,32 +33,33 @@ function makeRows(count: number): ListItemDescriptor[] {
 }
 
 /**
- * Drives the single `ListView` slot of a `QuiApp`, re-inserting it with an
- * updated `scroll_offset`/`selected_idx` each time the list scrolls.
+ * Owns the plain `scrollOffset`/`selectedIdx` state a `render` callback
+ * reads to rebuild the `list` layout leaf on every frame.
  */
 class AppShellDemo {
   app: InstanceType<typeof QuiApp>;
   rows: ListItemDescriptor[];
   selectedIdx: number;
   scrollOffset: number;
-  slot: number;
 
   constructor(app: InstanceType<typeof QuiApp>, rows: ListItemDescriptor[]) {
     this.app = app;
     this.rows = rows;
     this.selectedIdx = 0;
     this.scrollOffset = 0;
-    this.slot = app.insertList(this._descriptor());
+    app.setRender(() => this._render());
   }
 
-  private _descriptor(): ListViewDescriptor {
+  private _render(): { list: ListViewDescriptor } {
     return {
-      id: "list:appshell",
-      items: this.rows,
-      selected_idx: this.selectedIdx,
-      scroll_offset: this.scrollOffset,
-      has_focus: true,
-      show_v_scrollbar: true,
+      list: {
+        id: "list:appshell",
+        items: this.rows,
+        selected_idx: this.selectedIdx,
+        scroll_offset: this.scrollOffset,
+        has_focus: true,
+        show_v_scrollbar: true,
+      },
     };
   }
 
@@ -67,8 +67,6 @@ class AppShellDemo {
     const last = this.rows.length - 1;
     this.selectedIdx = Math.max(0, Math.min(last, this.selectedIdx + delta));
     this.scrollOffset = Math.max(0, Math.min(last, this.scrollOffset + delta));
-    this.app.slotClear(this.slot);
-    this.slot = this.app.insertList(this._descriptor());
   }
 }
 

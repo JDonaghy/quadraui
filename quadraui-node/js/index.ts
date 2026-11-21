@@ -132,14 +132,6 @@ class DecodeFailedError extends InvalidDescriptorError {
 }
 exports.DecodeFailedError = DecodeFailedError;
 
-/** A fixed slot or additive-primitive kind that already holds a descriptor -- mirrors `quadraui-py`'s `SlotOccupiedError`. */
-class SlotOccupiedError extends QuadrauiError {}
-exports.SlotOccupiedError = SlotOccupiedError;
-
-/** A slot id that is not one of the documented `SLOT_*` constants -- mirrors `quadraui-py`'s `UnknownSlotError`. */
-class UnknownSlotError extends QuadrauiError {}
-exports.UnknownSlotError = UnknownSlotError;
-
 /** A zero width/height, or a byte buffer whose length does not match the width/height it is supposed to encode -- mirrors `quadraui-py`'s `InvalidDimensionsError`. */
 class InvalidDimensionsError extends QuadrauiError {}
 exports.InvalidDimensionsError = InvalidDimensionsError;
@@ -226,8 +218,6 @@ const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiErro
   UnknownKeyError,
   VersionMismatchError,
   DecodeFailedError,
-  SlotOccupiedError,
-  UnknownSlotError,
   InvalidDimensionsError,
   InvalidCharError,
   PanicError,
@@ -304,7 +294,7 @@ exports.toQuadrauiError = toQuadrauiError;
  * this set before translating {@link NATIVE_BORROW_CONFLICT_PATTERN}: a
  * reentrant call to one of these gets {@link ReentrantCallError}'s own
  * tailored message naming the method and `actions()`; a reentrant call to
- * anything else (`insertButton`, `slotClear`, ...) still surfaces napi-rs's
+ * anything else (`screen`, `pushEvent`, ...) still surfaces napi-rs's
  * own generic rejection unchanged, since there is no `actions()`
  * counterpart to point a caller at.
  */
@@ -539,12 +529,9 @@ export type RenderCtx = InstanceType<typeof native.RenderCtx>;
  *
  * Construct it with a `width`/`height` cell grid, call `setRender` with a
  * callback that returns a layout tree of inline leaves, and inspect the
- * rendered frame with `screen()`/`screenContains()`. The fixed-slot
- * `insertButton`/`insertTextDisplay`/.../`insertExtra`/`clearExtra`/
- * `slotClear` methods still work but are deprecated -- each one warns once,
- * naming the inline layout leaf that replaces it. See the native binding's
- * own doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the full
- * method list and panic/poison behaviour.
+ * rendered frame with `screen()`/`screenContains()`. See the native
+ * binding's own doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the
+ * full method list and panic/poison behaviour.
  *
  * A thin subclass of the native constructor rather than a bare re-export:
  * every other method is already wrapped in place on
