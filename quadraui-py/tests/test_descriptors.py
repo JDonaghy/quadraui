@@ -1,11 +1,6 @@
 """Black-box coverage for `QuiApp`: render each of the six core primitives
 from a plain Python dict, through a render callback's flat
-`{"<kind>": {...}}` dict, and assert the rendered screen shows it. The
-deprecated slot API's own occupancy/validation behaviour (`insert_*`'s
-`SlotOccupiedError`, `slot_clear`'s `UnknownSlotError`/`bool` return) has no
-render-callback equivalent -- a render callback has no notion of "occupied",
-it just returns fresh data every frame -- so the handful of tests below that
-exercise that behaviour specifically stay on the deprecated calls.
+`{"<kind>": {...}}` dict, and assert the rendered screen shows it.
 
 Run against a built wheel/extension, e.g.:
 
@@ -19,8 +14,6 @@ from quadraui import (
     InvalidDescriptorError,
     InvalidDimensionsError,
     QuiApp,
-    SlotOccupiedError,
-    UnknownSlotError,
 )
 
 
@@ -286,19 +279,6 @@ def test_tab_bar_leaf_renders():
     assert app.screen_contains("Tab 1")
 
 
-def test_slot_occupied_then_cleared():
-    app = QuiApp(40, 20)
-    app.insert_button({"id": "demo:ok", "label": "OK"})
-    with pytest.raises(SlotOccupiedError):
-        app.insert_button({"id": "demo:ok2", "label": "OK2"})
-
-    assert app.slot_clear(0) is True
-    assert not app.screen_contains("OK")
-    slot = app.insert_button({"id": "demo:ok2", "label": "OK2"})
-    assert slot == 0
-    assert app.screen_contains("OK2")
-
-
 def test_button_leaf_invalid_descriptor_raises_invalid_descriptor_error():
     app = QuiApp(40, 20)
     app.set_render(lambda: {"button": {"not": "a button"}})
@@ -313,17 +293,6 @@ def test_zero_sized_app_raises_invalid_dimensions_error():
         QuiApp(40, 0)
     with pytest.raises(InvalidDimensionsError):
         QuiApp(0, 20)
-
-
-def test_slot_clear_unknown_slot_raises_unknown_slot_error():
-    app = QuiApp(40, 20)
-    with pytest.raises(UnknownSlotError):
-        app.slot_clear(999)
-
-
-def test_slot_clear_empty_slot_returns_false():
-    app = QuiApp(40, 20)
-    assert app.slot_clear(0) is False
 
 
 def test_screen_reflects_rendered_descriptors():

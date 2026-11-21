@@ -1,10 +1,8 @@
 """Black-box coverage for the additive primitive mechanism: a render
-callback's flat `{"progress": ..., "spinner": ..., "image": ...}` dict (and
-the generic, kind-by-name `insert_extra`/`clear_extra` pair, whose own
-occupancy/validation behaviour has no render-callback equivalent) builds a
-`ProgressBar`, `Spinner` and `Image` descriptor from a plain Python dict,
-each rendering alongside (not instead of) the six fixed slots, and the same
-three kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
+callback's flat `{"progress": ..., "spinner": ..., "image": ...}` dict
+builds a `ProgressBar`, `Spinner` and `Image` descriptor from a plain Python
+dict, each rendering alongside (not instead of) the six fixed slots, and the
+same three kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
 container) behind that same render callback -- the one other path a
 descriptor can reach the screen through.
 
@@ -13,11 +11,9 @@ These three primitives prove the additive mechanism described in the
 one costs an `ExtraPaint` impl (one line for a whole-area primitive like
 these three, a little layout derivation for one that needs a measure pass)
 and one line appended to the `EXTRA_PRIMITIVES` registry slice -- never an
-edit to the six-slot machinery (`SLOT_*`, `is_known_slot`/`clear_slot`,
-`LeafDescriptor`'s six-variant set) that `test_descriptors.py` exercises, and
-never a new pymethod, since a render callback dict (or, for the deprecated
-slot API, `insert_extra(kind, descriptor)`) already covers any registered
-kind by name.
+edit to the six-slot machinery (`LeafDescriptor`'s six-variant set) that
+`test_descriptors.py` exercises, and never a new pymethod, since a render
+callback dict already covers any registered kind by name.
 
 Run against a built wheel/extension, e.g.:
 
@@ -27,7 +23,7 @@ Run against a built wheel/extension, e.g.:
 
 import pytest
 
-from quadraui import InvalidDescriptorError, QuiApp, SlotOccupiedError
+from quadraui import InvalidDescriptorError, QuiApp
 
 
 def test_progress_leaf_renders_label():
@@ -74,67 +70,11 @@ def test_extra_primitives_coexist_with_fixed_slots():
     assert app.screen_contains("Downloading")
 
 
-def test_insert_progress_rejects_when_already_occupied():
-    app = QuiApp(40, 20)
-    app.insert_progress({"id": "progress:download", "label": "Downloading"})
-    with pytest.raises(SlotOccupiedError):
-        app.insert_progress({"id": "progress:other", "label": "Other"})
-
-
-def test_clear_extra_then_reinsert():
-    app = QuiApp(40, 20)
-    app.insert_spinner({"id": "spinner:lsp_boot", "label": "Indexing"})
-    assert app.clear_extra("spinner") is True
-    assert not app.screen_contains("Indexing")
-
-    app.insert_spinner({"id": "spinner:lsp_boot", "label": "Booting"})
-    assert app.screen_contains("Booting")
-
-
-def test_clear_extra_on_empty_slot_returns_false():
-    app = QuiApp(40, 20)
-    assert app.clear_extra("progress") is False
-
-
-def test_clear_extra_on_unknown_kind_returns_false():
-    # Unlike `slot_clear`, an unrecognized kind has nothing to clear rather
-    # than raising, even though `EXTRA_PRIMITIVES` does validate kinds on
-    # insert -- `clear_extra` only ever looks a kind up in the occupied-slots
-    # map, so a kind that was never registered is indistinguishable from one
-    # that is registered but simply not currently occupied.
-    app = QuiApp(40, 20)
-    assert app.clear_extra("not_a_real_kind") is False
-
-
 def test_image_leaf_invalid_descriptor_raises():
     app = QuiApp(40, 20)
     app.set_render(lambda: {"image": {"id": "image:logo"}})
     with pytest.raises(InvalidDescriptorError):
         app.screen()
-
-
-def test_insert_extra_renders_by_kind_name():
-    # The generic entry point: a future additive primitive reaches the
-    # screen through this one method with no new pymethod required --
-    # unlike a render callback, where every kind is already addressed
-    # generically by its dict key with no distinct "by name" method to
-    # prove at all.
-    app = QuiApp(40, 20)
-    app.insert_extra("progress", {"id": "progress:download", "label": "Downloading"})
-    assert app.screen_contains("Downloading")
-
-
-def test_insert_extra_unknown_kind_raises():
-    app = QuiApp(40, 20)
-    with pytest.raises(InvalidDescriptorError):
-        app.insert_extra("not_a_real_kind", {"id": "x"})
-
-
-def test_insert_extra_rejects_when_already_occupied():
-    app = QuiApp(40, 20)
-    app.insert_extra("spinner", {"id": "spinner:lsp_boot", "label": "Indexing"})
-    with pytest.raises(SlotOccupiedError):
-        app.insert_extra("spinner", {"id": "spinner:other", "label": "Other"})
 
 
 def test_render_callback_tree_leaf_uses_extra_primitive():
@@ -268,13 +208,12 @@ def test_render_callback_tree_leaf_rejects_two_extra_descriptors_together():
 
 # Parametrised table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry
 # that has a dedicated `FormEvent` (`switch` already has its own dedicated
-# test above the slot-path block below, and `progress`/`spinner`/`image`
-# have no event at all) round-trips through a literal inline layout-tree
-# leaf -- a `{"row": [{"id": ..., "<kind>": {...}}]}` dict, the exact shape
-# a render callback writes -- not just through `insert_extra`'s flat-slot
-# path. Each case pushes the events a real app would dispatch (a focusing
-# click, then a key/char where the kind needs one) and asserts the final
-# dispatched event the handler receives.
+# test above, and `progress`/`spinner`/`image` have no event at all)
+# round-trips through a literal inline layout-tree leaf -- a
+# `{"row": [{"id": ..., "<kind>": {...}}]}` dict, the exact shape a render
+# callback writes. Each case pushes the events a real app would dispatch (a
+# focusing click, then a key/char where the kind needs one) and asserts the
+# final dispatched event the handler receives.
 _INLINE_LEAF_CASES = [
     pytest.param(
         {"row": [{"id": "ni:1", "number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}]},
@@ -3612,7 +3551,7 @@ def test_show_context_menu_with_nested_submenu_opens_by_right_arrow_and_activate
 def test_show_context_menu_item_with_codicon_icon_renders_fallback():
     # `ContextMenuItem::icon` accepts the same `{"codicon": "...",
     # "fallback": "..."}` wire shape a tree row's `icon` does (see
-    # `test_descriptors.py::test_insert_tree_with_codicon_icon`), but
+    # `test_descriptors.py::test_tree_leaf_with_codicon_icon`), but
     # paints into the single-cell gutter `checked`'s `✓` shares (only
     # the fallback's first character renders) rather than a
     # measured-width slot -- `QuiApp`'s headless driver defaults to nerd

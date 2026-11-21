@@ -17,7 +17,7 @@ from quadraui import QuiApp
 _NO_MODS = {"shift": False, "ctrl": False, "alt": False, "cmd": False}
 
 
-def _insert_text_display(app):
+def _render_text_display(app):
     app.set_render(
         lambda: {
             "text_display": {
@@ -38,7 +38,7 @@ def _insert_text_display(app):
 
 def test_drag_over_text_display_emits_text_selection_changed():
     app = QuiApp(40, 20)
-    _insert_text_display(app)
+    _render_text_display(app)
 
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -77,7 +77,7 @@ def test_drag_over_text_display_emits_text_selection_changed():
 
 def test_ctrl_c_with_active_selection_emits_text_copied():
     app = QuiApp(40, 20)
-    _insert_text_display(app)
+    _render_text_display(app)
 
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -132,7 +132,7 @@ def test_ctrl_c_with_active_selection_emits_text_copied():
 
 def test_ctrl_c_without_selection_does_not_emit_text_copied():
     app = QuiApp(40, 20)
-    _insert_text_display(app)
+    _render_text_display(app)
 
     received = []
     app.set_handler(lambda event: received.append(event))
