@@ -424,6 +424,7 @@ mod tests {
             cr.paint().ok();
             let pango_layout = pangocairo::functions::create_layout(&cr);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                #[allow(deprecated)]
                 b.draw_list(rect, &list);
             });
         }
@@ -683,6 +684,7 @@ mod multi_select_driver_tests {
     impl AppLogic for ListApp {
         type AreaId = ();
 
+        #[allow(deprecated)]
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             backend.draw_list(Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H), &self.list);
         }

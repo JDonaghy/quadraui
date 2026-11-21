@@ -373,6 +373,7 @@ impl AppLogic for SearchPanelApp {
                         self.input_active = false;
                         if let Some(sl) = layout.sections.get(section) {
                             if let SectionBody::Tree(ref tree) = view.sections[section].body {
+                                #[allow(deprecated)]
                                 let tree_layout = backend.tree_layout(sl.body_bounds, tree);
                                 let local_x = position.x - sl.body_bounds.x;
                                 let local_y = position.y - sl.body_bounds.y;

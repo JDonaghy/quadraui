@@ -350,6 +350,7 @@ impl Demo for DataTableDemo {
             },
             UiEvent::MouseDown { position, .. } => {
                 let table = self.table(variant);
+                #[allow(deprecated)]
                 let layout = backend.data_table_layout(table_rect, &table);
                 // `DataTableLayout::hit_test` is viewport-relative (measured
                 // from the table's own left/top edge), not absolute like
@@ -374,6 +375,7 @@ impl Demo for DataTableDemo {
             }
             UiEvent::MouseMoved { position, .. } => {
                 let table = self.table(variant);
+                #[allow(deprecated)]
                 let layout = backend.data_table_layout(table_rect, &table);
                 let (lx, ly) = (position.x - table_rect.x, position.y - table_rect.y);
                 let old = self.hovered_idx;
@@ -462,6 +464,7 @@ mod tui_tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn clicking_the_status_header_at_a_nonzero_area_offset_sorts_by_it() {
         let mut demo = DataTableDemo::new();
         let mut backend = quadraui::tui::TuiBackend::new();

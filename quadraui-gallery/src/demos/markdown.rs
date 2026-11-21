@@ -191,6 +191,7 @@ impl MarkdownDemo {
             max_content_width: None,
             show_v_scrollbar: true,
         };
+        #[allow(deprecated)]
         backend.draw_list(area, &list);
     }
 }

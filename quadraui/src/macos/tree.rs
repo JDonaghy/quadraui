@@ -246,6 +246,11 @@ pub unsafe fn draw_tree_with_state(
 
 #[cfg(test)]
 mod tests {
+    // Tests exercise the deprecated row-family `Backend::draw_*`/`*_layout`
+    // methods directly, alongside their `DrawsPrimitives::draw_primitive`
+    // replacements — this deprecation targets callers, not
+    // this file's own coverage of the methods it deprecates.
+    #![allow(deprecated)]
     use super::super::headless::BitmapSurface;
     use super::super::text::make_font;
     use super::super::MacBackend;
@@ -1232,6 +1237,11 @@ mod tests {
 /// clicks on one row stay independent `MouseDown`s.
 #[cfg(test)]
 mod multi_select_driver_tests {
+    // Tests exercise the deprecated `Backend::draw_tree`/`tree_layout`
+    // directly alongside their `DrawsPrimitives::draw_primitive`
+    // replacement — this deprecation targets callers, not
+    // this file's own coverage of the methods it deprecates.
+    #![allow(deprecated)]
     use crate::macos::testing::MacDriver;
     use crate::primitives::tree::{selected_paths_for_indices, TreeEvent, TreeRow};
     use crate::runner::{AppLogic, Reaction};

@@ -61,7 +61,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 203;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 202;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -82,14 +82,22 @@ fn backend_trait_method_count_may_only_shrink() {
         methods,
     );
 
-    if methods.len() < BACKEND_METHOD_COUNT_BASELINE {
-        println!(
-            "backend_method_ratchet: Backend now has {} methods, below the frozen baseline of \
-             {BACKEND_METHOD_COUNT_BASELINE} — lower BACKEND_METHOD_COUNT_BASELINE in \
-             tests/backend_method_ratchet.rs to this file's count to re-tighten the ratchet.",
-            methods.len()
-        );
-    }
+    // A down-only ratchet enforces both directions, not just "never grows":
+    // a PR that *removes* a deprecated method must lower
+    // `BACKEND_METHOD_COUNT_BASELINE` in the same change, or this fails
+    // instead of silently passing with slack in the ratchet.
+    assert_eq!(
+        methods.len(),
+        BACKEND_METHOD_COUNT_BASELINE,
+        "Backend's trait body shrank from {BACKEND_METHOD_COUNT_BASELINE} methods to {} — \
+         lower BACKEND_METHOD_COUNT_BASELINE in tests/backend_method_ratchet.rs to {} in the \
+         same change that removed the method(s), so the ratchet stays tight instead of \
+         recording slack. See `docs/PRIMITIVE_RULES.md` for the widget-authoring rules this \
+         ratchet enforces.\n\nMethods found: {:#?}",
+        methods.len(),
+        methods.len(),
+        methods,
+    );
 }
 
 /// `(Primitive-implementing type name, legacy Backend method name)` pairs

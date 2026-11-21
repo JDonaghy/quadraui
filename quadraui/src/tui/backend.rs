@@ -3032,6 +3032,7 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_data_table called outside enter_frame_scope"
             );
+            #[allow(deprecated)]
             return self.data_table_layout(rect, table);
         };
         crate::tui::draw_data_table(frame.buffer_mut(), area, table, &theme, hovered_idx)
@@ -3052,6 +3053,7 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_data_table_with_glyphs called outside enter_frame_scope"
             );
+            #[allow(deprecated)]
             return self.data_table_layout(rect, table);
         };
         crate::tui::draw_data_table_with_glyphs(
@@ -3084,6 +3086,7 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_data_table_with_state called outside enter_frame_scope"
             );
+            #[allow(deprecated)]
             return self.data_table_layout(rect, table);
         };
         crate::tui::draw_data_table_with_state(frame.buffer_mut(), area, table, &theme, state)
@@ -3113,6 +3116,7 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_tree_table called outside enter_frame_scope"
             );
+            #[allow(deprecated)]
             return self.tree_table_layout(rect, table);
         };
         crate::tui::draw_tree_table(
@@ -5347,6 +5351,11 @@ impl crate::backend::WindowControl for TuiBackend {
 
 #[cfg(test)]
 mod tests {
+    // Tests exercise the deprecated row-family `Backend::draw_*`/`*_layout`
+    // methods directly, alongside their `DrawsPrimitives::draw_primitive`
+    // replacements — this deprecation targets callers, not
+    // this file's own coverage of the methods it deprecates.
+    #![allow(deprecated)]
     use super::*;
     use crate::backend::{DrawsPrimitives, MessageDialogOptions};
     use crate::{

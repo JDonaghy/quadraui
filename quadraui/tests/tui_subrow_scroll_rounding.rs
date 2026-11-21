@@ -88,6 +88,7 @@ impl ListApp {
 impl AppLogic for ListApp {
     type AreaId = ();
 
+    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         backend.draw_list(VIEWPORT, &self.list);
     }

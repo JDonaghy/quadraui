@@ -1134,6 +1134,7 @@ mod tests {
             backend.set_current_theme(test_theme());
             backend.set_current_line_height(LINE_HEIGHT);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                #[allow(deprecated)]
                 b.draw_tree(QRect::new(0.0, 0.0, W as f32, H as f32), tree);
             });
         }
@@ -1567,6 +1568,7 @@ mod multi_select_driver_tests {
     impl AppLogic for TreeApp {
         type AreaId = ();
 
+        #[allow(deprecated)]
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             backend.draw_tree(Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H), &self.tree);
         }

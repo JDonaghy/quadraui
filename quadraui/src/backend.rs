@@ -2570,7 +2570,15 @@ pub trait Backend: sealed::Sealed {
     /// instead — e.g. to match a fixed design-system row pitch
     /// independent of editor font size. TUI ignores the override
     /// (a terminal cell can't be subdivided).
+    #[deprecated(
+        since = "0.12.0",
+        note = "use DrawsPrimitives::draw_primitive with TreeView; removal tracked in #2609"
+    )]
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
+    #[deprecated(
+        since = "0.12.0",
+        note = "use DrawsPrimitives::draw_primitive with ListView; removal tracked in #2609"
+    )]
     fn draw_list(&mut self, rect: Rect, list: &ListView);
 
     /// [`Self::draw_tree`], tinting the hovered/pressed row's background
@@ -2614,6 +2622,7 @@ pub trait Backend: sealed::Sealed {
         _focus_ring_visible: bool,
     ) {
         let _ = state;
+        #[allow(deprecated)]
         self.draw_tree(rect, tree)
     }
 
@@ -2654,11 +2663,16 @@ pub trait Backend: sealed::Sealed {
         _focus_ring_visible: bool,
     ) {
         let _ = state;
+        #[allow(deprecated)]
         self.draw_list(rect, list)
     }
     /// Draw `table` into `rect` and return its layout for hit-testing.
     /// Coordinate frame: **LOCAL** — `hit_regions` / row bounds are
     /// relative to `rect`'s origin, matching [`Self::data_table_layout`].
+    #[deprecated(
+        since = "0.12.0",
+        note = "use DrawsPrimitives::draw_primitive with DataTable; removal tracked in #2609"
+    )]
     fn draw_data_table(
         &mut self,
         rect: Rect,
@@ -2684,6 +2698,7 @@ pub trait Backend: sealed::Sealed {
         table: &DataTable,
         state: &DataTablePaintState,
     ) -> DataTableLayout {
+        #[allow(deprecated)]
         self.draw_data_table(rect, table, state.hovered_idx)
     }
     /// Draw `table` into `rect` with an optional [`DataTableGlyphs`]
@@ -2707,6 +2722,7 @@ pub trait Backend: sealed::Sealed {
         glyphs: Option<&DataTableGlyphs>,
     ) -> DataTableLayout {
         let _ = glyphs;
+        #[allow(deprecated)]
         self.draw_data_table(rect, table, hovered_idx)
     }
     /// Compute the data-table layout without painting. Coordinate frame:
@@ -2714,6 +2730,10 @@ pub trait Backend: sealed::Sealed {
     /// top-left; callers subtract `rect.x` / `rect.y` from absolute
     /// click coordinates before calling `hit_test` (see the module doc's
     /// *Coordinate frames* section).
+    #[deprecated(
+        since = "0.12.0",
+        note = "use DrawsPrimitives::draw_primitive with DataTable; removal tracked in #2609"
+    )]
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
     /// Draw `table` — a [`DataTable`] plus per-row tree metadata — into
     /// `rect` and return its layout for hit-testing. Coordinate frame:
@@ -2725,6 +2745,11 @@ pub trait Backend: sealed::Sealed {
     /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
     /// the same pixel painter, a different [`crate::paint_surface::PaintSurface`]
     /// adapter per backend.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.12.0",
+        note = "use DrawsPrimitives::draw_primitive with TreeTable; removal tracked in #2609"
+    )]
     fn draw_tree_table(
         &mut self,
         rect: Rect,
@@ -2734,6 +2759,11 @@ pub trait Backend: sealed::Sealed {
     /// Compute the tree-table layout without painting, mirroring
     /// [`Self::data_table_layout`]. Required, no default — see
     /// [`Self::draw_tree_table`]'s doc for why.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.12.0",
+        note = "use DrawsPrimitives::draw_primitive with TreeTable; removal tracked in #2609"
+    )]
     fn tree_table_layout(&self, rect: Rect, table: &TreeTable) -> TreeTableLayout;
     /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when its content fits. Each backend supplies its native row
@@ -2760,6 +2790,10 @@ pub trait Backend: sealed::Sealed {
     /// at `rect`'s top-left; does **not** account for
     /// [`ListView::bordered`]'s 1-cell/1px border inset, matching every
     /// backend's `draw_list`.
+    #[deprecated(
+        since = "0.12.0",
+        note = "use DrawsPrimitives::draw_primitive with ListView; removal tracked in #2609"
+    )]
     fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
@@ -3766,6 +3800,10 @@ pub trait Backend: sealed::Sealed {
     /// coordinates before calling `hit_test` (see
     /// `primitives::layout_metrics::tree_layout`'s doc for why this frame
     /// is load-bearing).
+    #[deprecated(
+        since = "0.12.0",
+        note = "use DrawsPrimitives::draw_primitive with TreeView; removal tracked in #2609"
+    )]
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout;
 
     /// Vertical scrollbar geometry for `tree` rendered into `rect`, or

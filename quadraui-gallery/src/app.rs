@@ -432,6 +432,7 @@ impl ShellApp for GalleryApp {
         backend.set_theme(self.theme);
     }
 
+    #[allow(deprecated)]
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
         let lh = Self::demo_header_row_height(backend);
 
@@ -738,6 +739,7 @@ impl GalleryApp {
                     if !rows.is_empty() {
                         let list = self.sidebar_list(&rows);
                         let local = Rect::new(0.0, 0.0, sb.width, sb.height);
+                        #[allow(deprecated)]
                         let hit = backend
                             .list_layout(local, &list)
                             .hit_test(position.x - sb.x, position.y - sb.y);

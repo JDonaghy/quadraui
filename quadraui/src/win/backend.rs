@@ -3206,6 +3206,7 @@ impl Backend for WinBackend {
         }
         #[cfg(not(target_os = "windows"))]
         let _ = glyphs;
+        #[allow(deprecated)]
         self.draw_data_table(rect, table, hovered_idx)
     }
 
@@ -3236,6 +3237,7 @@ impl Backend for WinBackend {
         // No surface/DWrite yet — see `Self::draw_data_table`'s doc for
         // the same fallback; only `state.hovered_idx` affects the
         // no-paint layout this falls back to.
+        #[allow(deprecated)]
         self.draw_data_table(rect, table, state.hovered_idx)
     }
 
@@ -3289,7 +3291,10 @@ impl Backend for WinBackend {
                 nerd_fonts_enabled,
             )
         })
-        .unwrap_or_else(|| self.tree_table_layout(rect, table))
+        .unwrap_or_else(|| {
+            #[allow(deprecated)]
+            self.tree_table_layout(rect, table)
+        })
     }
     /// One-line forward to the shared
     /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
@@ -7429,6 +7434,11 @@ impl PaintSurface for EditorSurface<'_> {
 
 #[cfg(test)]
 mod tests {
+    // Tests exercise the deprecated row-family `Backend::draw_*`/`*_layout`
+    // methods directly, alongside their `DrawsPrimitives::draw_primitive`
+    // replacements — this deprecation targets callers, not
+    // this file's own coverage of the methods it deprecates.
+    #![allow(deprecated)]
     use super::*;
 
     /// Build a flat tree of `n_rows` leaf rows for `tree_vscrollbar`

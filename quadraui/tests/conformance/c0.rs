@@ -465,6 +465,7 @@ pub const CASES: &[Case] = &[
                 max_content_width: None,
                 show_v_scrollbar: false,
             };
+            #[allow(deprecated)]
             b.draw_list(area, &list);
         },
     },
@@ -523,6 +524,7 @@ pub const CASES: &[Case] = &[
                 style: TreeStyle::default(),
                 has_focus: false,
             };
+            #[allow(deprecated)]
             b.draw_tree(area, &tree);
         },
     },
@@ -768,6 +770,7 @@ pub const CASES: &[Case] = &[
                 footer: None,
                 bordered: false,
             };
+            #[allow(deprecated)]
             let _ = b.draw_data_table(area, &table, None);
         },
     },
@@ -815,6 +818,7 @@ pub const CASES: &[Case] = &[
                     TreeTableNode::new(vec![0, 0], 1),
                 ],
             };
+            #[allow(deprecated)]
             let _ = b.draw_tree_table(area, &table, None);
         },
     },

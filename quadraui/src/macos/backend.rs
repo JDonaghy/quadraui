@@ -6272,6 +6272,11 @@ extern "C" {
 
 #[cfg(test)]
 mod tests {
+    // Tests exercise the deprecated row-family `Backend::draw_*`/`*_layout`
+    // methods directly, alongside their `DrawsPrimitives::draw_primitive`
+    // replacements — this deprecation targets callers, not
+    // this file's own coverage of the methods it deprecates.
+    #![allow(deprecated)]
     use super::*;
     use crate::accelerator::{Accelerator, AcceleratorScope};
     use crate::event::Point;

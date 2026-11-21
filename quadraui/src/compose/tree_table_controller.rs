@@ -425,6 +425,7 @@ impl TreeTableController {
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect, columns: Vec<Column>) {
         let table = self.flatten(columns);
+        #[allow(deprecated)]
         backend.draw_tree_table(rect, &table, None);
     }
 
@@ -746,6 +747,7 @@ impl TreeTableController {
             }
         }
         let table = self.flatten(columns);
+        #[allow(deprecated)]
         let layout = backend.tree_table_layout(rect, &table);
         let scroll_offset = table.table.scroll_offset;
         let total_rows = table.table.rows.len();
@@ -795,6 +797,7 @@ impl TreeTableController {
             return TreeTableControllerEvent::Ignored;
         }
         let table = self.flatten(columns);
+        #[allow(deprecated)]
         let layout = backend.tree_table_layout(rect, &table);
         let scroll_offset = table.table.scroll_offset;
         let total_rows = table.table.rows.len();
@@ -865,6 +868,7 @@ impl TreeTableController {
     fn layout(&self, backend: &dyn Backend, rect: Rect, columns: Vec<Column>) -> TreeTableLayout {
         let mut table = self.flatten(columns);
         table.table.scroll_offset = 0;
+        #[allow(deprecated)]
         backend.tree_table_layout(rect, &table)
     }
 
