@@ -3699,6 +3699,7 @@ impl InteractionEngine {
                     }
                 }
                 MenuEvent::Ignored => {}
+                _ => {}
             }
         }
         match self.dispatch_context_menu(&event, backend) {

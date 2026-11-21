@@ -151,6 +151,7 @@ impl ShellAppTrait for ShellMenuDemo {
                 UiEvent::WindowResized { .. } => Reaction::Redraw,
                 _ => Reaction::Continue,
             },
+            _ => Reaction::Continue,
         }
     }
 

@@ -173,6 +173,7 @@ impl AppLogic for MenuBarApp {
                 UiEvent::WindowResized { .. } => Reaction::Redraw,
                 _ => Reaction::Continue,
             },
+            _ => Reaction::Continue,
         }
     }
 }
