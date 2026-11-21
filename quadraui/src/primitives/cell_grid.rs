@@ -1406,12 +1406,12 @@ impl crate::primitive::Primitive for CellGrid {
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         // Same runtime discriminator `ListView`/`IconGrid`'s own
-        // `Primitive::layout` use: a terminal cell's `line_height` is
-        // architecturally always exactly `1.0`, so this tells a TUI
-        // caller apart from a pixel backend even when both features are
-        // compiled into the same binary.
+        // `Primitive::layout` use — see `LayoutCtx::units`'s own doc for
+        // why `ctx.units()` (TUI's whole-cell `line_height` convention vs.
+        // a real pixel font metric) is reliable even when both features
+        // are compiled into the same binary.
         #[cfg(feature = "tui")]
-        if ctx.line_height <= 1.0 {
+        if ctx.units() == crate::primitive::Units::Cells {
             // Route through the exact resolver `crate::tui::draw_cell_grid`
             // itself calls (`tui_cell_grid_layout`), so this layout can
             // never drift from what TUI actually paints —
@@ -1468,6 +1468,16 @@ impl crate::primitive::Primitive for CellGrid {
     /// below instead, mirroring
     /// [`crate::primitives::icon_grid::IconGrid::paint`]'s identical
     /// split.
+    ///
+    /// Unlike `ListView`/`TreeView`/`DataTable`, there is no
+    /// [`crate::primitive::PaintState`] to source here: those primitives
+    /// layer a transient, backend-tracked hover/press index on top of an
+    /// otherwise-static row layout, but `CellGrid`'s selection
+    /// ([`CellGrid::selection_bounds`]), cursor ([`CellGrid::cursor`]) and
+    /// focus ([`CellGrid::has_focus`]) are already persistent fields on
+    /// `self` — [`native_surface_paint::paint`] reads them straight off
+    /// `grid`, not off any per-frame state a caller threads in. There is
+    /// nothing for a `PaintState` impl to add on top of that.
     fn paint(
         &self,
         layout: &Self::Layout,
