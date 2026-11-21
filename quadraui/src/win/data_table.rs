@@ -31,8 +31,8 @@ use crate::DataTableLayout;
 /// twin of [`draw_data_table`]'s internal layout call. Pure geometry over
 /// [`TextMeasure`] — `measure` may be a live `&DWrite` (when
 /// painting) or [`super::backend`]'s nominal measurer (no surface yet).
-/// Shares its column-measurement path with `gtk_data_table_layout` /
-/// `mac_data_table_layout` via [`pixel_data_table_layout`].
+/// Shares its column-measurement path with `mac_data_table_layout` /
+/// GTK's own `GtkBackend::data_table_layout` via [`pixel_data_table_layout`].
 pub fn win_data_table_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
