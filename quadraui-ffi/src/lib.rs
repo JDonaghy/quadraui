@@ -534,8 +534,8 @@ fn reaction_from_code(code: i32) -> Reaction {
 /// The [`AppLogic`] the C side drives: a thin leaf around
 /// [`BindingHost`] — the same six-fixed-slot model `quadraui-py` is a leaf
 /// over — plus the host's callbacks. This crate exposes only the six fixed
-/// slots over the C ABI, so [`BindingHost::extra_slots`] and the
-/// backend-settings replay fields stay empty/unused here.
+/// slots over the C ABI, so the backend-settings replay fields stay
+/// empty/unused here.
 struct FfiApp {
     host: BindingHost,
     vtable: QuiVTable,

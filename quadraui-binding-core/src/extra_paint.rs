@@ -2260,12 +2260,10 @@ macro_rules! extra_primitives {
             [$($kind),+];
 
         /// Decodes one additive primitive descriptor, dispatched by `kind`
-        /// through the same table [`EXTRA_PRIMITIVE_KINDS`] names — the
-        /// core counterpart of a binding's own `EXTRA_PRIMITIVES` decode
-        /// registry (`quadraui-py`'s `insert_extra`/`insert_progress`/...
-        /// and its layout-tree leaf/render-frame decode all route through
-        /// this). Returns a [`crate::DecodeError`] naming every registered
-        /// kind when `kind` isn't one of them.
+        /// through the same table [`EXTRA_PRIMITIVE_KINDS`] names — both
+        /// the layout-tree leaf decode and the flat render-frame extra
+        /// slot route through this. Returns a [`crate::DecodeError`]
+        /// naming every registered kind when `kind` isn't one of them.
         pub fn decode_extra_primitive<'de, D: serde::Deserializer<'de>>(
             what: &str,
             kind: &str,
