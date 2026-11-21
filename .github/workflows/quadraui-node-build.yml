@@ -153,7 +153,7 @@ jobs:
           done
       - name: npm pack
         run: npm pack --pack-destination "$RUNNER_TEMP"
-      - name: Verify the packed tarball is loadable and raises typed errors
+      - name: Verify the packed tarball is loadable, round-trips the layout tree and raises typed errors
         shell: bash
         run: |
           set -euo pipefail
@@ -162,17 +162,42 @@ jobs:
           tar -xf "$RUNNER_TEMP"/quadraui-node-*.tgz -C "$pkg_dir"
           node -e "
           const quadraui = require('$pkg_dir/package');
-          const app = new quadraui.QuiApp(5, 5);
-          if (typeof app.screen() !== 'string') {
-            throw new Error('screen() did not return a string');
+          const app = new quadraui.QuiApp(40, 20);
+
+          // setRender -> screen() -> pushEvent round-trip through the
+          // layout-tree API: a clicked switch leaf emits the
+          // FocusChanged/ToggleChanged semantic events it produces
+          // in-repo (quadraui-node/tests/descriptors.test.ts's
+          // 'switch' INLINE_LEAF_CASES entry).
+          app.setRender(() => ({
+            row: [{ id: 'leaf:1', switch: { id: 'sw:embedded', value: false } }],
+          }));
+          // setRender itself never repaints -- force the first render
+          // so the hit map reflects this leaf before the click below.
+          app.screen();
+          const received = [];
+          app.setHandler((event) => received.push(event));
+          app.pushEvent({ MouseDown: { button: 'Left', position: { x: 1.0, y: 1.0 }, modifiers: {} } });
+          app.run(1);
+          if (received.length !== 2) {
+            throw new Error('expected 2 events from the switch round-trip, got: ' + JSON.stringify(received));
           }
+          if (!received[0].FocusChanged || received[0].FocusChanged !== 'leaf:1') {
+            throw new Error('expected FocusChanged for leaf:1, got: ' + JSON.stringify(received[0]));
+          }
+          if (!received[1].Form || received[1].Form[0] !== 'leaf:1' || !received[1].Form[1].ToggleChanged) {
+            throw new Error('expected a ToggleChanged Form event for leaf:1, got: ' + JSON.stringify(received[1]));
+          }
+
+          // A malformed leaf still raises a typed, subclassable error.
+          app.setRender(() => ({ button: { not: 'a button' } }));
           try {
-            app.slotClear(999);
-            throw new Error('slotClear(999) did not raise');
+            app.screen();
+            throw new Error('screen() with a malformed button leaf did not raise');
           } catch (err) {
-            if (!(err instanceof quadraui.UnknownSlotError) || !(err instanceof quadraui.QuadrauiError)) {
-              throw new Error('slotClear(999) did not raise an UnknownSlotError/QuadrauiError: ' + err);
+            if (!(err instanceof quadraui.InvalidDescriptorError) || !(err instanceof quadraui.QuadrauiError)) {
+              throw new Error('malformed button leaf did not raise an InvalidDescriptorError/QuadrauiError: ' + err);
             }
           }
-          console.log('packed @quadraui/node is loadable and raises typed errors');
+          console.log('packed @quadraui/node is loadable, round-trips the layout tree and raises typed errors');
           "

@@ -315,7 +315,7 @@ test("text field leaf renders its value inside the bracket row", () => {
   assert.ok(app.screenContains("[hello"));
 });
 
-test("extra primitives coexist with the fixed slots", () => {
+test("extra primitives coexist with the primitive leaves in one render object", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
     button: { id: "demo:ok", label: "OK" },

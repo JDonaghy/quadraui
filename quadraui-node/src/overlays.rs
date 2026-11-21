@@ -10,9 +10,9 @@
 //! separate step. Call each from top-level script code only, never from
 //! inside the registered event handler or render callback -- both already
 //! hold this `QuiApp`'s one mutable borrow for the whole dispatch, so a
-//! reentrant call here raises `ReentrantCallError` the same way any other
-//! `QuiApp` method does (see the module doc's "cannot call back into
-//! `QuiApp`" note). From inside a handler, call the matching
+//! reentrant call here raises `ReentrantCallError` the same way every
+//! other `QuiAppActions`-backed method does (see the module doc's "cannot
+//! call back into `QuiApp`" note). From inside a handler, call the matching
 //! [`QuiAppActions`] method (via `QuiApp::actions()`) instead.
 //!
 //! Every method also calls [`QuiApp::check_not_live`] first: it reaches

@@ -1356,16 +1356,13 @@ impl AppLogic for NodeAppLogic {
         self.captured_waker.set(Some(backend.waker()));
     }
 
-    /// With no render callback registered, resolves [`Self::host`]'s six
-    /// fixed slots against [`InteractionEngine::widget_state`] via
-    /// [`resolve_render_refs`] (so an uncontrolled `Tree`/`List`/
-    /// `DataTable`'s cursor/scroll, `TabBar`'s active tab, etc. paint this
-    /// frame's resolved value rather than whatever raw descriptor the app
-    /// set) before painting them plus the anchored overlay pass every
-    /// binding's `render` runs -- see [`render_overlays`]'s own doc. With
-    /// a render callback registered, invokes it instead via
-    /// [`render_output_from_callback`] and resolves+paints whatever flat/
-    /// tree frame it returned the identical way, skipping [`Self::host`]
+    /// With no render callback registered, [`Self::host`]'s [`BindingHost::
+    /// render_refs`] is always empty -- `QuiApp` has no way to populate it
+    /// -- so [`draw_bands`] paints nothing this frame; only the anchored
+    /// overlay pass every binding's `render` runs still fires -- see
+    /// [`render_overlays`]'s own doc. With a render callback registered,
+    /// invokes it via [`render_output_from_callback`] and resolves+paints
+    /// whatever flat/tree frame it returned, skipping [`Self::host`]
     /// entirely for this frame -- mirrors `quadraui-py`'s own `render`.
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
@@ -2642,8 +2639,8 @@ fn bytes_to_value(bytes: &[u8]) -> JsonValue {
 /// napi-rs analog of `quadraui-py`'s own `QuiAppActions`, exposing the
 /// subset of its methods [`DeferredAction`]'s own doc names. A registered
 /// event handler already holds this `QuiApp`'s one `&mut self` for the
-/// whole dispatch that invoked it, so calling, say, `app.screen()` straight
-/// from inside it raises `ReentrantCallError` -- see
+/// whole dispatch that invoked it, so calling, say, `app.showToast(...)`
+/// straight from inside it raises `ReentrantCallError` -- see
 /// `QuiApp::check_not_dispatching`. Calling the matching method here
 /// instead touches no borrow of `QuiApp` itself: each method below decodes
 /// and validates its arguments immediately (so a malformed descriptor still
