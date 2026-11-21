@@ -2379,10 +2379,11 @@ impl crate::primitive::Primitive for DataTable {
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         // Same TUI-vs-pixel-backend discriminator `ListView`'s own
         // `Primitive::layout` uses — see that impl's doc for why
-        // `ctx.line_height` is reliable even when both features are
-        // compiled into the same binary.
+        // `ctx.units()` (TUI's whole-cell `line_height` convention vs. a
+        // real pixel font metric) is reliable even when both features
+        // are compiled into the same binary.
         #[cfg(feature = "tui")]
-        if ctx.line_height <= 1.0 {
+        if ctx.units() == crate::primitive::Units::Cells {
             let area = crate::tui::backend::q_rect_to_ratatui(rect);
             let layout = crate::tui::data_table_layout(area, self);
             return DataTablePrimitiveLayout {
@@ -2425,6 +2426,19 @@ impl crate::primitive::Primitive for DataTable {
             all(feature = "macos", target_os = "macos")
         ))]
         {
+            // No live hover/press/scroll tracking reaches `Primitive::paint`
+            // (its signature carries only `Self::Layout`, `PaintSurface`,
+            // `Theme` and `Style` — see `crate::primitive::PaintState`'s
+            // own doc for why that's a future widget-contract step, not
+            // this one), so this paints the same "nothing hovered/pressed,
+            // whole-row scroll" state a bare `DataTablePaintState::default()`
+            // always reports. Unlike `ListView`/`TreeView`'s own
+            // `native_surface_paint::paint`, `DataTable`'s pixel painter
+            // (`native_surface_paint::paint_with_state`) takes the whole
+            // `DataTablePaintState` rather than unpacked
+            // hovered_idx/pressed_idx arguments, so it is what a future
+            // `Primitive::paint` revision would thread a real,
+            // backend-tracked `DataTablePaintState` through unchanged.
             let state = DataTablePaintState::default();
             native_surface_paint::paint_with_state(
                 self,
