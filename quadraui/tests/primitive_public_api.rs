@@ -90,6 +90,11 @@ impl Primitive for Swatch {
     }
 }
 
+// `Swatch` implements `quadraui::Interactive` via `quadraui::non_interactive!`
+// — proof the macro, like `Primitive` itself, is genuinely usable from
+// outside the crate.
+quadraui::non_interactive!(Swatch);
+
 /// Draw a `Swatch` through `&mut dyn Backend`, returning the layout
 /// `draw_primitive` handed back, the areas `paint` was called with, and the
 /// metrics read off the same backend for comparison.

@@ -2361,6 +2361,17 @@ impl crate::primitive::Primitive for ListView {
     }
 }
 
+// No real `Interactive` impl yet — see the widget-contract epic's pilot
+// and port issues. Gated the same as the `Primitive` impl above: this
+// macro expands to an `Interactive` impl, which requires `Primitive`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+crate::non_interactive!(ListView);
+
 /// Events a `ListView` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ListViewEvent {

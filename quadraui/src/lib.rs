@@ -467,6 +467,17 @@ pub mod cell_surface;
 // `tui`-only build is not dead code from this crate's own boundary.
 pub mod primitive;
 
+// ── Interactive ──────────────────────────────────────────────────────────
+// The behaviour half of the widget contract: the `Interactive` trait,
+// `RoutedEvent`/`EventHost`/`EventCx`, `FocusSpec`/`FocusStop`, and the
+// `non_interactive!` macro for a `Primitive` with no behaviour of its own.
+// `Primitive` above is the paint half. Compiled unconditionally, same
+// rationale as `primitive` above: a `pub` trait with zero in-crate
+// implementors on a `tui`-only build is not dead code from this crate's
+// own boundary — the runtime that calls `Interactive::handle` is a later
+// addition, not a precondition for the trait itself to exist.
+pub mod interactive;
+
 // Host-independent paint-geometry helpers — pure rect/inset
 // arithmetic pulled out from behind `src/macos/`'s whole-module
 // `target_os = "macos"` gate (mirrors `src/win/msg.rs`'s equivalent split
@@ -843,6 +854,13 @@ pub use paint_surface::{PaintSurface, PathVerb};
 pub use cell_surface::{BorderSet, CellStyle as CellSurfaceStyle, CellSurface, CursorShape};
 // The `Primitive` trait — see that module's doc.
 pub use primitive::{LayoutCtx, Primitive};
+// The behaviour half of the widget contract — see `interactive`'s module
+// doc. `non_interactive!` itself is exported at the crate root by
+// `#[macro_export]`, not re-exported here.
+pub use interactive::{
+    EventCx, EventHost, FocusSpec, FocusStop, Interactive, KeyEvent, Never, PointerKind,
+    RoutedEvent, WidgetAction,
+};
 // `InteractionState` — a single hover/pressed store keyed by `WidgetId`,
 // meant to replace the bespoke per-primitive trackers and positional arguments
 // (`hovered_id`, `pressed_id`, `hovered_toolbar_id`) the old `Backend` methods

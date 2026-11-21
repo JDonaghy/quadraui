@@ -1,0 +1,629 @@
+//! The **behaviour** half of the widget contract: [`Interactive`] and its
+//! supporting types.
+//!
+//! [`crate::primitive::Primitive`] is the *paint* half — `layout()` +
+//! `paint()`, resolved once per frame and handed to a backend. `Interactive`
+//! is the other half every widget needs: what happens when a
+//! [`RoutedEvent`] reaches it — focus, hover/pressed, keyboard navigation,
+//! hit-testing and the semantic event(s) it produces.
+//!
+//! # Why a separate trait instead of folding this into `Primitive`
+//!
+//! A widget's paint shape (`Layout`) and its behaviour shape (`State`,
+//! `Action`) vary independently — a `Primitive` with zero behaviour (a
+//! `Progress` bar, a static `Divider`) still needs `layout()`/`paint()` but
+//! has nothing to `handle()`. [`non_interactive!`] is the one-line opt-out
+//! for exactly that case.
+//!
+//! # What's here
+//!
+//! - [`RoutedEvent`] — the one event shape [`Interactive::handle`] receives,
+//!   already resolved against this widget's own layout (local coordinates,
+//!   which [`SubTarget`] if any) by the runtime that calls it.
+//! - [`EventHost`] / [`EventCx`] — the narrow seam a widget's `handle` uses
+//!   to ask for focus, capture the pointer, change the cursor, or emit a
+//!   [`crate::UiEvent`], without reaching for a concrete backend type.
+//! - [`FocusSpec`] / [`FocusStop`] — how a widget declares its own
+//!   keyboard-navigation stops (none, itself, or a list of sub-targets) so
+//!   a host can build a tab order without the widget's internals.
+//! - [`WidgetAction`] / [`Never`] — the trait a widget's `Action` type
+//!   implements to turn itself into a [`crate::UiEvent`] the app routes
+//!   further, plus the uninhabited type a non-interactive widget uses for
+//!   "this never produces an action".
+//!
+//! # What's explicitly not here
+//!
+//! The runtime that calls [`Interactive::handle`] — translating raw
+//! backend input into [`RoutedEvent`]s, walking focus order, owning the
+//! live [`EventHost`] implementation — is a later issue. This module only
+//! defines the contract; nothing in this crate drives it yet.
+
+use crate::a11y::A11yAction;
+use crate::backend::PointerShape;
+use crate::event::{Key, Point, UiEvent};
+use crate::primitive::{Primitive, SubTarget, Units};
+use crate::types::{Modifiers, WidgetId};
+use crate::Handled;
+
+/// A widget's `Interactive::Action` payload turns itself into the
+/// [`UiEvent`] the app routes further.
+///
+/// `id` is the widget's own [`WidgetId`] — most impls just wrap it into a
+/// `UiEvent` variant that already carries a `widget: WidgetId`/`Option<WidgetId>`
+/// field, the same way every existing `compose::*Controller::handle_event`
+/// caller already attaches the controller's id to the `Handled::Event`
+/// payload it gets back.
+pub trait WidgetAction {
+    /// Turn `self` into the [`UiEvent`] this widget's owner (`id`) produced.
+    fn into_ui_event(self, id: WidgetId) -> UiEvent;
+}
+
+/// The uninhabited `Action` type a non-interactive widget uses — see
+/// [`non_interactive!`]. No value of this type can ever exist, so
+/// [`WidgetAction::into_ui_event`] is unreachable by construction, not by
+/// convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Never {}
+
+impl WidgetAction for Never {
+    fn into_ui_event(self, _id: WidgetId) -> UiEvent {
+        match self {}
+    }
+}
+
+/// How a widget participates in keyboard tab order.
+///
+/// Returned by [`Interactive::focus`]. A composite widget (a `DataTable`
+/// with per-cell navigation, a `TreeTable` with per-row navigation) names
+/// its own internal stops via [`Self::Children`] instead of exposing one
+/// opaque stop for the whole widget — the host's tab-order walk sees the
+/// real stop count without knowing anything about the widget's internals.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FocusSpec {
+    /// This widget never receives keyboard focus (a `Progress` bar, a
+    /// static `Divider`).
+    None,
+    /// This widget is one focus stop as a whole (a `Button`, a single-line
+    /// `TextInput`).
+    Stop,
+    /// This widget contributes one focus stop per listed [`FocusStop`] —
+    /// e.g. one per focusable cell/row/column.
+    Children(Vec<FocusStop>),
+}
+
+/// One focusable stop inside a [`FocusSpec::Children`] list.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FocusStop {
+    /// Which part of the widget this stop addresses.
+    pub sub: SubTarget,
+}
+
+/// Which pointer gesture a [`RoutedEvent::Pointer`] carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerKind {
+    /// A button went down.
+    Down(crate::event::MouseButton),
+    /// A button was released.
+    Up(crate::event::MouseButton),
+    /// The pointer moved with no button transition.
+    Move,
+    /// The pointer entered this widget's bounds.
+    Enter,
+    /// The pointer left this widget's bounds.
+    Leave,
+    /// A double-click resolved on this button.
+    DoubleClick(crate::event::MouseButton),
+}
+
+/// A keystroke, carried by [`RoutedEvent::Key`] — the same `key` /
+/// `modifiers` / `repeat` triple [`UiEvent::KeyPressed`] carries, named as
+/// one value so [`RoutedEvent`] doesn't need three loose fields of its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyEvent {
+    pub key: Key,
+    pub modifiers: Modifiers,
+    pub repeat: bool,
+}
+
+/// The one event shape [`Interactive::handle`] receives.
+///
+/// Already resolved against this widget's own [`Primitive::layout`]
+/// output by the runtime that calls `handle` — `local` is relative to the
+/// widget's own area, not window/screen coordinates, and `sub` (where
+/// present) names which part of a composite widget the event landed on,
+/// when the runtime's hit-test could tell.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RoutedEvent {
+    /// A mouse/touch gesture.
+    Pointer {
+        kind: PointerKind,
+        sub: Option<SubTarget>,
+        local: Point,
+        mods: Modifiers,
+    },
+    /// A scroll-wheel gesture.
+    Wheel {
+        dx: f32,
+        dy: f32,
+        local: Point,
+        mods: Modifiers,
+    },
+    /// A raw keystroke, routed because this widget held focus.
+    Key(KeyEvent),
+    /// Committed IME text, routed because this widget held focus — the
+    /// [`RoutedEvent`] counterpart of [`UiEvent::CharTyped`].
+    Text(String),
+    /// An assistive-technology action, routed the same way a mouse/keyboard
+    /// gesture would be.
+    Action(A11yAction),
+    /// This widget (or, for a composite widget, the named sub-target)
+    /// gained keyboard focus.
+    FocusIn(Option<SubTarget>),
+    /// This widget lost keyboard focus.
+    FocusOut,
+}
+
+/// The runtime seam [`Interactive::handle`] reaches through [`EventCx`] to
+/// ask for focus, capture the pointer, change the cursor, or emit a
+/// [`UiEvent`] — implemented by the runtime that drives [`Interactive`]
+/// widgets (a later issue), never by a widget itself.
+pub trait EventHost {
+    /// Whether `id` (or, for a composite widget, its `sub` part) currently
+    /// holds keyboard focus.
+    fn is_focused(&self, id: &WidgetId, sub: Option<SubTarget>) -> bool;
+    /// Ask the host to move keyboard focus to `id` (or its `sub` part).
+    fn request_focus(&mut self, id: &WidgetId, sub: Option<SubTarget>);
+    /// Route every subsequent pointer event to `id` until
+    /// [`Self::release_pointer`], regardless of where the pointer moves —
+    /// a drag/resize/scrollbar-track gesture's usual shape.
+    fn capture_pointer(&mut self, id: &WidgetId);
+    /// End a pointer capture started by [`Self::capture_pointer`].
+    fn release_pointer(&mut self);
+    /// Request the given pointer cursor while over this widget.
+    fn set_cursor(&mut self, cursor: PointerShape);
+    /// Ask the host to repaint — the same "something changed, redraw"
+    /// signal [`crate::compose::Handled::Consumed`] carries for a
+    /// `compose::*Controller`.
+    fn request_redraw(&mut self);
+    /// Hand a semantic event to the host for routing.
+    fn emit(&mut self, event: UiEvent);
+    /// Which unit system this host's layouts are expressed in — see
+    /// [`Units`].
+    fn units(&self) -> Units;
+}
+
+/// [`Interactive::handle`]'s narrow view of the live [`EventHost`], bound
+/// to the calling widget's own [`WidgetId`] so every call reads as "about
+/// me" rather than repeating `id` at every call site.
+pub struct EventCx<'a> {
+    /// The widget this context was constructed for — every method below
+    /// implicitly addresses the live [`EventHost`] with this id.
+    pub id: WidgetId,
+    host: &'a mut dyn EventHost,
+}
+
+impl<'a> EventCx<'a> {
+    /// Bind `host` to `id` for the duration of one [`Interactive::handle`]
+    /// call.
+    pub fn new(id: WidgetId, host: &'a mut dyn EventHost) -> Self {
+        Self { id, host }
+    }
+
+    /// Whether this widget (or its `sub` part) currently holds keyboard
+    /// focus — see [`EventHost::is_focused`].
+    pub fn is_focused(&self, sub: Option<SubTarget>) -> bool {
+        self.host.is_focused(&self.id, sub)
+    }
+
+    /// Ask the host to move keyboard focus to this widget (or its `sub`
+    /// part) — see [`EventHost::request_focus`].
+    pub fn request_focus(&mut self, sub: Option<SubTarget>) {
+        self.host.request_focus(&self.id, sub);
+    }
+
+    /// Capture the pointer for this widget — see
+    /// [`EventHost::capture_pointer`].
+    pub fn capture_pointer(&mut self) {
+        self.host.capture_pointer(&self.id);
+    }
+
+    /// Release a pointer capture started by [`Self::capture_pointer`] —
+    /// see [`EventHost::release_pointer`].
+    pub fn release_pointer(&mut self) {
+        self.host.release_pointer();
+    }
+
+    /// Request a pointer cursor — see [`EventHost::set_cursor`].
+    pub fn set_cursor(&mut self, cursor: PointerShape) {
+        self.host.set_cursor(cursor);
+    }
+
+    /// Ask the host to repaint — see [`EventHost::request_redraw`].
+    pub fn request_redraw(&mut self) {
+        self.host.request_redraw();
+    }
+
+    /// Hand a semantic event to the host — see [`EventHost::emit`].
+    pub fn emit(&mut self, event: UiEvent) {
+        self.host.emit(event);
+    }
+
+    /// Which unit system the host's layouts are expressed in — see
+    /// [`EventHost::units`].
+    pub fn units(&self) -> Units {
+        self.host.units()
+    }
+}
+
+/// The **behaviour** half of the widget contract — every widget
+/// implements this, either with real logic or via [`non_interactive!`].
+///
+/// Mirrors [`Primitive`]'s own shape: `Self::Layout` (from `Primitive`) is
+/// what [`Self::handle`] hit-tests against, the same fully-resolved value
+/// [`Primitive::paint`] receives, so a widget never needs a second,
+/// behaviour-only layout pass.
+pub trait Interactive: Primitive {
+    /// This widget's own interaction state — hover/pressed index, scroll
+    /// offset, in-progress drag, whatever [`Self::handle`] needs to
+    /// remember between events. `Default` so a host can create one before
+    /// the first event ever arrives.
+    type State: Default + 'static;
+
+    /// The semantic event(s) this widget's [`Self::handle`] can produce —
+    /// see [`WidgetAction`]. [`Never`] for a widget that never produces
+    /// one (still possible even for an [`Interactive`] impl that only ever
+    /// returns [`crate::compose::Handled::Consumed`]/[`crate::compose::Handled::Ignored`]).
+    type Action: WidgetAction;
+
+    /// How this widget participates in keyboard tab order. Default:
+    /// [`FocusSpec::None`] — correct for a widget with no keyboard story
+    /// at all.
+    fn focus(&self) -> FocusSpec {
+        FocusSpec::None
+    }
+
+    /// Handle one [`RoutedEvent`] against `layout` (as produced by
+    /// [`Primitive::layout`]), reading/updating `state` and reaching
+    /// through `cx` for focus/capture/cursor/emit.
+    fn handle(
+        &self,
+        state: &mut Self::State,
+        event: &RoutedEvent,
+        layout: &Self::Layout,
+        cx: &mut EventCx,
+    ) -> Handled<Self::Action>;
+
+    /// Assistive-technology actions this widget currently supports, given
+    /// `state` — e.g. a collapsed tree row supports `Expand` but not
+    /// `Collapse`. Default: none.
+    fn a11y_actions(&self, state: &Self::State) -> Vec<A11yAction> {
+        let _ = state;
+        Vec::new()
+    }
+}
+
+/// Implement [`Interactive`] for a [`Primitive`] with no behaviour at all
+/// — `State = ()`, `Action = `[`Never`], `handle` always
+/// [`crate::compose::Handled::Ignored`]. For a widget whose real
+/// interaction logic hasn't shipped yet, or that genuinely never reacts to
+/// input (`Progress`, `Divider`).
+#[macro_export]
+macro_rules! non_interactive {
+    ($ty:ty) => {
+        impl $crate::interactive::Interactive for $ty {
+            type State = ();
+            type Action = $crate::interactive::Never;
+
+            fn handle(
+                &self,
+                _state: &mut Self::State,
+                _event: &$crate::interactive::RoutedEvent,
+                _layout: &Self::Layout,
+                _cx: &mut $crate::interactive::EventCx,
+            ) -> $crate::Handled<Self::Action> {
+                $crate::Handled::Ignored
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::a11y::{A11yInfo, A11yPrimitive};
+    use crate::event::MouseButton;
+    use crate::primitive::LayoutCtx;
+    use crate::Rect;
+
+    /// A toy counter widget: focus `Stop`, `Up`/`Down` arrow keys change
+    /// its count, Enter emits an [`Handled::Event`].
+    #[derive(Debug, Default)]
+    struct Counter;
+
+    #[derive(Debug, Default)]
+    struct CounterState {
+        count: i32,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct CounterActivated(i32);
+
+    impl WidgetAction for CounterActivated {
+        fn into_ui_event(self, id: WidgetId) -> UiEvent {
+            UiEvent::DoubleClick {
+                widget: Some(id),
+                position: Point::default(),
+            }
+        }
+    }
+
+    impl A11yPrimitive for Counter {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for Counter {
+        type Layout = Rect;
+        type Event = ();
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _theme: &crate::theme::Theme,
+            _style: &crate::style::Style,
+        ) {
+        }
+    }
+
+    impl Interactive for Counter {
+        type State = CounterState;
+        type Action = CounterActivated;
+
+        fn focus(&self) -> FocusSpec {
+            FocusSpec::Stop
+        }
+
+        fn handle(
+            &self,
+            state: &mut CounterState,
+            event: &RoutedEvent,
+            _layout: &Rect,
+            cx: &mut EventCx,
+        ) -> Handled<CounterActivated> {
+            match event {
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Named(crate::event::NamedKey::Up),
+                    ..
+                }) => {
+                    state.count += 1;
+                    cx.request_redraw();
+                    Handled::Consumed
+                }
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Named(crate::event::NamedKey::Down),
+                    ..
+                }) => {
+                    state.count -= 1;
+                    cx.request_redraw();
+                    Handled::Consumed
+                }
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Named(crate::event::NamedKey::Enter),
+                    ..
+                }) => Handled::Event(CounterActivated(state.count)),
+                _ => Handled::Ignored,
+            }
+        }
+    }
+
+    /// Minimal [`EventHost`] mock: records every call so a test can assert
+    /// on what [`Interactive::handle`] asked for.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focused: Option<(WidgetId, Option<SubTarget>)>,
+        focus_requests: Vec<(WidgetId, Option<SubTarget>)>,
+        redraws: usize,
+        emitted: Vec<UiEvent>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, id: &WidgetId, sub: Option<SubTarget>) -> bool {
+            self.focused == Some((*id, sub))
+        }
+
+        fn request_focus(&mut self, id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push((*id, sub));
+            self.focused = Some((*id, sub));
+        }
+
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+
+        fn release_pointer(&mut self) {}
+
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+
+        fn request_redraw(&mut self) {
+            self.redraws += 1;
+        }
+
+        fn emit(&mut self, event: UiEvent) {
+            self.emitted.push(event);
+        }
+
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn key(named: crate::event::NamedKey) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key: Key::Named(named),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    }
+
+    #[test]
+    fn counter_declares_a_single_focus_stop() {
+        assert_eq!(Counter.focus(), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn arrow_keys_change_state_and_request_a_redraw() {
+        let widget = Counter;
+        let mut state = CounterState::default();
+        let mut host = MockHost::default();
+        let id = WidgetId::new("counter:1");
+
+        let mut cx = EventCx::new(id, &mut host);
+        let outcome = widget.handle(
+            &mut state,
+            &key(crate::event::NamedKey::Up),
+            &Rect::default(),
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(state.count, 1);
+        assert_eq!(host.redraws, 1);
+
+        let mut cx = EventCx::new(id, &mut host);
+        let outcome = widget.handle(
+            &mut state,
+            &key(crate::event::NamedKey::Down),
+            &Rect::default(),
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(state.count, 0);
+        assert_eq!(host.redraws, 2);
+    }
+
+    #[test]
+    fn enter_emits_a_handled_event_carrying_the_current_count() {
+        let widget = Counter;
+        let mut state = CounterState { count: 3 };
+        let mut host = MockHost::default();
+        let id = WidgetId::new("counter:2");
+        let mut cx = EventCx::new(id, &mut host);
+
+        let outcome = widget.handle(
+            &mut state,
+            &key(crate::event::NamedKey::Enter),
+            &Rect::default(),
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Event(CounterActivated(3)));
+    }
+
+    #[test]
+    fn unrelated_events_are_ignored() {
+        let widget = Counter;
+        let mut state = CounterState::default();
+        let mut host = MockHost::default();
+        let id = WidgetId::new("counter:3");
+        let mut cx = EventCx::new(id, &mut host);
+
+        let outcome = widget.handle(
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                sub: None,
+                local: Point::default(),
+                mods: Modifiers::default(),
+            },
+            &Rect::default(),
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Ignored);
+    }
+
+    #[test]
+    fn event_cx_requests_focus_against_its_own_bound_id() {
+        let mut host = MockHost::default();
+        let id = WidgetId::new("counter:4");
+        let mut cx = EventCx::new(id, &mut host);
+
+        assert!(!cx.is_focused(None));
+        cx.request_focus(None);
+        assert!(cx.is_focused(None));
+        assert_eq!(host.focus_requests, vec![(id, None)]);
+    }
+
+    #[test]
+    fn widget_action_turns_itself_into_a_ui_event_carrying_the_widget_id() {
+        let id = WidgetId::new("counter:5");
+        let event = CounterActivated(7).into_ui_event(id);
+        match event {
+            UiEvent::DoubleClick { widget, .. } => assert_eq!(widget, Some(id)),
+            other => panic!("expected UiEvent::DoubleClick, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn never_has_no_values_and_cannot_be_constructed() {
+        fn _assert_into_ui_event_exists<T: WidgetAction>() {}
+        _assert_into_ui_event_exists::<Never>();
+    }
+
+    /// A toy stand-in for a `Primitive` with no behaviour — proves
+    /// [`crate::non_interactive!`] compiles against an arbitrary type and
+    /// always ignores events.
+    #[derive(Debug, Default)]
+    struct StaticDivider;
+
+    impl A11yPrimitive for StaticDivider {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for StaticDivider {
+        type Layout = Rect;
+        type Event = ();
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _theme: &crate::theme::Theme,
+            _style: &crate::style::Style,
+        ) {
+        }
+    }
+
+    crate::non_interactive!(StaticDivider);
+
+    #[test]
+    fn non_interactive_macro_ignores_every_event() {
+        let widget = StaticDivider;
+        let mut state = ();
+        let mut host = MockHost::default();
+        let id = WidgetId::new("divider:1");
+        let mut cx = EventCx::new(id, &mut host);
+
+        let outcome = widget.handle(
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::default(),
+                mods: Modifiers::default(),
+            },
+            &Rect::default(),
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Ignored);
+        assert!(widget.a11y_actions(&state).is_empty());
+        assert_eq!(widget.focus(), FocusSpec::None);
+    }
+}
