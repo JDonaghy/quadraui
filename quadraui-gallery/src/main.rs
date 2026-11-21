@@ -150,7 +150,7 @@ fn main() -> Result<(), quadraui::RunError> {
     target_os = "macos",
     not(any(feature = "tui", feature = "gtk"))
 ))]
-fn main() -> std::process::ExitCode {
+fn main() -> Result<(), quadraui::RunError> {
     maybe_run_capture();
     maybe_dump_registry();
     quadraui::macos::shell_runner::run_with_shell(

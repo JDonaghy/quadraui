@@ -18,6 +18,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() -> std::process::ExitCode {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::macos::run(common::AppState::new())
 }

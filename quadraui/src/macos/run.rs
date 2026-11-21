@@ -119,7 +119,7 @@ use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
 // `crate::runtime`.
 pub(crate) use crate::runtime::EventOutcome;
 use crate::transition::Transition;
-use crate::{ButtonMask, Point, ScrollDelta, UiEvent};
+use crate::{ButtonMask, Point, RunError, ScrollDelta, UiEvent};
 
 /// Opaque stand-in for the C type `CGContext`. We only ever hold a
 /// `*mut OpaqueCGContext`, which we then cast to `core-graphics`'
@@ -2352,11 +2352,11 @@ fn window_style_mask(config: &RunConfig) -> NSWindowStyleMask {
 ///     }
 /// }
 ///
-/// fn main() -> std::process::ExitCode {
+/// fn main() -> Result<(), quadraui::RunError> {
 ///     quadraui::macos::run(Hello)
 /// }
 /// ```
-pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
+pub fn run<A: AppLogic + 'static>(app: A) -> Result<(), RunError> {
     run_with(app, RunConfig::default())
 }
 
@@ -2365,7 +2365,18 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 ///
 /// **Must be called from the main thread** — enforced by the
 /// [`MainThreadMarker::new`] check at entry.
-pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::process::ExitCode {
+///
+/// Returns `Result<(), RunError>` mirroring `tui::run`/`gtk::run`'s shape,
+/// but today always resolves `Ok(())`: unlike GLib's `Application::run`
+/// (which hands `gtk::run_with` a real exit code — see [`RunError::Code`]'s
+/// doc), `NSApplication::run()` returns no status at all, and this backend
+/// has no headless self-check mechanism analogous to GTK's
+/// `QUADRAUI_GTK_SMOKE_MS` to fold into one. The `Result` shape is kept
+/// anyway for call-site parity across backends and so a future failure
+/// mode (a native window/dialog call failing during `bootstrap`, surfaced
+/// as [`RunError::Backend`]) has somewhere to land without another
+/// breaking signature change.
+pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Result<(), RunError> {
     let mtm =
         MainThreadMarker::new().expect("quadraui::macos::run must be called from the main thread");
     let boot = bootstrap(app, config, mtm);
@@ -2374,7 +2385,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     // window closes or `[NSApp terminate:]` is invoked.
     boot.ns_app.run();
 
-    std::process::ExitCode::SUCCESS
+    Ok(())
 }
 
 /// Everything [`run_with`] builds before it hands control to AppKit's own
