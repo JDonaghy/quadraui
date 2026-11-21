@@ -268,35 +268,6 @@ impl ListViewLayout {
 /// rationale and the `scroll_px` resolution rule.
 pub type ListPaintState = RowPaintState;
 
-/// [`ListPaintState`] already carries exactly the four concepts
-/// [`crate::primitive::PaintState`] names, as plain fields rather than
-/// trait methods — this impl is the bridge between the two, read by
-/// [`crate::primitive::Primitive::paint`]/`paint_cells`'s [`ListView`]
-/// pilot below instead of reaching for the fields directly, so that
-/// pilot's hover/pressed/scroll/stripe inputs are visibly sourced from
-/// the shared contract. [`crate::primitives::tree::TreePaintState`] and
-/// [`crate::primitives::data_table::DataTablePaintState`] are the same
-/// underlying [`RowPaintState`] type, so they get this impl for free —
-/// a future `Tree`/`DataTable` re-port onto [`crate::primitive::PaintState`]
-/// does not need to repeat it.
-impl crate::primitive::PaintState for ListPaintState {
-    fn hovered_idx(&self) -> Option<usize> {
-        self.hovered_idx
-    }
-
-    fn pressed_idx(&self) -> Option<usize> {
-        self.pressed_idx
-    }
-
-    fn scroll_px(&self) -> Option<f32> {
-        self.scroll_px
-    }
-
-    fn striped(&self) -> bool {
-        self.striped
-    }
-}
-
 #[cfg(test)]
 mod paint_state_tests {
     use super::ListPaintState;
