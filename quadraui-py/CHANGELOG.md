@@ -110,6 +110,15 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   programmatically instead of parsing it back out of the exception
   message.
 
+### Removed
+
+- `QuiApp.insert_button`/`insert_text_display`/`insert_list`/`insert_tree`/
+  `insert_data_table`/`insert_tab_bar`/`insert_progress`/`insert_spinner`/
+  `insert_image`/`insert_extra`/`clear_extra`/`slot_clear`, deprecated in
+  0.11.0: the six fixed primitive slots and every additive primitive now
+  reach the screen only through a `render` callback's descriptor dict.
+  `SlotOccupiedError`/`UnknownSlotError` are removed with them.
+
 ## [0.11.0] - 2026-11-14
 
 ### Added

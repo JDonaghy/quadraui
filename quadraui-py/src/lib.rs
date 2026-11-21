@@ -12,17 +12,9 @@
 //! [`PyAppLogic`]'s callback bridge and the `QuiApp` surface below.
 //!
 //! [`QuiApp`] wraps a `quadraui::tui::testing::TuiDriver` running an
-//! in-crate [`AppLogic`] that holds one optional descriptor per core
-//! primitive (button, text display, list, tree, data table, tab bar), plus
-//! any number of additive primitives (`insert_extra`/`insert_progress`/
-//! `insert_spinner`/`insert_image`) registered in
-//! `quadraui_binding_core::extra_paint`'s `extra_primitives!` table — see
-//! that macro's doc for why registering a further additive primitive never
-//! touches the six fixed slots. Each `insert_*` method takes a Python
-//! `dict`, decodes it into the matching descriptor type via
-//! [`pythonize::depythonize`], stores it in that primitive's slot, and
-//! re-renders immediately so `screen()`/`screen_contains()` reflect it
-//! without a separate step.
+//! in-crate [`AppLogic`] whose only way to show a descriptor is the
+//! `render` callback (`QuiApp(..., render=...)` or `set_render`) — see
+//! below.
 //!
 //! `push_event`/`push_key_event` queue a [`UiEvent`] (decoded from a Python
 //! dict, or synthesized from a key code); `step`/`run` drain that queue
@@ -37,18 +29,18 @@
 //!
 //! A registered event handler runs while the run loop holds the one
 //! mutable borrow of this app's [`PyAppLogic`] for the whole step, so it
-//! cannot call back into `QuiApp.insert_*`/`slot_clear` on the same
-//! instance — PyO3's runtime borrow guard rejects that second borrow. The
-//! `render` callback (`QuiApp(..., render=...)` or `set_render`) is the way
-//! around that: it takes no arguments and returns a `dict` mapping slot
-//! names (`"button"`, `"text_display"`, `"list"`, `"tree"`, `"data_table"`,
-//! `"tab_bar"`) to a descriptor `dict` (or `None`/omitted to draw nothing in
-//! that slot this frame). [`PyAppLogic::render`] calls it once per frame —
-//! the same frame the runner already repaints after every dispatched event
-//! or tick — so an app keeps its live state in a plain Python object the
-//! event handler mutates directly and the render callback reads back out,
-//! instead of mutating `QuiApp` itself. The render callback must not call
-//! back into `QuiApp` either; like the event handler, it only returns data.
+//! cannot call back into `QuiApp` on the same instance — PyO3's runtime
+//! borrow guard rejects that second borrow. The `render` callback
+//! (`QuiApp(..., render=...)` or `set_render`) is the way around that: it
+//! takes no arguments and returns a `dict` mapping slot names (`"button"`,
+//! `"text_display"`, `"list"`, `"tree"`, `"data_table"`, `"tab_bar"`) to a
+//! descriptor `dict` (or `None`/omitted to draw nothing in that slot this
+//! frame). [`PyAppLogic::render`] calls it once per frame — the same frame
+//! the runner already repaints after every dispatched event or tick — so an
+//! app keeps its live state in a plain Python object the event handler
+//! mutates directly and the render callback reads back out, instead of
+//! mutating `QuiApp` itself. The render callback must not call back into
+//! `QuiApp` either; like the event handler, it only returns data.
 //!
 //! Every error this binding can raise itself (as opposed to one a
 //! registered Python callback raised, which passes through unchanged) is a
@@ -137,7 +129,7 @@ use std::thread;
 use std::time::Duration;
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyDeprecationWarning, PyException};
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 #[cfg(test)]
 use pyo3::types::PyTuple;
@@ -186,15 +178,15 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, apply_tab_activated, begin_drag_out, begin_power_save_block,
     callback_reaction, caret_shape, clear_recent_documents, click_down_up_events,
-    collect_leaf_tooltips, color_depth_name, data_table_rows_and_viewport, decode_extra_primitive,
-    dialog_severity, drag::scroll_view_at, draw_bands, end_power_save_block, font_role,
-    guarded as core_guarded, is_default_protocol_client, key_pressed_event, list_rows_and_viewport,
-    login_item_enabled, menu_for_surface, merge_overrides, message_dialog_options_from_buttons,
-    paint_layout_windowed, pointer_shape, record_pending_error, remove_as_default_protocol_client,
-    render_overlays, resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active,
-    resolve_list_cursor, resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active,
-    resolve_tree_cursor, resolve_tree_cursor_windowed, resolve_tree_expansion,
-    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
+    collect_leaf_tooltips, color_depth_name, data_table_rows_and_viewport, dialog_severity,
+    drag::scroll_view_at, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
+    is_default_protocol_client, key_pressed_event, list_rows_and_viewport, login_item_enabled,
+    menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout_windowed,
+    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
+    resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
+    resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
+    resolve_tree_cursor_windowed, resolve_tree_expansion, set_as_default_protocol_client,
+    set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
     toast_corner, tree_rows_and_viewport, tree_table_controller_nodes_from_wire,
     tree_total_rows_and_viewport, update_apply_on_quit, update_check_for_update,
@@ -283,7 +275,7 @@ create_exception!(
     _quadraui,
     InvalidDescriptorError,
     QuadrauiError,
-    "A descriptor dict passed to `push_event` or an `insert_*` method did \
+    "A descriptor dict passed to `push_event` or a render callback did \
     not decode into the shape it was expected to have (mirrors \
     `QUI_ERR_INVALID_JSON`). [`decode_error_to_py`] raises one of the \
     subclasses below for every `quadraui_binding_core::DecodeError` \
@@ -350,22 +342,6 @@ create_exception!(
     out-of-range \"ratio\") -- mirrors \
     `quadraui_binding_core::DecodeError::Borrow`. Its `code` class \
     attribute is `\"borrow\"`."
-);
-
-create_exception!(
-    _quadraui,
-    SlotOccupiedError,
-    QuadrauiError,
-    "An `insert_*` method was called on a slot that already holds a \
-    descriptor (mirrors `QUI_ERR_SLOT_OCCUPIED`)."
-);
-
-create_exception!(
-    _quadraui,
-    UnknownSlotError,
-    QuadrauiError,
-    "`slot_clear` was given an id that isn't one of this app's six fixed \
-    primitive slots (mirrors `QUI_ERR_UNKNOWN_SLOT`)."
 );
 
 create_exception!(
@@ -508,19 +484,6 @@ create_exception!(
     which translates the matching generic napi-rs rejection the same way."
 );
 
-/// Slot id of the app's `Button` descriptor.
-const SLOT_BUTTON: i64 = quadraui_binding_core::SLOT_BUTTON;
-/// Slot id of the app's `TextDisplay` descriptor.
-const SLOT_TEXT_DISPLAY: i64 = quadraui_binding_core::SLOT_TEXT_DISPLAY;
-/// Slot id of the app's `ListView` descriptor.
-const SLOT_LIST: i64 = quadraui_binding_core::SLOT_LIST;
-/// Slot id of the app's `TreeView` descriptor.
-const SLOT_TREE: i64 = quadraui_binding_core::SLOT_TREE;
-/// Slot id of the app's `DataTable` descriptor.
-const SLOT_DATA_TABLE: i64 = quadraui_binding_core::SLOT_DATA_TABLE;
-/// Slot id of the app's `TabBar` descriptor.
-const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
-
 /// One action a [`QuiAppActions`] method recorded, already decoded and
 /// validated, waiting for [`flush_deferred_actions`] to apply it. Each
 /// variant mirrors one of the `QuiApp` methods [`QuiAppActions`]'s own
@@ -655,11 +618,10 @@ struct PyAppLogic {
     /// Registered via `QuiApp::set_render` / the `render` constructor
     /// argument; called with no arguments once per frame and expected to
     /// return a `dict` mapping slot names to a descriptor `dict` (or
-    /// `None`/omitted to draw nothing in that slot). When set, this
-    /// overrides [`Self::host`]'s static slots for every render — it is the
-    /// one way an app's displayed state can change after the runner has
-    /// taken over the event loop, since the event handler that mutates that
-    /// state cannot itself re-borrow this `QuiApp` to call `insert_*`.
+    /// `None`/omitted to draw nothing in that slot). This is the only way an
+    /// app's displayed state can change after the runner has taken over the
+    /// event loop, since the event handler that mutates that state cannot
+    /// itself re-borrow this `QuiApp`.
     render_callback: Option<Py<PyAny>>,
     /// Set by `handle`/`tick` when the Python callback they invoke raises.
     /// `step_once` takes this and re-raises it out of `step`/`run` instead
@@ -705,31 +667,6 @@ struct PyAppLogic {
 }
 
 impl PyAppLogic {
-    fn slot_occupied(&self, slot: i64) -> bool {
-        self.host.slot_occupied(slot)
-    }
-
-    /// Whether `slot` names one of this app's fixed primitive slots.
-    fn is_known_slot(slot: i64) -> bool {
-        BindingHost::is_known_slot(slot)
-    }
-
-    /// Empties one slot, returning whether it held anything.
-    fn clear_slot(&mut self, slot: i64) -> bool {
-        self.host.clear_slot(slot)
-    }
-
-    /// Whether `kind` names a currently-occupied additive primitive slot.
-    fn extra_occupied(&self, kind: &str) -> bool {
-        self.host.extra_occupied(kind)
-    }
-
-    /// Empties one additive primitive slot, returning whether it held
-    /// anything.
-    fn clear_extra_slot(&mut self, kind: &str) -> bool {
-        self.host.clear_extra_slot(kind)
-    }
-
     /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
     /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
     /// own real wall clock, or a test-pinned value once `QuiApp.set_test_clock_ms`
@@ -2144,9 +2081,9 @@ const RENDER_CALLBACK_WHAT: &str = "render";
 /// leaving the caller to skip drawing this frame rather than paint a
 /// half-decoded one.
 ///
-/// Every call site that can trigger a render — `step`/`run`, `screen`,
-/// `screen_contains`, `insert_*`, and `slot_clear` — drains `pending_error`
-/// after rendering and re-raises it, so a render-callback failure surfaces
+/// Every call site that can trigger a render — `step`/`run`, `screen`, and
+/// `screen_contains` — drains `pending_error` after rendering and re-raises
+/// it, so a render-callback failure surfaces
 /// the same way a `handle`/`tick` callback failure does no matter which of
 /// those triggered the repaint. `run_tui`/`run_native` additionally break
 /// their loop as soon as `pending_error` is set, since nothing else is
@@ -2933,9 +2870,9 @@ type NativeAppLogic = NativeExitPolicy<PyAppLogic>;
 
 /// A headless quadraui app, driven entirely from Python.
 ///
-/// Construct it with a `width`/`height` cell grid, insert descriptors with
-/// the `insert_*` methods, and inspect the rendered frame with `screen()`/
-/// `screen_contains()`.
+/// Construct it with a `width`/`height` cell grid, register a `render`
+/// callback to supply descriptors, and inspect the rendered frame with
+/// `screen()`/`screen_contains()`.
 ///
 /// `unsendable`: the TUI backend's internal terminal handle uses `Rc`/
 /// `RefCell` (shared with its dialog-surface plumbing), so a `QuiApp` is
@@ -4144,10 +4081,7 @@ impl QuiApp {
     /// "text_display", "list", "tree", "data_table", "tab_bar") to a
     /// descriptor `dict` (or `None`/omitted to draw nothing in that slot),
     /// and must not call back into this `QuiApp` — it only returns data.
-    /// Replaces any previously registered render callback, and overrides
-    /// whatever `insert_*` put in the static slots for every frame from
-    /// here on; `slot_clear`/`insert_*` still work but their effect on what
-    /// is drawn is masked while a render callback is registered.
+    /// Replaces any previously registered render callback.
     fn set_render(&mut self, callback: Py<PyAny>) {
         self.driver.app_mut().render_callback = Some(callback);
     }
@@ -5207,197 +5141,6 @@ impl QuiApp {
         })
     }
 
-    /// Inserts a `Button` descriptor from a Python dict, returning its slot
-    /// handle. Raises `RuntimeError` if the button slot is already
-    /// occupied — call `slot_clear` first.
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `button` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    fn insert_button(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
-        warn_insert_deprecated(descriptor.py(), "insert_button", "button")?;
-        self.insert(
-            SLOT_BUTTON,
-            "insert_button",
-            |app, value| {
-                app.host.button = Some(value);
-            },
-            descriptor,
-        )
-    }
-
-    /// Inserts a `TextDisplay` descriptor from a Python dict, returning its
-    /// slot handle. Raises `RuntimeError` if the text-display slot is
-    /// already occupied — call `slot_clear` first.
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `text_display` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    fn insert_text_display(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
-        warn_insert_deprecated(descriptor.py(), "insert_text_display", "text_display")?;
-        self.insert(
-            SLOT_TEXT_DISPLAY,
-            "insert_text_display",
-            |app, value| {
-                app.host.text_display = Some(value);
-            },
-            descriptor,
-        )
-    }
-
-    /// Inserts a `ListView` descriptor from a Python dict, returning its
-    /// slot handle. Raises `RuntimeError` if the list slot is already
-    /// occupied — call `slot_clear` first.
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `list` layout leaf as the replacement; removal is a later breaking
-    /// release.
-    fn insert_list(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
-        warn_insert_deprecated(descriptor.py(), "insert_list", "list")?;
-        self.insert(
-            SLOT_LIST,
-            "insert_list",
-            |app, value| {
-                app.host.list = Some(value);
-            },
-            descriptor,
-        )
-    }
-
-    /// Inserts a `TreeView` descriptor from a Python dict, returning its
-    /// slot handle. Raises `RuntimeError` if the tree slot is already
-    /// occupied — call `slot_clear` first.
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `tree` layout leaf as the replacement; removal is a later breaking
-    /// release.
-    fn insert_tree(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
-        warn_insert_deprecated(descriptor.py(), "insert_tree", "tree")?;
-        self.insert(
-            SLOT_TREE,
-            "insert_tree",
-            |app, value| {
-                app.host.tree = Some(value);
-            },
-            descriptor,
-        )
-    }
-
-    /// Inserts a `DataTable` descriptor from a Python dict, returning its
-    /// slot handle. Raises `RuntimeError` if the data-table slot is
-    /// already occupied — call `slot_clear` first.
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `data_table` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    fn insert_data_table(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
-        warn_insert_deprecated(descriptor.py(), "insert_data_table", "data_table")?;
-        self.insert(
-            SLOT_DATA_TABLE,
-            "insert_data_table",
-            |app, value| {
-                app.host.data_table = Some(value);
-            },
-            descriptor,
-        )
-    }
-
-    /// Inserts a `TabBar` descriptor from a Python dict, returning its slot
-    /// handle. Raises `RuntimeError` if the tab-bar slot is already
-    /// occupied — call `slot_clear` first.
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `tab_bar` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    fn insert_tab_bar(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
-        warn_insert_deprecated(descriptor.py(), "insert_tab_bar", "tab_bar")?;
-        self.insert(
-            SLOT_TAB_BAR,
-            "insert_tab_bar",
-            |app, value| {
-                app.host.tab_bar = Some(value);
-            },
-            descriptor,
-        )
-    }
-
-    /// Inserts a `ProgressBar` descriptor from a Python dict, returning
-    /// `"progress"` back. Raises `RuntimeError` if `"progress"` is already
-    /// occupied — call `clear_extra("progress")` first. A thin,
-    /// typed-descriptor convenience over [`Self::insert_extra`].
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `progress` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    fn insert_progress(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
-        warn_insert_deprecated(descriptor.py(), "insert_progress", "progress")?;
-        self.store_extra("progress", "insert_progress", descriptor)
-    }
-
-    /// Inserts a `Spinner` descriptor from a Python dict, returning
-    /// `"spinner"` back. Raises `RuntimeError` if `"spinner"` is already
-    /// occupied — call `clear_extra("spinner")` first. A thin,
-    /// typed-descriptor convenience over [`Self::insert_extra`].
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `spinner` layout leaf as the replacement; removal is a later
-    /// breaking release.
-    fn insert_spinner(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
-        warn_insert_deprecated(descriptor.py(), "insert_spinner", "spinner")?;
-        self.store_extra("spinner", "insert_spinner", descriptor)
-    }
-
-    /// Inserts an `Image` descriptor from a Python dict, returning
-    /// `"image"` back. Raises `RuntimeError` if `"image"` is already
-    /// occupied — call `clear_extra("image")` first. A thin,
-    /// typed-descriptor convenience over [`Self::insert_extra`].
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `image` layout leaf as the replacement; removal is a later breaking
-    /// release.
-    fn insert_image(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
-        warn_insert_deprecated(descriptor.py(), "insert_image", "image")?;
-        self.store_extra("image", "insert_image", descriptor)
-    }
-
-    /// Inserts a descriptor for any additive primitive `kind` registered in
-    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table
-    /// (an `InvalidDescriptorError` raised for an unknown `kind` names
-    /// every registered one), returning `kind` back. Raises `RuntimeError`
-    /// if `kind` is already occupied — call `clear_extra(kind)` first.
-    /// Lets a consumer insert a future additive primitive by name alone,
-    /// with no new pymethod needed on this class.
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming the inline
-    /// `kind` layout leaf as the replacement; removal is a later breaking
-    /// release.
-    fn insert_extra(&mut self, kind: &str, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
-        warn_insert_deprecated(descriptor.py(), "insert_extra", kind)?;
-        self.store_extra(kind, "insert_extra", descriptor)
-    }
-
-    /// Empties an additive primitive slot (one registered in
-    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table),
-    /// re-rendering so `screen()` no longer shows it.
-    /// Returns whether the slot held anything; an unrecognized `kind`
-    /// simply has nothing to clear (unlike `slot_clear`, this never raises
-    /// for an unknown key).
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming omitting
-    /// `kind`'s layout leaf from the next `render` callback as the
-    /// replacement; removal is a later breaking release.
-    fn clear_extra(&mut self, py: Python<'_>, kind: &str) -> PyResult<bool> {
-        warn_clear_extra_deprecated(py, kind)?;
-        self.guarded(|app| {
-            let cleared = app.driver.app_mut().clear_extra_slot(kind);
-            if cleared {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(cleared)
-        })
-    }
-
     /// Opens one of this app's seven in-canvas overlay kinds by name — the
     /// generic counterpart [`Self::show_context_menu`]/
     /// [`Self::show_message_dialog`]/[`Self::show_toast`]/
@@ -5705,11 +5448,11 @@ impl QuiApp {
     /// where a menu should open), never from inside the registered event
     /// handler or render callback: both already hold this `QuiApp`'s one
     /// mutable borrow for the whole dispatch, so a reentrant call here
-    /// raises [`ReentrantCallError`] (unlike `QuiApp.insert_*`/
-    /// `slot_clear`, which have no `actions()` counterpart to point to and
-    /// so still raise PyO3's raw `RuntimeError: Already borrowed` on the
-    /// same reentrant call) — see [`guard_against_reentrant_call`]'s own
-    /// doc. From inside a handler, call [`QuiAppActions::show_context_menu`] (via
+    /// raises [`ReentrantCallError`] (unlike a `QuiApp` method with no
+    /// `actions()` counterpart to point to, which still raises PyO3's raw
+    /// `RuntimeError: Already borrowed` on the same reentrant call) — see
+    /// [`guard_against_reentrant_call`]'s own doc. From inside a handler,
+    /// call [`QuiAppActions::show_context_menu`] (via
     /// [`QuiApp::actions`]) instead — see that type's doc for why it can
     /// succeed where this can't. A one-line forward onto
     /// [`Self::show_overlay`].
@@ -5971,31 +5714,6 @@ impl QuiApp {
         self.dismiss_overlay("rich_text_popup")
     }
 
-    /// Empties a slot (one of the integers returned by an `insert_*` call),
-    /// re-rendering so `screen()` no longer shows it. Returns whether the
-    /// slot held anything. Raises `UnknownSlotError` if `slot` doesn't name
-    /// one of this app's six fixed primitive slots.
-    ///
-    /// **Deprecated**: raises a `DeprecationWarning` naming omitting the
-    /// relevant fixed-slot layout leaf from the next `render` callback as
-    /// the replacement; removal is a later breaking release.
-    fn slot_clear(&mut self, py: Python<'_>, slot: i64) -> PyResult<bool> {
-        if !PyAppLogic::is_known_slot(slot) {
-            return Err(UnknownSlotError::new_err(format!(
-                "unknown slot id: {slot}"
-            )));
-        }
-        warn_slot_clear_deprecated(py, slot)?;
-        self.guarded(|app| {
-            let cleared = app.driver.app_mut().clear_slot(slot);
-            if cleared {
-                app.driver.render();
-                take_pending_error(app.driver.app_mut())?;
-            }
-            Ok(cleared)
-        })
-    }
-
     /// Renders the current frame and returns it as a plain-text screen
     /// dump, one row per line.
     fn screen(&mut self) -> PyResult<String> {
@@ -6136,11 +5854,10 @@ impl QuiApp {
     // the same one `step`/`run`/`screen` always render against, regardless
     // of whether `run_native` currently has a native window open (see the
     // `driver` field's doc on `run_tui`/`run_native` not sharing a driver).
-    // A layout computation that calls these alongside `insert_*`/the
-    // render callback -- both of which only ever run against this same
-    // headless backend too -- gets numbers that agree with what `screen`/
-    // `screen_contains` actually show, on every platform this binding
-    // builds for.
+    // A layout computation that calls these alongside the render callback
+    // -- which only ever runs against this same headless backend too --
+    // gets numbers that agree with what `screen`/`screen_contains` actually
+    // show, on every platform this binding builds for.
 
     /// This app's current viewport as `(width, height, scale)`, in cells
     /// -- [`Backend::viewport`]. `scale` is always `1.0` on the headless
@@ -7421,73 +7138,11 @@ fn ratatui_rgb(color: quadraui::tui::testing::Color) -> (u8, u8, u8) {
 /// Takes and re-raises any error a render callback recorded during the
 /// `render()` call that just ran, mirroring `step_once`'s handling of a
 /// `handle`/`tick` callback failure. Every `QuiApp` method that can trigger
-/// a render outside of `step`/`run` — `screen`, `screen_contains`,
-/// `insert_*`, `slot_clear` — calls this right after rendering so a render
-/// callback's exception is never silently swallowed.
+/// a render outside of `step`/`run` — `screen`, `screen_contains` — calls
+/// this right after rendering so a render callback's exception is never
+/// silently swallowed.
 fn take_pending_error(app: &mut PyAppLogic) -> PyResult<()> {
     core_take_pending_error(&mut app.pending_error.borrow_mut())
-}
-
-/// Raises a `DeprecationWarning` carrying `message` -- the one call
-/// [`warn_insert_deprecated`]/[`warn_clear_extra_deprecated`]/
-/// [`warn_slot_clear_deprecated`] below make, each having already built
-/// `message` from a `BindingHost::*_deprecation_message` call, unconditionally
-/// on every call -- see [`BindingHost::first_deprecation_report`]'s own doc
-/// for why only `quadraui-node` needs the per-app "have I already reported
-/// this" dedup. Raises only if Python's own warning filters have escalated
-/// `DeprecationWarning` to an error (`-W error::DeprecationWarning` or an
-/// equivalent `simplefilter`), in which case the slot/extra call itself
-/// never runs.
-///
-/// `message` can embed caller-supplied data (`insert_extra`/`clear_extra`'s
-/// own `kind` argument is an arbitrary Python `str`, which may legally
-/// contain a NUL byte), and a C string can't carry an interior NUL. Rather
-/// than asserting that invariant with an `.expect()` a caller can actually
-/// violate, a NUL byte is stripped before building the `CString` -- the
-/// warning still names the kind (minus any NUL) instead of the whole call
-/// panicking on previously-valid input.
-fn emit_deprecation_warning(py: Python<'_>, message: String) -> PyResult<()> {
-    let message = if message.contains('\0') {
-        message.replace('\0', "")
-    } else {
-        message
-    };
-    let message = std::ffi::CString::new(message)
-        .unwrap_or_else(|_| std::ffi::CString::new("deprecation warning").unwrap());
-    PyErr::warn(py, &py.get_type::<PyDeprecationWarning>(), &message, 1)
-}
-
-/// [`emit_deprecation_warning`] for inserting primitive `leaf_kind` via the
-/// deprecated `what` method -- the one call every `insert_*`/`insert_extra`
-/// pymethod makes, naming the inline layout leaf of that same kind as the
-/// replacement. Builds the shared message via
-/// [`BindingHost::insert_deprecation_message`] so the wording lives once,
-/// shared with `quadraui-node`'s own forward.
-fn warn_insert_deprecated(py: Python<'_>, what: &str, leaf_kind: &str) -> PyResult<()> {
-    emit_deprecation_warning(py, BindingHost::insert_deprecation_message(what, leaf_kind))
-}
-
-/// [`emit_deprecation_warning`] for `clear_extra`, naming omitting `kind`'s
-/// layout leaf from the next `render` callback as the replacement. Builds
-/// the shared message via [`BindingHost::clear_extra_deprecation_message`].
-fn warn_clear_extra_deprecated(py: Python<'_>, kind: &str) -> PyResult<()> {
-    emit_deprecation_warning(
-        py,
-        BindingHost::clear_extra_deprecation_message("clear_extra", kind),
-    )
-}
-
-/// [`emit_deprecation_warning`] for `slot_clear`, naming omitting `slot`'s
-/// fixed-primitive layout leaf from the next `render` callback as the
-/// replacement. `slot` is assumed already validated by
-/// [`PyAppLogic::is_known_slot`] -- see [`BindingHost::slot_kind_name`]'s
-/// own doc for why this never actually sees an unrecognized slot. Builds
-/// the shared message via [`BindingHost::slot_clear_deprecation_message`].
-fn warn_slot_clear_deprecated(py: Python<'_>, slot: i64) -> PyResult<()> {
-    emit_deprecation_warning(
-        py,
-        BindingHost::slot_clear_deprecation_message("slot_clear", slot),
-    )
 }
 
 /// Attempts the one mutable borrow `method` needs, converting PyO3's own
@@ -7591,63 +7246,6 @@ impl QuiApp {
     /// it must not be constructed fresh per call.
     fn clipboard_backend(&mut self) -> &TuiBackend {
         self.clipboard.get_or_insert_with(TuiBackend::new)
-    }
-
-    /// Shared body of every `insert_*` method: reject an occupied slot,
-    /// decode the dict into `T`, store it with `store`, then re-render.
-    fn insert<T: serde::de::DeserializeOwned>(
-        &mut self,
-        slot: i64,
-        what: &str,
-        store: impl FnOnce(&mut PyAppLogic, T),
-        descriptor: &Bound<'_, PyDict>,
-    ) -> PyResult<i64> {
-        if self.driver.app().slot_occupied(slot) {
-            return Err(SlotOccupiedError::new_err(format!(
-                "{what}: slot already occupied; call slot_clear({slot}) first"
-            )));
-        }
-        let value: T = decode(what, descriptor)?;
-        self.guarded(|app| {
-            store(app.driver.app_mut(), value);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(slot)
-        })
-    }
-
-    /// Shared body of every additive-primitive `insert_*` method (including
-    /// the public `insert_extra` pymethod above): reject an already-occupied
-    /// `kind`, decode the dict through [`decode_extra_primitive`], store it,
-    /// then re-render, returning `kind` back for symmetry with the fixed
-    /// `insert_*` methods' slot-handle return value. The additive
-    /// counterpart to [`Self::insert`] — `kind` is a string (one registered
-    /// in `quadraui_binding_core::extra_paint`'s `extra_primitives!` table)
-    /// rather than a fixed `SLOT_*` integer, so a new additive primitive
-    /// never needs a new slot constant.
-    fn store_extra(
-        &mut self,
-        kind: &str,
-        what: &str,
-        descriptor: &Bound<'_, PyDict>,
-    ) -> PyResult<String> {
-        if self.driver.app().extra_occupied(kind) {
-            return Err(SlotOccupiedError::new_err(format!(
-                "{what}: {kind:?} already occupied; call clear_extra({kind:?}) first"
-            )));
-        }
-        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-        let value = decode_extra_primitive(what, kind, &mut de).map_err(decode_error_to_py)?;
-        self.guarded(|app| {
-            app.driver
-                .app_mut()
-                .host
-                .extra_slots
-                .insert(kind.to_string(), value);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(kind.to_string())
-        })
     }
 
     /// Shared body of every [`QuiApp::show_overlay`] match arm: runs
@@ -7812,8 +7410,6 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<VersionMismatchError>(),
     )?;
     m.add("DecodeFailedError", py.get_type::<DecodeFailedError>())?;
-    m.add("SlotOccupiedError", py.get_type::<SlotOccupiedError>())?;
-    m.add("UnknownSlotError", py.get_type::<UnknownSlotError>())?;
     m.add(
         "InvalidDimensionsError",
         py.get_type::<InvalidDimensionsError>(),
