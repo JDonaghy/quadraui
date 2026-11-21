@@ -21,8 +21,8 @@ use crate::DataTableLayout;
 /// at `(x, y, w, h)` and `line_height`. Shares its column-measurement
 /// path (and `font: &CTFont` passed straight through as `&dyn
 /// TextMeasure` — `CTFont` implements it directly, see `macos::text`'s
-/// module doc) with `gtk_data_table_layout` / `win_data_table_layout`
-/// via [`pixel_data_table_layout`].
+/// module doc) with `win_data_table_layout` / GTK's own
+/// `GtkBackend::data_table_layout` via [`pixel_data_table_layout`].
 pub fn mac_data_table_layout(
     table: &DataTable,
     font: &CTFont,
