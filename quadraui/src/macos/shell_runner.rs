@@ -24,9 +24,11 @@
 
 use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
-use crate::shell_adapter::build_shell_adapter;
+use crate::{shell_adapter::build_shell_adapter, RunError};
 
-/// Run a [`ShellApp`] with AppShell chrome on the macOS backend.
+/// Run a [`ShellApp`] with AppShell chrome on the macOS backend. Returns
+/// `Result<(), RunError>` — see [`super::run::run_with`]'s doc for why
+/// this backend's `Result` resolves `Ok(())` today.
 ///
 /// `config.app_icon` (set via [`ShellConfig::with_app_icon`])
 /// reaches [`RunConfig::app_icon`] the same way `config.title` /
@@ -37,10 +39,7 @@ use crate::shell_adapter::build_shell_adapter;
 ///
 /// **Must be called from the main thread** — enforced transitively by
 /// [`super::run::run_with`].
-pub fn run_with_shell<A: ShellApp + 'static>(
-    app: A,
-    config: ShellConfig,
-) -> std::process::ExitCode {
+pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Result<(), RunError> {
     let mut run_config =
         RunConfig::new(config.title.clone()).with_client_side_titlebar(config.client_side_titlebar);
     if let Some(app_icon) = config.app_icon.clone() {
