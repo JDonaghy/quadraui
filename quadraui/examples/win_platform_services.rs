@@ -307,7 +307,7 @@ impl AppLogic for PlatformServicesDemo {
 }
 
 #[cfg(target_os = "windows")]
-fn main() -> std::process::ExitCode {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::win::run(PlatformServicesDemo::default())
 }
 

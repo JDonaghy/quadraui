@@ -46,7 +46,7 @@ fn main() -> Result<(), quadraui::RunError> {
     not(any(feature = "tui", feature = "gtk")),
     not(all(feature = "macos", target_os = "macos"))
 ))]
-fn main() -> std::process::ExitCode {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::win::shell_runner::run_with_shell(app::App::new(), app::App::config())
 }
 

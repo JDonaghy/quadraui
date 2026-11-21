@@ -1,21 +1,14 @@
 //! The unified return type every backend's `run`/`run_with` converges on.
 //!
-//! The four backends don't all agree on what their entry point returns.
-//! `win::run`/`run_with` return [`std::process::ExitCode`] (so an app's
-//! `main` is a one-liner, but the *why* behind a non-zero exit — a
-//! missing display, a failed native window create, a headless smoke
-//! self-check — is lost by the time it reaches the exit code, and
-//! `ExitCode` doesn't implement [`std::error::Error`], so it can't be
-//! `?`-propagated through anything that expects one). `tui::run`/
-//! `run_with`/`run_with_shell`, `gtk::run`/`run_with`/`run_with_shell`,
-//! and `macos::run`/`run_with`/`run_with_shell` are wired to [`RunError`]
-//! instead — the seam every backend's `run`/`run_with` converges on, so
-//! each ends up returning `Result<(), RunError>`.
-//!
-//! `win` still returns `std::process::ExitCode` pending its own follow-on
-//! issue — split one per backend (per `CLAUDE.md`'s "one backend per
-//! issue" rule) so each conversion is reviewed and tested against that
-//! backend's own host, instead of one sprawling cross-backend diff.
+//! Every backend now converges on the same shape: `tui::run`/`run_with`/
+//! `run_with_shell`, `gtk::run`/`run_with`/`run_with_shell`,
+//! `macos::run`/`run_with`/`run_with_shell`, and `win::run`/`run_with`/
+//! `run_with_shell` all return `Result<(), RunError>` instead of
+//! [`std::process::ExitCode`] — whose one bare number loses the *why*
+//! behind a non-zero exit (a missing display, a failed native window
+//! create, a headless smoke self-check), and which doesn't implement
+//! [`std::error::Error`], so it can't be `?`-propagated through anything
+//! that expects one.
 //!
 //! # Why not keep using `ExitCode` everywhere
 //!
@@ -42,15 +35,14 @@
 //! matched on by variant.
 //!
 //! ```ignore
-//! // The shape every backend's `run`/`run_with` will return once its own
-//! // follow-on issue lands.
+//! // The shape every backend's `run`/`run_with` returns.
 //! fn main() -> Result<(), quadraui::RunError> {
 //!     quadraui::tui::run(MyApp)
 //! }
 //!
 //! // Or, where the caller wants `ExitCode` ergonomics specifically
-//! // (matches today's `win` call sites) rather than letting
-//! // the runtime's own `Result` glue print and exit on error:
+//! // rather than letting the runtime's own `Result` glue print and exit
+//! // on error:
 //! fn main() -> std::process::ExitCode {
 //!     match quadraui::tui::run(MyApp) {
 //!         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -59,8 +51,8 @@
 //! }
 //! ```
 //!
-//! One caveat worth calling out for whichever follow-on issue wires a
-//! backend to this type: the standard library's blanket
+//! One caveat worth calling out for any future backend that wires itself
+//! to this type: the standard library's blanket
 //! `impl<T: Termination, E: Debug> Termination for Result<T, E>` only
 //! requires `E: Debug`, not `E: Termination` — so a plain `fn main() ->
 //! Result<(), RunError>` dispatches through *that* impl, not
