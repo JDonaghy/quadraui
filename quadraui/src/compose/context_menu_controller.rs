@@ -90,6 +90,7 @@
 //! (`JDonaghy/vimcode#1580`).
 
 use crate::backend::{Backend, ResolvedMenuStyle};
+use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::event::{Point, UiEvent};
 use crate::interaction::InteractionState;
 use crate::primitives::context_menu::{
@@ -515,14 +516,11 @@ impl ContextMenuController {
         if items.is_empty() {
             return;
         }
-        let temp = ContextMenu {
-            id: WidgetId::new("_move"),
-            items,
-            selected_idx: current,
-            bg: None,
-            placement: ContextMenuPlacement::AnchorPoint,
-        };
-        let new_sel = temp.move_selection(current, delta);
+        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
+            !items[i].is_separator() && !items[i].disabled
+        })
+        .unwrap_or(current);
         self.set_selected_at_depth(depth, new_sel);
     }
 

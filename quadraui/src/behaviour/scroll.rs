@@ -3,7 +3,7 @@
 //!
 //! Every controller that keeps a selected/focused item visible —
 //! `TreeNavCore`, `FormController`, `PathPicker`, `DualModePalette`,
-//! `Palette`, `IconGrid`, `CellGridController` — calls into
+//! `Palette`, `IconGrid`, `CellGridController`, `TextInput` — calls into
 //! [`ensure_visible`]/[`ensure_visible_px`] instead of re-deriving this
 //! arithmetic, so the "scroll the minimum amount to bring the target back
 //! into the viewport" rule has exactly one implementation.

@@ -8,6 +8,8 @@
 //! itself, passing in `total` (the combined top-panel + bottom-item count)
 //! each time a bound is needed.
 
+use crate::behaviour::nav::{FlatNav, NavKey};
+
 /// Keyboard focus/cursor + mouse-hover state for an activity bar's
 /// logical item sequence (top panels first, then bottom items).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -74,15 +76,25 @@ impl ActivityBarKeyboard {
     /// Move the cursor to the next item. Saturates at `total - 1` —
     /// does not wrap. No-op when `total == 0`.
     pub(crate) fn select_next(&mut self, total: usize) {
-        if total > 0 {
-            self.cursor = (self.cursor + 1).min(total - 1);
-        }
+        self.cursor = FlatNav::mv(total, Some(self.cursor), NavKey::Down, false, |_| true)
+            .unwrap_or(self.cursor);
     }
 
     /// Move the cursor to the previous item. Saturates at index 0 —
     /// does not wrap.
     pub(crate) fn select_prev(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        // No `total` bound is needed for an upward move: `self.cursor + 1`
+        // is always a valid length for the current cursor position, so
+        // `FlatNav` clamps at 0 exactly like the plain `saturating_sub(1)`
+        // this replaces.
+        self.cursor = FlatNav::mv(
+            self.cursor + 1,
+            Some(self.cursor),
+            NavKey::Up,
+            false,
+            |_| true,
+        )
+        .unwrap_or(self.cursor);
     }
 
     /// Set the cursor to `idx`, clamped to `[0, total - 1]`. No-op when
