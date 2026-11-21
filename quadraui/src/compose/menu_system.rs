@@ -17,6 +17,7 @@
 
 use super::context_menu_controller::menu_item_heights;
 use crate::backend::{Backend, ResolvedMenuStyle};
+use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::event::{Rect, UiEvent};
 use crate::interaction::InteractionState;
 use crate::primitives::context_menu::{
@@ -876,15 +877,11 @@ impl MenuSystem {
     }
 
     fn next_enabled_menu(&self, from: usize, delta: isize) -> usize {
-        let n = self.menus.len();
-        let mut idx = from;
-        for _ in 0..n {
-            idx = crate::focus::cycle_index(idx, delta, n);
-            if !self.menus[idx].disabled {
-                return idx;
-            }
-        }
-        from
+        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        FlatNav::mv(self.menus.len(), Some(from), key, true, |i| {
+            !self.menus[i].disabled
+        })
+        .unwrap_or(from)
     }
 
     /// Return the selected item index at the currently-deepest open level.
@@ -915,14 +912,11 @@ impl MenuSystem {
             return;
         };
 
-        let temp = ContextMenu {
-            id: WidgetId::new("_move"),
-            items,
-            selected_idx: current,
-            bg: None,
-            placement: ContextMenuPlacement::AnchorPoint,
-        };
-        let new_sel = temp.move_selection(current, delta);
+        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
+            !items[i].is_separator() && !items[i].disabled
+        })
+        .unwrap_or(current);
 
         if depth == 0 {
             self.dropdown_selected = new_sel;

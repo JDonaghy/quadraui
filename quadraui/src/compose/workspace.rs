@@ -144,6 +144,7 @@
 //! [`TabItem::is_preview`], which every backend already renders italic
 //! (`quadraui/src/tui/tab_bar.rs`).
 
+use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
 use crate::event::{Key, MouseButton, NamedKey, Rect};
 // This compose helper caches exactly what `Backend::draw_tab_bar` returns
@@ -631,7 +632,19 @@ impl WorkspaceController {
             return None;
         }
         let active = self.active.unwrap_or(0);
-        let next = crate::focus::cycle_index(active, delta, n);
+        // `delta == 0` is a no-op step; `FlatNav`'s `PageUp`/`PageDown`
+        // variants treat a zero magnitude as one step (see their doc), so
+        // it's special-cased here rather than handed to `FlatNav::mv`.
+        let next = if delta == 0 {
+            active
+        } else {
+            let key = if delta > 0 {
+                NavKey::PageDown(delta as usize)
+            } else {
+                NavKey::PageUp((-delta) as usize)
+            };
+            FlatNav::mv(n, Some(active), key, true, |_| true).unwrap_or(active)
+        };
         self.set_active_index(next)
     }
 

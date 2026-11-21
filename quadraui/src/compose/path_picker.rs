@@ -18,6 +18,7 @@
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
+use crate::behaviour::nav::{FlatNav, NavKey as FlatNavKey};
 use crate::behaviour::scroll::ensure_visible;
 use crate::{Key, Modifiers, NamedKey};
 
@@ -278,14 +279,26 @@ impl PathPickerCore {
 
     /// Move the selection one row up (clamped at 0).
     pub(crate) fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        self.selected = FlatNav::mv(
+            self.filtered.len(),
+            Some(self.selected),
+            FlatNavKey::Up,
+            false,
+            |_| true,
+        )
+        .unwrap_or(self.selected);
     }
 
     /// Move the selection one row down (clamped at last row).
     pub(crate) fn move_down(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = (self.selected + 1).min(self.filtered.len() - 1);
-        }
+        self.selected = FlatNav::mv(
+            self.filtered.len(),
+            Some(self.selected),
+            FlatNavKey::Down,
+            false,
+            |_| true,
+        )
+        .unwrap_or(self.selected);
     }
 
     /// Clamp `scroll_top` so `selected` is always visible within
