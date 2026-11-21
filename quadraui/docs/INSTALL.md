@@ -11,7 +11,7 @@ has no backend to run them on.
 
 ```toml
 [dependencies]
-quadraui = { version = "0.1", features = ["tui"] }
+quadraui = { version = "0.11", features = ["tui"] }
 ```
 
 A typical app ships the terminal backend plus the native one for each desktop it targets.
@@ -20,16 +20,16 @@ per-target:
 
 ```toml
 [dependencies]
-quadraui = { version = "0.1", features = ["tui"] }
+quadraui = { version = "0.11", features = ["tui"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-quadraui = { version = "0.1", features = ["tui", "gtk"] }
+quadraui = { version = "0.11", features = ["tui", "gtk"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-quadraui = { version = "0.1", features = ["tui", "macos"] }
+quadraui = { version = "0.11", features = ["tui", "macos"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-quadraui = { version = "0.1", features = ["tui", "win"] }
+quadraui = { version = "0.11", features = ["tui", "win"] }
 ```
 
 To follow unreleased work, pin a git revision rather than tracking `develop`:

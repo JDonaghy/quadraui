@@ -48,8 +48,17 @@ Goal: a future agent can write a whole new backend (Windows, macOS) just by
 implementing the `Backend` trait — zero consumer-side changes, zero per-example
 rewrites. Non-negotiable:
 
-1. **Every primitive MUST have a `Backend` trait method.** TUI + GTK rasterisers
-   with no trait method is a bug — add the trait method.
+1. **A new widget implements `Primitive` (+ `A11yPrimitive`), not a new `Backend`
+   method.** `quadraui::primitive::Primitive` + `DrawsPrimitives::draw_primitive`
+   is the one portable seam: implement `layout()` + `paint()` once and every
+   backend that implements `PaintSurface` (GTK, macOS, Win) paints it, with a
+   `paint_cells` override for TUI — zero new `Backend` methods, zero per-backend
+   opt-in. `Backend` is sealed and `tests/backend_method_ratchet.rs` locks its
+   method count at a frozen baseline that may only shrink: adding a
+   `Backend::draw_<name>`/`<name>_layout` pair for a new widget fails that test.
+   See `quadraui/src/primitive.rs`'s module doc and `tests/primitive_public_api.rs`
+   for the worked example, and `quadraui/docs/PRIMITIVE_RULES.md`'s "Adding a
+   widget" checklist for the full list of what else ships with it.
 2. **Apps and examples go through `AppLogic` + `quadraui::{tui,gtk}::run`.** Render
    code is backend-generic; one `AppLogic` impl drives every backend.
 3. **Examples are paired by shape, not backend:** one `AppLogic` in
@@ -72,6 +81,29 @@ When adding a capability, state its TUI story and ship a `tui_*` test.
 **Clipboard events:** `UiEvent::ClipboardPaste(String)` inserts pasted text into
 the focused input; `UiEvent::TextCopied(String)` only confirms a copy happened.
 Ctrl-C copy in a new backend/primitive emits `TextCopied`, never `ClipboardPaste`.
+
+## Review gate: no new `Backend` methods, no widget duplication
+
+The adversarial reviewer reads this file. A diff that does any of the following
+gets an unconditional `request-changes` — same weight as the sealed-suite rule
+below — unless the linked issue's body carries an explicit operator-approved
+exemption:
+
+- adds a method to `trait Backend` in `quadraui/src/backend.rs`;
+- adds a non-test file under `quadraui/src/{tui,gtk,macos,win}/` that paints or
+  lays out a widget, rather than a platform-service capability (clipboard,
+  trash, secret store, dialogs, …) — a new widget's rasterisation belongs in
+  its `Primitive::paint`/`paint_cells` impl, not a new per-backend file;
+- adds a new widget type that does not implement `Primitive` (+ `A11yPrimitive`);
+- adds a second implementation of logic that already exists elsewhere —
+  navigation, scroll-into-view, hit-testing, focus, or painting the same widget
+  twice via two different call paths.
+
+**Reviewers: grep the diff for `fn draw_` / `fn *_layout` inside `impl Backend`
+or `trait Backend`.** A hit is the signal this rule exists to catch — see
+*Cross-backend portability commitment* invariant 1 and
+`quadraui/docs/PRIMITIVE_RULES.md`'s "Adding a widget" checklist for the path a
+new widget should take instead.
 
 ## Finish the issue — `partial` is not a scope choice
 
