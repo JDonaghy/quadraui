@@ -198,11 +198,6 @@ pub use command_center::{draw_command_center, gtk_command_center_layout};
 pub use completions::draw_completions;
 #[doc(hidden)]
 pub use context_menu::draw_context_menu;
-pub use data_table::draw_data_table;
-#[doc(hidden)]
-pub use data_table::{
-    draw_data_table_with_glyphs, draw_data_table_with_state, gtk_data_table_layout,
-};
 #[doc(hidden)]
 pub use dialog::draw_dialog;
 pub use editor::{draw_editor, editor_col_at_x};

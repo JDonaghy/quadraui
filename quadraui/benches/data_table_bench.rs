@@ -15,10 +15,11 @@
 //!    this stage is a regression sentinel more than a scaling stress
 //!    test: it should stay flat regardless of `ROWS`.
 //! 3. **`paint`** — the TUI (`quadraui::tui::draw_data_table`) and GTK
-//!    (`quadraui::gtk::draw_data_table`, headless in-memory Cairo)
-//!    rasterisers. Both only paint `visible_rows` (bounded by the
-//!    viewport), so this proves the paint path stays viewport-bound on
-//!    a 100k-row table rather than accidentally becoming O(rows).
+//!    (`Backend::draw_data_table` on a real `GtkBackend`, headless
+//!    in-memory Cairo) rasterisers. Both only paint `visible_rows`
+//!    (bounded by the viewport), so this proves the paint path stays
+//!    viewport-bound on a 100k-row table rather than accidentally
+//!    becoming O(rows).
 //!
 //! Run: `cargo bench --bench data_table_bench --features tui,gtk`
 //! (drop a feature to skip its `paint` stage; `frame_build`/`layout`
@@ -128,31 +129,29 @@ mod gtk_bench {
     use super::*;
     use gtk4::pango;
     use pangocairo::cairo::{Context, Format, ImageSurface};
-    use quadraui::gtk::draw_data_table;
-    use quadraui::Theme;
+    use quadraui::gtk::GtkBackend;
+    use quadraui::{Backend, Rect};
 
     pub fn bench_paint(c: &mut Criterion) {
         let table = build_table(ROWS, COLS);
-        let theme = Theme::default();
         let surface = ImageSurface::create(Format::ARgb32, 1200, 800).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
         let pctx = pangocairo::functions::create_context(&cr);
         pctx.set_font_description(&pango::FontDescription::from_string("Sans 11"));
         let layout = pango::Layout::new(&pctx);
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(20.0);
+        let rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
         c.bench_function("data_table_paint_gtk_100k_rows", |b| {
             b.iter(|| {
-                black_box(draw_data_table(
-                    &cr,
-                    &layout,
-                    0.0,
-                    0.0,
-                    1200.0,
-                    800.0,
-                    &table,
-                    &theme,
-                    20.0,
-                    Some(ROWS / 2),
-                ));
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    // `Backend::draw_data_table` is deprecated in favour of
+                    // `DrawsPrimitives::draw_primitive`, but still the real
+                    // path every pre-migration host calls each frame —
+                    // see this bench module's own doc.
+                    #[allow(deprecated)]
+                    black_box(b.draw_data_table(rect, &table, Some(ROWS / 2)));
+                });
             })
         });
     }
