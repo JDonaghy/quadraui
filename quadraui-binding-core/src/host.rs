@@ -26,7 +26,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
@@ -46,7 +45,6 @@ use quadraui::{
 };
 
 use crate::engine::InteractionEngine;
-use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::layout::{
     grid_cell_rects, quantise_horizontal, quantise_vertical, LayoutLeaf, LayoutNode, LayoutTabs,
@@ -86,11 +84,6 @@ pub struct BindingHost {
     pub tree: Option<TreeView>,
     pub data_table: Option<DataTable>,
     pub tab_bar: Option<TabBar>,
-    /// Always empty: no binding populates an additive primitive slot
-    /// through this host any more, but [`Self::render_refs`] still needs a
-    /// same-lifetime-as-`self` map to hand [`RenderRefs::extra`] its
-    /// reference.
-    extra: HashMap<String, Rc<dyn ExtraPaint>>,
     /// Set via a binding's own `register_accelerator`/`unregister_accelerator`
     /// surface. Kept here (not just applied directly to the live backend)
     /// so this whole host — moved by value into a real
@@ -268,8 +261,11 @@ impl BindingHost {
     }
 
     /// Borrows this host's six fixed slots as the [`RenderRefs`] shape
-    /// [`crate::render::draw_bands`] paints from. [`RenderRefs::extra`]
-    /// always borrows [`Self::extra`], which this host never populates.
+    /// [`crate::render::draw_bands`] paints from. A host carries no
+    /// additive primitives of its own, so [`RenderRefs::extra`] borrows an
+    /// empty map and nothing paints after the six fixed bands; an additive
+    /// primitive reaches a backend as a layout-tree leaf or through a
+    /// decoded [`crate::render::RenderFrame`] instead.
     pub fn render_refs(&self) -> RenderRefs<'_> {
         RenderRefs {
             button: self.button.as_ref(),
@@ -278,7 +274,7 @@ impl BindingHost {
             tree: self.tree.as_ref(),
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
-            extra: &self.extra,
+            extra: crate::render::no_extras(),
             // `BindingHost`'s slots are set directly from Rust fields, not
             // decoded from a raw dict, so there is no `scroll_px` key to
             // lift out here — a host that wants pixel-precise scrolling
@@ -2401,7 +2397,7 @@ pub struct NativeExitPolicy<A> {
     /// GTK's own `apply_reaction` and `win`'s dispatch/tick already handle
     /// `Reaction::Exit` from any event without this wrapper's help.
     #[cfg(all(feature = "macos", not(feature = "gtk")))]
-    pub exit_requested: Rc<Cell<bool>>,
+    pub exit_requested: std::rc::Rc<Cell<bool>>,
 }
 
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]

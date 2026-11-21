@@ -1,0 +1,100 @@
+//! `BindingHost`'s construction contract, exercised from outside the crate
+//! the way every binding leaf (`quadraui-py`, `quadraui-node`,
+//! `quadraui-ffi`) builds one: a struct literal naming the few fields it
+//! cares about, finished with `..BindingHost::default()`. That functional
+//! record update only compiles while every field of the struct is visible
+//! here, so this test is what keeps the host's fields reachable from a
+//! binding crate rather than only from inside `quadraui-binding-core`.
+//!
+//! Also pins the paint consequence of the host carrying no additive
+//! primitives of its own: the `RenderRefs` it hands `draw_bands` borrows an
+//! empty extras map, so only the fixed bands reach the backend.
+
+use quadraui::tui::testing::TuiDriver;
+use quadraui::{
+    Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Button, InteractionState,
+    KeyBinding, Reaction, StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
+};
+use quadraui_binding_core::{draw_bands, BindingHost};
+
+/// Paints whatever fixed descriptors its host holds, through the exact
+/// `BindingHost::render_refs` -> `draw_bands` path a binding's own
+/// `AppLogic::render` drives.
+struct HostApp {
+    host: BindingHost,
+}
+
+impl AppLogic for HostApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let mut hits = Vec::new();
+        draw_bands(backend, self.host.render_refs(), &mut hits, &|_| {
+            InteractionState::default()
+        });
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+/// A binding builds a host by naming only the fields it populates and
+/// deferring the rest to `Default` — the fixed descriptor slots and the
+/// backend-settings replay store are all reachable from another crate.
+#[test]
+fn a_binding_builds_a_host_by_functional_record_update() {
+    let accelerator = Accelerator {
+        id: AcceleratorId::new("save"),
+        binding: KeyBinding::Save,
+        scope: AcceleratorScope::Global,
+        label: None,
+    };
+    let mut accelerators = std::collections::HashMap::new();
+    accelerators.insert(accelerator.id.clone(), accelerator);
+
+    let host = BindingHost {
+        button: Some(Button::new(WidgetId::new("save"), "Save")),
+        accelerators,
+        ..BindingHost::default()
+    };
+
+    assert!(host.button.is_some());
+    assert_eq!(host.accelerators.len(), 1);
+    assert!(host.list.is_none());
+}
+
+/// The six fixed slots a host does hold paint top-to-bottom, and the extras
+/// map the host contributes is empty, so nothing paints after them.
+#[test]
+fn a_host_paints_its_fixed_slots_and_no_additive_primitives() {
+    let mut status = TextDisplay::new(WidgetId::new("status"));
+    status.append_line(TextDisplayLine {
+        spans: vec![StyledSpan::plain("Ready")],
+        decoration: Default::default(),
+        timestamp: None,
+    });
+
+    let host = BindingHost {
+        button: Some(Button::new(WidgetId::new("save"), "Save")),
+        text_display: Some(status),
+        ..BindingHost::default()
+    };
+    assert!(
+        host.render_refs().extra.is_empty(),
+        "a host carries no additive primitive of its own"
+    );
+
+    let mut driver = TuiDriver::new(HostApp { host }, 24, 8);
+    driver.render();
+    assert!(
+        driver.screen_contains("Save"),
+        "the button band must paint:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Ready"),
+        "the text-display band must paint below it:\n{}",
+        driver.screen()
+    );
+}

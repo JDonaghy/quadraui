@@ -122,6 +122,20 @@ pub struct RenderRefs<'a> {
     pub data_table_scroll_px: Option<f32>,
 }
 
+/// The additive-primitive map a [`RenderRefs`] borrows when its source
+/// carries only the six fixed descriptors — one empty map per thread, so a
+/// caller with nothing to paint after the fixed bands has a map that
+/// outlives any `RenderRefs<'_>` it builds without keeping a permanently
+/// empty field of its own. [`crate::host::BindingHost::render_refs`] is
+/// that caller.
+pub(crate) fn no_extras() -> &'static HashMap<String, Rc<dyn ExtraPaint>> {
+    thread_local! {
+        static NO_EXTRAS: &'static HashMap<String, Rc<dyn ExtraPaint>> =
+            Box::leak(Box::new(HashMap::new()));
+    }
+    NO_EXTRAS.with(|map| *map)
+}
+
 /// Allocates the next `lines`-tall band (scaled by `line_height`),
 /// starting at the mutable cursor `*y` and never exceeding `viewport`'s
 /// remaining height — the sequential top-to-bottom allocation [`draw_bands`]
