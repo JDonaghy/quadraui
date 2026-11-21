@@ -8,22 +8,25 @@
 
 use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
-use crate::shell_adapter::build_shell_adapter;
+use crate::{shell_adapter::build_shell_adapter, RunError};
 
-/// Run a [`ShellApp`] with AppShell chrome on the GTK backend.
+/// Run a [`ShellApp`] with AppShell chrome on the GTK backend, returning
+/// [`RunError::Code`] if the GLib main loop exits non-zero or a headless
+/// `QUADRAUI_GTK_SMOKE_MS` self-check fails — see [`super::run::run_with`]'s
+/// doc for the full contract.
 ///
 /// The GTK window's identity (Wayland `xdg_toplevel.set_app_id`; X11 `WM_CLASS`)
 /// comes from `RunConfig::app_id`, which the window manager uses to match the
 /// live window to an installed `.desktop` file. `config.app_id` / `config.icon_name`
 /// (set via [`ShellConfig::with_app_id`] / [`ShellConfig::with_icon_name`]) reach
 /// the runner via [`RunConfig`]; `config.title` similarly reaches the GTK window.
-pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
+pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Result<(), RunError> {
     let mut run_config = RunConfig::new(config.app_id.clone(), config.title.clone());
     if let Some(icon_name) = config.icon_name.clone() {
         run_config = run_config.with_icon_name(icon_name);
     }
     let adapter = build_shell_adapter(app, config);
-    super::run::run_with(adapter, run_config);
+    super::run::run_with(adapter, run_config)
 }
 
 /// Build a [`ShellApp`] as a [`crate::gtk::run::GtkRunner`] instead of

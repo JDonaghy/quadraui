@@ -23,6 +23,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() -> std::process::ExitCode {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::gtk::run(common::ChatDemo::new())
 }

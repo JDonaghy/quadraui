@@ -10,6 +10,6 @@
 #[path = "common/dialog_table_demo.rs"]
 mod dialog_table_demo;
 
-fn main() -> std::process::ExitCode {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::gtk::run(dialog_table_demo::DialogTableDemo::new())
 }

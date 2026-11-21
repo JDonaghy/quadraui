@@ -28,8 +28,8 @@ fn main() -> Result<(), quadraui::RunError> {
 }
 
 #[cfg(all(feature = "gtk", not(feature = "tui")))]
-fn main() {
-    quadraui::gtk::shell_runner::run_with_shell(app::App::new(), app::App::config());
+fn main() -> Result<(), quadraui::RunError> {
+    quadraui::gtk::shell_runner::run_with_shell(app::App::new(), app::App::config())
 }
 
 #[cfg(all(

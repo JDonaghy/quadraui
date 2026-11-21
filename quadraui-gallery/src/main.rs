@@ -136,13 +136,13 @@ fn main() -> Result<(), quadraui::RunError> {
 }
 
 #[cfg(all(feature = "gtk", not(feature = "tui")))]
-fn main() {
+fn main() -> Result<(), quadraui::RunError> {
     maybe_run_capture();
     maybe_dump_registry();
     quadraui::gtk::shell_runner::run_with_shell(
         quadraui_gallery::GalleryApp::new(),
         quadraui_gallery::GalleryApp::config(),
-    );
+    )
 }
 
 #[cfg(all(
