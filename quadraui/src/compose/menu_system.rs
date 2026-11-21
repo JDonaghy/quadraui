@@ -99,7 +99,11 @@ pub struct MenuDef {
 }
 
 /// What happened after [`MenuSystem::handle`] processed an event.
+///
+/// `#[non_exhaustive]`: a downstream `match` must add a wildcard arm
+/// (`_ => {}`) so a future variant isn't a breaking change on its own.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum MenuEvent {
     /// An action item was activated (clicked or Enter'd).
     Activated(WidgetId),
