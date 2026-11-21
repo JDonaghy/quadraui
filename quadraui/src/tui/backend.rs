@@ -452,6 +452,19 @@ pub struct TuiBackend {
     /// that `&mut dyn CellSurface` borrows from `self` instead of a local.
     /// Its buffer pointer is live only inside [`Self::enter_frame_scope`].
     cell_surface_scratch: Option<super::cell_surface::TuiCellSurface>,
+    /// `(x, y, shape)` from the most recent [`crate::CellSurface::set_cursor`]
+    /// call on the surface [`Self::cell_surface`] hands out this frame.
+    ///
+    /// [`Self::cell_surface`] passes `&mut self.last_cell_surface_cursor`
+    /// into [`super::cell_surface::TuiCellSurface::new`] as its write-back
+    /// sink, the same "buffer-only paint → frame-level side effect" handoff
+    /// `last_cursor_position` uses for `draw_editor`'s caret — see that
+    /// field's own doc. [`Self::take_last_cell_surface_cursor`] consumes it
+    /// once per frame in [`super::run::paint_frame`], which applies the
+    /// position via `Frame::set_cursor_position` and the shape via a
+    /// DECSCUSR write, then [`Self::begin_frame`] clears it so a frame that
+    /// never calls `set_cursor` doesn't inherit a stale value.
+    last_cell_surface_cursor: Option<(u16, u16, crate::CursorShape)>,
 }
 
 /// One cell rect registered via [`TuiBackend::register_opaque_rect`] —
@@ -523,6 +536,7 @@ impl TuiBackend {
             frame_capture: crate::frame::FrameCapture::default(),
             last_screenshot: None,
             cell_surface_scratch: None,
+            last_cell_surface_cursor: None,
         }
     }
 
@@ -918,7 +932,12 @@ impl TuiBackend {
             // The `'static` lifetime here is a fiction — the borrow
             // is actually scoped to the enclosing
             // `enter_frame_scope` call. Methods using this never let
-            // the borrow escape past their own return.
+            // the borrow escape past their own return, with one
+            // exception: `Self::cell_surface` derives a raw `*mut Buffer`
+            // from it and stores that pointer on `self` — see
+            // `super::cell_surface::TuiCellSurface`'s own doc for why that
+            // is still sound (the pointer's validity window matches this
+            // one exactly, it is just type-erased, not lifetime-extended).
             Some(unsafe { &mut *(ptr as *mut Frame<'static>) })
         }
     }
@@ -1260,6 +1279,44 @@ impl TuiBackend {
     /// on the value surviving past this one read.
     pub(crate) fn take_last_cursor_position(&mut self) -> Option<(u16, u16)> {
         self.last_cursor_position.take()
+    }
+
+    /// Take the `(x, y, shape)` cached by the most recent
+    /// [`crate::CellSurface::set_cursor`] call this frame, leaving `None`
+    /// behind.
+    ///
+    /// Called by [`super::run::paint_frame`] once per frame, after the
+    /// editor-cursor handoff [`Self::take_last_cursor_position`] already
+    /// consumes — same "take, not a plain getter" reasoning: the value is
+    /// frame-scoped, cleared again by [`Self::begin_frame`] before the next
+    /// `set_cursor` call, so nothing relies on it surviving past this read.
+    pub(crate) fn take_last_cell_surface_cursor(
+        &mut self,
+    ) -> Option<(u16, u16, crate::CursorShape)> {
+        self.last_cell_surface_cursor.take()
+    }
+
+    /// Apply the `(x, y, shape)` [`Self::take_last_cell_surface_cursor`]
+    /// returns, if any: moves the terminal cursor via
+    /// `frame.set_cursor_position` — the same call
+    /// [`super::run::paint_frame`] makes for `draw_editor`'s cached
+    /// position, run right after it — and steers its hardware shape via
+    /// the same best-effort DECSCUSR write [`Backend::set_caret_shape`]
+    /// uses. A no-op when nothing called [`crate::CellSurface::set_cursor`]
+    /// this frame.
+    pub(crate) fn apply_last_cell_surface_cursor(&mut self, frame: &mut Frame<'_>) {
+        let Some((x, y, shape)) = self.take_last_cell_surface_cursor() else {
+            return;
+        };
+        frame.set_cursor_position((x, y));
+        use ratatui::crossterm::cursor::SetCursorStyle;
+        use ratatui::crossterm::execute;
+        let style = match shape {
+            crate::CursorShape::Block => SetCursorStyle::SteadyBlock,
+            crate::CursorShape::Bar => SetCursorStyle::SteadyBar,
+            crate::CursorShape::Underline => SetCursorStyle::SteadyUnderScore,
+        };
+        let _ = execute!(std::io::stdout(), style);
     }
 
     /// Set the active selection to cover the entire visible content of the
@@ -2342,6 +2399,18 @@ impl Backend for TuiBackend {
         // this a frame that stops painting an editor (e.g. it's hidden)
         // would keep showing the terminal cursor at the last-known spot.
         self.last_cursor_position = None;
+        // Clear the cached cell-surface cursor for the same reason — a
+        // frame that stops calling `CellSurface::set_cursor` must stop
+        // showing the terminal cursor at the last-known spot. Also clears
+        // the scratch `TuiCellSurface` the previous frame's `cell_surface()`
+        // calls left behind; its buffer pointer is only valid inside the
+        // `enter_frame_scope` call that produced it, so letting it dangle
+        // until the next `cell_surface()` call overwrote it (rather than
+        // clearing it here) left the one per-frame field without the
+        // "cleared at frame start" invariant every other field on this
+        // list documents.
+        self.last_cell_surface_cursor = None;
+        self.cell_surface_scratch = None;
         // Clear per-frame tab-bar layout cache for the same reason as
         // `zones` — a bar that stops painting must stop resolving
         // `tab_center`/`tab_close_center` too.
@@ -2809,8 +2878,17 @@ impl Backend for TuiBackend {
     /// [`crate::primitive::Primitive::paint`] on a pixel backend.
     fn cell_surface(&mut self) -> Option<&mut dyn crate::CellSurface> {
         let depth = self.color_depth;
+        // Take this as a raw pointer *before* `current_frame_mut` borrows
+        // `self` again below — two `&mut self.<field>` borrows in the same
+        // expression would conflict even though the fields are disjoint,
+        // since `current_frame_mut`'s return value keeps the first one
+        // alive for the compiler's purposes. See
+        // `TuiCellSurface::new`'s doc for why the parameter itself is a
+        // raw pointer.
+        let cursor_sink: *mut Option<(u16, u16, crate::CursorShape)> =
+            &mut self.last_cell_surface_cursor;
         let buf = self.current_frame_mut()?.buffer_mut();
-        let surface = super::cell_surface::TuiCellSurface::new(buf, depth);
+        let surface = super::cell_surface::TuiCellSurface::new(buf, depth, cursor_sink);
         Some(self.cell_surface_scratch.insert(surface))
     }
 
