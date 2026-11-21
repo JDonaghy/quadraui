@@ -460,9 +460,9 @@ impl crate::a11y::A11yPrimitive for IconGrid {
 // ── GUI paint: centred icon + label tile ────────────────────────────
 
 /// Default tile size derived from a [`crate::primitive::LayoutCtx`] when
-/// [`IconGrid::tile_size`] is `None`. TUI (`ctx.line_height <= 1.0`)
-/// gets a cell-quantised size; every pixel backend gets a size scaled
-/// off its own chrome metrics.
+/// [`IconGrid::tile_size`] is `None`. TUI (`ctx.units() ==`
+/// [`crate::primitive::Units::Cells`]) gets a cell-quantised size; every
+/// pixel backend gets a size scaled off its own chrome metrics.
 ///
 /// Gated on the same feature set as the
 /// [`crate::primitive::Primitive`] impl below, its only caller: a
@@ -475,7 +475,7 @@ impl crate::a11y::A11yPrimitive for IconGrid {
     all(feature = "macos", target_os = "macos")
 ))]
 fn default_tile_size(ctx: &crate::primitive::LayoutCtx) -> (f32, f32) {
-    if ctx.line_height <= 1.0 {
+    if ctx.units() == crate::primitive::Units::Cells {
         // TUI: 12 cells wide (enough for a short filename plus margin),
         // 2 cells tall (icon row + label row) — `Primitive::paint_cells`
         // falls back to a 1-row tile when the rect itself is too short
@@ -522,10 +522,11 @@ pub(crate) mod native_surface_paint {
     /// `hovered_idx` — index into `grid.items` to tint via
     /// [`Theme::list_hover_bg`], mirroring
     /// [`crate::primitives::list::native_surface_paint::paint`]'s own
-    /// `hovered_idx` parameter: `None` from every caller today (`IconGrid`
-    /// has no dedicated `Backend::draw_icon_grid` method with its own
-    /// mouse-hover tracking to source a real index from — see this
-    /// module's own doc, "No new Backend methods"), reserved for a
+    /// `hovered_idx` parameter: always `None` from [`Primitive::paint`]'s
+    /// call site below, sourced from a bare [`IconGridPaintState::default`]
+    /// (`IconGrid` has no dedicated `Backend::draw_icon_grid` method with
+    /// its own mouse-hover tracking to populate that state with — see
+    /// this module's own doc, "No new Backend methods"), reserved for a
     /// future caller that does.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
@@ -581,6 +582,21 @@ pub(crate) mod native_surface_paint {
 }
 
 // ── `crate::primitive::Primitive` impl ──────────────────────────────
+
+/// Per-frame paint-time state for an [`IconGrid`] — hover tile tracking,
+/// the same concept [`crate::primitives::list::ListPaintState`]/
+/// [`crate::primitives::tree::TreePaintState`]/
+/// [`crate::primitives::data_table::DataTablePaintState`] name for their
+/// own row index, applied to a flat tile index instead. Field-identical
+/// to those three, so it is another alias of the shared
+/// [`crate::primitives::row_stack::RowPaintState`] rather than a new
+/// type — see that type's doc for the full rationale.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) type IconGridPaintState = crate::primitives::row_stack::RowPaintState;
 
 /// [`crate::primitive::Primitive::Layout`] for [`IconGrid`] — the
 /// grid-local [`IconGridLayout`] paired with the absolute area it was
@@ -647,7 +663,7 @@ impl crate::primitive::Primitive for IconGrid {
         }
 
         #[cfg(feature = "tui")]
-        if ctx.line_height <= 1.0 {
+        if ctx.units() == crate::primitive::Units::Cells {
             // Same "fall back to a 1-row tile" rule
             // `Self::paint_cells` applies when painting — kept here too
             // so layout and paint never disagree on tile height. See
@@ -684,6 +700,14 @@ impl crate::primitive::Primitive for IconGrid {
             all(feature = "macos", target_os = "macos")
         ))]
         {
+            // No per-call interaction-state channel reaches this far —
+            // `Primitive::paint`'s fixed signature carries none (see
+            // that trait's own doc) — so `native_surface_paint::paint`
+            // is handed the "no such state" default every `PaintState`
+            // method already falls back to, read through the trait
+            // instead of an inline `None` literal.
+            use crate::primitive::PaintState;
+            let paint_state = IconGridPaintState::default();
             native_surface_paint::paint(
                 self,
                 layout.area,
@@ -692,7 +716,7 @@ impl crate::primitive::Primitive for IconGrid {
                 surface,
                 theme,
                 style,
-                /* hovered_idx */ None,
+                paint_state.hovered_idx(),
             );
         }
         // A `tui`-only build has no `PaintSurface` to paint into at all
