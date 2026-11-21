@@ -2297,25 +2297,22 @@ fn window_title(config: &RunConfig) -> String {
     config.title.clone()
 }
 
-/// The `NSWindow` style mask [`run_with`]'s window-creation call site
-/// applies — pulled out for the same off-main-thread testability reason as
-/// [`window_title`]: `NSWindowStyleMask` is a plain
-/// `NSUInteger` bitflags wrapper (see its `objc2_app_kit` definition), so
-/// comparing bit patterns needs no live `NSApplication`, unlike window
-/// *construction* itself.
+/// The `NSWindow` style mask [`run_with`]'s window-creation call site applies —
+/// pulled out for the same off-main-thread testability reason as
+/// [`window_title`]: `NSWindowStyleMask` is a plain `NSUInteger` bitflags
+/// wrapper (see its `objc2_app_kit` definition), so comparing bit patterns needs
+/// no live `NSApplication`, unlike window *construction* itself.
 ///
-/// `config.client_side_titlebar` unset (the default) reproduces the exact
-/// mask this call site hardcoded before #947 — a regression guard for
-/// every existing consumer. Set, it additionally carries
-/// `FullSizeContentView`: the content view then extends under the full
-/// titlebar region while the native traffic lights float on top of it, per
-/// #947's "keep the native controls, don't emulate GTK's undecorated
-/// model" design. [`run_with`]'s call site pairs this with
-/// `setTitlebarAppearsTransparent(true)` + `NSWindowTitleVisibility::Hidden`
-/// to complete the look — those two aren't part of the style mask itself,
-/// so they can't be covered by this pure function; they're exercised by
-/// the same operator-run smoke tier as the rest of live AppKit window
-/// creation (see [`window_title`]'s doc).
+/// `config.client_side_titlebar` unset (the default) yields the plain
+/// titled/closable/resizable/miniaturizable mask. Set, it additionally carries
+/// `FullSizeContentView`: the content view extends under the full titlebar
+/// region while the native traffic lights float on top of it, keeping the native
+/// controls rather than emulating GTK's undecorated model. [`run_with`]'s call
+/// site pairs this with `setTitlebarAppearsTransparent(true)` +
+/// `NSWindowTitleVisibility::Hidden` to complete the look — neither is part of
+/// the mask, so this pure function can't cover them; they're exercised by the
+/// same operator-run smoke tier as the rest of live AppKit window creation (see
+/// [`window_title`]'s doc).
 fn window_style_mask(config: &RunConfig) -> NSWindowStyleMask {
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::Closable
@@ -2328,10 +2325,9 @@ fn window_style_mask(config: &RunConfig) -> NSWindowStyleMask {
     }
 }
 
-/// Open an AppKit window, install a [`MacBackend`], and drive `app`
-/// against it, using the default [`RunConfig`] (a generic window title).
-/// See [`run_with`] to set a custom title — needed by any
-/// app that isn't quadraui itself. Returns when the user closes the
+/// Open an AppKit window, install a [`MacBackend`], and drive `app` against it
+/// with the default [`RunConfig`] — a generic window title, so any app but
+/// quadraui itself wants [`run_with`] instead. Returns when the user closes the
 /// window (red traffic-light) or `app.handle` returns [`Reaction::Exit`].
 ///
 /// **Must be called from the main thread** — enforced by the
@@ -2366,16 +2362,12 @@ pub fn run<A: AppLogic + 'static>(app: A) -> Result<(), RunError> {
 /// **Must be called from the main thread** — enforced by the
 /// [`MainThreadMarker::new`] check at entry.
 ///
-/// Returns `Result<(), RunError>` mirroring `tui::run`/`gtk::run`'s shape,
-/// but today always resolves `Ok(())`: unlike GLib's `Application::run`
-/// (which hands `gtk::run_with` a real exit code — see [`RunError::Code`]'s
-/// doc), `NSApplication::run()` returns no status at all, and this backend
-/// has no headless self-check mechanism analogous to GTK's
-/// `QUADRAUI_GTK_SMOKE_MS` to fold into one. The `Result` shape is kept
-/// anyway for call-site parity across backends and so a future failure
-/// mode (a native window/dialog call failing during `bootstrap`, surfaced
-/// as [`RunError::Backend`]) has somewhere to land without another
-/// breaking signature change.
+/// Returns `Result<(), RunError>` for call-site parity with `tui::run` /
+/// `gtk::run`, and always resolves `Ok(())`: `NSApplication::run()` reports no
+/// status at all (unlike GLib's `Application::run`, which feeds `gtk::run_with`
+/// the [`RunError::Code`] it returns), and there is no headless self-check like
+/// `QUADRAUI_GTK_SMOKE_MS` to fold in. The shape gives a future native-call
+/// failure in [`bootstrap`] somewhere to land, as [`RunError::Backend`].
 pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Result<(), RunError> {
     let mtm =
         MainThreadMarker::new().expect("quadraui::macos::run must be called from the main thread");
