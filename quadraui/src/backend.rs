@@ -4707,7 +4707,28 @@ pub trait DrawsPrimitives: Backend {
     /// [`Backend::nerd_fonts_enabled`] — the same chrome-oriented
     /// metrics [`Backend::draw_list`]'s own backend wrappers resolve
     /// before calling into
-    /// [`crate::primitives::list::native_surface_paint::paint`].
+    /// [`crate::primitives::list::native_surface_paint::paint`] — with
+    /// `line_height` additionally floored at the active
+    /// [`crate::Style::row_height`] token via
+    /// [`crate::primitive::LayoutCtx::resolve_row_height`], the same
+    /// resolution every bespoke `draw_list`/`draw_tree`/`draw_data_table`
+    /// path already applies through its own private `resolved_row_height`
+    /// helper, so a `Primitive`'s `layout()` never under-sizes a row
+    /// against a chrome font taller than that token.
+    ///
+    /// On the [`Backend::paint_surface`] path, paints inside a
+    /// [`PaintSurface::surface_push_clip`]/[`PaintSurface::surface_pop_clip`]
+    /// pair scoped to `rect`, matching every bespoke `draw_*` rasteriser's
+    /// own convention of clipping a primitive's paint to the area it was
+    /// asked to fill — a `Primitive::paint` impl that draws wider than
+    /// `layout.area` (e.g. an unclamped text run) is clipped rather than
+    /// bleeding into whatever paints next. On the
+    /// [`Backend::cell_surface`] path, a `Some` cell surface whose
+    /// [`crate::CellSurface::ratatui_buffer`] answers `None` is a
+    /// programmer error — calling this outside a frame scope — and is
+    /// reported with an `expect` panic rather than silently skipping
+    /// [`Primitive::paint_cells`], mirroring every `TuiBackend::draw_*`
+    /// method's own "called outside enter_frame_scope" panic.
     ///
     /// ```ignore
     /// // `MyBackend` implements `Backend` (sealed — in-crate only, so
@@ -4718,23 +4739,31 @@ pub trait DrawsPrimitives: Backend {
     /// if layout.hit_test(click_x, click_y) { /* ... */ }
     /// ```
     fn draw_primitive<P: Primitive>(&mut self, rect: Rect, primitive: &P) -> P::Layout {
+        let style = self.style();
         let ctx = LayoutCtx {
-            line_height: self.chrome_line_height(),
+            line_height: LayoutCtx::resolve_row_height(self.chrome_line_height(), &style),
             char_width: self.char_width(),
             nerd_fonts_enabled: self.nerd_fonts_enabled(),
         };
         let layout = primitive.layout(&ctx, rect);
         let theme = self.theme();
-        let style = self.style();
+        let services = crate::primitive::PaintServices {
+            theme: &theme,
+            style: &style,
+        };
         if let Some(surface) = self.paint_surface() {
-            primitive.paint(&layout, surface, &theme, &style);
+            surface.surface_push_clip(rect);
+            primitive.paint(&layout, surface, services.theme, services.style);
+            surface.surface_pop_clip();
         }
         #[cfg(feature = "tui")]
-        if let Some(buf) = self
-            .cell_surface()
-            .and_then(crate::CellSurface::ratatui_buffer)
-        {
-            primitive.paint_cells(&layout, buf, &theme);
+        if let Some(cell_surface) = self.cell_surface() {
+            let buf = cell_surface.ratatui_buffer().expect(
+                "Backend::cell_surface answered Some but CellSurface::ratatui_buffer \
+                 answered None — DrawsPrimitives::draw_primitive must run inside a frame \
+                 scope (TuiBackend::enter_frame_scope)",
+            );
+            primitive.paint_cells(&layout, buf, services.theme);
         }
         layout
     }
