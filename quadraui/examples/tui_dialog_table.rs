@@ -10,6 +10,6 @@
 #[path = "common/dialog_table_demo.rs"]
 mod dialog_table_demo;
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::tui::run(dialog_table_demo::DialogTableDemo::new())
 }

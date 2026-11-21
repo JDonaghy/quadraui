@@ -13,6 +13,6 @@
 #[path = "common/form_dialog_demo.rs"]
 mod form_dialog_demo;
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::tui::run(form_dialog_demo::FormDialogApp::new())
 }

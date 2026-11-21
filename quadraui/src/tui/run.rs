@@ -56,6 +56,7 @@ use crate::backend::Backend;
 use crate::control::{self, ControlHandle, ControlPort};
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
+use crate::RunError;
 // Re-exported (not just imported) so `tui::testing` — and any other
 // in-crate caller that historically reached `EventOutcome` through this
 // module — keeps working unchanged after the type moved to
@@ -138,8 +139,8 @@ impl RunConfig {
 /// that takes an explicit config, e.g. to opt into `no-mouse` mode.
 ///
 /// Returns `Ok(())` on graceful exit (the app returned
-/// [`Reaction::Exit`] from its `handle` method), or an
-/// [`io::Error`] from terminal setup / tear-down. Panics inside the
+/// [`Reaction::Exit`] from its `handle` method), or a
+/// [`RunError::Io`] from terminal setup / tear-down. Panics inside the
 /// app propagate after the runner restores the terminal so the user
 /// doesn't end up with a broken terminal state.
 ///
@@ -150,7 +151,7 @@ impl RunConfig {
 /// Apps with multiple independently-drawn surfaces (vimcode's
 /// per-DrawingArea GTK model) are out of scope today; the
 /// single-frame model covers most TUI apps cleanly.
-pub fn run<A: AppLogic>(app: A) -> io::Result<()> {
+pub fn run<A: AppLogic>(app: A) -> Result<(), RunError> {
     run_with(app, RunConfig::default())
 }
 
@@ -159,7 +160,7 @@ pub fn run<A: AppLogic>(app: A) -> io::Result<()> {
 /// `examples/tui_no_mouse.rs` for a runnable demo and
 /// `tests/tui_pty_smoke.rs`'s `no_mouse` module for the black-box proof
 /// that mouse capture is actually withheld over a real pty.
-pub fn run_with<A: AppLogic>(app: A, config: RunConfig) -> io::Result<()> {
+pub fn run_with<A: AppLogic>(app: A, config: RunConfig) -> Result<(), RunError> {
     let mut runner = TuiRunner::new_with(app, config)?;
 
     // Run the app inside `catch_unwind` so a panic in app code doesn't
@@ -171,7 +172,7 @@ pub fn run_with<A: AppLogic>(app: A, config: RunConfig) -> io::Result<()> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
         match runner.pump(POLL_TIMEOUT_CEILING)? {
             StepOutcome::Continue => {}
-            StepOutcome::Exited => return Ok(()),
+            StepOutcome::Exited => return io::Result::Ok(()),
         }
     }));
 
@@ -182,7 +183,7 @@ pub fn run_with<A: AppLogic>(app: A, config: RunConfig) -> io::Result<()> {
     runner.finish();
 
     match result {
-        Ok(io_result) => io_result,
+        Ok(io_result) => io_result.map_err(RunError::from),
         Err(payload) => std::panic::resume_unwind(payload),
     }
 }

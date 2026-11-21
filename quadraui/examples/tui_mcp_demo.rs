@@ -305,7 +305,7 @@ fn mcp_transport() -> quadraui_mcp::Transport {
     }
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), quadraui::RunError> {
     // Computed and printed before `TuiRunner::new`, which immediately
     // enables raw mode and enters the alternate screen — anything
     // written after that point lands on the alternate screen instead of

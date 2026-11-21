@@ -25,6 +25,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::tui::run(common::FolderPickerApp::new())
 }

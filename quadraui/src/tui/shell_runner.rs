@@ -8,11 +8,12 @@
 
 use crate::shell::{ShellApp, ShellConfig};
 use crate::shell_adapter::build_shell_adapter;
+use crate::RunError;
 
 /// Run a [`ShellApp`] with AppShell chrome on the TUI backend.
-pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
+pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Result<(), RunError> {
     let adapter = build_shell_adapter(app, config);
-    let _ = super::run::run(adapter);
+    super::run::run(adapter)
 }
 
 /// Build a [`ShellApp`] as a [`crate::tui::run::TuiRunner`] instead of

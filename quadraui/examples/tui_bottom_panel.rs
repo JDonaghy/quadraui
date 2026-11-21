@@ -12,8 +12,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() {
+fn main() -> Result<(), quadraui::RunError> {
     let app = common::bottom_panel_demo::BottomPanelDemo::new();
     let config = common::bottom_panel_demo::BottomPanelDemo::config();
-    quadraui::tui::shell_runner::run_with_shell(app, config);
+    quadraui::tui::shell_runner::run_with_shell(app, config)
 }

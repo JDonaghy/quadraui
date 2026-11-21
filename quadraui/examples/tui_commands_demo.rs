@@ -171,7 +171,7 @@ impl quadraui::AppLogic for CommandsDemo {
     }
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), quadraui::RunError> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("--json") {
         std::process::exit(quadraui::control::cli::run(

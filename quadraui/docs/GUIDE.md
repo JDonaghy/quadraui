@@ -236,7 +236,7 @@ Two things worth calling out:
 ## Step 4: running it
 
 ```rust,ignore
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::tui::run(TwoPane::new())
 }
 ```
