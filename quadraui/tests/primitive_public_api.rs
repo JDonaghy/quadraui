@@ -22,7 +22,7 @@
 //!    [`quadraui::primitive::Primitive::paint_cells`] override), so a host
 //!    can hit-test against geometry it cannot paint.
 //! 4. On TUI, a `Primitive` impl that *does* override `paint_cells` gets
-//!    painted too, through [`quadraui::Backend::cell_buffer`] — the same
+//!    painted too, through [`quadraui::Backend::cell_surface`] — the same
 //!    `&mut dyn Backend` seam, not a concrete `&mut TuiBackend`.
 //!
 //! `Swatch::paint` records its call rather than issuing a paint verb: a live
@@ -187,8 +187,7 @@ impl Primitive for CellSwatch {
 /// [`CellSwatch::paint_cells`] must run when `draw_primitive` is called
 /// through `&mut dyn Backend` against a real `TuiBackend` — the shape
 /// every `compose::*` controller's `render` is handed
-/// ([`Backend::cell_buffer`] is what makes this reachable; before it
-/// existed, this path painted nothing — see issue #2647).
+/// ([`Backend::cell_surface`] is what makes this reachable).
 #[cfg(feature = "tui")]
 #[test]
 fn tui_draw_primitive_paints_cells_through_dyn_backend() {

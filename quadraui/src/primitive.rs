@@ -193,7 +193,7 @@ pub trait Primitive: A11yPrimitive {
     /// Paint `layout` onto a TUI cell buffer —
     /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s default body
     /// calls this instead of [`Self::paint`] whenever
-    /// [`crate::backend::Backend::cell_buffer`] answers `Some`
+    /// [`crate::backend::Backend::cell_surface`] answers `Some`
     /// (`TuiBackend`'s case), since TUI has no [`PaintSurface`] to hand
     /// it (see that trait's module doc, "Why TUI stays out").
     ///

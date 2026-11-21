@@ -699,7 +699,7 @@ impl crate::primitive::Primitive for IconGrid {
         // — `self` reaching the screen on TUI goes through
         // `Self::paint_cells` instead, which `DrawsPrimitives::
         // draw_primitive`'s default body calls in place of this method
-        // whenever `Backend::cell_buffer` answers `Some`.
+        // whenever `Backend::cell_surface` answers `Some`.
         #[cfg(not(any(
             feature = "gtk",
             feature = "win",

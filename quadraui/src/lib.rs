@@ -449,6 +449,15 @@ pub mod run_error;
 // way it did back when this was `pub(crate)`.
 pub mod paint_surface;
 
+// ── CellSurface ─────────────────────────────────────────────────────────
+// `PaintSurface`'s cell-grid counterpart — the ~9-verb drawing seam
+// underneath the TUI backend, formalising the informal `set_cell`/
+// `set_cell_wide`/`draw_styled_text` API `tui/mod.rs` already has.
+// Compiled unconditionally, same rationale as `paint_surface` above:
+// every type it trades in is already feature-independent, and only its
+// one `ratatui`-naming method is gated on `feature = "tui"`.
+pub mod cell_surface;
+
 // ── Primitive ──────────────────────────────────────────────────────────────
 // The `Primitive` trait — one `layout()` + `paint()` pair a widget outside
 // this crate implements to compose with every `PaintSurface` backend through
@@ -826,6 +835,12 @@ pub use frame::{
     ScreenLayout, Surface,
 };
 pub use paint_surface::{PaintSurface, PathVerb};
+// `PaintSurface`'s cell-grid counterpart — see `cell_surface`'s module doc.
+// `CellStyle` is aliased the same way `primitives::editor`'s own
+// `CursorShape`/`CursorPos` are above (`EditorCursorShape`,
+// `EditorCursorPos`): `primitives::cell_grid` already has an unrelated,
+// unaliased `CellStyle` (spreadsheet-cell formatting) at this crate root.
+pub use cell_surface::{BorderSet, CellStyle as CellSurfaceStyle, CellSurface, CursorShape};
 // The `Primitive` trait — see that module's doc.
 pub use primitive::{LayoutCtx, Primitive};
 // `InteractionState` — a single hover/pressed store keyed by `WidgetId`,
