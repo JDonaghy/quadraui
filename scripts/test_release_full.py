@@ -513,6 +513,41 @@ class CheckTimeoutTests(unittest.TestCase):
         self.assertIn("--check-timeout", result.stdout)
 
 
+class WithPyFlagTests(unittest.TestCase):
+    """`release_full.py` must carry `quadraui-py` along by default --
+    `release_decide.py check-binding-versions` requires its minor to track
+    the crate's on every promotion -- and still allow a crate-only release
+    via `--no-with-py`."""
+
+    def test_default_is_with_py(self):
+        self.assertTrue(release_full.WITH_PY)
+
+    def test_prepare_cmd_includes_with_py_by_default(self):
+        orig = release_full.WITH_PY
+        try:
+            release_full.WITH_PY = True
+            self.assertIn("--with-py", release_full.release_py_prepare_cmd("0.2.0"))
+        finally:
+            release_full.WITH_PY = orig
+
+    def test_prepare_cmd_omits_with_py_when_disabled(self):
+        orig = release_full.WITH_PY
+        try:
+            release_full.WITH_PY = False
+            self.assertNotIn("--with-py", release_full.release_py_prepare_cmd("0.2.0"))
+        finally:
+            release_full.WITH_PY = orig
+
+    def test_no_with_py_cli_flag_is_documented(self):
+        result = subprocess.run(
+            [sys.executable, str(Path(release_full.__file__)), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--no-with-py", result.stdout)
+
+
 GATE_RE = re.compile(
     r"needs:\s*bump-shape\b.*?if:\s*\$\{\{\s*!cancelled\(\)\s*&&[^}]*"
     r"needs\.bump-shape\.outputs\.is_bump\s*!=\s*'true'",

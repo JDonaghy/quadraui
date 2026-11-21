@@ -9,13 +9,21 @@ readme = "../README.md"
 keywords = ["mcp", "tui", "accessibility", "agent"]
 categories = ["gui", "command-line-interface"]
 rust-version = "1.92.0"
+# Not published to crates.io: it's a workspace-internal MCP server, not a
+# library consumers depend on. `publish = false` keeps it out of
+# `scripts/release.py`/`release.yml`'s crate publish step, and means its
+# `quadraui` path dependency below carries no `version` requirement — a
+# pinned requirement on an unpublished crate only risks a workspace member
+# whose semver req falls behind the next `quadraui` version bump, breaking
+# `cargo update -p quadraui` for the whole workspace.
+publish = false
 
 [dependencies]
 # `control` is the only `quadraui` feature this crate needs: the control
 # channel is backend-neutral (built on `std::sync::mpsc` plus
 # `Backend::waker`), so this crate never has to know which backend —
 # TUI, GTK, macOS, Windows — produced the `ControlHandle` it was handed.
-quadraui = { path = "../quadraui", version = "0.11.0", features = ["control"] }
+quadraui = { path = "../quadraui", features = ["control"] }
 # JSON-RPC 2.0 envelopes and MCP tool schemas/results. No MCP SDK crate:
 # the handshake this module implements (`initialize` / `tools/list` /
 # `tools/call`, four tools) is a few dozen lines of JSON over a

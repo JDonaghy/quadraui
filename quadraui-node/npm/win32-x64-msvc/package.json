@@ -6,10 +6,20 @@
   ],
   "main": "quadraui-node.win32-x64-msvc.node",
   "files": [
-    "quadraui-node.win32-x64-msvc.node"
+    "quadraui-node.win32-x64-msvc.node",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "description": "napi-rs bindings: insert quadraui descriptors from JavaScript/TypeScript and render them headlessly.",
   "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JDonaghy/quadraui.git",
+    "directory": "quadraui-node/npm/win32-x64-msvc"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "publishConfig": {
     "access": "public"
   },

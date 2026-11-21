@@ -9,11 +9,16 @@ Usage:
 
     python3 scripts/release_full.py 0.2.1
     python3 scripts/release_full.py 0.2.1 --yes   # non-interactive
+    python3 scripts/release_full.py 0.2.1 --no-with-py   # crate-only bump
 
 Phases:
 
   1. Preflight  — repo clean, on develop, version valid, changelog non-empty
-  2. Prepare    — `release.py prepare` (branch, bump, changelog, commit)
+  2. Prepare    — `release.py prepare` (branch, bump, changelog, commit).
+                   Passes `--with-py` by default, so `quadraui-py` bumps in
+                   lockstep and `release_decide.py check-binding-versions`
+                   passes on the promotion PR below; `--no-with-py` opts a
+                   crate-only release out.
   3. Bump PR    — push branch, create PR to develop, wait for merge
   4. Promote    — develop → main PR (merge commit), wait for merge
   5. Publish    — wait for CI to publish to crates.io + push the tag
@@ -37,6 +42,17 @@ RED = "\033[31m"
 RESET = "\033[0m"
 
 AUTO_YES = False
+
+# `release_decide.py check-binding-versions` requires `quadraui-py`'s minor
+# to track `quadraui`'s on every `develop` -> `main` promotion (unconditional
+# -- see `release.py`'s own module docstring), so a bump that goes through
+# `release_full.py` must carry `quadraui-py` along in the same `prepare`
+# commit by default, the same as a hand-run `release.py prepare --with-py`.
+# `--no-with-py` opts a crate-only release out for the rare case
+# `quadraui-py` is deliberately staying behind (its own minor already
+# matches, or the wheel isn't ready yet) and a human will reconcile the
+# binding version separately before promoting.
+WITH_PY = True
 
 # `wait_for_checks`'s default poll timeout (seconds). The quadraui CI matrix
 # (cargo-semver-checks + win + macos + gallery) routinely runs past the old
@@ -482,6 +498,16 @@ def find_and_checkout_bumped_release_branch(version: str) -> bool:
     return False
 
 
+def release_py_prepare_cmd(version: str) -> list[str]:
+    """The `scripts/release.py prepare` command `prepare` below shells out
+    to, including `--with-py` when the global `WITH_PY` flag (default on,
+    `--no-with-py` opts out) is set."""
+    cmd = [sys.executable, "scripts/release.py", "prepare", version]
+    if WITH_PY:
+        cmd.append("--with-py")
+    return cmd
+
+
 def prepare(version: str) -> None:
     banner("2/5", f"Prepare release branch for {version}")
 
@@ -520,8 +546,7 @@ def prepare(version: str) -> None:
             fail("tracked files are dirty — commit or stash first")
 
     result = subprocess.run(
-        [sys.executable, "scripts/release.py", "prepare", version],
-        cwd=REPO_DIR, text=True,
+        release_py_prepare_cmd(version), cwd=REPO_DIR, text=True,
     )
 
     if stashed:
@@ -649,7 +674,7 @@ def publish(version: str) -> None:
 
 
 def main() -> None:
-    global AUTO_YES, CHECK_TIMEOUT
+    global AUTO_YES, CHECK_TIMEOUT, WITH_PY
     parser = argparse.ArgumentParser(
         description="End-to-end quadraui release.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -660,12 +685,22 @@ def main() -> None:
     parser.add_argument("--check-timeout", type=int, default=CHECK_TIMEOUT,
                         help="seconds to wait for a PR's CI checks before "
                              f"giving up (default: {CHECK_TIMEOUT})")
+    parser.add_argument("--no-with-py", dest="with_py", action="store_false",
+                        default=True,
+                        help="don't bump quadraui-py alongside the crate "
+                             "(default: bump it, matching `release.py "
+                             "prepare --with-py`, so "
+                             "`release_decide.py check-binding-versions` "
+                             "passes on the promotion PR). Pass this only "
+                             "when quadraui-py's minor already matches the "
+                             "target and this release is crate-only.")
     args = parser.parse_args()
 
     if args.yes:
         AUTO_YES = True
 
     CHECK_TIMEOUT = args.check_timeout
+    WITH_PY = args.with_py
 
     # Add scripts/ to sys.path so we can import release.py helpers
     sys.path.insert(0, str(REPO_DIR / "scripts"))
