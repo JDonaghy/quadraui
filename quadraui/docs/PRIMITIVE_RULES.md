@@ -124,7 +124,8 @@ method). This is the "what ships in the PR", in order:
    implementation today (`Backend::paint_surface` answers `None` on
    `TuiBackend`), so `draw_primitive`'s default `paint()` path never
    reaches a terminal. Override `Primitive::paint_cells` to paint into
-   the `ratatui::buffer::Buffer` `Backend::cell_buffer` hands back —
+   the `ratatui::buffer::Buffer` the `CellSurface` `Backend::cell_surface`
+   hands back exposes via `CellSurface::ratatui_buffer` —
    see `quadraui/tests/primitive_public_api.rs`'s `CellSwatch` for the
    worked example. Skipping this is a *Cross-backend portability
    commitment* violation ("TUI is a first-class backend") the same way
