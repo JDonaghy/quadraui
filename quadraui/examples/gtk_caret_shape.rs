@@ -11,6 +11,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() {
-    quadraui::gtk::run(common::caret_shape_demo::CaretShapeDemo::new());
+fn main() -> Result<(), quadraui::RunError> {
+    quadraui::gtk::run(common::caret_shape_demo::CaretShapeDemo::new())
 }

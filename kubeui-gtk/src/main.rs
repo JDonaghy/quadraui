@@ -15,5 +15,8 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    quadraui::gtk::run(app)
+    match quadraui::gtk::run(app) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => std::process::Termination::report(err),
+    }
 }

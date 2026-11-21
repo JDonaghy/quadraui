@@ -11,8 +11,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() {
+fn main() -> Result<(), quadraui::RunError> {
     let app = common::help_layer_demo::HelpLayerDemo::new();
     let config = common::help_layer_demo::HelpLayerDemo::config();
-    quadraui::gtk::shell_runner::run_with_shell(app, config);
+    quadraui::gtk::shell_runner::run_with_shell(app, config)
 }

@@ -71,8 +71,8 @@
 //!   operator-run wrapper uses Xvfb.
 //!
 //! Any assertion failure is printed to stderr and flips [`run`]'s return
-//! value to [`std::process::ExitCode::FAILURE`], overriding GLib's own
-//! exit code — see the end of [`run`]. Disabled (zero runtime cost)
+//! value to `Err(RunError::Code(..))`, overriding GLib's own exit code —
+//! see the end of [`run`]. Disabled (zero runtime cost)
 //! unless `QUADRAUI_GTK_SMOKE_MS` is set, so ordinary interactive
 //! launches are unaffected.
 //!
@@ -169,7 +169,7 @@ use crate::runtime::{self, ReactionSink, RESIZE_SETTLE};
 // module — keeps working unchanged after the type moved to
 // `crate::runtime`.
 pub(crate) use crate::runtime::EventOutcome;
-use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, SystemTheme, UiEvent};
+use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, RunError, SystemTheme, UiEvent};
 
 /// Default window size, in DIPs. Matches the `ApplicationWindow`
 /// builder's `default_width`/`default_height` below. Also used to seed
@@ -216,10 +216,12 @@ const SMOKE_PASTE_VAR: &str = "QUADRAUI_GTK_SMOKE_PASTE";
 /// #     fn render(&self, _b: &mut dyn quadraui::Backend, _a: ()) {}
 /// #     fn handle(&mut self, _e: quadraui::UiEvent, _b: &mut dyn quadraui::Backend) -> quadraui::Reaction { quadraui::Reaction::Continue }
 /// # }
+/// # fn main() -> Result<(), quadraui::RunError> {
 /// use quadraui::gtk::RunConfig;
 ///
 /// let config = RunConfig::new("io.github.jdonaghy.kubeui-gtk", "kubeui");
-/// quadraui::gtk::run_with(MyApp, config);
+/// quadraui::gtk::run_with(MyApp, config)
+/// # }
 /// ```
 ///
 /// ## Downstream impact (CLAUDE.md rule 8): `single_instance` field
@@ -342,18 +344,19 @@ impl Default for RunConfig {
 /// loop polls the queue and dispatches via
 /// [`AppLogic::handle`][crate::AppLogic::handle].
 ///
-/// Returns [`std::process::ExitCode`] so apps can `fn main() ->
-/// std::process::ExitCode { quadraui::gtk::run(app) }` without
-/// translating between `glib::ExitCode` and the stdlib type. Mirrors
-/// the ergonomic shape of `quadraui::tui::run` (which returns
-/// `std::io::Result<()>` so apps' `main` is similarly trivial).
-pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
+/// Returns `Result<(), RunError>` so apps can `fn main() -> Result<(),
+/// quadraui::RunError> { quadraui::gtk::run(app) }`, mirroring the
+/// ergonomic shape of `quadraui::tui::run`. A non-success GLib exit code
+/// (or a headless `QUADRAUI_GTK_SMOKE_MS` self-check failure) surfaces as
+/// [`RunError::Code`] — see that variant's doc for why this backend falls
+/// back to a bare code rather than a richer cause.
+pub fn run<A: AppLogic + 'static>(app: A) -> Result<(), RunError> {
     run_with(app, RunConfig::default())
 }
 
 /// Same as [`run`], but with a caller-supplied [`RunConfig`] (app id +
 /// window title) instead of the generic quadraui defaults.
-pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::process::ExitCode {
+pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Result<(), RunError> {
     let app = Rc::new(RefCell::new(app));
     let backend = Rc::new(RefCell::new(GtkBackend::new()));
     // `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
@@ -468,9 +471,13 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     // `xvfb-run` caller sees a non-zero status even though the app itself
     // exited "cleanly" (a closed window, not a crash).
     if smoke_failed.get() {
-        return std::process::ExitCode::FAILURE;
+        return Err(RunError::Code(glib::ExitCode::FAILURE.get()));
     }
-    std::process::ExitCode::from(glib_code)
+    if glib_code == glib::ExitCode::SUCCESS {
+        Ok(())
+    } else {
+        Err(RunError::Code(glib_code.get()))
+    }
 }
 
 pub use crate::runner::StepOutcome;
@@ -730,7 +737,7 @@ impl GtkRunner {
     /// failure — a tiny-window regression or a clipboard round-trip
     /// mismatch, set by `schedule_smoke_check`. Mirrors `run_with`'s own
     /// post-`gapp.run()` `smoke_failed.get()` check. [`run`]/[`run_with`]
-    /// fold this into their returned `std::process::ExitCode` automatically,
+    /// fold this into their returned `Result<(), RunError>` automatically,
     /// but `step`/`pump` return a [`StepOutcome`] with no room for a failure
     /// signal, so an embedding host must poll this explicitly once the runner
     /// reaches [`StepOutcome::Exited`] (headless smoke mode always forces the

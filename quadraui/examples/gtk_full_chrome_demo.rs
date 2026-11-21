@@ -7,8 +7,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() {
+fn main() -> Result<(), quadraui::RunError> {
     let app = common::full_chrome_demo::FullChromeDemo::new();
     let config = common::full_chrome_demo::FullChromeDemo::config();
-    quadraui::gtk::shell_runner::run_with_shell(app, config);
+    quadraui::gtk::shell_runner::run_with_shell(app, config)
 }

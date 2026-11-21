@@ -15,6 +15,6 @@
 #[path = "common/modal_occlusion_demo.rs"]
 mod modal_occlusion_demo;
 
-fn main() -> std::process::ExitCode {
+fn main() -> Result<(), quadraui::RunError> {
     quadraui::gtk::run(modal_occlusion_demo::ModalOcclusionDemo::new())
 }

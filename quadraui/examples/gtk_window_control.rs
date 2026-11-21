@@ -10,6 +10,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() {
-    quadraui::gtk::run(common::window_control_demo::WindowControlDemo::new());
+fn main() -> Result<(), quadraui::RunError> {
+    quadraui::gtk::run(common::window_control_demo::WindowControlDemo::new())
 }

@@ -1,23 +1,22 @@
 //! The unified return type every backend's `run`/`run_with` converges on.
 //!
-//! Today the four backends disagree on what their entry point returns:
-//! `tui::run`/`run_with` return [`std::io::Result`]`<()>` (terminal
-//! setup/teardown is the only failure mode crossterm gives a structured
-//! cause for); `gtk::run`, `macos::run`, and `win::run` all return
+//! The four backends don't all agree on what their entry point returns.
+//! `macos::run`/`run_with` and `win::run`/`run_with` return
 //! [`std::process::ExitCode`] (so an app's `main` is a one-liner, but the
 //! *why* behind a non-zero exit — a missing display, a failed native
 //! window create, a headless smoke self-check — is lost by the time it
 //! reaches the exit code, and `ExitCode` doesn't implement
 //! [`std::error::Error`], so it can't be `?`-propagated through anything
-//! that expects one). [`RunError`] is the seam the per-backend follow-on
-//! issues converge their `run`/`run_with` signatures on, so every backend
-//! ends up returning `Result<(), RunError>` instead of either shape above.
+//! that expects one). `tui::run`/`run_with`/`run_with_shell` and
+//! `gtk::run`/`run_with`/`run_with_shell` are wired to [`RunError`]
+//! instead — the seam every backend's `run`/`run_with` converges on, so
+//! each ends up returning `Result<(), RunError>`.
 //!
-//! **This module only defines the type.** No backend's `run.rs` or
-//! `shell_runner.rs` is wired to return it yet — that's deliberately split
-//! into one issue per backend (per `CLAUDE.md`'s "one backend per issue"
-//! rule) so each conversion is reviewed and tested against that backend's
-//! own host, instead of one sprawling cross-backend diff.
+//! `macos`/`win` still return `std::process::ExitCode` pending their own
+//! follow-on issues — split one per backend (per `CLAUDE.md`'s "one
+//! backend per issue" rule) so each conversion is reviewed and tested
+//! against that backend's own host, instead of one sprawling cross-backend
+//! diff.
 //!
 //! # Why not keep using `ExitCode` everywhere
 //!
@@ -51,7 +50,7 @@
 //! }
 //!
 //! // Or, where the caller wants `ExitCode` ergonomics specifically
-//! // (matches today's `gtk`/`macos`/`win` call sites) rather than letting
+//! // (matches today's `macos`/`win` call sites) rather than letting
 //! // the runtime's own `Result` glue print and exit on error:
 //! fn main() -> std::process::ExitCode {
 //!     match quadraui::tui::run(MyApp) {
