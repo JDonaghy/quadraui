@@ -247,7 +247,10 @@ impl Demo for CellGridDemo {
                 ..
             } => {
                 let ctx = LayoutCtx {
-                    line_height: backend.chrome_line_height(),
+                    line_height: LayoutCtx::resolve_row_height(
+                        backend.chrome_line_height(),
+                        &backend.style(),
+                    ),
                     char_width: backend.char_width(),
                     nerd_fonts_enabled: backend.nerd_fonts_enabled(),
                 };
