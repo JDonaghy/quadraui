@@ -3159,6 +3159,11 @@ impl Backend for GtkBackend {
     /// [`crate::primitives::data_table::DataTableGlyphs`] override for the
     /// header's sort-direction glyph, honoured in full here (unlike the
     /// trait default, which ignores `glyphs`).
+    ///
+    /// Forwards to the shared
+    /// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]
+    /// through [`Self::with_chrome_surface`] — `DataTable` is chrome, not
+    /// editor content, same as [`Self::draw_tree_table`].
     fn draw_data_table_with_glyphs(
         &mut self,
         rect: QRect,
@@ -3166,45 +3171,23 @@ impl Backend for GtkBackend {
         hovered_idx: Option<usize>,
         glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
     ) -> crate::DataTableLayout {
-        let lh = self.resolved_row_height(self.current_line_height);
+        let lh = self.resolved_row_height(self.current_line_height) as f32;
         let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_data_table_with_glyphs called outside enter_frame_scope");
-        // `DataTable` is chrome, not editor content — save the editor
-        // font on the shared layout, paint the table in `ui_font`, then
-        // restore, matching `Self::draw_tree`'s save/swap/restore.
-        // `crate::gtk::draw_data_table_with_glyphs` derives its bold/icon
-        // font variants from whatever base font `layout` carries in, so
-        // without this swap it painted with whatever the ambient
-        // per-frame font happened to be (the editor font by default).
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        // `draw_data_table_with_opacity` (not the public
-        // `draw_data_table_with_glyphs`, which always paints at full
-        // opacity) so the table's vertical/horizontal scrollbars follow
-        // the same overlay idle-fade as `Self::draw_scrollbar`.
-        let opacity = self.scrollbar_fade_opacity();
-        let table_layout = crate::gtk::data_table::draw_data_table_with_opacity(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            table,
-            &theme,
-            lh,
-            hovered_idx,
-            glyphs,
-            nerd_fonts_enabled,
-            opacity,
-            None,
-            false,
-        );
-        layout.set_font_description(saved_font.as_ref());
+        let state = crate::primitives::data_table::DataTablePaintState::default()
+            .with_hovered_idx(hovered_idx);
+        let table_layout = self.with_chrome_surface("draw_data_table_with_glyphs", |surface| {
+            crate::primitives::data_table::native_surface_paint::paint_with_state(
+                table,
+                surface,
+                &theme,
+                rect,
+                lh,
+                &state,
+                glyphs,
+                nerd_fonts_enabled,
+            )
+        });
         self.record_data_table_painted_text(rect, table, &table_layout, table.scroll_offset, 0.0);
         table_layout
     }
@@ -3212,10 +3195,7 @@ impl Backend for GtkBackend {
     /// [`Self::draw_data_table_with_glyphs`], plus — when
     /// `state.scroll_px` is `Some` — a pixel-precise scroll position
     /// instead of only [`crate::DataTable::scroll_offset`]'s whole-row
-    /// value, via [`crate::gtk::data_table::draw_data_table_with_opacity`]
-    /// (same free function [`Self::draw_data_table_with_glyphs`] uses,
-    /// so both paths apply [`Self::scrollbar_fade_opacity`] to the
-    /// scrollbars). `state.scroll_px: None` paints pixel-identically to
+    /// value. `state.scroll_px: None` paints pixel-identically to
     /// [`Self::draw_data_table_with_glyphs`].
     fn draw_data_table_with_state(
         &mut self,
@@ -3223,43 +3203,24 @@ impl Backend for GtkBackend {
         table: &crate::DataTable,
         state: &crate::primitives::data_table::DataTablePaintState,
     ) -> crate::DataTableLayout {
-        let lh = self.resolved_row_height(self.current_line_height);
+        let lh = self.resolved_row_height(self.current_line_height) as f32;
         let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_data_table_with_state called outside enter_frame_scope");
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        // `draw_data_table_with_opacity` directly (not the
-        // `draw_data_table_with_state` free function, which always
-        // paints its scrollbars at full opacity) so the table's
-        // vertical/horizontal scrollbars keep following the same
-        // overlay idle-fade as `Self::draw_data_table_with_glyphs` and
-        // `Self::draw_scrollbar`, even when `state.scroll_px` is `Some`.
-        let opacity = self.scrollbar_fade_opacity();
-        let table_layout = crate::gtk::data_table::draw_data_table_with_opacity(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            table,
-            &theme,
-            lh,
-            state.hovered_idx,
-            None,
-            nerd_fonts_enabled,
-            opacity,
-            state.scroll_px,
-            state.striped,
-        );
-        layout.set_font_description(saved_font.as_ref());
+        let table_layout = self.with_chrome_surface("draw_data_table_with_state", |surface| {
+            crate::primitives::data_table::native_surface_paint::paint_with_state(
+                table,
+                surface,
+                &theme,
+                rect,
+                lh,
+                state,
+                None,
+                nerd_fonts_enabled,
+            )
+        });
 
-        let scroll_offset = table.effective_scroll_offset(lh as f32, state.scroll_px);
-        let sub_px = table.scroll_sub_row_px(lh as f32, state.scroll_px);
+        let scroll_offset = table.effective_scroll_offset(lh, state.scroll_px);
+        let sub_px = table.scroll_sub_row_px(lh, state.scroll_px);
         self.record_data_table_painted_text(rect, table, &table_layout, scroll_offset, sub_px);
         table_layout
     }
@@ -9566,16 +9527,15 @@ mod tests {
         );
     }
 
-    /// Regression for `draw_data_table_with_state` hardcoding the
-    /// scrollbar to full opacity: both `draw_data_table` and
-    /// `draw_data_table_with_state` (with `scroll_px: None`) must apply
-    /// the same idle-fade, so once `set_scroll_last_interaction(None)`
-    /// pins the fade to fully faded (mirrors `gtk::scrollbar`'s own
-    /// `scrollbar_absent_when_explicitly_marked_never_interacted`), the
-    /// scrollbar column paints as plain background on *both* paths —
-    /// not full opacity on one and faded on the other.
+    /// `draw_data_table` and `draw_data_table_with_state` at
+    /// `DataTablePaintState::default()` both forward to the same
+    /// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]
+    /// call, so they must paint byte-identically — including the
+    /// scrollbar, which (unlike [`Self::draw_scrollbar`]'s own idle-fade)
+    /// this shared painter always paints at full opacity, matching
+    /// `DataTable`'s `TreeTable`/`ListView`/`TreeView` siblings on GTK.
     #[test]
-    fn gtk_backend_draw_data_table_with_state_applies_idle_fade_like_draw_data_table() {
+    fn gtk_backend_draw_data_table_with_state_matches_draw_data_table() {
         const W: i32 = 300;
         const H: i32 = 150;
         let table = crate::DataTable {
@@ -9624,9 +9584,6 @@ mod tests {
                 let frame_layout = pango::Layout::new(&pango_ctx);
                 let mut backend = GtkBackend::new();
                 Backend::set_current_line_height(&mut backend, 16.0);
-                // Fully faded, deterministically — no real scroll ever
-                // happened and no clock to fast-forward.
-                backend.set_scroll_last_interaction(None);
                 let mut out = None;
                 backend.enter_frame_scope(&cr, &frame_layout, |b| {
                     out = Some(if with_state {
@@ -9647,38 +9604,20 @@ mod tests {
             (data, stride, layout)
         };
 
-        let (data_table_px, stride1, layout1) = paint(false);
-        let (with_state_px, stride2, layout2) = paint(true);
+        let (data_table_px, _stride1, layout1) = paint(false);
+        let (with_state_px, _stride2, layout2) = paint(true);
         assert!(
             layout1.visible_rows < table.rows.len(),
             "fixture must actually overflow to exercise the v-scrollbar"
         );
-
-        let pixel = |data: &[u8], stride: usize, x: usize, y: usize| {
-            let off = y * stride + x * 4;
-            (data[off + 2], data[off + 1], data[off])
-        };
-        let sb_x = (W as f64 - layout1.scrollbar_width as f64 + 2.0) as usize;
-        let sb_y = layout1.header_height as usize + 2;
-        let bg = {
-            let theme = crate::Theme::default();
-            (theme.background.r, theme.background.g, theme.background.b)
-        };
-
-        assert_eq!(
-            pixel(&data_table_px, stride1, sb_x, sb_y),
-            bg,
-            "draw_data_table must leave the scrollbar column as plain background once fully faded"
-        );
-        assert_eq!(
-            pixel(&with_state_px, stride2, sb_x, sb_y),
-            bg,
-            "draw_data_table_with_state must apply the same idle-fade as draw_data_table, \
-             not paint the scrollbar at full opacity regardless of fade state"
-        );
         assert_eq!(
             layout1.scrollbar_width, layout2.scrollbar_width,
             "both paths must resolve the same layout"
+        );
+        assert_eq!(
+            data_table_px, with_state_px,
+            "draw_data_table_with_state's default state must paint byte-identically \
+             to draw_data_table"
         );
     }
 
@@ -9839,7 +9778,7 @@ mod tests {
                 // "non-white" and confuse the body-row ink scan below —
                 // the body row (unlike the header) paints no background
                 // fill of its own when neither selected nor hovered (see
-                // `crate::gtk::draw_data_table`'s body-row loop).
+                // `crate::primitives::data_table::native_surface_paint::paint_row`).
                 cr.set_source_rgb(1.0, 1.0, 1.0);
                 cr.paint().ok();
                 let pango_ctx = pangocairo::functions::create_context(&cr);

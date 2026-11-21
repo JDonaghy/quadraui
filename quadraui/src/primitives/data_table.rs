@@ -1085,14 +1085,19 @@ where
     resolved
 }
 
-// The shared paint implementation [`crate::DataTable`] itself paints on
-// **macOS and Windows** only — `gtk::data_table::draw_data_table` is not
-// migrated and stays a full, bespoke Cairo + Pango implementation. GTK does
-// reach this module, though: [`crate::primitives::tree_table::native_surface_paint`]
-// builds on [`paint_with_layout`]/[`paint_row`]/[`paint_cell`] on every GUI
-// backend, GTK included, since `TreeTable`'s shared painter has no bespoke
-// per-backend twin of its own to prefer instead. The contract all three
-// backends hold to for a plain `DataTable`:
+// The shared paint implementation [`crate::GtkBackend`](crate::gtk::GtkBackend)'s
+// `draw_data_table` family forwards to through [`crate::gtk::GtkBackend::with_chrome_surface`]
+// — GTK has no bespoke Cairo+Pango `DataTable` painter of its own anymore.
+// macOS's and Windows' own `Backend::draw_data_table` methods still paint
+// through their bespoke `macos::data_table`/`win::data_table` modules
+// instead, each painting a cell's spans as one shaped text call rather than
+// this module's per-span `surface_draw_text_run` loop; both still reach this
+// module via `Primitive::paint`'s generic `draw_primitive` path and via
+// [`crate::primitives::tree_table::native_surface_paint`], which builds on
+// [`paint_with_layout`]/[`paint_row`]/[`paint_cell`] for `TreeTable` on every
+// GUI backend since `TreeTable` has no bespoke per-backend twin of its own to
+// prefer instead. The contract every backend reaching this module holds to
+// for a plain `DataTable`:
 //
 // * Selection/hover row tints alpha-blend via `surface_fill_rect_alpha`, so
 //   they composite over whatever is already painted underneath.
