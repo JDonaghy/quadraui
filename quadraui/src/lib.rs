@@ -428,6 +428,13 @@ pub mod crash;
 // backend feature; see `update`'s module doc.
 pub mod update;
 
+// Unified `run`/`run_with` return type — the seam every backend's
+// `run.rs`/`shell_runner.rs` converges on, one per-backend issue at a
+// time. Compiled unconditionally, like `crash`/`update`/`power`: the
+// type itself carries no backend-specific state; see `run_error`'s
+// module doc for the full why-not-`ExitCode` rationale.
+pub mod run_error;
+
 // ── PaintSurface ────────────────────────────────────────────────────────
 // The ~15-verb drawing trait underneath the three pixel backends —
 // extracted from helpers each of GtkBackend/MacBackend/WinBackend already
@@ -795,6 +802,9 @@ pub use event::{
     Viewport,
 };
 pub use update::{StagedUpdate, UpdateFeed, UpdateInfo, UpdateInfoBuilder, UpdateService};
+// The unified `run`/`run_with` return type every backend converges on —
+// see `run_error`'s module doc.
+pub use run_error::RunError;
 // `PlatformServices::on_battery`/`thermal_state`/`begin_power_save_block`/
 // `end_power_save_block`'s types and `UiEvent::PowerStateChanged`'s
 // payload — see `power`'s module doc.
