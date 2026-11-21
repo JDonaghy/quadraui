@@ -305,7 +305,7 @@ impl<L> PrimitiveLayout<L> {
 /// before it has a live `&mut dyn PaintSurface`/`&mut
 /// ratatui::buffer::Buffer` in hand to match on, e.g. for logging or a
 /// capability check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SubTarget {
     /// A pixel backend's [`PaintSurface`] — GTK, macOS, Win. Reached via

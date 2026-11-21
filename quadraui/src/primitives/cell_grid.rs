@@ -1520,6 +1520,10 @@ impl crate::primitive::Primitive for CellGrid {
     }
 }
 
+// No real `Interactive` impl yet — see the widget-contract epic's pilot
+// and port issues.
+crate::non_interactive!(CellGrid);
+
 #[cfg(test)]
 mod tests {
     use super::*;

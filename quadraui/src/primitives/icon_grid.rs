@@ -879,6 +879,17 @@ impl crate::primitive::Primitive for IconGrid {
     }
 }
 
+// No real `Interactive` impl yet — see the widget-contract epic's pilot
+// and port issues. Gated the same as the `Primitive` impl above: this
+// macro expands to an `Interactive` impl, which requires `Primitive`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+crate::non_interactive!(IconGrid);
+
 #[cfg(test)]
 mod tests {
     use super::*;
