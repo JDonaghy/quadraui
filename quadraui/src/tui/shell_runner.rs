@@ -7,10 +7,10 @@
 //! [`ShellConfig`]. This module only wires the adapter into the TUI event loop.
 
 use crate::shell::{ShellApp, ShellConfig};
-use crate::shell_adapter::build_shell_adapter;
-use crate::RunError;
+use crate::{shell_adapter::build_shell_adapter, RunError};
 
-/// Run a [`ShellApp`] with AppShell chrome on the TUI backend.
+/// Run a [`ShellApp`] with AppShell chrome on the TUI backend, returning
+/// [`RunError::Io`] if terminal setup or tear-down fails.
 pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Result<(), RunError> {
     let adapter = build_shell_adapter(app, config);
     super::run::run(adapter)
