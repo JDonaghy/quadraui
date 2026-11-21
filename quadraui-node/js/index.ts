@@ -162,7 +162,7 @@ exports.StaleRenderCtxError = StaleRenderCtxError;
 
 /**
  * One of `QuiApp`'s methods restricted to top-level script code (the ones
- * with a matching `QuiAppActions` method -- `showMessageDialog`,
+ * with a matching `QuiAppActions` method -- `showOverlay`,
  * `setTitle`, ...) called re-entrantly, from inside this same app's own
  * registered event/tick/render callback. napi-rs's own per-instance
  * native-borrow tracking rejects the underlying call at the FFI boundary,
@@ -301,11 +301,6 @@ exports.toQuadrauiError = toQuadrauiError;
 const REENTRANT_RESTRICTED_METHODS: ReadonlySet<string> = new Set([
   "showOverlay",
   "dismissOverlay",
-  "showMessageDialog",
-  "showContextMenu",
-  "showToast",
-  "showTooltip",
-  "hideTooltip",
   "sendNotification",
   "openPath",
   "revealInFileManager",

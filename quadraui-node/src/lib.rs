@@ -619,10 +619,7 @@ fn request_exit_before_drop(live: &mut LiveRunner) {
 /// still does its own items decode at flush time, same as every other
 /// variant's matching `QuiApp` method does synchronously -- see
 /// `quadraui-py`'s `test_deferred_actions.py` module doc for why that one
-/// exception exists. [`Self::HideTooltip`] carries no argument at all --
-/// `QuiApp::hideTooltip` itself takes none -- so [`flush_deferred_actions`]
-/// applies it via the same [`InteractionEngine::hide_tooltip`] call that
-/// method makes directly.
+/// exception exists.
 ///
 /// `QuiAppActions::showOverlay` pushes one of [`Self::ContextMenu`]/
 /// [`Self::MessageDialog`]/[`Self::Toast`]/[`Self::Tooltip`]/
@@ -645,7 +642,6 @@ enum DeferredAction {
     ContextMenu(Vec<ContextMenuItem>, Point),
     Toast(Toast, ToastCorner),
     Tooltip(Tooltip, Rect),
-    HideTooltip,
     Completions(quadraui::Completions, Point),
     Float(quadraui::Float, FloatMeasure),
     RichTextPopup(quadraui::RichTextPopup, Point),
@@ -2041,9 +2037,6 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
             DeferredAction::Tooltip(tooltip, anchor) => {
                 app.engine.show_tooltip(tooltip, anchor);
             }
-            DeferredAction::HideTooltip => {
-                app.engine.hide_tooltip();
-            }
             DeferredAction::Completions(completions, cursor) => {
                 app.engine.show_completions(completions, cursor);
             }
@@ -2750,8 +2743,9 @@ fn bytes_to_value(bytes: &[u8]) -> JsonValue {
 /// napi-rs analog of `quadraui-py`'s own `QuiAppActions`, exposing the
 /// subset of its methods [`DeferredAction`]'s own doc names. A registered
 /// event handler already holds this `QuiApp`'s one `&mut self` for the
-/// whole dispatch that invoked it, so calling, say, `app.showToast(...)`
-/// straight from inside it raises `ReentrantCallError` -- see
+/// whole dispatch that invoked it, so calling, say,
+/// `app.showOverlay("toast", ...)` straight from inside it raises
+/// `ReentrantCallError` -- see
 /// `QuiApp::check_not_dispatching`. Calling the matching method here
 /// instead touches no borrow of `QuiApp` itself: each method below decodes
 /// and validates its arguments immediately (so a malformed descriptor still
@@ -2769,97 +2763,6 @@ pub struct QuiAppActions {
 
 #[napi]
 impl QuiAppActions {
-    /// Queues a [`DeferredAction::MessageDialog`] -- same arguments, same
-    /// decoding, as `quadraui-py`'s `QuiApp.show_message_dialog`/
-    /// `QuiAppActions.show_message_dialog`. `buttons` decodes as a JS array
-    /// of plain objects shaped like [`DialogButton`].
-    #[napi(js_name = "showMessageDialog")]
-    pub fn show_message_dialog(
-        &self,
-        env: Env,
-        title: String,
-        body: String,
-        buttons: Unknown,
-        severity: Option<String>,
-    ) -> Result<()> {
-        let buttons: Vec<DialogButton> = decode_direct(env, "showMessageDialog", buttons)?;
-        let severity = severity
-            .map(|s| {
-                dialog_severity(&s)
-                    .map_err(|err| invalid_descriptor_error(format!("showMessageDialog: {err}")))
-            })
-            .transpose()?;
-        let opts = message_dialog_options_from_buttons(title, body, buttons, severity)
-            .map_err(|err| invalid_descriptor_error(format!("showMessageDialog: {err}")))?;
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::MessageDialog(opts));
-        Ok(())
-    }
-
-    /// Queues a [`DeferredAction::ContextMenu`] -- same arguments, same
-    /// decoding, as `quadraui-py`'s `show_context_menu`. `items` decodes as
-    /// a JS array of plain objects shaped like [`ContextMenuItem`]; `point`
-    /// as a plain `{x, y}` object.
-    #[napi(js_name = "showContextMenu")]
-    pub fn show_context_menu(&self, env: Env, items: Unknown, point: Unknown) -> Result<()> {
-        let items: Vec<ContextMenuItem> = decode_direct(env, "showContextMenu", items)?;
-        let point: Point = decode_direct(env, "showContextMenu", point)?;
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::ContextMenu(items, point));
-        Ok(())
-    }
-
-    /// Queues a [`DeferredAction::Toast`] -- same arguments, same decoding,
-    /// as `quadraui-py`'s `show_toast`. `toast` decodes as a plain object
-    /// shaped like [`Toast`].
-    #[napi(js_name = "showToast")]
-    pub fn show_toast(&self, env: Env, toast: Unknown, corner: Option<String>) -> Result<()> {
-        let toast: Toast = decode_direct(env, "showToast", toast)?;
-        let corner = corner
-            .map(|c| {
-                toast_corner(&c)
-                    .map_err(|err| invalid_descriptor_error(format!("showToast: {err}")))
-            })
-            .transpose()?
-            .unwrap_or_default();
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::Toast(toast, corner));
-        Ok(())
-    }
-
-    /// Queues a [`DeferredAction::Tooltip`] -- same arguments, same
-    /// decoding, as `QuiApp.showTooltip`. `tooltip` decodes as a plain
-    /// object shaped like [`Tooltip`]; `anchor` as a plain
-    /// `{x, y, width, height}` object.
-    #[napi(js_name = "showTooltip")]
-    pub fn show_tooltip(&self, env: Env, tooltip: Unknown, anchor: Unknown) -> Result<()> {
-        let tooltip: Tooltip = decode_direct(env, "showTooltip", tooltip)?;
-        let anchor: Rect = decode_direct(env, "showTooltip", anchor)?;
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::Tooltip(tooltip, anchor));
-        Ok(())
-    }
-
-    /// Queues a [`DeferredAction::HideTooltip`] -- no arguments, same as
-    /// `QuiApp.hideTooltip`. For a tooltip source with no `Button` to carry
-    /// it (a toolbar action's own `tooltip`, or a tree/data-table row), the
-    /// handler is the only thing that knows when to dismiss it -- typically
-    /// on the hit-tested `MouseLeft` for the widget it showed on
-    /// `MouseEntered`. Calling `app.hideTooltip()` straight from inside that
-    /// same handler would raise `ReentrantCallError`; this queues the exact
-    /// same engine call instead.
-    #[napi(js_name = "hideTooltip")]
-    pub fn hide_tooltip(&self) -> Result<()> {
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::HideTooltip);
-        Ok(())
-    }
-
     /// Queues a [`DeferredAction::Notification`] -- same arguments, same
     /// decoding, as `quadraui-py`'s `send_notification`.
     #[napi(js_name = "sendNotification")]

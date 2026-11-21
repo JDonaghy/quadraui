@@ -25,9 +25,10 @@
 // carry it (a toolbar action, or a tree/data-table row) has no
 // host-driven tooltip at all, so the handler itself shows/hides one from
 // the hit-tested `MouseEntered`/`MouseLeft` it already gets, via
-// `QuiApp.actions()`'s `showTooltip`/`hideTooltip` -- the only way to do
-// either from inside a handler, since a direct `app.showTooltip`/
-// `app.hideTooltip()` call there raises `ReentrantCallError`.
+// `QuiApp.actions()`'s `showOverlay`/`dismissOverlay` -- the only way to do
+// either from inside a handler, since a direct `app.showOverlay("tooltip",
+// ...)`/`app.dismissOverlay("tooltip")` call there raises
+// `ReentrantCallError`.
 //
 // Run against a built addon, e.g.:
 //
@@ -156,8 +157,8 @@ test("tooltip hides on click then reappears if the pointer holds still", () => {
   app.step();
   assert.ok(app.screenContains("Save the file"));
 
-  // A click dismisses it immediately, same as `showTooltip`'s own
-  // explicit-dismiss contract.
+  // A click dismisses it immediately, same as `showOverlay("tooltip", ...)`'s
+  // own explicit-dismiss contract.
   click(app, row, col);
   assert.ok(!app.screenContains("Save the file"));
 
@@ -269,35 +270,37 @@ test("handler shows and hides its own tooltip via actions", () => {
   // host's own `driveHoverTooltip` never shows anything here -- the same
   // situation a toolbar action's own `tooltip`, or a tree/data-table row
   // with no `Button` to carry one, is in. Every assertion below is driven
-  // entirely by the handler's own `actions.showTooltip`/
-  // `actions.hideTooltip` calls on the hit-tested `MouseEntered`/
-  // `MouseLeft` it gets for the button.
+  // entirely by the handler's own `actions.showOverlay("tooltip", ...)`/
+  // `actions.dismissOverlay("tooltip")` calls on the hit-tested
+  // `MouseEntered`/`MouseLeft` it gets for the button.
   const app = new QuiApp(40, 10);
   const actions = app.actions();
 
   app.setHandler((event: any) => {
     if ("MouseEntered" in event) {
-      actions.showTooltip(
+      actions.showOverlay(
+        "tooltip",
         { id: "tip:act", text: "Row action" },
         { x: 0, y: 2, width: 10, height: 1 },
       );
     } else if ("MouseLeft" in event) {
-      actions.hideTooltip();
+      actions.dismissOverlay("tooltip");
     }
   });
   app.setRender(() => ({ button: { id: "act", label: "Act" } }));
   const [row, col] = locate(app, "Act");
 
   // Entering the button dispatches the hit-tested `MouseEntered`; the
-  // handler queues `showTooltip` from inside it, since a direct
-  // `app.showTooltip(...)` call there would raise `ReentrantCallError`.
+  // handler queues `showOverlay("tooltip", ...)` from inside it, since a
+  // direct `app.showOverlay("tooltip", ...)` call there would raise
+  // `ReentrantCallError`.
   moveTo(app, row, col);
   assert.ok(app.screenContains("Row action"));
 
   // Leaving dispatches the matching `MouseLeft`; the handler's
-  // `actions.hideTooltip()` call dismisses it immediately -- there is no
-  // `Button.tooltip` for the host's own auto-hide to lean on here, so
-  // without this the tooltip would stay on screen forever.
+  // `actions.dismissOverlay("tooltip")` call dismisses it immediately --
+  // there is no `Button.tooltip` for the host's own auto-hide to lean on
+  // here, so without this the tooltip would stay on screen forever.
   moveTo(app, 9, 39);
   assert.ok(!app.screenContains("Row action"));
 });

@@ -198,7 +198,7 @@ export type QuiAppWaker = InstanceType<typeof native.QuiAppWaker>;
  * the matching `QuiApp` method itself would raise `ReentrantCallError`;
  * see `index.ts`'s own doc comment (`REENTRANT_RESTRICTED_METHODS`) for
  * the full list of methods this mirrors, and `app/runtime.ts`'s `App.confirm`/
- * `App.alert` for the typed-app-layer wrapper built on `showMessageDialog`.
+ * `App.alert` for the typed-app-layer wrapper built on `showOverlay`.
  */
 export type QuiAppActions = InstanceType<typeof native.QuiAppActions>;
 

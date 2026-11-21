@@ -649,7 +649,11 @@ test("a MessageDialogResolved with no pending confirm/alert falls through to onE
   });
   // Opened through the lower-level `actions` escape hatch directly, not
   // through `confirm`/`alert` -- its resolution must not be swallowed.
-  app.actions.showMessageDialog("Title", "Body", [{ id: "ok", label: "OK", is_default: true }], undefined);
+  app.actions.showOverlay(
+    "message_dialog",
+    { title: "Title", body: "Body", buttons: [{ id: "ok", label: "OK", is_default: true }] },
+    null,
+  );
   app.step();
   app.pushEvent(keyEvent({ Named: "Enter" }));
   app.step();

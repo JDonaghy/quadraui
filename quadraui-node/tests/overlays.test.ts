@@ -1,18 +1,15 @@
-// Black-box coverage for the in-canvas modal-overlay primitives wired onto
-// `InteractionEngine`'s own anchored-overlay slot: `showContextMenu`,
-// `showMessageDialog`/`dismissMessageDialog`, `showToast`/`dismissToast`,
-// `showTooltip`/`hideTooltip`, `showCompletions`/`dismissCompletions`,
-// `showFloat`/`dismissFloat`, and
-// `showRichTextPopup`/`dismissRichTextPopup` -- plus the generic
-// `showOverlay`/`dismissOverlay` pair every one of those 13 methods is a
-// one-line forward onto -- a port of
+// Black-box coverage for `QuiApp.showOverlay`/`dismissOverlay` -- the generic
+// entry point for every in-canvas modal-overlay kind wired onto
+// `InteractionEngine`'s own anchored-overlay slot: `"context_menu"`,
+// `"message_dialog"`, `"toast"`, `"tooltip"`, `"completions"`, `"float"`,
+// `"rich_text_popup"`, `"popover"`, `"layout_dialog"` -- a port of
 // `quadraui-py/tests/test_overlay_primitives.py` and
-// `quadraui-py/tests/test_extra_primitives.py`'s `show_message_dialog`/
-// `show_context_menu` cases. `QuiAppActions.showMessageDialog`
+// `quadraui-py/tests/test_extra_primitives.py`'s `"message_dialog"`/
+// `"context_menu"` cases. `QuiAppActions.showOverlay`
 // (`tests/callbacks.test.ts`) is a different method on a different class --
 // it queues through the deferred-action queue for use from inside a
-// handler -- so it covers neither `QuiApp.showMessageDialog` nor
-// `QuiApp.showContextMenu`/`dismissMessageDialog` directly.
+// handler -- so it covers neither `QuiApp.showOverlay` nor
+// `QuiApp.dismissOverlay` directly.
 //
 // Run against a built addon, e.g.:
 //
@@ -61,12 +58,12 @@ function contextMenuItems() {
   ];
 }
 
-test("showContextMenu then clicking an item activates it", () => {
+test("showOverlay context_menu then clicking an item activates it", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showContextMenu(contextMenuItems(), { x: 2.0, y: 2.0 });
+  app.showOverlay("context_menu", { items: contextMenuItems() }, { x: 2.0, y: 2.0 });
   assert.ok(app.screenContains("Copy"));
 
   const [row, col] = locate(app, "Copy");
@@ -75,12 +72,12 @@ test("showContextMenu then clicking an item activates it", () => {
   assert.deepEqual(received, [{ ContextMenuItemActivated: "copy" }]);
 });
 
-test("showContextMenu escape dismisses without item activation", () => {
+test("showOverlay context_menu escape dismisses without item activation", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showContextMenu(contextMenuItems(), { x: 2.0, y: 2.0 });
+  app.showOverlay("context_menu", { items: contextMenuItems() }, { x: 2.0, y: 2.0 });
   escape(app);
 
   // A unit `UiEvent` variant (no payload) encodes as the bare variant name,
@@ -89,8 +86,8 @@ test("showContextMenu escape dismisses without item activation", () => {
   assert.ok(!app.screenContains("Copy"));
 });
 
-test("showContextMenu with a nested submenu opens by Right arrow and activates the nested item", () => {
-  // An item's `submenu` nests through the same `showContextMenu` call;
+test("showOverlay context_menu with a nested submenu opens by Right arrow and activates the nested item", () => {
+  // An item's `submenu` nests through the same `"context_menu"` descriptor;
   // opening the child popup by Right arrow and activating its leaf
   // reports that leaf's own id via `ContextMenuItemActivated` -- the
   // same shape a flat menu's activation already carries, regardless of
@@ -99,19 +96,22 @@ test("showContextMenu with a nested submenu opens by Right arrow and activates t
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showContextMenu(
-    [
-      {
-        id: "view",
-        label: { spans: [{ text: "View", fg: null, bg: null }] },
-        submenu: [
-          {
-            id: "toggle_sidebar",
-            label: { spans: [{ text: "Toggle Sidebar", fg: null, bg: null }] },
-          },
-        ],
-      },
-    ],
+  app.showOverlay(
+    "context_menu",
+    {
+      items: [
+        {
+          id: "view",
+          label: { spans: [{ text: "View", fg: null, bg: null }] },
+          submenu: [
+            {
+              id: "toggle_sidebar",
+              label: { spans: [{ text: "Toggle Sidebar", fg: null, bg: null }] },
+            },
+          ],
+        },
+      ],
+    },
     { x: 2.0, y: 2.0 },
   );
   assert.ok(app.screenContains("View"));
@@ -132,7 +132,7 @@ test("showContextMenu with a nested submenu opens by Right arrow and activates t
   assert.ok(!app.screenContains("Toggle Sidebar"));
 });
 
-test("showContextMenu item with a codicon icon renders its fallback glyph", () => {
+test("showOverlay context_menu item with a codicon icon renders its fallback glyph", () => {
   // `ContextMenuItem.icon` accepts the same `{codicon: "...", fallback:
   // "..."}` wire shape a tree row's `icon` does (see
   // `descriptors.test.ts`'s `tree leaf accepts a codicon icon and
@@ -143,32 +143,38 @@ test("showContextMenu item with a codicon icon renders its fallback glyph", () =
   // off, so that's the fallback's plain-text first character, followed
   // by one blank gap cell ahead of the label.
   const app = new QuiApp(40, 20);
-  app.showContextMenu(
-    [
-      {
-        id: "new-file",
-        label: { spans: [{ text: "New File", fg: null, bg: null }] },
-        icon: { codicon: "new-file", fallback: "NF" },
-      },
-    ],
+  app.showOverlay(
+    "context_menu",
+    {
+      items: [
+        {
+          id: "new-file",
+          label: { spans: [{ text: "New File", fg: null, bg: null }] },
+          icon: { codicon: "new-file", fallback: "NF" },
+        },
+      ],
+    },
     { x: 2.0, y: 2.0 },
   );
   assert.ok(app.screenContains("N New File"));
   assert.ok(!app.screenContains("NNew File"));
 });
 
-test("showContextMenu item with an unknown codicon name raises InvalidDescriptorError", () => {
+test("showOverlay context_menu item with an unknown codicon name raises InvalidDescriptorError", () => {
   const app = new QuiApp(40, 20);
   assert.throws(
     () =>
-      app.showContextMenu(
-        [
-          {
-            id: "new-file",
-            label: { spans: [{ text: "New File", fg: null, bg: null }] },
-            icon: { codicon: "not-a-real-codicon-name", fallback: "?" },
-          },
-        ],
+      app.showOverlay(
+        "context_menu",
+        {
+          items: [
+            {
+              id: "new-file",
+              label: { spans: [{ text: "New File", fg: null, bg: null }] },
+              icon: { codicon: "not-a-real-codicon-name", fallback: "?" },
+            },
+          ],
+        },
         { x: 2.0, y: 2.0 },
       ),
     /InvalidDescriptorError/,
@@ -184,12 +190,16 @@ function dialogButtons() {
   ];
 }
 
-test("showMessageDialog then clicking a button resolves it", () => {
+test("showOverlay message_dialog then clicking a button resolves it", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showMessageDialog("Unsaved changes", "Do you want to save?", dialogButtons());
+  app.showOverlay(
+    "message_dialog",
+    { title: "Unsaved changes", body: "Do you want to save?", buttons: dialogButtons() },
+    null,
+  );
   assert.ok(app.screenContains("Save"));
 
   const [row, col] = locate(app, "Save");
@@ -199,12 +209,16 @@ test("showMessageDialog then clicking a button resolves it", () => {
   assert.ok(!app.screenContains("Save"));
 });
 
-test("showMessageDialog enter resolves the default button", () => {
+test("showOverlay message_dialog enter resolves the default button", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showMessageDialog("Unsaved changes", "Do you want to save?", dialogButtons());
+  app.showOverlay(
+    "message_dialog",
+    { title: "Unsaved changes", body: "Do you want to save?", buttons: dialogButtons() },
+    null,
+  );
   app.pushEvent({
     KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false },
   });
@@ -213,34 +227,43 @@ test("showMessageDialog enter resolves the default button", () => {
   assert.deepEqual(received, [{ MessageDialogResolved: "save" }]);
 });
 
-test("showMessageDialog rejects an empty buttons array", () => {
+test("showOverlay message_dialog rejects an empty buttons array", () => {
   const app = new QuiApp(40, 20);
   assert.throws(
-    () => app.showMessageDialog("Title", "Body", []),
+    () => app.showOverlay("message_dialog", { title: "Title", body: "Body", buttons: [] }, null),
     /InvalidDescriptorError/,
   );
 });
 
-test("showMessageDialog rejects an unknown severity", () => {
+test("showOverlay message_dialog rejects an unknown severity", () => {
   const app = new QuiApp(40, 20);
   assert.throws(
-    () => app.showMessageDialog("Title", "Body", dialogButtons(), "critical"),
+    () =>
+      app.showOverlay(
+        "message_dialog",
+        { title: "Title", body: "Body", buttons: dialogButtons(), severity: "critical" },
+        null,
+      ),
     /InvalidDescriptorError/,
   );
 });
 
-test("dismissMessageDialog closes without resolving", () => {
+test("dismissOverlay message_dialog closes without resolving", () => {
   const app = new QuiApp(40, 20);
-  assert.equal(app.dismissMessageDialog(), false);
+  assert.equal(app.dismissOverlay("message_dialog"), false);
 
-  app.showMessageDialog("Title", "Body", dialogButtons());
-  assert.equal(app.dismissMessageDialog(), true);
+  app.showOverlay(
+    "message_dialog",
+    { title: "Title", body: "Body", buttons: dialogButtons() },
+    null,
+  );
+  assert.equal(app.dismissOverlay("message_dialog"), true);
   assert.ok(!app.screenContains("Save"));
 });
 
 // ── Toast ────────────────────────────────────────────────────────────────
 
-test("showToast paints over base content and action click routes", () => {
+test("showOverlay toast paints over base content and action click routes", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
@@ -248,12 +271,16 @@ test("showToast paints over base content and action click routes", () => {
   app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
   assert.ok(app.screenContains("OK"));
 
-  app.showToast({
-    id: "toast:saved",
-    title: "Saved",
-    body: "",
-    actions: [{ id: "undo", label: "Undo" }],
-  });
+  app.showOverlay(
+    "toast",
+    {
+      id: "toast:saved",
+      title: "Saved",
+      body: "",
+      actions: [{ id: "undo", label: "Undo" }],
+    },
+    null,
+  );
   assert.ok(app.screenContains("OK"));
   assert.ok(app.screenContains("Saved"));
   assert.ok(app.screenContains("Undo"));
@@ -270,7 +297,7 @@ test("toast dismiss click closes with no event", () => {
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showToast({ id: "toast:saved", title: "Saved", body: "" });
+  app.showOverlay("toast", { id: "toast:saved", title: "Saved", body: "" }, null);
   const [row, col] = locate(app, "×");
 
   click(app, row, col);
@@ -279,36 +306,37 @@ test("toast dismiss click closes with no event", () => {
   assert.ok(!app.screenContains("Saved"));
 });
 
-test("dismissToast by id closes without input", () => {
+test("dismissOverlay toast by id closes without input", () => {
   const app = new QuiApp(40, 20);
-  app.showToast({ id: "toast:a", title: "A", body: "" });
-  app.showToast({ id: "toast:b", title: "B", body: "" });
+  app.showOverlay("toast", { id: "toast:a", title: "A", body: "" }, null);
+  app.showOverlay("toast", { id: "toast:b", title: "B", body: "" }, null);
   assert.ok(app.screenContains("A"));
   assert.ok(app.screenContains("B"));
 
-  assert.equal(app.dismissToast("toast:a"), true);
+  assert.equal(app.dismissOverlay("toast:a"), true);
   assert.ok(!app.screenContains("A"));
   assert.ok(app.screenContains("B"));
 
-  assert.equal(app.dismissToast("toast:a"), false);
+  assert.equal(app.dismissOverlay("toast:a"), false);
 });
 
-test("showToast rejects a malformed descriptor", () => {
+test("showOverlay toast rejects a malformed descriptor", () => {
   const app = new QuiApp(40, 20);
   assert.throws(
-    () => app.showToast({ id: "toast:bad" }),
+    () => app.showOverlay("toast", { id: "toast:bad" }, null),
     /InvalidDescriptorError/,
   );
 });
 
 // ── Tooltip ──────────────────────────────────────────────────────────────
 
-test("showTooltip paints over base content then auto-dismisses on click", () => {
+test("showOverlay tooltip paints over base content then auto-dismisses on click", () => {
   const app = new QuiApp(40, 20);
   app.setHandler(() => undefined);
 
   app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
-  app.showTooltip(
+  app.showOverlay(
+    "tooltip",
     { id: "tip:hint", text: "Hello tip" },
     { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
   );
@@ -321,17 +349,18 @@ test("showTooltip paints over base content then auto-dismisses on click", () => 
   assert.ok(!app.screenContains("Hello tip"));
 });
 
-test("hideTooltip closes explicitly", () => {
+test("dismissOverlay tooltip closes explicitly", () => {
   const app = new QuiApp(40, 20);
-  app.showTooltip(
+  app.showOverlay(
+    "tooltip",
     { id: "tip:hint", text: "Hello tip" },
     { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
   );
   assert.ok(app.screenContains("Hello tip"));
 
-  assert.equal(app.hideTooltip(), true);
+  assert.equal(app.dismissOverlay("tooltip"), true);
   assert.ok(!app.screenContains("Hello tip"));
-  assert.equal(app.hideTooltip(), false);
+  assert.equal(app.dismissOverlay("tooltip"), false);
 });
 
 // ── Completions ────────────────────────────────────────────────────────
@@ -343,12 +372,13 @@ function completionItems() {
   ];
 }
 
-test("showCompletions then clicking an item activates it", () => {
+test("showOverlay completions then clicking an item activates it", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showCompletions(
+  app.showOverlay(
+    "completions",
     { id: "completions:editor", selected_idx: 0, items: completionItems() },
     { x: 2.0, y: 2.0 },
   );
@@ -369,7 +399,8 @@ test("completions escape dismisses without activation", () => {
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showCompletions(
+  app.showOverlay(
+    "completions",
     { id: "completions:editor", selected_idx: 0, items: completionItems() },
     { x: 2.0, y: 2.0 },
   );
@@ -379,15 +410,16 @@ test("completions escape dismisses without activation", () => {
   assert.ok(!app.screenContains("map"));
 });
 
-test("dismissCompletions closes without input", () => {
+test("dismissOverlay completions closes without input", () => {
   const app = new QuiApp(40, 20);
-  app.showCompletions(
+  app.showOverlay(
+    "completions",
     { id: "completions:editor", selected_idx: 0, items: completionItems() },
     { x: 2.0, y: 2.0 },
   );
-  assert.equal(app.dismissCompletions(), true);
+  assert.equal(app.dismissOverlay("completions"), true);
   assert.ok(!app.screenContains("map"));
-  assert.equal(app.dismissCompletions(), false);
+  assert.equal(app.dismissOverlay("completions"), false);
 });
 
 // ── Float ────────────────────────────────────────────────────────────────
@@ -400,13 +432,17 @@ function anchor(x: number, y: number, width = 1.0, height = 1.0, side = "Bottom"
   };
 }
 
-test("showFloat paints chrome then escape dismisses", () => {
+test("showOverlay float paints chrome then escape dismisses", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
   app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
-  app.showFloat({ id: "float:hints", anchor: anchor(2.0, 2.0) }, 10.0, 4.0);
+  app.showOverlay(
+    "float",
+    { id: "float:hints", anchor: anchor(2.0, 2.0) },
+    { width: 10.0, height: 4.0 },
+  );
 
   assert.ok(app.screenContains("OK"));
   assert.ok(app.screenContains("┌"));
@@ -417,11 +453,15 @@ test("showFloat paints chrome then escape dismisses", () => {
   assert.ok(!app.screenContains("┌"));
 });
 
-test("dismissFloat closes without input", () => {
+test("dismissOverlay float closes without input", () => {
   const app = new QuiApp(40, 20);
-  app.showFloat({ id: "float:hints", anchor: anchor(2.0, 2.0) }, 10.0, 4.0);
-  assert.equal(app.dismissFloat(), true);
-  assert.equal(app.dismissFloat(), false);
+  app.showOverlay(
+    "float",
+    { id: "float:hints", anchor: anchor(2.0, 2.0) },
+    { width: 10.0, height: 4.0 },
+  );
+  assert.equal(app.dismissOverlay("float"), true);
+  assert.equal(app.dismissOverlay("float"), false);
 });
 
 test("a non-focusable float does not claim escape", () => {
@@ -429,10 +469,10 @@ test("a non-focusable float does not claim escape", () => {
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showFloat(
+  app.showOverlay(
+    "float",
     { id: "float:hint", anchor: anchor(2.0, 2.0), focusable: false },
-    10.0,
-    4.0,
+    { width: 10.0, height: 4.0 },
   );
 
   escape(app);
@@ -443,12 +483,13 @@ test("a non-focusable float does not claim escape", () => {
 
 // ── RichTextPopup ────────────────────────────────────────────────────────
 
-test("showRichTextPopup then clicking a link routes", () => {
+test("showOverlay rich_text_popup then clicking a link routes", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.showRichTextPopup(
+  app.showOverlay(
+    "rich_text_popup",
     {
       id: "popup:hover",
       lines: [{ spans: [{ text: "See docs", fg: null, bg: null }] }],
@@ -471,7 +512,8 @@ test("showRichTextPopup then clicking a link routes", () => {
 test("rich text popup escape dismisses", () => {
   const app = new QuiApp(40, 20);
   app.setHandler(() => undefined);
-  app.showRichTextPopup(
+  app.showOverlay(
+    "rich_text_popup",
     {
       id: "popup:hover",
       lines: [{ spans: [{ text: "Hello", fg: null, bg: null }] }],
@@ -487,9 +529,10 @@ test("rich text popup escape dismisses", () => {
   assert.ok(!app.screenContains("Hello"));
 });
 
-test("dismissRichTextPopup closes without input", () => {
+test("dismissOverlay rich_text_popup closes without input", () => {
   const app = new QuiApp(40, 20);
-  app.showRichTextPopup(
+  app.showOverlay(
+    "rich_text_popup",
     {
       id: "popup:hover",
       lines: [{ spans: [{ text: "Hello", fg: null, bg: null }] }],
@@ -498,15 +541,16 @@ test("dismissRichTextPopup closes without input", () => {
     },
     { x: 2.0, y: 2.0 },
   );
-  assert.equal(app.dismissRichTextPopup(), true);
-  assert.equal(app.dismissRichTextPopup(), false);
+  assert.equal(app.dismissOverlay("rich_text_popup"), true);
+  assert.equal(app.dismissOverlay("rich_text_popup"), false);
 });
 
-// ── Generic showOverlay/dismissOverlay ──────────────────────────────────
+// ── showOverlay/dismissOverlay's own cross-kind contract ─────────────────
 //
-// All 13 kind-specific methods above are one-line forwards onto these two;
-// this section exercises the generic pair directly rather than re-covering
-// every behavior already pinned above.
+// The sections above each pin one kind's own event-routing/paint behavior;
+// this one covers what `showOverlay`/`dismissOverlay` guarantee across
+// every kind instead -- the returned id's shape, unknown-kind/missing-anchor
+// rejection, and an unknown dismiss id being a no-op.
 
 test("showOverlay toast returns its own id and dismissOverlay closes it", () => {
   const app = new QuiApp(40, 20);
@@ -539,8 +583,6 @@ test("showOverlay message_dialog returns a sentinel and dismissOverlay closes it
 });
 
 test("showOverlay context_menu then dismissOverlay closes it", () => {
-  // `dismissOverlay("context_menu")` is a new capability `dismiss*` never
-  // had: there was no `dismissContextMenu` among the original 13.
   const app = new QuiApp(40, 20);
   const returnedId = app.showOverlay(
     "context_menu",
@@ -555,25 +597,16 @@ test("showOverlay context_menu then dismissOverlay closes it", () => {
   assert.equal(app.dismissOverlay("context_menu"), false);
 });
 
-test("showOverlay tooltip matches showTooltip's own screen output", () => {
-  // `showTooltip` is itself a one-line forward onto `showOverlay`; this
-  // pins that the generic entry point paints identically to the
-  // kind-specific one it replaces.
-  const direct = new QuiApp(40, 20);
-  direct.showTooltip(
-    { id: "tip:hint", text: "Hello tip" },
-    { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
-  );
-
-  const generic = new QuiApp(40, 20);
-  const returnedId = generic.showOverlay(
+test("showOverlay tooltip returns the descriptor's own id", () => {
+  const app = new QuiApp(40, 20);
+  const returnedId = app.showOverlay(
     "tooltip",
     { id: "tip:hint", text: "Hello tip" },
     { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
   );
 
   assert.equal(returnedId, "tip:hint");
-  assert.equal(generic.screen(), direct.screen());
+  assert.ok(app.screenContains("Hello tip"));
 });
 
 test("showOverlay rejects an unknown kind", () => {

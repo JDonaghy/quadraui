@@ -26,14 +26,11 @@ use serde::Deserialize;
 
 use super::*;
 
-/// Which of [`QuiApp::show_overlay`]'s seven in-canvas overlay kinds a
-/// `kind` string names. The 13 existing `show*`/`dismiss*` methods below
-/// (`showContextMenu`, `showMessageDialog`/`dismissMessageDialog`,
-/// `showToast`/`dismissToast`, `showTooltip`/`hideTooltip`,
-/// `showCompletions`/`dismissCompletions`, `showFloat`/`dismissFloat`,
-/// `showRichTextPopup`/`dismissRichTextPopup`) are one-line forwards onto
-/// [`QuiApp::show_overlay`]/[`QuiApp::dismiss_overlay`] built on this enum
-/// -- the napi-rs analog of `quadraui-py`'s own `OverlayKind`.
+/// Which of [`QuiApp::show_overlay`]'s nine in-canvas overlay kinds a
+/// `kind` string names -- see that method's own doc (and
+/// [`QuiApp::dismiss_overlay`]'s) for the shared `descriptor`/`anchor` shape
+/// each variant below expects, the napi-rs analog of `quadraui-py`'s own
+/// `OverlayKind`.
 #[derive(Clone, Copy)]
 enum OverlayKind {
     ContextMenu,
@@ -124,49 +121,9 @@ fn require_anchor<'env>(
     })
 }
 
-/// Shallow-copies `object`'s own enumerable properties into a fresh JS
-/// object with `extra_key` set to `extra_value` (when `Some`) alongside
-/// them. `showToast`'s own forward onto [`QuiApp::show_overlay`] uses this
-/// to fold its `corner` argument into `toast`'s own shape without
-/// mutating the object the caller passed in -- the napi-rs analog of
-/// `quadraui-py`'s own `toast.copy()` before `set_item("corner", ...)`.
-fn copy_with_field(
-    env: Env,
-    what: &str,
-    object: Unknown,
-    extra_key: &str,
-    extra_value: Option<String>,
-) -> Result<Unknown<'static>> {
-    let source: Object = match object.get_type()? {
-        // SAFETY: `get_type` just confirmed `object` is a JS object.
-        ValueType::Object => unsafe { object.cast() }?,
-        other => {
-            return Err(invalid_descriptor_error(format!(
-                "{what}: expected an object, got {other:?}"
-            )))
-        }
-    };
-    let mut copy = Object::new(&env)?;
-    for key in Object::keys(&source)? {
-        if let Some(value) = source.get::<Unknown>(&key)? {
-            copy.set(key.as_str(), value)?;
-        }
-    }
-    if let Some(extra_value) = extra_value {
-        copy.set(extra_key, extra_value)?;
-    }
-    Ok(copy.to_unknown())
-}
-
 #[napi]
 impl QuiApp {
-    /// Opens one of this app's seven in-canvas overlay kinds by name -- the
-    /// generic counterpart [`Self::show_context_menu`]/
-    /// [`Self::show_message_dialog`]/[`Self::show_toast`]/
-    /// [`Self::show_tooltip`]/[`Self::show_completions`]/
-    /// [`Self::show_float`]/[`Self::show_rich_text_popup`] each forward
-    /// onto (see each one's own doc for the exact user-facing shape and
-    /// event-routing behavior its `kind` carries over unchanged).
+    /// Opens one of this app's nine in-canvas overlay kinds by name.
     ///
     /// `kind` is one of `"context_menu"`, `"message_dialog"`, `"toast"`,
     /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"`,
@@ -184,12 +141,11 @@ impl QuiApp {
     /// viewport-relative default.
     /// `descriptor` holds that kind's own fields: for `"toast"`,
     /// `"tooltip"`, `"completions"`, `"float"`, `"rich_text_popup"`, the
-    /// same object shape the matching `show*` method's own primitive
-    /// documents (plus an extra `"corner"` key for `"toast"`, the named
-    /// method's own scalar argument); for `"context_menu"`, a single
-    /// `"items"` key wrapping that method's own list argument; for
-    /// `"message_dialog"`, `"title"`/`"body"`/`"buttons"`/`"severity"` keys
-    /// matching that method's own scalar arguments.
+    /// matching `quadraui` primitive's own shape (plus an extra `"corner"`
+    /// key for `"toast"`, the stacking corner); for `"context_menu"`, a
+    /// single `"items"` key wrapping a list of `ContextMenuItem` objects;
+    /// for `"message_dialog"`, `"title"`/`"body"`/`"buttons"`/`"severity"`
+    /// keys.
     ///
     /// `anchor` reshapes each kind's own positional argument into one
     /// object: an `{x, y}` point for `"context_menu"`/`"completions"`/
@@ -206,11 +162,12 @@ impl QuiApp {
     /// itself -- for the two that don't (`"context_menu"`,
     /// `"message_dialog"`).
     ///
-    /// Same "call from top-level script code only" restriction as
-    /// [`Self::show_message_dialog`] -- every kind routes through this
-    /// app's one `self.driver`, so a reentrant call from inside the
+    /// Call from top-level script code only -- every kind routes through
+    /// this app's one `self.driver`, so a reentrant call from inside the
     /// registered event handler or render callback raises
-    /// `ReentrantCallError` the same way.
+    /// `ReentrantCallError` the same way every other restricted `QuiApp`
+    /// method does; from inside a handler, call [`QuiAppActions::show_overlay`]
+    /// (via `QuiApp::actions()`) instead.
     #[napi(js_name = "showOverlay")]
     pub fn show_overlay(
         &mut self,
@@ -389,15 +346,8 @@ impl QuiApp {
         }
     }
 
-    /// Closes the overlay named by `id` -- the generic counterpart
-    /// [`Self::dismiss_message_dialog`]/[`Self::dismiss_toast`]/
-    /// [`Self::hide_tooltip`]/[`Self::dismiss_completions`]/
-    /// [`Self::dismiss_float`]/[`Self::dismiss_rich_text_popup`] each
-    /// forward onto, plus a `"context_menu"` case none of those six had a
-    /// dismiss counterpart for at all. Returns whether an overlay was
-    /// actually open to close; no event is dispatched either way -- the
-    /// same "close without resolving" shape every one of those six methods
-    /// already documents.
+    /// Closes the overlay named by `id`. Returns whether an overlay was
+    /// actually open to close; no event is dispatched either way.
     ///
     /// `id` is either one of `showOverlay`'s own six singleton sentinels
     /// (`"context_menu"`, `"message_dialog"`, `"tooltip"`, `"completions"`,
@@ -441,185 +391,6 @@ impl QuiApp {
                 })
             }
         }
-    }
-
-    /// Opens a context menu built from `items` at `position` (an `{x, y}`
-    /// object) -- [`InteractionEngine::open_context_menu`]. Selecting an
-    /// item surfaces as `UiEvent::ContextMenuItemActivated`; dismissing
-    /// with Escape or a click outside surfaces as
-    /// `UiEvent::ContextMenuDismissed`, both through the normal registered
-    /// handler. Calling this again while a popup from an earlier call is
-    /// still open replaces it with the new one silently. A one-line
-    /// forward onto [`Self::show_overlay`].
-    #[napi(js_name = "showContextMenu")]
-    pub fn show_context_menu(&mut self, env: Env, items: Unknown, position: Unknown) -> Result<()> {
-        let mut descriptor = Object::new(&env)?;
-        descriptor.set("items", items)?;
-        self.show_overlay(
-            env,
-            "context_menu".to_string(),
-            descriptor.to_unknown(),
-            Some(position),
-        )?;
-        Ok(())
-    }
-
-    /// Opens an in-canvas confirm/alert/prompt dialog built from `title`/
-    /// `body`/`buttons`/`severity` -- [`InteractionEngine::open_message_dialog`].
-    /// `buttons` is a non-empty array of objects shaped like the in-canvas
-    /// `Dialog` primitive's own `buttons` field. `severity` is one of
-    /// `"info"`, `"question"`, `"warning"`, `"error"`, or `undefined`/`null`
-    /// for no severity tint. Calling this again while a dialog from an
-    /// earlier call is still open replaces it with the new one silently;
-    /// call `dismissMessageDialog` to close without resolving. A one-line
-    /// forward onto [`Self::show_overlay`].
-    #[napi(js_name = "showMessageDialog")]
-    pub fn show_message_dialog(
-        &mut self,
-        env: Env,
-        title: String,
-        body: String,
-        buttons: Unknown,
-        severity: Option<String>,
-    ) -> Result<()> {
-        let mut descriptor = Object::new(&env)?;
-        descriptor.set("title", title)?;
-        descriptor.set("body", body)?;
-        descriptor.set("buttons", buttons)?;
-        if let Some(severity) = severity {
-            descriptor.set("severity", severity)?;
-        }
-        self.show_overlay(
-            env,
-            "message_dialog".to_string(),
-            descriptor.to_unknown(),
-            None,
-        )?;
-        Ok(())
-    }
-
-    /// Closes the open message dialog (if any) without resolving it --
-    /// `UiEvent::MessageDialogResolved` does not fire. Returns whether a
-    /// dialog was open to close. A one-line forward onto
-    /// [`Self::dismiss_overlay`].
-    #[napi(js_name = "dismissMessageDialog")]
-    pub fn dismiss_message_dialog(&mut self, env: Env) -> Result<bool> {
-        self.dismiss_overlay(env, "message_dialog".to_string())
-    }
-
-    /// Shows `toast` (an object matching [`Toast`]'s shape) stacked in
-    /// `corner` (one of `"bottom_right"` (default), `"bottom_left"`,
-    /// `"top_right"`, `"top_left"`) among whatever toasts are already
-    /// showing -- [`InteractionEngine::show_toast`]. Replaces any existing
-    /// toast with the same `id`. A click on an action button dispatches
-    /// `UiEvent::ToastActionClicked(id)`; a click on the dismiss button
-    /// closes it directly with no event. A one-line forward onto
-    /// [`Self::show_overlay`].
-    #[napi(js_name = "showToast")]
-    pub fn show_toast(&mut self, env: Env, toast: Unknown, corner: Option<String>) -> Result<()> {
-        let descriptor = copy_with_field(env, "showToast", toast, "corner", corner)?;
-        self.show_overlay(env, "toast".to_string(), descriptor, None)?;
-        Ok(())
-    }
-
-    /// Closes the toast with this id, if showing -- no event is dispatched.
-    /// Returns whether one was closed. A one-line forward onto
-    /// [`Self::dismiss_overlay`].
-    #[napi(js_name = "dismissToast")]
-    pub fn dismiss_toast(&mut self, env: Env, id: String) -> Result<bool> {
-        self.dismiss_overlay(env, id)
-    }
-
-    /// Shows `tooltip` (an object matching [`quadraui::Tooltip`]'s shape)
-    /// anchored against `anchor`, an `{x, y, width, height}` rect in this
-    /// app's own cell grid -- [`InteractionEngine::show_tooltip`]. Replaces
-    /// any tooltip already showing. The next `MouseDown`/`KeyPressed` this
-    /// app handles auto-dismisses it; call `hideTooltip` to dismiss sooner.
-    /// A one-line forward onto [`Self::show_overlay`].
-    #[napi(js_name = "showTooltip")]
-    pub fn show_tooltip(&mut self, env: Env, tooltip: Unknown, anchor: Unknown) -> Result<()> {
-        self.show_overlay(env, "tooltip".to_string(), tooltip, Some(anchor))?;
-        Ok(())
-    }
-
-    /// Hides the open tooltip (if any). Returns whether one was open. A
-    /// one-line forward onto [`Self::dismiss_overlay`].
-    #[napi(js_name = "hideTooltip")]
-    pub fn hide_tooltip(&mut self, env: Env) -> Result<bool> {
-        self.dismiss_overlay(env, "tooltip".to_string())
-    }
-
-    /// Shows `completions` (an object matching [`quadraui::Completions`]'s
-    /// shape) anchored at `cursor`, an `{x, y}` caret position in this
-    /// app's own cell grid -- [`InteractionEngine::show_completions`].
-    /// Replaces any popup already open. A click on an item dispatches
-    /// `UiEvent::CompletionItemActivated(id, index)` and closes the popup;
-    /// Escape, or a click outside it, closes it with no event. A one-line
-    /// forward onto [`Self::show_overlay`].
-    #[napi(js_name = "showCompletions")]
-    pub fn show_completions(
-        &mut self,
-        env: Env,
-        completions: Unknown,
-        cursor: Unknown,
-    ) -> Result<()> {
-        self.show_overlay(env, "completions".to_string(), completions, Some(cursor))?;
-        Ok(())
-    }
-
-    /// Closes the open completions popup (if any) without reporting a
-    /// selection. Returns whether one was open. A one-line forward onto
-    /// [`Self::dismiss_overlay`].
-    #[napi(js_name = "dismissCompletions")]
-    pub fn dismiss_completions(&mut self, env: Env) -> Result<bool> {
-        self.dismiss_overlay(env, "completions".to_string())
-    }
-
-    /// Opens `float` (an object matching [`quadraui::Float`]'s shape) at
-    /// `width`x`height` cells -- [`InteractionEngine::show_float`]. Chrome
-    /// only -- paints the float's background/border, nothing else; there
-    /// is no content surface on this binding yet. Escape closes a
-    /// focusable float (`float.focusable`, `true` by default) with no
-    /// event; a non-focusable hint float never claims Escape. A one-line
-    /// forward onto [`Self::show_overlay`].
-    #[napi(js_name = "showFloat")]
-    pub fn show_float(&mut self, env: Env, float: Unknown, width: f64, height: f64) -> Result<()> {
-        let anchor = encode_via_json(env, "showFloat", &FloatSize { width, height })?;
-        self.show_overlay(env, "float".to_string(), float, Some(anchor))?;
-        Ok(())
-    }
-
-    /// Closes the open float (if any) with no event. Returns whether one
-    /// was open. A one-line forward onto [`Self::dismiss_overlay`].
-    #[napi(js_name = "dismissFloat")]
-    pub fn dismiss_float(&mut self, env: Env) -> Result<bool> {
-        self.dismiss_overlay(env, "float".to_string())
-    }
-
-    /// Shows `popup` (an object matching [`quadraui::RichTextPopup`]'s
-    /// shape) anchored at `anchor`, an `{x, y}` position in this app's own
-    /// cell grid -- [`InteractionEngine::show_rich_text_popup`]. Replaces
-    /// any popup already open. A click on a link dispatches
-    /// `UiEvent::RichTextLinkClicked(id, url)`; Escape, or a click outside
-    /// the popup, closes it with no event. A one-line forward onto
-    /// [`Self::show_overlay`].
-    #[napi(js_name = "showRichTextPopup")]
-    pub fn show_rich_text_popup(
-        &mut self,
-        env: Env,
-        popup: Unknown,
-        anchor: Unknown,
-    ) -> Result<()> {
-        self.show_overlay(env, "rich_text_popup".to_string(), popup, Some(anchor))?;
-        Ok(())
-    }
-
-    /// Closes the open rich-text popup (if any) without reporting a link
-    /// click. Returns whether one was open. A one-line forward onto
-    /// [`Self::dismiss_overlay`].
-    #[napi(js_name = "dismissRichTextPopup")]
-    pub fn dismiss_rich_text_popup(&mut self, env: Env) -> Result<bool> {
-        self.dismiss_overlay(env, "rich_text_popup".to_string())
     }
 }
 
@@ -802,8 +573,7 @@ impl QuiAppActions {
     /// as [`QuiApp::dismiss_overlay`]. Unlike that method, there is
     /// nothing open yet to report closing -- `flush_deferred_actions`
     /// applies this only after the current dispatch returns -- so this
-    /// returns nothing, the same shape [`Self::hide_tooltip`] (defined in
-    /// `quadraui-node/src/lib.rs`) already uses for the same reason.
+    /// returns nothing rather than whether something was open to close.
     #[napi(js_name = "dismissOverlay")]
     pub fn dismiss_overlay(&self, id: String) -> Result<()> {
         self.queue
@@ -817,9 +587,7 @@ impl QuiApp {
     /// Shared body of every [`Self::show_overlay`] match arm: runs `open`
     /// against this app's live `(TuiBackend, NodeAppLogic)` pair, then
     /// re-renders so `screen()`/`screenContains()` reflect the newly
-    /// opened overlay without a separate step -- the same immediate-render
-    /// contract each of the 13 kind-specific `show*` methods already
-    /// documents.
+    /// opened overlay without a separate step.
     fn open_overlay(
         &mut self,
         env: Env,
@@ -858,9 +626,7 @@ impl QuiApp {
 
     /// Shared body of every [`Self::dismiss_overlay`] match arm: runs
     /// `close` against this app's live `(TuiBackend, NodeAppLogic)` pair,
-    /// re-rendering only when it reports something was actually closed --
-    /// the same "no-op re-render" contract each of the six kind-specific
-    /// `dismiss*`/`hideTooltip` methods already documents.
+    /// re-rendering only when it reports something was actually closed.
     fn dismiss_via(
         &mut self,
         env: Env,
