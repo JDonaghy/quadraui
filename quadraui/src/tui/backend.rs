@@ -1665,10 +1665,10 @@ impl crate::runtime::PreprocessBackend for TuiBackend {
             && !modifiers.cmd
     }
 
-    /// The one concrete [`crate::widget_state::WidgetRoutingState`] wiring
-    /// today — see [`crate::runtime::PreprocessBackend::widget_routing_mut`]'s
-    /// doc for why every other backend keeps the trait's `None` default
-    /// instead.
+    /// Forwards to the [`crate::widget_state::WidgetRoutingState`] in
+    /// this backend's [`crate::backend_core::BackendCore`] — see
+    /// [`crate::runtime::PreprocessBackend::widget_routing_mut`]'s doc
+    /// for what a backend keeping the trait's `None` default opts out of.
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         Some(self.core.widget_routing_mut())
     }

@@ -277,8 +277,8 @@ pub(crate) trait PreprocessBackend {
     /// doing anything, so a backend that returns `None` here never enters
     /// that step at all, identically to how an app that never overrides
     /// [`AppLogic::tab_stops`] keeps step 4 (Tab/Shift+Tab cycling)
-    /// inert. `TuiBackend` is the one override today — see its own
-    /// `PreprocessBackend` impl.
+    /// inert. `TuiBackend` and `MacBackend` override it today — see their
+    /// own `PreprocessBackend` impls.
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         None
     }

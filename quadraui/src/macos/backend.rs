@@ -1702,14 +1702,10 @@ impl crate::runtime::PreprocessBackend for MacBackend {
         crate::desktop::PasteModifier::Cmd
     }
 
-    /// Wires `MacBackend` onto the widget-contract routing engine —
-    /// mirrors [`crate::tui::backend::TuiBackend`]'s own
-    /// `widget_routing_mut` override, forwarding to the
-    /// [`crate::backend_core::BackendCore`] field every backend already
-    /// embeds. See
+    /// Forwards to the [`crate::widget_state::WidgetRoutingState`] in
+    /// this backend's [`crate::backend_core::BackendCore`] — see
     /// [`crate::runtime::PreprocessBackend::widget_routing_mut`]'s doc
-    /// for why a backend returning `None` here (the trait default) opts
-    /// out of the routing step entirely.
+    /// for what a backend keeping the trait's `None` default opts out of.
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         Some(self.core.widget_routing_mut())
     }
