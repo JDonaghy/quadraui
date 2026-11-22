@@ -224,6 +224,13 @@ pub(crate) trait PreprocessBackend {
     /// the counterpart to the read-only `Backend::focus_manager`. Only
     /// [`preprocess_event`]'s Tab/Shift+Tab intercept calls this; see
     /// `crate::focus`'s module doc for why that's the single writer.
+    ///
+    /// Every caller that mutates this must mutate [`Self::focus_tree_mut`]
+    /// in the same step for a whole-widget focus change — the two are
+    /// meant to agree on "which id is focused" at all times. Tab/Shift+Tab
+    /// cycling keeps them in step by cycling [`FocusTree`] directly and
+    /// mirroring the result here, rather than cycling this manager and
+    /// mirroring outward.
     fn focus_manager_mut(&mut self) -> &mut FocusManager;
 
     /// Look up a registered `Global`-scope accelerator for `key`+`modifiers`.
