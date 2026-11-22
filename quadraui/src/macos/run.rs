@@ -1693,16 +1693,16 @@ impl QuadraView {
         self.apply_reaction(reaction);
     }
 
-    /// Drain the events the backend queued outside the responder chain
-    /// (a native menu or tray action selector, a `Backend::waker`
-    /// payload, a notification activation) through [`Self::dispatch`], so
-    /// each one's [`Reaction`] applies exactly like a click's — which is
-    /// what makes a native File > Quit item's `Exit` quit. Driven from
-    /// the wake callback [`MacBackend::redraw_kicker`] hands those
-    /// selectors, and from `idlePollTick:`, as GTK drives its own
-    /// `drain_and_tick` from that same pair of sites.
+    /// Drain events queued outside the responder chain through
+    /// [`Self::dispatch`] — what applies File > Quit's `Exit`.
+    /// `try_borrow_mut`, guarded like `objc_cursor_update`: a nested
+    /// popup run loop can re-fire this while `backend` is borrowed.
     fn dispatch_queued_events(&self) {
-        let queued: Vec<UiEvent> = self.ivars().backend.borrow_mut().poll_events();
+        let Ok(mut backend) = self.ivars().backend.try_borrow_mut() else {
+            return;
+        };
+        let queued = backend.poll_events();
+        drop(backend);
         for ev in queued {
             self.dispatch(ev);
         }
