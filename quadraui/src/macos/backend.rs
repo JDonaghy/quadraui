@@ -385,6 +385,10 @@ pub struct MacBackend {
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
+    /// Sub-target-aware focus tree built from the app's
+    /// [`crate::runner::AppLogic::frame_tree`] — see [`Backend::focus_tree`].
+    /// [`Self::set_focus`] keeps this in step with `focus` above.
+    focus_tree: crate::focus::FocusTree,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`.
     /// Picks `Icon::glyph` vs `Icon::fallback` in `draw_activity_bar` and
     /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
@@ -855,6 +859,7 @@ impl MacBackend {
             requested_cursor: PointerShape::Default,
             nerd_fonts_enabled: true,
             focus: crate::focus::FocusManager::new(),
+            focus_tree: crate::focus::FocusTree::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             wake_callback,
             tick_callback: Arc::new(std::sync::OnceLock::new()),
@@ -2152,7 +2157,16 @@ impl Backend for MacBackend {
     }
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
+        self.focus_tree.set_focus(id.map(|id| (id, None)));
         self.focus.set_focus(id)
+    }
+
+    fn focus_tree(&self) -> &crate::focus::FocusTree {
+        &self.focus_tree
+    }
+
+    fn focus_tree_mut(&mut self) -> &mut crate::focus::FocusTree {
+        &mut self.focus_tree
     }
 
     fn frame_capture(&mut self) -> Option<&mut crate::frame::FrameCapture> {

@@ -741,6 +741,10 @@ pub struct WinBackend {
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
+    /// Sub-target-aware focus tree built from the app's
+    /// [`crate::runner::AppLogic::frame_tree`] — see [`Backend::focus_tree`].
+    /// [`Self::set_focus`] keeps this in step with `focus` above.
+    focus_tree: crate::focus::FocusTree,
     /// Thread-safe inbox for [`crate::UiEvent::User`] payloads — see
     /// [`crate::runtime::UserEventQueue`]'s doc. Not `target_os`-gated: the
     /// queue has no WinAPI dependency, same rationale as `events` above; only
@@ -912,6 +916,7 @@ impl WinBackend {
             nerd_fonts_enabled: true,
             last_error: None,
             focus: crate::focus::FocusManager::new(),
+            focus_tree: crate::focus::FocusTree::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             zones: Vec::new(),
             overlay_bounds_this_frame: Vec::new(),
@@ -2561,7 +2566,16 @@ impl Backend for WinBackend {
     }
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
+        self.focus_tree.set_focus(id.map(|id| (id, None)));
         self.focus.set_focus(id)
+    }
+
+    fn focus_tree(&self) -> &crate::focus::FocusTree {
+        &self.focus_tree
+    }
+
+    fn focus_tree_mut(&mut self) -> &mut crate::focus::FocusTree {
+        &mut self.focus_tree
     }
 
     fn frame_capture(&mut self) -> Option<&mut crate::frame::FrameCapture> {

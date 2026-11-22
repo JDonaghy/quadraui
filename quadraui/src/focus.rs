@@ -178,6 +178,7 @@ impl FocusManager {
 /// [`crate::interactive::EventHost::is_focused`]/`request_focus` take.
 pub type FocusAddress = (WidgetId, Option<SubTarget>);
 
+#[derive(Debug, Clone, PartialEq)]
 struct FocusTreeStop {
     address: FocusAddress,
     rect: Rect,
@@ -216,7 +217,7 @@ struct FocusTreeStop {
 /// path) suppresses it. See that type's doc for how a host composes
 /// `tree.is_focused(id, sub) && tree.is_focus_visible()` into a
 /// primitive's own `has_focus`/`focused` descriptor field.
-#[derive(Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FocusTree {
     stops: Vec<FocusTreeStop>,
     focused: Option<FocusAddress>,
