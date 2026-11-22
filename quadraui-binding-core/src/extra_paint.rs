@@ -7,20 +7,19 @@
 //! of this file — no enum variant, no central match arm, and no second
 //! decode registry in a binding to keep in lockstep with it.
 
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
 use quadraui::{
-    render_markdown_to_styled, ActivityBar, ActivityBarStyle, Backend, BoardModel, Canvas, Cell,
-    CellGridController, Chart, Column, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure,
-    DatePicker, Decoration, DiffView, DrawsPrimitives, Editor, FieldKind, FindReplacePanel,
-    FontRole, Form, FormField, Icon, Image, InteractionState, LabelPosition, MenuBar, MessageList,
-    Minimap, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Palette, PipelineView,
-    Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar,
-    Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit, Terminal, TextDisplay,
-    TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
-    TreeTableController, TreeTableNodeData, WidgetId,
+    render_markdown_to_styled, ActivityBar, ActivityBarStyle, Backend, BoardModel, Canvas, Chart,
+    Column, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration,
+    DiffView, Editor, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon, Image,
+    InteractionState, LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize,
+    NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect,
+    RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit,
+    StyledText, Switch, SwitchHit, Terminal, TextDisplay, TextDisplayLine, TextField, TextInput,
+    TextRegion, Theme, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData,
+    WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -1539,141 +1538,6 @@ impl ExtraPaint for TreeTableControllerDescriptor {
     }
 }
 
-/// A `"cell_grid"` extra: the spreadsheet-shaped counterpart of
-/// `"tree_table_controller"` — the only state [`crate::engine::InteractionEngine`]
-/// ever paints through a cached [`CellGridController`] rather than this
-/// trait's own stateless [`ExtraPaint::paint`] fallback
-/// ([`crate::engine::InteractionEngine::sync_cell_grids`]). `cells`,
-/// `loaded_row_start`/`loaded_col_start` are reconciled fresh every
-/// frame, same as every other geometry field here — a host re-sends
-/// whatever windowed cell text it has loaded for the controller's
-/// current scroll position, the same per-frame contract
-/// [`quadraui::CellGrid::cells`]'s own module doc describes. `cursor`/
-/// `selection_anchor`/`row_scroll`/`col_scroll` are the opposite: read
-/// only on [`Self::seed_controller`] (the first frame this `id` is
-/// seen), then left alone forever after — [`CellGridController`] owns
-/// cursor/selection/scroll navigation from then on, the same "seed once,
-/// then the richer controller owns it" rule
-/// [`TreeTableControllerDescriptor`]'s own doc gives for `nodes`/
-/// `selected_id`.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct CellGridControllerDescriptor {
-    pub id: WidgetId,
-    #[serde(default)]
-    pub row_count: usize,
-    #[serde(default)]
-    pub col_count: usize,
-    #[serde(default)]
-    pub frozen_rows: usize,
-    #[serde(default)]
-    pub frozen_cols: usize,
-    #[serde(default = "default_cell_grid_row_height")]
-    pub default_row_height: f32,
-    #[serde(default = "default_cell_grid_col_width")]
-    pub default_col_width: f32,
-    #[serde(default)]
-    pub row_heights: BTreeMap<usize, f32>,
-    #[serde(default)]
-    pub col_widths: BTreeMap<usize, f32>,
-    #[serde(default = "default_true")]
-    pub show_row_headers: bool,
-    #[serde(default = "default_true")]
-    pub show_col_headers: bool,
-    #[serde(default)]
-    pub row_labels: BTreeMap<usize, String>,
-    #[serde(default)]
-    pub col_labels: BTreeMap<usize, String>,
-    /// This frame's windowed cell text — see the module-level doc above
-    /// for why this is reconciled every frame rather than seeded once.
-    #[serde(default)]
-    pub cells: Vec<Vec<Cell>>,
-    /// Absolute sheet origin `cells`' scrolled (non-frozen) portion
-    /// covers, independent of [`Self::row_scroll`] — see
-    /// [`quadraui::CellGrid::loaded_row_start`]'s own doc for why the two
-    /// must stay independent for
-    /// [`crate::engine::InteractionEngine::sync_cell_grids`]'s own
-    /// `CellsRequested` check to ever notice a scroll that outran what's
-    /// loaded.
-    #[serde(default)]
-    pub loaded_row_start: usize,
-    #[serde(default)]
-    pub loaded_col_start: usize,
-    #[serde(default)]
-    pub cursor: (usize, usize),
-    #[serde(default)]
-    pub selection_anchor: Option<(usize, usize)>,
-    #[serde(default)]
-    pub row_scroll: usize,
-    #[serde(default)]
-    pub col_scroll: usize,
-    #[serde(default = "default_true")]
-    pub has_focus: bool,
-    #[serde(default = "default_true")]
-    pub show_scrollbar: bool,
-}
-
-/// `serde(default = ...)` for [`CellGridControllerDescriptor::default_row_height`]/
-/// `default_col_width`, matching [`CellGridController::new`]'s own
-/// un-set defaults rather than `f32::default() == 0.0`, which would
-/// paint every row/column at zero size.
-fn default_cell_grid_row_height() -> f32 {
-    1.0
-}
-fn default_cell_grid_col_width() -> f32 {
-    8.0
-}
-
-impl CellGridControllerDescriptor {
-    /// A freshly-seeded [`CellGridController`] for this descriptor's
-    /// `id` and every geometry field — see [`Self`]'s own doc for which
-    /// fields this only ever runs once per cached controller for
-    /// (`cursor`/`selection_anchor`/`row_scroll`/`col_scroll`) versus
-    /// which [`crate::engine::InteractionEngine::sync_cell_grids`]
-    /// reconciles again on every later frame.
-    pub(crate) fn seed_controller(&self) -> CellGridController {
-        let mut controller = CellGridController::new(self.id.as_str().to_string());
-        controller.set_dimensions(self.row_count, self.col_count);
-        controller.set_frozen(self.frozen_rows, self.frozen_cols);
-        controller.set_sizing(self.default_row_height, self.default_col_width);
-        controller.set_row_heights(self.row_heights.clone());
-        controller.set_col_widths(self.col_widths.clone());
-        controller.set_show_row_headers(self.show_row_headers);
-        controller.set_show_col_headers(self.show_col_headers);
-        controller.set_row_labels(self.row_labels.clone());
-        controller.set_col_labels(self.col_labels.clone());
-        controller.set_selection(self.cursor, self.selection_anchor);
-        controller.set_scroll(self.row_scroll, self.col_scroll);
-        controller
-    }
-}
-
-impl ExtraPaint for CellGridControllerDescriptor {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let mut controller = self.seed_controller();
-        controller.set_has_focus(self.has_focus);
-        controller.set_show_scrollbar(self.show_scrollbar);
-        backend.draw_primitive(area, &controller.grid(self.cells.clone()));
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check only — same limitation
-    /// [`TreeTableControllerDescriptor::hit_test`]'s own doc describes;
-    /// the precise cell/header/corner resolution a click actually gets
-    /// goes through [`crate::engine::InteractionEngine::handle`]'s own
-    /// cached-controller routing instead, which has a real `Backend` to
-    /// resolve against.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
-
 impl ExtraPaint for ActivityBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         self.paint_chrome(backend, area, &InteractionState::default());
@@ -2308,7 +2172,6 @@ extra_primitives! {
     "diff_view" => DiffView,
     "tree_table" => TreeTable,
     "tree_table_controller" => TreeTableControllerDescriptor,
-    "cell_grid" => CellGridControllerDescriptor,
     "activity_bar" => ActivityBar,
     "toolbar" => ToolbarWithOverflow,
     "menu_bar" => MenuBar,
@@ -2340,17 +2203,24 @@ extra_primitives! {
 /// [`decode_widget_leaf`] is this table's own decode step, the `Widget`
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
-/// `"icon_grid"` is the seam's first (and, for now, only) member: unlike
-/// every [`EXTRA_PRIMITIVE_KINDS`] entry, [`quadraui::IconGrid`] has no
-/// bespoke [`ExtraPaint`] impl to write here — painting, whole-area hit
-/// testing and [`DynWidget::handle`] routing are already fully generic
-/// (see [`crate::layout::LeafDescriptor::Widget`]'s own doc), so this one
-/// line is its entire wiring. A further kind joins this table only when
-/// it likewise needs nothing beyond that generic contract; a kind with
-/// its own paint-time chrome state (tab-stop children, chrome click
-/// regions, a custom whole-area-vs-sub-region hit test) still belongs in
+/// `"icon_grid"` and `"cell_grid"` are this table's two members: unlike
+/// every [`EXTRA_PRIMITIVE_KINDS`] entry, neither [`quadraui::IconGrid`]
+/// nor [`quadraui::CellGrid`] has a bespoke [`ExtraPaint`] impl to write
+/// here — painting, whole-area hit testing and [`DynWidget::handle`]
+/// routing are already fully generic (see
+/// [`crate::layout::LeafDescriptor::Widget`]'s own doc), so each kind's
+/// entire wiring is its one line in this array.
+/// [`quadraui::CellGrid`]'s own [`crate::interactive::Interactive`] impl
+/// (keyboard navigation, inline editing, click-and-drag selection) and
+/// [`quadraui::CellGrid::cells_requested`] (read generically through
+/// [`crate::engine::InteractionEngine::dyn_widget_cells_requested`]'s own
+/// downcast) cover every bit of state a `"cell_grid"` leaf needs. A
+/// further kind joins this table only when it likewise needs nothing
+/// beyond that generic contract; a kind with its own paint-time chrome
+/// state (tab-stop children, chrome click regions, a custom
+/// whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 1] = ["icon_grid"];
+pub const WIDGET_KINDS: [&str; 2] = ["icon_grid", "cell_grid"];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
 /// [`DynWidget`], via [`quadraui::decode_widget`] — the `Widget`

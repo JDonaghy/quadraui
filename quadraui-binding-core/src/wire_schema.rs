@@ -858,39 +858,46 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("style", cell_style_descriptor),
         ],
     ));
-    let cell_grid_controller_descriptor = b.define(obj_doc(
-        "CellGridControllerDescriptor",
+    let cell_edit_state_descriptor = b.define(obj(
+        "CellEditStateDescriptor",
+        vec![
+            field("text", str_()),
+            field_opt("cursor", int_()),
+            field_opt("selection_anchor", nullable(int_())),
+            field_opt("placeholder", nullable(str_())),
+        ],
+    ));
+    let cell_grid_descriptor = b.define(obj_doc(
+        "CellGridDescriptor",
         vec![
             field("id", re("WidgetId")),
-            field_opt("row_count", int_()),
-            field_opt("col_count", int_()),
+            field("row_count", int_()),
+            field("col_count", int_()),
             field_opt("frozen_rows", int_()),
             field_opt("frozen_cols", int_()),
-            field_opt("default_row_height", float_()),
-            field_opt("default_col_width", float_()),
+            field_opt("row_scroll", int_()),
+            field_opt("col_scroll", int_()),
+            field("default_row_height", float_()),
+            field("default_col_width", float_()),
             field_opt("row_heights", dictt(str_(), float_())),
             field_opt("col_widths", dictt(str_(), float_())),
             field_opt("show_row_headers", bool_()),
             field_opt("show_col_headers", bool_()),
             field_opt("row_labels", dictt(str_(), str_())),
             field_opt("col_labels", dictt(str_(), str_())),
+            field_opt("cursor", tup(vec![int_(), int_()])),
+            field_opt("selection_anchor", nullable(tup(vec![int_(), int_()]))),
             with_doc(
                 field_opt("cells", list(list(cell_descriptor))),
-                "This frame's windowed cell text, reconciled every frame -- see `CellGridControllerDescriptor`'s own Rust doc.",
+                "This frame's windowed cell text -- see `CellGrid::cells_requested`'s own Rust doc for how a host keeps it in sync with `loaded_row_start`/`loaded_col_start` as the viewport scrolls.",
             ),
             field_opt("loaded_row_start", int_()),
             field_opt("loaded_col_start", int_()),
-            with_doc(
-                field_opt("cursor", tup(vec![int_(), int_()])),
-                "Read once, when this id is first seen, then left alone forever after -- the cached `CellGridController` owns cursor navigation from then on.",
-            ),
-            field_opt("selection_anchor", nullable(tup(vec![int_(), int_()]))),
-            field_opt("row_scroll", int_()),
-            field_opt("col_scroll", int_()),
             field_opt("has_focus", bool_()),
             field_opt("show_scrollbar", bool_()),
+            field_opt("editing", nullable(cell_edit_state_descriptor)),
         ],
-        "The spreadsheet-shaped counterpart of `TreeTableControllerDescriptor` -- a `cell_grid` extra backed by a cached `CellGridController` rather than a stateless paint.",
+        "The spreadsheet-shaped `WIDGET_KINDS` member -- a `cell_grid` leaf's raw `quadraui::CellGrid` fields, decoded straight into that type (no cached-controller indirection) and routed through `CellGridEvent` for navigation/editing/virtualisation.",
     ));
 
     let tab_item_descriptor = b.define(obj_doc(
@@ -2886,7 +2893,6 @@ pub fn schema() -> Vec<DefJson> {
             "markdown" => markdown_descriptor.clone(),
             "tree_table" => tree_table_descriptor.clone(),
             "tree_table_controller" => tree_table_controller_descriptor.clone(),
-            "cell_grid" => cell_grid_controller_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -2903,6 +2909,7 @@ pub fn schema() -> Vec<DefJson> {
     for kind in crate::extra_paint::WIDGET_KINDS {
         let ty = match kind {
             "icon_grid" => icon_grid_descriptor.clone(),
+            "cell_grid" => cell_grid_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3198,6 +3205,80 @@ pub fn schema() -> Vec<DefJson> {
             ("ColumnResized", column_resized_payload),
             ("SelectionSet", tree_table_selection_set_payload),
             ("ToggleExpanded", tree_table_toggle_expanded_payload),
+        ],
+        vec![],
+    ));
+
+    // ── `CellGridEvent` -- `cell_grid`'s own `WIDGET_KINDS` member emits
+    // this through `UiEvent::CellGrid`, not through `EXTRA_PRIMITIVE_KINDS`'s
+    // per-kind `dispatch_*` method: the generic `WIDGET_KINDS` seam routes
+    // every kind's semantic event through the same `UiEvent` dispatch, so
+    // there is nothing bespoke to add on the `EventSink` trait for it.
+    let cell_grid_cursor_moved_payload = b.define(obj(
+        "_CellGridCursorMovedPayload",
+        vec![field("row", int_()), field("col", int_())],
+    ));
+    let cell_grid_cells_requested_payload = b.define(obj(
+        "_CellGridCellsRequestedPayload",
+        vec![
+            field("row_start", int_()),
+            field("col_start", int_()),
+            field("rows", int_()),
+            field("cols", int_()),
+        ],
+    ));
+    let cell_grid_navigated_payload = b.define(obj(
+        "_CellGridNavigatedPayload",
+        vec![
+            field("cursor", tup(vec![int_(), int_()])),
+            field("selection_anchor", nullable(tup(vec![int_(), int_()]))),
+            field("row_scroll", int_()),
+            field("col_scroll", int_()),
+        ],
+    ));
+    let cell_edit_requested_payload = b.define(obj(
+        "_CellEditRequestedPayload",
+        vec![field("row", int_()), field("col", int_())],
+    ));
+    let cell_edit_started_payload = b.define(obj(
+        "_CellEditStartedPayload",
+        vec![
+            field("row", int_()),
+            field("col", int_()),
+            field("edit", re("CellEditStateDescriptor")),
+        ],
+    ));
+    let cell_edit_changed_payload = b.define(obj(
+        "_CellEditChangedPayload",
+        vec![
+            field("row", int_()),
+            field("col", int_()),
+            field("edit", re("CellEditStateDescriptor")),
+        ],
+    ));
+    let cell_edit_committed_payload = b.define(obj(
+        "_CellEditCommittedPayload",
+        vec![
+            field("row", int_()),
+            field("col", int_()),
+            field("text", str_()),
+        ],
+    ));
+    let cell_edit_cancelled_payload = b.define(obj(
+        "_CellEditCancelledPayload",
+        vec![field("row", int_()), field("col", int_())],
+    ));
+    b.define(flat(
+        "CellGridEvent",
+        &[
+            ("CursorMoved", cell_grid_cursor_moved_payload),
+            ("CellsRequested", cell_grid_cells_requested_payload),
+            ("Navigated", cell_grid_navigated_payload),
+            ("CellEditRequested", cell_edit_requested_payload),
+            ("CellEditStarted", cell_edit_started_payload),
+            ("CellEditChanged", cell_edit_changed_payload),
+            ("CellEditCommitted", cell_edit_committed_payload),
+            ("CellEditCancelled", cell_edit_cancelled_payload),
         ],
         vec![],
     ));
@@ -3759,6 +3840,7 @@ pub fn schema() -> Vec<DefJson> {
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
             ("TreeTable", tup(vec![re("WidgetId"), re("TreeTableEvent")])),
+            ("CellGrid", tup(vec![re("WidgetId"), re("CellGridEvent")])),
             ("Toolbar", tup(vec![re("WidgetId"), re("ToolbarEvent")])),
             ("Canvas", tup(vec![re("WidgetId"), re("CanvasEvent")])),
             ("BackendNative", backend_native_event),
@@ -3815,12 +3897,12 @@ mod coverage {
         Accelerator, AcceleratorScope, ActivityBar, ActivityBarEvent, ActivityItem,
         BackendNativeEvent, Badge, BadgeStatus, BoardCard, BoardColumn, BoardModel, Button,
         ButtonIconPosition, ButtonMask, ButtonRowItem, ButtonSpec, ButtonVariant, CalendarDate,
-        Canvas, CanvasEvent, CardBadge, Cell, CellAlign, CellStyle, Chart, ChartEvent, ChartKind,
-        Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine,
-        ContextMenuItem, ControlWidth, DataRow, DataTable, DataTableEvent, DateFormat, DateLocale,
-        DatePicker, Decoration, DiagnosticMark, DiagnosticSeverity, DiffEditability, DiffHunk,
-        DiffLine, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DrawOp, Editor, EditorCursor,
-        EditorCursorPos as CursorPos, EditorCursorShape as CursorShape, EditorLine,
+        Canvas, CanvasEvent, CardBadge, Cell, CellAlign, CellGrid, CellGridEvent, CellStyle, Chart,
+        ChartEvent, ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter,
+        CommandLine, ContextMenuItem, ControlWidth, DataRow, DataTable, DataTableEvent, DateFormat,
+        DateLocale, DatePicker, Decoration, DiagnosticMark, DiagnosticSeverity, DiffEditability,
+        DiffHunk, DiffLine, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DrawOp, Editor,
+        EditorCursor, EditorCursorPos as CursorPos, EditorCursorShape as CursorShape, EditorLine,
         EditorSelection, EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan,
         EmptyBody, FieldKind, FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField,
         FormSpacing, FrHitRegion, GitLineStatus, HeaderAction, Icon, IconGrid, IconGridItem, Image,
@@ -3841,6 +3923,7 @@ mod coverage {
     };
 
     use quadraui::primitives::canvas::{CanvasCursor, CanvasFontRole, CanvasRegion};
+    use quadraui::primitives::cell_grid::CellEditState;
 
     use crate::hit::HitDetail;
     use crate::layout::{LayoutNode, LeafDescriptor};
@@ -4086,6 +4169,46 @@ mod coverage {
                 paths: _,
             } => {}
             TreeTableEvent::ToggleExpanded { path: _, expand: _ } => {}
+        }
+    }
+
+    fn assert_cell_grid_event(e: CellGridEvent) {
+        match e {
+            CellGridEvent::CursorMoved { row: _, col: _ } => {}
+            CellGridEvent::CellsRequested {
+                row_start: _,
+                col_start: _,
+                rows: _,
+                cols: _,
+            } => {}
+            CellGridEvent::Navigated {
+                cursor: _,
+                selection_anchor: _,
+                row_scroll: _,
+                col_scroll: _,
+            } => {}
+            CellGridEvent::CellEditRequested { row: _, col: _ } => {}
+            CellGridEvent::CellEditStarted {
+                row: _,
+                col: _,
+                edit: _,
+            } => {}
+            CellGridEvent::CellEditChanged {
+                row: _,
+                col: _,
+                edit: _,
+            } => {}
+            CellGridEvent::CellEditCommitted {
+                row: _,
+                col: _,
+                text: _,
+            } => {}
+            CellGridEvent::CellEditCancelled { row: _, col: _ } => {}
+            // `CellGridEvent` is `#[non_exhaustive]` -- a new variant
+            // doesn't need a wildcard-arm migration here, so this guard
+            // can't catch one landing unnoticed. Still worth naming every
+            // variant that exists today explicitly.
+            _ => {}
         }
     }
 
@@ -4988,6 +5111,43 @@ mod coverage {
             has_focus,
             scroll_offset,
             tile_size
+        }
+    );
+    assert_fields!(
+        assert_cell_grid_fields,
+        CellGrid {
+            id,
+            row_count,
+            col_count,
+            frozen_rows,
+            frozen_cols,
+            row_scroll,
+            col_scroll,
+            default_row_height,
+            default_col_width,
+            row_heights,
+            col_widths,
+            show_row_headers,
+            show_col_headers,
+            row_labels,
+            col_labels,
+            cursor,
+            selection_anchor,
+            cells,
+            loaded_row_start,
+            loaded_col_start,
+            has_focus,
+            show_scrollbar,
+            editing
+        }
+    );
+    assert_fields!(
+        assert_cell_edit_state_fields,
+        CellEditState {
+            text,
+            cursor,
+            selection_anchor,
+            placeholder
         }
     );
     fn assert_weekday(w: Weekday) {
@@ -6262,8 +6422,8 @@ mod coverage {
         use std::collections::BTreeSet;
 
         use quadraui::{
-            ChartKind, DrawOp, FormEvent, Key, MouseButton, TabBarEvent, ToolbarButton,
-            ToolbarEvent, UiEvent,
+            CellGridEvent, ChartKind, DrawOp, FormEvent, Key, MouseButton, TabBarEvent,
+            ToolbarButton, ToolbarEvent, UiEvent,
         };
 
         /// Deserializes a deliberately-unknown tag into `T` and parses the
@@ -6375,6 +6535,23 @@ mod coverage {
                 "ButtonClicked",
                 "KeyPressed",
                 "FocusMoved",
+            ]
+        );
+
+        variant_shape_test!(
+            cell_grid_event_variants_match_the_schema_tag_list,
+            CellGridEvent,
+            "CellGridEvent",
+            "CellGridEvent",
+            [
+                "CursorMoved",
+                "CellsRequested",
+                "Navigated",
+                "CellEditRequested",
+                "CellEditStarted",
+                "CellEditChanged",
+                "CellEditCommitted",
+                "CellEditCancelled",
             ]
         );
 

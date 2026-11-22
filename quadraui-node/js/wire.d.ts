@@ -348,30 +348,38 @@ export interface CellDescriptor {
   style?: CellStyleDescriptor;
 }
 
-/** The spreadsheet-shaped counterpart of `TreeTableControllerDescriptor` -- a `cell_grid` extra backed by a cached `CellGridController` rather than a stateless paint. */
-export interface CellGridControllerDescriptor {
+export interface CellEditStateDescriptor {
+  text: string;
+  cursor?: number;
+  selection_anchor?: number | null;
+  placeholder?: string | null;
+}
+
+/** The spreadsheet-shaped `WIDGET_KINDS` member -- a `cell_grid` leaf's raw `quadraui::CellGrid` fields, decoded straight into that type (no cached-controller indirection) and routed through `CellGridEvent` for navigation/editing/virtualisation. */
+export interface CellGridDescriptor {
   id: WidgetId;
-  row_count?: number;
-  col_count?: number;
+  row_count: number;
+  col_count: number;
   frozen_rows?: number;
   frozen_cols?: number;
-  default_row_height?: number;
-  default_col_width?: number;
+  row_scroll?: number;
+  col_scroll?: number;
+  default_row_height: number;
+  default_col_width: number;
   row_heights?: Record<string, number>;
   col_widths?: Record<string, number>;
   show_row_headers?: boolean;
   show_col_headers?: boolean;
   row_labels?: Record<string, string>;
   col_labels?: Record<string, string>;
-  cells?: CellDescriptor[][]; // This frame's windowed cell text, reconciled every frame -- see `CellGridControllerDescriptor`'s own Rust doc.
+  cursor?: [number, number];
+  selection_anchor?: [number, number] | null;
+  cells?: CellDescriptor[][]; // This frame's windowed cell text -- see `CellGrid::cells_requested`'s own Rust doc for how a host keeps it in sync with `loaded_row_start`/`loaded_col_start` as the viewport scrolls.
   loaded_row_start?: number;
   loaded_col_start?: number;
-  cursor?: [number, number]; // Read once, when this id is first seen, then left alone forever after -- the cached `CellGridController` owns cursor navigation from then on.
-  selection_anchor?: [number, number] | null;
-  row_scroll?: number;
-  col_scroll?: number;
   has_focus?: boolean;
   show_scrollbar?: boolean;
+  editing?: CellEditStateDescriptor | null;
 }
 
 /** The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`. */
@@ -1888,7 +1896,6 @@ export interface LayoutLeafNode {
   diff_view?: DiffViewDescriptor;
   tree_table?: TreeTableDescriptor;
   tree_table_controller?: TreeTableControllerDescriptor;
-  cell_grid?: CellGridControllerDescriptor;
   activity_bar?: ActivityBarDescriptor;
   toolbar?: ToolbarDescriptor;
   menu_bar?: MenuBarDescriptor;
@@ -1908,6 +1915,7 @@ export interface LayoutLeafNode {
   textarea?: TextAreaDescriptor;
   markdown?: MarkdownDescriptor;
   icon_grid?: IconGridDescriptor;
+  cell_grid?: CellGridDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1948,7 +1956,6 @@ export interface RenderFrameDict {
   diff_view?: DiffViewDescriptor | null;
   tree_table?: TreeTableDescriptor | null;
   tree_table_controller?: TreeTableControllerDescriptor | null;
-  cell_grid?: CellGridControllerDescriptor | null;
   activity_bar?: ActivityBarDescriptor | null;
   toolbar?: ToolbarDescriptor | null;
   menu_bar?: MenuBarDescriptor | null;
@@ -1968,6 +1975,7 @@ export interface RenderFrameDict {
   textarea?: TextAreaDescriptor | null;
   markdown?: MarkdownDescriptor | null;
   icon_grid?: IconGridDescriptor | null;
+  cell_grid?: CellGridDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */
@@ -2141,6 +2149,55 @@ export interface _TreeTableToggleExpandedPayload {
 }
 
 export type TreeTableEvent = { HeaderClicked: _ColPayload; } | { RowActivated: _TreeTableIdxPathPayload; } | { RowSelected: _TreeTableIdxPathPayload; } | { RowDoubleClicked: _TreeTableIdxPathPayload; } | { Scroll: _DataTableScrollPayload; } | { ColumnResized: _ColumnResizedPayload; } | { SelectionSet: _TreeTableSelectionSetPayload; } | { ToggleExpanded: _TreeTableToggleExpandedPayload; };
+
+export interface _CellGridCursorMovedPayload {
+  row: number;
+  col: number;
+}
+
+export interface _CellGridCellsRequestedPayload {
+  row_start: number;
+  col_start: number;
+  rows: number;
+  cols: number;
+}
+
+export interface _CellGridNavigatedPayload {
+  cursor: [number, number];
+  selection_anchor: [number, number] | null;
+  row_scroll: number;
+  col_scroll: number;
+}
+
+export interface _CellEditRequestedPayload {
+  row: number;
+  col: number;
+}
+
+export interface _CellEditStartedPayload {
+  row: number;
+  col: number;
+  edit: CellEditStateDescriptor;
+}
+
+export interface _CellEditChangedPayload {
+  row: number;
+  col: number;
+  edit: CellEditStateDescriptor;
+}
+
+export interface _CellEditCommittedPayload {
+  row: number;
+  col: number;
+  text: string;
+}
+
+export interface _CellEditCancelledPayload {
+  row: number;
+  col: number;
+}
+
+export type CellGridEvent = { CursorMoved: _CellGridCursorMovedPayload; } | { CellsRequested: _CellGridCellsRequestedPayload; } | { Navigated: _CellGridNavigatedPayload; } | { CellEditRequested: _CellEditRequestedPayload; } | { CellEditStarted: _CellEditStartedPayload; } | { CellEditChanged: _CellEditChangedPayload; } | { CellEditCommitted: _CellEditCommittedPayload; } | { CellEditCancelled: _CellEditCancelledPayload; };
 
 export interface _IndexPayload {
   index: number;
@@ -2581,7 +2638,7 @@ export interface RowsRequestedEvent {
 }
 
 /** Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`. */
-export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, FormEvent]; hit?: HitDetail; } | { Palette: [WidgetId, PaletteEvent]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { TreeTable: [WidgetId, TreeTableEvent]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { Canvas: [WidgetId, CanvasEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
+export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, FormEvent]; hit?: HitDetail; } | { Palette: [WidgetId, PaletteEvent]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { TreeTable: [WidgetId, TreeTableEvent]; hit?: HitDetail; } | { CellGrid: [WidgetId, CellGridEvent]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { Canvas: [WidgetId, CanvasEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
 
 /** `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key. */
 export type UiEvent = ("WindowClose" | "DisplaysChanged" | "ContextMenuDismissed") | _UiEventDict;

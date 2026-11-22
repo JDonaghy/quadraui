@@ -15,23 +15,23 @@ use std::rc::Rc;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    CellGridController, CellGridControllerEvent, ContextMenuController, ContextMenuOutcome,
-    FormController, FormControllerAction, FormDialogAction, FormDialogController, Handled, MenuDef,
-    MenuEvent, MenuSystem, MessageDialogController, TreeTableController, TreeTableControllerEvent,
+    ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction,
+    FormDialogAction, FormDialogController, Handled, MenuDef, MenuEvent, MenuSystem,
+    MessageDialogController, TreeTableController, TreeTableControllerEvent,
 };
 use quadraui::primitive::DynWidget;
 use quadraui::primitives::form::focus_order;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
-    wheel_row_delta, Backend, CanvasEvent, Cell, CellGrid, CellGridEvent, Column,
-    CompletionItemMeasure, Completions, CompletionsHit, CompletionsLayout, ContextMenu,
-    ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, DrawsPrimitives, EditOp,
-    EventCx, EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, InteractionState, Key,
-    MenuBar, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind,
-    PointerShape, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure,
-    RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast,
-    ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure,
-    TreeEvent, TreeTableNodeData, UiEvent, WidgetId,
+    wheel_row_delta, Backend, CanvasEvent, CellGrid, CellGridEvent, CellGridPrimitiveLayout,
+    Column, CompletionItemMeasure, Completions, CompletionsHit, CompletionsLayout, ContextMenu,
+    ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, EditOp, EventCx, EventHost,
+    Float, FloatLayout, FloatMeasure, Form, FormEvent, InteractionState, Key, KeyEvent, MenuBar,
+    MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind, PointerShape, Rect,
+    RichTextPopup, RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, RoutedEvent,
+    ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner,
+    ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
+    TreeTableNodeData, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -39,7 +39,7 @@ use crate::drag::{
     gesture_target_at, markdown_at, scroll_scrollbar, scroll_view_at, text_display_scroll_state,
     tree_scroll_state, ActiveDrag, DataTableColumnDrag, GestureDrag, ScrollDrag, ScrollbarDrag,
 };
-use crate::extra_paint::{extra_as, CellGridControllerDescriptor, TreeTableControllerDescriptor};
+use crate::extra_paint::{extra_as, TreeTableControllerDescriptor};
 use crate::hit::{
     chrome_hover_hit, data_table_rows_and_viewport, event_position, hit_test_painted,
     list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, tree_total_rows_and_viewport,
@@ -627,30 +627,6 @@ pub trait EventSink {
         quadraui::Reaction::Continue
     }
 
-    /// A `"cell_grid"` extra's cached [`CellGridController`] (`id` is the
-    /// extra's own, not any particular cell's) reported `event` — mirrors
-    /// [`Self::dispatch_tree_table_controller`]'s own default-method
-    /// rollout for the identical reason: `quadraui::UiEvent` has no
-    /// variant for this controller's cursor/selection/inline-edit/paste
-    /// outcomes, nor for its `CellsRequested` two-axis virtualisation
-    /// request ([`InteractionEngine::sync_cell_grids`]'s own doc), so a
-    /// binding wires this default method to its own callback however it
-    /// threads a widget-scoped event today, once it exposes `"cell_grid"`
-    /// over its own FFI surface.
-    ///
-    /// Defaults to ignoring the event and reporting
-    /// [`quadraui::Reaction::Continue`] — every existing [`EventSink`] impl
-    /// keeps compiling unchanged against this new default method until it
-    /// deliberately overrides it.
-    fn dispatch_cell_grid_controller(
-        &mut self,
-        id: WidgetId,
-        event: CellGridControllerWireEvent,
-    ) -> quadraui::Reaction {
-        let _ = (id, event);
-        quadraui::Reaction::Continue
-    }
-
     /// [`InteractionEngine::handle`]'s own drag-gesture arm/continue/clear
     /// (see [`crate::drag::GestureDrag`]'s own doc) reported `event` —
     /// mirrors [`Self::dispatch_tree_table_controller`]'s own default-method
@@ -746,121 +722,6 @@ impl TreeTableControllerWireEvent {
                 Some(Self::SortChanged { col, ascending })
             }
             TreeTableControllerEvent::Consumed | TreeTableControllerEvent::Ignored => None,
-        }
-    }
-}
-
-/// Wire-shaped mirror of [`CellGridControllerEvent`] — `Serialize`/
-/// `Deserialize` (`CellGridControllerEvent` itself has neither; it's an
-/// in-crate-only `quadraui::compose` type), and narrowed to the five
-/// variants a host actually needs told about:
-/// [`InteractionEngine::handle`]'s own `"cell_grid"` routing folds
-/// `Consumed`/`Ignored` into a bare `Reaction` directly (same as
-/// [`TreeTableControllerWireEvent`]'s own doc), and folds
-/// `CellEditRequested`/`CellEditStarted`/`CellEditChanged`/
-/// `CellEditCancelled` into a bare redraw too — the in-progress edit's
-/// text/cursor already lives in the cached [`CellGridController`]'s own
-/// state, which [`crate::extra_paint::CellGridControllerDescriptor::paint`]'s
-/// next repaint reads straight back off [`CellGridController::grid`], so
-/// there's nothing beyond "redraw" a host callback needs told for any of
-/// those four. `CutRequested` has no wire counterpart at all today:
-/// [`CellGridController::handle`] never produces it —
-/// [`CellGridController::cut_selection`] is a direct host call a binding
-/// makes on its own Ctrl+X detection, not something routed through a
-/// [`quadraui::UiEvent`] this engine resolves.
-///
-/// [`CellsRequested`](Self::CellsRequested) has no [`CellGridControllerEvent`]
-/// counterpart at all — [`InteractionEngine::handle`] computes it
-/// directly via [`quadraui::CellGrid::cells_requested`] after every
-/// non-ignored outcome, the same "no input event to derive from" case
-/// that method's own doc describes.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum CellGridControllerWireEvent {
-    /// The active cell moved to a new absolute `(row, col)` with no
-    /// multi-cell selection beyond it.
-    CursorMoved { row: usize, col: usize },
-    /// The selection now spans more than the cursor cell — all bounds
-    /// inclusive, already normalized (`top <= bottom`, `left <= right`).
-    SelectionChanged {
-        top: usize,
-        left: usize,
-        bottom: usize,
-        right: usize,
-    },
-    /// An inline edit at `(row, col)` was confirmed (Enter, Tab, or an
-    /// arrow key) — the host applies `text` to its own engine for that
-    /// cell. The cursor has already moved to the next cell; see
-    /// [`CellGridController::cursor`].
-    CellEditCommitted {
-        row: usize,
-        col: usize,
-        text: String,
-    },
-    /// The viewport needs the absolute sheet block `[row_start,
-    /// row_start + rows)` x `[col_start, col_start + cols)` painted next
-    /// frame — see [`quadraui::CellGrid::cells_requested`]'s own doc for
-    /// why the frozen rows/columns are excluded. A host answers by
-    /// re-sending `"cell_grid"`'s `cells`/`loaded_row_start`/
-    /// `loaded_col_start` for exactly this block on its next render.
-    CellsRequested {
-        row_start: usize,
-        col_start: usize,
-        rows: usize,
-        cols: usize,
-    },
-    /// [`CellGridController::handle`] found clipboard text to paste
-    /// (either a terminal bracketed paste with no active edit, or
-    /// [`CellGridController::paste`] called directly on Ctrl+V), anchored
-    /// at the current selection's top-left corner. The host parses
-    /// `text` as TSV and applies it through its own engine starting at
-    /// the anchor — see [`CellGridControllerEvent::PasteRequested`]'s own
-    /// doc.
-    PasteRequested {
-        anchor_row: usize,
-        anchor_col: usize,
-        text: String,
-    },
-}
-
-impl CellGridControllerWireEvent {
-    /// Translates a [`CellGridControllerEvent`] into its wire-shaped
-    /// counterpart — `None` for every variant [`Self`]'s own doc folds
-    /// into a bare redraw instead of a real [`EventSink::dispatch_cell_grid_controller`]
-    /// call.
-    fn from_controller_event(event: CellGridControllerEvent) -> Option<Self> {
-        match event {
-            CellGridControllerEvent::CursorMoved { row, col } => {
-                Some(Self::CursorMoved { row, col })
-            }
-            CellGridControllerEvent::SelectionChanged {
-                top,
-                left,
-                bottom,
-                right,
-            } => Some(Self::SelectionChanged {
-                top,
-                left,
-                bottom,
-                right,
-            }),
-            CellGridControllerEvent::CellEditCommitted { row, col, text } => {
-                Some(Self::CellEditCommitted { row, col, text })
-            }
-            CellGridControllerEvent::PasteRequested {
-                anchor_row,
-                anchor_col,
-                text,
-            } => Some(Self::PasteRequested {
-                anchor_row,
-                anchor_col,
-                text,
-            }),
-            // `Consumed`/`Ignored`, the four in-progress-edit variants,
-            // and `CutRequested` — see `Self`'s own doc for why each
-            // folds to a bare redraw instead of a real dispatch. The
-            // wildcard also covers any variant a future `quadraui`
-            // release adds to this `#[non_exhaustive]` enum.
-            _ => None,
         }
     }
 }
@@ -1412,30 +1273,17 @@ pub struct InteractionEngine {
     /// [`Self::form_order`]'s own doc for why a `MouseDown` claim loop
     /// walks this rather than the `HashMap`s above directly.
     tree_table_order: RefCell<Vec<WidgetId>>,
-    /// One [`CellGridController`] per `"cell_grid"` extra painted this
-    /// (or a prior) frame, keyed by the extra's own id — the
-    /// spreadsheet-shaped counterpart of [`Self::tree_table_controllers`].
-    /// [`Self::sync_cell_grids`] seeds a newly-created entry from the
-    /// extra's own `cursor`/`selection_anchor`/`row_scroll`/`col_scroll`
-    /// exactly once ([`crate::extra_paint::CellGridControllerDescriptor::seed_controller`]);
-    /// from then on the controller owns its own cursor/selection/scroll/
-    /// inline-edit state, same as [`Self::tree_table_controllers`] owns
-    /// expand/selection/sort from its own creation onward.
-    cell_grid_controllers: RefCell<HashMap<WidgetId, CellGridController>>,
-    /// The absolute bounds plus the geometry/windowing fields
-    /// [`Self::sync_cell_grids`] most recently painted each
-    /// [`Self::cell_grid_controllers`] entry with — [`CellGridController::handle`]
-    /// takes the rect as a plain argument rather than storing it (same as
-    /// [`Self::tree_table_rects`]'s own doc), and [`InteractionEngine::handle`]'s
-    /// own `CellsRequested` check (see [`CellGridControllerWireEvent::CellsRequested`]'s
-    /// doc) needs the frozen counts and the loaded window's own origin/
-    /// shape back, which [`CellGridController`] itself exposes no getter
-    /// for.
-    cell_grid_contexts: RefCell<HashMap<WidgetId, CellGridSyncContext>>,
-    /// This frame's `"cell_grid"` extra ids, in the paint order
-    /// [`Self::sync_cell_grids`] saw them — mirrors [`Self::tree_table_order`]'s
-    /// own doc.
-    cell_grid_order: RefCell<Vec<WidgetId>>,
+    /// The id of the [`PaintedHit::Widget`] leaf currently holding a
+    /// [`quadraui::interactive::EventHost::capture_pointer`] request, if
+    /// any — the generic [`crate::extra_paint::WIDGET_KINDS`] seam's own
+    /// counterpart of [`Self::active_drag`]/[`Self::scrollbar_drag`]/
+    /// [`Self::column_drag`]/[`Self::scroll_drag`]. Set by
+    /// [`Self::dyn_widget_dispatch`] when a `DynWidget::handle` call
+    /// requests capture (e.g. [`CellGrid`]'s own drag-to-extend-selection);
+    /// cleared the same way on a release request, and unconditionally on
+    /// every `MouseUp` — mirroring those four fields' own "`MouseUp`
+    /// always ends it" reset.
+    dyn_widget_capture: RefCell<Option<WidgetId>>,
 }
 
 /// What [`InteractionEngine::dispatch_dyn_widget_click`] resolved —
@@ -1496,17 +1344,24 @@ struct DynWidgetIntents {
     focus_request: Option<WidgetId>,
     redraw: bool,
     emitted: Vec<UiEvent>,
+    /// Set by [`EventHost::capture_pointer`] — [`InteractionEngine::dyn_widget_dispatch`]
+    /// applies this onto [`InteractionEngine::dyn_widget_capture`].
+    capture_requested: bool,
+    /// Set by [`EventHost::release_pointer`] — same application site as
+    /// [`Self::capture_requested`].
+    release_requested: bool,
 }
 
 /// [`EventHost`] impl backing one [`DynWidget::handle`] call, scoped to a
-/// `LeafDescriptor::Widget` leaf's click dispatch. `capture_pointer`/
-/// `release_pointer`/`set_cursor` are no-ops — not wired yet rather than
-/// impossible: this engine has no generic per-widget pointer-capture or
-/// cursor-shape tracking outside its own bespoke drag state machines
-/// (`Self::active_drag` and friends), and `IconGrid`, this seam's only
-/// member so far, never calls any of the three. A future `WIDGET_KINDS`
-/// entry that does extends this host the same way `request_focus`'s own
-/// `intents` outbox already demonstrates.
+/// `LeafDescriptor::Widget` leaf's event dispatch. `set_cursor` is a
+/// no-op — not wired yet rather than impossible: this engine has no
+/// generic per-widget cursor-shape tracking outside its own bespoke drag
+/// state machines (`Self::active_drag` and friends), and no
+/// `WIDGET_KINDS` member calls it yet. `capture_pointer`/`release_pointer`
+/// record an intent rather than touching [`InteractionEngine::dyn_widget_capture`]
+/// directly, same reason `request_focus` records one instead of calling
+/// `backend.set_focus` — this host has no `&mut InteractionEngine` to
+/// reach either.
 struct DynWidgetEventHost<'a> {
     units: quadraui::primitive::Units,
     intents: &'a mut DynWidgetIntents,
@@ -1526,9 +1381,13 @@ impl EventHost for DynWidgetEventHost<'_> {
         self.intents.focus_request = Some(*id);
     }
 
-    fn capture_pointer(&mut self, _id: &WidgetId) {}
+    fn capture_pointer(&mut self, _id: &WidgetId) {
+        self.intents.capture_requested = true;
+    }
 
-    fn release_pointer(&mut self) {}
+    fn release_pointer(&mut self) {
+        self.intents.release_requested = true;
+    }
 
     fn set_cursor(&mut self, _cursor: PointerShape) {}
 
@@ -1559,23 +1418,6 @@ fn dyn_widget_hit(hit_map: &[PaintedHit], id: WidgetId) -> Option<(Rect, Rc<dyn 
         } if *hit_id == id => Some((*area, Rc::clone(widget))),
         _ => None,
     })
-}
-
-/// [`InteractionEngine::cell_grid_contexts`]'s per-id entry — everything
-/// [`InteractionEngine::handle`]'s own `"cell_grid"` routing and
-/// [`InteractionEngine::cell_grid_cells_requested`] need back about the
-/// extra's most recent paint that isn't already owned by its cached
-/// [`CellGridController`].
-#[derive(Debug, Clone)]
-struct CellGridSyncContext {
-    rect: Rect,
-    row_count: usize,
-    col_count: usize,
-    frozen_rows: usize,
-    frozen_cols: usize,
-    loaded_row_start: usize,
-    loaded_col_start: usize,
-    cells: Vec<Vec<Cell>>,
 }
 
 impl InteractionEngine {
@@ -2789,85 +2631,6 @@ impl InteractionEngine {
         *self.tree_table_order.borrow_mut() = seen;
     }
 
-    /// The [`crate::extra_paint::CellGridControllerDescriptor`] counterpart
-    /// of [`Self::sync_tree_tables`]: every `"cell_grid"` extra painted
-    /// this frame gets its own cached [`CellGridController`] (creating
-    /// and seeding one the first time an id is seen, via
-    /// [`crate::extra_paint::CellGridControllerDescriptor::seed_controller`]),
-    /// repainted from that controller's own live cursor/selection/
-    /// inline-edit state instead of the plain, stateless
-    /// [`crate::extra_paint::ExtraPaint::paint`] every extra gets by
-    /// default. Call once per render, after the extras loop in
-    /// `draw_bands`/`paint_leaf` already painted the plain fallback.
-    ///
-    /// Every geometry/windowing field (`row_count`, `col_count`,
-    /// `frozen_rows`/`frozen_cols`, sizing, labels, header toggles,
-    /// `cells`, `loaded_row_start`/`loaded_col_start`) plus `has_focus`/
-    /// `show_scrollbar` IS reconciled every frame — unlike
-    /// [`Self::sync_tree_tables`]'s `nodes`/`selected_id`, every one of
-    /// these is cosmetic/windowed data with no internal controller state
-    /// of its own to clobber; see [`crate::extra_paint::CellGridControllerDescriptor`]'s
-    /// own doc. `cursor`/`selection_anchor`/`row_scroll`/`col_scroll` are
-    /// the opposite — seeded once, on creation, and never again, same as
-    /// [`Self::tree_table_controllers`]'s own doc for why `nodes`/
-    /// `selected_id` aren't reconciled either.
-    ///
-    /// A cached entry whose id wasn't painted this frame is dropped, so a
-    /// cell grid that stops rendering doesn't keep answering events
-    /// forever.
-    pub fn sync_cell_grids(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
-        let mut seen = Vec::new();
-        for hit in hits {
-            let PaintedHit::Extra {
-                id, area, extra, ..
-            } = hit
-            else {
-                continue;
-            };
-            let Some(descriptor) = extra_as::<CellGridControllerDescriptor>(extra) else {
-                continue;
-            };
-            seen.push(*id);
-            let engine_focused = backend.focus_manager().focused() == Some(id);
-            let mut controllers = self.cell_grid_controllers.borrow_mut();
-            let controller = controllers
-                .entry(*id)
-                .or_insert_with(|| descriptor.seed_controller());
-            controller.set_dimensions(descriptor.row_count, descriptor.col_count);
-            controller.set_frozen(descriptor.frozen_rows, descriptor.frozen_cols);
-            controller.set_sizing(descriptor.default_row_height, descriptor.default_col_width);
-            controller.set_row_heights(descriptor.row_heights.clone());
-            controller.set_col_widths(descriptor.col_widths.clone());
-            controller.set_show_row_headers(descriptor.show_row_headers);
-            controller.set_show_col_headers(descriptor.show_col_headers);
-            controller.set_row_labels(descriptor.row_labels.clone());
-            controller.set_col_labels(descriptor.col_labels.clone());
-            controller.set_has_focus(descriptor.has_focus || engine_focused);
-            controller.set_show_scrollbar(descriptor.show_scrollbar);
-            backend.draw_primitive(*area, &controller.grid(descriptor.cells.clone()));
-            self.cell_grid_contexts.borrow_mut().insert(
-                *id,
-                CellGridSyncContext {
-                    rect: *area,
-                    row_count: descriptor.row_count,
-                    col_count: descriptor.col_count,
-                    frozen_rows: descriptor.frozen_rows,
-                    frozen_cols: descriptor.frozen_cols,
-                    loaded_row_start: descriptor.loaded_row_start,
-                    loaded_col_start: descriptor.loaded_col_start,
-                    cells: descriptor.cells.clone(),
-                },
-            );
-        }
-        self.cell_grid_controllers
-            .borrow_mut()
-            .retain(|id, _| seen.contains(id));
-        self.cell_grid_contexts
-            .borrow_mut()
-            .retain(|id, _| seen.contains(id));
-        *self.cell_grid_order.borrow_mut() = seen;
-    }
-
     /// Answers a [`TreeTableControllerWireEvent::ChildrenRequested`] for
     /// the `"tree_table_controller"` cached under `id`: attaches
     /// `children` to `node_id` via [`TreeTableController::set_children`]
@@ -3133,113 +2896,68 @@ impl InteractionEngine {
         )
     }
 
-    /// [`CellGridController::handle`]'s own geometry-only computation of
-    /// whether the `"cell_grid"` cached under `id` needs a fresh window
-    /// of cell text — [`quadraui::CellGrid::cells_requested`] run against
-    /// a throwaway probe built from `id`'s own [`Self::cell_grid_contexts`]
-    /// entry (the frozen counts and the loaded window's own origin/
-    /// shape, all `CellGridController` itself exposes no getter for) and
-    /// `id`'s cached controller's CURRENT, post-event
-    /// [`CellGridController::layout`] — so a navigation key or drag that
-    /// just scrolled past what the host's own `cells` covers is caught
-    /// the same frame it happens, not a frame late. `None` when `id`
-    /// names no cached controller/context (never painted this frame), or
-    /// the loaded window already covers the resolved viewport.
-    fn cell_grid_cells_requested(
+    /// Whether the `"cell_grid"` [`PaintedHit::Widget`] painted under `id`
+    /// this frame needs a fresh window of cell text —
+    /// [`quadraui::CellGrid::cells_requested`] run against the SAME real
+    /// widget [`dyn_widget_hit`] already resolved for dispatch, downcast
+    /// back via [`quadraui::primitive::DynWidget::as_any`]. Unlike the
+    /// deleted [`CellGridController`]-based version of this check, no
+    /// throwaway probe is needed: that controller exposed no getter for
+    /// the frozen/loaded-window fields a probe would have to reconstruct,
+    /// but the real, just-decoded [`CellGrid`] already has every one of
+    /// them. `None` for anything that isn't a `CellGrid` (including every
+    /// other [`crate::extra_paint::WIDGET_KINDS`] member, and an `id` not
+    /// painted this frame at all), and for a `CellGrid` whose loaded
+    /// window already covers the resolved viewport.
+    /// `pending` is the semantic event [`Self::dyn_widget_dispatch`] is
+    /// about to route back to the host for the same `id`, if any — the
+    /// hit-tested widget it reads via [`dyn_widget_hit`] is still this
+    /// frame's painted snapshot, from *before* that event's effect (e.g.
+    /// a `PageDown`'s [`CellGridEvent::Navigated`]) lands, since the real
+    /// state only updates once the host re-renders. When `pending`
+    /// carries a `Navigated` for this `id`, it is applied to a clone
+    /// before laying out, so the loaded-window check below sees the
+    /// scroll position the host is about to adopt rather than the one it
+    /// is about to leave.
+    fn dyn_widget_cells_requested(
         &self,
         id: WidgetId,
-        backend: &dyn Backend,
-    ) -> Option<CellGridControllerWireEvent> {
-        let ctx = self.cell_grid_contexts.borrow().get(&id)?.clone();
-        let layout = self
-            .cell_grid_controllers
-            .borrow()
-            .get(&id)?
-            .layout(backend, ctx.rect);
-        // Every field below besides `row_count`/`col_count`/`frozen_rows`/
-        // `frozen_cols`/`loaded_row_start`/`loaded_col_start`/`cells` is
-        // irrelevant to `CellGrid::cells_requested` (it only reads those
-        // seven through `CellGrid::cells_window`) — see that method's own
-        // doc — so the rest are filled with inert placeholders rather than
-        // threading the live geometry through just to satisfy the struct
-        // literal. `row_count`/`col_count` themselves are NOT inert:
-        // `cells_window` clamps `frozen_rows`/`frozen_cols` and
-        // `loaded_row_start`/`loaded_col_start` against them, so leaving
-        // them at `0` collapses every clamp to `0` regardless of the real
-        // loaded window.
-        let probe = CellGrid {
-            id,
-            row_count: ctx.row_count,
-            col_count: ctx.col_count,
-            frozen_rows: ctx.frozen_rows,
-            frozen_cols: ctx.frozen_cols,
-            row_scroll: 0,
-            col_scroll: 0,
-            default_row_height: 1.0,
-            default_col_width: 1.0,
-            row_heights: Default::default(),
-            col_widths: Default::default(),
-            show_row_headers: false,
-            show_col_headers: false,
-            row_labels: Default::default(),
-            col_labels: Default::default(),
-            cursor: (0, 0),
-            selection_anchor: None,
-            cells: ctx.cells,
-            loaded_row_start: ctx.loaded_row_start,
-            loaded_col_start: ctx.loaded_col_start,
-            has_focus: false,
-            show_scrollbar: false,
-            editing: None,
-        };
-        match probe.cells_requested(&layout.layout) {
-            Some(CellGridEvent::CellsRequested {
-                row_start,
-                col_start,
-                rows,
-                cols,
-            }) => Some(CellGridControllerWireEvent::CellsRequested {
-                row_start,
-                col_start,
-                rows,
-                cols,
-            }),
-            // `CellGridEvent` is `#[non_exhaustive]`; `CellsRequested` is
-            // its only variant today.
-            _ => None,
-        }
-    }
-
-    /// Translates a [`CellGridController::handle`] outcome into the
-    /// `Reaction` [`Self::handle`]'s own `"cell_grid"` routing blocks
-    /// return — mirrors [`Self::dispatch_tree_table_outcome`]'s own
-    /// `Ignored`/real-variant split, plus one addition: whenever `outcome`
-    /// wasn't `Ignored`, also runs [`Self::cell_grid_cells_requested`] and
-    /// merges its own dispatch in, since any of those outcomes could have
-    /// moved the controller's scroll (a navigation key, or
-    /// [`CellGridController::handle`]'s own drag-to-extend-selection) past
-    /// what the host's loaded `cells` covers.
-    fn dispatch_cell_grid_outcome(
-        &self,
-        id: WidgetId,
-        outcome: CellGridControllerEvent,
-        backend: &dyn Backend,
-        sink: &mut dyn EventSink,
-    ) -> Option<quadraui::Reaction> {
-        use quadraui::Reaction;
-        if matches!(outcome, CellGridControllerEvent::Ignored) {
-            return None;
-        }
-        let mut reaction = match CellGridControllerWireEvent::from_controller_event(outcome) {
-            Some(wire_event) => {
-                Reaction::Redraw.merge(sink.dispatch_cell_grid_controller(id, wire_event))
+        pending: Option<&UiEvent>,
+        backend: &mut dyn Backend,
+    ) -> Option<UiEvent> {
+        let (area, widget) = dyn_widget_hit(&self.hit_map.borrow(), id)?;
+        let mut grid = widget.as_ref().downcast_ref::<CellGrid>()?.clone();
+        if let Some(UiEvent::CellGrid(
+            event_id,
+            CellGridEvent::Navigated {
+                cursor,
+                selection_anchor,
+                row_scroll,
+                col_scroll,
+            },
+        )) = pending
+        {
+            if *event_id == id {
+                grid.cursor = *cursor;
+                grid.selection_anchor = *selection_anchor;
+                grid.row_scroll = *row_scroll;
+                grid.col_scroll = *col_scroll;
             }
-            None => Reaction::Redraw,
-        };
-        if let Some(cells_requested) = self.cell_grid_cells_requested(id, backend) {
-            reaction = reaction.merge(sink.dispatch_cell_grid_controller(id, cells_requested));
         }
-        Some(reaction)
+        let style = backend.style();
+        let ctx = quadraui::primitive::LayoutCtx {
+            line_height: quadraui::primitive::LayoutCtx::resolve_row_height(
+                backend.chrome_line_height(),
+                &style,
+            ),
+            char_width: backend.char_width(),
+            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+        };
+        let widget: Rc<dyn DynWidget> = Rc::new(grid.clone());
+        let layout = widget.layout(&ctx, area);
+        let layout = layout.downcast_ref::<CellGridPrimitiveLayout>()?;
+        let event = grid.cells_requested(&layout.layout)?;
+        Some(UiEvent::CellGrid(id, event))
     }
 
     /// The single hit-test/dispatch pass over [`Self::overlays`],
@@ -3683,16 +3401,6 @@ impl InteractionEngine {
         let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), id) else {
             return DynWidgetClickOutcome::default();
         };
-        let style = backend.style();
-        let ctx = quadraui::primitive::LayoutCtx {
-            line_height: quadraui::primitive::LayoutCtx::resolve_row_height(
-                backend.chrome_line_height(),
-                &style,
-            ),
-            char_width: backend.char_width(),
-            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-        };
-        let layout = widget.layout(&ctx, area);
         let local = Point::new(position.x - area.x, position.y - area.y);
         let routed = RoutedEvent::Pointer {
             kind: if double_click {
@@ -3704,6 +3412,115 @@ impl InteractionEngine {
             local,
             mods: modifiers,
         };
+        self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink)
+    }
+
+    /// Routes a `KeyPressed`/`CharTyped`/`ClipboardPaste` to whichever
+    /// [`crate::layout::LeafDescriptor::Widget`] leaf currently holds
+    /// engine focus, through that leaf's own [`DynWidget::handle`] — the
+    /// generic seam's counterpart of the hand-written focused-key blocks
+    /// [`Self::handle`] already has for `"form"`/`"tree_table_controller"`.
+    /// `CharTyped`/`ClipboardPaste` both map to [`RoutedEvent::Text`], the
+    /// same shape a committed IME string arrives as — a widget whose
+    /// `Interactive::handle` treats "text with no active edit" as the
+    /// start of one (e.g. [`CellGrid`]) treats a paste the same way; see
+    /// [`CellGridEvent`]'s own doc for why that means a paste never
+    /// spreads across more than the cursor cell here, unlike the deleted
+    /// [`CellGridController`]-based `PasteRequested` wire event. An empty
+    /// [`DynWidgetClickOutcome`] (no-op) when nothing is focused, or the
+    /// focused id doesn't name a `PaintedHit::Widget` this frame.
+    fn dispatch_dyn_widget_key(
+        &self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> DynWidgetClickOutcome {
+        let Some(focused) = backend.focus_manager().focused().copied() else {
+            return DynWidgetClickOutcome::default();
+        };
+        let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), focused) else {
+            return DynWidgetClickOutcome::default();
+        };
+        let routed = match event {
+            UiEvent::KeyPressed {
+                key,
+                modifiers,
+                repeat,
+                ..
+            } => RoutedEvent::Key(KeyEvent {
+                key: key.clone(),
+                modifiers: *modifiers,
+                repeat: *repeat,
+            }),
+            UiEvent::CharTyped(c) => RoutedEvent::Text(c.to_string()),
+            UiEvent::ClipboardPaste(text) => RoutedEvent::Text(text.clone()),
+            _ => return DynWidgetClickOutcome::default(),
+        };
+        self.dyn_widget_dispatch(focused, &widget, area, routed, backend, sink)
+    }
+
+    /// Routes a `MouseMoved`/`MouseUp` to whichever [`PaintedHit::Widget`]
+    /// leaf currently holds [`Self::dyn_widget_capture`] — the generic
+    /// seam's counterpart of [`Self::active_drag`]/[`Self::scrollbar_drag`]/
+    /// [`Self::column_drag`]/[`Self::scroll_drag`]'s own drag-continuation
+    /// routing, needed because [`EventHost::capture_pointer`]'s own
+    /// contract ("route every subsequent pointer event to `id` ...
+    /// regardless of where the pointer moves") has no generic
+    /// implementation yet outside those four bespoke state machines. An
+    /// empty [`DynWidgetClickOutcome`] (no-op) when nothing is captured,
+    /// or the captured id doesn't name a `PaintedHit::Widget` this frame
+    /// (it stopped painting mid-drag).
+    fn dispatch_dyn_widget_captured_move(
+        &self,
+        position: Point,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> DynWidgetClickOutcome {
+        let Some(id) = *self.dyn_widget_capture.borrow() else {
+            return DynWidgetClickOutcome::default();
+        };
+        let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), id) else {
+            return DynWidgetClickOutcome::default();
+        };
+        let routed = RoutedEvent::Pointer {
+            kind: PointerKind::Move,
+            sub: None,
+            local: Point::new(position.x - area.x, position.y - area.y),
+            mods: Modifiers::default(),
+        };
+        self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink)
+    }
+
+    /// Runs `widget.handle` for one already-constructed [`RoutedEvent`]
+    /// against `area`, applying whatever [`EventCx`] intents it recorded
+    /// (focus/redraw/emit/pointer-capture) the same way regardless of
+    /// which caller (click, focused-key, or captured-drag routing)
+    /// resolved the event — and, whenever the call produced a real
+    /// outcome (not a bare [`Handled::Ignored`]), also checks
+    /// [`Self::dyn_widget_cells_requested`] and dispatches its own event
+    /// too, mirroring the deleted [`CellGridController`]-based
+    /// `dispatch_cell_grid_outcome`'s identical "whenever outcome wasn't
+    /// Ignored" doc.
+    fn dyn_widget_dispatch(
+        &self,
+        id: WidgetId,
+        widget: &Rc<dyn DynWidget>,
+        area: Rect,
+        routed: RoutedEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> DynWidgetClickOutcome {
+        let style = backend.style();
+        let ctx = quadraui::primitive::LayoutCtx {
+            line_height: quadraui::primitive::LayoutCtx::resolve_row_height(
+                backend.chrome_line_height(),
+                &style,
+            ),
+            char_width: backend.char_width(),
+            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+        };
+        let layout = widget.layout(&ctx, area);
+
         let mut intents = DynWidgetIntents::default();
         let handled = {
             let mut states = self.dyn_widget_state.borrow_mut();
@@ -3718,7 +3535,16 @@ impl InteractionEngine {
 
         let mut outcome = DynWidgetClickOutcome::default();
         if let Some(focus_id) = intents.focus_request {
-            backend.set_focus(Some(focus_id));
+            if backend.set_focus(Some(focus_id)) {
+                let focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(focus_id)), None);
+                outcome.reaction = outcome.reaction.merge(focus_reaction);
+            }
+        }
+        if intents.capture_requested {
+            *self.dyn_widget_capture.borrow_mut() = Some(id);
+        }
+        if intents.release_requested {
+            *self.dyn_widget_capture.borrow_mut() = None;
         }
         if intents.redraw {
             outcome.reaction = outcome.reaction.merge(quadraui::Reaction::Redraw);
@@ -3734,6 +3560,15 @@ impl InteractionEngine {
                 outcome.reaction = outcome.reaction.merge(quadraui::Reaction::Redraw);
             }
             Handled::Ignored => {}
+        }
+
+        if outcome.event.is_some() || outcome.consumed {
+            if let Some(cells_requested) =
+                self.dyn_widget_cells_requested(id, outcome.event.as_ref(), backend)
+            {
+                let reaction = sink.dispatch(&cells_requested, Some(&HitDetail::WidgetBody));
+                outcome.reaction = outcome.reaction.merge(reaction);
+            }
         }
         outcome
     }
@@ -3828,15 +3663,34 @@ impl InteractionEngine {
                     }
                 }
             }
-            // Same reset for a `"cell_grid"` extra's own in-progress
-            // range-selection drag — `CellGridController::handle`'s own
-            // `MouseUp` arm clears `drag_anchor` unconditionally too, so
-            // a release outside the grid's own rect still ends it.
-            for id in self.cell_grid_order.borrow().iter() {
-                let rect = self.cell_grid_contexts.borrow().get(id).map(|ctx| ctx.rect);
-                if let Some(rect) = rect {
-                    if let Some(controller) = self.cell_grid_controllers.borrow_mut().get_mut(id) {
-                        let _ = controller.handle(&event, backend, rect);
+            // Ends a [`Self::dyn_widget_capture`] drag the same way — a
+            // captured `DynWidget` (e.g. `CellGrid`'s own
+            // drag-to-extend-selection) gets this `MouseUp` routed to it
+            // first, so its own `RoutedEvent::Pointer { kind:
+            // PointerKind::Up, .. }` arm can clear whatever drag state it
+            // holds (`CellGridState::drag_anchor`), then the capture is
+            // cleared unconditionally regardless of what `handle`
+            // reported — mirrors every reset above: a release outside the
+            // widget's own rect still ends it.
+            let captured = self.dyn_widget_capture.borrow_mut().take();
+            if let Some(id) = captured {
+                let hit = dyn_widget_hit(&self.hit_map.borrow(), id);
+                if let Some((area, widget)) = hit {
+                    if let UiEvent::MouseUp {
+                        position, button, ..
+                    } = &event
+                    {
+                        let routed = RoutedEvent::Pointer {
+                            kind: PointerKind::Up(*button),
+                            sub: None,
+                            local: Point::new(position.x - area.x, position.y - area.y),
+                            mods: Modifiers::default(),
+                        };
+                        let outcome =
+                            self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink);
+                        if let Some(further) = outcome.event {
+                            let _ = sink.dispatch(&further, Some(&HitDetail::WidgetBody));
+                        }
                     }
                 }
             }
@@ -4082,51 +3936,36 @@ impl InteractionEngine {
         }
 
         // A `KeyPressed`/`CharTyped`/`ClipboardPaste` landing on a
-        // focused `"cell_grid"` extra routes through its own cached
-        // [`CellGridController`] — `CellGridController::handle` does its
-        // own internal `Ignored`-when-nothing-to-do gate for every key it
-        // doesn't recognize, so trying this unconditionally is safe even
-        // when no cell grid is focused: `cell_grid_contexts` then has no
-        // entry for the focused id. `CharTyped`/`ClipboardPaste` reach
-        // this block (unlike the plain `KeyPressed`-only tree-table block
-        // above) because typing a bare character with no active edit
-        // starts one, and a paste with no active edit becomes a
-        // selection-anchored range paste — both only resolve from inside
-        // `CellGridController::handle` itself. Unlike the tree-table
-        // block above, `CellGridController::handle` *does* claim Tab/
-        // BackTab (`move_tab`, and `handle_edit_key`'s own in-edit commit)
-        // — but `CellGridControllerDescriptor::tab_stop` always returns
-        // `true`, so `runtime::preprocess_event`'s global Tab cycle
-        // claims the key first and this block never sees it; `move_tab`
-        // is reachable only through a host that routes `KeyPressed`
-        // straight to this engine without going through that cycle.
+        // focused [`crate::extra_paint::WIDGET_KINDS`] leaf (e.g. a
+        // `"cell_grid"`) routes through its own [`DynWidget::handle`] —
+        // the generic seam's counterpart of the `"tree_table_controller"`
+        // block above. `DynWidget::handle` reports [`Handled::Ignored`]
+        // for anything it doesn't recognize, so trying this
+        // unconditionally is safe even when nothing focused names a
+        // `PaintedHit::Widget` this frame. `CharTyped`/`ClipboardPaste`
+        // reach this block (unlike the plain `KeyPressed`-only tree-table
+        // block above) because a widget like [`CellGrid`] treats both as
+        // the [`RoutedEvent::Text`] a committed IME string would produce
+        // — see [`Self::dispatch_dyn_widget_key`]'s own doc for why that
+        // means a paste never spreads past the cursor cell.
         if matches!(
             event,
             UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_)
         ) {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
-                let rect = self
-                    .cell_grid_contexts
-                    .borrow()
-                    .get(&focused)
-                    .map(|ctx| ctx.rect);
-                if let Some(rect) = rect {
-                    let outcome = self
-                        .cell_grid_controllers
-                        .borrow_mut()
-                        .get_mut(&focused)
-                        .map(|controller| {
-                            controller.set_has_focus(true);
-                            controller.handle(&event, backend, rect)
-                        });
-                    if let Some(outcome) = outcome {
-                        if let Some(reaction) =
-                            self.dispatch_cell_grid_outcome(focused, outcome, backend, sink)
-                        {
-                            return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
-                        }
-                    }
-                }
+            let outcome = self.dispatch_dyn_widget_key(&event, backend, sink);
+            if matches!(outcome.reaction, Reaction::Exit) {
+                return outcome.reaction;
+            }
+            if let Some(replacement) = outcome.event {
+                let reaction = sink.dispatch(&replacement, Some(&HitDetail::WidgetBody));
+                return outcome
+                    .reaction
+                    .merge(reaction)
+                    .merge(continue_or_tooltip_redraw(tooltip_dismissed));
+            } else if outcome.consumed {
+                return outcome
+                    .reaction
+                    .merge(continue_or_tooltip_redraw(tooltip_dismissed));
             }
         }
 
@@ -4377,129 +4216,39 @@ impl InteractionEngine {
             }
         }
 
-        // A `MouseDown` lands on at most one `"cell_grid"` extra's own
-        // `rect` — `CellGridController::handle`'s own `mouse_down`
-        // returns `Ignored` for a position outside it (and for every
-        // scrollbar/corner hit it doesn't yet implement — see that
-        // method's own doc) — so trying every cached controller, in
-        // `cell_grid_order`'s deterministic paint order, and stopping at
-        // the first non-`Ignored` result mirrors the `"tree_table_controller"`
-        // claim loop above. No `DoubleClick` arm: `CellGridController::handle`
-        // has none to claim.
-        if matches!(event, UiEvent::MouseDown { .. }) {
-            let claim = self
-                .cell_grid_order
-                .borrow()
-                .iter()
-                .filter_map(|id| {
-                    self.cell_grid_contexts
-                        .borrow()
-                        .get(id)
-                        .map(|ctx| (*id, ctx.rect))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .find_map(|(id, rect)| {
-                    let outcome = self
-                        .cell_grid_controllers
-                        .borrow_mut()
-                        .get_mut(&id)
-                        .map(|controller| controller.handle(&event, backend, rect))?;
-                    (!matches!(outcome, CellGridControllerEvent::Ignored)).then_some((id, outcome))
-                });
-            if let Some((id, outcome)) = claim {
-                // Mirrors the `"tree_table_controller"` claim loop above:
-                // a click a `CellGridController` just claimed also moves
-                // engine-level focus to the extra's own id, so the
-                // `KeyPressed`/`CharTyped`/`ClipboardPaste` routing above
-                // can find it on the very next keystroke.
-                let mut focus_reaction = Reaction::Continue;
-                if backend.set_focus(Some(id)) {
-                    focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(id)), None);
-                    if matches!(focus_reaction, Reaction::Exit) {
-                        return focus_reaction;
-                    }
-                }
-                let reaction = self
-                    .dispatch_cell_grid_outcome(id, outcome, backend, sink)
-                    .unwrap_or(Reaction::Redraw);
-                return focus_reaction.merge(reaction);
-            }
-        }
-
+        // A `MouseDown`/click-to-focus on a `"cell_grid"` leaf no longer
+        // needs a bespoke claim loop here: it now decodes as a
+        // `crate::layout::LeafDescriptor::Widget`, so it hits
+        // `HitDetail::WidgetBody` through the generic hit-test pipeline
+        // below, the same as every other `WIDGET_KINDS` member —
+        // [`Self::dispatch_dyn_widget_click`] (and, through it,
+        // [`Self::dyn_widget_dispatch`]'s own focus-request handling)
+        // covers click-to-focus generically. No `UiEvent::Scroll` arm
+        // either: [`CellGrid::handle`][quadraui::interactive::Interactive::handle]
+        // has no `RoutedEvent::Wheel` arm of its own yet (always
+        // `Handled::Ignored`), same gap the deleted
+        // [`CellGridController`]-based wheel block already documented as
+        // a no-op.
+        //
         // A move with the left button held continues whichever
-        // `"cell_grid"` extra's own in-progress range-selection drag (if
-        // any) the `MouseDown` claim above armed — unlike the `"form"`/
-        // `"tree_table_controller"` blocks above (which only ever
-        // continue a scrollbar-thumb drag, internal state the host never
-        // needs told about), `CellGridController::handle`'s own
-        // `mouse_drag` can report a real `SelectionChanged` as the
-        // dragged range grows, so this routes through
-        // [`Self::dispatch_cell_grid_outcome`] rather than a bare
-        // `Consumed` check.
-        if matches!(
-            event,
-            UiEvent::MouseMoved {
-                buttons: quadraui::ButtonMask { left: true, .. },
-                ..
+        // [`crate::extra_paint::WIDGET_KINDS`] leaf's own in-progress
+        // drag (if any) a prior `MouseDown` armed via
+        // [`EventHost::capture_pointer`] — the generic counterpart of the
+        // `"form"`/`"tree_table_controller"` scrollbar-drag-continuation
+        // blocks above, routed through [`Self::dispatch_dyn_widget_captured_move`]
+        // rather than a bare `Consumed` check since a widget like
+        // [`CellGrid`] can report a real `Navigated` (selection-extending)
+        // event as the dragged range grows.
+        if let UiEvent::MouseMoved { position, .. } = &event {
+            let outcome = self.dispatch_dyn_widget_captured_move(*position, backend, sink);
+            if matches!(outcome.reaction, Reaction::Exit) {
+                return outcome.reaction;
             }
-        ) {
-            let mut reaction = Reaction::Continue;
-            for id in self.cell_grid_order.borrow().iter() {
-                let rect = self.cell_grid_contexts.borrow().get(id).map(|ctx| ctx.rect);
-                if let Some(rect) = rect {
-                    let outcome = self
-                        .cell_grid_controllers
-                        .borrow_mut()
-                        .get_mut(id)
-                        .map(|controller| controller.handle(&event, backend, rect));
-                    if let Some(outcome) = outcome {
-                        if let Some(r) =
-                            self.dispatch_cell_grid_outcome(*id, outcome, backend, sink)
-                        {
-                            reaction = reaction.merge(r);
-                        }
-                    }
-                }
-            }
-            if !matches!(reaction, Reaction::Continue) {
-                return reaction;
-            }
-        }
-
-        // A wheel `Scroll` landing inside a `"cell_grid"` extra's own
-        // rect routes through its cached `CellGridController` — mirrors
-        // the `"tree_table_controller"` block above, kept even though
-        // `CellGridController::handle` has no `UiEvent::Scroll` arm of
-        // its own yet (always `Ignored`): a future wheel-scroll addition
-        // there needs no further engine-side wiring once this exists.
-        if let UiEvent::Scroll { position, .. } = &event {
-            let claim = self
-                .cell_grid_order
-                .borrow()
-                .iter()
-                .filter_map(|id| {
-                    self.cell_grid_contexts
-                        .borrow()
-                        .get(id)
-                        .map(|ctx| (*id, ctx.rect))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .find(|(_, rect)| rect.contains(*position));
-            if let Some((id, rect)) = claim {
-                let outcome = self
-                    .cell_grid_controllers
-                    .borrow_mut()
-                    .get_mut(&id)
-                    .map(|controller| controller.handle(&event, backend, rect));
-                if let Some(outcome) = outcome {
-                    if let Some(reaction) =
-                        self.dispatch_cell_grid_outcome(id, outcome, backend, sink)
-                    {
-                        return reaction;
-                    }
-                }
+            if let Some(replacement) = outcome.event {
+                let reaction = sink.dispatch(&replacement, Some(&HitDetail::WidgetBody));
+                return outcome.reaction.merge(reaction);
+            } else if outcome.consumed {
+                return outcome.reaction;
             }
         }
 
@@ -5569,20 +5318,19 @@ mod tests {
 
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, Cell, Column, ColumnAlign, ColumnWidth, DataTable, Key,
-        ListView, Modifiers, MouseButton, NamedKey, Point, Reaction, Rect, ScrollAxis, ScrollDelta,
-        Split, StyledSpan, StyledText, TabBar, TabBarEvent, TabBarHit, TextDisplay,
-        TextDisplayLine, TextInput, ToolbarEvent, TreeEvent, TreeView, UiEvent, WidgetId,
+        AppLogic, Backend, Button, Cell, CellGrid, CellGridEvent, Column, ColumnAlign, ColumnWidth,
+        DataTable, Key, ListView, Modifiers, MouseButton, NamedKey, Point, Reaction, Rect,
+        ScrollAxis, ScrollDelta, Split, StyledSpan, StyledText, TabBar, TabBarEvent, TabBarHit,
+        TextDisplay, TextDisplayLine, TextInput, ToolbarEvent, TreeEvent, TreeView, UiEvent,
+        WidgetId,
     };
 
     use super::{
-        style_token, theme_token, viewport_rect, CellGridControllerWireEvent, EventSink,
-        InteractionEngine, TreeTableControllerWireEvent,
+        style_token, theme_token, viewport_rect, EventSink, InteractionEngine,
+        TreeTableControllerWireEvent,
     };
     use crate::drag::find_split_tree_layout;
-    use crate::extra_paint::{
-        CellGridControllerDescriptor, TreeTableControllerDescriptor, TreeTableControllerNode,
-    };
+    use crate::extra_paint::{TreeTableControllerDescriptor, TreeTableControllerNode};
     use crate::hit::{HitDetail, PaintedHit};
     use crate::host::{
         render_overlays, resolve_data_table_cursor, resolve_layout_node,
@@ -5614,10 +5362,6 @@ mod tests {
         /// mirrors [`Self::tree_table_dispatched`] for the drag-gesture
         /// counterpart.
         drag_gesture_dispatched: Vec<DragGestureWireEvent>,
-        /// Every [`EventSink::dispatch_cell_grid_controller`] call, in
-        /// order — mirrors [`Self::tree_table_dispatched`] for the
-        /// `"cell_grid"` counterpart.
-        cell_grid_dispatched: Vec<(WidgetId, CellGridControllerWireEvent)>,
     }
 
     impl EventSink for RecordingSink {
@@ -5637,15 +5381,6 @@ mod tests {
 
         fn dispatch_drag_gesture(&mut self, event: DragGestureWireEvent) -> Reaction {
             self.drag_gesture_dispatched.push(event);
-            Reaction::Continue
-        }
-
-        fn dispatch_cell_grid_controller(
-            &mut self,
-            id: WidgetId,
-            event: CellGridControllerWireEvent,
-        ) -> Reaction {
-            self.cell_grid_dispatched.push((id, event));
             Reaction::Continue
         }
     }
@@ -6129,23 +5864,73 @@ mod tests {
         );
     }
 
-    /// Mirrors [`TreeTableControllerLogic`], for the `"cell_grid"` seam
-    /// instead.
-    struct CellGridControllerLogic {
-        descriptor: RefCell<CellGridControllerDescriptor>,
+    /// Mirrors [`TreeTableControllerLogic`], for the generic
+    /// [`crate::extra_paint::WIDGET_KINDS`] seam's `"cell_grid"` member
+    /// instead: unlike that cached-controller logic, there is no engine-
+    /// owned state to seed once and forget — `self.grid` is the single
+    /// source of truth a real host would keep, and [`Self::apply`]
+    /// round-trips every dispatched [`CellGridEvent`] back onto it after
+    /// each `handle` call, the same "host owns the state, the widget only
+    /// ever reports what changed" contract [`CellGridEvent::Navigated`]'s
+    /// own doc describes.
+    struct CellGridLogic {
+        grid: RefCell<CellGrid>,
         engine: InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
 
-    impl AppLogic for CellGridControllerLogic {
+    impl CellGridLogic {
+        /// Applies one dispatched [`CellGridEvent`] onto [`Self::grid`] —
+        /// idempotent and order-preserving, so replaying the same event
+        /// twice (or the whole history every `handle` call, rather than
+        /// only the newest slice) converges to the same state either way.
+        fn apply(&self, event: &CellGridEvent) {
+            let mut grid = self.grid.borrow_mut();
+            match event {
+                CellGridEvent::Navigated {
+                    cursor,
+                    selection_anchor,
+                    row_scroll,
+                    col_scroll,
+                } => {
+                    grid.cursor = *cursor;
+                    grid.selection_anchor = *selection_anchor;
+                    grid.row_scroll = *row_scroll;
+                    grid.col_scroll = *col_scroll;
+                }
+                CellGridEvent::CellEditStarted { edit, .. }
+                | CellGridEvent::CellEditChanged { edit, .. } => {
+                    grid.editing = Some(edit.clone());
+                }
+                CellGridEvent::CellEditCommitted { .. }
+                | CellGridEvent::CellEditCancelled { .. } => {
+                    grid.editing = None;
+                }
+                // `CellEditRequested` names no new state of its own to
+                // apply (a host picks its own seed text for the editor,
+                // the module doc's "no cell content to seed itself with"
+                // gap), and `CellsRequested` is answered by swapping in a
+                // new `cells`/`loaded_row_start`/`loaded_col_start`
+                // block, which a test applies directly rather than
+                // through this generic round-trip.
+                _ => {}
+            }
+        }
+    }
+
+    impl AppLogic for CellGridLogic {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let area = viewport_rect(backend);
-            let descriptor = self.descriptor.borrow().clone();
+            let grid = self.grid.borrow().clone();
+            let id = grid.id.as_str().to_string();
             let content = LayoutNode::Leaf(LayoutLeaf {
-                id: descriptor.id.as_str().to_string(),
-                descriptor: LeafDescriptor::Extra(Rc::new(descriptor)),
+                id,
+                descriptor: LeafDescriptor::Widget {
+                    kind: "cell_grid",
+                    widget: Rc::new(grid),
+                },
                 scroll_px: None,
             });
             let mut hits = Vec::new();
@@ -6160,26 +5945,44 @@ mod tests {
         }
 
         fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-            self.engine
-                .handle(event, backend, &mut *self.sink.borrow_mut())
+            let reaction = self
+                .engine
+                .handle(event, backend, &mut *self.sink.borrow_mut());
+            let id = self.grid.borrow().id;
+            let events: Vec<CellGridEvent> = self
+                .sink
+                .borrow()
+                .dispatched
+                .iter()
+                .filter_map(|(ev, _)| match ev {
+                    UiEvent::CellGrid(ev_id, cg_ev) if *ev_id == id => Some(cg_ev.clone()),
+                    _ => None,
+                })
+                .collect();
+            for ev in &events {
+                self.apply(ev);
+            }
+            reaction
         }
     }
 
     /// A 20x5 sheet with only 2 loaded rows — deliberately fewer than a
     /// 10-cell-tall viewport needs, so the very first routed event
-    /// exercises [`InteractionEngine::cell_grid_cells_requested`] without
+    /// exercises [`InteractionEngine::dyn_widget_cells_requested`] without
     /// any scroll having happened yet. `cells[r][c]` is `"r{r}c{c}"`, a
     /// value every test can assert against unambiguously by position.
-    fn small_window_cell_grid_descriptor() -> CellGridControllerDescriptor {
+    fn small_window_cell_grid() -> CellGrid {
         let cells = (0..2)
             .map(|r| (0..5).map(|c| Cell::plain(format!("r{r}c{c}"))).collect())
             .collect();
-        CellGridControllerDescriptor {
+        CellGrid {
             id: WidgetId::new("cg"),
             row_count: 20,
             col_count: 5,
             frozen_rows: 0,
             frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
             default_row_height: 1.0,
             default_col_width: 8.0,
             row_heights: Default::default(),
@@ -6188,27 +5991,26 @@ mod tests {
             show_col_headers: true,
             row_labels: Default::default(),
             col_labels: Default::default(),
+            cursor: (0, 0),
+            selection_anchor: None,
             cells,
             loaded_row_start: 0,
             loaded_col_start: 0,
-            cursor: (0, 0),
-            selection_anchor: None,
-            row_scroll: 0,
-            col_scroll: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         }
     }
 
-    /// A click inside the `"cell_grid"` extra both click-focuses it (so
-    /// the next keystroke reaches it) and reports a `CursorMoved` through
-    /// [`EventSink::dispatch_cell_grid_controller`] — the same "claim ->
-    /// focus -> dispatch" shape the tree-table-controller claim loop
-    /// exercises in [`tree_table_controller_double_click_activates_row`].
+    /// A click inside the `"cell_grid"` leaf both click-focuses it (so the
+    /// next keystroke reaches it) and reports a `Navigated` event through
+    /// the generic [`EventSink::dispatch`] — the same "claim -> focus ->
+    /// dispatch" shape the tree-table-controller claim loop exercises in
+    /// [`tree_table_controller_double_click_activates_row`].
     #[test]
-    fn cell_grid_controller_click_moves_cursor_and_focuses() {
-        let logic = CellGridControllerLogic {
-            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
+    fn cell_grid_click_moves_cursor_and_focuses() {
+        let logic = CellGridLogic {
+            grid: RefCell::new(small_window_cell_grid()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6224,32 +6026,35 @@ mod tests {
         assert_eq!(
             driver.backend().focus_manager().focused(),
             Some(&WidgetId::new("cg")),
-            "clicking a cell should click-focus the cell_grid extra"
+            "clicking a cell should click-focus the cell_grid leaf"
         );
-        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
-            dispatched.iter().any(|(id, ev)| {
-                *id == WidgetId::new("cg")
-                    && matches!(
-                        ev,
-                        CellGridControllerWireEvent::CursorMoved { row: 0, col: 0 }
-                    )
-            }),
+            dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::CellGrid(
+                    id,
+                    CellGridEvent::Navigated {
+                        cursor: (0, 0),
+                        ..
+                    }
+                ) if *id == WidgetId::new("cg")
+            )),
             "clicking the first body cell should move the cursor to (0, 0): {:?}",
             dispatched
         );
     }
 
-    /// A left-button drag across more than one cell reports a
-    /// `SelectionChanged` with the normalized rectangular bounds — the
-    /// MouseMoved-drag-continue block routes through
-    /// [`InteractionEngine::dispatch_cell_grid_outcome`] rather than a
-    /// bare `Consumed` check specifically so this reaches `sink` (see
-    /// that method's own doc).
+    /// A left-button drag across more than one cell reports a `Navigated`
+    /// event with the extended selection anchor — the generic captured-
+    /// drag routing ([`InteractionEngine::dispatch_dyn_widget_captured_move`])
+    /// routes through the full [`InteractionEngine::dyn_widget_dispatch`]
+    /// rather than a bare `Consumed` check specifically so this reaches
+    /// `sink` (see that method's own doc).
     #[test]
-    fn cell_grid_controller_drag_extends_selection() {
-        let logic = CellGridControllerLogic {
-            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
+    fn cell_grid_drag_extends_selection() {
+        let logic = CellGridLogic {
+            grid: RefCell::new(small_window_cell_grid()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6259,33 +6064,32 @@ mod tests {
         driver.drag(9.0, 1.5, 17.0, 2.5);
         driver.render();
 
-        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
-            dispatched.iter().any(|(id, ev)| {
-                *id == WidgetId::new("cg")
-                    && matches!(
-                        ev,
-                        CellGridControllerWireEvent::SelectionChanged {
-                            top: 0,
-                            left: 0,
-                            bottom: 1,
-                            right: 1,
-                        }
-                    )
-            }),
-            "dragging from (0, 0) to (1, 1) should report that rectangular selection: {:?}",
+            dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::CellGrid(
+                    id,
+                    CellGridEvent::Navigated {
+                        cursor: (1, 1),
+                        selection_anchor: Some((0, 0)),
+                        ..
+                    }
+                ) if *id == WidgetId::new("cg")
+            )),
+            "dragging from (0, 0) to (1, 1) should report that selection: {:?}",
             dispatched
         );
     }
 
     /// The loaded `cells` window (2 rows) doesn't cover what a 10-cell-tall
-    /// viewport needs — [`InteractionEngine::cell_grid_cells_requested`]
+    /// viewport needs — [`InteractionEngine::dyn_widget_cells_requested`]
     /// catches this on the very first routed event, with no scroll
     /// required to trigger it.
     #[test]
-    fn cell_grid_controller_requests_cells_when_window_too_small() {
-        let logic = CellGridControllerLogic {
-            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
+    fn cell_grid_requests_cells_when_window_too_small() {
+        let logic = CellGridLogic {
+            grid: RefCell::new(small_window_cell_grid()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6295,43 +6099,45 @@ mod tests {
         driver.click(9.0, 1.5);
         driver.render();
 
-        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
-            dispatched.iter().any(|(id, ev)| {
-                *id == WidgetId::new("cg")
-                    && matches!(
-                        ev,
-                        CellGridControllerWireEvent::CellsRequested {
-                            row_start: 0,
-                            col_start: 0,
-                            ..
-                        }
-                    )
-            }),
+            dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::CellGrid(
+                    id,
+                    CellGridEvent::CellsRequested {
+                        row_start: 0,
+                        col_start: 0,
+                        ..
+                    }
+                ) if *id == WidgetId::new("cg")
+            )),
             "a 2-row loaded window under a taller viewport should request more rows: {:?}",
             dispatched
         );
     }
 
-    /// Mirrors [`small_window_cell_grid_descriptor`] but with `frozen_rows:
-    /// 1` and `cells`/`loaded_row_start` already covering the entire
-    /// sheet — regression coverage for [`InteractionEngine::cell_grid_cells_requested`]'s
-    /// probe `CellGrid` needing its own `row_count`/`col_count` set: with
-    /// those left at `0`, [`CellGrid::cells_window`]'s `frozen_rows =
+    /// Mirrors [`small_window_cell_grid`] but with `frozen_rows: 1` and
+    /// `cells`/`loaded_row_start` already covering the entire sheet —
+    /// regression coverage for [`quadraui::CellGrid::cells_requested`]
+    /// needing its own `row_count`/`col_count` set: with those left at
+    /// `0`, [`CellGrid::cells_window`]'s `frozen_rows =
     /// self.frozen_rows.min(self.row_count)` collapsed to `0` and
     /// `row_start = self.loaded_row_start.clamp(frozen_rows, self.row_count)`
     /// collapsed to always-`0`, so a grid with any frozen rows reported
     /// `CellsRequested` forever even when fully loaded.
-    fn frozen_rows_cell_grid_descriptor() -> CellGridControllerDescriptor {
+    fn frozen_rows_cell_grid() -> CellGrid {
         let cells = (0..20)
             .map(|r| (0..5).map(|c| Cell::plain(format!("r{r}c{c}"))).collect())
             .collect();
-        CellGridControllerDescriptor {
+        CellGrid {
             id: WidgetId::new("cg"),
             row_count: 20,
             col_count: 5,
             frozen_rows: 1,
             frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
             default_row_height: 1.0,
             default_col_width: 8.0,
             row_heights: Default::default(),
@@ -6345,17 +6151,16 @@ mod tests {
             loaded_col_start: 0,
             cursor: (0, 0),
             selection_anchor: None,
-            row_scroll: 0,
-            col_scroll: 0,
             has_focus: true,
             show_scrollbar: false,
+            editing: None,
         }
     }
 
     #[test]
-    fn cell_grid_controller_frozen_rows_fully_loaded_does_not_request_cells() {
-        let logic = CellGridControllerLogic {
-            descriptor: RefCell::new(frozen_rows_cell_grid_descriptor()),
+    fn cell_grid_frozen_rows_fully_loaded_does_not_request_cells() {
+        let logic = CellGridLogic {
+            grid: RefCell::new(frozen_rows_cell_grid()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6365,30 +6170,31 @@ mod tests {
         driver.click(9.0, 1.5);
         driver.render();
 
-        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
-            !dispatched.iter().any(|(id, ev)| {
-                *id == WidgetId::new("cg")
-                    && matches!(ev, CellGridControllerWireEvent::CellsRequested { .. })
-            }),
+            !dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::CellGrid(id, CellGridEvent::CellsRequested { .. })
+                    if *id == WidgetId::new("cg")
+            )),
             "a `frozen_rows > 0` grid whose `cells`/`loaded_row_start` already cover the \
              whole sheet must not request more cells: {:?}",
             dispatched
         );
     }
 
-    /// After a host answers an initial [`CellGridControllerWireEvent::CellsRequested`]
-    /// by loading exactly the named block, a later event that moves the
-    /// cursor back onto the already-loaded window (same screen position,
-    /// now mapped to the scrolled block) must not see the request repeat
-    /// — the regression this covers is [`CellGrid::cells_window`]'s
-    /// `row_start`/`col_start` landing on `0` regardless of the
-    /// `loaded_row_start`/`loaded_col_start` the host just answered with,
-    /// which kept re-requesting the same block forever.
+    /// After a host answers an initial `CellsRequested` by loading exactly
+    /// the named block, a later event that moves the cursor back onto the
+    /// already-loaded window (same screen position, now mapped to the
+    /// scrolled block) must not see the request repeat — the regression
+    /// this covers is [`CellGrid::cells_window`]'s `row_start`/`col_start`
+    /// landing on `0` regardless of the `loaded_row_start`/`loaded_col_start`
+    /// the host just answered with, which kept re-requesting the same
+    /// block forever.
     #[test]
-    fn cell_grid_controller_cells_requested_does_not_repeat_after_host_loads_window() {
-        let logic = CellGridControllerLogic {
-            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
+    fn cell_grid_cells_requested_does_not_repeat_after_host_loads_window() {
+        let logic = CellGridLogic {
+            grid: RefCell::new(small_window_cell_grid()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6396,14 +6202,13 @@ mod tests {
         // This test clicks the same screen position twice, with no real
         // wall-clock delay between them — without this, `TuiBackend`'s
         // own `DoubleClickDetector` would fold the second click into a
-        // `DoubleClick` (which `CellGridController::handle` has no arm
-        // for) instead of delivering the plain `MouseDown` this test
-        // means to send.
+        // `DoubleClick` instead of delivering the plain `MouseDown` this
+        // test means to send.
         driver.set_double_click_folding(false);
         driver.render();
         driver.click(9.0, 1.5);
         driver.render();
-        driver.app().sink.borrow_mut().cell_grid_dispatched.clear();
+        driver.app().sink.borrow_mut().dispatched.clear();
 
         // Scroll past the 2 loaded rows so the visible window's absolute
         // start moves away from 0.
@@ -6411,22 +6216,20 @@ mod tests {
         driver.render();
 
         let (row_start, col_start, rows, cols) = {
-            let dispatched = driver.app().sink.borrow().cell_grid_dispatched.clone();
+            let dispatched = driver.app().sink.borrow().dispatched.clone();
             dispatched
                 .iter()
-                .find_map(|(id, ev)| {
-                    if *id != WidgetId::new("cg") {
-                        return None;
-                    }
-                    match ev {
-                        CellGridControllerWireEvent::CellsRequested {
+                .find_map(|(ev, _)| match ev {
+                    UiEvent::CellGrid(
+                        id,
+                        CellGridEvent::CellsRequested {
                             row_start,
                             col_start,
                             rows,
                             cols,
-                        } => Some((*row_start, *col_start, *rows, *cols)),
-                        _ => None,
-                    }
+                        },
+                    ) if *id == WidgetId::new("cg") => Some((*row_start, *col_start, *rows, *cols)),
+                    _ => None,
                 })
                 .expect("paging down past the 2-row loaded window should request a new block")
         };
@@ -6445,12 +6248,12 @@ mod tests {
             })
             .collect();
         {
-            let mut descriptor = driver.app().descriptor.borrow_mut();
-            descriptor.cells = cells;
-            descriptor.loaded_row_start = row_start;
-            descriptor.loaded_col_start = col_start;
+            let mut grid = driver.app().grid.borrow_mut();
+            grid.cells = cells;
+            grid.loaded_row_start = row_start;
+            grid.loaded_col_start = col_start;
         }
-        driver.app().sink.borrow_mut().cell_grid_dispatched.clear();
+        driver.app().sink.borrow_mut().dispatched.clear();
         driver.render();
 
         // Clicking the same screen position again lands on the (now
@@ -6459,28 +6262,32 @@ mod tests {
         driver.click(9.0, 1.5);
         driver.render();
 
-        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
-            !dispatched.iter().any(|(id, ev)| {
-                *id == WidgetId::new("cg")
-                    && matches!(ev, CellGridControllerWireEvent::CellsRequested { .. })
-            }),
+            !dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::CellGrid(id, CellGridEvent::CellsRequested { .. })
+                    if *id == WidgetId::new("cg")
+            )),
             "once the host has loaded exactly the requested block, a follow-up event \
              should not repeat the request: {:?}",
             dispatched
         );
     }
 
-    /// A terminal bracketed paste with no active edit and no engine focus
-    /// elsewhere reports `PasteRequested` anchored at the current
-    /// selection's top-left corner — the `KeyPressed`/`CharTyped`/
-    /// `ClipboardPaste` focused-routing block (unlike the tree-table-
-    /// controller block it mirrors) also matches `ClipboardPaste` for
-    /// exactly this reason.
+    /// A terminal bracketed paste with no active edit routes through
+    /// [`RoutedEvent::Text`], the same shape committed IME text arrives
+    /// as — [`CellGrid::handle`][quadraui::interactive::Interactive::handle]
+    /// treats it as the start of a fresh edit seeded with the whole
+    /// pasted string, same as typing a bare character with no active
+    /// edit does. Unlike the deleted [`CellGridController`]-based
+    /// `PasteRequested` wire event, this never spreads a multi-line/TSV
+    /// paste across more than the cursor cell — see
+    /// [`InteractionEngine::dispatch_dyn_widget_key`]'s own doc.
     #[test]
-    fn cell_grid_controller_paste_with_no_active_edit_requests_range_paste() {
-        let logic = CellGridControllerLogic {
-            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
+    fn cell_grid_paste_with_no_active_edit_starts_a_single_cell_edit() {
+        let logic = CellGridLogic {
+            grid: RefCell::new(small_window_cell_grid()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6488,37 +6295,38 @@ mod tests {
         driver.render();
         driver.click(9.0, 1.5);
         driver.render();
-        driver.app().sink.borrow_mut().cell_grid_dispatched.clear();
+        driver.app().sink.borrow_mut().dispatched.clear();
 
         driver.dispatch(UiEvent::ClipboardPaste("pasted\ttext".to_string()));
         driver.render();
 
-        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
-            dispatched.iter().any(|(id, ev)| {
-                *id == WidgetId::new("cg")
-                    && matches!(
-                        ev,
-                        CellGridControllerWireEvent::PasteRequested {
-                            anchor_row: 0,
-                            anchor_col: 0,
-                            text,
-                        } if text == "pasted\ttext"
-                    )
-            }),
-            "a bracketed paste with no active edit should report a range PasteRequested anchored at the cursor: {:?}",
+            dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::CellGrid(
+                    id,
+                    CellGridEvent::CellEditStarted {
+                        row: 0,
+                        col: 0,
+                        edit,
+                    }
+                ) if *id == WidgetId::new("cg") && edit.text == "pasted\ttext"
+            )),
+            "a bracketed paste with no active edit should start a single-cell edit \
+             seeded with the whole pasted text: {:?}",
             dispatched
         );
     }
 
     /// Typing a character with no active edit starts one; Enter commits
-    /// it and reports `CellEditCommitted` with the typed text —
-    /// `CharTyped` reaches the cell-grid-controller block for exactly
-    /// this reason (see that block's own doc).
+    /// it and reports `CellEditCommitted` with the typed text — `CharTyped`
+    /// reaches the focused-key block for exactly this reason (see that
+    /// block's own doc).
     #[test]
-    fn cell_grid_controller_typed_edit_commits_on_enter() {
-        let logic = CellGridControllerLogic {
-            descriptor: RefCell::new(small_window_cell_grid_descriptor()),
+    fn cell_grid_typed_edit_commits_on_enter() {
+        let logic = CellGridLogic {
+            grid: RefCell::new(small_window_cell_grid()),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -6532,19 +6340,19 @@ mod tests {
         driver.press_named(NamedKey::Enter);
         driver.render();
 
-        let dispatched = &driver.app().sink.borrow().cell_grid_dispatched;
+        let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
-            dispatched.iter().any(|(id, ev)| {
-                *id == WidgetId::new("cg")
-                    && matches!(
-                        ev,
-                        CellGridControllerWireEvent::CellEditCommitted {
-                            row: 0,
-                            col: 0,
-                            text,
-                        } if text == "x"
-                    )
-            }),
+            dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::CellGrid(
+                    id,
+                    CellGridEvent::CellEditCommitted {
+                        row: 0,
+                        col: 0,
+                        text,
+                    }
+                ) if *id == WidgetId::new("cg") && text == "x"
+            )),
             "typing \"x\" then Enter should commit a CellEditCommitted with that text: {:?}",
             dispatched
         );

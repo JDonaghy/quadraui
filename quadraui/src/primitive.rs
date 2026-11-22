@@ -650,7 +650,17 @@ pub trait Primitive: A11yPrimitive {
 /// `W::State` via [`PrimitiveLayout::as_any`]/[`std::any::Any::downcast_mut`]
 /// and mapping `W::Action` to a [`crate::UiEvent`] via
 /// [`WidgetAction::into_ui_event`].
-pub trait DynWidget: A11yPrimitive {
+pub trait DynWidget: A11yPrimitive + std::any::Any {
+    /// This widget's `&dyn Any` view, for downcasting back to the
+    /// concrete widget type — the [`DynWidget`] counterpart of
+    /// [`PrimitiveLayout::as_any`], for a caller that needs a method this
+    /// trait doesn't erase (e.g. `quadraui::CellGrid::cells_requested`,
+    /// which a binding layer has no generic hook for yet). Prefer
+    /// [`downcast_ref`][dyn@DynWidget::downcast_ref] over calling this
+    /// directly — same `Box`-vs-trait-object pitfall
+    /// [`PrimitiveLayout::as_any`]'s own doc describes.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// This widget's own id, if it carries one — see [`Primitive::id`].
     fn id(&self) -> Option<&WidgetId>;
 
@@ -722,10 +732,14 @@ pub trait DynWidget: A11yPrimitive {
 
 impl<W> DynWidget for W
 where
-    W: Interactive,
+    W: Interactive + 'static,
     W::Layout: 'static,
     W::State: 'static,
 {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Primitive::id(self)
     }
@@ -804,6 +818,18 @@ where
 
     fn capture(&self) -> OwnedContent {
         Primitive::capture(self)
+    }
+}
+
+impl dyn DynWidget {
+    /// Downcast back to a concrete widget type `T` — `self.as_any()` plus
+    /// [`std::any::Any::downcast_ref`] in one call. Inherent to `dyn
+    /// DynWidget` itself, not part of the [`DynWidget`] trait, for the
+    /// same `Box`-erases-the-`Box`-not-the-widget reason
+    /// [`dyn PrimitiveLayout`]'s own `downcast_ref` is inherent — see that
+    /// method's doc.
+    pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.as_any().downcast_ref::<T>()
     }
 }
 
@@ -1046,5 +1072,51 @@ mod tests {
         assert_eq!(state.hovered_idx(), Some(3));
         assert_eq!(state.scroll_px(), None);
         assert!(!state.striped());
+    }
+
+    /// `dyn DynWidget::downcast_ref` recovers the concrete widget behind a
+    /// type-erased `&dyn DynWidget` — the seam a caller with a method
+    /// `DynWidget` itself doesn't erase (e.g.
+    /// `quadraui::CellGrid::cells_requested`) reaches for instead of
+    /// extending the trait's own vtable.
+    #[test]
+    fn dyn_widget_downcast_ref_recovers_the_concrete_type() {
+        use crate::CellGrid;
+
+        let grid = CellGrid {
+            id: WidgetId::new("sheet"),
+            row_count: 1,
+            col_count: 1,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 8.0,
+            row_heights: Default::default(),
+            col_widths: Default::default(),
+            show_row_headers: false,
+            show_col_headers: false,
+            row_labels: Default::default(),
+            col_labels: Default::default(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: Vec::new(),
+            loaded_row_start: 0,
+            loaded_col_start: 0,
+            has_focus: false,
+            show_scrollbar: false,
+            editing: None,
+        };
+        let erased: Box<dyn DynWidget> = Box::new(grid);
+        let recovered = erased
+            .as_ref()
+            .downcast_ref::<CellGrid>()
+            .expect("CellGrid should downcast back out of its own DynWidget erasure");
+        assert_eq!(recovered.id.as_str(), "sheet");
+
+        // A mismatched concrete type downcasts to `None` rather than
+        // panicking.
+        assert!(erased.as_ref().downcast_ref::<crate::Spinner>().is_none());
     }
 }
