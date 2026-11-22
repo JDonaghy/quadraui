@@ -298,7 +298,49 @@ pub trait AppLogic {
     /// Tab/Shift+Tab keystroke arrives and once per frame after
     /// `render`, to resolve the focused widget's rect for
     /// [`crate::Backend::draw_focus_ring`].
+    ///
+    /// Kept alongside [`Self::extra_tab_stops`] rather than deprecated:
+    /// `quadraui-node`/`quadraui-py`/`quadraui-binding-core`'s `BindingHost`
+    /// all override this today, so the shared runner reads *both* lists and
+    /// cycles their concatenation — an app that already overrides this one
+    /// needs no changes, and one that adopts [`Self::extra_tab_stops`]
+    /// instead gets identical behavior.
     fn tab_stops(&self, _area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
+        Vec::new()
+    }
+
+    /// Tab stops not already covered by [`Self::frame_tree`]'s own
+    /// [`crate::interactive::Interactive::focus`] declarations — same
+    /// `(WidgetId, Rect)` pairs in cycle order as [`Self::tab_stops`], read
+    /// and cycled alongside it rather than instead of it (see that method's
+    /// doc for why both exist).
+    ///
+    /// Defaults to empty, meaning **Tab/Shift+Tab pass through to
+    /// [`Self::handle`] completely unclaimed** — zero behavior change for
+    /// every app that doesn't override this.
+    ///
+    /// Once this (or [`Self::tab_stops`]) returns a non-empty list, the
+    /// runner claims Tab/Shift+Tab globally: the shared pipeline intercepts
+    /// them, cycles [`crate::Backend::focus_manager`], and delivers
+    /// [`crate::UiEvent::FocusChanged`] to [`Self::handle`] instead of the
+    /// raw key press — see that event's doc for the exact contract,
+    /// including why a widget that treats literal Tab as input (a code
+    /// editor's indent command, say) should stay out of this list.
+    ///
+    /// Named "extra" because an app whose [`Self::frame_tree`] already
+    /// declares real [`crate::interactive::Interactive::focus`] stops
+    /// doesn't need to repeat them here — that frame tree already feeds
+    /// the [`crate::focus::FocusTree`] the widget-contract routing engine
+    /// cycles internally (`crate::runtime::route_widget_key`,
+    /// `crate::runtime::WidgetEventHost`). This method exists for whatever
+    /// a `frame_tree` can't yet express — a main-tree `"form"` extra
+    /// holding engine focus outside any `Interactive` widget, say.
+    ///
+    /// Called on `&self` (no interior mutability required) both when a
+    /// Tab/Shift+Tab keystroke arrives and once per frame after `render`,
+    /// to resolve the focused widget's rect for
+    /// [`crate::Backend::draw_focus_ring`].
+    fn extra_tab_stops(&self, _area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
         Vec::new()
     }
 
