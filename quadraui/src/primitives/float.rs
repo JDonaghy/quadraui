@@ -42,7 +42,7 @@
 //! It is **not** enforced by this primitive — a `Float` is plain data, same as every
 //! other primitive here — it is carried through to
 //! [`crate::ModalStack`] via [`crate::ModalStack::push_with_focusable`] (push
-//! a non-focusable float with `push_with_focusable(id, bounds, Focusable::No)`
+//! a non-focusable float with `push_with_focusable(id, bounds, false)`
 //! instead of the focusable-by-default [`crate::ModalStack::push`]) and
 //! read back via [`crate::ModalStack::top_focusable`]: the topmost
 //! *focusable* entry, skipping any non-focusable float stacked above it
