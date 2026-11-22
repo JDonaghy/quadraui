@@ -163,6 +163,116 @@ pub fn route_action(
     }
 }
 
+/// The [`crate::frame_tree::FrameTree`] counterpart of [`route_action`]:
+/// feeds an assistive-technology action straight through
+/// [`crate::primitive::DynWidget::handle`] for a
+/// [`crate::frame::Surface::Widget`] id, the same `RoutedEvent::Action`
+/// path a real input event would take
+/// (`crate::runtime::dispatch_widget_routed_event`), instead of
+/// hand-translating the action into a `UiEvent` the way every
+/// `route_*_action` helper above does for its own content kind.
+///
+/// [`route_action`] can't do this itself: it only ever sees an
+/// [`A11yTree`] snapshot (ids, roles, bounds — captured once per frame
+/// from [`crate::frame::OwnedContent`]), never the live widget value
+/// [`crate::interactive::Interactive::handle`] needs to call. This
+/// function takes the live `tree`/`states` pair instead — the same two
+/// types `crate::runtime::preprocess_event`'s widget-routing step already
+/// threads through for a real mouse/keyboard event — so a backend's
+/// `accesskit::ActionHandler` glue calls this (not [`route_action`])
+/// whenever the target node's owner is a `Surface::Widget` id present in
+/// the current frame's [`crate::frame_tree::FrameTree`].
+///
+/// `ctx` supplies the same `line_height`/`char_width`/`nerd_fonts_enabled`
+/// triple a direct input event's [`crate::primitive::LayoutCtx`] would
+/// carry — a caller already has one (it built the frame this action
+/// targets), so this takes it rather than guessing a backend's metrics.
+///
+/// Returns the widget's produced [`UiEvent`](s): any
+/// [`crate::interactive::EventHost::emit`] calls made during `handle`,
+/// followed by its own [`crate::compose::Handled::Event`] payload, if
+/// any — exactly what `dispatch_widget_routed_event` would hand to
+/// `app.handle` for the matching direct-input gesture. Empty (logged)
+/// when `target` has no node in `tree`.
+///
+/// `#[allow(dead_code)]`: like [`route_action`] itself, this is only
+/// ever meant to be called from a backend's `accesskit::ActionHandler`
+/// glue — but unlike `route_action` (called today from
+/// `crate::control`'s command port and the `testing::a11y` harness), no
+/// backend wires an `ActionHandler` up to *either* routing function yet.
+/// That wiring is real, separate, per-backend work, not something this
+/// module can add for its own caller to appear; the function still needs
+/// to exist (and be tested) now so that wiring has something to call.
+#[allow(dead_code)]
+pub fn route_widget_action(
+    tree: &crate::frame_tree::FrameTree,
+    states: &mut crate::widget_state::WidgetStateStore,
+    ctx: &crate::primitive::LayoutCtx,
+    target: WidgetId,
+    action: A11yAction,
+) -> Vec<UiEvent> {
+    let Some(node) = tree.find(&target) else {
+        crate::diagnostics::emit(format!(
+            "a11y: widget action {action:?} has no live FrameTree node for widget {target:?}"
+        ));
+        return Vec::new();
+    };
+
+    let layout = node.widget.layout(ctx, node.rect);
+    let state = states.state_for(target, node.widget.as_ref());
+
+    /// A no-op [`crate::interactive::EventHost`]: an assistive-technology
+    /// action has no cursor to move, no focus-ring geometry to repaint
+    /// immediately, and no pointer to capture, so every request but
+    /// `emit` is simply dropped — only the semantic events `handle`
+    /// produces (via `emit` or its own return value) matter to the
+    /// caller.
+    struct NoopHost {
+        emitted: Vec<UiEvent>,
+        units: crate::primitive::Units,
+    }
+
+    impl crate::interactive::EventHost for NoopHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<crate::interactive::SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, _sub: Option<crate::interactive::SubTarget>) {}
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: crate::backend::PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, event: UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> crate::primitive::Units {
+            self.units
+        }
+    }
+
+    let units = if ctx.line_height <= 1.0 {
+        crate::primitive::Units::Cells
+    } else {
+        crate::primitive::Units::Pixels
+    };
+    let mut host = NoopHost {
+        emitted: Vec::new(),
+        units,
+    };
+    let mut cx = crate::interactive::EventCx::new(target, &mut host);
+    let outcome = node.widget.handle(
+        state,
+        &crate::interactive::RoutedEvent::Action(action),
+        &*layout,
+        &mut cx,
+    );
+
+    let mut events = host.emitted;
+    if let crate::compose::Handled::Event(ui_event) = outcome {
+        events.push(ui_event);
+    }
+    events
+}
+
 /// A synthetic scroll-wheel event routed at `widget` rather than at
 /// whatever happens to be under the pointer — `widget` is what decides
 /// the target, not `position`, since an assistive-technology scroll
@@ -868,5 +978,188 @@ mod tests {
 
         let events = route_action(snapshot.tree(), node, A11yAction::Click, None);
         assert!(events.is_empty());
+    }
+
+    // ─── `route_widget_action` ──────────────────────────────────────────
+
+    use crate::frame_tree::FrameTree;
+    use crate::interactive::{EventCx, FocusSpec, Interactive, RoutedEvent, WidgetAction};
+    use crate::primitive::{LayoutCtx, Primitive};
+    use crate::widget_state::WidgetStateStore;
+    use crate::{Handled, UiEvent};
+
+    /// A toy widget whose `Action::Click` arm matches
+    /// [`A11yAction::Click`] one-for-one, so a test can show both paths
+    /// land on the identical outcome.
+    #[derive(Debug)]
+    struct Toggle {
+        id: WidgetId,
+    }
+
+    #[derive(Debug, Default, PartialEq)]
+    struct ToggleState {
+        on: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct Toggled;
+
+    impl WidgetAction for Toggled {
+        fn into_ui_event(self, id: WidgetId) -> UiEvent {
+            UiEvent::FocusChanged(Some(id))
+        }
+    }
+
+    impl crate::a11y::A11yPrimitive for Toggle {
+        fn a11y_info(&self) -> crate::a11y::A11yInfo {
+            crate::a11y::A11yInfo::default()
+        }
+    }
+
+    impl Primitive for Toggle {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _theme: &crate::theme::Theme,
+            _style: &crate::style::Style,
+        ) {
+        }
+    }
+
+    impl Interactive for Toggle {
+        type State = ToggleState;
+        type Action = Toggled;
+
+        fn focus(&self) -> FocusSpec {
+            FocusSpec::Stop
+        }
+
+        fn handle(
+            &self,
+            state: &mut ToggleState,
+            event: &RoutedEvent,
+            _layout: &Rect,
+            _cx: &mut EventCx,
+        ) -> Handled<Toggled> {
+            match event {
+                RoutedEvent::Action(A11yAction::Click) => {
+                    state.on = !state.on;
+                    Handled::Event(Toggled)
+                }
+                _ => Handled::Ignored,
+            }
+        }
+    }
+
+    fn widget_ctx() -> LayoutCtx {
+        LayoutCtx {
+            line_height: 1.0,
+            char_width: 1.0,
+            nerd_fonts_enabled: false,
+        }
+    }
+
+    #[test]
+    fn route_widget_action_calls_through_to_interactive_handle() {
+        let id = WidgetId::new("toggle");
+        let mut tree = FrameTree::new();
+        tree.push(id, Rect::new(0.0, 0.0, 4.0, 1.0), Box::new(Toggle { id }));
+        let mut states = WidgetStateStore::new();
+
+        let events = route_widget_action(&tree, &mut states, &widget_ctx(), id, A11yAction::Click);
+        assert_eq!(events, vec![UiEvent::FocusChanged(Some(id))]);
+
+        // The widget's own state persisted the mutation `handle` made —
+        // not just the returned `UiEvent`.
+        let state = states
+            .state_for(id, &Toggle { id })
+            .downcast_ref::<ToggleState>()
+            .unwrap();
+        assert!(state.on);
+    }
+
+    #[test]
+    fn route_widget_action_is_empty_and_logged_for_a_missing_node() {
+        let tree = FrameTree::new();
+        let mut states = WidgetStateStore::new();
+
+        let events = route_widget_action(
+            &tree,
+            &mut states,
+            &widget_ctx(),
+            WidgetId::new("missing"),
+            A11yAction::Click,
+        );
+        assert!(events.is_empty());
+    }
+
+    /// The acceptance scenario from the widget-contract routing engine's
+    /// issue: an `A11yAction::Click` through `route_widget_action`
+    /// produces the identical `UiEvent` a direct `RoutedEvent::Action`
+    /// delivery would — proven here by calling `Interactive::handle`
+    /// directly for the "direct input" side instead of going through the
+    /// full `preprocess_event` pipeline (covered end-to-end, with a real
+    /// `TuiBackend`, in `crate::runtime`'s own `widget_routing_tests`).
+    #[test]
+    fn route_widget_action_matches_direct_interactive_handle() {
+        let id = WidgetId::new("toggle:direct");
+        let mut tree = FrameTree::new();
+        tree.push(id, Rect::new(0.0, 0.0, 4.0, 1.0), Box::new(Toggle { id }));
+        let mut states = WidgetStateStore::new();
+
+        let via_a11y =
+            route_widget_action(&tree, &mut states, &widget_ctx(), id, A11yAction::Click);
+
+        struct MockHost;
+        impl crate::interactive::EventHost for MockHost {
+            fn is_focused(
+                &self,
+                _id: &WidgetId,
+                _sub: Option<crate::interactive::SubTarget>,
+            ) -> bool {
+                false
+            }
+            fn request_focus(
+                &mut self,
+                _id: &WidgetId,
+                _sub: Option<crate::interactive::SubTarget>,
+            ) {
+            }
+            fn capture_pointer(&mut self, _id: &WidgetId) {}
+            fn release_pointer(&mut self) {}
+            fn set_cursor(&mut self, _cursor: crate::backend::PointerShape) {}
+            fn request_redraw(&mut self) {}
+            fn emit(&mut self, _event: UiEvent) {}
+            fn units(&self) -> crate::primitive::Units {
+                crate::primitive::Units::Cells
+            }
+        }
+
+        let mut direct_state = ToggleState::default();
+        let mut host = MockHost;
+        let mut cx = EventCx::new(id, &mut host);
+        let direct_outcome = Toggle { id }.handle(
+            &mut direct_state,
+            &RoutedEvent::Action(A11yAction::Click),
+            &Rect::default(),
+            &mut cx,
+        );
+
+        assert_eq!(
+            via_a11y,
+            vec![direct_outcome.into_event().unwrap().into_ui_event(id)]
+        );
     }
 }

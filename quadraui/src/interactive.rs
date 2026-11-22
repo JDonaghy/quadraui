@@ -33,10 +33,12 @@
 //!
 //! # What's explicitly not here
 //!
-//! The runtime that calls [`Interactive::handle`] — translating raw
-//! backend input into [`RoutedEvent`]s, walking focus order, owning the
-//! live [`EventHost`] implementation — is a later issue. This module only
-//! defines the contract; nothing in this crate drives it yet.
+//! This module only defines the contract. The runtime that calls
+//! [`Interactive::handle`] — translating raw backend input into
+//! [`RoutedEvent`]s, walking focus order, owning the live [`EventHost`]
+//! implementation — is `crate::runtime::preprocess_event`'s widget-routing
+//! step, built on [`crate::frame_tree::FrameTree`] and
+//! [`crate::widget_state::WidgetStateStore`].
 
 use crate::a11y::A11yAction;
 use crate::backend::PointerShape;

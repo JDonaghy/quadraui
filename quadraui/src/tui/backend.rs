@@ -1664,6 +1664,14 @@ impl crate::runtime::PreprocessBackend for TuiBackend {
             && !modifiers.alt
             && !modifiers.cmd
     }
+
+    /// The one concrete [`crate::widget_state::WidgetRoutingState`] wiring
+    /// today — see [`crate::runtime::PreprocessBackend::widget_routing_mut`]'s
+    /// doc for why every other backend keeps the trait's `None` default
+    /// instead.
+    fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
+        Some(self.core.widget_routing_mut())
+    }
 }
 
 /// Convert a [`crate::Rect`] (f32 coordinates) to a

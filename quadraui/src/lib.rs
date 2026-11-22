@@ -478,6 +478,16 @@ pub mod primitive;
 // addition, not a precondition for the trait itself to exist.
 pub mod interactive;
 
+// ── Widget-contract routing engine ───────────────────────────────────────
+// `FrameTree` — the current frame's `Interactive` widgets as (id, rect,
+// widget) nodes, and `WidgetStateStore`/`WidgetRoutingState` — persistent
+// per-widget state plus hover/capture bookkeeping. Together they back the
+// hit-test/capture/Enter-Leave/focus/bubbling algorithm in
+// `crate::runtime::preprocess_event`. Compiled unconditionally, same
+// rationale as `primitive`/`interactive` above.
+pub mod frame_tree;
+pub mod widget_state;
+
 // Host-independent paint-geometry helpers — pure rect/inset
 // arithmetic pulled out from behind `src/macos/`'s whole-module
 // `target_os = "macos"` gate (mirrors `src/win/msg.rs`'s equivalent split
@@ -861,6 +871,10 @@ pub use interactive::{
     EventCx, EventHost, FocusSpec, FocusStop, Interactive, KeyEvent, Never, PointerKind,
     RoutedEvent, WidgetAction,
 };
+// The widget-contract routing engine's two public types — see
+// `frame_tree`/`widget_state`'s own module docs.
+pub use frame_tree::{FrameTree, FrameTreeNode};
+pub use widget_state::{WidgetRoutingState, WidgetStateStore};
 // `InteractionState` — a single hover/pressed store keyed by `WidgetId`,
 // meant to replace the bespoke per-primitive trackers and positional arguments
 // (`hovered_id`, `pressed_id`, `hovered_toolbar_id`) the old `Backend` methods
