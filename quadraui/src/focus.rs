@@ -295,6 +295,46 @@ impl FocusTree {
         }
     }
 
+    /// Rebuild this tree's stops from a flat `(WidgetId, Rect)` list — the
+    /// [`FocusAddress`]-keyed counterpart of
+    /// [`FocusManager::sync_tab_order`], for a caller that has
+    /// [`crate::runner::AppLogic::tab_stops`]/
+    /// [`crate::runner::AppLogic::extra_tab_stops`]'s flat shape rather
+    /// than a [`FrameTree`] to rebuild from ([`Self::sync`]'s own source).
+    /// Every stop is addressed `(id, None)` — the flat shape carries no
+    /// [`SubTarget`] to preserve. If the previously-focused address is
+    /// still present in the rebuilt order, focus (and its focus-visible
+    /// state) is preserved; otherwise focus is cleared, matching
+    /// [`FocusManager::sync_tab_order`]'s own contract.
+    ///
+    /// Gated like `mod runtime` itself (the only caller, in
+    /// `crate::runtime::preprocess_event`'s Tab/Shift+Tab step) to avoid a
+    /// dead-code warning on a feature combination that builds this module
+    /// but not that one.
+    #[cfg(any(
+        feature = "tui",
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    pub(crate) fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
+        let rebuilt: Vec<FocusTreeStop> = stops
+            .iter()
+            .map(|(id, rect)| FocusTreeStop {
+                address: (*id, None),
+                rect: *rect,
+            })
+            .collect();
+        let keep_focus = self
+            .focused
+            .as_ref()
+            .is_some_and(|cur| rebuilt.iter().any(|stop| &stop.address == cur));
+        self.stops = rebuilt;
+        if !keep_focus {
+            self.focused = None;
+        }
+    }
+
     /// Every stop's address, in reading order.
     pub fn tab_order(&self) -> Vec<FocusAddress> {
         self.stops.iter().map(|s| s.address).collect()
@@ -941,6 +981,56 @@ mod tests {
             rebuilt_frame.push(a, rect(0.0), Box::new(StopWidget));
             tree.sync(&rebuilt_frame);
 
+            assert_eq!(tree.focused(), None);
+        }
+
+        /// [`FocusTree::sync_tab_order`] — the flat `(WidgetId, Rect)`
+        /// counterpart of [`Self::sync`] that
+        /// `crate::runtime::preprocess_event`'s Tab/Shift+Tab step feeds
+        /// from `AppLogic::tab_stops`/`extra_tab_stops` — addresses every
+        /// stop `(id, None)` and preserves focus by id the same way
+        /// [`FocusManager::sync_tab_order`] does.
+        #[cfg(any(
+            feature = "tui",
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        #[test]
+        fn sync_tab_order_preserves_focus_by_id() {
+            let a = WidgetId::new("a");
+            let b = WidgetId::new("b");
+            let mut tree = FocusTree::new();
+            tree.sync_tab_order(&[(a, rect(0.0)), (b, rect(3.0))]);
+            tree.focus_next();
+            assert_eq!(tree.focused(), Some(&(a, None)));
+
+            // Geometry moved (b now first), but the id is still present.
+            tree.sync_tab_order(&[(b, rect(0.0)), (a, rect(3.0))]);
+            assert_eq!(
+                tree.focused(),
+                Some(&(a, None)),
+                "focus follows the id, not position"
+            );
+        }
+
+        #[cfg(any(
+            feature = "tui",
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        #[test]
+        fn sync_tab_order_clears_focus_when_id_removed() {
+            let a = WidgetId::new("a");
+            let b = WidgetId::new("b");
+            let mut tree = FocusTree::new();
+            tree.sync_tab_order(&[(a, rect(0.0)), (b, rect(3.0))]);
+            tree.focus_next();
+            tree.focus_next();
+            assert_eq!(tree.focused(), Some(&(b, None)));
+
+            tree.sync_tab_order(&[(a, rect(0.0))]);
             assert_eq!(tree.focused(), None);
         }
 
