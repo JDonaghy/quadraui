@@ -291,8 +291,8 @@ form is never a dead end just because the key was left `null`.
 tracked by `WidgetState::resolve` at all -- it is purely cosmetic, read only
 when painting the caret/focus-ring chrome. Which widget actually *receives*
 a typed key or click is decided entirely by the engine's own focus state
-(`backend.focus_manager().focused()`, set by click-to-focus or
-`FocusManager::focus_next`/`focus_prev`), never by this field. A render
+(`backend.focus_tree().focused_id()`, set by click-to-focus or
+`FocusTree::focus_next`/`focus_prev`), never by this field. A render
 callback that never echoes `has_focus: true` back after a `FocusChanged`
 dispatch still gets every subsequent keystroke delivered to that widget --
 only the focus-ring/caret rendering for that one frame would be stale, not

@@ -23,7 +23,7 @@
 //!    still happens on every `MouseMoved`.
 //! 3. **Tab-to-focus + a key reaching the canvas** — `Canvas::focusable`
 //!    is `true`, and this `AppLogic` hand-rolls a single-entry
-//!    `tab_stops` list (no `ScreenLayout` involved — unlike
+//!    `extra_tab_stops` list (no `ScreenLayout` involved — unlike
 //!    `examples/common/focus_demo.rs`, there is only one tab stop here,
 //!    so there is no layout to derive it from). Once the canvas is
 //!    focused (`UiEvent::FocusChanged`), Left/Right moves which region
@@ -63,11 +63,11 @@ pub struct CanvasRegionsDemo {
     /// loses focus (there is nowhere else to Tab to in this demo, so
     /// that only happens before the very first Tab).
     focused: Option<WidgetId>,
-    /// The canvas's own rect, cached at paint time for `tab_stops` to
-    /// read back — `AppLogic::tab_stops` is `&self`-only and gets no
-    /// `Backend`, so the geometry has to be computed where a `Backend`
-    /// *is* available (`render`) and read back here, same pattern
-    /// `examples/common/focus_demo.rs`'s `cached_tab_stops` uses.
+    /// The canvas's own rect, cached at paint time for `extra_tab_stops`
+    /// to read back — `AppLogic::extra_tab_stops` is `&self`-only and
+    /// gets no `Backend`, so the geometry has to be computed where a
+    /// `Backend` *is* available (`render`) and read back here, same
+    /// pattern `examples/common/focus_demo.rs`'s `cached_tab_stops` uses.
     cached_canvas_rect: RefCell<Rect>,
 }
 
@@ -198,7 +198,7 @@ impl AppLogic for CanvasRegionsDemo {
         );
     }
 
-    fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+    fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
         // One tab stop: the canvas itself, gated on `Canvas::focusable` —
         // the same flag `render`/`canvas()` set on the descriptor, read
         // back here rather than hardcoded, so flipping it actually

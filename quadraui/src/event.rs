@@ -794,18 +794,18 @@ pub enum UiEvent {
     ///
     /// Emitted by the shared runner pipeline
     /// ([`crate::runtime::preprocess_event`]) whenever
-    /// [`crate::focus::FocusManager::focus_next`]/`focus_prev` (driven
-    /// by Tab/Shift+Tab) or [`crate::focus::FocusManager::set_focus`]
-    /// actually changes [`crate::Backend::focus_manager`]'s
-    /// [`crate::focus::FocusManager::focused`] value. `None` means focus
+    /// [`crate::focus::FocusTree::focus_next`]/`focus_prev` (driven
+    /// by Tab/Shift+Tab) or [`crate::Backend::set_focus`]
+    /// actually changes [`crate::Backend::focus_tree`]'s
+    /// [`crate::focus::FocusTree::focused`] value. `None` means focus
     /// was cleared — no widget focused. A no-op cycle (e.g. Tab in a
     /// single-widget tab order) does not re-fire this event.
     ///
     /// Routing: broadcast — apps read the new value directly off the
-    /// payload (or off [`crate::Backend::focus_manager`] at any later
+    /// payload (or off [`crate::Backend::focus_tree`] at any later
     /// point) rather than this being routed to a specific widget's
     /// handler. Only fires for apps that opt in by returning a
-    /// non-empty [`crate::runner::AppLogic::tab_stops`].
+    /// non-empty [`crate::runner::AppLogic::extra_tab_stops`].
     FocusChanged(Option<WidgetId>),
 
     // ── System theme change ─────────────────────────────────────────────

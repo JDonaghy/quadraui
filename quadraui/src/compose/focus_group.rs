@@ -1,16 +1,14 @@
 //! `FocusGroup` — a tiny helper for Tab-cycling between N focusable
 //! regions by index.
 //!
-//! Unlike [`FocusRing`](super::FocusRing) (which tracks widget IDs
-//! and starts focused), `FocusGroup` works with plain indices, starts
-//! unfocused (`None`), and supports dynamic `count` changes — the
-//! shape [`crate::compose::sidebar_system`] and
+//! Unlike [`crate::FocusTree`] (which tracks widget ids and starts
+//! wherever the first `focus_next()` lands), `FocusGroup` works with plain
+//! indices, starts unfocused (`None`), and supports dynamic `count`
+//! changes — the shape [`crate::compose::sidebar_system`] and
 //! [`crate::compose::tab_group`] need for regions that get added and
-//! removed at runtime with no natural ID to key by.
+//! removed at runtime with no natural id to key by.
 //!
 //! Typical use: sidebar sections, panel layouts, dialog tab order.
-//! [`FocusRing`](super::FocusRing) is a thin ID-keyed wrapper around
-//! this same cycling engine — see its module doc.
 
 /// Manages Tab-cycling across N focusable regions with wrap-around.
 #[derive(Debug, Clone, PartialEq, Eq)]

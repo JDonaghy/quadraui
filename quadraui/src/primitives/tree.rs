@@ -1326,6 +1326,93 @@ pub(crate) mod native_surface_paint {
             );
         }
 
+        /// A headless, end-to-end proof that `focus_ring_visible` reflects
+        /// [`crate::focus::FocusTree`]'s real Tab-vs-click `:focus-visible`
+        /// convention — composed as `tree.is_focused(id, None) &&
+        /// tree.is_focus_visible()`, the bool a host passes here — and
+        /// that the painted stroke actually tracks it, not just a literal
+        /// `true`/`false` this test assigns itself.
+        #[test]
+        fn focused_tree_row_paints_a_ring_after_tab_than_after_click() {
+            use crate::focus::FocusTree;
+
+            let id = WidgetId::new("sidebar:tree");
+            let mut focus = FocusTree::new();
+            focus.sync_tab_order(&[(id.clone(), Rect::new(0.0, 0.0, 0.0, 0.0))]);
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut tree = make_tree(vec![leaf(0, "alpha")]);
+            tree.id = id.clone();
+            tree.selected_path = Some(vec![0]);
+
+            let paint_and_count_strokes = |focus_ring_visible: bool| -> usize {
+                let layout = crate::primitives::layout_metrics::tree_layout(
+                    &tree,
+                    AREA,
+                    LINE_HEIGHT as f64,
+                    8.0,
+                );
+                let mut surface = RecordingSurface::default();
+                paint(
+                    &tree,
+                    AREA,
+                    &layout,
+                    LINE_HEIGHT,
+                    false,
+                    &mut surface,
+                    &theme,
+                    &style,
+                    None,
+                    None,
+                    focus_ring_visible,
+                );
+                surface.strokes.len()
+            };
+
+            // Tab: `focus_next()` is the real keyboard-move path.
+            focus.focus_next();
+            let focus_ring_visible = focus.is_focused(&id, None) && focus.is_focus_visible();
+            assert!(
+                focus_ring_visible,
+                "a Tab-reached tree must report focus-visible"
+            );
+            assert_eq!(
+                paint_and_count_strokes(focus_ring_visible),
+                1,
+                "a Tab-reached tree's selected row must paint a ring"
+            );
+
+            // Click: `set_focus` re-focuses the same widget via the pointer path.
+            focus.set_focus(Some((id.clone(), None)));
+            let focus_ring_visible = focus.is_focused(&id, None) && focus.is_focus_visible();
+            assert!(
+                focus.is_focused(&id, None),
+                "the click did move focus to this tree"
+            );
+            assert!(
+                !focus_ring_visible,
+                "a mouse click must suppress the tree's focus-visible ring"
+            );
+            assert_eq!(
+                paint_and_count_strokes(focus_ring_visible),
+                0,
+                "a clicked tree's selected row must paint no ring"
+            );
+
+            // Shift+Tab afterwards restores the ring.
+            focus.focus_prev();
+            let focus_ring_visible = focus.is_focused(&id, None) && focus.is_focus_visible();
+            assert!(
+                focus_ring_visible,
+                "a subsequent keyboard move restores focus-visible"
+            );
+            assert_eq!(
+                paint_and_count_strokes(focus_ring_visible),
+                1,
+                "Shift+Tab repaints the same ring Tab did"
+            );
+        }
+
         /// A `scroll_px` amount smaller than the row height
         /// (`layout_with_scroll_px`'s uniform row pitch here) shifts
         /// every painted row's `y` up by that exact remainder — the

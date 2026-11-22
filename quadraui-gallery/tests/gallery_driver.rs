@@ -1062,11 +1062,11 @@ fn form_toggle_click_updates_the_status_line() {
 }
 
 /// Pressing Tab on the `Form` demo's "Search & replace" variant advances
-/// the `FocusRing` from the search field to the toggle group — proves
-/// Tab/Shift+Tab actually drives `FocusRing::advance`, not just that it
+/// the `FocusTree` from the search field to the toggle group — proves
+/// Tab/Shift+Tab actually drives `FocusTree::focus_next`, not just that it
 /// exists on the struct.
 #[test]
-fn form_tab_key_advances_the_focus_ring() {
+fn form_tab_key_advances_the_focus_tree() {
     // Tall enough that the Data tab's full `Form` JSON (4 fields, deeply
     // nested `FieldKind` payloads) fits before `focused_field` — which
     // serialises right after the `fields` array — scrolls out of view.
@@ -1084,7 +1084,7 @@ fn form_tab_key_advances_the_focus_ring() {
     driver.click(dx, dy);
     assert!(
         driver.screen_contains("\"focused_field\": \"toggles\""),
-        "Tab should advance the FocusRing from search to toggles:\n{}",
+        "Tab should advance the FocusTree from search to toggles:\n{}",
         driver.screen()
     );
 }

@@ -24,8 +24,8 @@
 //! paints on `chrome()`'s composed index); `Enter`/`Space` activate the
 //! focused tab; a click focuses+activates a tab without showing the ring
 //! — [`Self::chrome`] passes `None` instead of `self.focused` whenever
-//! [`Self::focus_visible`] is `false`, same suppression convention
-//! [`quadraui::compose::FocusRing::set`] documents for its own click path.
+//! [`Self::focus_visible`] is `false`, the same click-suppresses-the-ring
+//! convention [`quadraui::focus::FocusTree::set_focus`] documents.
 
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,

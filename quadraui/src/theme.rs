@@ -626,7 +626,7 @@ impl Theme {
     /// [`crate::Backend::draw_focus_ring`] paints, and the border a
     /// shared `native_surface_paint` module paints for a focused
     /// [`crate::Button`]/row/field that isn't routed through the
-    /// runner-owned [`crate::focus::FocusManager`] overlay).
+    /// runner-owned [`crate::focus::FocusTree`] overlay).
     ///
     /// **A method, not a field** — the same reasoning as
     /// [`Self::tab_active_border_top`]: every palette that already sets

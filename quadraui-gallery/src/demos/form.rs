@@ -4,14 +4,14 @@
 //! Four variants cover the `Form` primitive's range: every `FieldKind`
 //! laid out statically, a small interactive search/replace panel
 //! (toggle group, button row, an embedded toolbar field, and
-//! [`FocusRing`]-driven Tab/Shift+Tab cycling), a 20-field settings panel
+//! [`FocusTree`]-driven Tab/Shift+Tab cycling), a 20-field settings panel
 //! long enough to need [`FormController`]'s built-in scrollbar, and a
 //! label-placement reference sheet exercising `label_position` /
 //! `label_align` / `label_width` (an aligned `Left` label column shared by
 //! two fields, plus `Top`, `Inline` and `Hidden` variants on the rest).
 
 use quadraui::{
-    Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusRing,
+    Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusTree,
     Form, FormController, FormControllerAction, FormEvent, FormField, FormHit, Handled,
     InteractionState, Key, LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect,
     StatusBar, StatusBarSegment, Style, StyledText, ToggleGroupItem, Toolbar, ToolbarButton,
@@ -38,6 +38,22 @@ fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> 
 }
 
 // gallery:begin
+/// Builds a [`FocusTree`] whose tab order is a fixed list of ids, each
+/// addressing the whole field (no `SubTarget`, no real on-screen rect —
+/// this demo drives Tab/Shift+Tab itself rather than through the
+/// runner's `AppLogic::extra_tab_stops`), already landed on the first
+/// stop so the panel opens with a visible focus target.
+fn focus_ring(ids: &[&str]) -> FocusTree {
+    let mut tree = FocusTree::new();
+    let stops: Vec<(WidgetId, Rect)> = ids
+        .iter()
+        .map(|id| (WidgetId::new(*id), Rect::new(0.0, 0.0, 0.0, 0.0)))
+        .collect();
+    tree.sync_tab_order(&stops);
+    tree.focus_next();
+    tree
+}
+
 /// Variant 1 ("Search & replace") state: a mini find/replace panel.
 struct SearchReplaceState {
     search_query: String,
@@ -45,7 +61,7 @@ struct SearchReplaceState {
     case_sensitive: bool,
     whole_word: bool,
     regex: bool,
-    focus: FocusRing,
+    focus: FocusTree,
     last_action: String,
 }
 
@@ -57,7 +73,7 @@ impl SearchReplaceState {
             case_sensitive: true,
             whole_word: false,
             regex: false,
-            focus: FocusRing::new(vec!["search", "toggles", "replace", "buttons"]),
+            focus: focus_ring(&["search", "toggles", "replace", "buttons"]),
             last_action: "—".into(),
         }
     }
@@ -179,7 +195,7 @@ impl SearchReplaceState {
                     row_align: None,
                 },
             ],
-            focused_field: self.focus.current().cloned(),
+            focused_field: self.focus.focused_id().copied(),
             scroll_offset: 0,
             has_focus: true,
             label_position: Default::default(),
@@ -213,7 +229,7 @@ impl SearchReplaceState {
                 }
             }
             other => {
-                self.focus.set(id);
+                self.focus.set_focus(Some((*id, None)));
                 self.last_action = format!("focus → {other}");
             }
         }
@@ -809,11 +825,11 @@ impl Demo for FormDemo {
                 }
                 UiEvent::KeyPressed { key, .. } => match key {
                     Key::Named(NamedKey::Tab) => {
-                        self.search_replace.focus.advance();
+                        self.search_replace.focus.focus_next();
                         Reaction::Redraw
                     }
                     Key::Named(NamedKey::BackTab) => {
-                        self.search_replace.focus.retreat();
+                        self.search_replace.focus.focus_prev();
                         Reaction::Redraw
                     }
                     _ => Reaction::Continue,
@@ -902,7 +918,7 @@ mod tests {
     fn search_replace_click_on_a_field_id_moves_focus() {
         let mut state = SearchReplaceState::new();
         state.click(&WidgetId::new("replace"));
-        assert_eq!(state.focus.current(), Some(&WidgetId::new("replace")));
+        assert_eq!(state.focus.focused_id(), Some(&WidgetId::new("replace")));
     }
 
     #[test]

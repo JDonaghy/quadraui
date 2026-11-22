@@ -735,15 +735,12 @@ pub struct WinBackend {
     /// itself has no WinAPI dependency, same rationale as `current_pointer_shape`
     /// — only the `EndDraw` call that would populate it needs a real host.
     last_error: Option<BackendError>,
-    /// Single owner of keyboard focus — see
-    /// [`crate::focus`]'s module doc. Mutated only by the shared
-    /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
-    /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
-    /// read elsewhere via [`Backend::focus_manager`].
-    focus: crate::focus::FocusManager,
-    /// Sub-target-aware focus tree built from the app's
-    /// [`crate::runner::AppLogic::frame_tree`] — see [`crate::runtime::PreprocessBackend::focus_tree`].
-    /// [`Self::set_focus`] keeps this in step with `focus` above.
+    /// Single owner of keyboard focus — see [`crate::focus`]'s module
+    /// doc. Mutated by [`Self::set_focus`] (whole-widget focus changes)
+    /// and by the shared Tab/Shift+Tab intercept in
+    /// [`crate::runtime::preprocess_event`] via
+    /// [`crate::runtime::PreprocessBackend::focus_tree_mut`]; read
+    /// elsewhere via [`Backend::focus_tree`].
     focus_tree: crate::focus::FocusTree,
     /// Thread-safe inbox for [`crate::UiEvent::User`] payloads — see
     /// [`crate::runtime::UserEventQueue`]'s doc. Not `target_os`-gated: the
@@ -915,7 +912,6 @@ impl WinBackend {
             text_runs: Vec::new(),
             nerd_fonts_enabled: true,
             last_error: None,
-            focus: crate::focus::FocusManager::new(),
             focus_tree: crate::focus::FocusTree::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             zones: Vec::new(),
@@ -1979,10 +1975,6 @@ impl crate::runtime::PreprocessBackend for WinBackend {
         self.focused_activity_bar_id()
     }
 
-    fn focus_manager_mut(&mut self) -> &mut crate::focus::FocusManager {
-        &mut self.focus
-    }
-
     fn match_keypress(
         &self,
         key: &crate::Key,
@@ -2001,10 +1993,6 @@ impl crate::runtime::PreprocessBackend for WinBackend {
     /// what overriding the trait's `None` default opts into.
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         Some(self.core.widget_routing_mut())
-    }
-
-    fn focus_tree(&self) -> &crate::focus::FocusTree {
-        &self.focus_tree
     }
 
     fn focus_tree_mut(&mut self) -> &mut crate::focus::FocusTree {
@@ -2569,13 +2557,12 @@ impl Backend for WinBackend {
         self.drag_state.clone()
     }
 
-    fn focus_manager(&self) -> &crate::focus::FocusManager {
-        &self.focus
+    fn focus_tree(&self) -> &crate::focus::FocusTree {
+        &self.focus_tree
     }
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-        self.focus_tree.set_focus(id.map(|id| (id, None)));
-        self.focus.set_focus(id)
+        self.focus_tree.set_focus(id.map(|id| (id, None)))
     }
 
     fn frame_capture(&mut self) -> Option<&mut crate::frame::FrameCapture> {

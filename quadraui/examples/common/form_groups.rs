@@ -1,5 +1,5 @@
 //! Backend-agnostic Form demo showcasing `FieldKind::ToggleGroup`,
-//! `FieldKind::ButtonRow`, and [`FocusRing`] for Tab/Shift+Tab cycling.
+//! `FieldKind::ButtonRow`, and [`FocusTree`] for Tab/Shift+Tab cycling.
 //!
 //! Single [`AppLogic`] impl drives both the TUI runner and the GTK
 //! runner. The thin shells in `examples/{tui,gtk}_form_groups.rs` are
@@ -14,14 +14,29 @@
 //! Controls:
 //! - mouse click on toggle  → flip value
 //! - mouse click on button  → log to status bar
-//! - `Tab` / `Shift+Tab`    → cycle focused field (via FocusRing)
+//! - `Tab` / `Shift+Tab`    → cycle focused field (via FocusTree)
 //! - `q` / `Esc`            → quit
 
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormField, FormHit,
+    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusTree, Form, FormField, FormHit,
     InteractionState, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
     StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
+
+/// Builds a [`FocusTree`] whose tab order is a fixed list of ids, each
+/// addressing the whole field (no [`quadraui::interactive::SubTarget`],
+/// no real on-screen rect — this demo drives Tab/Shift+Tab itself rather
+/// than through the runner's `AppLogic::extra_tab_stops`).
+fn focus_ring(ids: &[&str]) -> FocusTree {
+    let mut tree = FocusTree::new();
+    let stops: Vec<(WidgetId, Rect)> = ids
+        .iter()
+        .map(|id| (WidgetId::new(*id), Rect::new(0.0, 0.0, 0.0, 0.0)))
+        .collect();
+    tree.sync_tab_order(&stops);
+    tree.focus_next(); // land on the first stop, so the panel opens with a visible focus target.
+    tree
+}
 
 pub struct FormGroupsApp {
     search_query: String,
@@ -29,7 +44,7 @@ pub struct FormGroupsApp {
     case_sensitive: bool,
     whole_word: bool,
     regex: bool,
-    focus: FocusRing,
+    focus: FocusTree,
     last_action: String,
     /// Which scope preset is active (0=Workspace, 1=File, 2=Selection).
     scope: usize,
@@ -43,7 +58,7 @@ impl FormGroupsApp {
             case_sensitive: true,
             whole_word: false,
             regex: false,
-            focus: FocusRing::new(vec!["search", "toggles", "replace", "buttons", "scope"]),
+            focus: focus_ring(&["search", "toggles", "replace", "buttons", "scope"]),
             last_action: "—".into(),
             scope: 0,
         }
@@ -215,7 +230,7 @@ impl FormGroupsApp {
                     row_align: None,
                 },
             ],
-            focused_field: self.focus.current().cloned(),
+            focused_field: self.focus.focused().map(|(id, _)| *id),
             scroll_offset: 0,
             has_focus: true,
             label_position: Default::default(),
@@ -273,7 +288,7 @@ impl FormGroupsApp {
                     self.scope = 2;
                     self.last_action = "scope=Selection".into();
                 } else {
-                    self.focus.set(id);
+                    self.focus.set_focus(Some((*id, None)));
                     self.last_action = format!("focus → {}", id.as_str());
                 }
             }
@@ -337,11 +352,11 @@ impl AppLogic for FormGroupsApp {
             UiEvent::KeyPressed { key, .. } => match key {
                 Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
                 Key::Named(NamedKey::Tab) => {
-                    self.focus.advance();
+                    self.focus.focus_next();
                     Reaction::Redraw
                 }
                 Key::Named(NamedKey::BackTab) => {
-                    self.focus.retreat();
+                    self.focus.focus_prev();
                     Reaction::Redraw
                 }
                 _ => Reaction::Continue,

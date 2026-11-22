@@ -25,7 +25,7 @@
 //! Routing app-wide Tab into `Button::focused` is the host's job — same
 //! division of responsibility as every other primitive here: this type
 //! owns what happens once it has focus, not how focus arrives (see
-//! [`crate::focus::FocusManager`] for the app-wide owner of "what has
+//! [`crate::focus::FocusTree`] for the app-wide owner of "what has
 //! focus").
 
 use crate::backend::PointerShape;
@@ -671,7 +671,7 @@ pub(crate) mod native_surface_paint {
         // focus arrive" information, so a host that wants focus-visible
         // suppression after a mouse click (VS Code's convention) clears
         // `focused` itself on click rather than on Tab — see
-        // `crate::compose::FocusRing::is_focus_visible`.
+        // `crate::FocusTree::is_focus_visible`.
         if button.focused && !button.disabled {
             let mut ring = focus_ring_geometry(rect, style);
             // `focus_ring_geometry` reads `style.corner_radius` by

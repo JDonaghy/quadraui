@@ -1,4 +1,4 @@
-//! GTK runner for `FocusDemo` — runner-owned `FocusManager` + focus ring.
+//! GTK runner for `FocusDemo` — runner-owned `FocusTree` + focus ring.
 //!
 //! Same `AppLogic` as `tui_focus_ring`, proving the Tab traversal and the
 //! ring paint are backend-generic.

@@ -9208,7 +9208,7 @@ fn tab_chrome_demo_right_arrow_moves_focus_and_shows_it_in_reverse_video() {
 
 /// Clicking a tab suppresses the focus ring even though the click itself
 /// also moves keyboard focus onto the clicked tab — the acceptance list's
-/// "suppressed after a click", and [`quadraui::compose::FocusRing::set`]'s
+/// "suppressed after a click", and [`quadraui::FocusTree::set_focus`]'s
 /// documented convention. Compares against a driver that activates the
 /// same tab purely by clicking (no prior keyboard move at all): if the
 /// click truly suppresses the ring, the two end states must be visually
@@ -10705,6 +10705,254 @@ fn focus_demo_ring_overlays_without_erasing_the_focused_widget() {
     assert!(
         driver.screen_contains(&format!("focus: {RIGHT_ID}")),
         "{}",
+        driver.screen()
+    );
+}
+
+// ─── Three Surface::Widgets, one declaring FocusSpec::Children ────────────
+
+/// A minimal `AppLogic` + two local `Interactive` widgets, built only to
+/// drive `ScreenLayout::tab_stops()`/the runner's shared Tab-cycle through
+/// three real `Surface::Widget` entries — the generic widget-contract path
+/// `FocusDemo` above never exercises, since every one of its stops is a
+/// built-in primitive (`Surface::List`/`Surface::StatusBar`), not a
+/// `Surface::Widget`.
+mod three_widget_focus_demo {
+    use quadraui::interactive::SubTarget;
+    use quadraui::{
+        A11yInfo, A11yPrimitive, AppLogic, Backend, Color, EventCx, FocusSpec, FocusStop, Handled,
+        Interactive, Key, LayoutCtx, Never, PaintSurface, Primitive, Reaction, Rect, ScreenLayout,
+        Style, Surface, Theme, UiEvent, WidgetId,
+    };
+    use std::cell::RefCell;
+
+    /// A single-stop `Surface::Widget`: paints its own label and declares
+    /// `FocusSpec::Stop`.
+    #[derive(Debug, Clone)]
+    pub struct LabelWidget {
+        pub id: WidgetId,
+        pub label: &'static str,
+    }
+
+    impl A11yPrimitive for LabelWidget {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for LabelWidget {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            layout: &Rect,
+            surface: &mut dyn PaintSurface,
+            _theme: &Theme,
+            _style: &Style,
+        ) {
+            surface.surface_draw_text_run(*layout, self.label, Color::rgb(255, 255, 255));
+        }
+    }
+
+    impl Interactive for LabelWidget {
+        type State = ();
+        type Action = Never;
+
+        fn focus(&self) -> FocusSpec {
+            FocusSpec::Stop
+        }
+
+        fn handle(
+            &self,
+            _state: &mut (),
+            _event: &quadraui::interactive::RoutedEvent,
+            _layout: &Rect,
+            _cx: &mut EventCx,
+        ) -> Handled<Never> {
+            Handled::Ignored
+        }
+    }
+
+    /// A composite `Surface::Widget` declaring two children via
+    /// `FocusSpec::Children`. [`ScreenLayout::tab_stops`] must still report
+    /// it as exactly one stop (see `frame.rs`'s own
+    /// `widget_tab_stops_collapses_focus_spec_children_to_one_stop`), and
+    /// here that has to hold up through the real runner pipeline, not just
+    /// a direct `ScreenLayout` call.
+    #[derive(Debug, Clone)]
+    pub struct ChildrenWidget {
+        pub id: WidgetId,
+        pub label: &'static str,
+    }
+
+    impl A11yPrimitive for ChildrenWidget {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for ChildrenWidget {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            layout: &Rect,
+            surface: &mut dyn PaintSurface,
+            _theme: &Theme,
+            _style: &Style,
+        ) {
+            surface.surface_draw_text_run(*layout, self.label, Color::rgb(255, 255, 255));
+        }
+    }
+
+    impl Interactive for ChildrenWidget {
+        type State = ();
+        type Action = Never;
+
+        fn focus(&self) -> FocusSpec {
+            FocusSpec::Children(vec![
+                FocusStop { sub: SubTarget(0) },
+                FocusStop { sub: SubTarget(1) },
+            ])
+        }
+
+        fn handle(
+            &self,
+            _state: &mut (),
+            _event: &quadraui::interactive::RoutedEvent,
+            _layout: &Rect,
+            _cx: &mut EventCx,
+        ) -> Handled<Never> {
+            Handled::Ignored
+        }
+    }
+
+    /// Three `Surface::Widget`s stacked in one column, the middle one
+    /// declaring `FocusSpec::Children`. The tab order is derived from
+    /// `ScreenLayout::tab_stops()` and cached at paint time, the same
+    /// `AppLogic::extra_tab_stops` convention `examples/common/focus_demo.rs`
+    /// documents.
+    pub struct ThreeWidgetFocusDemo {
+        cached_tab_stops: RefCell<Vec<(WidgetId, Rect)>>,
+    }
+
+    impl ThreeWidgetFocusDemo {
+        pub fn new() -> Self {
+            Self {
+                cached_tab_stops: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl AppLogic for ThreeWidgetFocusDemo {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut frame = ScreenLayout::new();
+            frame.push(Surface::Widget {
+                rect: Rect::new(0.0, 0.0, 15.0, 1.0),
+                widget: Box::new(LabelWidget {
+                    id: WidgetId::new("widget-a"),
+                    label: "widget-a",
+                }),
+            });
+            frame.push(Surface::Widget {
+                rect: Rect::new(0.0, 1.0, 15.0, 1.0),
+                widget: Box::new(ChildrenWidget {
+                    id: WidgetId::new("widget-children"),
+                    label: "widget-children",
+                }),
+            });
+            frame.push(Surface::Widget {
+                rect: Rect::new(0.0, 2.0, 15.0, 1.0),
+                widget: Box::new(LabelWidget {
+                    id: WidgetId::new("widget-b"),
+                    label: "widget-b",
+                }),
+            });
+            *self.cached_tab_stops.borrow_mut() = frame.tab_stops();
+            frame.draw(backend);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.cached_tab_stops.borrow().clone()
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            match event {
+                UiEvent::KeyPressed {
+                    key: Key::Char('q'),
+                    ..
+                } => Reaction::Exit,
+                _ => Reaction::Continue,
+            }
+        }
+    }
+}
+
+use three_widget_focus_demo::ThreeWidgetFocusDemo;
+
+fn three_widget_focus_driver() -> TuiDriver<ThreeWidgetFocusDemo> {
+    TuiDriver::new(ThreeWidgetFocusDemo::new(), 20, 4)
+}
+
+/// Tab order across three `Surface::Widget`s, the middle one declaring
+/// `FocusSpec::Children` — the runner-owned `FocusTree` must step onto it
+/// as exactly one stop (not one per declared child) and leave it again on
+/// the very next Tab, driven through the real `event -> handle -> render`
+/// pipeline rather than calling `FocusTree` directly.
+#[test]
+fn three_surface_widgets_tab_order_steps_past_the_children_widget_as_one_stop() {
+    let mut driver = three_widget_focus_driver();
+    assert_eq!(driver.backend().focus_tree().focused_id(), None);
+
+    driver.press_named(NamedKey::Tab);
+    assert_eq!(
+        driver.backend().focus_tree().focused_id(),
+        Some(&quadraui::WidgetId::new("widget-a")),
+        "Tab must reach the first widget:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Tab);
+    assert_eq!(
+        driver.backend().focus_tree().focused_id(),
+        Some(&quadraui::WidgetId::new("widget-children")),
+        "Tab must reach the Children widget as a single stop:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Tab);
+    assert_eq!(
+        driver.backend().focus_tree().focused_id(),
+        Some(&quadraui::WidgetId::new("widget-b")),
+        "Tab must leave the Children widget on the very next press:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Tab);
+    assert_eq!(
+        driver.backend().focus_tree().focused_id(),
+        Some(&quadraui::WidgetId::new("widget-a")),
+        "Tab must wrap back to the first widget:\n{}",
         driver.screen()
     );
 }
