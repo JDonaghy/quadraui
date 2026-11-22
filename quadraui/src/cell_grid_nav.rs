@@ -1,15 +1,14 @@
 //! Pure cursor/selection/scroll arithmetic for a rectangular `row_count` x
-//! `col_count` grid — the geometry [`crate::compose::CellGridController`]
-//! and [`crate::primitives::cell_grid::CellGrid`]'s [`crate::interactive::Interactive`]
-//! impl both walk, kept in exactly one place instead of hand-copied into
-//! each caller.
+//! `col_count` grid — the geometry [`crate::primitives::cell_grid::CellGrid`]'s
+//! [`crate::interactive::Interactive`] impl walks, kept in its own module
+//! rather than inlined into that impl.
 //!
 //! Every function here takes its inputs by value and returns the new
-//! value(s) with no side effects — neither caller's own state (cursor,
-//! selection anchor, scroll offsets) is mutated here. The controller
-//! applies the result directly to its own fields; the primitive wraps it
-//! into a [`crate::primitives::cell_grid::CellGridEvent::Navigated`] for a
-//! host to apply instead, since [`crate::interactive::Interactive::handle`]
+//! value(s) with no side effects — the caller's own state (cursor,
+//! selection anchor, scroll offsets) is never mutated here. The
+//! primitive wraps the result into a
+//! [`crate::primitives::cell_grid::CellGridEvent::Navigated`] for a host
+//! to apply instead, since [`crate::interactive::Interactive::handle`]
 //! only ever gets `&self`.
 
 use crate::behaviour::scroll::ensure_visible;

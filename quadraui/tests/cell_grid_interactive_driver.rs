@@ -14,10 +14,11 @@
 //! `Backend::draw_primitive`, the same generic path every other
 //! `Primitive`-only widget goes through.
 //!
-//! `CellGridController` (untouched by this issue) is covered by its own
-//! unit tests in `compose::cell_grid_controller`; this test exercises the
-//! independent, lower-level `Interactive` path the primitive itself now
-//! offers.
+//! `examples/common/cell_grid_demo.rs` drives this same `Interactive`
+//! impl through its own hand-rolled, band-based dispatch instead of
+//! `AppLogic::frame_tree`; this test exercises the generic
+//! `FrameTree`/routing-engine path a host that registers with
+//! `frame_tree` gets for free.
 
 use quadraui::primitives::cell_grid::CellEditState;
 use quadraui::tui::testing::TuiDriver;
@@ -29,9 +30,9 @@ use quadraui::{
 const GRID_RECT: Rect = Rect::new(0.0, 0.0, 40.0, 10.0);
 
 /// Minimal `AppLogic` wiring one `CellGrid` through the generic
-/// `Interactive`/`FrameTree` routing engine — used only by this test, not
-/// a demo (`examples/tui_cell_grid.rs` already covers the
-/// `CellGridController` path).
+/// `Interactive`/`FrameTree` routing engine — used only by this test;
+/// `examples/tui_cell_grid.rs` drives the same primitive through its own
+/// hand-rolled dispatch instead (see this module's own doc).
 struct CellGridDriverApp {
     id: WidgetId,
     grid: CellGrid,
@@ -47,34 +48,12 @@ impl CellGridDriverApp {
                     .collect::<Vec<_>>()
             })
             .collect();
-        Self {
-            id,
-            grid: CellGrid {
-                id,
-                row_count: 50,
-                col_count: 20,
-                frozen_rows: 0,
-                frozen_cols: 0,
-                row_scroll: 0,
-                col_scroll: 0,
-                default_row_height: 1.0,
-                default_col_width: 4.0,
-                row_heights: Default::default(),
-                col_widths: Default::default(),
-                show_row_headers: true,
-                show_col_headers: true,
-                row_labels: Default::default(),
-                col_labels: Default::default(),
-                cursor: (0, 0),
-                selection_anchor: None,
-                cells,
-                loaded_row_start: 0,
-                loaded_col_start: 0,
-                has_focus: false,
-                show_scrollbar: false,
-                editing: None,
-            },
-        }
+        let mut grid = CellGrid::new(id);
+        grid.row_count = 50;
+        grid.col_count = 20;
+        grid.default_col_width = 4.0;
+        grid.cells = cells;
+        Self { id, grid }
     }
 }
 

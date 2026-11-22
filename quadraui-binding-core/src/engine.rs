@@ -5975,31 +5975,13 @@ mod tests {
         let cells = (0..2)
             .map(|r| (0..5).map(|c| Cell::plain(format!("r{r}c{c}"))).collect())
             .collect();
-        CellGrid {
-            id: WidgetId::new("cg"),
-            row_count: 20,
-            col_count: 5,
-            frozen_rows: 0,
-            frozen_cols: 0,
-            row_scroll: 0,
-            col_scroll: 0,
-            default_row_height: 1.0,
-            default_col_width: 8.0,
-            row_heights: Default::default(),
-            col_widths: Default::default(),
-            show_row_headers: true,
-            show_col_headers: true,
-            row_labels: Default::default(),
-            col_labels: Default::default(),
-            cursor: (0, 0),
-            selection_anchor: None,
-            cells,
-            loaded_row_start: 0,
-            loaded_col_start: 0,
-            has_focus: true,
-            show_scrollbar: false,
-            editing: None,
-        }
+        let mut grid = CellGrid::new(WidgetId::new("cg"));
+        grid.row_count = 20;
+        grid.col_count = 5;
+        grid.default_col_width = 8.0;
+        grid.cells = cells;
+        grid.has_focus = true;
+        grid
     }
 
     /// A click inside the `"cell_grid"` leaf both click-focuses it (so the
@@ -6130,31 +6112,15 @@ mod tests {
         let cells = (0..20)
             .map(|r| (0..5).map(|c| Cell::plain(format!("r{r}c{c}"))).collect())
             .collect();
-        CellGrid {
-            id: WidgetId::new("cg"),
-            row_count: 20,
-            col_count: 5,
-            frozen_rows: 1,
-            frozen_cols: 0,
-            row_scroll: 0,
-            col_scroll: 0,
-            default_row_height: 1.0,
-            default_col_width: 8.0,
-            row_heights: Default::default(),
-            col_widths: Default::default(),
-            show_row_headers: true,
-            show_col_headers: true,
-            row_labels: Default::default(),
-            col_labels: Default::default(),
-            cells,
-            loaded_row_start: 1,
-            loaded_col_start: 0,
-            cursor: (0, 0),
-            selection_anchor: None,
-            has_focus: true,
-            show_scrollbar: false,
-            editing: None,
-        }
+        let mut grid = CellGrid::new(WidgetId::new("cg"));
+        grid.row_count = 20;
+        grid.col_count = 5;
+        grid.frozen_rows = 1;
+        grid.default_col_width = 8.0;
+        grid.cells = cells;
+        grid.loaded_row_start = 1;
+        grid.has_focus = true;
+        grid
     }
 
     #[test]

@@ -5113,7 +5113,7 @@ mod coverage {
             tile_size
         }
     );
-    assert_fields!(
+    assert_fields_non_exhaustive!(
         assert_cell_grid_fields,
         CellGrid {
             id,

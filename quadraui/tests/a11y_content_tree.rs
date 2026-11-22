@@ -16,8 +16,6 @@
 //! attach it to a `TextDisplay` rendering markdown, and assert on the
 //! resulting snapshot instead.
 
-use std::collections::BTreeMap;
-
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
     markdown_a11y_children, render_markdown_to_styled, A11yRole, Canvas, Cell, CellGrid, Chart,
@@ -1086,31 +1084,15 @@ fn cell_grid_3x3_with_selection() -> CellGrid {
             .map(|c| Cell::plain(format!("{label}{c}")))
             .collect::<Vec<_>>()
     };
-    CellGrid {
-        id: WidgetId::new("sheet"),
-        row_count: 3,
-        col_count: 3,
-        frozen_rows: 0,
-        frozen_cols: 0,
-        row_scroll: 0,
-        col_scroll: 0,
-        default_row_height: 1.0,
-        default_col_width: 4.0,
-        row_heights: BTreeMap::new(),
-        col_widths: BTreeMap::new(),
-        show_row_headers: true,
-        show_col_headers: true,
-        row_labels: BTreeMap::new(),
-        col_labels: BTreeMap::new(),
-        cursor: (1, 1),
-        selection_anchor: Some((0, 0)),
-        cells: vec![row("r0"), row("r1"), row("r2")],
-        loaded_row_start: 0,
-        loaded_col_start: 0,
-        has_focus: true,
-        show_scrollbar: false,
-        editing: None,
-    }
+    let mut grid = CellGrid::new(WidgetId::new("sheet"));
+    grid.row_count = 3;
+    grid.col_count = 3;
+    grid.default_col_width = 4.0;
+    grid.cursor = (1, 1);
+    grid.selection_anchor = Some((0, 0));
+    grid.cells = vec![row("r0"), row("r1"), row("r2")];
+    grid.has_focus = true;
+    grid
 }
 
 /// Covers the issue's own named acceptance deliverable: an `A11yScenario`
