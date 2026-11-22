@@ -44,6 +44,7 @@
 //! dedicated field for that case, because an `IconGrid` tile's icon
 //! glyph already serves that role.
 
+use crate::behaviour::scroll::ensure_visible;
 use crate::event::Rect;
 use crate::primitives::image::Image;
 use crate::primitives::row_stack;
@@ -261,21 +262,17 @@ impl IconGrid {
         };
 
         // Keep `selected_idx`'s row inside the viewport before resolving
-        // `scroll_px` — the same correction
-        // `crate::compose::tree_nav::TreeNavCore::scroll_to_visible`
-        // performs for `TreeView`, baked into this layout call instead
-        // of left to a separate controller (see `IconGridLayout::
-        // resolved_scroll_offset`'s own doc).
-        let mut scroll_offset_rows = self.scroll_offset.min(total_rows - 1);
+        // `scroll_px`, via the same `behaviour::scroll::ensure_visible` call
+        // `TreeController` uses for `TreeView`, baked into this layout call
+        // instead of left to a separate controller (see
+        // `IconGridLayout::resolved_scroll_offset`'s own doc).
         let selected = self.selected_idx.min(self.items.len() - 1);
         let selected_row = selected / columns;
-        if viewport_rows > 0 {
-            if selected_row < scroll_offset_rows {
-                scroll_offset_rows = selected_row;
-            } else if selected_row >= scroll_offset_rows + viewport_rows {
-                scroll_offset_rows = selected_row + 1 - viewport_rows;
-            }
-        }
+        let scroll_offset_rows = ensure_visible(
+            self.scroll_offset.min(total_rows - 1),
+            viewport_rows,
+            selected_row,
+        );
 
         let stack = row_stack::layout_row_stack(
             scroll_offset_rows,

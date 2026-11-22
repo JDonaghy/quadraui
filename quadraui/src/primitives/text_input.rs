@@ -63,6 +63,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::accelerator::KeyBinding;
 use crate::backend::PointerShape;
+use crate::behaviour::scroll::ensure_visible;
 use crate::event::{Key, NamedKey, Point, Rect};
 use crate::style::Style;
 use crate::types::{Modifiers, WidgetId};
@@ -1006,23 +1007,13 @@ impl TextInput {
 
         // Vertical scroll auto-clamp.
         let max_scroll = total_lines.saturating_sub(max_rows);
-        let mut scroll = self.scroll_offset.min(max_scroll);
-        if cursor_line < scroll {
-            scroll = cursor_line;
-        } else if cursor_line >= scroll + max_rows {
-            scroll = cursor_line + 1 - max_rows;
-        }
-        scroll = scroll.min(max_scroll);
+        let scroll = ensure_visible(self.scroll_offset.min(max_scroll), max_rows, cursor_line)
+            .min(max_scroll);
 
         // Horizontal scroll auto-clamp — keep cursor inside [scroll_col,
         // scroll_col + visible_cols). Reserve one column of slack so the
         // cursor itself stays visible (not flush against the right edge).
-        let mut scroll_col = self.scroll_col;
-        if cursor_col < scroll_col {
-            scroll_col = cursor_col;
-        } else if cursor_col >= scroll_col + visible_cols {
-            scroll_col = cursor_col + 1 - visible_cols;
-        }
+        let scroll_col = ensure_visible(self.scroll_col, visible_cols, cursor_col);
 
         let visible_count = total_lines.saturating_sub(scroll).min(max_rows);
         let mut visible_lines: Vec<VisibleTextInputLine> = Vec::with_capacity(visible_count);

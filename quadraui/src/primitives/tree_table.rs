@@ -16,12 +16,12 @@
 //! the chevron (or Left/Right on the keyboard) is the one interaction
 //! `DataTable` doesn't already have; apps compute it from
 //! [`TreeTableLayout::hit_test`]'s [`TreeTableHit::Chevron`] and
-//! [`crate::compose::tree_nav::TreeNavCore::horizontal_nav`] — the same
+//! [`crate::behaviour::nav::TreeNavCore::horizontal_nav`] — the same
 //! navigation core [`crate::compose::TreeController`] already uses for
 //! `TreeView`, reused here via [`TreeTableNode`]'s [`NavRow`] impl rather
 //! than re-derived.
 
-use crate::compose::tree_nav::NavRow;
+use crate::behaviour::nav::NavRow;
 use crate::event::Rect;
 #[cfg(any(
     feature = "gtk",
@@ -395,7 +395,7 @@ pub enum TreeTableEvent {
     },
     /// The chevron was clicked, or Left/Right on the keyboard resolved to
     /// an expand/collapse (as opposed to a parent/first-child selection
-    /// move) via [`crate::compose::tree_nav::TreeNavCore::horizontal_nav`].
+    /// move) via [`crate::behaviour::nav::TreeNavCore::horizontal_nav`].
     /// `expand: true` means the app should set this row's
     /// [`TreeTableNode::is_expanded`] to `Some(true)` (and may need to
     /// push newly-visible child rows next frame); `false` means collapse.
@@ -403,7 +403,7 @@ pub enum TreeTableEvent {
 }
 
 impl TreeTableEvent {
-    /// Map [`crate::compose::tree_nav::HorizontalNav`]'s branch-toggle
+    /// Map [`crate::behaviour::nav::HorizontalNav`]'s branch-toggle
     /// variants — the Left/Right-on-the-keyboard counterpart of
     /// [`TreeTableLayout::chevron_toggle`]'s mouse path — to
     /// [`Self::ToggleExpanded`]. `None` for
@@ -411,8 +411,8 @@ impl TreeTableEvent {
     /// moves rather than an expand/collapse and stay the app's own
     /// [`Self::RowSelected`] handling.
     #[must_use]
-    pub fn from_horizontal_nav(nav: crate::compose::tree_nav::HorizontalNav) -> Option<Self> {
-        use crate::compose::tree_nav::HorizontalNav;
+    pub fn from_horizontal_nav(nav: crate::behaviour::nav::HorizontalNav) -> Option<Self> {
+        use crate::behaviour::nav::HorizontalNav;
         match nav {
             HorizontalNav::Collapse(path) => Some(Self::ToggleExpanded {
                 path,

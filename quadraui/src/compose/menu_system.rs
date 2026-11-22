@@ -17,6 +17,7 @@
 
 use super::context_menu_controller::menu_item_heights;
 use crate::backend::{Backend, ResolvedMenuStyle};
+use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::event::{Rect, UiEvent};
 use crate::interaction::InteractionState;
 use crate::primitives::context_menu::{
@@ -876,15 +877,14 @@ impl MenuSystem {
     }
 
     fn next_enabled_menu(&self, from: usize, delta: isize) -> usize {
-        let n = self.menus.len();
-        let mut idx = from;
-        for _ in 0..n {
-            idx = crate::focus::cycle_index(idx, delta, n);
-            if !self.menus[idx].disabled {
-                return idx;
-            }
-        }
-        from
+        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        // `from` counts as navigable even when it is itself disabled, so a
+        // move off a disabled menu steps to the next enabled one in bar
+        // order instead of seeding at either end of the bar.
+        FlatNav::mv(self.menus.len(), Some(from), key, true, |i| {
+            i == from || !self.menus[i].disabled
+        })
+        .unwrap_or(from)
     }
 
     /// Return the selected item index at the currently-deepest open level.
@@ -915,14 +915,14 @@ impl MenuSystem {
             return;
         };
 
-        let temp = ContextMenu {
-            id: WidgetId::new("_move"),
-            items,
-            selected_idx: current,
-            bg: None,
-            placement: ContextMenuPlacement::AnchorPoint,
-        };
-        let new_sel = temp.move_selection(current, delta);
+        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        // `current` counts as navigable even when it sits on a separator or
+        // a disabled item, so the move steps to the next selectable item in
+        // list order rather than seeding at either end.
+        let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
+            i == current || (!items[i].is_separator() && !items[i].disabled)
+        })
+        .unwrap_or(current);
 
         if depth == 0 {
             self.dropdown_selected = new_sel;
@@ -1886,6 +1886,37 @@ mod tests {
         assert_eq!(ms.next_enabled_menu(1, 1), 0);
         // from file (0) backward wraps past help to edit (1)
         assert_eq!(ms.next_enabled_menu(0, -1), 1);
+    }
+
+    #[test]
+    fn next_enabled_menu_steps_on_from_a_disabled_menu() {
+        let menu = |id: &str, disabled: bool| MenuDef {
+            id: WidgetId::new(id),
+            label: id.into(),
+            disabled,
+            items: vec![action("x", "X")],
+        };
+        // The middle menu is disabled and is where the move starts from
+        // (Alt-activating a disabled menu label, say): the move steps to
+        // its neighbour in bar order, not to an end of the bar.
+        let ms = MenuSystem::new(vec![menu("a", false), menu("b", true), menu("c", false)]);
+        assert_eq!(ms.next_enabled_menu(1, 1), 2);
+        assert_eq!(ms.next_enabled_menu(1, -1), 0);
+    }
+
+    #[test]
+    fn move_selection_off_a_separator_steps_to_the_neighbouring_item() {
+        let mut ms = MenuSystem::new(sample_menus());
+        // The file dropdown is `new, save, separator, quit`, and index 2 —
+        // the separator — is the current selection.
+        ms.open_item = Some(0);
+        ms.dropdown_selected = 2;
+        ms.move_selection(1);
+        assert_eq!(ms.dropdown_selected, 3, "forward lands on quit");
+
+        ms.dropdown_selected = 2;
+        ms.move_selection(-1);
+        assert_eq!(ms.dropdown_selected, 1, "backward lands on save");
     }
 
     #[test]

@@ -1,22 +1,135 @@
-//! Row-agnostic navigation/selection core, shared by every controller over a
-//! flattened tree-shaped row list — [`crate::TreeController`] today.
-//!
-//! [`TreeNavCore`] owns exactly the state and transitions that depend only on
-//! a flattened row's `path`/`indent`/`is_expanded` shape — selection by
-//! [`TreePath`], Up/Down/PageUp/PageDown/Home/End, Left/Right
-//! collapse-or-select-parent / expand-or-select-first-child, scroll-to-follow,
-//! scrollbar drag, and activation. A caller's row type implements [`NavRow`]
-//! to plug into it; [`crate::TreeRow`] does, in `tree_controller.rs`, and
-//! `TreeController` is a thin layer over this core plus its own
-//! `TreeView`-specific rendering, hit-testing and inline editing.
+//! List/tree navigation: [`NavKey`] turns a keystroke into a navigation
+//! intent, [`FlatNav`] resolves that intent against a flat, index-addressed
+//! list, and [`TreeNavCore`] resolves selection/scroll against a flattened
+//! tree-shaped row list addressed by [`crate::TreePath`].
 
+use crate::event::{Key, NamedKey};
+use crate::interactive::KeyEvent;
 use crate::primitives::scrollbar::{
     scroll_by_clamped, scroll_by_clamped_f32, scroll_rows_floor, wheel_delta, ThumbDrag,
 };
 use crate::TreePath;
 
+use super::scroll::ensure_visible;
+
+// ─── NavKey ──────────────────────────────────────────────────────────────
+
+/// A keystroke resolved to a navigation intent, independent of which
+/// widget or list it moves. [`NavKey::from_key`] is the one place a raw
+/// [`KeyEvent`] becomes one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavKey {
+    /// Move one step backward.
+    Up,
+    /// Move one step forward.
+    Down,
+    /// Move `n` steps backward. [`NavKey::from_key`] can't know a list's
+    /// page size (that's the caller's viewport, not the keystroke), so it
+    /// maps the physical Page Up key to `PageUp(1)`; a caller navigating a
+    /// paged list reconstructs `NavKey::PageUp(viewport_len)` with the
+    /// real page size instead of using that placeholder directly.
+    PageUp(usize),
+    /// Move `n` steps forward — see [`NavKey::PageUp`]'s doc for the same
+    /// placeholder-vs-real-page-size caveat.
+    PageDown(usize),
+    /// Move to the first item.
+    Home,
+    /// Move to the last item.
+    End,
+}
+
+impl NavKey {
+    /// Map a keystroke to a [`NavKey`], or `None` if it isn't a
+    /// navigation key. The one key→intent mapping every list/tree
+    /// navigation caller shares.
+    pub fn from_key(event: &KeyEvent) -> Option<NavKey> {
+        match event.key {
+            Key::Named(NamedKey::Up) => Some(NavKey::Up),
+            Key::Named(NamedKey::Down) => Some(NavKey::Down),
+            Key::Named(NamedKey::PageUp) => Some(NavKey::PageUp(1)),
+            Key::Named(NamedKey::PageDown) => Some(NavKey::PageDown(1)),
+            Key::Named(NamedKey::Home) => Some(NavKey::Home),
+            Key::Named(NamedKey::End) => Some(NavKey::End),
+            _ => None,
+        }
+    }
+}
+
+// ─── FlatNav ─────────────────────────────────────────────────────────────
+
+/// Stateless navigation over a flat, index-addressed list: `len` items,
+/// an optional `current` index, a [`NavKey`] intent, a `wrap` flag, and an
+/// `is_enabled` predicate a caller uses to skip disabled items (pass
+/// `|_| true` when every item is selectable).
+///
+/// No current selection (`current: None`) seeds at the first enabled item
+/// moving forward (`Down`/`PageDown`) or the last enabled item moving
+/// backward (`Up`/`PageUp`), matching every existing clamped-index-move
+/// copy this type replaces. Returns `None` only when no item is enabled
+/// (including `len == 0`).
+pub struct FlatNav;
+
+impl FlatNav {
+    /// Resolve `key` against a `len`-item list and return the index it
+    /// moves to, skipping every item `is_enabled` rejects.
+    ///
+    /// `Home`/`End` land on the first/last *enabled* item. A zero-magnitude
+    /// `PageUp(0)`/`PageDown(0)` moves one step, so a caller that hasn't
+    /// resolved its page size yet still makes progress rather than
+    /// no-opping. `None` means no item is enabled (including `len == 0`),
+    /// which callers typically fold back to their current index.
+    pub fn mv(
+        len: usize,
+        current: Option<usize>,
+        key: NavKey,
+        wrap: bool,
+        is_enabled: impl Fn(usize) -> bool,
+    ) -> Option<usize> {
+        let enabled: Vec<usize> = (0..len).filter(|&i| is_enabled(i)).collect();
+        if enabled.is_empty() {
+            return None;
+        }
+        let last = enabled.len() as isize - 1;
+        let pos = current.and_then(|cur| enabled.iter().position(|&i| i == cur));
+
+        let new_pos = match key {
+            NavKey::Home => 0,
+            NavKey::End => last,
+            NavKey::Up => Self::step(pos, -1, last, wrap),
+            NavKey::Down => Self::step(pos, 1, last, wrap),
+            NavKey::PageUp(n) => Self::step(pos, -(n.max(1) as isize), last, wrap),
+            NavKey::PageDown(n) => Self::step(pos, n.max(1) as isize, last, wrap),
+        };
+        enabled.get(new_pos as usize).copied()
+    }
+
+    /// Move `pos` (an index into the filtered `enabled` list, not the raw
+    /// list) by `delta`, clamped to `[0, last]` or wrapped, per `wrap`.
+    /// `pos == None` (no current selection) seeds at either end,
+    /// depending on `delta`'s sign, same convention `FlatNav::mv`'s doc
+    /// describes.
+    fn step(pos: Option<usize>, delta: isize, last: isize, wrap: bool) -> isize {
+        match pos {
+            Some(p) => {
+                if wrap {
+                    // `crate::focus::cycle_index` is the crate's one
+                    // wrapping-index helper; reuse it rather than
+                    // re-deriving the same `rem_euclid` here.
+                    crate::focus::cycle_index(p, delta, last as usize + 1) as isize
+                } else {
+                    (p as isize + delta).clamp(0, last)
+                }
+            }
+            None if delta > 0 => 0,
+            None => last,
+        }
+    }
+}
+
+// ─── TreeNavCore ─────────────────────────────────────────────────────────
+
 /// A flattened row exposing enough shape for [`TreeNavCore`] to navigate it,
-/// without depending on [`crate::TreeRow`]/[`crate::TreeView`].
+/// without depending on `crate::TreeRow`/`crate::TreeView`.
 pub trait NavRow {
     /// This row's path. Selection is tracked by path (not index) so it
     /// survives a re-flatten that shifts indices.
@@ -80,8 +193,19 @@ pub enum HorizontalNav {
 
 /// Row-agnostic navigation/selection state: selected path, row-quantised
 /// scroll offset, pixel-precise scroll position, and an in-progress
-/// scrollbar thumb drag. See the module doc for what this does and does
-/// not own.
+/// scrollbar thumb drag.
+///
+/// Owns exactly the state and transitions that depend only on a flattened
+/// row's `path`/`indent`/`is_expanded` shape — selection by [`TreePath`],
+/// Up/Down/PageUp/PageDown/Home/End, Left/Right collapse-or-select-parent /
+/// expand-or-select-first-child, scroll-to-follow, scrollbar drag, and
+/// activation. It never owns row content: every method that needs the
+/// current row list takes `rows: &[R]` as a parameter, so a caller never
+/// constructs a throwaway controller just to navigate a borrowed view. A
+/// caller's row type implements [`NavRow`] to plug into it;
+/// `crate::TreeRow` does, in `compose::tree_controller`, and
+/// `TreeController` is a thin layer over this core plus its own
+/// `TreeView`-specific rendering, hit-testing and inline editing.
 #[derive(Debug, Default)]
 pub struct TreeNavCore {
     selected_path: Option<TreePath>,
@@ -256,14 +380,9 @@ impl TreeNavCore {
     // ── Scroll-to-follow ─────────────────────────────────────────────
 
     pub fn scroll_to_visible(&mut self, row: usize, viewport_rows: usize) {
-        if viewport_rows == 0 {
-            return;
-        }
-        if row < self.scroll_offset {
-            self.scroll_offset = row;
-            self.scroll_px = None;
-        } else if row >= self.scroll_offset + viewport_rows {
-            self.scroll_offset = row.saturating_sub(viewport_rows.saturating_sub(1));
+        let new_offset = ensure_visible(self.scroll_offset, viewport_rows, row);
+        if new_offset != self.scroll_offset {
+            self.scroll_offset = new_offset;
             self.scroll_px = None;
         }
     }
@@ -351,6 +470,144 @@ impl TreeNavCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── NavKey ─────────────────────────────────────────────────────────
+
+    fn key_event(key: Key) -> KeyEvent {
+        KeyEvent {
+            key,
+            modifiers: Default::default(),
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn from_key_maps_named_nav_keys() {
+        assert_eq!(
+            NavKey::from_key(&key_event(Key::Named(NamedKey::Up))),
+            Some(NavKey::Up)
+        );
+        assert_eq!(
+            NavKey::from_key(&key_event(Key::Named(NamedKey::Down))),
+            Some(NavKey::Down)
+        );
+        assert_eq!(
+            NavKey::from_key(&key_event(Key::Named(NamedKey::PageUp))),
+            Some(NavKey::PageUp(1))
+        );
+        assert_eq!(
+            NavKey::from_key(&key_event(Key::Named(NamedKey::PageDown))),
+            Some(NavKey::PageDown(1))
+        );
+        assert_eq!(
+            NavKey::from_key(&key_event(Key::Named(NamedKey::Home))),
+            Some(NavKey::Home)
+        );
+        assert_eq!(
+            NavKey::from_key(&key_event(Key::Named(NamedKey::End))),
+            Some(NavKey::End)
+        );
+    }
+
+    #[test]
+    fn from_key_ignores_non_nav_keys() {
+        assert_eq!(
+            NavKey::from_key(&key_event(Key::Named(NamedKey::Enter))),
+            None
+        );
+        assert_eq!(NavKey::from_key(&key_event(Key::Char('a'))), None);
+    }
+
+    // ── FlatNav ────────────────────────────────────────────────────────
+
+    #[test]
+    fn flat_nav_on_empty_list_is_none() {
+        assert_eq!(FlatNav::mv(0, None, NavKey::Down, false, |_| true), None);
+    }
+
+    #[test]
+    fn flat_nav_down_from_none_selects_first() {
+        assert_eq!(FlatNav::mv(5, None, NavKey::Down, false, |_| true), Some(0));
+    }
+
+    #[test]
+    fn flat_nav_up_from_none_selects_last() {
+        assert_eq!(FlatNav::mv(5, None, NavKey::Up, false, |_| true), Some(4));
+    }
+
+    #[test]
+    fn flat_nav_clamps_without_wrap() {
+        assert_eq!(
+            FlatNav::mv(5, Some(4), NavKey::Down, false, |_| true),
+            Some(4)
+        );
+        assert_eq!(
+            FlatNav::mv(5, Some(0), NavKey::Up, false, |_| true),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn flat_nav_wraps_when_enabled() {
+        assert_eq!(
+            FlatNav::mv(5, Some(4), NavKey::Down, true, |_| true),
+            Some(0)
+        );
+        assert_eq!(FlatNav::mv(5, Some(0), NavKey::Up, true, |_| true), Some(4));
+    }
+
+    #[test]
+    fn flat_nav_home_and_end() {
+        assert_eq!(
+            FlatNav::mv(5, Some(2), NavKey::Home, false, |_| true),
+            Some(0)
+        );
+        assert_eq!(
+            FlatNav::mv(5, Some(2), NavKey::End, false, |_| true),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn flat_nav_page_moves_by_n() {
+        assert_eq!(
+            FlatNav::mv(10, Some(5), NavKey::PageDown(3), false, |_| true),
+            Some(8)
+        );
+        assert_eq!(
+            FlatNav::mv(10, Some(5), NavKey::PageUp(3), false, |_| true),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn flat_nav_skips_disabled_items() {
+        // Index 1 is disabled: Down from 0 lands on 2, not 1.
+        let is_enabled = |i: usize| i != 1;
+        assert_eq!(
+            FlatNav::mv(4, Some(0), NavKey::Down, false, is_enabled),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn flat_nav_home_skips_leading_disabled_items() {
+        let is_enabled = |i: usize| i != 0;
+        assert_eq!(
+            FlatNav::mv(4, Some(2), NavKey::Home, false, is_enabled),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn flat_nav_all_disabled_is_none() {
+        assert_eq!(
+            FlatNav::mv(4, Some(0), NavKey::Down, false, |_| false),
+            None
+        );
+    }
+
+    // ── TreeNavCore ────────────────────────────────────────────────────
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Row {

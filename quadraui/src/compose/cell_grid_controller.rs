@@ -21,14 +21,15 @@
 //!
 //! # Scroll-to-follow and frozen panes
 //!
-//! [`Self::ensure_cursor_visible`] mirrors
-//! [`crate::compose::tree_nav::TreeNavCore::scroll_to_visible`]'s
-//! "if before the window, snap to top; if after, snap to bottom" rule,
-//! run independently on the row and column axis, and skipped entirely
-//! for a cursor inside the frozen rows/columns — those are always
-//! visible by construction, scrolled or not. The final clamp into
-//! `[0, max]` reuses [`scroll_by_clamped`] rather than hand-rolling the
-//! same arithmetic a third time.
+//! [`Self::ensure_cursor_visible`] calls
+//! [`crate::behaviour::scroll::ensure_visible`] independently on the row
+//! and column axis, skipped entirely for a cursor inside the frozen
+//! rows/columns — those are always visible by construction, scrolled or
+//! not. The final clamp into `[0, max]` reuses [`scroll_by_clamped`]
+//! rather than hand-rolling the same arithmetic a third time. When the
+//! frozen rows/columns fill the rect outright the body window is zero
+//! wide, so there is no window to bring the cursor into: the offset only
+//! ever moves *back* towards the cursor's own rank there.
 //!
 //! # No shared key classifier
 //!
@@ -36,7 +37,7 @@
 //! closest existing "which navigation key is this" helper, but its shape
 //! doesn't fit a 2-D grid: it has no Left/Right (a tree spends those on
 //! expand/collapse, routed through
-//! [`crate::compose::tree_nav::TreeNavCore::horizontal_nav`] instead), no
+//! [`crate::behaviour::nav::TreeNavCore::horizontal_nav`] instead), no
 //! Tab/Shift+Tab, and no Ctrl-modified "jump to an edge" variant. This
 //! controller classifies its own keys in [`Self::handle_key`] instead of
 //! forcing tree-shaped navigation onto cells.
@@ -54,6 +55,7 @@
 use std::collections::BTreeMap;
 
 use crate::backend::{Backend, Clipboard};
+use crate::behaviour::scroll::ensure_visible;
 use crate::primitive::{LayoutCtx, Primitive};
 use crate::primitives::cell_grid::{
     Cell, CellEditState, CellGrid, CellGridHit, CellGridPrimitiveLayout,
@@ -541,22 +543,27 @@ impl CellGridController {
 
         if cr >= frozen_rows {
             let rank = cr - frozen_rows;
-            if rank < self.row_scroll {
-                self.row_scroll = rank;
-            } else if body_rows > 0 && rank >= self.row_scroll + body_rows {
-                self.row_scroll = rank + 1 - body_rows;
-            }
+            // A viewport that fits zero body rows (frozen rows fill the
+            // rect) gives `ensure_visible` no window to measure against, so
+            // it no-ops; a backwards move still pulls the offset back to
+            // the cursor's own rank there.
+            self.row_scroll = if body_rows == 0 {
+                self.row_scroll.min(rank)
+            } else {
+                ensure_visible(self.row_scroll, body_rows, rank)
+            };
             let max_scroll = (self.row_count.saturating_sub(frozen_rows)).saturating_sub(body_rows);
             self.row_scroll = scroll_by_clamped(self.row_scroll, 0, max_scroll);
         }
 
         if cc >= frozen_cols {
             let rank = cc - frozen_cols;
-            if rank < self.col_scroll {
-                self.col_scroll = rank;
-            } else if body_cols > 0 && rank >= self.col_scroll + body_cols {
-                self.col_scroll = rank + 1 - body_cols;
-            }
+            // Same zero-width-body case as the row axis above.
+            self.col_scroll = if body_cols == 0 {
+                self.col_scroll.min(rank)
+            } else {
+                ensure_visible(self.col_scroll, body_cols, rank)
+            };
             let max_scroll = (self.col_count.saturating_sub(frozen_cols)).saturating_sub(body_cols);
             self.col_scroll = scroll_by_clamped(self.col_scroll, 0, max_scroll);
         }
@@ -1621,6 +1628,27 @@ mod tests {
         c.handle(&key(NamedKey::Left, Modifiers::default()), &b, RECT);
         assert_eq!(c.cursor(), (0, 1));
         assert_eq!(c.col_scroll(), 0);
+    }
+
+    #[test]
+    fn a_body_window_that_fits_no_rows_still_scrolls_back_towards_the_cursor() {
+        let mut c = controller(100, 100);
+        c.set_frozen(4, 0);
+        c.set_show_row_headers(false);
+        c.set_show_col_headers(false);
+        // Four frozen rows fill a four-row rect outright, so zero body
+        // rows fit and there is no window to bring the cursor into.
+        let rect = Rect::new(0.0, 0.0, 30.0, 4.0);
+        let b = backend();
+        c.set_scroll(5, 0);
+        c.set_selection((5, 0), None);
+        c.handle(&key(NamedKey::Up, Modifiers::default()), &b, rect);
+        assert_eq!(c.cursor(), (4, 0));
+        assert_eq!(
+            c.row_scroll(),
+            0,
+            "a backwards move still pulls the offset back to the cursor's rank"
+        );
     }
 
     // ── set_dimensions ───────────────────────────────────────────────

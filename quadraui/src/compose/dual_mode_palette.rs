@@ -33,6 +33,7 @@
 //! }
 //! ```
 
+use crate::behaviour::scroll::ensure_visible;
 use crate::compose::Handled;
 use crate::interaction::InteractionState;
 use crate::{
@@ -619,15 +620,7 @@ impl DualModePaletteController {
     /// Clamp `scroll_top` so `selected` is always visible within
     /// `visible_rows` rows.
     fn sync_scroll(&mut self, visible_rows: usize) {
-        if visible_rows == 0 {
-            return;
-        }
-        if self.selected < self.scroll_top {
-            self.scroll_top = self.selected;
-        }
-        if self.selected >= self.scroll_top + visible_rows {
-            self.scroll_top = self.selected + 1 - visible_rows;
-        }
+        self.scroll_top = ensure_visible(self.scroll_top, visible_rows, self.selected);
     }
 
     /// Build the `Palette` descriptor for the current state.

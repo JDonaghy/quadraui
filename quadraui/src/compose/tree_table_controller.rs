@@ -13,7 +13,7 @@
 //!
 //! Navigation, selection, scroll-to-follow and activation are not
 //! reimplemented here — every one of them goes through
-//! [`crate::compose::tree_nav::TreeNavCore`], the same row-agnostic core
+//! [`crate::behaviour::nav::TreeNavCore`], the same row-agnostic core
 //! [`crate::compose::TreeController`] uses for `TreeView`. This controller's
 //! own job is translating between [`NodeId`] (stable across a sort, which
 //! reorders a flattened row's [`crate::TreePath`]) and the positional
@@ -48,10 +48,8 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
+use crate::behaviour::nav::{Edge, HorizontalDir, HorizontalNav, NavOutcome, NavRow, TreeNavCore};
 use crate::compose::tree_controller::{classify_tree_nav_key, TreeNavKey};
-use crate::compose::tree_nav::{
-    Edge, HorizontalDir, HorizontalNav, NavOutcome, NavRow, TreeNavCore,
-};
 use crate::primitives::data_table::{Column, DataRow, DataTable, SortDirection};
 use crate::primitives::row_stack::vscrollbar_thumb;
 use crate::primitives::scrollbar::PressZone;
@@ -250,7 +248,7 @@ pub struct TreeTableController {
     folders_first: bool,
     /// Selection, scroll position and scrollbar-drag state — the
     /// row-agnostic core shared with [`crate::compose::TreeController`];
-    /// see [`crate::compose::tree_nav`]. [`Self::handle`] drives its
+    /// see [`crate::behaviour::nav`]. [`Self::handle`] drives its
     /// `begin_scrollbar_drag`/`drag_to`/`end_scrollbar_drag` trio from a
     /// scrollbar track built in [`Self::scrollbar`], the same way
     /// [`crate::compose::TreeController`] drives it from
@@ -537,7 +535,7 @@ impl TreeTableController {
     }
 
     /// Left/Right: collapse-or-select-parent / expand-or-select-first-child,
-    /// via [`crate::compose::tree_nav::TreeNavCore::horizontal_nav`] —
+    /// via [`crate::behaviour::nav::TreeNavCore::horizontal_nav`] —
     /// the same rule [`crate::TreeTableLayout::chevron_toggle`]'s
     /// Left/Right counterpart documents, applied against this
     /// controller's own id-keyed model instead of re-derived.
@@ -917,7 +915,7 @@ impl TreeTableController {
     /// A press on `sb`'s track, outside the already-handled
     /// [`Self::click`] early return — mirrors
     /// [`crate::compose::TreeController::click_scrollbar`]: a thumb press
-    /// starts a drag via [`crate::compose::tree_nav::TreeNavCore::begin_scrollbar_drag`],
+    /// starts a drag via [`crate::behaviour::nav::TreeNavCore::begin_scrollbar_drag`],
     /// a track press before/after the thumb pages by a viewport.
     fn click_scrollbar(
         &mut self,
@@ -965,7 +963,7 @@ impl TreeTableController {
     /// filtered out — what every keyboard navigation entry point
     /// ([`Self::move_selection_by`], [`Self::move_selection_to_edge`],
     /// [`Self::toggle_expand_selected`], [`Self::handle_horizontal`]) feeds
-    /// [`crate::compose::tree_nav::TreeNavCore`], so Down/Right/Home/End
+    /// [`crate::behaviour::nav::TreeNavCore`], so Down/Right/Home/End
     /// skip over a pending lazy branch's placeholder row exactly like a
     /// mouse click on it already does ([`Self::click`]/[`Self::double_click`]
     /// both guard `!row.loading`), instead of selecting or activating a

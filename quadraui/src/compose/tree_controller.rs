@@ -23,7 +23,7 @@
 //! sign convention: positive `delta.y` = scroll content up (decrease
 //! offset). Backends normalise their native direction before emitting.
 
-use crate::compose::tree_nav::{NavOutcome, NavRow, TreeNavCore};
+use crate::behaviour::nav::{NavOutcome, NavRow, TreeNavCore};
 use crate::primitives::scrollbar::PressZone;
 use crate::text_util::{next_char_boundary, prev_char_boundary, snap_to_char_boundary};
 use crate::{
@@ -31,9 +31,9 @@ use crate::{
     SelectionMode, TreePath, TreeRow, TreeRowEditState, TreeView, TreeViewHit, UiEvent, WidgetId,
 };
 
-/// Re-exported from [`crate::compose::tree_nav`] — see its own doc for
+/// Re-exported from [`crate::behaviour::nav`] — see its own doc for
 /// what [`TreeController::move_selection_to_edge`] does with it.
-pub use crate::compose::tree_nav::Edge;
+pub use crate::behaviour::nav::Edge;
 
 impl NavRow for TreeRow {
     fn path(&self) -> &TreePath {
@@ -158,7 +158,7 @@ pub struct TreeController {
     rows: Vec<TreeRow>,
     /// Selection, scroll position and scrollbar-drag state — the
     /// row-agnostic core shared with any other flattened row source; see
-    /// [`crate::compose::tree_nav`].
+    /// [`crate::behaviour::nav`].
     nav: TreeNavCore,
     has_focus: bool,
     vim_keys: bool,
