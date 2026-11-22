@@ -594,7 +594,7 @@ pub use a11y::{
 };
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;
-pub use focus::FocusManager;
+pub use focus::{FocusAddress, FocusManager, FocusTree};
 pub use font_role::{ChromePrimitive, EditorClassPrimitive, FontRole};
 pub use generic_font::GenericFamily;
 pub use primitives::activity_bar::{
