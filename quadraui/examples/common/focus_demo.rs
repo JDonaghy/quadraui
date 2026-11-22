@@ -10,8 +10,8 @@
 //!
 //! 1. hand the runner this frame's tab order via
 //!    [`AppLogic::tab_stops`] — which is literally
-//!    [`ScreenLayout::tab_stops`]'s output, cached at paint time the same
-//!    way `frame_demo` caches its [`FrameHitMap`]; and
+//!    [`ScreenLayout::tab_stops`]'s output, cached at paint time (see
+//!    `cached_tab_stops` below); and
 //! 2. redraw when [`UiEvent::FocusChanged`] arrives.
 //!
 //! Everything else — cycling, wrap-around, "which rect does the ring go
@@ -50,10 +50,11 @@ pub struct FocusDemo {
     /// the event is observable in text as well as in the painted ring.
     focused: Option<WidgetId>,
     /// This frame's tab order, cached at paint time. `AppLogic::tab_stops`
-    /// is `&self`-only and gets no backend, so — exactly like
-    /// `frame_demo`'s `cached_hit_map` — the geometry-derived answer is
-    /// computed inside `render` (where the viewport *is* available) and
-    /// read back out here.
+    /// is `&self`-only and gets no backend, so the geometry-derived answer
+    /// is computed inside `render` (where the viewport *is* available) and
+    /// read back out here — `frame_demo` recomputes its own surface rects
+    /// the same way, in both `render` and `handle`, rather than caching
+    /// them.
     cached_tab_stops: RefCell<Vec<(WidgetId, Rect)>>,
 }
 

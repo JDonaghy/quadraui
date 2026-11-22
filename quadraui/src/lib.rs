@@ -858,6 +858,10 @@ pub use login_item::LoginItemOptions;
 // at `quadraui::paths::*` only — call sites there, not here.
 pub use paths::AppPathKind;
 // The public paint-verb seam — see `paint_surface`'s module doc.
+// `FrameHitMap`/`FrameZone` are deprecated (use `crate::frame_tree::FrameTree`
+// instead — see their own `#[deprecated]` notes in `frame.rs`). Allow it here
+// since `pub use` of a deprecated item is itself a use site.
+#[allow(deprecated)]
 pub use frame::{
     check_frame_order, compose_frame, set_frame_capture, FrameCapture, FrameHitMap,
     FrameOrderViolation, FramePresence, FrameRung, FrameZone, OwnedContent, OwnedFrame, OwnedNode,

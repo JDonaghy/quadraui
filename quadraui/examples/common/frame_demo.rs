@@ -1,18 +1,19 @@
 //! Renders a TabBar + ListView + StatusBar entirely through
-//! `ScreenLayout::draw()`, then dispatches clicks via
-//! `FrameHitMap::hit_test()` to identify which surface was clicked.
+//! `ScreenLayout::draw()`, then dispatches clicks by recomputing each
+//! surface's own rect and testing it directly — the same pattern
+//! `activity_style_demo.rs` and `AppShell::compute_layout`'s own
+//! callers use, and the replacement for the now-`#[deprecated]`
+//! `FrameHitMap`/`FrameZone` hit-map this demo used to cache.
 //!
 //! The ListView rows are intentionally wider than the terminal so the
 //! example doubles as the interactive smoke test for ListView horizontal
 //! scroll: `←`/`→` (or `h`/`l`) scroll the content and a horizontal
 //! scrollbar appears along the bottom of the list area (TUI backend).
 
-use std::cell::RefCell;
-
 use quadraui::{
-    AppLogic, Backend, Color, FrameHitMap, FrameZone, Key, ListItem, ListView, NamedKey, Reaction,
-    Rect, ScreenLayout, SegmentMeasure, StatusBar, StatusBarSegment, StyledText, Surface, TabBar,
-    TabBarHit, TabItem, TabMeasure, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Key, ListItem, ListView, NamedKey, Reaction, Rect, ScreenLayout,
+    SegmentMeasure, StatusBar, StatusBarSegment, StyledText, Surface, TabBar, TabBarHit, TabItem,
+    TabMeasure, UiEvent, WidgetId,
 };
 
 pub struct FrameDemo {
@@ -27,7 +28,6 @@ pub struct FrameDemo {
     /// Active h-scrollbar thumb drag: (track_x, track_w, thumb_len, grab_offset).
     h_sb_drag: Option<(f32, f32, f32, f32)>,
     last_hit: String,
-    cached_hit_map: RefCell<FrameHitMap>,
 }
 
 impl FrameDemo {
@@ -58,7 +58,6 @@ impl FrameDemo {
             show_v_scroll: true,
             h_sb_drag: None,
             last_hit: "—".into(),
-            cached_hit_map: RefCell::new(FrameHitMap::default()),
         }
     }
 
@@ -74,15 +73,22 @@ impl FrameDemo {
         2 + widest
     }
 
-    /// The list surface rect, derived the same way `render` lays it out.
-    /// Recomputed in `handle` so click/drag routing matches the paint.
-    fn list_rect(&self, backend: &dyn Backend) -> Rect {
+    /// The three surfaces' rects, derived the same way `render` lays them
+    /// out. Recomputed in `handle` so click/drag routing matches the
+    /// paint — there is no cached hit map to read back (`FrameHitMap` is
+    /// `#[deprecated]`; these surfaces carry no `Interactive`/`DynWidget`
+    /// identity for a `FrameTree` node to hold either).
+    fn rects(&self, backend: &dyn Backend) -> (Rect, Rect, Rect) {
         let vp = backend.viewport();
         let lh = backend.line_height();
         let tab_h = (lh * 1.5).round();
         let status_h = (lh * 1.5).round();
         let list_h = (vp.height - tab_h - status_h).max(0.0);
-        Rect::new(0.0, tab_h, vp.width, list_h)
+        (
+            Rect::new(0.0, 0.0, vp.width, tab_h),
+            Rect::new(0.0, tab_h, vp.width, list_h),
+            Rect::new(0.0, tab_h + list_h, vp.width, status_h),
+        )
     }
 
     fn tab_bar(&self) -> TabBar {
@@ -176,15 +182,7 @@ impl AppLogic for FrameDemo {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let vp = backend.viewport();
-        let lh = backend.line_height();
-        let tab_h = (lh * 1.5).round();
-        let status_h = (lh * 1.5).round();
-        let list_h = (vp.height - tab_h - status_h).max(0.0);
-
-        let tab_rect = Rect::new(0.0, 0.0, vp.width, tab_h);
-        let list_rect = Rect::new(0.0, tab_h, vp.width, list_h);
-        let status_rect = Rect::new(0.0, tab_h + list_h, vp.width, status_h);
+        let (tab_rect, list_rect, status_rect) = self.rects(backend);
 
         let tab_bar = self.tab_bar();
         let list = self.list_view();
@@ -207,8 +205,7 @@ impl AppLogic for FrameDemo {
             pressed: None,
         });
 
-        let hit_map = frame.draw(backend);
-        *self.cached_hit_map.borrow_mut() = hit_map;
+        frame.draw(backend);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -249,14 +246,15 @@ impl AppLogic for FrameDemo {
                 _ => {}
             },
             UiEvent::MouseDown { position, .. } => {
-                // The h-scrollbar thumb sits on the bottom row of the list,
-                // inside the `FrameZone::List` rect, so hit-test it first.
-                // Geometry comes straight from the backend (`list_hscrollbar`)
-                // — the same `Scrollbar` the rasteriser painted — so the
-                // draggable thumb lines up exactly with what's on screen.
+                let (tab_rect, list_rect, status_rect) = self.rects(backend);
+
+                // The h-scrollbar thumb sits on the bottom row of the list
+                // rect, so hit-test it first. Geometry comes straight from
+                // the backend (`list_hscrollbar`) — the same `Scrollbar`
+                // the rasteriser painted — so the draggable thumb lines up
+                // exactly with what's on screen.
                 let list = self.list_view();
-                let lr = self.list_rect(backend);
-                if let Some(hsb) = backend.list_hscrollbar(lr, &list) {
+                if let Some(hsb) = backend.list_hscrollbar(list_rect, &list) {
                     let on_row =
                         position.y >= hsb.track.y && position.y < hsb.track.y + hsb.track.height;
                     if on_row {
@@ -285,44 +283,39 @@ impl AppLogic for FrameDemo {
                     }
                 }
 
-                let hit_map = self.cached_hit_map.borrow();
-                let zone = hit_map.hit_test(position.x, position.y);
-                match zone {
-                    FrameZone::TabBar { .. } => {
-                        let lh = backend.line_height();
-                        let cw = backend.char_width();
-                        let vp = backend.viewport();
-                        let tab_bar = self.tab_bar();
-                        let layout = tab_bar.layout(
-                            vp.width,
-                            (lh * 1.5).round(),
-                            cw * 2.0,
-                            |i| {
-                                let w = tab_bar.tabs[i].label.chars().count() as f32 * cw;
-                                TabMeasure::new(w, 0.0)
-                            },
-                            |_| SegmentMeasure::new(0.0),
-                        );
-                        if let TabBarHit::Tab(idx) = layout.hit_test(position.x, position.y) {
-                            self.active_tab = idx;
-                            self.last_hit = format!("Tab({idx})");
-                        }
+                // The three surfaces stack vertically with no overlap, so
+                // checking each rect in turn (instead of a cached z-ordered
+                // hit map) resolves unambiguously.
+                if tab_rect.contains(*position) {
+                    let lh = backend.line_height();
+                    let cw = backend.char_width();
+                    let vp = backend.viewport();
+                    let tab_bar = self.tab_bar();
+                    let layout = tab_bar.layout(
+                        vp.width,
+                        (lh * 1.5).round(),
+                        cw * 2.0,
+                        |i| {
+                            let w = tab_bar.tabs[i].label.chars().count() as f32 * cw;
+                            TabMeasure::new(w, 0.0)
+                        },
+                        |_| SegmentMeasure::new(0.0),
+                    );
+                    if let TabBarHit::Tab(idx) = layout.hit_test(position.x, position.y) {
+                        self.active_tab = idx;
+                        self.last_hit = format!("Tab({idx})");
                     }
-                    FrameZone::List { .. } => {
-                        let lh = backend.line_height();
-                        let tab_h = (lh * 1.5).round();
-                        let row = ((position.y - tab_h) / lh).floor() as usize;
-                        if row < self.items.len() {
-                            self.selected = row;
-                            self.last_hit = format!("List({row})");
-                        }
+                } else if list_rect.contains(*position) {
+                    let lh = backend.line_height();
+                    let row = ((position.y - list_rect.y) / lh).floor() as usize;
+                    if row < self.items.len() {
+                        self.selected = row;
+                        self.last_hit = format!("List({row})");
                     }
-                    FrameZone::StatusBar { .. } => {
-                        self.last_hit = "StatusBar".into();
-                    }
-                    _ => {
-                        self.last_hit = format!("{zone:?}");
-                    }
+                } else if status_rect.contains(*position) {
+                    self.last_hit = "StatusBar".into();
+                } else {
+                    self.last_hit = "Empty".into();
                 }
                 return Reaction::Redraw;
             }

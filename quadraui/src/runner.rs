@@ -30,9 +30,9 @@
 //! The trait carries an [`AppLogic::AreaId`] associated type. In
 //! practice all runners (GTK single-DA, TUI) use `type AreaId = ()`
 //! and pass `Default::default()`. The single-DA model uses zone routing
-//! via `AppShell::compute_layout` + `FrameHitMap` hit-testing, not
-//! multiple GTK DrawingAreas. The associated type is retained as a
-//! compatibility seam.
+//! via `AppShell::compute_layout`'s resolved rects, hit-tested directly
+//! by the app, not multiple GTK DrawingAreas. The associated type is
+//! retained as a compatibility seam.
 //!
 //! # A fourth, optional loop phase: the control channel
 //!
@@ -190,8 +190,8 @@ pub enum StepOutcome {
 pub trait AppLogic {
     /// Identifier for distinct render targets. All current runners
     /// use `type AreaId = ()` — zone routing is handled by
-    /// `AppShell::compute_layout` + `FrameHitMap`, not multiple DAs.
-    /// Retained as a compatibility seam.
+    /// `AppShell::compute_layout`'s resolved rects, hit-tested directly
+    /// by the app, not multiple DAs. Retained as a compatibility seam.
     type AreaId: Copy + Eq + std::fmt::Debug + Default;
 
     /// One-time setup hook. Called by the runner after backend

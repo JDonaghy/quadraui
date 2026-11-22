@@ -683,7 +683,9 @@ mod tests {
     /// Backs [`crate::frame::Surface::DropOverlay`]: `bounds()` is
     /// this primitive's only source of a zone rect, so it needs its
     /// own direct coverage independent of the `Surface`/`FrameHitMap`
-    /// round-trip test in `frame.rs`.
+    /// round-trip test in `frame.rs` (`FrameHitMap` itself is
+    /// `#[deprecated]`; the round-trip test still exercises it under
+    /// `#[allow(deprecated)]`).
     #[test]
     fn bounds_prefers_highlight_then_insertion_bar_then_default() {
         let highlight = Rect::new(1.0, 2.0, 3.0, 4.0);
