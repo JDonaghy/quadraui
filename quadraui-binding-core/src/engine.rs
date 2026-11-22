@@ -11,6 +11,7 @@
 
 use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
@@ -18,18 +19,19 @@ use quadraui::compose::{
     FormController, FormControllerAction, FormDialogAction, FormDialogController, Handled, MenuDef,
     MenuEvent, MenuSystem, MessageDialogController, TreeTableController, TreeTableControllerEvent,
 };
+use quadraui::primitive::DynWidget;
 use quadraui::primitives::form::focus_order;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
     wheel_row_delta, Backend, CanvasEvent, Cell, CellGrid, CellGridEvent, Column,
     CompletionItemMeasure, Completions, CompletionsHit, CompletionsLayout, ContextMenu,
-    ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, DrawsPrimitives, EditOp, Float,
-    FloatLayout, FloatMeasure, Form, FormEvent, InteractionState, Key, MenuBar,
-    MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, Rect, RichTextPopup,
-    RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, ScrollAxis, ScrollViewEvent,
-    TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay,
-    ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, TreeTableNodeData,
-    UiEvent, WidgetId,
+    ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, DrawsPrimitives, EditOp,
+    EventCx, EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, InteractionState, Key,
+    MenuBar, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind,
+    PointerShape, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure,
+    RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast,
+    ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure,
+    TreeEvent, TreeTableNodeData, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -407,6 +409,22 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             PaintedHit::Extra {
                 id, area, extra, ..
             } => extra.tab_stop().then_some((*id, *area)),
+            // Mirrors `Extra`'s own opt-in above, through `DynWidget`'s
+            // own focus contract rather than a bespoke `tab_stop` bool:
+            // only `FocusSpec::Stop` (a single, whole-widget stop) counts.
+            // `FocusSpec::Children` (per-sub-target stops) has no
+            // `PaintedHit::Widget` field to report more than one
+            // `(WidgetId, Rect)` from yet — a widget that needs that
+            // extends this arm the same way a future finer-grained
+            // `HitDetail::WidgetBody` would. `IconGrid`, this seam's only
+            // member so far, reports `FocusSpec::None` (it has no
+            // `Interactive::focus` override), so it is not a tab stop
+            // through this generic path — unlike its own prior
+            // `ExtraPaint::tab_stop` override, which always answered
+            // `true`.
+            PaintedHit::Widget { id, area, widget } => {
+                matches!(widget.focus(), quadraui::FocusSpec::Stop).then_some((*id, *area))
+            }
         })
         .collect()
 }
@@ -1277,6 +1295,16 @@ pub struct InteractionEngine {
     /// [`crate::host::resolve_split_ratio`]/[`crate::host::resolve_tab_bar_active`]/
     /// [`crate::host::resolve_tree_expansion`].
     widget_state: WidgetState,
+    /// Per-[`crate::layout::LeafDescriptor::Widget`] [`DynWidget::State`][DynWidget],
+    /// type-erased behind [`quadraui::WidgetStateStore`] and keyed by
+    /// `WidgetId` — the generic seam's own counterpart of [`Self::widget_state`],
+    /// which only ever resolves the handful of named fields
+    /// (cursor/scroll/active-tab) the six fixed leaf kinds carry.
+    /// [`Self::dispatch_dyn_widget_click`] is the only reader/writer today;
+    /// [`Self::set_hits`] prunes it to just the ids still painted as a
+    /// `PaintedHit::Widget` this frame, mirroring [`Self::widget_state`]'s
+    /// own per-frame sweep.
+    dyn_widget_state: RefCell<quadraui::WidgetStateStore>,
     /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
     /// open/close/keyboard-nav/submenu state machine that turns a click on
     /// a top-level item into an open dropdown and a selection into
@@ -1413,6 +1441,129 @@ pub struct InteractionEngine {
     cell_grid_order: RefCell<Vec<WidgetId>>,
 }
 
+/// What [`InteractionEngine::dispatch_dyn_widget_click`] resolved —
+/// mirrors the `Option<UiEvent>` / `attach_hit` pair its caller already
+/// threads through every other `detail` arm, bundled with the `Reaction`s
+/// produced along the way (an `EventCx::emit`ted event's own dispatch, or
+/// the bare `Redraw` [`quadraui::Handled::Consumed`] asks for) so the
+/// caller folds exactly one value into its own running `Reaction`, same
+/// as [`InteractionEngine::scroll_focused_child_into_view`]'s return.
+struct DynWidgetClickOutcome {
+    /// Replacement semantic event, when [`DynWidget::handle`] resolved one
+    /// ([`quadraui::Handled::Event`]) — the caller swaps it in for the raw
+    /// `MouseDown`/`DoubleClick` and stops attaching the raw hit, mirroring
+    /// every other semantic substitution in [`InteractionEngine::handle`].
+    event: Option<UiEvent>,
+    /// `true` for [`quadraui::Handled::Consumed`]: the click changed the
+    /// widget's own state with no event to route, so the caller still
+    /// swallows the raw click (same as `event.is_some()`) but has nothing
+    /// to swap `event` for.
+    consumed: bool,
+    /// Every `Reaction` already dispatched/resolved by this call.
+    reaction: quadraui::Reaction,
+}
+
+/// The pointer-click facts [`InteractionEngine::handle`] has already
+/// resolved by the time a hit reaches
+/// [`InteractionEngine::dispatch_dyn_widget_click`] — bundled into one
+/// value so that method stays under `clippy::too_many_arguments` without
+/// losing any of them.
+struct PointerClick {
+    position: Point,
+    button: MouseButton,
+    modifiers: Modifiers,
+    double_click: bool,
+}
+
+impl Default for DynWidgetClickOutcome {
+    fn default() -> Self {
+        Self {
+            event: None,
+            consumed: false,
+            reaction: quadraui::Reaction::Continue,
+        }
+    }
+}
+
+/// [`EventCx::emit`]/[`EventCx::request_focus`]/[`EventCx::request_redraw`]'s
+/// outbox for one [`DynWidget::handle`] call — mirrors `quadraui::runtime`'s
+/// own private `WidgetHostIntents`/`WidgetEventHost` pair (the reference
+/// impl backing the same trait for the widget-contract routing engine):
+/// recording what the widget asked for here, rather than reaching for
+/// `backend`/`sink` directly from inside [`DynWidgetEventHost`]'s own
+/// methods, sidesteps a second concurrent borrow of either while
+/// [`DynWidget::handle`] itself still holds `&mut dyn Any` into
+/// [`InteractionEngine::dyn_widget_state`].
+#[derive(Default)]
+struct DynWidgetIntents {
+    focus_request: Option<WidgetId>,
+    redraw: bool,
+    emitted: Vec<UiEvent>,
+}
+
+/// [`EventHost`] impl backing one [`DynWidget::handle`] call, scoped to a
+/// `LeafDescriptor::Widget` leaf's click dispatch. `capture_pointer`/
+/// `release_pointer`/`set_cursor` are no-ops — not wired yet rather than
+/// impossible: this engine has no generic per-widget pointer-capture or
+/// cursor-shape tracking outside its own bespoke drag state machines
+/// (`Self::active_drag` and friends), and `IconGrid`, this seam's only
+/// member so far, never calls any of the three. A future `WIDGET_KINDS`
+/// entry that does extends this host the same way `request_focus`'s own
+/// `intents` outbox already demonstrates.
+struct DynWidgetEventHost<'a> {
+    units: quadraui::primitive::Units,
+    intents: &'a mut DynWidgetIntents,
+}
+
+impl EventHost for DynWidgetEventHost<'_> {
+    fn is_focused(&self, _id: &WidgetId, _sub: Option<quadraui::interactive::SubTarget>) -> bool {
+        // Click-to-focus for the leaf as a whole already ran before this
+        // arm is reached (`InteractionEngine::handle`'s own generic
+        // `tab_stops`-based focus move) -- a composite widget's own
+        // sub-target focus tracking is a further extension this host
+        // doesn't support yet, same as `request_focus`'s own doc.
+        false
+    }
+
+    fn request_focus(&mut self, id: &WidgetId, _sub: Option<quadraui::interactive::SubTarget>) {
+        self.intents.focus_request = Some(*id);
+    }
+
+    fn capture_pointer(&mut self, _id: &WidgetId) {}
+
+    fn release_pointer(&mut self) {}
+
+    fn set_cursor(&mut self, _cursor: PointerShape) {}
+
+    fn request_redraw(&mut self) {
+        self.intents.redraw = true;
+    }
+
+    fn emit(&mut self, event: UiEvent) {
+        self.intents.emitted.push(event);
+    }
+
+    fn units(&self) -> quadraui::primitive::Units {
+        self.units
+    }
+}
+
+/// The `(area, widget)` of the [`PaintedHit::Widget`] painted under `id`
+/// this frame, or `None` if no such hit exists (including a stale `id`
+/// from a previous frame's hit map). `widget` is an `Rc` clone, same
+/// reason [`PaintedHit::Widget`]'s own field is one — see that field's
+/// doc.
+fn dyn_widget_hit(hit_map: &[PaintedHit], id: WidgetId) -> Option<(Rect, Rc<dyn DynWidget>)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Widget {
+            id: hit_id,
+            area,
+            widget,
+        } if *hit_id == id => Some((*area, Rc::clone(widget))),
+        _ => None,
+    })
+}
+
 /// [`InteractionEngine::cell_grid_contexts`]'s per-id entry — everything
 /// [`InteractionEngine::handle`]'s own `"cell_grid"` routing and
 /// [`InteractionEngine::cell_grid_cells_requested`] need back about the
@@ -1510,6 +1661,16 @@ impl InteractionEngine {
             .borrow_mut()
             .retain(|id, _| windowed_leaf_extent(&hits, *id).is_some());
         self.widget_state.gc();
+        let live_dyn_widgets: Vec<WidgetId> = hits
+            .iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Widget { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        self.dyn_widget_state
+            .borrow_mut()
+            .retain(|id| live_dyn_widgets.contains(id));
         *self.hit_map.borrow_mut() = hits;
     }
 
@@ -3498,6 +3659,88 @@ impl InteractionEngine {
         }
     }
 
+    /// Routes a non-double-click-aware `MouseDown`/`DoubleClick` landing
+    /// on `HitDetail::WidgetBody` through the matched
+    /// [`crate::layout::LeafDescriptor::Widget`]'s own
+    /// [`DynWidget::handle`] — the generic seam's counterpart of
+    /// [`Self::handle`]'s own `HitDetail::ExtraBody` arm, which instead
+    /// special-cases each [`crate::extra_paint::ExtraPaint`] kind it
+    /// recognizes by downcast. Resolves `widget`'s layout fresh against
+    /// `area` rather than reusing anything from paint time — see
+    /// [`PaintedHit::Widget`]'s own doc for why nothing is stashed to
+    /// reuse. An empty [`DynWidgetClickOutcome`] (no-op) when `id` doesn't
+    /// name a `PaintedHit::Widget` this frame.
+    fn dispatch_dyn_widget_click(
+        &self,
+        id: WidgetId,
+        click: PointerClick,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> DynWidgetClickOutcome {
+        let PointerClick {
+            position,
+            button,
+            modifiers,
+            double_click,
+        } = click;
+        let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), id) else {
+            return DynWidgetClickOutcome::default();
+        };
+        let style = backend.style();
+        let ctx = quadraui::primitive::LayoutCtx {
+            line_height: quadraui::primitive::LayoutCtx::resolve_row_height(
+                backend.chrome_line_height(),
+                &style,
+            ),
+            char_width: backend.char_width(),
+            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+        };
+        let layout = widget.layout(&ctx, area);
+        let local = Point::new(position.x - area.x, position.y - area.y);
+        let routed = RoutedEvent::Pointer {
+            kind: if double_click {
+                PointerKind::DoubleClick(button)
+            } else {
+                PointerKind::Down(button)
+            },
+            sub: None,
+            local,
+            mods: modifiers,
+        };
+        let mut intents = DynWidgetIntents::default();
+        let handled = {
+            let mut states = self.dyn_widget_state.borrow_mut();
+            let state = states.state_for(id, widget.as_ref());
+            let mut host = DynWidgetEventHost {
+                units: ctx.units(),
+                intents: &mut intents,
+            };
+            let mut cx = EventCx::new(id, &mut host);
+            widget.handle(state, &routed, layout.as_ref(), &mut cx)
+        };
+
+        let mut outcome = DynWidgetClickOutcome::default();
+        if let Some(focus_id) = intents.focus_request {
+            backend.set_focus(Some(focus_id));
+        }
+        if intents.redraw {
+            outcome.reaction = outcome.reaction.merge(quadraui::Reaction::Redraw);
+        }
+        for emitted in intents.emitted {
+            let reaction = sink.dispatch(&emitted, Some(&HitDetail::WidgetBody));
+            outcome.reaction = outcome.reaction.merge(reaction);
+        }
+        match handled {
+            Handled::Event(replacement) => outcome.event = Some(replacement),
+            Handled::Consumed => {
+                outcome.consumed = true;
+                outcome.reaction = outcome.reaction.merge(quadraui::Reaction::Redraw);
+            }
+            Handled::Ignored => {}
+        }
+        outcome
+    }
+
     pub fn handle(
         &mut self,
         mut event: UiEvent,
@@ -4860,6 +5103,9 @@ impl InteractionEngine {
         // instead of) the raw `MouseDown`/`DoubleClick` dispatch — merged
         // into the final `Reaction` the same way `focus_reaction` is.
         let mut button_clicked_reaction = Reaction::Continue;
+        // Set by the `HitDetail::WidgetBody` arm below, mirroring
+        // `button_clicked_reaction`'s own doc.
+        let mut widget_click_reaction = Reaction::Continue;
         if let Some((id, detail)) = &hit {
             let modifiers_and_double_click = match &event {
                 UiEvent::MouseDown {
@@ -4915,6 +5161,30 @@ impl InteractionEngine {
                             position,
                         ) {
                             event = semantic;
+                            attach_hit = false;
+                        }
+                    }
+                } else if matches!(detail, HitDetail::WidgetBody) {
+                    if let Some(position) = event_position(&event) {
+                        let outcome = self.dispatch_dyn_widget_click(
+                            *id,
+                            PointerClick {
+                                position,
+                                button,
+                                modifiers,
+                                double_click,
+                            },
+                            backend,
+                            sink,
+                        );
+                        if matches!(outcome.reaction, Reaction::Exit) {
+                            return outcome.reaction;
+                        }
+                        widget_click_reaction = widget_click_reaction.merge(outcome.reaction);
+                        if let Some(replacement) = outcome.event {
+                            event = replacement;
+                            attach_hit = false;
+                        } else if outcome.consumed {
                             attach_hit = false;
                         }
                     }
@@ -5198,6 +5468,7 @@ impl InteractionEngine {
             .merge(hover_reaction)
             .merge(focus_reaction)
             .merge(button_clicked_reaction)
+            .merge(widget_click_reaction)
             .merge(event_reaction)
             .merge(persisted_state)
             .merge(scripted_reaction)

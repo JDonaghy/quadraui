@@ -10,16 +10,17 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use quadraui::primitive::DynWidget;
 use quadraui::{
     render_markdown_to_styled, ActivityBar, ActivityBarStyle, Backend, BoardModel, Canvas, Cell,
     CellGridController, Chart, Column, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure,
     DatePicker, Decoration, DiffView, DrawsPrimitives, Editor, FieldKind, FindReplacePanel,
-    FontRole, Form, FormField, Icon, IconGrid, Image, InteractionState, LabelPosition, MenuBar,
-    MessageList, Minimap, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Palette,
-    PipelineView, Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis, ScrollView,
-    Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit, Terminal,
-    TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton,
-    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    FontRole, Form, FormField, Icon, Image, InteractionState, LabelPosition, MenuBar, MessageList,
+    Minimap, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Palette, PipelineView,
+    Point, ProgressBar, RadioGroup, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar,
+    Spinner, StatusBar, StatusBarHit, StyledText, Switch, SwitchHit, Terminal, TextDisplay,
+    TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
+    TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -1281,35 +1282,6 @@ impl ExtraPaint for Chart {
     }
 }
 
-impl ExtraPaint for IconGrid {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        // `IconGrid` is a `quadraui::Primitive`, not a dedicated
-        // `Backend::draw_icon_grid` method — `DrawsPrimitives::
-        // draw_primitive` resolves its layout and paints it (GUI through
-        // `PaintSurface`, TUI through the cell buffer) on whichever
-        // backend this runs on, with no per-backend wiring needed here.
-        backend.draw_primitive(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check, same limitation [`DatePicker`]'s own
-    /// `hit_test` documents: resolving a click to a specific tile needs
-    /// the resolved [`quadraui::IconGridLayout`] this trait's `hit_test`
-    /// has no parameter for — not wired yet rather than impossible.
-    /// Arrow-key navigation still works once focused via
-    /// [`ExtraPaint::tab_stop`].
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
-
 impl ExtraPaint for MessageList {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_message_list(area, self);
@@ -2356,7 +2328,46 @@ extra_primitives! {
     "password" => PasswordInput,
     "textarea" => TextArea,
     "markdown" => Markdown,
-    "icon_grid" => IconGrid,
+}
+
+/// The `widget_kinds!`-registered kind strings this crate decodes into
+/// [`crate::layout::LeafDescriptor::Widget`] rather than
+/// [`crate::layout::LeafDescriptor::Extra`] — the [`DynWidget`] seam's own
+/// kind table, parallel to [`EXTRA_PRIMITIVE_KINDS`] above but never
+/// overlapping it (a kind lives in exactly one of the two tables). Each
+/// entry here must also be a [`quadraui::widget_kinds!`] entry, so
+/// [`quadraui::decode_widget`] actually knows how to decode it —
+/// [`decode_widget_leaf`] is this table's own decode step, the `Widget`
+/// counterpart of [`decode_extra_primitive_checked`].
+///
+/// `"icon_grid"` is the seam's first (and, for now, only) member: unlike
+/// every [`EXTRA_PRIMITIVE_KINDS`] entry, [`quadraui::IconGrid`] has no
+/// bespoke [`ExtraPaint`] impl to write here — painting, whole-area hit
+/// testing and [`DynWidget::handle`] routing are already fully generic
+/// (see [`crate::layout::LeafDescriptor::Widget`]'s own doc), so this one
+/// line is its entire wiring. A further kind joins this table only when
+/// it likewise needs nothing beyond that generic contract; a kind with
+/// its own paint-time chrome state (tab-stop children, chrome click
+/// regions, a custom whole-area-vs-sub-region hit test) still belongs in
+/// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
+pub const WIDGET_KINDS: [&str; 1] = ["icon_grid"];
+
+/// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
+/// [`DynWidget`], via [`quadraui::decode_widget`] — the `Widget`
+/// counterpart of [`decode_extra_primitive_checked`]. Unlike that
+/// function, `quadraui::decode_widget` has no `DecodeDiagnostics` seam of
+/// its own yet (see that function's own doc), so an unrecognized key
+/// inside `value` is silently ignored by `serde_json::from_value` rather
+/// than reported — a known, narrower trade-off of this seam's first cut,
+/// not a goal to preserve.
+pub(crate) fn decode_widget_leaf(
+    what: &str,
+    kind: &str,
+    value: &serde_json::Value,
+) -> Result<Rc<dyn DynWidget>, crate::DecodeError> {
+    quadraui::decode_widget(kind, value.clone())
+        .map(Rc::from)
+        .map_err(|err| crate::DecodeError::borrow(what, format!("invalid descriptor: {err}")))
 }
 
 #[cfg(test)]
@@ -2670,6 +2681,135 @@ mod tests {
                         && *button_id == WidgetId::new("toolbar:save")
             )),
             "expected a ButtonClicked event for the inline toolbar leaf, got {dispatched:?}"
+        );
+    }
+
+    /// An `IconGrid` placed as a `LeafDescriptor::Widget` (not `Extra` —
+    /// [`IconGrid`] has no [`ExtraPaint`] impl at all, see
+    /// [`crate::layout::LeafDescriptor::Widget`]'s own doc) paints through
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] and records a
+    /// [`PaintedHit::Widget`], proving the generic seam carries a click
+    /// decode-to-paint-to-hit-test-to-dispatch end to end: a `MouseDown`
+    /// landing on the painted area resolves [`crate::hit::HitDetail::WidgetBody`] (not some
+    /// fallback "unrecognised hit" shape), and
+    /// [`crate::engine::InteractionEngine::handle`] routes it into
+    /// [`quadraui::primitive::DynWidget::handle`] rather than skipping
+    /// dispatch outright — observable here because
+    /// [`IconGrid::handle`][quadraui::primitive::DynWidget::handle] always
+    /// returns [`quadraui::Handled::Ignored`] (`IconGrid` has no
+    /// `Interactive` override), so the dispatch falls through to the same
+    /// raw `MouseDown` [`RecordingSink::dispatch`] would have seen without
+    /// this seam — but now carrying `Some(&HitDetail::WidgetBody)`, which
+    /// only happens once [`InteractionEngine::handle`] has actually walked
+    /// the `dispatch_dyn_widget_click` branch rather than treating the hit
+    /// as unrecognised.
+    #[test]
+    fn icon_grid_leaf_click_round_trips_through_the_dyn_widget_seam() {
+        use crate::engine::InteractionEngine;
+        use crate::hit::HitDetail;
+        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::render::paint_layout;
+        use quadraui::{IconGrid, IconGridItem, Modifiers, MouseButton};
+
+        /// Unlike [`RecordingSink`], also keeps the [`HitDetail`] each
+        /// dispatch carried, so the test can assert the click resolved to
+        /// [`HitDetail::WidgetBody`] specifically, not merely that some
+        /// event arrived.
+        #[derive(Default)]
+        struct DetailRecordingSink {
+            dispatched: Vec<(UiEvent, Option<HitDetail>)>,
+        }
+
+        impl crate::engine::EventSink for DetailRecordingSink {
+            fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> Reaction {
+                self.dispatched.push((event.clone(), hit_detail.cloned()));
+                Reaction::Continue
+            }
+        }
+
+        struct IconGridLeafApp {
+            engine: InteractionEngine,
+            sink: RefCell<DetailRecordingSink>,
+        }
+
+        impl AppLogic for IconGridLeafApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let grid = IconGrid {
+                    id: WidgetId::new("grid:1"),
+                    items: vec![IconGridItem {
+                        id: WidgetId::new("grid:1:item-0"),
+                        icon: quadraui::Icon::new("\u{f15b}", "F"),
+                        image: None,
+                        label: StyledText::plain("README.md"),
+                        detail: None,
+                        decoration: Default::default(),
+                    }],
+                    selected_idx: 0,
+                    has_focus: true,
+                    scroll_offset: 0,
+                    tile_size: None,
+                };
+                let tree = LayoutNode::Row(LayoutContainer::new(
+                    vec![LayoutNode::Leaf(LayoutLeaf {
+                        id: "grid:1".into(),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "icon_grid",
+                            widget: Rc::new(grid),
+                        },
+                        scroll_px: None,
+                    })],
+                    Spacing::default(),
+                ));
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &tree, &mut hits, &|id| {
+                    self.engine.chrome_interaction(id)
+                });
+                self.engine.set_hits(hits);
+            }
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                self.engine
+                    .handle(event, backend, &mut *self.sink.borrow_mut())
+            }
+        }
+
+        let app = IconGridLeafApp {
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(DetailRecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+
+        let grid_area = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Widget { id, area, .. } if *id == WidgetId::new("grid:1") => {
+                        Some(*area)
+                    }
+                    _ => None,
+                })
+                .expect("icon_grid leaf should have painted a Widget hit")
+        };
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(grid_area.x, grid_area.y),
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, hit_detail)| matches!(
+                (event, hit_detail),
+                (UiEvent::MouseDown { .. }, Some(HitDetail::WidgetBody))
+            )),
+            "expected the icon_grid click to resolve HitDetail::WidgetBody \
+             through the InteractionEngine, got {dispatched:?}"
         );
     }
 

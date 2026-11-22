@@ -1991,7 +1991,8 @@ pub fn resolve_layout_node_windowed(
                 }
                 LeafDescriptor::Button(_)
                 | LeafDescriptor::TextDisplay(_)
-                | LeafDescriptor::Extra(_) => {}
+                | LeafDescriptor::Extra(_)
+                | LeafDescriptor::Widget { .. } => {}
             }
         }
         LayoutNode::Split(split) => {

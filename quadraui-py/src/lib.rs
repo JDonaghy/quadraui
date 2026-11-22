@@ -2847,7 +2847,10 @@ fn resolve_layout_leaf_state(
         LeafDescriptor::TabBar(tab_bar) => {
             *tab_bar = resolve_tab_bar_active(engine.widget_state(), tab_bar);
         }
-        LeafDescriptor::Button(_) | LeafDescriptor::TextDisplay(_) | LeafDescriptor::Extra(_) => {}
+        LeafDescriptor::Button(_)
+        | LeafDescriptor::TextDisplay(_)
+        | LeafDescriptor::Extra(_)
+        | LeafDescriptor::Widget { .. } => {}
     }
 }
 

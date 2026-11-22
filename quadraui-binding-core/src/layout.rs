@@ -15,6 +15,7 @@ use quadraui::{
 };
 
 use quadraui::layout::{resolve_grid_tracks, GridTrack};
+use quadraui::primitive::DynWidget;
 
 use crate::extra_paint::ExtraPaint;
 use crate::DecodeError;
@@ -1454,6 +1455,26 @@ pub enum LeafDescriptor {
     /// neither ever adds a new `LeafDescriptor` variant — both route
     /// through this one.
     Extra(Rc<dyn ExtraPaint>),
+    /// A kind registered in [`crate::extra_paint::WIDGET_KINDS`], decoded
+    /// through [`quadraui::decode_widget`] into a type-erased
+    /// [`quadraui::primitive::DynWidget`] rather than an [`ExtraPaint`] —
+    /// the generic seam a binding kind joins when its `quadraui::Primitive`
+    /// has no bespoke paint/hit-test/event wiring of its own to write
+    /// here, only the layout-tree leaf dict decode a [`WIDGET_KINDS`]
+    /// entry adds. Painted via [`quadraui::DrawsPrimitives::draw_dyn`]
+    /// (see [`crate::render::paint_leaf`]'s `Widget` arm), hit-tested as a
+    /// whole area (see [`crate::hit::PaintedHit::Widget`]), and routed to
+    /// [`DynWidget::handle`] on a click (see
+    /// [`crate::engine::InteractionEngine::handle`]'s `HitDetail::WidgetBody`
+    /// arm). `kind` is the matched [`WIDGET_KINDS`] string, kept for
+    /// diagnostics — nothing in this generic path downcasts on it, unlike
+    /// [`Self::Extra`]'s own kind-specific arms.
+    ///
+    /// [`WIDGET_KINDS`]: crate::extra_paint::WIDGET_KINDS
+    Widget {
+        kind: &'static str,
+        widget: Rc<dyn DynWidget>,
+    },
 }
 
 /// The descriptor keys a layout tree leaf dict may carry — the six names
