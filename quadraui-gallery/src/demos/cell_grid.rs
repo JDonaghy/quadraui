@@ -14,12 +14,13 @@
 //! A click is resolved the same way it was painted: [`CellGridDemo::screen`]
 //! builds the frame's [`quadraui::ScreenLayout`] once, [`Demo::render`]
 //! draws it and [`Demo::handle`]'s `MouseDown` arm hit-tests the
-//! identical [`quadraui::FrameZone::Widget`] zone before falling back to
+//! identical node in the [`quadraui::FrameTree`] derived from it (via
+//! [`quadraui::ScreenLayout::into_frame_tree`]) before falling back to
 //! the widget's own [`quadraui::CellGridHit`] fine-grained resolution —
 //! never a second, independently hand-rolled geometry computation.
 
 use quadraui::{
-    Backend, BackendCaps, Cell, CellGrid, CellGridHit, CellGridPrimitiveLayout, Color, FrameZone,
+    Backend, BackendCaps, Cell, CellGrid, CellGridHit, CellGridPrimitiveLayout, Color, FrameTree,
     Key, LayoutCtx, MouseButton, NamedKey, Reaction, Rect, ScreenLayout, StatusBar,
     StatusBarSegment, Style, Surface, UiEvent, WidgetId,
 };
@@ -196,12 +197,13 @@ impl CellGridDemo {
     /// This frame's [`Surface`]s — the grid itself, routed through
     /// [`Surface::Widget`], plus the status bar — in the one z-order
     /// both [`Demo::render`] (via [`ScreenLayout::draw`]) and
-    /// [`Demo::handle`]'s `MouseDown` arm (via [`ScreenLayout::hit_map`])
-    /// need. Building both from this one method, the same way
-    /// [`Self::grid_rect`]/[`Self::status_rect`] already keep render and
-    /// hit-test from drifting apart, means a click is resolved against
-    /// exactly the [`FrameZone::Widget`] zone that was last painted,
-    /// rather than a second hand-rolled geometry computation.
+    /// [`Demo::handle`]'s `MouseDown` arm (via
+    /// [`ScreenLayout::into_frame_tree`]) need. Building both from this
+    /// one method, the same way [`Self::grid_rect`]/[`Self::status_rect`]
+    /// already keep render and hit-test from drifting apart, means a
+    /// click is resolved against exactly the [`FrameTree`] node for the
+    /// grid widget that was last painted, rather than a second
+    /// hand-rolled geometry computation.
     fn screen(&self, backend: &dyn Backend, area: Rect) -> ScreenLayout {
         let rect = Self::grid_rect(area, backend);
         let status_rect = Self::status_rect(area, backend);
@@ -271,7 +273,7 @@ impl Demo for CellGridDemo {
                 position,
                 ..
             } => {
-                let frame = self.screen(backend, area);
+                let tree: FrameTree = self.screen(backend, area).into_frame_tree();
                 let ctx = LayoutCtx {
                     line_height: LayoutCtx::resolve_row_height(
                         backend.chrome_line_height(),
@@ -280,23 +282,19 @@ impl Demo for CellGridDemo {
                     char_width: backend.char_width(),
                     nerd_fonts_enabled: backend.nerd_fonts_enabled(),
                 };
-                // Route the click through the same `FrameZone::Widget`
-                // zone `Self::screen`'s `Surface::Widget` paints —
+                // Route the click through the same `FrameTree` node
+                // `Self::screen`'s `Surface::Widget` paints —
                 // confirming the position actually lands in the grid's
-                // zone (and not, say, the status bar below it) — before
-                // falling back to the widget's own `CellGridHit`
-                // fine-grained resolution, the per-surface step
-                // `ScreenLayout::draw`'s own doc calls for.
-                let hit = match frame.hit_map().hit_test(position.x, position.y) {
-                    FrameZone::Widget { idx, id: Some(_) } => match &frame.surfaces()[idx] {
-                        Surface::Widget { rect, widget } => widget
-                            .layout(&ctx, *rect)
-                            .downcast_ref::<CellGridPrimitiveLayout>()
-                            .map(|layout| layout.hit_test(position.x, position.y)),
-                        _ => None,
-                    },
-                    _ => None,
-                };
+                // node (and not, say, the status bar below it, which
+                // `into_frame_tree` drops since it never routed through
+                // `Surface::Widget`) — before falling back to the
+                // widget's own `CellGridHit` fine-grained resolution.
+                let hit = tree.hit_test(*position).and_then(|node| {
+                    node.widget
+                        .layout(&ctx, node.rect)
+                        .downcast_ref::<CellGridPrimitiveLayout>()
+                        .map(|layout| layout.hit_test(position.x, position.y))
+                });
                 match hit {
                     Some(CellGridHit::Cell(r, c)) => {
                         self.cursor = (r, c);
@@ -414,9 +412,9 @@ mod tests {
 
     /// A click in the status bar's own band must not move the cursor —
     /// proves `Demo::handle`'s `MouseDown` arm actually routes through
-    /// the `FrameZone::Widget` zone `Self::screen` builds (which only
-    /// covers the grid's band) rather than hit-testing the whole `area`
-    /// against the grid's layout unconditionally.
+    /// the `FrameTree` node `Self::screen` builds for the grid widget
+    /// (which only covers the grid's band) rather than hit-testing the
+    /// whole `area` against the grid's layout unconditionally.
     #[test]
     fn clicking_the_status_bar_does_not_move_the_cursor() {
         let mut demo = CellGridDemo::new();
