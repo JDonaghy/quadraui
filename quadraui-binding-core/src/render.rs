@@ -18,6 +18,9 @@ use quadraui::{
     TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
+use quadraui::primitive::{LayoutCtx as DynLayoutCtx, Size as DynSize};
+use quadraui::DrawsPrimitives;
+
 use crate::extra_paint::{extra_as, ExtraPaint};
 use crate::hit::{LoadedRows, PaintedHit, ScrollChildHit, TreeTableHitState};
 use crate::layout::{
@@ -1054,9 +1057,10 @@ fn offset_windowed_leaf_scrolled_to_offset(
             shadow.scroll_offset = row;
             LeafDescriptor::DataTable(shadow)
         }
-        LeafDescriptor::Button(_) | LeafDescriptor::TabBar(_) | LeafDescriptor::Extra(_) => {
-            return None
-        }
+        LeafDescriptor::Button(_)
+        | LeafDescriptor::TabBar(_)
+        | LeafDescriptor::Extra(_)
+        | LeafDescriptor::Widget { .. } => return None,
     };
     Some(LayoutNode::Leaf(LayoutLeaf {
         id: leaf.id.clone(),
@@ -1648,6 +1652,27 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
         }
         LeafDescriptor::Extra(extra) => {
             let natural = extra.natural_size(backend);
+            NaturalSize {
+                width: natural.width,
+                height: natural.height,
+            }
+        }
+        LeafDescriptor::Widget { widget, .. } => {
+            // No final rect exists yet at measurement time — same
+            // "nothing to pass" `avail` DynWidget::measure's own default
+            // (`NaturalSize::NONE`, ignoring both arguments) already
+            // documents for a widget with no genuinely size-dependent
+            // answer. `IconGrid`, this seam's only member so far, is one
+            // of those (it doesn't override `measure`), so this always
+            // degrades to `NaturalSize::NONE` today; a future `WIDGET_KINDS`
+            // entry that does use `avail` still gets a real measurement
+            // once this leaf's own container passes one through here.
+            let ctx = DynLayoutCtx {
+                line_height,
+                char_width: backend.char_width(),
+                nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+            };
+            let natural = widget.measure(&ctx, DynSize::new(0.0, 0.0));
             NaturalSize {
                 width: natural.width,
                 height: natural.height,
@@ -2988,6 +3013,14 @@ pub fn paint_leaf_windowed(
                 extra: Rc::clone(extra),
                 chrome_hits,
                 tree_table_hit,
+            });
+        }
+        LeafDescriptor::Widget { widget, .. } => {
+            backend.draw_dyn(area, widget.as_ref(), &());
+            hits.push(PaintedHit::Widget {
+                id,
+                area,
+                widget: Rc::clone(widget),
             });
         }
     }

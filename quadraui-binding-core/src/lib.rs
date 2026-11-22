@@ -279,7 +279,7 @@ pub use engine::{
 };
 pub use extra_paint::{
     decode_extra_primitive, extra_as, CellGridControllerDescriptor, ExtraPaint,
-    TreeTableControllerDescriptor, TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS,
+    TreeTableControllerDescriptor, TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS, WIDGET_KINDS,
 };
 pub use hit::tree_total_rows_and_viewport;
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};

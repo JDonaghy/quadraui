@@ -57,11 +57,13 @@
 //! dicts `crate::wire` decodes field-by-field, not a `#[derive(Deserialize)]`
 //! struct (see that module's own doc). Their dispatch keys are still pulled
 //! straight from [`crate::layout::LEAF_KIND_KEYS`] and
-//! [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] below rather than
-//! re-typed, so a new leaf kind or additive primitive always gets a schema
-//! entry -- every registered kind, including every `EXTRA_PRIMITIVE_KINDS`
-//! additive kind beyond `status_bar`, is narrowed field-by-field, not left
-//! as an untyped placeholder.
+//! [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] and
+//! [`crate::extra_paint::WIDGET_KINDS`] below rather than re-typed, so a new
+//! leaf kind, additive primitive, or generic-widget kind always gets a
+//! schema entry -- every registered kind, including every
+//! `EXTRA_PRIMITIVE_KINDS` additive kind beyond `status_bar` and every
+//! `WIDGET_KINDS` kind, is narrowed field-by-field, not left as an untyped
+//! placeholder.
 
 use serde::Serialize;
 
@@ -2787,11 +2789,15 @@ pub fn schema() -> Vec<DefJson> {
     ));
 
     // `LayoutLeafNode`/`RenderFrameDict`'s descriptor-kind keys: the six
-    // fixed `LEAF_KIND_KEYS`, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS`
-    // additive kind are all fully typed. Reading straight off the real Rust
-    // consts means a new fixed or additive kind always gets *a* schema entry
+    // fixed `LEAF_KIND_KEYS`, `status_bar`, every `EXTRA_PRIMITIVE_KINDS`
+    // additive kind, and every `WIDGET_KINDS` generic-widget kind are all
+    // fully typed. Reading straight off the real Rust consts means a new
+    // fixed, additive, or generic-widget kind always gets *a* schema entry
     // with no further edit here (the `unreachable!` arm below is this
-    // function's own reminder to type it before merging).
+    // function's own reminder to type it before merging). `WIDGET_KINDS`,
+    // like `"scripted_widget"` above, is `LayoutLeafNode`-only --
+    // `crate::wire::frame`'s own `known_keys` never names a `WIDGET_KINDS`
+    // entry, so its loop below pushes into `leaf_fields` alone.
     //
     // `leaf_fields` and `render_frame_fields` are built independently
     // (rather than one sliced from the other) because they are not the
@@ -2880,12 +2886,25 @@ pub fn schema() -> Vec<DefJson> {
             "markdown" => markdown_descriptor.clone(),
             "tree_table" => tree_table_descriptor.clone(),
             "tree_table_controller" => tree_table_controller_descriptor.clone(),
-            "icon_grid" => icon_grid_descriptor.clone(),
             "cell_grid" => cell_grid_controller_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
         render_frame_fields.push(field_opt(kind, nullable(ty)));
+    }
+    // `WIDGET_KINDS` mirrors the `EXTRA_PRIMITIVE_KINDS` loop just above,
+    // but only into `leaf_fields` — a `LeafDescriptor::Widget` kind
+    // decodes from a `LayoutLeafNode` dict (see
+    // `crate::wire::layout_leaf_from_value`), never from a flat
+    // `RenderFrameDict` slot the way an `EXTRA_PRIMITIVE_KINDS` kind can
+    // (`crate::wire::frame`'s own decode has no `WIDGET_KINDS` loop of
+    // its own), so `render_frame_fields` is intentionally left untouched.
+    for kind in crate::extra_paint::WIDGET_KINDS {
+        let ty = match kind {
+            "icon_grid" => icon_grid_descriptor.clone(),
+            other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
+        };
+        leaf_fields.push(field_opt(kind, ty));
     }
     // A `LayoutLeafNode` is itself a valid row/column child, so it takes
     // the same `"size"`/`"min"`/`"max"` sibling keys every other
@@ -2899,7 +2918,7 @@ pub fn schema() -> Vec<DefJson> {
     let layout_leaf_node = b.define(obj_doc(
         "LayoutLeafNode",
         leaf_fields,
-        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed.",
+        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.",
     ));
 
     b.define(union_of_doc(
@@ -3523,6 +3542,7 @@ pub fn schema() -> Vec<DefJson> {
             &[],
         ),
         ("_HitDetailExtraBody", "extra_body", &[]),
+        ("_HitDetailWidgetBody", "widget_body", &[]),
         ("_HitDetailCanvasRegion", "canvas_region", &[]),
         ("_HitDetailExtraChrome", "extra_chrome", &[]),
         ("_HitDetailScrollBody", "scroll_body", &[]),
@@ -4206,6 +4226,7 @@ mod coverage {
             HitDetail::TreeScrollbarThumb => {}
             HitDetail::TreeScrollbarTrackAfter => {}
             HitDetail::ExtraBody => {}
+            HitDetail::WidgetBody => {}
             HitDetail::CanvasRegion { region: _ } => {}
             HitDetail::ExtraChrome { bar: _ } => {}
             HitDetail::ScrollBody => {}
@@ -4224,6 +4245,7 @@ mod coverage {
             LeafDescriptor::DataTable(_) => {}
             LeafDescriptor::TabBar(_) => {}
             LeafDescriptor::Extra(_) => {}
+            LeafDescriptor::Widget { .. } => {}
         }
     }
 

@@ -5,7 +5,9 @@
 
 use serde_json::Value;
 
-use crate::extra_paint::{decode_extra_primitive_checked, EXTRA_PRIMITIVE_KINDS};
+use crate::extra_paint::{
+    decode_extra_primitive_checked, decode_widget_leaf, EXTRA_PRIMITIVE_KINDS, WIDGET_KINDS,
+};
 use crate::layout::{LayoutLeaf, LeafDescriptor, LEAF_KIND_KEYS};
 use crate::scripted::{lookup_scripted_widget, ScriptedWidgetDescriptor};
 use crate::DecodeError;
@@ -29,11 +31,12 @@ fn record_items_window(diagnostics: &DecodeDiagnostics, id: &str, body: &Value) 
 }
 
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
-/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] or an
-/// [`EXTRA_PRIMITIVE_KINDS`] kind must be present and hold a `dict` — a
-/// leaf with two keys from either set (fixed+fixed, fixed+extra, or
-/// extra+extra) is rejected by the single `found` duplicate check shared
-/// across both loops below. Also reads this leaf's optional
+/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`], an
+/// [`EXTRA_PRIMITIVE_KINDS`] kind, or a [`crate::extra_paint::WIDGET_KINDS`]
+/// kind must be present and hold a `dict` — a leaf with two keys from any
+/// two of the three sets is rejected by the single `found` duplicate
+/// check shared across all three loops below. Also reads this leaf's
+/// optional
 /// `"draggable"`/`"drop_target"` [`DRAG_ROLE_KEYS`], recording a
 /// [`super::value::DragRole`] against `id` in `diagnostics`'s side table
 /// when either is set, and this leaf's optional `"a11y"` [`A11Y_KEYS`]
@@ -62,6 +65,7 @@ pub(super) fn layout_leaf_from_value(
     let known_keys: Vec<&str> = std::iter::once("id")
         .chain(LEAF_KIND_KEYS)
         .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
+        .chain(WIDGET_KINDS.iter().copied())
         .chain(UNIVERSAL_NODE_SIBLING_KEYS)
         .chain(DRAG_ROLE_KEYS)
         .chain(A11Y_KEYS)
@@ -201,13 +205,34 @@ pub(super) fn layout_leaf_from_value(
             value_dict,
         )?));
     }
+    // `WIDGET_KINDS` mirrors `EXTRA_PRIMITIVE_KINDS`'s own loop above,
+    // decoding into `LeafDescriptor::Widget` via `quadraui::decode_widget`
+    // instead of `LeafDescriptor::Extra` via `decode_extra_primitive_checked`
+    // — the two tables never overlap, so a leaf can match at most one kind
+    // across all three loops regardless of which it lands in.
+    for kind in WIDGET_KINDS {
+        let Some(v) = obj_get(value, kind) else {
+            continue;
+        };
+        let value_dict = must_be_dict(&context, v, kind)?;
+        if found.is_some() {
+            return Err(DecodeError::borrow(
+                &context,
+                "has more than one descriptor kind",
+            ));
+        }
+        found = Some(LeafDescriptor::Widget {
+            kind,
+            widget: decode_widget_leaf(&context, kind, value_dict)?,
+        });
+    }
 
     let descriptor = found.ok_or_else(|| {
         DecodeError::borrow(
             &context,
             format!(
-                "is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {:?})",
-                EXTRA_PRIMITIVE_KINDS
+                "is missing a descriptor (one of {LEAF_KIND_KEYS:?}, {:?}, or {:?})",
+                EXTRA_PRIMITIVE_KINDS, WIDGET_KINDS
             ),
         )
     })?;

@@ -15,6 +15,8 @@ use quadraui::{
     TreeViewLayout, UiEvent, WidgetId,
 };
 
+use quadraui::primitive::DynWidget;
+
 use crate::extra_paint::{extra_as, ExtraPaint};
 use crate::wire::DragRole;
 
@@ -307,6 +309,26 @@ pub enum PaintedHit {
         /// for every other extra.
         tree_table_hit: Option<TreeTableHitState>,
     },
+    /// One [`crate::layout::LeafDescriptor::Widget`], painted by
+    /// [`crate::render::paint_leaf`]'s `Widget` arm. `area` is the
+    /// ABSOLUTE rect it was painted into, exactly like [`Self::Extra`]'s
+    /// own `area` — hit-tested the same whole-area way
+    /// ([`HitDetail::WidgetBody`] on any `area.contains(point)`), since
+    /// [`DynWidget`] carries no `ExtraPaint::hit_test`-style sub-region
+    /// test of its own yet. `widget` is an [`Rc`] clone of the leaf's own
+    /// descriptor, kept alive past this frame's render the same reason
+    /// [`Self::Extra`]'s `extra` is — so a later click can resolve
+    /// `DynWidget::handle` against it — but, unlike `Extra`, no layout is
+    /// stashed alongside it: [`DynWidget::layout`] is cheap to recompute
+    /// against `area` at click time, and always reproduces exactly what
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] painted this frame (see
+    /// that method's own doc), so there is nothing a stored layout would
+    /// save.
+    Widget {
+        id: WidgetId,
+        area: Rect,
+        widget: Rc<dyn DynWidget>,
+    },
     /// A [`crate::layout::LayoutNode::Scroll`]'s own viewport, in the
     /// ABSOLUTE frame (matching [`Self::Split`]) — `viewport` already
     /// excludes the scrollbar gutter `crate::render::paint_layout`'s
@@ -461,6 +483,7 @@ fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
         | PaintedHit::TabBar { clip, .. }
         | PaintedHit::TextDisplay { clip, .. } => Some(clip),
         PaintedHit::Extra { area, .. } => Some(area),
+        PaintedHit::Widget { area, .. } => Some(area),
         PaintedHit::Scroll { viewport, .. } => Some(viewport),
         PaintedHit::Split { .. }
         | PaintedHit::SplitTree { .. }
@@ -598,6 +621,15 @@ pub enum HitDetail {
     /// Per-kind sub-region detail (e.g. which combo-box row) is a later,
     /// separate extension of this variant.
     ExtraBody,
+    /// Landed on a [`crate::layout::LeafDescriptor::Widget`]'s whole
+    /// painted area — the `Widget` counterpart of [`Self::ExtraBody`].
+    /// Carries no sub-region detail, same reason: a [`DynWidget`] has no
+    /// `ExtraPaint::hit_test`-style sub-region test to resolve one finer
+    /// than "landed somewhere on the widget" against. Routed through
+    /// [`DynWidget::handle`] (not `semantic_event_for_hit`, which has no
+    /// arm for this detail and falls through to `None`) by
+    /// [`crate::engine::InteractionEngine::handle`].
+    WidgetBody,
     /// Landed on a declared [`quadraui::CanvasRegion`] of a
     /// [`quadraui::Canvas`] — `region` is that region's own
     /// [`WidgetId`] (`CanvasRegion::id`), resolved
@@ -888,6 +920,11 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     }
                 } else if extra.hit_test(*area, point) {
                     return Some((*id, HitDetail::ExtraBody));
+                }
+            }
+            PaintedHit::Widget { id, area, .. } => {
+                if area.contains(point) {
+                    return Some((*id, HitDetail::WidgetBody));
                 }
             }
             PaintedHit::Scroll {
