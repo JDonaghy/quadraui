@@ -75,7 +75,7 @@
 
 use crate::backend::PointerShape;
 use crate::desktop::{is_paste_keypress, PasteModifier};
-use crate::focus::FocusManager;
+use crate::focus::{FocusManager, FocusTree};
 use crate::frame_tree::{FrameTree, FrameTreeNode};
 use crate::interactive::{EventCx, EventHost, FocusSpec, KeyEvent, PointerKind, RoutedEvent};
 use crate::primitive::Units;
@@ -282,6 +282,33 @@ pub(crate) trait PreprocessBackend {
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         None
     }
+
+    /// Read-only access to this backend's [`FocusTree`] — a richer,
+    /// [`crate::interactive::SubTarget`]-aware per-stop tab order built
+    /// from [`crate::runner::AppLogic::frame_tree`], used internally by the
+    /// widget-contract routing engine ([`route_widget_key`],
+    /// [`WidgetEventHost`]) in place of this backend's flat
+    /// [`crate::Backend::focus_manager`] — see [`FocusTree`]'s own doc for
+    /// why it exists alongside [`FocusManager`] rather than replacing it
+    /// outright. [`crate::Backend::set_focus`] keeps both in step for
+    /// every whole-widget focus change, so no existing
+    /// `focus_manager`/`set_focus` caller needs to change.
+    ///
+    /// No default: every backend that opts into widget-contract routing
+    /// owns exactly one `FocusTree`, constructed alongside its
+    /// `FocusManager`.
+    fn focus_tree(&self) -> &FocusTree;
+
+    /// Mutable access to this backend's [`FocusTree`] — the counterpart to
+    /// [`Self::focus_tree`]. The widget-contract routing engine uses this
+    /// to keep the tree's stops synced with each dispatched event's
+    /// [`crate::frame_tree::FrameTree`] ([`FocusTree::sync`]) and, once a
+    /// widget resolves which of its own children a gesture or a focus
+    /// request names, to set that sub-target's focus precisely —
+    /// `(WidgetId, Some(SubTarget))`, which
+    /// [`crate::Backend::set_focus`]'s flat `WidgetId` signature cannot
+    /// express.
+    fn focus_tree_mut(&mut self) -> &mut FocusTree;
 }
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
@@ -773,7 +800,7 @@ where
 /// [`FrameTree`] still names it — `Bubble(Continue)` when either is
 /// missing.
 ///
-/// Reads [`crate::Backend::focus_tree`] rather than
+/// Reads [`PreprocessBackend::focus_tree`] rather than
 /// [`crate::Backend::focus_manager`] — the two stay in step for a
 /// whole-widget focus change (see [`crate::Backend::set_focus`]'s doc), so
 /// this is purely an internal wiring choice: it costs nothing today, and
@@ -936,7 +963,7 @@ struct WidgetHostIntents {
 /// need to answer and an outbox for everything else.
 ///
 /// `currently_focused` is a [`crate::focus::FocusAddress`] — sourced from
-/// [`crate::Backend::focus_tree`], not the flat
+/// [`PreprocessBackend::focus_tree`], not the flat
 /// [`crate::Backend::focus_manager`] — so [`EventHost::is_focused`] can
 /// tell a composite widget's individually-addressed children apart
 /// instead of answering every `sub` identically for one focused id.
