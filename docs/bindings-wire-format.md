@@ -753,6 +753,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailTreeScrollbarThumb`](#wire-_hitdetailtreescrollbarthumb)
 - [`_HitDetailTreeScrollbarTrackAfter`](#wire-_hitdetailtreescrollbartrackafter)
 - [`_HitDetailExtraBody`](#wire-_hitdetailextrabody)
+- [`_HitDetailWidgetBody`](#wire-_hitdetailwidgetbody)
 - [`_HitDetailCanvasRegion`](#wire-_hitdetailcanvasregion)
 - [`_HitDetailExtraChrome`](#wire-_hitdetailextrachrome)
 - [`_HitDetailScrollBody`](#wire-_hitdetailscrollbody)
@@ -3543,7 +3544,7 @@ Alias for `"Left" | "Right"`.
 <a id="wire-layoutleafnode"></a>
 #### `LayoutLeafNode`
 
-One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed.
+One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -4589,6 +4590,13 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `kind` | `"extra_body"` | yes |  |
 
+<a id="wire-_hitdetailwidgetbody"></a>
+#### `_HitDetailWidgetBody`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"widget_body"` | yes |  |
+
 <a id="wire-_hitdetailcanvasregion"></a>
 #### `_HitDetailCanvasRegion`
 
@@ -4638,7 +4646,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`

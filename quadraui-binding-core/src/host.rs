@@ -275,6 +275,7 @@ impl BindingHost {
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
             extra: crate::render::no_extras(),
+            widgets: crate::render::no_widgets(),
             // `BindingHost`'s slots are set directly from Rust fields, not
             // decoded from a raw dict, so there is no `scroll_px` key to
             // lift out here — a host that wants pixel-precise scrolling
@@ -1831,6 +1832,7 @@ pub fn resolve_render_refs(
         data_table,
         tab_bar,
         extra: refs.extra.clone(),
+        widgets: refs.widgets.clone(),
         list_scroll_px: refs.list_scroll_px,
         tree_scroll_px: refs.tree_scroll_px,
         data_table_scroll_px: refs.data_table_scroll_px,

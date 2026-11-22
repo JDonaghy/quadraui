@@ -414,14 +414,11 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             // only `FocusSpec::Stop` (a single, whole-widget stop) counts.
             // `FocusSpec::Children` (per-sub-target stops) has no
             // `PaintedHit::Widget` field to report more than one
-            // `(WidgetId, Rect)` from yet — a widget that needs that
-            // extends this arm the same way a future finer-grained
-            // `HitDetail::WidgetBody` would. `IconGrid`, this seam's only
-            // member so far, reports `FocusSpec::None` (it has no
-            // `Interactive::focus` override), so it is not a tab stop
-            // through this generic path — unlike its own prior
-            // `ExtraPaint::tab_stop` override, which always answered
-            // `true`.
+            // `(WidgetId, Rect)` from yet — a widget that needs
+            // per-sub-target stops extends this arm with a finer-grained
+            // `HitDetail::WidgetBody` of its own. `IconGrid`, this seam's
+            // only member so far, reports `FocusSpec::Stop`, so it is a
+            // tab stop through this generic path.
             PaintedHit::Widget { id, area, widget } => {
                 matches!(widget.focus(), quadraui::FocusSpec::Stop).then_some((*id, *area))
             }
@@ -5679,6 +5676,7 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -5732,6 +5730,7 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -5787,6 +5786,7 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -8914,6 +8914,7 @@ mod tests {
                     data_table: Some(&self.data_table),
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -9372,6 +9373,7 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -9567,6 +9569,7 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -9802,6 +9805,7 @@ mod tests {
                     data_table: Some(&resolved),
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -9980,6 +9984,7 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -10246,6 +10251,7 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -11091,6 +11097,7 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,

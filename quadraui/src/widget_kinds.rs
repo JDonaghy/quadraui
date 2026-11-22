@@ -189,16 +189,15 @@ mod tests {
 
         #[test]
         fn decodes_the_other_known_kind() {
-            // `IconGrid` doesn't override `Primitive::id` (its id lives on
-            // each `IconGridItem`, not the grid itself), so `DynWidget::id`
-            // falls back to the trait's own default of `None` — decoding
-            // without error is this kind's own round-trip signal.
+            // `IconGrid::id` is a plain field, so `DynWidget::id` recovers
+            // it generically, the same way it does for every other
+            // built-in primitive with its own id field.
             let payload = serde_json::json!({
                 "id": "icons",
                 "items": [],
             });
             let widget = decode_widget("icon_grid", payload).expect("icon_grid decodes");
-            assert_eq!(widget.id(), None);
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("icons"));
         }
 
         #[test]
