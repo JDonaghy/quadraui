@@ -152,8 +152,6 @@ mod full_chrome_demo;
 mod grid;
 #[path = "../examples/common/help_layer_demo.rs"]
 mod help_layer_demo;
-#[path = "../examples/common/hit_map_recover_demo.rs"]
-mod hit_map_recover_demo;
 #[path = "../examples/common/hscroll_editor.rs"]
 mod hscroll_editor;
 #[path = "../examples/common/image_app.rs"]
@@ -274,7 +272,6 @@ use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
 use grid::GridApp;
 use help_layer_demo::HelpLayerDemo;
-use hit_map_recover_demo::HitMapRecoverDemo;
 use hscroll_editor::HScrollEditor;
 use image_app::ImageApp;
 use indicators_app::IndicatorsApp;
@@ -4168,75 +4165,6 @@ fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
          should still be handled by shell chrome \
          (AppShellEvent::SidebarHidden):\n{}",
         driver.screen()
-    );
-}
-
-// ─── HitMapRecoverDemo: ScreenLayout::hit_map() ─────────────────────────────
-
-/// `HitMapRecoverDemo::render` paints the TabBar/List/StatusBar via direct
-/// `backend.draw_*()` calls, then builds a `ScreenLayout` from the same
-/// objects and calls `.hit_map()` — never `.draw()` — to recover a
-/// `FrameHitMap`. This proves the driver's initial paint already exercises
-/// `hit_map()` without error: all three surfaces render, and the demo's own
-/// status line (which only knows those labels via its `tab_bar()` /
-/// `list_view()` builders) shows up on screen.
-#[test]
-fn hit_map_recover_initial_screen_paints_tabs_and_list() {
-    let driver = TuiDriver::new(HitMapRecoverDemo::new(), 100, 30);
-    let screen = driver.screen();
-    assert!(driver.screen_contains("Resources"), "tab bar:\n{screen}");
-    assert!(driver.screen_contains("Pods"), "list:\n{screen}");
-    assert!(
-        driver.screen_contains("via hit_map(), not draw()"),
-        "status bar:\n{screen}"
-    );
-}
-
-/// Clicking a list row must resolve through the `FrameHitMap` produced by
-/// `hit_map()` alone — `render()` never calls `ScreenLayout::draw()`, so if
-/// click dispatch works here it can only be because `hit_map()` registered
-/// the same zone `draw()` would have.
-#[test]
-fn hit_map_recover_clicking_a_list_row_routes_through_hit_map() {
-    let mut driver = TuiDriver::new(HitMapRecoverDemo::new(), 100, 30);
-    let before = driver.screen();
-
-    let (x, y) = driver
-        .find("Services")
-        .unwrap_or_else(|| panic!("'Services' row not painted:\n{before}"));
-    driver.click(x, y);
-
-    let after = driver.screen();
-    assert_ne!(before, after, "clicking a row should change the screen");
-    assert!(
-        after.contains("last-hit:List(2)"),
-        "clicking 'Services' (row 2) should route through the hit_map()-built \
-         FrameHitMap to FrameZone::List{{ idx: .. }}:\n{after}"
-    );
-}
-
-/// Clicking the tab bar must resolve to `FrameZone::TabBar`, proving
-/// `hit_map()` distinguishes zones exactly as `draw()`'s inline
-/// registration would — the same `zone_for()` helper backs both.
-#[test]
-fn hit_map_recover_clicking_the_tab_bar_routes_through_hit_map() {
-    let mut driver = TuiDriver::new(HitMapRecoverDemo::new(), 100, 30);
-    let before = driver.screen();
-
-    let (x, y) = driver
-        .find("Resources")
-        .unwrap_or_else(|| panic!("tab bar not painted:\n{before}"));
-    driver.click(x, y);
-
-    let after = driver.screen();
-    assert_ne!(
-        before, after,
-        "clicking the tab bar should change the screen"
-    );
-    assert!(
-        after.contains("last-hit:TabBar"),
-        "clicking the tab bar should route through the hit_map()-built \
-         FrameHitMap to FrameZone::TabBar:\n{after}"
     );
 }
 
@@ -8479,6 +8407,56 @@ fn frame_demo_tab_key_cycles_active_tab_through_all_three() {
         driver.screen_contains("tab:0"),
         "third Tab should wrap back to Resources (0):\n{}",
         driver.screen()
+    );
+}
+
+/// Clicking a list row must resolve through `FrameDemo`'s own
+/// recomputed rects — there is no `FrameHitMap`/`FrameZone` cache
+/// behind this click dispatch any more (#2889).
+#[test]
+fn frame_demo_clicking_a_list_row_selects_it() {
+    let mut driver = TuiDriver::new(FrameDemo::new(), 120, 30);
+    let before = driver.screen();
+
+    let (x, y) = driver
+        .find("Services")
+        .unwrap_or_else(|| panic!("'Services' row not painted:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert_ne!(before, after, "clicking a row should change the screen");
+    assert!(
+        after.contains("hit:List(2)"),
+        "clicking 'Services' (row 2) should select it via the recomputed \
+         list rect:\n{after}"
+    );
+}
+
+/// Clicking the tab bar must resolve through the same recomputed
+/// `tab_rect`, switching the active tab.
+#[test]
+fn frame_demo_clicking_the_tab_bar_switches_tabs() {
+    let mut driver = TuiDriver::new(FrameDemo::new(), 120, 30);
+    let before = driver.screen();
+
+    let (x, y) = driver
+        .find("YAML")
+        .unwrap_or_else(|| panic!("tab bar not painted:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert_ne!(
+        before, after,
+        "clicking the tab bar should change the screen"
+    );
+    assert!(
+        after.contains("tab:1"),
+        "clicking the YAML tab should make it active via the recomputed \
+         tab rect:\n{after}"
+    );
+    assert!(
+        after.contains("hit:Tab(1)"),
+        "clicking the YAML tab should report hit:Tab(1):\n{after}"
     );
 }
 

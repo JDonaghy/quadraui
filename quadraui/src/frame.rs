@@ -2,12 +2,20 @@
 //!
 //! Apps build a [`ScreenLayout`] by pushing [`Surface`] entries in
 //! back-to-front z-order, then call [`ScreenLayout::draw`] to render
-//! everything and get back a [`FrameHitMap`] for click dispatch.
+//! everything. [`ScreenLayout::draw`]'s [`FrameHitMap`] return value and
+//! [`ScreenLayout::hit_map`] are both `#[deprecated]` — route
+//! [`Surface::Widget`] clicks through [`ScreenLayout::into_frame_tree`]
+//! and [`crate::frame_tree::FrameTree`] instead; every other `Surface`
+//! variant's app recomputes its own rects for hit-testing the way
+//! `examples/common/frame_demo.rs` does, since there is no
+//! [`crate::interactive::Interactive`] widget behind it for a
+//! [`crate::frame_tree::FrameTree`] node to hold.
 //!
-//! Apps that already paint each surface at its natural call site
-//! can instead push the same [`Surface`] entries into a `ScreenLayout`
-//! purely for hit-testing and call [`ScreenLayout::hit_map`], which
-//! registers every zone without invoking any `backend.draw_*()` call.
+//! Apps that already paint each surface at its natural call site can
+//! instead push the same [`Surface`] entries into a `ScreenLayout` purely
+//! for hit-testing and call the deprecated [`ScreenLayout::hit_map`],
+//! which registers every zone without invoking any `backend.draw_*()`
+//! call.
 //!
 //! `ScreenLayout::tab_stops` derives Tab order from the same pushed
 //! surfaces, and `ScreenLayout::tree_frame` (see its own doc) is an
@@ -494,6 +502,10 @@ pub enum Surface {
 /// `_ => {}`; grep in the PR body).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
+#[deprecated(
+    since = "0.12.0",
+    note = "use `crate::frame_tree::FrameTree` (via `ScreenLayout::into_frame_tree`/`AppLogic::frame_tree`) for click/hit-test routing instead"
+)]
 pub enum FrameZone {
     Editor {
         idx: usize,
@@ -645,10 +657,16 @@ pub enum FrameZone {
 /// for a receiver on the other end of a wire, and for what is still
 /// missing.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[deprecated(
+    since = "0.12.0",
+    note = "use `crate::frame_tree::FrameTree` (via `ScreenLayout::into_frame_tree`/`AppLogic::frame_tree`) for click/hit-test routing instead"
+)]
+#[allow(deprecated)]
 pub struct FrameHitMap {
     zones: Vec<(Rect, FrameZone)>,
 }
 
+#[allow(deprecated)]
 impl FrameHitMap {
     fn new() -> Self {
         Self::default()
@@ -837,6 +855,11 @@ impl ScreenLayout {
     /// After painting, records an [`OwnedFrame`] of `self` in `backend`'s
     /// [`FrameCapture`] slot when that slot exists and is enabled — see
     /// the module doc's "Live-frame capture for accessibility" section.
+    ///
+    /// The returned [`FrameHitMap`] is deprecated; route [`Surface::Widget`]
+    /// clicks through [`Self::into_frame_tree`] instead and ignore this
+    /// return value for every other surface.
+    #[allow(deprecated)]
     pub fn draw(&self, backend: &mut dyn Backend) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
 
@@ -1034,6 +1057,11 @@ impl ScreenLayout {
     /// only need the hit-test result — pushing surfaces here re-invokes
     /// no rendering, so it's safe to build this after (or interleaved
     /// with) the app's real paint sequencing.
+    #[deprecated(
+        since = "0.12.0",
+        note = "use `Self::into_frame_tree` for `Surface::Widget` click/hit-test routing instead"
+    )]
+    #[allow(deprecated)]
     pub fn hit_map(&self) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
 
@@ -1169,6 +1197,7 @@ impl ScreenLayout {
     /// Compute the hit-test rect/zone for a single surface at index `idx`.
     /// Shared by [`Self::draw`] and [`Self::hit_map`] so the two stay in
     /// lock-step by construction.
+    #[allow(deprecated)]
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
             Surface::Editor { rect, .. } => (*rect, FrameZone::Editor { idx }),
@@ -1453,6 +1482,7 @@ impl OwnedContent {
     /// `idx`, mirroring [`ScreenLayout::zone_for`]'s tag-per-variant
     /// mapping so a `ScreenLayout` and the [`OwnedFrame`] captured from
     /// it produce identical zones.
+    #[allow(deprecated)]
     fn zone(&self, idx: usize) -> FrameZone {
         match self {
             OwnedContent::Editor(_) => FrameZone::Editor { idx },
@@ -1674,6 +1704,7 @@ impl OwnedFrame {
     /// Same opt-in capture as [`ScreenLayout::draw`]: a clone of `self`
     /// is recorded in `backend`'s [`FrameCapture`] when that slot exists
     /// and is enabled.
+    #[allow(deprecated)]
     pub fn draw(&self, backend: &mut dyn Backend) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
         for node in &self.nodes {
@@ -1687,6 +1718,11 @@ impl OwnedFrame {
     /// Derive the [`FrameHitMap`] this frame would produce, without
     /// invoking any `backend.draw_*()` call — the owned-data counterpart
     /// of [`ScreenLayout::hit_map`].
+    #[deprecated(
+        since = "0.12.0",
+        note = "no in-tree replacement reads an `OwnedFrame`'s hit zones; build a `crate::frame_tree::FrameTree` from the source `ScreenLayout` instead"
+    )]
+    #[allow(deprecated)]
     pub fn hit_map(&self) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
         for node in &self.nodes {
@@ -1946,6 +1982,7 @@ pub fn check_frame_order<R: FrameRung>(visited: &[R]) -> Result<(), FrameOrderVi
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // exercises `FrameHitMap`/`FrameZone` directly; see their own `#[deprecated]` notes.
 mod tests {
     use super::*;
     use crate::primitives::tree::TreeRow;

@@ -20,8 +20,9 @@
 //! The runner uses a **single-DrawingArea** model: one DA, one
 //! `set_draw_func`, one `app.render(backend, AreaId::default())` per
 //! redraw. Zone routing (sidebar, main, status bar, etc.) is handled
-//! entirely by `AppShell::compute_layout` + `FrameHitMap` hit-testing
-//! — not by multiple GTK DAs.
+//! entirely by `AppShell::compute_layout`'s resolved rects, hit-tested
+//! directly by the app the same way `examples/common/frame_demo.rs`
+//! does — not by multiple GTK DAs.
 //!
 //! This was a deliberate decision. All vimcode paint paths
 //! already go through quadraui primitives, so per-zone
