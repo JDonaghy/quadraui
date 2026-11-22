@@ -39,7 +39,7 @@ use std::time::Duration;
 use crate::dispatch::DragState;
 use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
-use crate::focus::{FocusManager, FocusTree};
+use crate::focus::FocusManager;
 use crate::frame::{FrameCapture, OwnedFrame};
 use crate::interaction::InteractionState;
 use crate::login_item::LoginItemOptions;
@@ -2016,31 +2016,6 @@ pub trait Backend: sealed::Sealed {
     /// that forgets to wire this up should fail to compile rather than
     /// silently leave focus unchanged.
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool;
-
-    /// Read-only access to this backend's [`FocusTree`] — a richer,
-    /// [`crate::interactive::SubTarget`]-aware per-stop tab order built
-    /// from [`crate::runner::AppLogic::frame_tree`], used internally by the
-    /// widget-contract routing engine (`crate::runtime::route_widget_key`,
-    /// `crate::runtime::WidgetEventHost`) in place of this backend's flat
-    /// [`Self::focus_manager`] — see [`FocusTree`]'s own doc for why it
-    /// exists alongside [`FocusManager`] rather than replacing it outright.
-    /// [`Self::set_focus`] keeps both in step for every whole-widget focus
-    /// change, so no existing `focus_manager`/`set_focus` caller needs to
-    /// change.
-    ///
-    /// No default: every backend owns exactly one `FocusTree`, constructed
-    /// alongside its `FocusManager`.
-    fn focus_tree(&self) -> &FocusTree;
-
-    /// Mutable access to this backend's [`FocusTree`] — the counterpart to
-    /// [`Self::focus_tree`]. The widget-contract routing engine uses this to
-    /// keep the tree's stops synced with each dispatched event's
-    /// [`crate::frame_tree::FrameTree`] ([`FocusTree::sync`]) and, once a
-    /// widget resolves which of its own children a gesture or a focus
-    /// request names, to set that sub-target's focus precisely —
-    /// `(WidgetId, Some(SubTarget))`, which [`Self::set_focus`]'s flat
-    /// `WidgetId` signature cannot express.
-    fn focus_tree_mut(&mut self) -> &mut FocusTree;
 
     /// Paint the focus-ring convention around `rect` — a themed,
     /// border-only stroke (`Theme::accent_fg`) with no fill, so the

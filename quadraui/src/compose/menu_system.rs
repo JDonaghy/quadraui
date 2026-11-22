@@ -944,7 +944,6 @@ mod tests {
         modal_stack: std::rc::Rc<std::cell::RefCell<crate::ModalStack>>,
         drag_state: std::rc::Rc<std::cell::RefCell<crate::DragState>>,
         focus: crate::focus::FocusManager,
-        focus_tree: crate::focus::FocusTree,
         /// Declares `BackendCaps::native_menu`, so the trait's default
         /// `MenuStyle::Auto` resolves `ResolvedMenuStyle::Native` and
         /// the menu-bar layout reports the zero-height, item-less shape
@@ -960,7 +959,6 @@ mod tests {
                 modal_stack: std::rc::Rc::new(std::cell::RefCell::new(crate::ModalStack::new())),
                 drag_state: std::rc::Rc::new(std::cell::RefCell::new(crate::DragState::new())),
                 focus: crate::focus::FocusManager::new(),
-                focus_tree: crate::focus::FocusTree::new(),
                 native_menu_bar: false,
                 invalidation_log: crate::backend::InvalidationLog::new(),
                 services: crate::testing::NullPlatformServices::new(),
@@ -1028,14 +1026,7 @@ mod tests {
             &self.focus
         }
         fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-            self.focus_tree.set_focus(id.map(|id| (id, None)));
             self.focus.set_focus(id)
-        }
-        fn focus_tree(&self) -> &crate::focus::FocusTree {
-            &self.focus_tree
-        }
-        fn focus_tree_mut(&mut self) -> &mut crate::focus::FocusTree {
-            &mut self.focus_tree
         }
         fn draw_focus_ring(&mut self, _r: Rect) {}
         fn services(&self) -> &dyn crate::backend::PlatformServices {

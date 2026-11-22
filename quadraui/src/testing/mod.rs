@@ -701,9 +701,6 @@ pub struct RecordingBackend {
     /// honestly fabricate, so it's included rather than
     /// `unimplemented!()`.
     pub focus: crate::focus::FocusManager,
-    /// Backs [`Backend::focus_tree`] — kept in step with `focus` above by
-    /// [`Backend::set_focus`], same as every real backend.
-    pub focus_tree: crate::focus::FocusTree,
     /// Backs [`Backend::invalidate_rect`]/[`Backend::invalidation_log`] —
     /// pure bookkeeping, same shape every real backend's `BackendCore`
     /// delegates to.
@@ -760,7 +757,6 @@ impl Default for RecordingBackend {
             chrome_line_height: None,
             current_style: crate::Style::default(),
             focus: crate::focus::FocusManager::new(),
-            focus_tree: crate::focus::FocusTree::new(),
             invalidation_log: crate::backend::InvalidationLog::new(),
             cursor_calls: Vec::new(),
             notifications_capable: false,
@@ -1077,14 +1073,7 @@ impl crate::Backend for RecordingBackend {
         &self.focus
     }
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-        self.focus_tree.set_focus(id.map(|id| (id, None)));
         self.focus.set_focus(id)
-    }
-    fn focus_tree(&self) -> &crate::focus::FocusTree {
-        &self.focus_tree
-    }
-    fn focus_tree_mut(&mut self) -> &mut crate::focus::FocusTree {
-        &mut self.focus_tree
     }
     fn draw_focus_ring(&mut self, _r: Rect) {
         self.record("draw_focus_ring");
