@@ -249,11 +249,7 @@ pub fn route_widget_action(
         }
     }
 
-    let units = if ctx.line_height <= 1.0 {
-        crate::primitive::Units::Cells
-    } else {
-        crate::primitive::Units::Pixels
-    };
+    let units = ctx.units();
     let mut host = NoopHost {
         emitted: Vec::new(),
         units,
