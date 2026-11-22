@@ -890,17 +890,18 @@ impl MacBackend {
     }
 
     /// Install the closure [`Backend::waker`]'s returned handle invokes on
-    /// the AppKit main thread. `macos::run::run` calls this
-    /// once, right after constructing the `QuadraView`, with a closure
-    /// that calls `view.setNeedsDisplay(true)` — the same
+    /// the AppKit main thread. `macos::run::run` calls this once, right
+    /// after constructing the `QuadraView`, with a closure that drains the
+    /// queue (`QuadraView::dispatch_queued_events`) and then calls
+    /// `view.setNeedsDisplay(true)` — the same
     /// `ReactionSink::request_redraw` path `EventOutcome::Redraw` already
     /// uses for every other event, so a background-thread wake schedules a
     /// repaint through one call site rather than a second bespoke one.
     /// `mtm` proves the call happens on the main thread, matching
     /// [`dispatch2::MainThreadBound::new`]'s contract. [`Self::redraw_kicker`]
     /// hands a clone of this same closure to the menu/tray action
-    /// selectors, which need the identical "repaint the view itself,
-    /// not whatever window happens to be key" behaviour.
+    /// selectors, which need the identical "drain and repaint the view
+    /// itself, not whatever window happens to be key" behaviour.
     ///
     /// A second call is a no-op ([`std::sync::OnceLock::set`] silently
     /// ignores it) — `run` only ever calls this once per backend instance.
@@ -922,15 +923,15 @@ impl MacBackend {
     }
 
     /// Clone of the installed [`Self::set_wake_callback`] closure, if
-    /// `macos::run::run` has installed one. Calling it schedules a
-    /// repaint via `view.setNeedsDisplay(true)` on the view itself —
-    /// which AppKit services regardless of whether that view's window
-    /// is `keyWindow()` — rather than the live window needing to be
-    /// frontmost.
+    /// `macos::run::run` has installed one. Calling it drains the queued
+    /// events through `AppLogic::handle` and schedules a repaint via
+    /// `view.setNeedsDisplay(true)` on the view itself — which AppKit
+    /// services regardless of whether that view's window is `keyWindow()`
+    /// — rather than the live window needing to be frontmost.
     ///
     /// Menu/tray action selectors (`menu_bar_install::quadra_menu_action`,
     /// `tray::quadra_tray_action`) hold this directly so a queued
-    /// activation gets drained this run-loop turn without first
+    /// activation gets dispatched this run-loop turn without first
     /// checking `NSApplication::keyWindow()`, which is `None` whenever
     /// the app isn't frontmost — the common case for a tray-icon
     /// interaction. `None` for a `MacBackend` never handed to
@@ -1940,10 +1941,10 @@ impl Backend for MacBackend {
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         // Fold in any `UiEvent::User` payloads a background thread queued
         // via `waker()` since the last drain. Unconditional, matching
-        // `TuiBackend`/`GtkBackend::poll_events` — `macos::run`'s `paint`
-        // closure calls this on every repaint, and `waker()`'s
-        // `DispatchQueue::main().exec_async` nudge schedules exactly such
-        // a repaint out-of-band the moment a background thread wakes.
+        // `TuiBackend`/`GtkBackend::poll_events` — `macos::run`'s
+        // `QuadraView::dispatch_queued_events` calls this from the wake
+        // callback, which `waker()`'s `DispatchQueue::main().exec_async`
+        // nudge invokes the moment a background thread wakes.
         self.user_events.drain_into(&mut out);
         // Fold in any `UiEvent::NotificationActivated` a notification
         // delegate callback queued via `NotificationEventSink::deliver`
@@ -1971,14 +1972,12 @@ impl Backend for MacBackend {
 
     /// See [`Backend::waker`]'s doc for the full cross-backend contract.
     /// macOS's implementation, like GTK's, can't rely on a bounded poll
-    /// alone: `macos::run`'s `paint` closure only drains
-    /// [`Self::poll_events`] when AppKit actually calls `drawRect:`, and
-    /// nothing periodic forces that — unlike GTK's 33ms idle timer or
-    /// TUI's bounded `wait_events(timeout)`, a `MacBackend` app with no
-    /// unrelated user input or timer would never repaint at all, so a
-    /// background result would sit in the queue forever with nothing to
-    /// surface it. `dispatch2::DispatchQueue::main().exec_async` is GCD's
-    /// own thread-safe "run this on the main thread" primitive.
+    /// alone: AppKit's run loop is callback-driven, and unlike GTK's 33ms
+    /// idle timer or TUI's bounded `wait_events(timeout)` nothing in it
+    /// periodically drains [`Self::poll_events`] on its own, so without a
+    /// nudge a background result would sit in the queue until some
+    /// unrelated event arrived. `dispatch2::DispatchQueue::main()
+    /// .exec_async` is GCD's own "run this on the main thread" primitive.
     ///
     /// The dispatched closure can't touch `Rc<RefCell<MacBackend>>`/
     /// `Rc<RefCell<App>>`/the `QuadraView` directly (none are `Send`, and
@@ -1986,7 +1985,8 @@ impl Backend for MacBackend {
     /// `objc2` — `waker()` only has `&self` in any case, no handle to the
     /// app or view at all). It instead calls back into
     /// [`Self::wake_callback`], the `Rc<dyn Fn()>` `macos::run::run`
-    /// installs via [`Self::set_wake_callback`] that calls
+    /// installs via [`Self::set_wake_callback`]: it drains the queue
+    /// through `AppLogic::handle`, then calls
     /// `view.setNeedsDisplay(true)` — the same repaint request
     /// [`crate::runtime::ReactionSink::request_redraw`] issues for every
     /// other event. [`dispatch2::MainThreadBound`] is what makes carrying

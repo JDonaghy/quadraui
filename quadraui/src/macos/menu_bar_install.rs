@@ -12,13 +12,13 @@
 //! `MacBackend::redraw_kicker`. When the user clicks a menu item, the
 //! selector reads the sender's `tag`, looks up the `WidgetId`, pushes
 //! `UiEvent::MenuActivated(id)` onto the queue, and calls the redraw
-//! kicker to force the `drawRect:` that drains it — that kicker
-//! targets the app's own view directly rather than
-//! `NSApplication::keyWindow()`'s content view, so the activation is
-//! delivered even when the app isn't frontmost (the common case for a
-//! tray-icon interaction; see `super::tray::set_menu`, which reuses
-//! this same target). Standard app-menu items (Hide, Quit, etc.) use
-//! stock AppKit selectors instead and don't route through our target.
+//! kicker, which drains the queue through `AppLogic::handle` and applies
+//! each event's `Reaction` (File > Quit's `Exit` quits) before
+//! repainting. The kicker targets the view directly, not
+//! `NSApplication::keyWindow()`'s content view, so the activation lands
+//! even when the app isn't frontmost (the common case for a tray-icon
+//! interaction; see `super::tray::set_menu`, which reuses this target).
+//! Standard app-menu items (Hide, Quit, …) use stock AppKit selectors.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -106,12 +106,12 @@ define_class!(
         /// `UiEvent::MenuActivated(id)` onto the backend queue, then
         /// calls the installed redraw kicker (falling back to
         /// `setNeedsDisplay` on the key window's content view if none
-        /// is installed) so `drawRect:` fires — the paint closure
-        /// drains the queue and dispatches the event through
-        /// `AppLogic::handle` before painting, mirroring the TUI/GTK
-        /// poll-and-dispatch shape. The redraw kicker targets the
-        /// app's own view directly, so this is delivered even when no
-        /// window is `keyWindow()`.
+        /// is installed). The kicker drains the queue through
+        /// `AppLogic::handle` and applies the resulting `Reaction`
+        /// (`QuadraView::dispatch_queued_events`), mirroring the TUI/GTK
+        /// poll-and-dispatch shape, and targets the app's own view
+        /// directly, so this is delivered even when no window is
+        /// `keyWindow()`.
         #[unsafe(method(quadraMenuAction:))]
         fn quadra_menu_action(&self, sender: &NSMenuItem) {
             // `tag` and `setNeedsDisplay:` are safe methods.
@@ -130,7 +130,7 @@ define_class!(
                     // `macos::run::run` wired one, or in a unit test) —
                     // fall back to kicking the key window's content
                     // view directly. A no-op if there is no key window
-                    // (e.g. the app isn't frontmost), same as before.
+                    // (e.g. not frontmost); `idlePollTick:` drains it.
                     let mtm = MainThreadMarker::from(self);
                     let app = NSApplication::sharedApplication(mtm);
                     if let Some(window) = app.keyWindow() {
