@@ -877,10 +877,13 @@ impl EventHost for WidgetEventHost<'_> {
 ///   bubbles from a target to its listeners.
 /// - [`Handled::Consumed`] — the widget changed its own state with
 ///   nothing further to route; `Some(`[`EventOutcome::Redraw`]`)`.
-/// - [`Handled::Ignored`] — "not mine"; `None`, so the event bubbles down
-///   to `preprocess_event`'s remaining steps (and eventually `app.handle`
-///   with the *original*, un-routed event) exactly as if this widget
-///   didn't exist.
+/// - [`Handled::Ignored`] — "not mine"; `None` (so the event bubbles down
+///   to `preprocess_event`'s remaining steps, and eventually `app.handle`
+///   with the *original*, un-routed event, exactly as if this widget
+///   didn't exist) *unless* [`EventHost::emit`] was called during this
+///   same `handle`, in which case the merged reaction from those emitted
+///   events is returned instead of dropped, so an `Exit`/`RedrawAfter`
+///   they produced is never silently swallowed.
 ///
 /// `state`/`layout` are resolved fresh for this one call:
 /// [`crate::widget_state::WidgetStateStore::state_for`] for the former
@@ -937,23 +940,32 @@ where
     if let Some(cursor) = intents.cursor_request {
         backend.set_cursor(cursor);
     }
-    let mut last_extra = None;
-    for extra in intents.emitted {
-        last_extra = Some(app.handle(extra, backend));
-    }
+    let extra = intents
+        .emitted
+        .into_iter()
+        .fold(None, |acc: Option<EventOutcome>, e| {
+            let r = app.handle(e, backend);
+            Some(acc.map_or(r, |a| a.merge(r)))
+        });
 
     let result = match outcome {
-        Handled::Event(ui_event) => Some(app.handle(ui_event, backend)),
-        Handled::Consumed => Some(last_extra.unwrap_or(EventOutcome::Redraw)),
-        Handled::Ignored => None,
+        Handled::Event(ui_event) => {
+            let r = app.handle(ui_event, backend);
+            Some(extra.map_or(r, |a| a.merge(r)))
+        }
+        Handled::Consumed => {
+            Some(extra.map_or(EventOutcome::Redraw, |a| a.merge(EventOutcome::Redraw)))
+        }
+        Handled::Ignored => extra,
     };
 
     // `EventHost::request_redraw` is a request made *during* `handle`,
     // independent of which of the three outcomes above it ended up
     // returning — force at least a `Redraw` the same way `preprocess_event`'s
     // own `force_redraw` does for `TextSelectionChanged`/`DpiChanged`,
-    // but only when this step actually claimed the event: `Ignored`
-    // (`None`) must still mean "bubble, as if this step didn't run".
+    // but only when this step actually produced a reaction: a plain
+    // `Handled::Ignored` with no emitted events (`result == None`) still
+    // means "bubble, as if this step didn't run".
     match result {
         Some(outcome) if intents.redraw => Some(match outcome {
             EventOutcome::Continue | EventOutcome::RedrawAfter(_) => EventOutcome::Redraw,
@@ -1859,6 +1871,45 @@ mod widget_routing_tests {
                     ..
                 }) => Handled::Event(Activated),
                 RoutedEvent::Action(crate::a11y::A11yAction::Click) => Handled::Event(Activated),
+                // The four arms below exist purely to drive
+                // `dispatch_widget_routed_event`'s `EventHost::emit`
+                // merging through every `Handled` variant: each emits one
+                // or two marker `UiEvent::TextCopied`s (decoded by
+                // `CounterApp::handle` into a specific `Reaction`) before
+                // returning, so the merge-with-the-widget's-own-outcome
+                // logic is observable from the final `preprocess_event`
+                // return value instead of just unit-testing `Reaction::merge`
+                // in isolation.
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Named(NamedKey::Escape),
+                    ..
+                }) => {
+                    cx.emit(UiEvent::TextCopied("exit-marker".into()));
+                    Handled::Ignored
+                }
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Char('e'),
+                    ..
+                }) => {
+                    cx.emit(UiEvent::TextCopied("exit-marker".into()));
+                    Handled::Event(Activated)
+                }
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Char('c'),
+                    ..
+                }) => {
+                    cx.emit(UiEvent::TextCopied("continue-marker".into()));
+                    state.count += 1;
+                    Handled::Consumed
+                }
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Char('b'),
+                    ..
+                }) => {
+                    cx.emit(UiEvent::TextCopied("redraw-after:5".into()));
+                    cx.emit(UiEvent::TextCopied("redraw-after:100".into()));
+                    Handled::Ignored
+                }
                 _ => Handled::Ignored,
             }
         }
@@ -1884,8 +1935,21 @@ mod widget_routing_tests {
         fn render(&self, _backend: &mut dyn crate::Backend, _area: ()) {}
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+            // Decodes the marker `UiEvent::TextCopied`s `Counter::handle`'s
+            // `cx.emit` test arms produce into a specific `Reaction`, so a
+            // test can assert the *merged* outcome `preprocess_event`
+            // returns rather than just that `app.handle` ran.
+            let reaction = match &event {
+                UiEvent::TextCopied(text) if text == "exit-marker" => Some(Reaction::Exit),
+                UiEvent::TextCopied(text) if text == "continue-marker" => Some(Reaction::Continue),
+                UiEvent::TextCopied(text) => text
+                    .strip_prefix("redraw-after:")
+                    .and_then(|ms| ms.parse::<u64>().ok())
+                    .map(|ms| Reaction::RedrawAfter(Duration::from_millis(ms))),
+                _ => None,
+            };
             self.received.push(event);
-            Reaction::Redraw
+            reaction.unwrap_or(Reaction::Redraw)
         }
 
         fn frame_tree(&self, _area: ()) -> FrameTree {
@@ -2056,5 +2120,102 @@ mod widget_routing_tests {
         preprocess_event(key(crate::event::NamedKey::Enter), &mut backend, &mut app);
 
         assert_eq!(via_a11y, app.received);
+    }
+
+    /// `Handled::Ignored` must not silently drop the merged reaction from
+    /// any `EventHost::emit`ted event: the widget says "not mine", but it
+    /// still emitted an event whose handler asked to exit, and that must
+    /// reach `preprocess_event`'s return value rather than being discarded
+    /// in favor of bubbling the raw key to `app.handle` (which would have
+    /// returned `Reaction::Redraw`, masking the exit entirely).
+    #[test]
+    fn ignored_still_surfaces_an_emitted_exit() {
+        let (mut backend, mut app) = harness();
+        backend.set_focus(Some(app.id));
+
+        let outcome = preprocess_event(key(crate::event::NamedKey::Escape), &mut backend, &mut app);
+
+        assert_eq!(outcome, Reaction::Exit);
+        assert_eq!(
+            app.received,
+            vec![UiEvent::TextCopied("exit-marker".into())]
+        );
+    }
+
+    /// `Handled::Event` must merge the emitted reaction into the widget's
+    /// own bubbled action, not replace it: the emitted event asks to exit
+    /// while the widget's own `Activated` action (bubbled as
+    /// `UiEvent::DoubleClick`) would only have produced `Reaction::Redraw`
+    /// on its own — `Reaction::Exit` must win.
+    #[test]
+    fn event_arm_merges_with_an_emitted_exit_instead_of_dropping_it() {
+        let (mut backend, mut app) = harness();
+        backend.set_focus(Some(app.id));
+
+        let outcome = preprocess_event(
+            UiEvent::KeyPressed {
+                key: Key::Char('e'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+            &mut app,
+        );
+
+        assert_eq!(outcome, Reaction::Exit);
+        assert_eq!(
+            app.received,
+            vec![
+                UiEvent::TextCopied("exit-marker".into()),
+                UiEvent::DoubleClick {
+                    widget: Some(app.id),
+                    position: Point::default(),
+                },
+            ]
+        );
+    }
+
+    /// `Handled::Consumed` must never be *downgraded* by a weaker emitted
+    /// reaction: the emitted event's handler only returns
+    /// `Reaction::Continue`, but `Consumed` on its own means "repaint",
+    /// and `Reaction::merge` keeps the stronger of the two.
+    #[test]
+    fn consumed_is_never_downgraded_by_a_weaker_emitted_reaction() {
+        let (mut backend, mut app) = harness();
+        backend.set_focus(Some(app.id));
+
+        let outcome = preprocess_event(
+            UiEvent::KeyPressed {
+                key: Key::Char('c'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+            &mut app,
+        );
+
+        assert_eq!(outcome, Reaction::Redraw);
+    }
+
+    /// A batch of emitted events must fold with [`Reaction::merge`], not
+    /// "last one wins": the first emitted event asks for the *shorter*
+    /// `RedrawAfter` deadline and the second for a longer one — a
+    /// last-wins fold would keep the longer, less urgent deadline.
+    #[test]
+    fn a_batch_of_emitted_events_keeps_the_earliest_deadline_not_the_last_one() {
+        let (mut backend, mut app) = harness();
+        backend.set_focus(Some(app.id));
+
+        let outcome = preprocess_event(
+            UiEvent::KeyPressed {
+                key: Key::Char('b'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+            &mut app,
+        );
+
+        assert_eq!(outcome, Reaction::RedrawAfter(Duration::from_millis(5)));
     }
 }
