@@ -2723,17 +2723,17 @@ mod tests {
     /// layout, maybe paint" degrade `DrawsPrimitives::draw_dyn`'s own
     /// doc promises.
     ///
-    /// `tab_stops()` reports none for it: `CellGrid` is
-    /// `crate::non_interactive!`-tagged (see that macro's call site in
-    /// `cell_grid.rs`), so its `DynWidget::focus()` answers
-    /// `FocusSpec::None` by that macro's
-    /// own default, same as every other `non_interactive!` widget. This
-    /// is the correct, focus()-driven answer for `Surface::Widget` —
-    /// unlike every hard-coded `Surface` variant above (which contribute
-    /// a tab stop unconditionally, by field presence alone), a widget
-    /// that truthfully declares no keyboard story gets no stop.
+    /// `tab_stops()` answers from the widget's own
+    /// `DynWidget::focus()`, not from field presence: `CellGrid`
+    /// declares `FocusSpec::Stop` while it has cells to put a cursor on,
+    /// and `FocusSpec::None` for an empty sheet. Unlike every hard-coded
+    /// `Surface` variant above (which contribute a tab stop
+    /// unconditionally), the same `Surface::Widget` arm reports one stop
+    /// for the populated sheet and none for the empty one, so both
+    /// layouts below share one code path and differ only in what the
+    /// widget itself declares.
     #[test]
-    fn surface_widget_dispatches_through_draw_dyn_and_is_not_yet_a_tab_stop() {
+    fn surface_widget_dispatches_through_draw_dyn_and_takes_its_tab_stop_from_focus() {
         use crate::primitives::cell_grid::{Cell, CellGrid};
         use crate::testing::RecordingBackend;
 
@@ -2781,7 +2781,20 @@ mod tests {
             }
         );
 
-        assert_eq!(layout.tab_stops(), Vec::new());
+        assert_eq!(layout.tab_stops(), vec![(grid.id, rect)]);
+
+        let empty_grid = CellGrid {
+            row_count: 0,
+            col_count: 0,
+            cells: Vec::new(),
+            ..grid.clone()
+        };
+        let mut empty_layout = ScreenLayout::new();
+        empty_layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(empty_grid),
+        });
+        assert_eq!(empty_layout.tab_stops(), Vec::new());
     }
 
     /// `into_frame_tree` keeps only `Surface::Widget` entries, dropping
@@ -2961,9 +2974,10 @@ mod tests {
         }
     }
 
-    /// Two different [`Surface::Widget`]s — [`CellGrid`] (routed through
-    /// [`crate::non_interactive!`], so `FocusSpec::None`) and the
-    /// test-local [`Badge`] (a real [`Interactive`] impl declaring
+    /// Two different [`Surface::Widget`]s — an empty [`CellGrid`] (whose
+    /// [`Interactive::focus`] answers `FocusSpec::None`, there being no
+    /// cell to put a cursor on) and the test-local [`Badge`] (a real
+    /// [`Interactive`] impl declaring
     /// `FocusSpec::Stop`) — pushed into one [`ScreenLayout`] and drawn
     /// through [`crate::testing::RecordingBackend`]. Proves the single
     /// `Surface::Widget` arm in `draw`/`zone_for` handles both without
@@ -2975,14 +2989,14 @@ mod tests {
     /// `Surface::Widget` alike.
     #[test]
     fn two_different_surface_widgets_get_distinct_zones_tab_stops_and_layouts() {
-        use crate::primitives::cell_grid::{Cell, CellGrid};
+        use crate::primitives::cell_grid::CellGrid;
         use crate::testing::RecordingBackend;
 
         let grid_rect = Rect::new(0.0, 0.0, 20.0, 5.0);
         let grid = CellGrid {
             id: WidgetId::new("grid:sheet"),
-            row_count: 2,
-            col_count: 2,
+            row_count: 0,
+            col_count: 0,
             frozen_rows: 0,
             frozen_cols: 0,
             row_scroll: 0,
@@ -2997,10 +3011,7 @@ mod tests {
             col_labels: Default::default(),
             cursor: (0, 0),
             selection_anchor: None,
-            cells: vec![
-                vec![Cell::plain("hi"), Cell::plain("there")],
-                vec![Cell::plain("a"), Cell::plain("b")],
-            ],
+            cells: Vec::new(),
             loaded_row_start: 0,
             loaded_col_start: 0,
             has_focus: true,
@@ -3043,8 +3054,8 @@ mod tests {
         );
 
         // Only `badge` is a tab stop: its `Interactive::focus()` answers
-        // `FocusSpec::Stop`, while `grid`'s `non_interactive!`-tagged
-        // `Interactive` impl answers `FocusSpec::None`.
+        // `FocusSpec::Stop`, while the empty `grid` answers
+        // `FocusSpec::None`.
         assert_eq!(layout.tab_stops(), vec![(badge.id, badge_rect)]);
 
         let grid_layout = backend.draw_dyn(grid_rect, &grid, &());
