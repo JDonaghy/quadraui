@@ -221,7 +221,7 @@ mod tests {
 
         let id = WidgetId::new("search:input");
         let mut tree = FocusTree::new();
-        tree.sync_tab_order(&[(id.clone(), crate::event::Rect::new(0.0, 0.0, 0.0, 0.0))]);
+        tree.sync_tab_order(&[(id, crate::event::Rect::new(0.0, 0.0, 0.0, 0.0))]);
         let mut input = mk_input(vec!["hi"]);
         let theme = Theme::default();
         let rect = Rect::new(0, 0, 10, 3);
@@ -241,7 +241,7 @@ mod tests {
         draw_text_input(&mut buf_tab, rect, &input, &theme);
 
         // Click: `set_focus` re-focuses the same widget via the pointer path.
-        tree.set_focus(Some((id.clone(), None)));
+        tree.set_focus(Some((id, None)));
         input.has_focus = tree.is_focused(&id, None) && tree.is_focus_visible();
         assert!(
             tree.is_focused(&id, None),
