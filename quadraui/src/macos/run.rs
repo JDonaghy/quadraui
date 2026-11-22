@@ -9,12 +9,18 @@
 //! doesn't accept generic parameters. So we type-erase `A` through
 //! two closures stored on the view's ivars:
 //!
-//! - `paint: Box<dyn Fn(Viewport, CGContextRef) + 'static>` — invoked
-//!   from `drawRect:` after we resolve the viewport + grab the CG
-//!   context. The closure captures `Rc<RefCell<A>>` +
-//!   `Rc<RefCell<MacBackend>>`, runs
-//!   `backend.enter_frame_scope(ctx, |b| app.render(b, area))`, and
-//!   manages `begin_frame` / `end_frame`.
+//! - `paint: Box<dyn Fn(Viewport, CGContextRef) -> Reaction + 'static>`
+//!   — invoked from `drawRect:` after we resolve the viewport + grab the
+//!   CG context. The closure captures `Rc<RefCell<A>>` +
+//!   `Rc<RefCell<MacBackend>>`, drains any native-menu-activation
+//!   `UiEvent`s queued since the last frame through `app.handle`
+//!   (folding their `Reaction`s via [`crate::Reaction::merge`]), runs
+//!   `backend.enter_frame_scope(ctx, |b| app.render(b, area))`, manages
+//!   `begin_frame` / `end_frame`, and returns the merged `Reaction`.
+//!   `drawRect:` applies it via [`QuadraView::apply_paint_reaction`]
+//!   once this closure returns — see that method's doc for why a
+//!   `Reaction::Exit` from a menu click can't apply synchronously here
+//!   the way the `handle` path below does.
 //!
 //! - `handle: Rc<dyn Fn(UiEvent) -> Reaction + 'static>` — invoked by
 //!   every responder override (mouse, scroll, key) after the
@@ -175,7 +181,14 @@ pub(crate) unsafe fn fill_frame_background(
 /// callbacks. Built once per [`run`] call from the concrete `A:
 /// AppLogic`; from `define_class!`'s perspective they're just two
 /// `Box<dyn Fn>` smart pointers.
-type PaintFn = Box<dyn Fn(Viewport, CGContextRef) + 'static>;
+///
+/// Returns the [`Reaction`] merged from draining non-responder events
+/// (see [`drain_pending_menu_reaction`]) — `Reaction::Continue` when
+/// nothing was queued. `draw_rect` applies it once this closure returns,
+/// never while the closure itself (or AppKit's own `drawRect:` call) is
+/// still on the stack — see `draw_rect`'s doc for why a `Reaction::Exit`
+/// in particular can't be applied synchronously from in here.
+type PaintFn = Box<dyn Fn(Viewport, CGContextRef) -> Reaction + 'static>;
 /// `Rc`, not `Box` — the `handle` closure is shared between
 /// `QuadraView` (every responder-method dispatch) and `QuadraAppDelegate`
 /// (`applicationShouldTerminate:`), so both can run the same
@@ -403,6 +416,31 @@ pub(crate) fn control_dispatch<A: AppLogic>(
         EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
         EventOutcome::Exit => Reaction::Exit,
     }
+}
+
+/// Drain events queued from non-responder sources — currently, native
+/// menu activations [`Backend::install_menu_bar`] queues when AppKit fires
+/// an `NSMenuItem`'s action — and route each through `AppLogic::handle`
+/// exactly like a mouse/keyboard event, folding every resulting
+/// [`Reaction`] into one via [`Reaction::merge`].
+///
+/// Only runs `app.handle`, never applies the `Reaction` itself: the
+/// caller ([`bootstrap`]'s `paint` closure) runs this before rendering —
+/// so a menu-driven state mutation (e.g. toggling bold from a native
+/// Format menu) is reflected in the frame that follows it, matching every
+/// other event source — and hands the merged `Reaction` back up to
+/// `QuadraView::draw_rect`, which applies it once painting has finished.
+/// Deliberately a free function taking `&mut MacBackend` + `&mut A`
+/// rather than a method on `QuadraView`, so it's exercised by a plain
+/// unit test with no live `NSApplication`/`NSView` — see the `tests`
+/// module below.
+fn drain_pending_menu_reaction<A: AppLogic>(backend: &mut MacBackend, app: &mut A) -> Reaction {
+    let pending: Vec<UiEvent> = backend.poll_events();
+    let mut merged = Reaction::Continue;
+    for ev in pending {
+        merged = merged.merge(app.handle(ev, backend));
+    }
+    merged
 }
 
 /// Render one frame: `begin_frame` + [`MacBackend::enter_frame_scope`] +
@@ -713,15 +751,22 @@ define_class!(
             // for anything else `paint` runs (queued-event draining,
             // `tab_stops`, `begin_frame`/`end_frame`) so a panic there
             // degrades to "this frame is blank" instead of aborting the
-            // host process.
-            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (self.ivars().paint)(viewport, cg_ref);
+            // host process. A caught panic falls back to
+            // `Reaction::Continue` — no redraw, no exit — the same
+            // default [`Self::dispatch`] uses.
+            let reaction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (self.ivars().paint)(viewport, cg_ref)
             })) {
-                crate::desktop::report_caught_panic_once(
-                    "macos::run::QuadraView::draw_rect (paint)",
-                    payload.as_ref(),
-                );
-            }
+                Ok(reaction) => reaction,
+                Err(payload) => {
+                    crate::desktop::report_caught_panic_once(
+                        "macos::run::QuadraView::draw_rect (paint)",
+                        payload.as_ref(),
+                    );
+                    Reaction::Continue
+                }
+            };
+            self.apply_paint_reaction(reaction);
         }
 
         /// Top-left origin to match TUI + GTK conventions.
@@ -1134,6 +1179,21 @@ define_class!(
         #[unsafe(method(idlePollTick:))]
         fn idle_poll_tick(&self, _timer: &NSTimer) {
             self.dispatch_tick();
+        }
+
+        // ── Deferred exit from a menu-sourced `Reaction::Exit` ───────
+        //
+        // Target of the zero-delay, one-shot `NSTimer`
+        // [`Self::apply_paint_reaction`] arms when draining native menu
+        // activations (see [`drain_pending_menu_reaction`]) produces
+        // `Reaction::Exit`. Firing `apply_reaction` from here, once the
+        // run loop has moved on from `drawRect:` entirely, is what keeps
+        // `[NSApp terminate:]` from ever running while this view's
+        // `drawRect:` call is still on the stack — see
+        // `Self::apply_paint_reaction`'s doc for why that matters.
+        #[unsafe(method(deferredMenuExitTick:))]
+        fn deferred_menu_exit_tick(&self, _timer: &NSTimer) {
+            self.apply_reaction(Reaction::Exit);
         }
 
         // ── HiDPI runtime change ────────────────────────────────────
@@ -1704,6 +1764,47 @@ impl QuadraView {
     /// [`ReactionSink`] impl below.
     fn apply_reaction(&self, reaction: Reaction) {
         runtime::apply_outcome(reaction, self);
+    }
+
+    /// Apply the [`Reaction`] [`Self::draw_rect`]'s `paint` call produced
+    /// — the one `drain_pending_menu_reaction` folded from this frame's
+    /// native menu activations (`Redraw`/`RedrawAfter`/`Exit`), or
+    /// `Reaction::Continue` when nothing was queued.
+    ///
+    /// Every variant but `Exit` is safe to apply immediately, the same
+    /// way [`Self::dispatch`]/[`Self::dispatch_tick`] always do:
+    /// `Redraw` just calls `setNeedsDisplay:`, `RedrawAfter` just arms a
+    /// backend timer, and `Continue` is a no-op. `Exit` is different —
+    /// [`ReactionSink::request_exit`] calls `[NSApp terminate:]`
+    /// synchronously, and `draw_rect` is still on the stack here (this
+    /// runs from inside AppKit's `drawRect:` dispatch). Tearing the app
+    /// down while a view is mid-draw is the hazard this module's doc
+    /// warns about for the responder-chain path too; the deliberate fix
+    /// here is to never call `apply_reaction(Reaction::Exit)` from
+    /// within `drawRect:` at all. Instead, arm a zero-delay, one-shot
+    /// `NSTimer` targeting `deferredMenuExitTick:` — by the time that
+    /// fires, AppKit's run loop has moved on and `drawRect:` is off the
+    /// stack, so the exit lands exactly like any other `Reaction::Exit`
+    /// with none of the re-entrancy risk.
+    fn apply_paint_reaction(&self, reaction: Reaction) {
+        if reaction != Reaction::Exit {
+            self.apply_reaction(reaction);
+            return;
+        }
+        // SAFETY: `self` is a valid, live `QuadraView` for at least as
+        // long as this method call — same no-op upcast every other
+        // timer-arming call site in this file uses (e.g.
+        // `start_or_extend_wheel_momentum`'s `self_obj`).
+        let self_obj: &AnyObject = unsafe { &*(self as *const Self as *const AnyObject) };
+        let _timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                0.0,
+                self_obj,
+                sel!(deferredMenuExitTick:),
+                None,
+                false,
+            )
+        };
     }
 }
 
@@ -2483,18 +2584,22 @@ fn bootstrap<A: AppLogic + 'static>(
         Box::new(move |viewport: Viewport, cg_ref: CGContextRef| {
             // Drain any events queued from non-responder sources
             // (currently: native menu activations from
-            // `Backend::install_menu_bar`). Each fires through
-            // `AppLogic::handle` exactly like a mouse/keyboard event.
-            // Done before painting so state mutations land in this
-            // frame.
-            let pending: Vec<UiEvent> = backend.borrow_mut().poll_events();
-            for ev in pending {
-                let _ = app.borrow_mut().handle(ev, &mut *backend.borrow_mut());
-            }
+            // `Backend::install_menu_bar`) and fold their `Reaction`s
+            // into one. Done before painting so state mutations land in
+            // this frame; the merged `Reaction` itself is only *returned*
+            // here — applying it (in particular, `Reaction::Exit`'s
+            // `[NSApp terminate:]`) must wait until `draw_rect` has
+            // finished calling this closure, see `PaintFn`'s doc.
+            let reaction = {
+                let mut backend_mut = backend.borrow_mut();
+                let mut app_mut = app.borrow_mut();
+                drain_pending_menu_reaction(&mut backend_mut, &mut *app_mut)
+            };
 
             let mut backend_mut = backend.borrow_mut();
             let app_ref = app.borrow();
             render_frame(&mut backend_mut, &*app_ref, viewport, cg_ref);
+            reaction
         })
     };
     // Caret-blink state is shared between the backend (read each
@@ -3815,6 +3920,116 @@ mod window_close_tests {
             second.calls.get(),
             1,
             "each fresh Cmd-Q gets its own dispatch — a veto never marks the gate"
+        );
+    }
+}
+
+/// Coverage for [`drain_pending_menu_reaction`] — the drain-and-merge
+/// half of the native-menu-click fix: every `Reaction` a queued menu
+/// activation's handler returns must reach the caller, not just
+/// `Redraw`/`Continue`. No live `NSApplication`/`NSView` needed, since
+/// this only calls `MacBackend::poll_events` + `AppLogic::handle`, both
+/// plain Rust — the actual deferred `[NSApp terminate:]` half
+/// (`QuadraView::apply_paint_reaction` arming `deferredMenuExitTick:`
+/// instead of exiting synchronously from `drawRect:`) needs a live view
+/// and is exercised on real hardware instead, per this module's doc.
+#[cfg(test)]
+mod menu_reaction_tests {
+    use super::*;
+    use crate::types::WidgetId;
+
+    struct ScriptedApp {
+        reactions: std::collections::VecDeque<Reaction>,
+        events: Vec<UiEvent>,
+    }
+
+    impl ScriptedApp {
+        fn new(reactions: impl IntoIterator<Item = Reaction>) -> Self {
+            Self {
+                reactions: reactions.into_iter().collect(),
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for ScriptedApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event);
+            self.reactions.pop_front().unwrap_or(Reaction::Continue)
+        }
+    }
+
+    /// No pending menu activation at all — the common case, every frame
+    /// that isn't immediately after a native menu click — must answer
+    /// `Reaction::Continue` and never touch `app.handle`.
+    #[test]
+    fn no_pending_events_yields_continue_and_no_app_calls() {
+        let mut backend = MacBackend::new();
+        let mut app = ScriptedApp::new([]);
+        assert_eq!(
+            drain_pending_menu_reaction(&mut backend, &mut app),
+            Reaction::Continue
+        );
+        assert!(app.events.is_empty());
+    }
+
+    /// A single queued `MenuActivated` reaches `app.handle` exactly like
+    /// any other event, and its `Reaction` passes straight through to
+    /// the caller — the File > Quit repro: `Reaction::Exit` must not be
+    /// discarded on the way out of the drain.
+    #[test]
+    fn a_single_menu_events_reaction_is_not_discarded() {
+        let mut backend = MacBackend::new();
+        backend.push_event(UiEvent::MenuActivated(WidgetId::new("file.quit")));
+        let mut app = ScriptedApp::new([Reaction::Exit]);
+        assert_eq!(
+            drain_pending_menu_reaction(&mut backend, &mut app),
+            Reaction::Exit,
+            "a menu item's own Reaction::Exit (File > Quit) must survive the drain"
+        );
+        assert_eq!(
+            app.events,
+            vec![UiEvent::MenuActivated(WidgetId::new("file.quit"))]
+        );
+    }
+
+    /// Two queued menu activations in the same frame fold through
+    /// `Reaction::merge` — `Exit` wins over an earlier `Redraw` regardless
+    /// of queue order, matching every other multi-event batch
+    /// `dispatch_event` folds (`MouseDown`/`MouseMoved` routing).
+    #[test]
+    fn exit_wins_over_an_earlier_redraw_in_the_same_batch() {
+        let mut backend = MacBackend::new();
+        backend.push_event(UiEvent::MenuActivated(WidgetId::new("home.bold")));
+        backend.push_event(UiEvent::MenuActivated(WidgetId::new("file.quit")));
+        let mut app = ScriptedApp::new([Reaction::Redraw, Reaction::Exit]);
+        assert_eq!(
+            drain_pending_menu_reaction(&mut backend, &mut app),
+            Reaction::Exit
+        );
+        assert_eq!(
+            app.events.len(),
+            2,
+            "both queued activations must reach app.handle, not just the first"
+        );
+    }
+
+    /// A `RedrawAfter` with no `Exit`/`Redraw` in the batch still passes
+    /// through unchanged, so a menu item that schedules a future wake
+    /// isn't silently downgraded to `Continue`.
+    #[test]
+    fn redraw_after_with_no_other_reaction_passes_through() {
+        let mut backend = MacBackend::new();
+        backend.push_event(UiEvent::MenuActivated(WidgetId::new("home.bold")));
+        let deadline = std::time::Duration::from_millis(50);
+        let mut app = ScriptedApp::new([Reaction::RedrawAfter(deadline)]);
+        assert_eq!(
+            drain_pending_menu_reaction(&mut backend, &mut app),
+            Reaction::RedrawAfter(deadline)
         );
     }
 }
