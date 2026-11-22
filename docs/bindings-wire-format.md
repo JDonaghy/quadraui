@@ -424,7 +424,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`CellAlign`](#wire-cellalign)
 - [`CellStyleDescriptor`](#wire-cellstyledescriptor)
 - [`CellDescriptor`](#wire-celldescriptor)
-- [`CellGridControllerDescriptor`](#wire-cellgridcontrollerdescriptor)
+- [`CellEditStateDescriptor`](#wire-celleditstatedescriptor)
+- [`CellGridDescriptor`](#wire-cellgriddescriptor)
 - [`TabItemDescriptor`](#wire-tabitemdescriptor)
 - [`TabBarSegmentDescriptor`](#wire-tabbarsegmentdescriptor)
 - [`TabBarDescriptor`](#wire-tabbardescriptor)
@@ -681,6 +682,15 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_TreeTableSelectionSetPayload`](#wire-_treetableselectionsetpayload)
 - [`_TreeTableToggleExpandedPayload`](#wire-_treetabletoggleexpandedpayload)
 - [`TreeTableEvent`](#wire-treetableevent)
+- [`_CellGridCursorMovedPayload`](#wire-_cellgridcursormovedpayload)
+- [`_CellGridCellsRequestedPayload`](#wire-_cellgridcellsrequestedpayload)
+- [`_CellGridNavigatedPayload`](#wire-_cellgridnavigatedpayload)
+- [`_CellEditRequestedPayload`](#wire-_celleditrequestedpayload)
+- [`_CellEditStartedPayload`](#wire-_celleditstartedpayload)
+- [`_CellEditChangedPayload`](#wire-_celleditchangedpayload)
+- [`_CellEditCommittedPayload`](#wire-_celleditcommittedpayload)
+- [`_CellEditCancelledPayload`](#wire-_celleditcancelledpayload)
+- [`CellGridEvent`](#wire-cellgridevent)
 - [`_IndexPayload`](#wire-_indexpayload)
 - [`_IdPayload`](#wire-_idpayload)
 - [`TabBarEvent`](#wire-tabbarevent)
@@ -1312,35 +1322,46 @@ Alias for `"Left" | "Center" | "Right" | "General"`.
 | `text` | `string` | yes |  |
 | `style` | `CellStyleDescriptor` | no |  |
 
-<a id="wire-cellgridcontrollerdescriptor"></a>
-#### `CellGridControllerDescriptor`
+<a id="wire-celleditstatedescriptor"></a>
+#### `CellEditStateDescriptor`
 
-The spreadsheet-shaped counterpart of `TreeTableControllerDescriptor` -- a `cell_grid` extra backed by a cached `CellGridController` rather than a stateless paint.
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `text` | `string` | yes |  |
+| `cursor` | `number` | no |  |
+| `selection_anchor` | `number \| null` | no |  |
+| `placeholder` | `string \| null` | no |  |
+
+<a id="wire-cellgriddescriptor"></a>
+#### `CellGridDescriptor`
+
+The spreadsheet-shaped `WIDGET_KINDS` member -- a `cell_grid` leaf's raw `quadraui::CellGrid` fields, decoded straight into that type (no cached-controller indirection) and routed through `CellGridEvent` for navigation/editing/virtualisation.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `WidgetId` | yes |  |
-| `row_count` | `number` | no |  |
-| `col_count` | `number` | no |  |
+| `row_count` | `number` | yes |  |
+| `col_count` | `number` | yes |  |
 | `frozen_rows` | `number` | no |  |
 | `frozen_cols` | `number` | no |  |
-| `default_row_height` | `number` | no |  |
-| `default_col_width` | `number` | no |  |
+| `row_scroll` | `number` | no |  |
+| `col_scroll` | `number` | no |  |
+| `default_row_height` | `number` | yes |  |
+| `default_col_width` | `number` | yes |  |
 | `row_heights` | `Record<string, number>` | no |  |
 | `col_widths` | `Record<string, number>` | no |  |
 | `show_row_headers` | `boolean` | no |  |
 | `show_col_headers` | `boolean` | no |  |
 | `row_labels` | `Record<string, string>` | no |  |
 | `col_labels` | `Record<string, string>` | no |  |
-| `cells` | `CellDescriptor[][]` | no | This frame's windowed cell text, reconciled every frame -- see `CellGridControllerDescriptor`'s own Rust doc. |
+| `cursor` | `[number, number]` | no |  |
+| `selection_anchor` | `[number, number] \| null` | no |  |
+| `cells` | `CellDescriptor[][]` | no | This frame's windowed cell text -- see `CellGrid::cells_requested`'s own Rust doc for how a host keeps it in sync with `loaded_row_start`/`loaded_col_start` as the viewport scrolls. |
 | `loaded_row_start` | `number` | no |  |
 | `loaded_col_start` | `number` | no |  |
-| `cursor` | `[number, number]` | no | Read once, when this id is first seen, then left alone forever after -- the cached `CellGridController` owns cursor navigation from then on. |
-| `selection_anchor` | `[number, number] \| null` | no |  |
-| `row_scroll` | `number` | no |  |
-| `col_scroll` | `number` | no |  |
 | `has_focus` | `boolean` | no |  |
 | `show_scrollbar` | `boolean` | no |  |
+| `editing` | `CellEditStateDescriptor \| null` | no |  |
 
 <a id="wire-tabitemdescriptor"></a>
 #### `TabItemDescriptor`
@@ -3578,7 +3599,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `diff_view` | `DiffViewDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
-| `cell_grid` | `CellGridControllerDescriptor` | no |  |
 | `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
@@ -3598,6 +3618,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `textarea` | `TextAreaDescriptor` | no |  |
 | `markdown` | `MarkdownDescriptor` | no |  |
 | `icon_grid` | `IconGridDescriptor` | no |  |
+| `cell_grid` | `CellGridDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3646,7 +3667,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `diff_view` | `DiffViewDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
-| `cell_grid` | `CellGridControllerDescriptor \| null` | no |  |
 | `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
@@ -3666,6 +3686,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
 | `markdown` | `MarkdownDescriptor \| null` | no |  |
 | `icon_grid` | `IconGridDescriptor \| null` | no |  |
+| `cell_grid` | `CellGridDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
@@ -3977,6 +3998,93 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ColumnResized` | `_ColumnResizedPayload` |  |
 | `SelectionSet` | `_TreeTableSelectionSetPayload` |  |
 | `ToggleExpanded` | `_TreeTableToggleExpandedPayload` |  |
+
+<a id="wire-_cellgridcursormovedpayload"></a>
+#### `_CellGridCursorMovedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `row` | `number` | yes |  |
+| `col` | `number` | yes |  |
+
+<a id="wire-_cellgridcellsrequestedpayload"></a>
+#### `_CellGridCellsRequestedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `row_start` | `number` | yes |  |
+| `col_start` | `number` | yes |  |
+| `rows` | `number` | yes |  |
+| `cols` | `number` | yes |  |
+
+<a id="wire-_cellgridnavigatedpayload"></a>
+#### `_CellGridNavigatedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cursor` | `[number, number]` | yes |  |
+| `selection_anchor` | `[number, number] \| null` | yes |  |
+| `row_scroll` | `number` | yes |  |
+| `col_scroll` | `number` | yes |  |
+
+<a id="wire-_celleditrequestedpayload"></a>
+#### `_CellEditRequestedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `row` | `number` | yes |  |
+| `col` | `number` | yes |  |
+
+<a id="wire-_celleditstartedpayload"></a>
+#### `_CellEditStartedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `row` | `number` | yes |  |
+| `col` | `number` | yes |  |
+| `edit` | `CellEditStateDescriptor` | yes |  |
+
+<a id="wire-_celleditchangedpayload"></a>
+#### `_CellEditChangedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `row` | `number` | yes |  |
+| `col` | `number` | yes |  |
+| `edit` | `CellEditStateDescriptor` | yes |  |
+
+<a id="wire-_celleditcommittedpayload"></a>
+#### `_CellEditCommittedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `row` | `number` | yes |  |
+| `col` | `number` | yes |  |
+| `text` | `string` | yes |  |
+
+<a id="wire-_celleditcancelledpayload"></a>
+#### `_CellEditCancelledPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `row` | `number` | yes |  |
+| `col` | `number` | yes |  |
+
+<a id="wire-cellgridevent"></a>
+#### `CellGridEvent`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `CursorMoved` | `_CellGridCursorMovedPayload` |  |
+| `CellsRequested` | `_CellGridCellsRequestedPayload` |  |
+| `Navigated` | `_CellGridNavigatedPayload` |  |
+| `CellEditRequested` | `_CellEditRequestedPayload` |  |
+| `CellEditStarted` | `_CellEditStartedPayload` |  |
+| `CellEditChanged` | `_CellEditChangedPayload` |  |
+| `CellEditCommitted` | `_CellEditCommittedPayload` |  |
+| `CellEditCancelled` | `_CellEditCancelledPayload` |  |
 
 <a id="wire-_indexpayload"></a>
 #### `_IndexPayload`
@@ -4853,6 +4961,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |
 | `TreeTable` | `[WidgetId, TreeTableEvent]` |  |
+| `CellGrid` | `[WidgetId, CellGridEvent]` |  |
 | `Toolbar` | `[WidgetId, ToolbarEvent]` |  |
 | `Canvas` | `[WidgetId, CanvasEvent]` |  |
 | `BackendNative` | `BackendNativeEvent` |  |

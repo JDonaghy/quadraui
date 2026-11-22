@@ -322,30 +322,37 @@ class CellDescriptor(TypedDict):
     text: str
     style: NotRequired[CellStyleDescriptor]
 
-class CellGridControllerDescriptor(TypedDict):
-    """The spreadsheet-shaped counterpart of `TreeTableControllerDescriptor` -- a `cell_grid` extra backed by a cached `CellGridController` rather than a stateless paint."""
+class CellEditStateDescriptor(TypedDict):
+    text: str
+    cursor: NotRequired[int]
+    selection_anchor: NotRequired[Optional[int]]
+    placeholder: NotRequired[Optional[str]]
+
+class CellGridDescriptor(TypedDict):
+    """The spreadsheet-shaped `WIDGET_KINDS` member -- a `cell_grid` leaf's raw `quadraui::CellGrid` fields, decoded straight into that type (no cached-controller indirection) and routed through `CellGridEvent` for navigation/editing/virtualisation."""
     id: WidgetId
-    row_count: NotRequired[int]
-    col_count: NotRequired[int]
+    row_count: int
+    col_count: int
     frozen_rows: NotRequired[int]
     frozen_cols: NotRequired[int]
-    default_row_height: NotRequired[float]
-    default_col_width: NotRequired[float]
+    row_scroll: NotRequired[int]
+    col_scroll: NotRequired[int]
+    default_row_height: float
+    default_col_width: float
     row_heights: NotRequired[Dict[str, float]]
     col_widths: NotRequired[Dict[str, float]]
     show_row_headers: NotRequired[bool]
     show_col_headers: NotRequired[bool]
     row_labels: NotRequired[Dict[str, str]]
     col_labels: NotRequired[Dict[str, str]]
-    cells: NotRequired[List[List[CellDescriptor]]]  # This frame's windowed cell text, reconciled every frame -- see `CellGridControllerDescriptor`'s own Rust doc.
+    cursor: NotRequired[Tuple[int, int]]
+    selection_anchor: NotRequired[Optional[Tuple[int, int]]]
+    cells: NotRequired[List[List[CellDescriptor]]]  # This frame's windowed cell text -- see `CellGrid::cells_requested`'s own Rust doc for how a host keeps it in sync with `loaded_row_start`/`loaded_col_start` as the viewport scrolls.
     loaded_row_start: NotRequired[int]
     loaded_col_start: NotRequired[int]
-    cursor: NotRequired[Tuple[int, int]]  # Read once, when this id is first seen, then left alone forever after -- the cached `CellGridController` owns cursor navigation from then on.
-    selection_anchor: NotRequired[Optional[Tuple[int, int]]]
-    row_scroll: NotRequired[int]
-    col_scroll: NotRequired[int]
     has_focus: NotRequired[bool]
     show_scrollbar: NotRequired[bool]
+    editing: NotRequired[Optional[CellEditStateDescriptor]]
 
 class TabItemDescriptor(TypedDict):
     """The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`."""
@@ -1754,7 +1761,6 @@ LayoutLeafNode = TypedDict(
         "diff_view": NotRequired[DiffViewDescriptor],
         "tree_table": NotRequired[TreeTableDescriptor],
         "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
-        "cell_grid": NotRequired[CellGridControllerDescriptor],
         "activity_bar": NotRequired[ActivityBarDescriptor],
         "toolbar": NotRequired[ToolbarDescriptor],
         "menu_bar": NotRequired[MenuBarDescriptor],
@@ -1774,6 +1780,7 @@ LayoutLeafNode = TypedDict(
         "textarea": NotRequired[TextAreaDescriptor],
         "markdown": NotRequired[MarkdownDescriptor],
         "icon_grid": NotRequired[IconGridDescriptor],
+        "cell_grid": NotRequired[CellGridDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1816,7 +1823,6 @@ class RenderFrameDict(TypedDict):
     diff_view: NotRequired[Optional[DiffViewDescriptor]]
     tree_table: NotRequired[Optional[TreeTableDescriptor]]
     tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
-    cell_grid: NotRequired[Optional[CellGridControllerDescriptor]]
     activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
@@ -1836,6 +1842,7 @@ class RenderFrameDict(TypedDict):
     textarea: NotRequired[Optional[TextAreaDescriptor]]
     markdown: NotRequired[Optional[MarkdownDescriptor]]
     icon_grid: NotRequired[Optional[IconGridDescriptor]]
+    cell_grid: NotRequired[Optional[CellGridDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -2012,6 +2019,55 @@ class TreeTableEvent(TypedDict):
     ColumnResized: NotRequired[_ColumnResizedPayload]
     SelectionSet: NotRequired[_TreeTableSelectionSetPayload]
     ToggleExpanded: NotRequired[_TreeTableToggleExpandedPayload]
+
+class _CellGridCursorMovedPayload(TypedDict):
+    row: int
+    col: int
+
+class _CellGridCellsRequestedPayload(TypedDict):
+    row_start: int
+    col_start: int
+    rows: int
+    cols: int
+
+class _CellGridNavigatedPayload(TypedDict):
+    cursor: Tuple[int, int]
+    selection_anchor: Optional[Tuple[int, int]]
+    row_scroll: int
+    col_scroll: int
+
+class _CellEditRequestedPayload(TypedDict):
+    row: int
+    col: int
+
+class _CellEditStartedPayload(TypedDict):
+    row: int
+    col: int
+    edit: CellEditStateDescriptor
+
+class _CellEditChangedPayload(TypedDict):
+    row: int
+    col: int
+    edit: CellEditStateDescriptor
+
+class _CellEditCommittedPayload(TypedDict):
+    row: int
+    col: int
+    text: str
+
+class _CellEditCancelledPayload(TypedDict):
+    row: int
+    col: int
+
+class CellGridEvent(TypedDict):
+    CursorMoved: NotRequired[_CellGridCursorMovedPayload]
+    CellsRequested: NotRequired[_CellGridCellsRequestedPayload]
+    Navigated: NotRequired[_CellGridNavigatedPayload]
+    CellEditRequested: NotRequired[_CellEditRequestedPayload]
+    CellEditStarted: NotRequired[_CellEditStartedPayload]
+    CellEditChanged: NotRequired[_CellEditChangedPayload]
+    CellEditCommitted: NotRequired[_CellEditCommittedPayload]
+    CellEditCancelled: NotRequired[_CellEditCancelledPayload]
 
 class _IndexPayload(TypedDict):
     index: int
@@ -2466,6 +2522,7 @@ class _UiEventDict(TypedDict):
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]
     TreeTable: NotRequired[Tuple[WidgetId, TreeTableEvent]]
+    CellGrid: NotRequired[Tuple[WidgetId, CellGridEvent]]
     Toolbar: NotRequired[Tuple[WidgetId, ToolbarEvent]]
     Canvas: NotRequired[Tuple[WidgetId, CanvasEvent]]
     BackendNative: NotRequired[BackendNativeEvent]
