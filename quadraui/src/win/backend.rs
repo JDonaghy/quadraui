@@ -1989,6 +1989,14 @@ impl crate::runtime::PreprocessBackend for WinBackend {
     fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent {
         self.fold_double_click(ev)
     }
+
+    /// Wires `WinBackend` onto the widget-contract routing engine via its
+    /// embedded [`crate::backend_core::BackendCore`] — see
+    /// [`crate::runtime::PreprocessBackend::widget_routing_mut`]'s doc for
+    /// what overriding the trait's `None` default opts into.
+    fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
+        Some(self.core.widget_routing_mut())
+    }
 }
 
 impl crate::backend::sealed::Sealed for WinBackend {}
