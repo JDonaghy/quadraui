@@ -19,13 +19,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `ReentrantCallError`). `App.confirm`/`App.alert` now queue through
   `show_overlay("message_dialog", ...)` instead of `show_message_dialog`.
 
-- A `"cell_grid"` extra's `CellGridController` events now reach the
-  registered handler as `{"CellGridController": (id, event)}`, mirroring
-  `{"TreeTableController": (id, event)}`. `CellsRequested` (the
-  two-axis-virtualisation window request) needs no new host call to
-  answer -- re-render with that `"cell_grid"` extra's `cells`/
-  `loaded_row_start`/`loaded_col_start` covering the named block, same as
-  any other extra's per-frame data.
+- A `"cell_grid"` leaf's navigation/editing/virtualisation outcomes reach
+  the registered handler as an ordinary `UiEvent` variant,
+  `{"CellGrid": (id, event)}`, rather than the earlier
+  `{"CellGridController": (id, event)}` shape: `CellGrid` carries no
+  state of its own across frames, so the handler must apply
+  `Navigated`/`CellEditStarted`/`CellEditChanged`/`CellEditCommitted`/
+  `CellEditCancelled` back onto its own render state before the next
+  frame. `CellsRequested` (the two-axis-virtualisation window request)
+  still needs no new host call to answer -- re-render with that
+  `"cell_grid"` leaf's `cells`/`loaded_row_start`/`loaded_col_start`
+  covering the named block, same as any other leaf's per-frame data.
 - A `"grid"` layout node: `{"grid": {"columns": [...], "rows": [...],
   "cells": [...]}}` lays its cells out row-major across two independent
   track lists, each track one of `{"Fixed": px}`/`{"Percent": 0.0-1.0}`/
