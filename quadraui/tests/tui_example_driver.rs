@@ -8411,8 +8411,7 @@ fn frame_demo_tab_key_cycles_active_tab_through_all_three() {
 }
 
 /// Clicking a list row must resolve through `FrameDemo`'s own
-/// recomputed rects — there is no `FrameHitMap`/`FrameZone` cache
-/// behind this click dispatch any more (#2889).
+/// recomputed rects, not a cached hit-map.
 #[test]
 fn frame_demo_clicking_a_list_row_selects_it() {
     let mut driver = TuiDriver::new(FrameDemo::new(), 120, 30);

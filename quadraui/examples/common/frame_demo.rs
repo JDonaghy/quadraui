@@ -1,9 +1,9 @@
 //! Renders a TabBar + ListView + StatusBar entirely through
 //! `ScreenLayout::draw()`, then dispatches clicks by recomputing each
-//! surface's own rect and testing it directly — the same pattern
-//! `activity_style_demo.rs` and `AppShell::compute_layout`'s own
-//! callers use, and the replacement for the now-`#[deprecated]`
-//! `FrameHitMap`/`FrameZone` hit-map this demo used to cache.
+//! surface's own rect and testing it directly, rather than caching a
+//! `FrameHitMap`/`FrameZone` hit-map across the frame — the same
+//! pattern `activity_style_demo.rs` and `AppShell::compute_layout`'s
+//! own callers use.
 //!
 //! The ListView rows are intentionally wider than the terminal so the
 //! example doubles as the interactive smoke test for ListView horizontal
