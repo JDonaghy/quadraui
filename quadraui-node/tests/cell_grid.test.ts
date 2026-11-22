@@ -1,24 +1,29 @@
-// Black-box coverage for the `CellGridController` per-widget-id seam
-// exposed through `quadraui-node`: a plain JS object decodes into a
-// `"cell_grid"` extra (`EXTRA_PRIMITIVE_KINDS`'s generic registration
-// already covers the descriptor shape -- no new napi method needed for
-// that half), and the cursor/selection/inline-edit/virtualisation round
-// trip -- click a cell -> `CursorMoved` -> page past the loaded window ->
-// `CellsRequested` -> answer with a freshly loaded block -> type + Enter ->
-// `CellEditCommitted` -- reaches the registered handler as
-// `{"CellGridController": [id, event]}`, the same `{"TreeTableController":
+// Black-box coverage for the `cell_grid` `WIDGET_KINDS` seam exposed
+// through `quadraui-node`: a plain JS object decodes straight into
+// `quadraui::CellGrid` (`WIDGET_KINDS`'s generic registration already
+// covers the descriptor shape -- no new napi method needed for that
+// half), and the cursor/selection/inline-edit/virtualisation round trip
+// -- click a cell -> `Navigated` -> page past the loaded window ->
+// `CellsRequested` -> answer with a freshly loaded block -> type + Enter
+// -> `CellEditCommitted` -- reaches the registered handler as
+// `{"CellGrid": [id, event]}`, the same `{"TreeTableController":
 // [id, event]}` array shape `tree_table_controller.test.ts` already
 // exercises.
 //
-// Mirrors `quadraui-binding-core::engine`'s own
-// `cell_grid_controller_cells_requested_does_not_repeat_after_host_loads_window`/
-// `cell_grid_controller_typed_edit_commits_on_enter` Rust tests (and
-// `quadraui-py/tests/test_cell_grid.py`), driven end-to-end through this
-// binding's JS surface instead.
+// Unlike the old per-id-cached-controller design, `CellGrid` carries no
+// state of its own across frames: `cursor`/`selection_anchor`/
+// `row_scroll`/`col_scroll`/`editing` all come from whatever `descriptor`
+// returns *this* frame, so this test's own `state` object has to apply
+// every `Navigated`/`CellEditStarted`/`CellEditChanged`/
+// `CellEditCommitted`/`CellEditCancelled` event back onto itself before
+// the next render, the same way a real app's host state must. Mirrors
+// `quadraui-binding-core::engine`'s own `CellGridLogic::apply` Rust test
+// harness (and `quadraui-py/tests/test_cell_grid.py`), driven end-to-end
+// through this binding's JS surface instead.
 //
 // `CellsRequested` is answered the same way `RowsRequested` is elsewhere:
 // there is no separate `set_*` host call -- the engine reconciles a
-// `"cell_grid"` extra's `cells`/`loaded_row_start`/`loaded_col_start` fresh
+// `"cell_grid"` leaf's `cells`/`loaded_row_start`/`loaded_col_start` fresh
 // every frame, so mutating the render callback's own state and returning
 // `true` (redraw) from the handler is enough.
 //
@@ -34,11 +39,11 @@ const { QuiApp } = require("../js/index.ts");
 const NO_MODS = { shift: false, ctrl: false, alt: false, cmd: false };
 const PAGE_DOWN = { KeyPressed: { key: { Named: "PageDown" }, modifiers: NO_MODS, repeat: false } };
 const ENTER = { KeyPressed: { key: { Named: "Enter" }, modifiers: NO_MODS, repeat: false } };
-// A bare character key with no active edit starts one
-// (`CellGridController::handle_key`'s `Key::Char(c) if !jump =>
-// self.begin_typing(*c)` arm) -- the synthesized `CharTyped` event only
-// ever reaches `CellGridController::handle` once an edit is already under
-// way (that type's own doc), so this is `KeyPressed`, not `CharTyped`.
+// A bare character key with no active edit starts one (`CellGrid::handle`'s
+// own `RoutedEvent::Key` arm for a plain char) -- the synthesized
+// `CharTyped` event only ever reaches `CellGrid::handle` once an edit is
+// already under way (that type's own doc), so this is `KeyPressed`, not
+// `CharTyped`.
 const TYPE_X = { KeyPressed: { key: { Char: "x" }, modifiers: NO_MODS, repeat: false } };
 const CLICK_FIRST_CELL = {
   MouseDown: { button: "Left", position: { x: 9.0, y: 1.5 }, modifiers: {} },
@@ -46,7 +51,7 @@ const CLICK_FIRST_CELL = {
 // Far enough from `CLICK_FIRST_CELL` (> 1.5 cells) that `TuiBackend`'s
 // `DoubleClickDetector` (400ms/1.5-cell window) doesn't fold the two
 // consecutive `MouseDown`s below into a `DoubleClick`, which
-// `CellGridController::handle` has no arm for.
+// `CellGrid::handle` has no arm for.
 const CLICK_LAST_VISIBLE_ROW = {
   MouseDown: { button: "Left", position: { x: 9.0, y: 8.5 }, modifiers: {} },
 };
@@ -71,25 +76,55 @@ function cells(rowStart: number, colStart: number, rows: number, cols: number) {
   return out;
 }
 
-// A 20x5 sheet with only `state.cells`' own row count loaded, starting at
-// `state.loadedRowStart` -- deliberately fewer rows than the 10-cell-tall
-// viewport `render` below paints into, so a `CellsRequested` is always one
-// click/page away. Mirrors `quadraui-binding-core::engine`'s own
-// `small_window_cell_grid_descriptor`.
-function descriptor(state: { cells: unknown; loadedRowStart: number }) {
+type CellGridState = {
+  cells: unknown;
+  loadedRowStart: number;
+  loadedColStart: number;
+  cursor: [number, number];
+  selectionAnchor: [number, number] | null;
+  rowScroll: number;
+  colScroll: number;
+  editing: unknown;
+};
+
+// A 20x5 sheet with only `LOADED_ROWS` rows loaded, starting at row 0 --
+// deliberately fewer rows than the 10-cell-tall viewport `render` below
+// paints into, so a `CellsRequested` is always one click/page away.
+// Mirrors `quadraui-binding-core::engine`'s own `small_window_cell_grid`.
+function initialState(): CellGridState {
+  return {
+    cells: cells(0, 0, LOADED_ROWS, COL_COUNT),
+    loadedRowStart: 0,
+    loadedColStart: 0,
+    cursor: [0, 0],
+    selectionAnchor: null,
+    rowScroll: 0,
+    colScroll: 0,
+    editing: null,
+  };
+}
+
+function descriptor(state: CellGridState) {
   return {
     id: "cg",
     row_count: ROW_COUNT,
     col_count: COL_COUNT,
+    default_row_height: 1.0,
+    default_col_width: 8.0,
     cells: state.cells,
     loaded_row_start: state.loadedRowStart,
-    loaded_col_start: 0,
+    loaded_col_start: state.loadedColStart,
+    cursor: state.cursor,
+    selection_anchor: state.selectionAnchor,
+    row_scroll: state.rowScroll,
+    col_scroll: state.colScroll,
+    editing: state.editing,
     has_focus: true,
     show_scrollbar: false,
   };
 }
 
-function render(state: { cells: unknown; loadedRowStart: number }) {
+function render(state: CellGridState) {
   // A single-leaf `"row"` layout tree -- fills the whole viewport, the same
   // shape `tree_table_controller.test.ts`'s own `render` uses and for the
   // same reason (the flat six-slot-plus-extras system's fixed 3-line band
@@ -99,12 +134,33 @@ function render(state: { cells: unknown; loadedRowStart: number }) {
 
 function cellGridEvents(received: any[], id: string) {
   return received
-    .filter((entry) => "CellGridController" in entry && entry.CellGridController[0] === id)
-    .map((entry) => entry.CellGridController[1]);
+    .filter((entry) => "CellGrid" in entry && entry.CellGrid[0] === id)
+    .map((entry) => entry.CellGrid[1]);
 }
 
-test("cell grid controller click, scroll request, and edit round trip", () => {
-  const state = { cells: cells(0, 0, LOADED_ROWS, COL_COUNT), loadedRowStart: 0 };
+// Writes one `CellGridEvent` back onto `state` the way a real host's own
+// cursor/selection/scroll/editing fields must track it -- `CellGrid` itself
+// is stateless across frames, so skipping this leaves the next render
+// starting over at `(0, 0)` with no active edit, matching
+// `CellGridLogic::apply`'s own Rust contract.
+function apply(state: CellGridState, event: any) {
+  if (event.Navigated) {
+    state.cursor = event.Navigated.cursor;
+    state.selectionAnchor = event.Navigated.selection_anchor;
+    state.rowScroll = event.Navigated.row_scroll;
+    state.colScroll = event.Navigated.col_scroll;
+  }
+  const started = event.CellEditStarted ?? event.CellEditChanged;
+  if (started) {
+    state.editing = started.edit;
+  }
+  if (event.CellEditCommitted || event.CellEditCancelled) {
+    state.editing = null;
+  }
+}
+
+test("cell grid click, scroll request, and edit round trip", () => {
+  const state = initialState();
   const app = new QuiApp(20, 10);
   app.setRender(() => render(state));
   app.screen();
@@ -112,29 +168,34 @@ test("cell grid controller click, scroll request, and edit round trip", () => {
   const received: any[] = [];
   app.setHandler((event: any) => {
     received.push(event);
-    if (!("CellGridController" in event)) {
+    if (!("CellGrid" in event)) {
       return undefined;
     }
-    const [, payload] = event.CellGridController;
+    const [, payload] = event.CellGrid;
+    apply(state, payload);
     const requested = payload.CellsRequested;
     if (requested === undefined) {
-      return undefined;
+      return true;
     }
     // Exactly what a real app does with a `CellsRequested`: load that
     // absolute block and repaint -- there is no `set_*` call for this,
     // unlike `setTreeTableChildren`.
     state.cells = cells(requested.row_start, requested.col_start, requested.rows, requested.cols);
     state.loadedRowStart = requested.row_start;
+    state.loadedColStart = requested.col_start;
     return true;
   });
 
   // A click on the first body cell both click-focuses "cg" and reports a
-  // `CursorMoved` to (0, 0).
+  // `Navigated` moving the cursor to (0, 0) -- `CellGrid::handle` reports
+  // every click/key navigation as `Navigated`, never `CursorMoved` (that
+  // variant is a host-derived event this leaf never actually emits, see
+  // `CellGridEvent`'s own Rust doc).
   app.pushEvent(CLICK_FIRST_CELL);
   app.run(1);
   assert.ok(
     cellGridEvents(received, "cg").some(
-      (ev) => ev.CursorMoved && ev.CursorMoved.row === 0 && ev.CursorMoved.col === 0,
+      (ev) => ev.Navigated && ev.Navigated.cursor[0] === 0 && ev.Navigated.cursor[1] === 0,
     ),
     JSON.stringify(received),
   );
@@ -158,7 +219,7 @@ test("cell grid controller click, scroll request, and edit round trip", () => {
   app.run(1);
   const afterClick = cellGridEvents(received, "cg");
   assert.ok(!afterClick.some((ev) => ev.CellsRequested), JSON.stringify(afterClick));
-  assert.ok(afterClick.some((ev) => ev.CursorMoved), JSON.stringify(afterClick));
+  assert.ok(afterClick.some((ev) => ev.Navigated), JSON.stringify(afterClick));
 
   // Typing "x" starts an inline edit at the cursor; Enter commits it.
   received.length = 0;

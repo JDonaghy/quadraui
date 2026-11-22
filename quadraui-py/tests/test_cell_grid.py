@@ -1,22 +1,27 @@
-"""Black-box coverage for the `CellGridController` per-widget-id seam
-exposed through `quadraui-py`: a plain Python dict decodes into a
-`"cell_grid"` extra (`EXTRA_PRIMITIVE_KINDS`' generic registration already
-covers the descriptor shape -- no new pymethod needed for that half), and
-the cursor/selection/inline-edit/virtualisation round trip -- click a cell
--> `CursorMoved` -> page past the loaded window -> `CellsRequested` ->
-answer with a freshly loaded block -> type + Enter -> `CellEditCommitted`
--- reaches the registered handler as `{"CellGridController": (id,
-event)}`, mirroring `test_tree_table_controller.py`'s own
+"""Black-box coverage for the `cell_grid` `WIDGET_KINDS` seam exposed
+through `quadraui-py`: a plain Python dict decodes straight into
+`quadraui::CellGrid` (`WIDGET_KINDS`' generic registration already covers
+the descriptor shape -- no new pymethod needed for that half), and the
+cursor/selection/inline-edit/virtualisation round trip -- click a cell ->
+`Navigated` -> page past the loaded window ->
+`CellsRequested` -> answer with a freshly loaded block -> type + Enter ->
+`CellEditCommitted` -- reaches the registered handler as `{"CellGrid":
+(id, event)}`, mirroring `test_tree_table_controller.py`'s own
 `{"TreeTableController": (id, event)}` shape.
 
-Mirrors `quadraui-binding-core::engine`'s own
-`cell_grid_controller_cells_requested_does_not_repeat_after_host_loads_window`/
-`cell_grid_controller_typed_edit_commits_on_enter` Rust tests, driven
-end-to-end through this binding's Python surface instead.
+Unlike the old per-id-cached-controller design, `CellGrid` carries no
+state of its own across frames: `cursor`/`selection_anchor`/`row_scroll`/
+`col_scroll`/`editing` all come from whatever `_descriptor` returns *this*
+frame, so the test's own `state` dict has to apply every `Navigated`/
+`CellEditStarted`/`CellEditChanged`/`CellEditCommitted`/`CellEditCancelled`
+event back onto itself before the next render, the same way a real app's
+host state must. Mirrors `quadraui-binding-core::engine`'s own
+`CellGridLogic::apply` Rust test harness, driven end-to-end through this
+binding's Python surface instead.
 
 `CellsRequested` is answered the same way `test_windowed_rows_requested.py`
 answers a `RowsRequested`: there is no separate `set_*` host call -- the
-engine reconciles a `"cell_grid"` extra's `cells`/`loaded_row_start`/
+engine reconciles a `"cell_grid"` leaf's `cells`/`loaded_row_start`/
 `loaded_col_start` fresh every frame, so mutating the render callback's own
 state and returning `True` (redraw) from the handler is enough.
 
@@ -33,12 +38,11 @@ _PAGE_DOWN = {
     "KeyPressed": {"key": {"Named": "PageDown"}, "modifiers": _NO_MODS, "repeat": False}
 }
 _ENTER = {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": _NO_MODS, "repeat": False}}
-# A bare character key with no active edit starts one
-# (`CellGridController::handle_key`'s `Key::Char(c) if !jump =>
-# self.begin_typing(*c)` arm) -- the synthesized `CharTyped` event only
-# ever reaches `CellGridController::handle` once an edit is already under
-# way (that type's own doc), so this is `KeyPressed`, not `CharTyped`,
-# mirroring `TuiDriver::type_char`'s own `Key::Char` shape.
+# A bare character key with no active edit starts one (`CellGrid::handle`'s
+# own `RoutedEvent::Key` arm for a plain char) -- the synthesized
+# `CharTyped` event only ever reaches `CellGrid::handle` once an edit is
+# already under way (that type's own doc), so this is `KeyPressed`, not
+# `CharTyped`, mirroring `TuiDriver::type_char`'s own `Key::Char` shape.
 _TYPE_X = {"KeyPressed": {"key": {"Char": "x"}, "modifiers": _NO_MODS, "repeat": False}}
 _CLICK_FIRST_CELL = {
     "MouseDown": {"button": "Left", "position": {"x": 9.0, "y": 1.5}, "modifiers": {}}
@@ -46,7 +50,7 @@ _CLICK_FIRST_CELL = {
 # Far enough from `_CLICK_FIRST_CELL` (> 1.5 cells) that `TuiBackend`'s
 # `DoubleClickDetector` (400ms/1.5-cell window) doesn't fold the two
 # consecutive `MouseDown`s below into a `DoubleClick`, which
-# `CellGridController::handle` has no arm for.
+# `CellGrid::handle` has no arm for.
 _CLICK_LAST_VISIBLE_ROW = {
     "MouseDown": {"button": "Left", "position": {"x": 9.0, "y": 8.5}, "modifiers": {}}
 }
@@ -66,19 +70,39 @@ def _cells(row_start, col_start, rows, cols):
     ]
 
 
+def _initial_state():
+    """A 20x5 sheet with only `LOADED_ROWS` rows loaded, starting at
+    row 0 -- deliberately fewer rows than the 10-cell-tall viewport
+    `_render` below paints into, so a `CellsRequested` is always one
+    `click`/page away. Mirrors `quadraui-binding-core::engine`'s own
+    `small_window_cell_grid`."""
+    return {
+        "cells": _cells(0, 0, LOADED_ROWS, COL_COUNT),
+        "loaded_row_start": 0,
+        "loaded_col_start": 0,
+        "cursor": [0, 0],
+        "selection_anchor": None,
+        "row_scroll": 0,
+        "col_scroll": 0,
+        "editing": None,
+    }
+
+
 def _descriptor(state):
-    """A 20x5 sheet with only `state["cells"]`' own row count loaded,
-    starting at `state["loaded_row_start"]` -- deliberately fewer rows
-    than the 10-cell-tall viewport `_render` below paints into, so a
-    `CellsRequested` is always one `click`/page away. Mirrors
-    `quadraui-binding-core::engine`'s own `small_window_cell_grid_descriptor`."""
     return {
         "id": "cg",
         "row_count": ROW_COUNT,
         "col_count": COL_COUNT,
+        "default_row_height": 1.0,
+        "default_col_width": 8.0,
         "cells": state["cells"],
         "loaded_row_start": state["loaded_row_start"],
-        "loaded_col_start": 0,
+        "loaded_col_start": state["loaded_col_start"],
+        "cursor": state["cursor"],
+        "selection_anchor": state["selection_anchor"],
+        "row_scroll": state["row_scroll"],
+        "col_scroll": state["col_scroll"],
+        "editing": state["editing"],
         "has_focus": True,
         "show_scrollbar": False,
     }
@@ -94,17 +118,33 @@ def _render(state):
 
 def _cell_grid_events(received, id_):
     return [
-        entry["CellGridController"][1]
+        entry["CellGrid"][1]
         for entry in received
-        if "CellGridController" in entry and entry["CellGridController"][0] == id_
+        if "CellGrid" in entry and entry["CellGrid"][0] == id_
     ]
 
 
-def test_cell_grid_controller_click_scroll_request_and_edit_round_trip():
-    state = {
-        "cells": _cells(0, 0, LOADED_ROWS, COL_COUNT),
-        "loaded_row_start": 0,
-    }
+def _apply(state, event):
+    """Writes one `CellGridEvent` back onto `state` the way a real host's
+    own `cursor`/`selection_anchor`/`row_scroll`/`col_scroll`/`editing`
+    fields must track it -- `CellGrid` itself is stateless across frames,
+    so skipping this leaves the next render starting over at `(0, 0)` with
+    no active edit, matching `CellGridLogic::apply`'s own Rust contract."""
+    navigated = event.get("Navigated")
+    if navigated is not None:
+        state["cursor"] = navigated["cursor"]
+        state["selection_anchor"] = navigated["selection_anchor"]
+        state["row_scroll"] = navigated["row_scroll"]
+        state["col_scroll"] = navigated["col_scroll"]
+    started = event.get("CellEditStarted") or event.get("CellEditChanged")
+    if started is not None:
+        state["editing"] = started["edit"]
+    if "CellEditCommitted" in event or "CellEditCancelled" in event:
+        state["editing"] = None
+
+
+def test_cell_grid_click_scroll_request_and_edit_round_trip():
+    state = _initial_state()
     app = QuiApp(20, 10, render=lambda: _render(state))
     app.screen()
 
@@ -112,12 +152,13 @@ def test_cell_grid_controller_click_scroll_request_and_edit_round_trip():
 
     def on_event(event):
         received.append(event)
-        if "CellGridController" not in event:
+        if "CellGrid" not in event:
             return None
-        _, payload = event["CellGridController"]
+        _, payload = event["CellGrid"]
+        _apply(state, payload)
         requested = payload.get("CellsRequested")
         if requested is None:
-            return None
+            return True
         # Exactly what a real app does with a `CellsRequested`: load that
         # absolute block and repaint -- there is no `set_*` call for this,
         # unlike `set_tree_table_children`.
@@ -126,15 +167,22 @@ def test_cell_grid_controller_click_scroll_request_and_edit_round_trip():
         cols = requested["cols"]
         state["cells"] = _cells(row_start, requested["col_start"], rows, cols)
         state["loaded_row_start"] = row_start
+        state["loaded_col_start"] = requested["col_start"]
         return True
 
     app.set_handler(on_event)
 
-    # A click on the first body cell both click-focuses "cg" and reports
-    # a `CursorMoved` to (0, 0).
+    # A click on the first body cell both click-focuses "cg" and reports a
+    # `Navigated` moving the cursor to (0, 0) -- `CellGrid::handle` reports
+    # every click/key navigation as `Navigated`, never `CursorMoved` (that
+    # variant is a host-derived event this leaf never actually emits, see
+    # `CellGridEvent`'s own Rust doc).
     app.push_event(_CLICK_FIRST_CELL)
     app.run(1)
-    assert {"CursorMoved": {"row": 0, "col": 0}} in _cell_grid_events(received, "cg"), received
+    navigated = [
+        ev["Navigated"] for ev in _cell_grid_events(received, "cg") if "Navigated" in ev
+    ]
+    assert navigated and navigated[0]["cursor"] == (0, 0), received
 
     # Paging down past the 2 loaded rows scrolls the cursor beyond what's
     # loaded, requesting (and -- via `on_event` above -- immediately
@@ -155,7 +203,7 @@ def test_cell_grid_controller_click_scroll_request_and_edit_round_trip():
     app.run(1)
     events = _cell_grid_events(received, "cg")
     assert not any("CellsRequested" in ev for ev in events), events
-    assert any("CursorMoved" in ev for ev in events), events
+    assert any("Navigated" in ev for ev in events), events
 
     # Typing "x" starts an inline edit at the cursor; Enter commits it.
     received.clear()
@@ -163,9 +211,7 @@ def test_cell_grid_controller_click_scroll_request_and_edit_round_trip():
     app.push_event(_ENTER)
     app.run(2)
     committed = [
-        ev["CellEditCommitted"]
-        for ev in _cell_grid_events(received, "cg")
-        if "CellEditCommitted" in ev
+        ev["CellEditCommitted"] for ev in _cell_grid_events(received, "cg") if "CellEditCommitted" in ev
     ]
     assert len(committed) == 1, received
     assert committed[0]["text"] == "x", committed
