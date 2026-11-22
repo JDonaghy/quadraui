@@ -5,7 +5,9 @@
 //! # Shape
 //!
 //! [`A11yTreeBuilder`] consumes a [`crate::frame::OwnedFrame`] (the
-//! serde-capable per-surface snapshot) and a [`FocusManager`], and
+//! serde-capable per-surface snapshot) and a [`FocusSource`] — the
+//! legacy flat [`crate::focus::FocusManager`] or the richer
+//! [`crate::focus::FocusTree`], whichever a caller already has — and
 //! produces either
 //!
 //! - a whole [`A11yTree`] — every node, in document order, root first —
@@ -180,7 +182,7 @@ use serde::{Serialize, Serializer};
 
 use crate::a11y::{A11yAction, A11yChecked, A11yInfo, A11yLive, A11yRole};
 use crate::event::Rect;
-use crate::focus::FocusManager;
+use crate::focus::{FocusManager, FocusTree};
 use crate::frame::{OwnedContent, OwnedFrame, OwnedNode};
 use crate::primitives::board::{BoardColumn, BoardModel};
 use crate::primitives::completions::Completions;
@@ -767,6 +769,35 @@ impl A11yUpdate {
     }
 }
 
+/// Where [`A11yTreeBuilder`]/[`frame_to_tree`] read "what's currently
+/// focused" from.
+///
+/// Implemented by both [`FocusManager`] (the flat, whole-widget store
+/// every existing caller already has) and [`FocusTree`] (the richer,
+/// per-[`crate::interactive::SubTarget`] store) so a caller passes
+/// whichever one it holds without converting first — adding `FocusTree`
+/// support here never breaks a `&FocusManager` call site. A11y tree
+/// building only ever needs "which whole widget is focused": a composite
+/// widget's focused *child* is resolved separately, through
+/// [`crate::a11y::A11yPrimitive::a11y_focus_key`], so this trait
+/// deliberately throws away `FocusTree`'s `SubTarget` half.
+pub trait FocusSource {
+    /// The widget that currently holds focus, if any.
+    fn focused_widget(&self) -> Option<&WidgetId>;
+}
+
+impl FocusSource for FocusManager {
+    fn focused_widget(&self) -> Option<&WidgetId> {
+        self.focused()
+    }
+}
+
+impl FocusSource for FocusTree {
+    fn focused_widget(&self) -> Option<&WidgetId> {
+        self.focused().map(|(id, _)| id)
+    }
+}
+
 /// Builds accessibility trees from frames, and diffs consecutive frames
 /// so only changed nodes are emitted.
 ///
@@ -833,7 +864,7 @@ impl A11yTreeBuilder {
 
     /// The full tree for this frame. Does not touch the diff state, so
     /// it can be called freely from tests and debug tooling.
-    pub fn tree(&self, frame: &OwnedFrame, focus: &FocusManager) -> A11yTree {
+    pub fn tree(&self, frame: &OwnedFrame, focus: &dyn FocusSource) -> A11yTree {
         build_tree(
             frame,
             focus,
@@ -845,7 +876,7 @@ impl A11yTreeBuilder {
 
     /// The next update for this frame: the whole tree the first time,
     /// only the changed nodes afterwards.
-    pub fn update(&mut self, frame: &OwnedFrame, focus: &FocusManager) -> A11yUpdate {
+    pub fn update(&mut self, frame: &OwnedFrame, focus: &dyn FocusSource) -> A11yUpdate {
         let tree = self.tree(frame, focus);
         let full = !self.sent_tree;
         let nodes: Vec<A11yTreeNode> = if full {
@@ -884,7 +915,7 @@ impl A11yTreeBuilder {
     pub fn tree_update(
         &mut self,
         frame: &OwnedFrame,
-        focus: &FocusManager,
+        focus: &dyn FocusSource,
     ) -> accesskit::TreeUpdate {
         self.update(frame, focus).to_tree_update()
     }
@@ -892,7 +923,7 @@ impl A11yTreeBuilder {
 
 /// The full accessibility tree for one frame, with the default root
 /// label — the stateless convenience form of [`A11yTreeBuilder::tree`].
-pub fn frame_to_tree(frame: &OwnedFrame, focus: &FocusManager) -> A11yTree {
+pub fn frame_to_tree(frame: &OwnedFrame, focus: &dyn FocusSource) -> A11yTree {
     build_tree(frame, focus, DEFAULT_ROOT_LABEL, None, &HashMap::new())
 }
 
@@ -907,7 +938,7 @@ pub fn frame_to_tree(frame: &OwnedFrame, focus: &FocusManager) -> A11yTree {
 /// topmost dialog surface in the frame.
 pub fn frame_to_tree_with_modal(
     frame: &OwnedFrame,
-    focus: &FocusManager,
+    focus: &dyn FocusSource,
     modal_top: Option<&WidgetId>,
 ) -> A11yTree {
     build_tree(frame, focus, DEFAULT_ROOT_LABEL, modal_top, &HashMap::new())
@@ -927,6 +958,11 @@ pub fn frame_to_tree_with_modal(
 /// [`crate::Backend::focus_manager`] — the same two inputs
 /// [`A11yTreeBuilder::tree`]/[`frame_to_tree`] already take explicitly,
 /// just read straight off the live backend instead of a test scenario.
+/// The sealed [`crate::Backend`] trait exposes only the flat
+/// [`FocusManager`], not [`FocusTree`] — adding the latter would grow its
+/// trait-body method count past `tests/backend_method_ratchet.rs`'s
+/// frozen baseline — but [`FocusSource`] is implemented for both, so this
+/// reads straight off `focus_manager()` without converting it first.
 pub fn backend_a11y_tree(backend: &dyn crate::Backend) -> Option<A11yTree> {
     let frame = backend.last_frame()?;
     Some(frame_to_tree(frame, backend.focus_manager()))
@@ -960,7 +996,7 @@ fn modal_surface(frame: &OwnedFrame, modal_top: Option<&WidgetId>) -> Option<usi
 
 fn build_tree(
     frame: &OwnedFrame,
-    focus: &FocusManager,
+    focus: &dyn FocusSource,
     root_label: &str,
     modal_top: Option<&WidgetId>,
     children_overrides: &HashMap<WidgetId, Vec<A11yChild>>,
@@ -1017,7 +1053,7 @@ fn build_tree(
         let child_ids: Vec<A11yNodeId> =
             children.iter().map(|child| id.child(&child.key)).collect();
 
-        if focus.focused() == owned.widget_id.as_ref() && owned.widget_id.is_some() {
+        if focus.focused_widget() == owned.widget_id.as_ref() && owned.widget_id.is_some() {
             focus_id = match &described.focus_key {
                 // Searches the *whole* subtree, not just `children`
                 // itself, since a focus key can name a grandchild —
@@ -2442,7 +2478,7 @@ mod tests {
     #[test]
     fn root_is_a_window_covering_every_surface() {
         let frame = frame_with(vec![list_surface(), toolbar_surface()]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         let root = tree.node(tree.root()).expect("root node");
         assert_eq!(root.role(), A11yRole::Window);
         assert_eq!(root.label(), Some("quadraui"));
@@ -2453,7 +2489,7 @@ mod tests {
     #[test]
     fn list_maps_to_a_list_with_item_children() {
         let frame = frame_with(vec![list_surface()]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -2467,7 +2503,7 @@ mod tests {
     #[test]
     fn toolbar_maps_buttons_with_disabled_state() {
         let frame = frame_with(vec![toolbar_surface()]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -2621,7 +2657,7 @@ mod tests {
     #[test]
     fn unmapped_primitive_is_a_labelled_group() {
         let frame = frame_with(vec![float_surface()]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         let node = tree
             .children_of(tree.root())
             .first()
@@ -2634,7 +2670,7 @@ mod tests {
     #[test]
     fn scrollbar_reports_its_axis_and_a_presentational_thumb() {
         let frame = frame_with(vec![scrollbar_surface()]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -2659,7 +2695,7 @@ mod tests {
                 list: list("files", Some("Files"), &["a.rs", "b.rs", "c.rs"], 1),
             },
         ]);
-        let fm = FocusManager::new();
+        let fm = FocusTree::new();
         let a = frame_to_tree(&first, &fm);
         let b = frame_to_tree(&second, &fm);
         let list_id = A11yNodeId::for_widget(&WidgetId::new("files"));
@@ -2673,9 +2709,9 @@ mod tests {
     }
 
     #[test]
-    fn focus_follows_the_focus_manager_into_the_active_row() {
+    fn focus_follows_the_focus_tree_into_the_active_row() {
         let frame = frame_with(vec![list_surface(), toolbar_surface()]);
-        let mut fm = FocusManager::new();
+        let mut fm = FocusTree::new();
         let unfocused = frame_to_tree(&frame, &fm);
         assert_eq!(
             unfocused.focus(),
@@ -2683,7 +2719,7 @@ mod tests {
             "nothing focused parks focus on the root"
         );
 
-        fm.set_focus(Some(WidgetId::new("files")));
+        fm.set_focus(Some((WidgetId::new("files"), None)));
         let tree = frame_to_tree(&frame, &fm);
         assert_eq!(
             tree.focused().and_then(|n| n.label()),
@@ -2703,8 +2739,8 @@ mod tests {
             hovered: None,
             pressed: None,
         }]);
-        let mut fm = FocusManager::new();
-        fm.set_focus(Some(WidgetId::new("tools")));
+        let mut fm = FocusTree::new();
+        fm.set_focus(Some((WidgetId::new("tools"), None)));
         let tree = frame_to_tree(&frame, &fm);
         assert_eq!(tree.focused().and_then(|n| n.label()), Some("Stop"));
     }
@@ -2713,7 +2749,7 @@ mod tests {
     fn consumer_a11y_override_wins_field_by_field() {
         let mut frame = frame_with(vec![list_surface()]);
         frame.nodes_mut()[0].a11y = Some(A11yInfo::new().with_label("Open editors"));
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         let node = tree
             .children_of(tree.root())
             .first()
@@ -2737,7 +2773,7 @@ mod tests {
                 .with_description("Files currently open in the editor")
                 .with_live(A11yLive::Polite),
         );
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         let node = tree
             .children_of(tree.root())
             .first()
@@ -2769,7 +2805,7 @@ mod tests {
     fn first_update_is_full_then_only_changed_nodes_are_emitted() {
         let mut builder = A11yTreeBuilder::new();
         let frame = frame_with(vec![list_surface(), toolbar_surface()]);
-        let fm = FocusManager::new();
+        let fm = FocusTree::new();
 
         let first = builder.update(&frame, &fm);
         assert!(first.full);
@@ -2790,7 +2826,7 @@ mod tests {
     #[test]
     fn changed_selection_emits_only_the_affected_rows() {
         let mut builder = A11yTreeBuilder::new();
-        let fm = FocusManager::new();
+        let fm = FocusTree::new();
         builder.update(&frame_with(vec![list_surface()]), &fm);
 
         let moved = frame_with(vec![Surface::List {
@@ -2809,7 +2845,7 @@ mod tests {
     #[test]
     fn removing_a_row_re_emits_the_parent_without_it() {
         let mut builder = A11yTreeBuilder::new();
-        let fm = FocusManager::new();
+        let fm = FocusTree::new();
         builder.update(&frame_with(vec![list_surface()]), &fm);
 
         let shorter = frame_with(vec![Surface::List {
@@ -2835,7 +2871,7 @@ mod tests {
     fn reset_forces_a_full_tree_again() {
         let mut builder = A11yTreeBuilder::new();
         let frame = frame_with(vec![list_surface()]);
-        let fm = FocusManager::new();
+        let fm = FocusTree::new();
         builder.update(&frame, &fm);
         builder.reset();
         let again = builder.update(&frame, &fm);
@@ -2846,7 +2882,7 @@ mod tests {
     #[test]
     fn root_label_is_overridable() {
         let builder = A11yTreeBuilder::new().with_root_label("kubeui");
-        let tree = builder.tree(&frame_with(vec![list_surface()]), &FocusManager::new());
+        let tree = builder.tree(&frame_with(vec![list_surface()]), &FocusTree::new());
         assert_eq!(
             tree.node(tree.root()).and_then(|n| n.label()),
             Some("kubeui")
@@ -2856,7 +2892,7 @@ mod tests {
     #[test]
     fn surfaces_without_a_widget_id_still_appear() {
         let frame = frame_with(vec![canvas_surface()]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(tree.nodes().len(), 2, "root plus the id-less surface");
         assert_eq!(
             tree.children_of(tree.root())[0].id,
@@ -2869,8 +2905,8 @@ mod tests {
     fn tree_update_carries_tree_info_focus_and_nodes() {
         let mut builder = A11yTreeBuilder::new();
         let frame = frame_with(vec![list_surface()]);
-        let mut fm = FocusManager::new();
-        fm.set_focus(Some(WidgetId::new("files")));
+        let mut fm = FocusTree::new();
+        fm.set_focus(Some((WidgetId::new("files"), None)));
 
         let update = builder.tree_update(&frame, &fm);
         let tree_info = update.tree.expect("first update declares the tree");
@@ -2972,7 +3008,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 60.0, 4.0),
             view,
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -2989,7 +3025,7 @@ mod tests {
     #[test]
     fn board_model_maps_columns_and_cards_with_independent_positions() {
         let frame = frame_with(vec![board_surface()]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -3048,7 +3084,7 @@ mod tests {
             table,
             hovered: None,
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -3100,7 +3136,7 @@ mod tests {
             table,
             hovered: None,
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
 
         let table_id = A11yNodeId::for_widget(&WidgetId::new("big"));
         let rows = tree.children_of(table_id);
@@ -3174,7 +3210,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
             tree: tree_view,
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -3201,7 +3237,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 40.0, 6.0),
             list,
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -3267,7 +3303,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 40.0, 20.0),
             view,
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -3460,7 +3496,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 40.0, 30.0),
             view,
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -3524,7 +3560,7 @@ mod tests {
                 resolved_scroll_offset: 0,
             },
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
@@ -3575,7 +3611,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
             palette,
         }]);
-        let tree = frame_to_tree(&frame, &FocusManager::new());
+        let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
