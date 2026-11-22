@@ -20,7 +20,7 @@ Read this when:
 ## The copy path, end to end
 
 1. `Ctrl-C` with an active text selection is intercepted in
-   `runtime.rs::preprocess_event` (step 4). It never reaches
+   `runtime.rs::preprocess_event` (step 6). It never reaches
    `AppLogic::handle` as a key press.
 2. The runtime calls `backend.services().clipboard().write_text(&text)`.
 3. It then delivers `UiEvent::TextCopied(text)` so the app can show a
