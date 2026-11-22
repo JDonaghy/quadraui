@@ -9,6 +9,8 @@
 //! menu item plus the current state of the two toggles. Clicking a
 //! menu item or hitting its ⌘-shortcut updates the state and
 //! re-installs the menu so the `✓` next to the toggle items flips.
+//! File > Quit Demo answers `Reaction::Exit`, so it also shows that a
+//! native menu item's `Reaction` reaches the runner at all.
 //!
 //! Runs on TUI / GTK too, but on those backends `install_menu_bar`
 //! is a no-op — the example just shows a status bar saying so. The
@@ -57,6 +59,10 @@ impl NativeMenuApp {
                         menu_item("file.new", "New", Some(KeyBinding::New)),
                         menu_item("file.open", "Open…", Some(KeyBinding::Open)),
                         menu_item("file.save", "Save", Some(KeyBinding::Save)),
+                        ContextMenuItem::default(), // separator
+                        // The `Reaction::Exit` case: `handle` below answers
+                        // `Exit` for this id, so activating it quits.
+                        menu_item("file.quit", "Quit Demo", None),
                     ]),
                 },
                 // ── Edit ──────────────────────────────────────────
@@ -189,6 +195,9 @@ impl AppLogic for NativeMenuApp {
             UiEvent::MenuActivated(id) => {
                 self.last_action = Some(id.as_str().to_string());
                 match id.as_str() {
+                    // A native menu item's `Reaction` reaches the runner
+                    // the same way a click's does, so `Exit` quits here.
+                    "file.quit" => return Reaction::Exit,
                     "view.toggle_sidebar" => {
                         self.sidebar_visible = !self.sidebar_visible;
                         // Re-install so the `✓` reflects the new state.
