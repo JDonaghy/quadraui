@@ -73,13 +73,17 @@
 //!   (middle-click paste, and Ctrl-V on TUI) — unified behavior brought
 //!   by routing all backends through this one function.
 
+use crate::backend::PointerShape;
 use crate::desktop::{is_paste_keypress, PasteModifier};
 use crate::focus::FocusManager;
+use crate::frame_tree::{FrameTree, FrameTreeNode};
+use crate::interactive::{EventCx, EventHost, FocusSpec, KeyEvent, PointerKind, RoutedEvent};
+use crate::primitive::Units;
 use crate::runner::AppLogic;
 use crate::text_selection::ActiveTextSelection;
 use crate::{
-    AcceleratorId, ActivityBarEvent, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent,
-    WidgetId,
+    AcceleratorId, ActivityBarEvent, Handled, Key, Modifiers, MouseButton, NamedKey, Point,
+    UiEvent, WidgetId,
 };
 
 // `EventOutcome::RedrawAfter` needs `Duration` unconditionally
@@ -259,6 +263,25 @@ pub(crate) trait PreprocessBackend {
             && !modifiers.alt
             && !modifiers.cmd
     }
+
+    /// Mutable access to this backend's widget-contract routing state
+    /// (hover/capture bookkeeping + per-widget
+    /// [`crate::widget_state::WidgetStateStore`] — see
+    /// [`crate::widget_state::WidgetRoutingState`]), or `None` for a
+    /// backend that hasn't embedded one in its
+    /// [`crate::backend_core::BackendCore`] yet.
+    ///
+    /// Default: `None` — exactly zero behavior change for a backend that
+    /// doesn't override this. [`preprocess_event`]'s widget-routing step
+    /// (step 2 below) checks this *and* [`AppLogic::frame_tree`] before
+    /// doing anything, so a backend that returns `None` here never enters
+    /// that step at all, identically to how an app that never overrides
+    /// [`AppLogic::tab_stops`] keeps step 4 (Tab/Shift+Tab cycling)
+    /// inert. `TuiBackend` is the one override today — see its own
+    /// `PreprocessBackend` impl.
+    fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
+        None
+    }
 }
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
@@ -273,12 +296,26 @@ pub(crate) trait PreprocessBackend {
 /// 1. [`UiEvent::MouseDown`] → [`PreprocessBackend::fold_double_click`]:
 ///    fold into [`UiEvent::DoubleClick`] if it lands in the backend's
 ///    double-click window.
-/// 2. `KeyPressed` while an `ActivityBar` declared
+/// 2. Widget-contract routing, only when
+///    [`PreprocessBackend::widget_routing_mut`] returns `Some` *and*
+///    [`AppLogic::frame_tree`] returns a non-empty
+///    [`crate::frame_tree::FrameTree`] for the current frame — see
+///    [`route_widget_event`]'s own doc for the full
+///    hit-test/capture/Enter-Leave/focus/bubbling algorithm. Runs right
+///    after double-click folding (so a folded `DoubleClick` is what a
+///    widget sees, not the raw second `MouseDown`) and before every
+///    later step, so a widget's own keys (a toy counter's
+///    `Up`/`Down`/`Enter`) reach [`crate::interactive::Interactive::handle`]
+///    before the shared Tab-cycling/accelerator steps below get a
+///    chance to reinterpret them. A widget that doesn't want an event
+///    for itself answers [`Handled::Ignored`] and it bubbles down to
+///    step 3 unchanged, exactly as if this step didn't run at all.
+/// 3. `KeyPressed` while an `ActivityBar` declared
 ///    `is_keyboard_focused = true`: redirect to
 ///    `UiEvent::ActivityBar(id, KeyPressed { .. })` instead of the app's
 ///    normal `handle` — `ShellAdapter`'s built-in activity-bar keyboard
 ///    cursor depends on this.
-/// 3. Tab / Shift+Tab focus cycling, only when
+/// 4. Tab / Shift+Tab focus cycling, only when
 ///    [`AppLogic::tab_stops`] returns non-empty for the current frame
 ///    *and* the currently-focused id (if any) is actually named by it:
 ///    sync [`FocusManager`]'s tab order, cycle it
@@ -297,9 +334,9 @@ pub(crate) trait PreprocessBackend {
 ///    away" and clearing focus: the raw key press falls through to
 ///    `app.handle` unchanged, so whatever excluded it can claim it with
 ///    its own more specific handling.
-/// 4. `KeyPressed` matching a registered `Global`-scope accelerator:
+/// 5. `KeyPressed` matching a registered `Global`-scope accelerator:
 ///    rewrite to `UiEvent::Accelerator`.
-/// 5. Ctrl-C ([`PreprocessBackend::is_copy_keypress`]) with an active
+/// 6. Ctrl-C ([`PreprocessBackend::is_copy_keypress`]) with an active
 ///    text selection: copy it to the clipboard, clear it, and deliver
 ///    `UiEvent::TextCopied` instead of forwarding the raw key press —
 ///    forwarding it could trigger quit/copy-all handlers, and
@@ -313,26 +350,26 @@ pub(crate) trait PreprocessBackend {
 ///    misconfigured tmux swallows the copy entirely. Apps should
 ///    word their copy confirmation accordingly; see
 ///    `quadraui/docs/CLIPBOARD.md`.
-/// 6. Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], keyed off
+/// 7. Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], keyed off
 ///    [`PreprocessBackend::paste_modifier`]): read the clipboard and
 ///    deliver `UiEvent::ClipboardPaste` instead of forwarding the raw key
 ///    press.
-/// 7. Middle-click (`MouseDown` with `MouseButton::Middle`): read the
+/// 8. Middle-click (`MouseDown` with `MouseButton::Middle`): read the
 ///    PRIMARY selection and deliver `UiEvent::ClipboardPaste` — the
 ///    X11/Wayland "paste what was last selected" convention, distinct
 ///    from the CLIPBOARD selection Ctrl-V reads. Every backend but GTK's
 ///    `Clipboard` impl answers `None` here (see
 ///    [`crate::backend::Clipboard::read_primary_selection`]'s default),
 ///    so this step is a safe no-op everywhere else.
-/// 8. Ctrl-A: select the entire content of the most-recently focused
+/// 9. Ctrl-A: select the entire content of the most-recently focused
 ///    `TextRegion`, if one is registered.
-/// 9. `MouseDown` or `DoubleClick`: clear the displayed selection
-///    highlight — a fresh drag (or a folded double-click landing on the
-///    same spot) may be starting/finishing and shouldn't show a stale
-///    highlight from the previous interaction. Never cancels an
-///    in-progress drag — `clear_selection_display` only clears the
-///    rendered overlay (see its doc).
-/// 10. `TextSelectionChanged`: update the backend's active selection and
+/// 10. `MouseDown` or `DoubleClick`: clear the displayed selection
+///     highlight — a fresh drag (or a folded double-click landing on the
+///     same spot) may be starting/finishing and shouldn't show a stale
+///     highlight from the previous interaction. Never cancels an
+///     in-progress drag — `clear_selection_display` only clears the
+///     rendered overlay (see its doc).
+/// 11. `TextSelectionChanged`: update the backend's active selection and
 ///     force a redraw.
 #[cfg(any(
     feature = "tui",
@@ -348,7 +385,12 @@ where
     // ── 1. Double-click folding ────────────────────────────────────────
     let event = backend.fold_double_click(event);
 
-    // ── 2. ActivityBar keyboard focus intercept ─────────────────────
+    // ── 2. Widget-contract routing ─────────────────────────────────────
+    if let Some(outcome) = route_widget_event(&event, backend, app) {
+        return outcome;
+    }
+
+    // ── 3. ActivityBar keyboard focus intercept ─────────────────────
     if let UiEvent::KeyPressed {
         ref key, modifiers, ..
     } = event
@@ -366,7 +408,7 @@ where
         }
     }
 
-    // ── 3. Tab / Shift+Tab focus cycling ────────────────────────────────
+    // ── 4. Tab / Shift+Tab focus cycling ────────────────────────────────
     if let UiEvent::KeyPressed {
         key: Key::Named(named @ (NamedKey::Tab | NamedKey::BackTab)),
         modifiers,
@@ -413,7 +455,7 @@ where
         }
     }
 
-    // ── 4. Global accelerator dispatch ─────────────────────────────────
+    // ── 5. Global accelerator dispatch ─────────────────────────────────
     let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
         match backend.match_keypress(key, *modifiers) {
             Some(id) => UiEvent::Accelerator(id, *modifiers),
@@ -423,7 +465,7 @@ where
         event
     };
 
-    // ── 5. Ctrl-C interception (copy active text selection) ────────────
+    // ── 6. Ctrl-C interception (copy active text selection) ────────────
     if let UiEvent::KeyPressed {
         ref key,
         ref modifiers,
@@ -438,7 +480,7 @@ where
         }
     }
 
-    // ── 6. Ctrl-V / Ctrl-Shift-V interception (paste) ───────────────────
+    // ── 7. Ctrl-V / Ctrl-Shift-V interception (paste) ───────────────────
     if let UiEvent::KeyPressed {
         ref key,
         ref modifiers,
@@ -453,7 +495,7 @@ where
         }
     }
 
-    // ── 7. Middle-click interception (PRIMARY-selection paste) ──────────
+    // ── 8. Middle-click interception (PRIMARY-selection paste) ──────────
     if let UiEvent::MouseDown {
         button: MouseButton::Middle,
         ..
@@ -464,7 +506,7 @@ where
         }
     }
 
-    // ── 8. Ctrl-A interception (select-all for text regions) ────────────
+    // ── 9. Ctrl-A interception (select-all for text regions) ────────────
     if let UiEvent::KeyPressed {
         key: Key::Char('a') | Key::Char('A'),
         modifiers,
@@ -481,7 +523,7 @@ where
         }
     }
 
-    // ── 9. MouseDown / DoubleClick: clear the displayed selection ───────
+    // ── 10. MouseDown / DoubleClick: clear the displayed selection ───────
     if matches!(
         event,
         UiEvent::MouseDown { .. } | UiEvent::DoubleClick { .. }
@@ -489,7 +531,7 @@ where
         backend.clear_selection_display();
     }
 
-    // ── 10. TextSelectionChanged: update active selection while dragging ─
+    // ── 11. TextSelectionChanged: update active selection while dragging ─
     let mut force_redraw = false;
     if let UiEvent::TextSelectionChanged {
         ref region,
@@ -501,7 +543,7 @@ where
         force_redraw = true;
     }
 
-    // ── 11. DpiChanged: always repaint, regardless of the app's own
+    // ── 12. DpiChanged: always repaint, regardless of the app's own
     // Reaction. A DPI change means every pixel-based
     // measurement quadraui/the app has cached is now stale — an app that
     // has no opinion on this event (the unhandled-catch-all default,
@@ -528,6 +570,396 @@ where
         }
     } else {
         outcome
+    }
+}
+
+// ─── Widget-contract routing engine ─────────────────────────────────────────
+//
+// Hit-test/capture/Enter-Leave/focus/bubbling for `Interactive` widgets —
+// step 2 of `preprocess_event`'s pipeline above. See `route_widget_event`'s
+// own doc for the algorithm and `crate::frame_tree`/`crate::widget_state`'s
+// module docs for the two types it's built on.
+
+/// Step 2 of [`preprocess_event`]: route `event` to whichever
+/// [`crate::frame_tree::FrameTree`] widget it targets, if any.
+///
+/// Returns `Some(outcome)` when the widget contract claimed `event`
+/// entirely — either consuming it (a redraw) or producing a semantic
+/// [`UiEvent`] already routed through `app.handle`. Returns `None` to mean
+/// **bubble**: nothing claimed it, so `preprocess_event`'s later steps (and
+/// eventually `app.handle` with the original `event`) run exactly as if
+/// this step didn't exist. That includes every case where the opt-in
+/// itself isn't live (`widget_routing_mut` returns `None`, or
+/// `AppLogic::frame_tree` is empty), so this function is always safe to
+/// call unconditionally — it reads as "try widget routing first" rather
+/// than a conditional the caller has to gate itself.
+///
+/// # Algorithm
+///
+/// - **Modal scope.** If [`crate::Backend::modal_stack_handle`]'s stack is
+///   non-empty, this step does nothing at all (`None`) — `Interactive`
+///   widgets are base-layer content only (there is no modal-interior
+///   `Surface::Widget` story yet), so any open modal blocks the whole
+///   engine rather than trying to arbitrate which side of the stack a hit
+///   belongs to. This is what makes a modal "block" a widget: the widget
+///   never sees the event, and — because this function returns `None` —
+///   neither does anything else below it that would otherwise reach the
+///   base layer unprotected.
+/// - **Hit-test** (`MouseDown`): [`FrameTree::hit_test`] against the
+///   event's position; a hit whose [`crate::interactive::FocusSpec`]
+///   isn't `None` also moves keyboard focus to it first (click-to-focus),
+///   before the gesture itself is delivered.
+/// - **Focus routing** (`KeyPressed`): the currently-focused widget (via
+///   [`crate::Backend::focus_manager`]), if it's named in this frame's
+///   tree.
+/// - **Capture** (`MouseMoved`, [`EventHost::capture_pointer`]/
+///   `release_pointer`): while
+///   [`crate::widget_state::WidgetRoutingState::captured`] names a
+///   widget, every move routes to it directly ([`PointerKind::Move`]),
+///   bypassing hit-testing/hover entirely — see [`route_widget_move`].
+/// - **Enter/Leave** (`MouseMoved`, no active capture): compares this
+///   move's hit-test result against
+///   [`crate::widget_state::WidgetRoutingState::hovered`] and delivers
+///   [`PointerKind::Leave`]/[`PointerKind::Enter`] to whichever widgets
+///   changed — see [`route_widget_hover`]. Never claims the move itself
+///   (always returns `None` for `MouseMoved`) — hover tracking is a side
+///   effect, not a consumption; the app's own `MouseMoved` handling
+///   (cursors, tooltips) still runs.
+/// - **Bubbling** is [`crate::primitive::DynWidget::handle`]'s own job via
+///   [`crate::compose::Handled::Ignored`] — see
+///   [`dispatch_widget_routed_event`].
+///
+/// Every other [`UiEvent`] variant falls straight through (`None`) —
+/// scroll/double-click/mouse-up widget routing is future work, not needed
+/// by anything that opts in today.
+fn route_widget_event<B, A>(event: &UiEvent, backend: &mut B, app: &mut A) -> Option<EventOutcome>
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    backend.widget_routing_mut()?;
+    if !backend.modal_stack_handle().borrow().is_empty() {
+        return None;
+    }
+    let tree = app.frame_tree(A::AreaId::default());
+    if tree.is_empty() {
+        return None;
+    }
+
+    match event {
+        UiEvent::MouseDown {
+            position,
+            button,
+            modifiers,
+            ..
+        } => route_widget_pointer_down(*position, *button, *modifiers, backend, app, &tree),
+        UiEvent::MouseMoved { position, .. } => {
+            route_widget_move(*position, backend, app, &tree);
+            None
+        }
+        UiEvent::KeyPressed {
+            key,
+            modifiers,
+            repeat,
+        } => route_widget_key(key.clone(), *modifiers, *repeat, backend, app, &tree),
+        _ => None,
+    }
+}
+
+/// `MouseDown` arm of [`route_widget_event`]: hit-test, click-to-focus,
+/// then deliver [`PointerKind::Down`].
+fn route_widget_pointer_down<B, A>(
+    position: Point,
+    button: MouseButton,
+    modifiers: Modifiers,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> Option<EventOutcome>
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let node = tree.hit_test(position)?;
+    let id = node.id;
+    if !matches!(node.widget.focus(), FocusSpec::None) {
+        backend.set_focus(Some(id));
+    }
+    let routed = RoutedEvent::Pointer {
+        kind: PointerKind::Down(button),
+        sub: None,
+        local: local_point(position, node.rect),
+        mods: modifiers,
+    };
+    dispatch_widget_routed_event(id, node, &routed, backend, app)
+}
+
+/// `KeyPressed` arm of [`route_widget_event`]: route to whichever widget
+/// currently holds keyboard focus, if any, and if this frame's
+/// [`FrameTree`] still names it.
+fn route_widget_key<B, A>(
+    key: Key,
+    modifiers: Modifiers,
+    repeat: bool,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> Option<EventOutcome>
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let focused = backend.focus_manager().focused().copied()?;
+    let node = tree.find(&focused)?;
+    let routed = RoutedEvent::Key(KeyEvent {
+        key,
+        modifiers,
+        repeat,
+    });
+    dispatch_widget_routed_event(focused, node, &routed, backend, app)
+}
+
+/// `MouseMoved` arm of [`route_widget_event`]: while a widget holds an
+/// active pointer capture (see [`EventHost::capture_pointer`]), every
+/// move routes to it directly — [`PointerKind::Move`], bypassing
+/// hit-testing and hover tracking entirely, the standard "everything
+/// goes to the captured widget regardless of where the pointer is" rule
+/// a drag/resize/scrollbar-track gesture depends on. Otherwise falls
+/// through to [`route_widget_hover`] for plain Enter/Leave tracking.
+fn route_widget_move<B, A>(position: Point, backend: &mut B, app: &mut A, tree: &FrameTree)
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    if let Some(captured_id) = backend.widget_routing_mut().and_then(|r| r.captured) {
+        if let Some(node) = tree.find(&captured_id) {
+            let routed = RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                sub: None,
+                local: local_point(position, node.rect),
+                mods: Modifiers::default(),
+            };
+            dispatch_widget_routed_event(captured_id, node, &routed, backend, app);
+            return;
+        }
+    }
+    route_widget_hover(position, backend, app, tree);
+}
+
+/// [`route_widget_move`]'s no-capture path: synthesize
+/// [`PointerKind::Leave`]/[`PointerKind::Enter`] for whichever widgets'
+/// hover state changed, then record the new hover target. Any
+/// [`Handled::Event`]/[`Handled::Consumed`] outcome from either synthetic
+/// delivery is deliberately discarded — hover is a side effect a real
+/// mouse move causes, not a gesture the app routes further.
+fn route_widget_hover<B, A>(position: Point, backend: &mut B, app: &mut A, tree: &FrameTree)
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let hit_id = tree.hit_test(position).map(|node| node.id);
+    let Some(routing) = backend.widget_routing_mut() else {
+        return;
+    };
+    let previous = routing.hovered;
+    if previous == hit_id {
+        return;
+    }
+
+    if let Some(prev_id) = previous {
+        if let Some(prev_node) = tree.find(&prev_id) {
+            let routed = RoutedEvent::Pointer {
+                kind: PointerKind::Leave,
+                sub: None,
+                local: local_point(position, prev_node.rect),
+                mods: Modifiers::default(),
+            };
+            dispatch_widget_routed_event(prev_id, prev_node, &routed, backend, app);
+        }
+    }
+    if let Some(new_id) = hit_id {
+        if let Some(new_node) = tree.find(&new_id) {
+            let routed = RoutedEvent::Pointer {
+                kind: PointerKind::Enter,
+                sub: None,
+                local: local_point(position, new_node.rect),
+                mods: Modifiers::default(),
+            };
+            dispatch_widget_routed_event(new_id, new_node, &routed, backend, app);
+        }
+    }
+    if let Some(routing) = backend.widget_routing_mut() {
+        routing.hovered = hit_id;
+    }
+}
+
+/// `local` coordinates for a point relative to `rect`'s origin — what
+/// [`RoutedEvent::Pointer`]'s `local` field carries, per that variant's
+/// own doc.
+fn local_point(position: Point, rect: crate::event::Rect) -> Point {
+    Point::new(position.x - rect.x, position.y - rect.y)
+}
+
+/// Deferred side effects an [`EventHost`] impl records during one
+/// [`crate::primitive::DynWidget::handle`] call, applied to `backend` only after that call
+/// returns — see [`dispatch_widget_routed_event`]'s doc for why: both
+/// `state` (borrowed from [`crate::widget_state::WidgetRoutingState`])
+/// and an [`EventHost`] that could call back into `backend` directly
+/// would need two live mutable borrows of the same backend at once,
+/// which Rust's borrow checker (correctly) rejects. Recording intents
+/// here instead and applying them afterward, sequentially, needs only one
+/// borrow at a time.
+#[derive(Default)]
+struct WidgetHostIntents {
+    focus_request: Option<WidgetId>,
+    capture_request: Option<Option<WidgetId>>,
+    cursor_request: Option<PointerShape>,
+    redraw: bool,
+    emitted: Vec<UiEvent>,
+}
+
+/// [`EventHost`] impl backing one [`crate::primitive::DynWidget::handle`] call — see
+/// [`WidgetHostIntents`] for why this holds no backend reference at all,
+/// only a snapshot of what [`EventHost::is_focused`]/[`EventHost::units`]
+/// need to answer and an outbox for everything else.
+struct WidgetEventHost<'a> {
+    currently_focused: Option<WidgetId>,
+    units: Units,
+    intents: &'a mut WidgetHostIntents,
+}
+
+impl EventHost for WidgetEventHost<'_> {
+    fn is_focused(&self, id: &WidgetId, _sub: Option<crate::interactive::SubTarget>) -> bool {
+        self.currently_focused == Some(*id)
+    }
+
+    fn request_focus(&mut self, id: &WidgetId, _sub: Option<crate::interactive::SubTarget>) {
+        self.intents.focus_request = Some(*id);
+    }
+
+    fn capture_pointer(&mut self, id: &WidgetId) {
+        self.intents.capture_request = Some(Some(*id));
+    }
+
+    fn release_pointer(&mut self) {
+        self.intents.capture_request = Some(None);
+    }
+
+    fn set_cursor(&mut self, cursor: PointerShape) {
+        self.intents.cursor_request = Some(cursor);
+    }
+
+    fn request_redraw(&mut self) {
+        self.intents.redraw = true;
+    }
+
+    fn emit(&mut self, event: UiEvent) {
+        self.intents.emitted.push(event);
+    }
+
+    fn units(&self) -> Units {
+        self.units
+    }
+}
+
+/// Call `node.widget`'s [`crate::primitive::DynWidget::handle`] against `routed`, applying
+/// every [`EventHost`] side effect ([`EventHost::request_focus`],
+/// [`EventHost::capture_pointer`]/`release_pointer`,
+/// [`EventHost::set_cursor`], [`EventHost::emit`]) to `backend`/`app`
+/// afterward, then translates the outcome:
+///
+/// - [`Handled::Event`] — the widget's action, already turned into a
+///   [`UiEvent`] by [`crate::interactive::WidgetAction::into_ui_event`] —
+///   is routed through `app.handle`, same as every other synthetic
+///   `UiEvent` [`preprocess_event`]'s other steps dispatch. This is the
+///   "bubbling" half of the contract: a widget that *does* produce a
+///   semantic event hands it up to the app exactly the way a DOM event
+///   bubbles from a target to its listeners.
+/// - [`Handled::Consumed`] — the widget changed its own state with
+///   nothing further to route; `Some(`[`EventOutcome::Redraw`]`)`.
+/// - [`Handled::Ignored`] — "not mine"; `None`, so the event bubbles down
+///   to `preprocess_event`'s remaining steps (and eventually `app.handle`
+///   with the *original*, un-routed event) exactly as if this widget
+///   didn't exist.
+///
+/// `state`/`layout` are resolved fresh for this one call:
+/// [`crate::widget_state::WidgetStateStore::state_for`] for the former
+/// (created via [`crate::primitive::DynWidget::new_state`] on first use, then persisted —
+/// see that store's own doc), [`crate::primitive::DynWidget::layout`] against `node.rect`
+/// for the latter (cheap to recompute; `Interactive`'s whole contract is
+/// that `Self::Layout` is already the value [`crate::primitive::DynWidget::paint`] would
+/// have used this frame).
+fn dispatch_widget_routed_event<B, A>(
+    id: WidgetId,
+    node: &FrameTreeNode,
+    routed: &RoutedEvent,
+    backend: &mut B,
+    app: &mut A,
+) -> Option<EventOutcome>
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let ctx = crate::primitive::LayoutCtx {
+        line_height: backend.line_height(),
+        char_width: backend.char_width(),
+        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+    };
+    let layout = node.widget.layout(&ctx, node.rect);
+    let currently_focused = backend.focus_manager().focused().copied();
+    let units = if backend.line_height() <= 1.0 {
+        Units::Cells
+    } else {
+        Units::Pixels
+    };
+
+    let mut intents = WidgetHostIntents::default();
+    let outcome = {
+        let routing = backend.widget_routing_mut()?;
+        let state = routing.states.state_for(id, node.widget.as_ref());
+        let mut host = WidgetEventHost {
+            currently_focused,
+            units,
+            intents: &mut intents,
+        };
+        let mut cx = EventCx::new(id, &mut host);
+        node.widget.handle(state, routed, &*layout, &mut cx)
+    };
+
+    if let Some(focus_id) = intents.focus_request {
+        backend.set_focus(Some(focus_id));
+    }
+    if let Some(capture) = intents.capture_request {
+        if let Some(routing) = backend.widget_routing_mut() {
+            routing.captured = capture;
+        }
+    }
+    if let Some(cursor) = intents.cursor_request {
+        backend.set_cursor(cursor);
+    }
+    let mut last_extra = None;
+    for extra in intents.emitted {
+        last_extra = Some(app.handle(extra, backend));
+    }
+
+    let result = match outcome {
+        Handled::Event(ui_event) => Some(app.handle(ui_event, backend)),
+        Handled::Consumed => Some(last_extra.unwrap_or(EventOutcome::Redraw)),
+        Handled::Ignored => None,
+    };
+
+    // `EventHost::request_redraw` is a request made *during* `handle`,
+    // independent of which of the three outcomes above it ended up
+    // returning — force at least a `Redraw` the same way `preprocess_event`'s
+    // own `force_redraw` does for `TextSelectionChanged`/`DpiChanged`,
+    // but only when this step actually claimed the event: `Ignored`
+    // (`None`) must still mean "bubble, as if this step didn't run".
+    match result {
+        Some(outcome) if intents.redraw => Some(match outcome {
+            EventOutcome::Continue | EventOutcome::RedrawAfter(_) => EventOutcome::Redraw,
+            other => other,
+        }),
+        other => other,
     }
 }
 
@@ -1292,5 +1724,337 @@ mod event_outcome_merge_tests {
             short.merge(long),
             EventOutcome::RedrawAfter(d) if d == Duration::from_millis(5)
         ));
+    }
+}
+
+/// End-to-end proof of the widget-contract routing engine (step 2 of
+/// [`preprocess_event`]) against a real [`crate::tui::TuiBackend`] — the
+/// "TUI-proven" half of this module's widget routing. Exercises the exact
+/// scenarios the engine exists for: click→focus, key→state-change→
+/// semantic event, hover→Enter/Leave, a modal blocking all of the above,
+/// and [`crate::a11y::route_widget_action`] producing the identical
+/// semantic event a direct keystroke would.
+#[cfg(all(test, feature = "tui"))]
+mod widget_routing_tests {
+    use super::*;
+    use crate::a11y::{A11yInfo, A11yPrimitive};
+    use crate::event::Rect;
+    use crate::interactive::{Interactive, WidgetAction};
+    use crate::primitive::{LayoutCtx, Primitive};
+    use crate::runner::Reaction;
+    use crate::tui::TuiBackend;
+    use crate::Backend;
+
+    const COUNTER_RECT: Rect = Rect::new(0.0, 0.0, 10.0, 3.0);
+
+    /// Mirrors `crate::interactive`'s own `Counter` test fixture, extended
+    /// with a `hovered` flag so [`PointerKind::Enter`]/[`PointerKind::Leave`]
+    /// are independently observable from `count`.
+    #[derive(Debug)]
+    struct Counter {
+        id: WidgetId,
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq)]
+    struct CounterState {
+        count: i32,
+        hovered: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct Activated;
+
+    impl WidgetAction for Activated {
+        fn into_ui_event(self, id: WidgetId) -> UiEvent {
+            UiEvent::DoubleClick {
+                widget: Some(id),
+                position: Point::default(),
+            }
+        }
+    }
+
+    impl A11yPrimitive for Counter {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for Counter {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _theme: &crate::theme::Theme,
+            _style: &crate::style::Style,
+        ) {
+        }
+    }
+
+    impl Interactive for Counter {
+        type State = CounterState;
+        type Action = Activated;
+
+        fn focus(&self) -> FocusSpec {
+            FocusSpec::Stop
+        }
+
+        fn handle(
+            &self,
+            state: &mut CounterState,
+            event: &RoutedEvent,
+            _layout: &Rect,
+            cx: &mut EventCx,
+        ) -> Handled<Activated> {
+            use crate::event::NamedKey;
+            match event {
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Down(_),
+                    ..
+                } => {
+                    state.count += 1;
+                    cx.request_redraw();
+                    Handled::Consumed
+                }
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Enter,
+                    ..
+                } => {
+                    state.hovered = true;
+                    Handled::Consumed
+                }
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Leave,
+                    ..
+                } => {
+                    state.hovered = false;
+                    Handled::Consumed
+                }
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Named(NamedKey::Up),
+                    ..
+                }) => {
+                    state.count += 1;
+                    Handled::Consumed
+                }
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Named(NamedKey::Down),
+                    ..
+                }) => {
+                    state.count -= 1;
+                    Handled::Consumed
+                }
+                RoutedEvent::Key(KeyEvent {
+                    key: Key::Named(NamedKey::Enter),
+                    ..
+                }) => Handled::Event(Activated),
+                RoutedEvent::Action(crate::a11y::A11yAction::Click) => Handled::Event(Activated),
+                _ => Handled::Ignored,
+            }
+        }
+    }
+
+    fn counter_tree(id: WidgetId) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(id, COUNTER_RECT, Box::new(Counter { id }));
+        tree
+    }
+
+    /// An [`AppLogic`] whose only widget is one [`Counter`], and which
+    /// records every [`UiEvent`] `handle` receives — the "did the semantic
+    /// event actually bubble to the app" half of each assertion below.
+    struct CounterApp {
+        id: WidgetId,
+        received: Vec<UiEvent>,
+    }
+
+    impl AppLogic for CounterApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn crate::Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+            self.received.push(event);
+            Reaction::Redraw
+        }
+
+        fn frame_tree(&self, _area: ()) -> FrameTree {
+            counter_tree(self.id)
+        }
+    }
+
+    fn harness() -> (TuiBackend, CounterApp) {
+        let id = WidgetId::new("counter");
+        (
+            TuiBackend::new(),
+            CounterApp {
+                id,
+                received: Vec::new(),
+            },
+        )
+    }
+
+    fn mouse_down_at(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    fn key(named: crate::event::NamedKey) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Named(named),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
+    }
+
+    /// Click → focus: a `MouseDown` landing inside the counter's rect
+    /// moves keyboard focus to it, with no app code at all.
+    #[test]
+    fn click_moves_focus_to_the_hit_widget() {
+        let (mut backend, mut app) = harness();
+        assert_eq!(backend.focus_manager().focused(), None);
+
+        preprocess_event(mouse_down_at(1.0, 1.0), &mut backend, &mut app);
+
+        assert_eq!(backend.focus_manager().focused(), Some(&app.id));
+    }
+
+    /// Key → state-change → semantic event: `Up` mutates the counter's
+    /// persisted state (observable across calls, proving
+    /// `WidgetStateStore` — not the rebuilt `Counter` descriptor — is what
+    /// survives), and a focused `Enter` bubbles `Activated`'s `UiEvent` to
+    /// `app.handle`.
+    #[test]
+    fn key_changes_state_and_enter_bubbles_a_semantic_event() {
+        let (mut backend, mut app) = harness();
+        backend.set_focus(Some(app.id));
+
+        let outcome = preprocess_event(key(crate::event::NamedKey::Up), &mut backend, &mut app);
+        assert_eq!(outcome, Reaction::Redraw);
+
+        let count = {
+            let routing = backend.widget_routing_mut().unwrap();
+            let state = routing
+                .states
+                .state_for(app.id, &Counter { id: app.id })
+                .downcast_mut::<CounterState>()
+                .unwrap();
+            state.count
+        };
+        assert_eq!(count, 1);
+
+        preprocess_event(key(crate::event::NamedKey::Enter), &mut backend, &mut app);
+        assert_eq!(
+            app.received,
+            vec![UiEvent::DoubleClick {
+                widget: Some(app.id),
+                position: Point::default(),
+            }]
+        );
+    }
+
+    /// Hover → Enter/Leave: moving the pointer into, then out of, the
+    /// counter's rect flips `CounterState::hovered` both ways, and the
+    /// `MouseMoved` event itself still bubbles to `app.handle` afterward
+    /// (hover tracking is a side effect, not a consumption).
+    #[test]
+    fn hover_synthesizes_enter_then_leave() {
+        let (mut backend, mut app) = harness();
+
+        preprocess_event(
+            UiEvent::MouseMoved {
+                position: Point::new(1.0, 1.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+            &mut app,
+        );
+        let hovered = |backend: &mut TuiBackend, app: &CounterApp| {
+            backend
+                .widget_routing_mut()
+                .unwrap()
+                .states
+                .state_for(app.id, &Counter { id: app.id })
+                .downcast_mut::<CounterState>()
+                .unwrap()
+                .hovered
+        };
+        assert!(hovered(&mut backend, &app));
+        assert!(app
+            .received
+            .iter()
+            .any(|e| matches!(e, UiEvent::MouseMoved { .. })));
+
+        preprocess_event(
+            UiEvent::MouseMoved {
+                position: Point::new(100.0, 100.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+            &mut app,
+        );
+        assert!(!hovered(&mut backend, &app));
+    }
+
+    /// Modal scope blocks it: with a modal pushed, a click that would
+    /// otherwise focus the counter does nothing — the widget never sees
+    /// the event.
+    #[test]
+    fn open_modal_blocks_widget_routing_entirely() {
+        let (mut backend, mut app) = harness();
+        backend.modal_stack_handle().borrow_mut().push(
+            WidgetId::new("some-modal"),
+            Rect::new(50.0, 50.0, 10.0, 10.0),
+        );
+
+        preprocess_event(mouse_down_at(1.0, 1.0), &mut backend, &mut app);
+
+        assert_eq!(backend.focus_manager().focused(), None);
+    }
+
+    /// `route_widget_action` produces the identical semantic event a
+    /// direct keystroke would: an `A11yAction::Click` through the a11y
+    /// path and a direct `Enter` keypress through `preprocess_event` both
+    /// end up calling the same `Counter::handle` arm, producing the same
+    /// `UiEvent`.
+    #[test]
+    fn a11y_route_widget_action_matches_direct_input() {
+        let id = WidgetId::new("counter:a11y");
+        let tree = counter_tree(id);
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let ctx = LayoutCtx {
+            line_height: 1.0,
+            char_width: 1.0,
+            nerd_fonts_enabled: false,
+        };
+
+        let via_a11y = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &ctx,
+            id,
+            crate::a11y::A11yAction::Click,
+        );
+
+        let (mut backend, mut app) = harness();
+        app.id = id;
+        backend.set_focus(Some(id));
+        preprocess_event(key(crate::event::NamedKey::Enter), &mut backend, &mut app);
+
+        assert_eq!(via_a11y, app.received);
     }
 }

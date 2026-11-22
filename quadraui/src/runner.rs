@@ -302,6 +302,30 @@ pub trait AppLogic {
         Vec::new()
     }
 
+    /// Opt into the shared widget-contract routing engine (see
+    /// `crate::runtime::preprocess_event`'s widget-routing step and
+    /// [`crate::frame_tree`]'s module doc): the current frame's
+    /// [`crate::interactive::Interactive`] widgets, as a
+    /// [`crate::frame_tree::FrameTree`] — typically
+    /// [`crate::frame::ScreenLayout::into_frame_tree`]'s output.
+    ///
+    /// Defaults to an empty [`crate::frame_tree::FrameTree`], meaning
+    /// **zero behavior change**: the routing engine's hit-test/capture/
+    /// Enter-Leave/focus steps all gate on this being non-empty, the same
+    /// way the Tab/Shift+Tab cycling in step 4 of `preprocess_event` gates
+    /// on [`Self::tab_stops`] being non-empty.
+    ///
+    /// Called `&self`-only, like [`Self::tab_stops`], and on-demand —
+    /// once per routed event, not once per frame — since a
+    /// [`crate::frame_tree::FrameTree`] node owns a type-erased widget
+    /// *value* with no lifetime that could outlive one call; see
+    /// [`crate::frame_tree`]'s module doc for why that rules out caching
+    /// it across the frame the way [`Self::tab_stops`]'s own owned
+    /// `(WidgetId, Rect)` pairs typically are.
+    fn frame_tree(&self, _area: Self::AreaId) -> crate::frame_tree::FrameTree {
+        crate::frame_tree::FrameTree::new()
+    }
+
     /// This app's "Level 2" named-command specs (see
     /// [`crate::control`]'s "Levels" doc section) — what `quadraui-mcp`'s
     /// `tools/list` appends after its four built-in Level 1 tools, and

@@ -1223,6 +1223,36 @@ impl ScreenLayout {
             Surface::Toolbar { rect, .. } => (*rect, FrameZone::Toolbar { idx }),
         }
     }
+
+    /// Drain this layout's [`Surface::Widget`] entries into a
+    /// [`crate::frame_tree::FrameTree`] for
+    /// [`crate::runner::AppLogic::frame_tree`], discarding every other
+    /// surface — the widget-contract routing engine only ever addresses
+    /// the [`crate::interactive::Interactive`] contract, not
+    /// `ScreenLayout`'s hand-written primitives.
+    ///
+    /// Consumes `self`, unlike [`Self::tab_stops`]/[`Self::hit_map`]:
+    /// routing an event to a widget means calling
+    /// [`crate::primitive::DynWidget::handle`] on the widget *value*
+    /// itself (`Surface::Widget`'s `widget: Box<dyn DynWidget>` field),
+    /// not just its id and rect, so there is no owned/borrowed split to
+    /// preserve — see [`crate::frame_tree`]'s module doc for why a
+    /// [`crate::frame_tree::FrameTree`] is built fresh per routed event
+    /// rather than cached across a frame the way [`FrameHitMap`] is.
+    ///
+    /// A widget missing [`crate::primitive::DynWidget::id`] (no id was
+    /// ever set on it) is skipped — there is no [`WidgetId`] to route by.
+    pub fn into_frame_tree(self) -> crate::frame_tree::FrameTree {
+        let mut tree = crate::frame_tree::FrameTree::new();
+        for surface in self.surfaces {
+            if let Surface::Widget { rect, widget } = surface {
+                if let Some(&id) = widget.id() {
+                    tree.push(id, rect, widget);
+                }
+            }
+        }
+        tree
+    }
 }
 
 impl Default for ScreenLayout {
@@ -2715,6 +2745,58 @@ mod tests {
         );
 
         assert_eq!(layout.tab_stops(), Vec::new());
+    }
+
+    /// `into_frame_tree` keeps only `Surface::Widget` entries, dropping
+    /// every hand-written primitive alongside it — the routing engine it
+    /// feeds (`crate::runtime::preprocess_event`) only ever addresses the
+    /// `Interactive` contract.
+    #[test]
+    fn into_frame_tree_keeps_only_widget_surfaces() {
+        use crate::primitives::cell_grid::{Cell, CellGrid};
+        use crate::types::WidgetId as Id;
+
+        let widget_rect = Rect::new(0.0, 0.0, 20.0, 5.0);
+        let grid = CellGrid {
+            id: Id::new("grid:sheet"),
+            row_count: 1,
+            col_count: 1,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 6.0,
+            row_heights: Default::default(),
+            col_widths: Default::default(),
+            show_row_headers: false,
+            show_col_headers: false,
+            row_labels: Default::default(),
+            col_labels: Default::default(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: vec![vec![Cell::plain("hi")]],
+            loaded_row_start: 0,
+            loaded_col_start: 0,
+            has_focus: false,
+            show_scrollbar: false,
+            editing: None,
+        };
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::TextField {
+            rect: Rect::new(0.0, 10.0, 20.0, 1.0),
+            tf: TextField::new(Id::new("status")),
+        });
+        layout.push(Surface::Widget {
+            rect: widget_rect,
+            widget: Box::new(grid.clone()),
+        });
+
+        let tree = layout.into_frame_tree();
+        assert_eq!(tree.nodes().len(), 1);
+        let node = tree.find(&grid.id).expect("widget node survives");
+        assert_eq!(node.rect, widget_rect);
     }
 
     /// The TUI side of the same wiring: `ScreenLayout::draw` through a

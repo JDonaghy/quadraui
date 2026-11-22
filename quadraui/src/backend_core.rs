@@ -64,6 +64,7 @@ use crate::dispatch::{DragState, TextRegion};
 use crate::event::{Key, Point, Rect};
 use crate::text_selection::{ActiveTextSelection, TextSelectionState};
 use crate::types::{Modifiers, WidgetId};
+use crate::widget_state::WidgetRoutingState;
 use crate::{Accelerator, AcceleratorId, AcceleratorScope, ParsedBinding, UiEvent};
 
 /// Shared accelerator registry + text-selection bookkeeping. See the
@@ -97,6 +98,21 @@ pub(crate) struct BackendCore {
     ///
     /// [inv]: crate::backend::Backend::invalidate_rect
     invalidation_log: InvalidationLog,
+    /// Hover/capture bookkeeping + per-widget interaction state for the
+    /// widget-contract routing engine — see
+    /// `crate::runtime::PreprocessBackend::widget_routing_mut`'s doc for
+    /// why this field, unlike every other one above, is not yet read by
+    /// every backend's `Backend`/`PreprocessBackend` impl (only
+    /// `TuiBackend` wires it up today).
+    ///
+    /// `#[allow(dead_code)]` on both this field and
+    /// [`Self::widget_routing_mut`]: a feature combination that embeds
+    /// `BackendCore` but excludes `tui` (`--features win`/`--features
+    /// macos` alone, this crate's cross-target compile-check legs) has no
+    /// caller for either — same rationale as [`Self::register_accelerator`]'s
+    /// own attribute above.
+    #[allow(dead_code)]
+    widget_routing: WidgetRoutingState,
 }
 
 impl BackendCore {
@@ -344,6 +360,19 @@ impl BackendCore {
             char_width,
         )
     }
+
+    // ─── Widget-contract routing ────────────────────────────────────────
+
+    /// Mutable access to the widget-contract routing engine's hover/
+    /// capture bookkeeping + per-widget state — see
+    /// `crate::runtime::PreprocessBackend::widget_routing_mut`.
+    ///
+    /// `#[allow(dead_code)]`: see [`Self::widget_routing`]'s own
+    /// attribute.
+    #[allow(dead_code)]
+    pub(crate) fn widget_routing_mut(&mut self) -> &mut WidgetRoutingState {
+        &mut self.widget_routing
+    }
 }
 
 #[cfg(test)]
@@ -538,6 +567,16 @@ mod tests {
             Point::new(50.0, 5.0),
         );
         assert_eq!(core.extract_selection_text_pixel(20.0, 10.0), "hello");
+    }
+
+    #[test]
+    fn widget_routing_mut_is_stable_across_calls() {
+        let mut core = BackendCore::default();
+        core.widget_routing_mut().hovered = Some(WidgetId::new("hovered"));
+        assert_eq!(
+            core.widget_routing_mut().hovered,
+            Some(WidgetId::new("hovered"))
+        );
     }
 
     #[test]

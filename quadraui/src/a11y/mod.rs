@@ -79,6 +79,11 @@ mod content;
 pub mod tree;
 
 pub use action::{route_action, A11yAction, A11yActionValue};
+// `route_widget_action` has no non-test caller yet — same reason as its
+// own `#[allow(dead_code)]` (see that function's doc): no backend wires
+// an `accesskit::ActionHandler` up to either routing function today.
+#[allow(unused_imports)]
+pub use action::route_widget_action;
 pub use content::markdown_a11y_children;
 pub use tree::{
     backend_a11y_tree, frame_to_tree, frame_to_tree_with_modal, A11yChild, A11yNodeId,
