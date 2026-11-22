@@ -140,9 +140,12 @@ impl RowPaintCtx<'_> {
 }
 
 /// Width a cell may paint into: one less than the column, reserving the
-/// right-edge separator cell every column but the last one carries.
+/// right-edge separator cell every column but the last one carries. The
+/// actual subtraction is [`super::usable_width_with_separator`] —
+/// [`crate::tui::cell_grid`] reuses that same arithmetic for its own
+/// column-separator/frozen-pane reservations rather than a second copy.
 fn usable_width(ctx: &RowPaintCtx<'_>, col_idx: usize, col_w: u16) -> u16 {
-    col_w.saturating_sub(u16::from(col_idx + 1 < ctx.table.columns.len()))
+    super::usable_width_with_separator(col_w, col_idx + 1 < ctx.table.columns.len())
 }
 
 /// Fill a full-width band at `y` with `(fg, bg)`, then walk every

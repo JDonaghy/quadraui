@@ -337,6 +337,27 @@ pub struct CellGrid {
     /// events `handle` returns.
     #[serde(default)]
     pub editing: Option<CellEditState>,
+    /// Paint a `theme.separator` column divider at every body/header
+    /// column's right-edge cell on TUI — the same reservation
+    /// [`crate::tui::data_table`]'s own `usable_width` makes for
+    /// `DataTable`'s separator column, and the way [`Self`]'s own
+    /// frozen-column boundary divider already does. `false` (the
+    /// default) paints nothing extra. No effect on a pixel backend:
+    /// `native_surface_paint::paint`'s gridlines already draw a rule
+    /// between every column regardless of this flag.
+    #[serde(default)]
+    pub column_separators: bool,
+    /// Tint every other non-frozen body row with
+    /// [`crate::theme::Theme::row_alt_bg`] ("zebra striping"), on every
+    /// backend. `false` (the default) paints no stripe. Stripes by
+    /// *absolute* row index, so a row keeps its stripe across a scroll —
+    /// the same convention [`crate::primitives::row_stack::RowPaintState::striped`]
+    /// follows for `DataTable`/`ListView`. The cursor cell, any cell
+    /// inside the current selection range, and a cell with an explicit
+    /// [`CellStyle::bg`] all win over the stripe; frozen rows and the
+    /// column/row header strips are never striped.
+    #[serde(default)]
+    pub striped: bool,
 }
 
 /// Single-line inline edit state for [`CellGrid::editing`] — the text
@@ -395,7 +416,25 @@ impl CellGrid {
             has_focus: false,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         }
+    }
+
+    /// Opt into [`Self::column_separators`] — builder form for a caller
+    /// that chains construction rather than setting the field directly.
+    #[must_use]
+    pub fn with_column_separators(mut self, on: bool) -> Self {
+        self.column_separators = on;
+        self
+    }
+
+    /// Opt into [`Self::striped`] — builder form for a caller that
+    /// chains construction rather than setting the field directly.
+    #[must_use]
+    pub fn with_striped(mut self, on: bool) -> Self {
+        self.striped = on;
+        self
     }
 
     /// This row's header label: its [`Self::row_labels`] override if
@@ -1403,6 +1442,20 @@ pub(crate) mod native_surface_paint {
                 let rect = Rect::new(area.x + col_span.start, y, col_span.size, row_span.size);
                 if let Some(bg) = cell.style.bg {
                     surface.surface_fill_rect(rect, bg);
+                } else if grid.striped
+                    && r_pos >= layout.frozen_rows
+                    && row_span.index % 2 == 1
+                    && !((sr0..=sr1).contains(&row_span.index)
+                        && (sc0..=sc1).contains(&col_span.index))
+                {
+                    // Zebra stripe on the absolute row index, same as
+                    // `crate::tui::cell_grid`'s own TUI stripe — a cell
+                    // inside the current selection (which always covers
+                    // at least the cursor itself) wins over the stripe,
+                    // and a frozen row (`r_pos < layout.frozen_rows`) or
+                    // either header strip (painted separately above,
+                    // never reaching this loop) is never striped.
+                    surface.surface_fill_rect(rect, theme.row_alt_bg(theme.background));
                 }
                 paint_cell_text(surface, cell, rect, theme);
             }
@@ -2225,6 +2278,8 @@ mod tests {
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         }
     }
 
@@ -2820,6 +2875,8 @@ mod interactive_tests {
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         }
     }
 
@@ -3518,6 +3575,8 @@ mod a11y_tests {
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         }
     }
 
@@ -3659,6 +3718,8 @@ mod range_as_tsv_tests {
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         }
     }
 
@@ -3880,6 +3941,8 @@ mod native_surface_paint_tests {
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         }
     }
 
@@ -4029,5 +4092,80 @@ mod native_surface_paint_tests {
             .expect("cell (2, 2)'s text must paint");
         assert_eq!(run.2, Color::rgb(200, 10, 10));
         assert!(run.3, "the cell's own bold override must apply");
+    }
+
+    #[test]
+    fn striping_off_by_default_paints_no_stripe_fill() {
+        let grid = grid();
+        let layout = grid.layout(200.0, 100.0, 10.0, 15.0, 0.0, 0.0);
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let mut surface = RecordingSurface::default();
+        let theme = Theme::default();
+        let style = Style::default();
+        paint(&grid, area, &layout, &mut surface, &theme, &style);
+
+        let stripe_color = theme.row_alt_bg(theme.background);
+        assert!(
+            !surface
+                .fills
+                .iter()
+                .any(|(_, color)| *color == stripe_color),
+            "`striped: false` (the default) must never paint the zebra-stripe colour"
+        );
+    }
+
+    #[test]
+    fn striped_tints_odd_absolute_rows_but_never_a_frozen_cursor_or_selected_cell() {
+        let row = |label: &str| {
+            (0..2)
+                .map(|c| Cell::plain(format!("{label}{c}")))
+                .collect::<Vec<_>>()
+        };
+        let mut grid = CellGrid::new(WidgetId::new("grid:striped"));
+        grid.row_count = 5;
+        grid.col_count = 2;
+        grid.frozen_rows = 2;
+        grid.default_row_height = 10.0;
+        grid.default_col_width = 40.0;
+        grid.show_row_headers = false;
+        grid.show_col_headers = false;
+        // Lands on an odd absolute row (3) — the cell this cursor sits on
+        // must not stripe despite that, since the cursor always wins.
+        grid.cursor = (3, 0);
+        grid.cells = vec![row("r0"), row("r1"), row("r2"), row("r3"), row("r4")];
+        grid.striped = true;
+        let layout = grid.layout(200.0, 100.0, 0.0, 0.0, 0.0, 0.0);
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let mut surface = RecordingSurface::default();
+        let theme = Theme::default();
+        let style = Style::default();
+        paint(&grid, area, &layout, &mut surface, &theme, &style);
+
+        let stripe_color = theme.row_alt_bg(theme.background);
+        let rect_for = |abs_row: usize, abs_col: usize| {
+            let r = layout.rows.iter().find(|r| r.index == abs_row).unwrap();
+            let c = layout.cols.iter().find(|c| c.index == abs_col).unwrap();
+            Rect::new(c.start, r.start, c.size, r.size)
+        };
+        let is_striped = |abs_row: usize, abs_col: usize| {
+            surface
+                .fills
+                .contains(&(rect_for(abs_row, abs_col), stripe_color))
+        };
+
+        // Row 1 is a frozen row with an odd absolute index — frozen rows
+        // are never striped, odd or not.
+        assert!(!is_striped(1, 0), "a frozen row must never stripe");
+        // Row 2 is a scrolled (non-frozen) but even row — no stripe.
+        assert!(!is_striped(2, 0), "an even absolute row must not stripe");
+        // Row 3 is scrolled and odd; column 1 isn't the cursor — stripes.
+        assert!(
+            is_striped(3, 1),
+            "a scrolled, odd absolute row must stripe outside the cursor cell"
+        );
+        // Row 3, column 0 is the cursor's own cell — the cursor wins.
+        assert!(!is_striped(3, 0), "the cursor cell must never stripe");
+        // Row 4 is scrolled and even — no stripe.
+        assert!(!is_striped(4, 0), "an even absolute row must not stripe");
     }
 }
