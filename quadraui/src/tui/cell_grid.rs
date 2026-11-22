@@ -180,65 +180,22 @@ fn fill_band(
     }
 }
 
-/// Whether `layout.cols[col_idx]` is the frozen-pane boundary's own
-/// column — the last of `layout.frozen_cols`' entries, immediately
-/// before the scrolled region begins. That column already reserves (and
-/// paints, in the dedicated full-height loop near the bottom of
-/// [`draw_cell_grid`]) its own `│` divider, so [`has_plain_separator`]
-/// excludes it rather than stacking a second reservation on the same
-/// cell.
-fn is_frozen_boundary_col(layout: &CellGridLayout, col_idx: usize) -> bool {
-    layout.frozen_cols > 0
-        && layout.frozen_cols < layout.cols.len()
-        && col_idx + 1 == layout.frozen_cols
-}
-
-/// Whether `layout.cols[col_idx]` carries [`CellGrid::column_separators`]'s
-/// own plain `│` divider: the flag is on, this isn't
-/// [`is_frozen_boundary_col`] (which already has its own divider), and
-/// the column has a following one *in the sheet* (`grid.col_count`),
-/// not merely in the currently-visible/loaded `layout.cols` — so the
-/// separator keeps showing at every visible column boundary across a
-/// horizontal scroll, the same way [`crate::tui::data_table`]'s own
-/// `usable_width` reserves a cell for any column with a next entry in
-/// its full column list.
-fn has_plain_separator(layout: &CellGridLayout, grid: &CellGrid, col_idx: usize) -> bool {
-    grid.column_separators
-        && !is_frozen_boundary_col(layout, col_idx)
-        && layout
-            .cols
-            .get(col_idx)
-            .is_some_and(|c| c.index + 1 < grid.col_count)
-}
-
-/// Width the column at `layout.cols[col_idx]` may paint text into: one
-/// less than its screen width when it reserves its right-edge cell for
-/// either the frozen-pane boundary's own divider
-/// ([`is_frozen_boundary_col`]) or a plain column separator
-/// ([`has_plain_separator`]) — the two reservations never stack, since
-/// the latter already excludes the former. The actual subtraction is
-/// [`super::usable_width_with_separator`], shared with
-/// [`crate::tui::data_table`]'s own separator-column reservation, so an
-/// exactly-filling or overflowing value never loses its last glyph (or
-/// its `…`) to the divider painted over it.
-fn cell_usable_width(layout: &CellGridLayout, grid: &CellGrid, col_idx: usize, cw: u16) -> u16 {
-    let reserved =
-        is_frozen_boundary_col(layout, col_idx) || has_plain_separator(layout, grid, col_idx);
-    super::usable_width_with_separator(cw, reserved)
-}
-
-/// Overlay one divider glyph at `(x, y)`, keeping whatever background
-/// was already painted there (read back from the buffer) rather than
-/// flattening it to a fixed colour — so the frozen-pane divider reads as
-/// a rule drawn *on top of* the header/gutter/body fill, not a hole in
-/// it.
-fn overlay_divider(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor) {
+/// Overlay a vertical `│` rule down `height` rows from `(x, y0)` — every
+/// column divider this file paints, the frozen-pane boundary and a
+/// [`CellGrid::column_separators`] separator alike. Each glyph keeps
+/// whatever background was already painted under it (read back from the
+/// buffer) rather than flattening it to a fixed colour, so the rule
+/// reads as drawn *on top of* the header/gutter/body fill, not a hole in
+/// it. Cells outside `buf`'s area are skipped.
+fn overlay_divider_run(buf: &mut Buffer, x: u16, y0: u16, height: u16, fg: RatatuiColor) {
     let area = buf.area;
-    if x < area.x || y < area.y || x >= area.x + area.width || y >= area.y + area.height {
-        return;
+    for y in y0..y0.saturating_add(height) {
+        if x < area.x || y < area.y || x >= area.x + area.width || y >= area.y + area.height {
+            continue;
+        }
+        let bg = buf[(x, y)].bg;
+        set_cell(buf, x, y, '│', fg, bg);
     }
-    let bg = buf[(x, y)].bg;
-    set_cell(buf, x, y, ch, fg, bg);
 }
 
 /// Draw `grid` into `area` and return its layout for hit-testing.
@@ -293,7 +250,7 @@ pub fn draw_cell_grid(
         for (ci, col) in layout.cols.iter().enumerate() {
             if let Some((cx, cw)) = span_bounds(area.width, area.x, col) {
                 fill_band(buf, cx, y, cw, col_header_h, fg, header_bg);
-                let usable = cell_usable_width(&layout, grid, ci, cw);
+                let usable = grid.col_text_cells(&layout, ci, cw);
                 paint_text(
                     buf,
                     cx,
@@ -305,10 +262,8 @@ pub fn draw_cell_grid(
                     ColumnAlign::Center,
                     Modifier::BOLD,
                 );
-                if has_plain_separator(&layout, grid, ci) {
-                    for sep_y in y..y.saturating_add(col_header_h) {
-                        set_cell(buf, cx + usable, sep_y, '│', sep_fg, header_bg);
-                    }
+                if grid.paints_column_separator(&layout, ci) {
+                    overlay_divider_run(buf, cx + usable, y, col_header_h, sep_fg);
                 }
             }
         }
@@ -350,23 +305,14 @@ pub fn draw_cell_grid(
             let in_selection = in_sel_row && col.index >= sel_left && col.index <= sel_right;
 
             let style = cell.map(|c| &c.style);
-            // A row's zebra stripe only ever shows through on an
-            // otherwise plain cell — an explicit `CellStyle::bg` wins
-            // (the `map` below short-circuits `unwrap_or_else`), and it
-            // never reaches a frozen row (`ri < layout.frozen_rows`) or
-            // either header strip, which this loop never visits at all.
-            // Stripes by `row.index` (absolute), not `ri` (on-screen
-            // position), so a row keeps its tint across a scroll.
+            // An explicit `CellStyle::bg` wins over the row's zebra
+            // stripe, which in turn only shows through on a cell the
+            // cursor/selection branch below leaves alone.
             let base_bg = style
                 .and_then(|s| s.bg)
+                .or_else(|| grid.row_stripe_bg(&layout, ri, row.index, theme))
                 .map(ratatui_color)
-                .unwrap_or_else(|| {
-                    if grid.striped && ri >= layout.frozen_rows && row.index % 2 == 1 {
-                        ratatui_color(theme.row_alt_bg(theme.background))
-                    } else {
-                        bg
-                    }
-                });
+                .unwrap_or(bg);
             let cell_bg = if is_cursor {
                 cursor_bg
             } else if in_selection {
@@ -378,8 +324,7 @@ pub fn draw_cell_grid(
 
             fill_band(buf, cx, ry, cw, rh, cell_fg, cell_bg);
 
-            let usable = cell_usable_width(&layout, grid, ci, cw);
-
+            let usable = grid.col_text_cells(&layout, ci, cw);
             // The cursor cell's plain text is skipped while `editing` is
             // `Some`: the overlay below paints the inline editor over this
             // same span instead, and the earlier `fill_band` call already
@@ -406,10 +351,8 @@ pub fn draw_cell_grid(
                     );
                 }
             }
-            if has_plain_separator(&layout, grid, ci) {
-                for sep_y in ry..ry.saturating_add(rh) {
-                    set_cell(buf, cx + usable, sep_y, '│', sep_fg, cell_bg);
-                }
+            if grid.paints_column_separator(&layout, ci) {
+                overlay_divider_run(buf, cx + usable, ry, rh, sep_fg);
             }
         }
     }
@@ -428,7 +371,7 @@ pub fn draw_cell_grid(
                 span_bounds(area.height, area.y, row),
                 span_bounds(area.width, area.x, &col),
             ) {
-                let usable = cell_usable_width(&layout, grid, ci, cw);
+                let usable = grid.col_text_cells(&layout, ci, cw);
                 super::paint_inline_text_editor(
                     buf,
                     Rect::new(cx, ry, usable, rh),
@@ -449,16 +392,14 @@ pub fn draw_cell_grid(
 
     // ── Frozen-pane boundaries ───────────────────────────────────────
     // Column axis: the last frozen column already reserved its
-    // right-edge cell above (`cell_usable_width`/`is_frozen_boundary_col`),
-    // so the glyph lands in a cell no text was ever painted into.
+    // right-edge cell above (`CellGrid::col_text_cells`), so the glyph
+    // lands in a cell no text was ever painted into.
     if layout.frozen_cols > 0 && layout.frozen_cols < layout.cols.len() {
         if let Some((cx, cw)) =
             span_bounds(area.width, area.x, &layout.cols[layout.frozen_cols - 1])
         {
             let div_x = cx + cw.saturating_sub(1);
-            for y in area.y..area.y.saturating_add(area.height) {
-                overlay_divider(buf, div_x, y, '│', sep_fg);
-            }
+            overlay_divider_run(buf, div_x, area.y, area.height, sep_fg);
         }
     }
     // Row axis: there is no spare row to reserve (TUI rows are a
@@ -827,7 +768,7 @@ mod tests {
             .unwrap();
         let (cx, cw) = span_bounds(area.width, area.x, col).expect("cursor column is visible");
         let (cy, _) = span_bounds(area.height, area.y, cursor_row).expect("cursor row is visible");
-        let usable = cell_usable_width(&layout, &grid, ci, cw);
+        let usable = grid.col_text_cells(&layout, ci, cw);
 
         // The cell's own right-aligned "$1,200.50" must not survive
         // anywhere in the cursor cell's span — the defect this guards
@@ -972,7 +913,7 @@ mod tests {
         let probe = tui_cell_grid_layout(area, &grid);
         let (_, cw) =
             span_bounds(area.width, area.x, &probe.cols[0]).expect("frozen column 0 is visible");
-        let usable = cell_usable_width(&probe, &grid, 0, cw);
+        let usable = grid.col_text_cells(&probe, 0, cw);
         assert_eq!(
             usable,
             cw - 1,
@@ -1062,8 +1003,8 @@ mod tests {
     #[test]
     fn clicking_a_separator_cell_hit_tests_to_the_column_on_its_left() {
         // The separator glyph lives inside the column's own resolved
-        // span (`cell_usable_width` only narrows the *text*, never the
-        // span `hit_test` walks), so a click there needs no dedicated
+        // span (`CellGrid::col_text_cells` only narrows the *text*, never
+        // the span `hit_test` walks), so a click there needs no dedicated
         // hit-test handling — it already resolves to that same column.
         let mut grid = grid();
         grid.column_separators = true;

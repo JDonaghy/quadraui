@@ -450,16 +450,6 @@ pub(crate) fn align_offset(
     }
 }
 
-/// Width a `col_w`-wide column may paint text into, one cell narrower
-/// than `col_w` when `reserve_divider` is set — the shared "reserve the
-/// right-edge cell for a divider glyph" arithmetic [`data_table`]'s own
-/// `usable_width` (its separator column) and [`cell_grid`]'s own
-/// frozen-pane/plain-separator reservations both resolve down to, so
-/// the one subtraction has exactly one definition.
-pub(crate) fn usable_width_with_separator(col_w: u16, reserve_divider: bool) -> u16 {
-    col_w.saturating_sub(u16::from(reserve_divider))
-}
-
 /// Paint a single-line inline text editor — a text buffer, byte-offset
 /// cursor (rendered as an inverted-colour block), an optional selection
 /// highlight, and (when `text` is empty) a dim placeholder — starting at

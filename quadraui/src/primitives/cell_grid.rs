@@ -437,6 +437,83 @@ impl CellGrid {
         self
     }
 
+    /// The zebra-stripe background a *plain* body cell on the row at
+    /// `layout.rows[row_pos]` (absolute index `row_index`) paints under
+    /// its text, or `None` when that row carries no stripe and the
+    /// surface's own background shows through.
+    ///
+    /// Shared by every rasteriser so the stripe rule has one definition:
+    /// [`Self::striped`] must be on, the row must be outside the frozen
+    /// pane (`row_pos >= layout.frozen_rows`), and its *absolute* index
+    /// must be odd — absolute, not on-screen position, so a row keeps
+    /// its tint across a scroll, the convention
+    /// [`crate::primitives::row_stack::RowPaintState::striped`] already
+    /// follows for `DataTable`/`ListView`. A caller still lets an
+    /// explicit [`CellStyle::bg`], the cursor cell and the current
+    /// selection win over the value returned here; the header strips
+    /// never consult it at all.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[must_use]
+    pub(crate) fn row_stripe_bg(
+        &self,
+        layout: &CellGridLayout,
+        row_pos: usize,
+        row_index: usize,
+        theme: &crate::theme::Theme,
+    ) -> Option<Color> {
+        (self.striped && row_pos >= layout.frozen_rows && row_index % 2 == 1)
+            .then(|| theme.row_alt_bg(theme.background))
+    }
+
+    /// Whether the column at `layout.cols[col_idx]` carries a
+    /// [`Self::column_separators`] divider in its own right-edge cell:
+    /// the flag is on, the column is not the frozen-pane boundary (which
+    /// paints its own divider in that same cell), and it has a following
+    /// column *in the sheet* ([`Self::col_count`]) rather than merely in
+    /// the currently loaded `layout.cols` — so the separator shows at
+    /// every visible column boundary across a horizontal scroll, the way
+    /// `DataTable`'s own separator column does for any column with a
+    /// next entry in its full column list.
+    ///
+    /// Cell backends only: a pixel backend's gridlines
+    /// (`native_surface_paint`) already rule every column boundary.
+    #[cfg(feature = "tui")]
+    #[must_use]
+    pub(crate) fn paints_column_separator(&self, layout: &CellGridLayout, col_idx: usize) -> bool {
+        self.column_separators
+            && !layout.is_frozen_boundary_col(col_idx)
+            && layout
+                .cols
+                .get(col_idx)
+                .is_some_and(|c| c.index + 1 < self.col_count)
+    }
+
+    /// Width in cells the `col_w`-wide column at `layout.cols[col_idx]`
+    /// may paint text into: one cell narrower when that column reserves
+    /// its right edge for a `│` divider — either the frozen-pane
+    /// boundary's own ([`CellGridLayout::is_frozen_boundary_col`]) or a
+    /// [`Self::paints_column_separator`] separator, never both at once —
+    /// so an exactly-filling or overflowing value keeps its last glyph
+    /// (or its `…`) instead of losing it under the divider painted over
+    /// it.
+    #[cfg(feature = "tui")]
+    #[must_use]
+    pub(crate) fn col_text_cells(
+        &self,
+        layout: &CellGridLayout,
+        col_idx: usize,
+        col_w: u16,
+    ) -> u16 {
+        col_w.saturating_sub(u16::from(
+            layout.is_frozen_boundary_col(col_idx) || self.paints_column_separator(layout, col_idx),
+        ))
+    }
+
     /// This row's header label: its [`Self::row_labels`] override if
     /// set, otherwise its 1-based row number.
     #[must_use]
@@ -671,6 +748,20 @@ pub struct CellGridLayout {
 }
 
 impl CellGridLayout {
+    /// Whether `self.cols[col_idx]` is the frozen-pane boundary column:
+    /// the last of `self.frozen_cols`' entries, immediately before the
+    /// scrolled region begins. On a cell backend that column reserves
+    /// and paints its own full-height `│` divider, so
+    /// [`CellGrid::paints_column_separator`] excludes it rather than
+    /// stacking a second reservation on the same cell.
+    #[cfg(feature = "tui")]
+    #[must_use]
+    pub(crate) fn is_frozen_boundary_col(&self, col_idx: usize) -> bool {
+        self.frozen_cols > 0
+            && self.frozen_cols < self.cols.len()
+            && col_idx + 1 == self.frozen_cols
+    }
+
     /// Resolve a click to a corner / header / cell / scrollbar strip.
     /// `x`/`y` are viewport-relative, as a caller's raw pointer position.
     pub fn hit_test(&self, x: f32, y: f32) -> CellGridHit {
@@ -1442,20 +1533,18 @@ pub(crate) mod native_surface_paint {
                 let rect = Rect::new(area.x + col_span.start, y, col_span.size, row_span.size);
                 if let Some(bg) = cell.style.bg {
                     surface.surface_fill_rect(rect, bg);
-                } else if grid.striped
-                    && r_pos >= layout.frozen_rows
-                    && row_span.index % 2 == 1
-                    && !((sr0..=sr1).contains(&row_span.index)
-                        && (sc0..=sc1).contains(&col_span.index))
+                } else if let Some(stripe) =
+                    grid.row_stripe_bg(layout, r_pos, row_span.index, theme)
                 {
-                    // Zebra stripe on the absolute row index, same as
-                    // `crate::tui::cell_grid`'s own TUI stripe — a cell
-                    // inside the current selection (which always covers
-                    // at least the cursor itself) wins over the stripe,
-                    // and a frozen row (`r_pos < layout.frozen_rows`) or
-                    // either header strip (painted separately above,
-                    // never reaching this loop) is never striped.
-                    surface.surface_fill_rect(rect, theme.row_alt_bg(theme.background));
+                    // A cell inside the current selection (which always
+                    // covers at least the cursor itself) keeps the
+                    // selection fill painted over this band earlier,
+                    // so the stripe only shows through outside it.
+                    let selected = (sr0..=sr1).contains(&row_span.index)
+                        && (sc0..=sc1).contains(&col_span.index);
+                    if !selected {
+                        surface.surface_fill_rect(rect, stripe);
+                    }
                 }
                 paint_cell_text(surface, cell, rect, theme);
             }
