@@ -649,6 +649,10 @@ impl crate::primitive::Primitive for IconGrid {
     type Layout = IconGridPrimitiveLayout;
     type Event = IconGridEvent;
 
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         let (default_w, default_h) = default_tile_size(ctx);
         let (mut tile_w, mut tile_h) = self.tile_size.unwrap_or((default_w, default_h));
@@ -876,16 +880,37 @@ impl crate::primitive::Primitive for IconGrid {
     }
 }
 
-// No real `Interactive` impl yet — see the widget-contract epic's pilot
-// and port issues. Gated the same as the `Primitive` impl above: this
-// macro expands to an `Interactive` impl, which requires `Primitive`.
+// A real keyboard-nav `handle` body (arrow keys driving `selected_idx`,
+// Enter activating the current tile) is a port issue of its own; this
+// impl's only job today is to report a real `FocusSpec::Stop` so the
+// generic `DynWidget`-seam tab-order walk and click-to-focus routing
+// (`quadraui-binding-core::engine`) see `IconGrid` as a tab stop, the same
+// as every other focusable leaf. Gated the same as the `Primitive` impl
+// above, which this impl requires.
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-crate::non_interactive!(IconGrid);
+impl crate::interactive::Interactive for IconGrid {
+    type State = ();
+    type Action = crate::interactive::Never;
+
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    fn handle(
+        &self,
+        _state: &mut Self::State,
+        _event: &crate::interactive::RoutedEvent,
+        _layout: &Self::Layout,
+        _cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<Self::Action> {
+        crate::Handled::Ignored
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1048,6 +1073,35 @@ mod tests {
             layout.hit_test(area.x + tile0.x + 1.0, area.y + tile0.y + 1.0),
             IconGridHit::Item(0)
         );
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn primitive_id_recovers_the_grids_own_id() {
+        use crate::primitive::Primitive;
+        let g = grid(3);
+        assert_eq!(
+            Primitive::id(&g).map(|id| id.as_str()),
+            Some("icon_grid:test")
+        );
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn interactive_focus_is_a_tab_stop() {
+        use crate::interactive::{FocusSpec, Interactive};
+        let g = grid(3);
+        assert_eq!(Interactive::focus(&g), FocusSpec::Stop);
     }
 
     // ── icon_grid_move_selection ─────────────────────────────────────

@@ -2893,18 +2893,20 @@ pub fn schema() -> Vec<DefJson> {
         render_frame_fields.push(field_opt(kind, nullable(ty)));
     }
     // `WIDGET_KINDS` mirrors the `EXTRA_PRIMITIVE_KINDS` loop just above,
-    // but only into `leaf_fields` — a `LeafDescriptor::Widget` kind
-    // decodes from a `LayoutLeafNode` dict (see
-    // `crate::wire::layout_leaf_from_value`), never from a flat
-    // `RenderFrameDict` slot the way an `EXTRA_PRIMITIVE_KINDS` kind can
-    // (`crate::wire::frame`'s own decode has no `WIDGET_KINDS` loop of
-    // its own), so `render_frame_fields` is intentionally left untouched.
+    // into both `leaf_fields` (a `LeafDescriptor::Widget` kind decodes
+    // from a `LayoutLeafNode` dict, see `crate::wire::leaf::layout_leaf_from_value`'s
+    // own `WIDGET_KINDS` loop) and `render_frame_fields` (`crate::wire::frame`'s
+    // own decode has its own parallel `WIDGET_KINDS` loop, through
+    // `widget_slot_entry`, so a generic-widget kind also decodes from a
+    // flat `RenderFrameDict` slot, the same as an `EXTRA_PRIMITIVE_KINDS`
+    // kind can).
     for kind in crate::extra_paint::WIDGET_KINDS {
         let ty = match kind {
             "icon_grid" => icon_grid_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
-        leaf_fields.push(field_opt(kind, ty));
+        leaf_fields.push(field_opt(kind, ty.clone()));
+        render_frame_fields.push(field_opt(kind, nullable(ty)));
     }
     // A `LayoutLeafNode` is itself a valid row/column child, so it takes
     // the same `"size"`/`"min"`/`"max"` sibling keys every other

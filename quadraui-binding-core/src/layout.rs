@@ -1460,8 +1460,11 @@ pub enum LeafDescriptor {
     /// [`quadraui::primitive::DynWidget`] rather than an [`ExtraPaint`] —
     /// the generic seam a binding kind joins when its `quadraui::Primitive`
     /// has no bespoke paint/hit-test/event wiring of its own to write
-    /// here, only the layout-tree leaf dict decode a [`WIDGET_KINDS`]
-    /// entry adds. Painted via [`quadraui::DrawsPrimitives::draw_dyn`]
+    /// here, only the decode a [`WIDGET_KINDS`] entry adds (both as a
+    /// layout-tree leaf, this variant, and as a flat
+    /// [`crate::render::RenderFrame::widgets`] slot, which carries the
+    /// same decoded `DynWidget` without going through `LeafDescriptor` at
+    /// all). Painted via [`quadraui::DrawsPrimitives::draw_dyn`]
     /// (see [`crate::render::paint_leaf`]'s `Widget` arm), hit-tested as a
     /// whole area (see [`crate::hit::PaintedHit::Widget`]), and routed to
     /// [`DynWidget::handle`] on a click (see

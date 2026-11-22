@@ -18,7 +18,7 @@ use quadraui::{
     TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
-use quadraui::primitive::{LayoutCtx as DynLayoutCtx, Size as DynSize};
+use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
 use quadraui::DrawsPrimitives;
 
 use crate::extra_paint::{extra_as, ExtraPaint};
@@ -45,6 +45,10 @@ pub struct RenderFrame {
     pub tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name.
     pub extra: HashMap<String, Rc<dyn ExtraPaint>>,
+    /// Generic-widget ([`crate::extra_paint::WIDGET_KINDS`]) slots present
+    /// in this frame, keyed by kind name — the [`DynWidget`] counterpart
+    /// of `extra` above.
+    pub widgets: HashMap<String, Rc<dyn DynWidget>>,
     /// Optional pixel-precise scroll position lifted out of the `"list"`
     /// slot's raw dict by [`crate::scroll_px_from_value`] — `None` unless
     /// the dict set a numeric `"scroll_px"` key, in which case it wins
@@ -93,6 +97,7 @@ impl RenderFrame {
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
             extra: &self.extra,
+            widgets: &self.widgets,
             list_scroll_px: self.list_scroll_px,
             tree_scroll_px: self.tree_scroll_px,
             data_table_scroll_px: self.data_table_scroll_px,
@@ -114,6 +119,10 @@ pub struct RenderRefs<'a> {
     /// Additive primitive slots, keyed by kind name. Painted after the six
     /// fixed bands above, in a binding's own `EXTRA_PRIMITIVES` order.
     pub extra: &'a HashMap<String, Rc<dyn ExtraPaint>>,
+    /// Generic-widget slots, keyed by kind name — the [`DynWidget`]
+    /// counterpart of `extra` above. Painted last, after every `extra`
+    /// slot, in canonical [`crate::extra_paint::WIDGET_KINDS`] order.
+    pub widgets: &'a HashMap<String, Rc<dyn DynWidget>>,
     /// See [`RenderFrame::list_scroll_px`]. `None` for a `RenderRefs` a
     /// binding builds by hand from its own static fields (no dict to
     /// lift a `scroll_px` out of) — [`draw_bands`] paints exactly as
@@ -137,6 +146,17 @@ pub(crate) fn no_extras() -> &'static HashMap<String, Rc<dyn ExtraPaint>> {
             Box::leak(Box::new(HashMap::new()));
     }
     NO_EXTRAS.with(|map| *map)
+}
+
+/// [`no_extras`]'s [`DynWidget`] counterpart — the empty map a
+/// [`RenderRefs`] borrows for its `widgets` field when its source carries
+/// only the six fixed descriptors (plus, today, no `extra` either).
+pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
+    thread_local! {
+        static NO_WIDGETS: &'static HashMap<String, Rc<dyn DynWidget>> =
+            Box::leak(Box::new(HashMap::new()));
+    }
+    NO_WIDGETS.with(|map| *map)
 }
 
 /// Allocates the next `lines`-tall band (scaled by `line_height`),
@@ -293,8 +313,9 @@ pub fn draw_bands(
             });
         }
     }
-    // Additive primitives, painted in canonical `EXTRA_PRIMITIVES` order so
-    // the output is deterministic regardless of `HashMap` iteration order.
+    // Additive primitives, painted in canonical `EXTRA_PRIMITIVE_KINDS`
+    // order so the output is deterministic regardless of `HashMap`
+    // iteration order.
     for kind in crate::extra_paint::EXTRA_PRIMITIVE_KINDS {
         if let Some(extra) = refs.extra.get(kind) {
             if let Some(rect) = band(3.0) {
@@ -306,6 +327,25 @@ pub fn draw_bands(
                     extra: Rc::clone(extra),
                     chrome_hits,
                     tree_table_hit,
+                });
+            }
+        }
+    }
+    // Generic-widget (`WIDGET_KINDS`) slots, painted last in canonical
+    // order, same reason as the `extra` loop just above. `widget.id()` is
+    // `None` for any future `WIDGET_KINDS` member that doesn't carry its
+    // own id field (see `quadraui::primitive::Primitive::id`'s own doc);
+    // falling back to the slot's own `kind` string keeps this painted hit
+    // addressable either way, rather than needing a sentinel id of its own.
+    for kind in crate::extra_paint::WIDGET_KINDS {
+        if let Some(widget) = refs.widgets.get(kind) {
+            if let Some(rect) = band(3.0) {
+                backend.draw_dyn(rect, widget.as_ref(), &());
+                let id = widget.id().cloned().unwrap_or_else(|| WidgetId::new(kind));
+                hits.push(PaintedHit::Widget {
+                    id,
+                    area: rect,
+                    widget: Rc::clone(widget),
                 });
             }
         }
@@ -3054,6 +3094,67 @@ mod tests {
                 .collect(),
             spacing,
         )
+    }
+
+    /// [`draw_bands`]'s generic-widget (`WIDGET_KINDS`) loop paints a flat
+    /// `RenderRefs::widgets` slot through [`quadraui::DrawsPrimitives::draw_dyn`]
+    /// and records a [`PaintedHit::Widget`] under the descriptor's own id
+    /// — the flat-frame counterpart of the `extra` loop just above it,
+    /// and the paint-time half of
+    /// [`crate::wire::frame::tests::decodes_a_flat_render_frame_with_a_generic_widget_slot`]'s
+    /// decode-time coverage.
+    #[test]
+    fn draw_bands_paints_a_generic_widget_slot_and_records_its_hit() {
+        use quadraui::tui::TuiBackend;
+        use quadraui::{IconGrid, IconGridItem};
+
+        let grid = IconGrid {
+            id: WidgetId::new("icons:1"),
+            items: vec![IconGridItem {
+                id: WidgetId::new("item:0"),
+                icon: quadraui::Icon::new("\u{f15b}", "F"),
+                image: None,
+                label: quadraui::StyledText::plain("README.md"),
+                detail: None,
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: 0,
+            has_focus: false,
+            scroll_offset: 0,
+            tile_size: None,
+        };
+        let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+        widgets.insert("icon_grid".to_string(), Rc::new(grid));
+
+        let mut backend = TuiBackend::new();
+        let mut hits = Vec::new();
+        draw_bands(
+            &mut backend,
+            RenderRefs {
+                button: None,
+                text_display: None,
+                list: None,
+                tree: None,
+                data_table: None,
+                tab_bar: None,
+                extra: no_extras(),
+                widgets: &widgets,
+                list_scroll_px: None,
+                tree_scroll_px: None,
+                data_table_scroll_px: None,
+            },
+            &mut hits,
+            &|_| InteractionState::default(),
+        );
+
+        let widget_hit_id = hits
+            .iter()
+            .find_map(|hit| match hit {
+                PaintedHit::Widget { id, .. } => Some(*id),
+                _ => None,
+            })
+            .expect("a PaintedHit::Widget is recorded for the flat icon_grid slot");
+        assert_eq!(widget_hit_id.as_str(), "icons:1");
     }
 
     #[test]
