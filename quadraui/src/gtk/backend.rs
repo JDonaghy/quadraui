@@ -2160,6 +2160,14 @@ impl crate::runtime::PreprocessBackend for GtkBackend {
     fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent {
         self.fold_double_click(ev)
     }
+
+    /// Forwards to the [`crate::widget_state::WidgetRoutingState`] in
+    /// this backend's [`crate::backend_core::BackendCore`] — see
+    /// [`crate::runtime::PreprocessBackend::widget_routing_mut`]'s doc
+    /// for what a backend keeping the trait's `None` default opts out of.
+    fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
+        Some(self.core.widget_routing_mut())
+    }
 }
 
 /// Map a portable [`ResizeEdge`] to GDK's native `SurfaceEdge`, the
@@ -7188,6 +7196,28 @@ mod tests {
         backend.push_event(crate::UiEvent::WindowFocused(true));
         let q = backend.events_handle();
         assert_eq!(q.borrow().len(), 1);
+    }
+
+    // ── Widget-contract routing engine ───────────────────────────────
+
+    /// `PreprocessBackend::widget_routing_mut` returns `Some`, wiring
+    /// `GtkBackend` onto `runtime::preprocess_event`'s widget-contract
+    /// routing step — and the returned state is the same `BackendCore`
+    /// instance across calls, not a fresh one each time.
+    #[test]
+    fn widget_routing_mut_is_wired_and_stable_across_calls() {
+        use crate::runtime::PreprocessBackend;
+
+        let mut b = GtkBackend::new();
+        let routing = b
+            .widget_routing_mut()
+            .expect("GtkBackend must opt into widget-contract routing");
+        routing.hovered = Some(WidgetId::new("hovered"));
+
+        assert_eq!(
+            b.widget_routing_mut().unwrap().hovered,
+            Some(WidgetId::new("hovered"))
+        );
     }
 
     // ── Background-thread wake ──────────────────────────────────────────
