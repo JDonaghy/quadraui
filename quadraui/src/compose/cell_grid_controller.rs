@@ -21,15 +21,14 @@
 //!
 //! # Scroll-to-follow and frozen panes
 //!
-//! [`Self::ensure_cursor_visible`] calls
-//! [`crate::behaviour::scroll::ensure_visible`] independently on the row
-//! and column axis, skipped entirely for a cursor inside the frozen
-//! rows/columns — those are always visible by construction, scrolled or
-//! not. The final clamp into `[0, max]` reuses [`scroll_by_clamped`]
-//! rather than hand-rolling the same arithmetic a third time. When the
-//! frozen rows/columns fill the rect outright the body window is zero
-//! wide, so there is no window to bring the cursor into: the offset only
-//! ever moves *back* towards the cursor's own rank there.
+//! [`Self::ensure_cursor_visible`] delegates its row/column arithmetic to
+//! [`crate::cell_grid_nav::ensure_visible_scroll`] — the same geometry
+//! [`crate::primitives::cell_grid::CellGrid`]'s [`crate::interactive::Interactive`]
+//! impl needs, kept in one shared, state-free place instead of two
+//! independent copies. When the frozen rows/columns fill the rect outright
+//! the body window is zero wide, so there is no window to bring the
+//! cursor into: the offset only ever moves *back* towards the cursor's
+//! own rank there.
 //!
 //! # No shared key classifier
 //!
@@ -55,12 +54,11 @@
 use std::collections::BTreeMap;
 
 use crate::backend::{Backend, Clipboard};
-use crate::behaviour::scroll::ensure_visible;
+use crate::cell_grid_nav;
 use crate::primitive::{LayoutCtx, Primitive};
 use crate::primitives::cell_grid::{
     Cell, CellEditState, CellGrid, CellGridHit, CellGridPrimitiveLayout,
 };
-use crate::primitives::scrollbar::scroll_by_clamped;
 use crate::primitives::text_input::EditOp;
 use crate::{
     ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, TextField, UiEvent, WidgetId,
@@ -539,41 +537,23 @@ impl CellGridController {
     /// section.
     fn ensure_cursor_visible(&mut self, backend: &dyn Backend, rect: Rect) {
         let (body_rows, body_cols, frozen_rows, frozen_cols) = self.body_metrics(backend, rect);
-        let (cr, cc) = self.cursor;
-
-        if cr >= frozen_rows {
-            let rank = cr - frozen_rows;
-            // A viewport that fits zero body rows (frozen rows fill the
-            // rect) gives `ensure_visible` no window to measure against, so
-            // it no-ops; a backwards move still pulls the offset back to
-            // the cursor's own rank there.
-            self.row_scroll = if body_rows == 0 {
-                self.row_scroll.min(rank)
-            } else {
-                ensure_visible(self.row_scroll, body_rows, rank)
-            };
-            let max_scroll = (self.row_count.saturating_sub(frozen_rows)).saturating_sub(body_rows);
-            self.row_scroll = scroll_by_clamped(self.row_scroll, 0, max_scroll);
-        }
-
-        if cc >= frozen_cols {
-            let rank = cc - frozen_cols;
-            // Same zero-width-body case as the row axis above.
-            self.col_scroll = if body_cols == 0 {
-                self.col_scroll.min(rank)
-            } else {
-                ensure_visible(self.col_scroll, body_cols, rank)
-            };
-            let max_scroll = (self.col_count.saturating_sub(frozen_cols)).saturating_sub(body_cols);
-            self.col_scroll = scroll_by_clamped(self.col_scroll, 0, max_scroll);
-        }
+        let (row_scroll, col_scroll) = cell_grid_nav::ensure_visible_scroll(
+            self.row_count,
+            self.col_count,
+            frozen_rows,
+            frozen_cols,
+            body_rows,
+            body_cols,
+            self.row_scroll,
+            self.col_scroll,
+            self.cursor,
+        );
+        self.row_scroll = row_scroll;
+        self.col_scroll = col_scroll;
     }
 
-    fn clamp_cell(&self, (row, col): (usize, usize)) -> (usize, usize) {
-        (
-            row.min(self.row_count.saturating_sub(1)),
-            col.min(self.col_count.saturating_sub(1)),
-        )
+    fn clamp_cell(&self, cell: (usize, usize)) -> (usize, usize) {
+        cell_grid_nav::clamp_cell(self.row_count, self.col_count, cell)
     }
 
     fn result_for_current_selection(&self) -> CellGridControllerEvent {
@@ -628,9 +608,8 @@ impl CellGridController {
         backend: &dyn Backend,
         rect: Rect,
     ) -> CellGridControllerEvent {
-        let (r, c) = self.cursor;
-        let nr = (r as isize + d_row).clamp(0, self.row_count.saturating_sub(1) as isize) as usize;
-        let nc = (c as isize + d_col).clamp(0, self.col_count.saturating_sub(1) as isize) as usize;
+        let (nr, nc) =
+            cell_grid_nav::move_by(self.row_count, self.col_count, self.cursor, d_row, d_col);
         self.set_cursor(nr, nc, extend, backend, rect)
     }
 
@@ -643,22 +622,8 @@ impl CellGridController {
         backend: &dyn Backend,
         rect: Rect,
     ) -> CellGridControllerEvent {
-        let (r, c) = self.cursor;
-        let (nr, nc) = if forward {
-            if c + 1 < self.col_count {
-                (r, c + 1)
-            } else if r + 1 < self.row_count {
-                (r + 1, 0)
-            } else {
-                (r, c)
-            }
-        } else if c > 0 {
-            (r, c - 1)
-        } else if r > 0 {
-            (r - 1, self.col_count.saturating_sub(1))
-        } else {
-            (r, c)
-        };
+        let (nr, nc) =
+            cell_grid_nav::move_tab(self.row_count, self.col_count, self.cursor, forward);
         self.set_cursor(nr, nc, false, backend, rect)
     }
 
@@ -670,13 +635,8 @@ impl CellGridController {
         backend: &dyn Backend,
         rect: Rect,
     ) -> CellGridControllerEvent {
-        let (r, c) = self.cursor;
-        let nr = if forward {
-            (r + 1).min(self.row_count.saturating_sub(1))
-        } else {
-            r.saturating_sub(1)
-        };
-        self.set_cursor(nr, c, false, backend, rect)
+        let (nr, nc) = cell_grid_nav::move_enter(self.row_count, self.cursor, forward);
+        self.set_cursor(nr, nc, false, backend, rect)
     }
 
     fn page(
@@ -687,17 +647,18 @@ impl CellGridController {
         rect: Rect,
     ) -> CellGridControllerEvent {
         let (body_rows, ..) = self.body_metrics(backend, rect);
-        let page = body_rows.max(1) as isize;
-        let delta = if forward { page } else { -page };
+        let delta = cell_grid_nav::page_delta(body_rows, forward);
         self.move_by(delta, 0, extend, backend, rect)
     }
 
     fn select_all(&mut self, backend: &dyn Backend, rect: Rect) -> CellGridControllerEvent {
-        if self.row_count == 0 || self.col_count == 0 {
+        let Some((cursor, anchor)) =
+            cell_grid_nav::select_all_bounds(self.row_count, self.col_count)
+        else {
             return CellGridControllerEvent::Ignored;
-        }
-        self.cursor = (0, 0);
-        self.selection_anchor = Some((self.row_count - 1, self.col_count - 1));
+        };
+        self.cursor = cursor;
+        self.selection_anchor = Some(anchor);
         self.ensure_cursor_visible(backend, rect);
         self.result_for_current_selection()
     }
@@ -708,11 +669,13 @@ impl CellGridController {
         backend: &dyn Backend,
         rect: Rect,
     ) -> CellGridControllerEvent {
-        if self.col_count == 0 {
+        let Some((cursor, anchor)) =
+            cell_grid_nav::select_row_bounds(self.row_count, self.col_count, row)
+        else {
             return CellGridControllerEvent::Ignored;
-        }
-        self.cursor = self.clamp_cell((row, 0));
-        self.selection_anchor = Some(self.clamp_cell((row, self.col_count - 1)));
+        };
+        self.cursor = cursor;
+        self.selection_anchor = Some(anchor);
         self.ensure_cursor_visible(backend, rect);
         self.result_for_current_selection()
     }
@@ -723,11 +686,13 @@ impl CellGridController {
         backend: &dyn Backend,
         rect: Rect,
     ) -> CellGridControllerEvent {
-        if self.row_count == 0 {
+        let Some((cursor, anchor)) =
+            cell_grid_nav::select_col_bounds(self.row_count, self.col_count, col)
+        else {
             return CellGridControllerEvent::Ignored;
-        }
-        self.cursor = self.clamp_cell((0, col));
-        self.selection_anchor = Some(self.clamp_cell((self.row_count - 1, col)));
+        };
+        self.cursor = cursor;
+        self.selection_anchor = Some(anchor);
         self.ensure_cursor_visible(backend, rect);
         self.result_for_current_selection()
     }

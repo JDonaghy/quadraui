@@ -220,6 +220,33 @@ fn typing_starts_an_edit_and_enter_commits_it_and_moves_down() {
 }
 
 #[test]
+fn drag_through_the_real_routing_engine_extends_the_selection_then_releases_it() {
+    let mut driver = TuiDriver::new(CellGridDriverApp::new(), 60, 15);
+    let (x0, y0) = driver.find("A1").expect("cell A1 visible");
+    let (x1, y1) = driver.find("C3").expect("cell C3 visible");
+
+    // `drag` is down -> move -> up, all through the real
+    // `dispatch`/`preprocess_event` path — not a hand-built
+    // `RoutedEvent::Pointer { kind: PointerKind::Up, .. }` the way a
+    // `CellGrid::handle` unit test would, since that `Up` is exactly what
+    // the runtime previously never produced for a widget-routed capture.
+    driver.drag(x0, y0, x1, y1);
+    assert_eq!(driver.app().grid.cursor, (2, 2));
+    assert_eq!(driver.app().grid.selection_anchor, Some((0, 0)));
+
+    // The drag's `mouse_up` must have released the pointer capture: a
+    // later move with no new `mouse_down` has to fall through to plain
+    // hover tracking (`route_widget_hover`), not keep routing to the grid
+    // as an extending drag — otherwise the selection would follow the
+    // bare cursor forever, with every other widget losing Enter/Leave
+    // hover besides.
+    let (x2, y2) = driver.find("A1").expect("cell A1 still visible");
+    driver.mouse_move(x2, y2);
+    assert_eq!(driver.app().grid.cursor, (2, 2));
+    assert_eq!(driver.app().grid.selection_anchor, Some((0, 0)));
+}
+
+#[test]
 fn escape_cancels_an_edit_without_moving_the_cursor_or_changing_the_text() {
     let mut driver = TuiDriver::new(CellGridDriverApp::new(), 60, 15);
     let (x, y) = driver.find("A1").expect("cell A1 visible");

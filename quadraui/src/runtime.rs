@@ -687,6 +687,17 @@ where
 ///   [`crate::widget_state::WidgetRoutingState::captured`] names a
 ///   widget, every move routes to it directly ([`PointerKind::Move`]),
 ///   bypassing hit-testing/hover entirely — see [`route_widget_move`].
+/// - **Release** (`MouseUp`): routes [`PointerKind::Up`] to whichever
+///   widget currently holds the capture, if any — see
+///   [`route_widget_pointer_up`]. This is what lets a widget's own
+///   `MouseUp` arm actually run [`EventHost::release_pointer`] in the real
+///   runtime, not just in a test that hands `handle` an `Up` by hand;
+///   without it a capture taken on `MouseDown` is never released, so
+///   every later `MouseMoved` keeps routing to the captured widget
+///   (`route_widget_move`) and every other widget on screen permanently
+///   loses hover (`route_widget_hover` is bypassed while captured).
+///   Bubbles (`Bubble(Continue)`) when nothing is captured — a release
+///   with no active capture has nothing to deliver.
 /// - **Enter/Leave** (`MouseMoved`, no active capture): compares this
 ///   move's hit-test result against
 ///   [`crate::widget_state::WidgetRoutingState::hovered`] and delivers
@@ -703,8 +714,10 @@ where
 ///   [`dispatch_widget_routed_event`].
 ///
 /// Every other [`UiEvent`] variant falls straight through
-/// (`Bubble(Continue)`) — scroll/double-click/mouse-up widget routing is
-/// future work, not needed by anything that opts in today.
+/// (`Bubble(Continue)`) — scroll/double-click widget routing is future
+/// work, not needed by anything that opts in today. `MouseUp` is handled
+/// above, not here, since it only ever needs the capture lookup, never a
+/// fresh hit-test.
 ///
 /// Returns [`WidgetRouteOutcome`] rather than a bare `Option<EventOutcome>`
 /// because `MouseMoved`'s hover/capture handling never claims the event
@@ -745,6 +758,9 @@ where
             let side_effect = route_widget_move(*position, backend, app, &tree);
             WidgetRouteOutcome::Bubble(side_effect)
         }
+        UiEvent::MouseUp {
+            position, button, ..
+        } => route_widget_pointer_up(*position, *button, backend, app, &tree),
         UiEvent::KeyPressed {
             key,
             modifiers,
@@ -815,6 +831,40 @@ where
         mods: modifiers,
     };
     dispatch_widget_routed_event(id, node, &routed, backend, app)
+}
+
+/// `MouseUp` arm of [`route_widget_event`]: deliver [`PointerKind::Up`] to
+/// whichever widget currently holds the pointer capture (see
+/// [`EventHost::capture_pointer`]), the same capture-bypasses-hit-test rule
+/// [`route_widget_move`] follows — a release has to reach the widget that
+/// is still dragging even if the pointer has since left its bounds.
+/// `Bubble(Continue)` when nothing is captured, including a capture whose
+/// widget id this frame's tree doesn't have — there is nothing to
+/// release either way.
+fn route_widget_pointer_up<B, A>(
+    position: Point,
+    button: MouseButton,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> WidgetRouteOutcome
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let Some(captured_id) = backend.widget_routing_mut().and_then(|r| r.captured) else {
+        return WidgetRouteOutcome::Bubble(Reaction::Continue);
+    };
+    let Some(node) = tree.find(&captured_id) else {
+        return WidgetRouteOutcome::Bubble(Reaction::Continue);
+    };
+    let routed = RoutedEvent::Pointer {
+        kind: PointerKind::Up(button),
+        sub: None,
+        local: local_point(position, node.rect),
+        mods: Modifiers::default(),
+    };
+    dispatch_widget_routed_event(captured_id, node, &routed, backend, app)
 }
 
 /// `KeyPressed` arm of [`route_widget_event`]: route to whichever widget
@@ -2444,6 +2494,173 @@ mod widget_routing_tests {
                 UiEvent::TextCopied("redraw-after:100".into()),
                 UiEvent::TextCopied("redraw-after:5".into()),
             ]
+        );
+    }
+
+    /// A minimal widget that captures the pointer on `Down` and releases
+    /// it on `Up` — isolated from `Counter`'s unrelated arms so
+    /// [`route_widget_pointer_up`]'s own effect (capture release) is the
+    /// only thing under test.
+    #[derive(Debug)]
+    struct CaptureWidget {
+        id: WidgetId,
+    }
+
+    #[derive(Debug, Default, Clone, Copy, PartialEq)]
+    struct CaptureState {
+        /// How many `PointerKind::Move`s this widget saw while it held
+        /// the capture — zero once a `MouseUp` has released it, proving
+        /// a later move fell through to plain hover tracking instead.
+        moves_while_captured: u32,
+    }
+
+    impl A11yPrimitive for CaptureWidget {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for CaptureWidget {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _theme: &crate::theme::Theme,
+            _style: &crate::style::Style,
+        ) {
+        }
+    }
+
+    impl Interactive for CaptureWidget {
+        type State = CaptureState;
+        type Action = Activated;
+
+        fn focus(&self) -> FocusSpec {
+            FocusSpec::Stop
+        }
+
+        fn handle(
+            &self,
+            state: &mut CaptureState,
+            event: &RoutedEvent,
+            _layout: &Rect,
+            cx: &mut EventCx,
+        ) -> Handled<Activated> {
+            match event {
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Down(_),
+                    ..
+                } => {
+                    cx.capture_pointer();
+                    Handled::Consumed
+                }
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Move,
+                    ..
+                } => {
+                    state.moves_while_captured += 1;
+                    Handled::Consumed
+                }
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Up(_),
+                    ..
+                } => {
+                    cx.release_pointer();
+                    Handled::Consumed
+                }
+                _ => Handled::Ignored,
+            }
+        }
+    }
+
+    fn capture_tree(id: WidgetId) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(id, COUNTER_RECT, Box::new(CaptureWidget { id }));
+        tree
+    }
+
+    struct CaptureApp {
+        id: WidgetId,
+    }
+
+    impl AppLogic for CaptureApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn crate::Backend, _area: ()) {}
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+            Reaction::Redraw
+        }
+
+        fn frame_tree(&self, _area: ()) -> FrameTree {
+            capture_tree(self.id)
+        }
+    }
+
+    /// The real-runtime regression this module's `MouseUp` arm fixes: a
+    /// left press captures the pointer, and only `MouseUp` routing (not
+    /// the `PointerKind::Up` a hand-built `Interactive::handle` call could
+    /// fabricate) can run the widget's own `EventHost::release_pointer`.
+    /// Without it, a later `MouseMoved` keeps routing to the captured
+    /// widget forever instead of falling through to plain hover tracking.
+    #[test]
+    fn mouse_up_releases_the_capture_so_a_later_move_is_not_routed_to_it() {
+        let id = WidgetId::new("capture-widget");
+        let mut backend = TuiBackend::new();
+        let mut app = CaptureApp { id };
+
+        preprocess_event(mouse_down_at(1.0, 1.0), &mut backend, &mut app);
+        assert_eq!(
+            backend.widget_routing_mut().unwrap().captured,
+            Some(id),
+            "a left press must capture the pointer"
+        );
+
+        preprocess_event(
+            UiEvent::MouseUp {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(1.0, 1.0),
+            },
+            &mut backend,
+            &mut app,
+        );
+        assert_eq!(
+            backend.widget_routing_mut().unwrap().captured,
+            None,
+            "MouseUp must route to the captured widget so its own release_pointer call takes effect"
+        );
+
+        preprocess_event(
+            UiEvent::MouseMoved {
+                position: Point::new(1.0, 1.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+            &mut app,
+        );
+        let moves = backend
+            .widget_routing_mut()
+            .unwrap()
+            .states
+            .state_for(id, &CaptureWidget { id })
+            .downcast_mut::<CaptureState>()
+            .unwrap()
+            .moves_while_captured;
+        assert_eq!(
+            moves, 0,
+            "a move after release must never reach the widget as PointerKind::Move again"
         );
     }
 
