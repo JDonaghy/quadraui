@@ -239,6 +239,12 @@ pub mod layout;
 pub mod paths;
 pub mod prelude;
 pub mod primitives;
+// Pure cursor/selection arithmetic `primitives::cell_grid::CellGrid`'s
+// `Interactive` impl and `compose::CellGridController` both need against the
+// identical row/column grid — crate-private since neither caller's own
+// public shape (the descriptor, the controller's API) changes; only their
+// internals call through it instead of each hand-rolling the same geometry.
+pub(crate) mod cell_grid_nav;
 pub mod shell;
 pub mod style;
 pub mod terminal_style;

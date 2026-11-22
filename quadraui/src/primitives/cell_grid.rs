@@ -719,6 +719,12 @@ pub enum CellGridEvent {
     /// `Interactive::handle` only ever has `&self`, so every navigation
     /// outcome — a plain arrow, Tab, a header/corner click, a drag — is
     /// reported this way rather than mutated in place.
+    ///
+    /// Does not carry a focus signal of its own: [`CellGrid::has_focus`]
+    /// still needs a host's own [`crate::UiEvent::FocusChanged`] wiring
+    /// (the click-to-focus step already moved keyboard focus to this
+    /// widget by the time `handle` ran; this event is only the
+    /// cursor/selection half of that).
     Navigated {
         cursor: (usize, usize),
         selection_anchor: Option<(usize, usize)>,
@@ -1632,61 +1638,39 @@ pub struct CellGridState {
 }
 
 impl CellGrid {
-    fn clamp_cell_abs(&self, (row, col): (usize, usize)) -> (usize, usize) {
-        (
-            row.min(self.row_count.saturating_sub(1)),
-            col.min(self.col_count.saturating_sub(1)),
-        )
+    fn clamp_cell_abs(&self, cell: (usize, usize)) -> (usize, usize) {
+        crate::cell_grid_nav::clamp_cell(self.row_count, self.col_count, cell)
     }
 
     /// Scroll offsets that bring `cursor` into view against `layout`'s
-    /// already-resolved rows/columns, independently per axis and
-    /// skipped for a cursor inside the frozen prefix — the same
-    /// algorithm [`crate::compose::CellGridController::ensure_cursor_visible`]
-    /// runs, except the viewport capacity comes from `layout`'s own
-    /// row/column count at the *current* scroll position rather than a
-    /// fresh zero-scroll probe (`Interactive::handle` has no
-    /// `Backend`/`Rect` to resolve one with). For a sheet with uniform
-    /// row/column sizing the two agree everywhere except right at the
-    /// sheet's trailing edge, where this slightly undercounts capacity
-    /// and so can scroll, at most, one page short of the controller's
-    /// own result.
+    /// already-resolved rows/columns — the same
+    /// [`crate::cell_grid_nav::ensure_visible_scroll`]
+    /// [`crate::compose::CellGridController::ensure_cursor_visible`] calls,
+    /// except the viewport capacity comes from `layout`'s own row/column
+    /// count at the *current* scroll position rather than a fresh
+    /// zero-scroll probe (`Interactive::handle` has no `Backend`/`Rect` to
+    /// resolve one with). For a sheet with uniform row/column sizing the
+    /// two agree everywhere except right at the sheet's trailing edge,
+    /// where this slightly undercounts capacity and so can scroll, at
+    /// most, one page short of the controller's own result.
     fn ensure_visible_scroll(
         &self,
         layout: &CellGridLayout,
         cursor: (usize, usize),
     ) -> (usize, usize) {
-        let frozen_rows = self.frozen_rows.min(self.row_count);
-        let frozen_cols = self.frozen_cols.min(self.col_count);
         let body_rows = layout.rows.len().saturating_sub(layout.frozen_rows);
         let body_cols = layout.cols.len().saturating_sub(layout.frozen_cols);
-        let (cr, cc) = cursor;
-
-        let row_scroll = if cr >= frozen_rows {
-            let rank = cr - frozen_rows;
-            let scroll = if body_rows == 0 {
-                self.row_scroll.min(rank)
-            } else {
-                crate::behaviour::scroll::ensure_visible(self.row_scroll, body_rows, rank)
-            };
-            let max_scroll = (self.row_count.saturating_sub(frozen_rows)).saturating_sub(body_rows);
-            scroll.min(max_scroll)
-        } else {
-            self.row_scroll
-        };
-        let col_scroll = if cc >= frozen_cols {
-            let rank = cc - frozen_cols;
-            let scroll = if body_cols == 0 {
-                self.col_scroll.min(rank)
-            } else {
-                crate::behaviour::scroll::ensure_visible(self.col_scroll, body_cols, rank)
-            };
-            let max_scroll = (self.col_count.saturating_sub(frozen_cols)).saturating_sub(body_cols);
-            scroll.min(max_scroll)
-        } else {
-            self.col_scroll
-        };
-        (row_scroll, col_scroll)
+        crate::cell_grid_nav::ensure_visible_scroll(
+            self.row_count,
+            self.col_count,
+            self.frozen_rows,
+            self.frozen_cols,
+            body_rows,
+            body_cols,
+            self.row_scroll,
+            self.col_scroll,
+            cursor,
+        )
     }
 
     /// Build the [`CellGridEvent::Navigated`] that moves the cursor to
@@ -1724,10 +1708,14 @@ impl CellGrid {
         extend: bool,
         layout: &CellGridLayout,
     ) -> Handled<CellGridEvent> {
-        let (r, c) = self.cursor;
-        let nr = (r as isize + d_row).clamp(0, self.row_count.saturating_sub(1) as isize) as usize;
-        let nc = (c as isize + d_col).clamp(0, self.col_count.saturating_sub(1) as isize) as usize;
-        self.navigated((nr, nc), extend, layout)
+        let next = crate::cell_grid_nav::move_by(
+            self.row_count,
+            self.col_count,
+            self.cursor,
+            d_row,
+            d_col,
+        );
+        self.navigated(next, extend, layout)
     }
 
     /// Tab (`forward`) / Shift+Tab: across the row, wrapping to the
@@ -1735,35 +1723,16 @@ impl CellGrid {
     /// the selection, matching every spreadsheet's own Tab convention
     /// (same as [`crate::compose::CellGridController::move_tab`]).
     fn navigate_tab(&self, forward: bool, layout: &CellGridLayout) -> Handled<CellGridEvent> {
-        let (r, c) = self.cursor;
-        let (nr, nc) = if forward {
-            if c + 1 < self.col_count {
-                (r, c + 1)
-            } else if r + 1 < self.row_count {
-                (r + 1, 0)
-            } else {
-                (r, c)
-            }
-        } else if c > 0 {
-            (r, c - 1)
-        } else if r > 0 {
-            (r - 1, self.col_count.saturating_sub(1))
-        } else {
-            (r, c)
-        };
-        self.navigated((nr, nc), false, layout)
+        let next =
+            crate::cell_grid_nav::move_tab(self.row_count, self.col_count, self.cursor, forward);
+        self.navigated(next, false, layout)
     }
 
     /// Enter (`forward`) / Shift+Enter: down/up within the same column —
     /// never extends the selection.
     fn navigate_enter(&self, forward: bool, layout: &CellGridLayout) -> Handled<CellGridEvent> {
-        let (r, c) = self.cursor;
-        let nr = if forward {
-            (r + 1).min(self.row_count.saturating_sub(1))
-        } else {
-            r.saturating_sub(1)
-        };
-        self.navigated((nr, c), false, layout)
+        let next = crate::cell_grid_nav::move_enter(self.row_count, self.cursor, forward);
+        self.navigated(next, false, layout)
     }
 
     fn navigate_page(
@@ -1773,30 +1742,31 @@ impl CellGrid {
         layout: &CellGridLayout,
     ) -> Handled<CellGridEvent> {
         let body_rows = layout.rows.len().saturating_sub(layout.frozen_rows);
-        let page = body_rows.max(1) as isize;
-        let delta = if forward { page } else { -page };
+        let delta = crate::cell_grid_nav::page_delta(body_rows, forward);
         self.navigate_by(delta, 0, extend, layout)
     }
 
     fn navigate_select_all(&self, layout: &CellGridLayout) -> Handled<CellGridEvent> {
-        if self.row_count == 0 || self.col_count == 0 {
+        let Some((cursor, anchor)) =
+            crate::cell_grid_nav::select_all_bounds(self.row_count, self.col_count)
+        else {
             return Handled::Ignored;
-        }
-        let (row_scroll, col_scroll) = self.ensure_visible_scroll(layout, (0, 0));
+        };
+        let (row_scroll, col_scroll) = self.ensure_visible_scroll(layout, cursor);
         Handled::Event(CellGridEvent::Navigated {
-            cursor: (0, 0),
-            selection_anchor: Some((self.row_count - 1, self.col_count - 1)),
+            cursor,
+            selection_anchor: Some(anchor),
             row_scroll,
             col_scroll,
         })
     }
 
     fn navigate_select_row(&self, row: usize, layout: &CellGridLayout) -> Handled<CellGridEvent> {
-        if self.col_count == 0 {
+        let Some((cursor, anchor)) =
+            crate::cell_grid_nav::select_row_bounds(self.row_count, self.col_count, row)
+        else {
             return Handled::Ignored;
-        }
-        let cursor = self.clamp_cell_abs((row, 0));
-        let anchor = self.clamp_cell_abs((row, self.col_count - 1));
+        };
         let (row_scroll, col_scroll) = self.ensure_visible_scroll(layout, cursor);
         Handled::Event(CellGridEvent::Navigated {
             cursor,
@@ -1807,11 +1777,11 @@ impl CellGrid {
     }
 
     fn navigate_select_col(&self, col: usize, layout: &CellGridLayout) -> Handled<CellGridEvent> {
-        if self.row_count == 0 {
+        let Some((cursor, anchor)) =
+            crate::cell_grid_nav::select_col_bounds(self.row_count, self.col_count, col)
+        else {
             return Handled::Ignored;
-        }
-        let cursor = self.clamp_cell_abs((0, col));
-        let anchor = self.clamp_cell_abs((self.row_count - 1, col));
+        };
         let (row_scroll, col_scroll) = self.ensure_visible_scroll(layout, cursor);
         Handled::Event(CellGridEvent::Navigated {
             cursor,
@@ -2007,7 +1977,21 @@ impl CellGrid {
             Key::Char('a') if modifiers.ctrl || modifiers.cmd => {
                 self.apply_edit(edit, EditOp::SelectAll)
             }
-            Key::Char(c) => self.apply_edit(edit, EditOp::InsertChar(*c)),
+            // Guarded the same way the idle path's `Key::Char(c) if !jump`
+            // arm is: an unmodified character edits the buffer, but a
+            // Ctrl/Cmd/Alt chord (clipboard shortcuts, accelerators) must
+            // answer `Ignored` and bubble rather than insert the bare
+            // letter and swallow the keypress.
+            Key::Char(c) if !modifiers.ctrl && !modifiers.cmd && !modifiers.alt => {
+                self.apply_edit(edit, EditOp::InsertChar(*c))
+            }
+            // A Ctrl/Cmd/Alt chord that isn't `Ctrl/Cmd+A` above (e.g.
+            // Ctrl+C/Ctrl+V, an `<C-s>`/`<C-z>`/`<C-q>` accelerator) is not
+            // this widget's to claim — bubble so `preprocess_event`'s
+            // later clipboard/accelerator steps still see it, rather than
+            // falling into the catch-all `Consumed` below and silently
+            // swallowing the keypress.
+            Key::Char(_) => Handled::Ignored,
 
             _ => Handled::Consumed,
         }
@@ -2098,6 +2082,14 @@ impl Interactive for CellGrid {
     /// would need a host's tab order to walk every cell in a
     /// million-row sheet). `FocusSpec::None` for an empty sheet — there
     /// is no cell for the cursor to land on.
+    ///
+    /// A non-empty sheet's `FocusSpec::Stop` is a deliberate keyboard
+    /// trap, the same way a real spreadsheet's grid is: `Self::handle`'s
+    /// idle path claims `Tab`/`Shift+Tab` for cell-to-cell movement
+    /// (`Self::navigate_tab`), ahead of a host's own Tab-cycling step, so
+    /// neither key ever moves focus off the grid. A host that wants an
+    /// escape hatch needs its own key (Escape, Ctrl+Tab, …) routed
+    /// before this widget sees the event.
     fn focus(&self) -> FocusSpec {
         if self.row_count == 0 || self.col_count == 0 {
             FocusSpec::None
@@ -2129,6 +2121,20 @@ impl Interactive for CellGrid {
                 }
                 RoutedEvent::Text(text) if !text.is_empty() => {
                     self.apply_edit(edit, EditOp::InsertText(text.clone()))
+                }
+                // A drag started before this edit began (press → type →
+                // release, with no commit/cancel in between) still owns
+                // the capture and `state.drag_anchor` — releasing both
+                // here, even though the edit itself ignores the gesture,
+                // is what keeps a capture from outliving its own drag.
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Up(MouseButton::Left),
+                    ..
+                } => {
+                    if state.drag_anchor.take().is_some() {
+                        cx.release_pointer();
+                    }
+                    Handled::Consumed
                 }
                 RoutedEvent::Pointer { .. } => Handled::Consumed,
                 _ => Handled::Ignored,
@@ -3281,6 +3287,52 @@ mod interactive_tests {
     }
 
     #[test]
+    fn ctrl_or_cmd_or_alt_chord_bubbles_instead_of_inserting_the_letter_while_editing() {
+        let mut g = grid(5, 5);
+        g.editing = Some(CellEditState {
+            text: "h".to_string(),
+            cursor: 1,
+            selection_anchor: None,
+            placeholder: None,
+        });
+        let layout = layout_for(&g);
+
+        for modifiers in [
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        ] {
+            let mut state = CellGridState::default();
+            let mut host = MockHost::default();
+            let mut cx = EventCx::new(g.id, &mut host);
+            let outcome = g.handle(
+                &mut state,
+                &RoutedEvent::Key(KeyEvent {
+                    key: Key::Char('v'),
+                    modifiers,
+                    repeat: false,
+                }),
+                &layout,
+                &mut cx,
+            );
+            // Must bubble (`Ignored`), not insert a literal "v" and claim
+            // the keypress — a claimed Ctrl/Cmd+V would never reach
+            // `preprocess_event`'s later paste step, and an Alt+V would
+            // never reach a future Alt accelerator.
+            assert_eq!(outcome, Handled::Ignored, "modifiers = {modifiers:?}");
+        }
+    }
+
+    #[test]
     fn enter_while_editing_commits_and_emits_the_cursor_move_as_an_extra_event() {
         let mut g = grid(5, 5);
         g.editing = Some(CellEditState {
@@ -3348,6 +3400,45 @@ mod interactive_tests {
             &mut cx,
         );
         assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(g.editing.as_ref().map(|e| e.text.as_str()), Some("hi"));
+    }
+
+    #[test]
+    fn a_drag_started_before_an_edit_still_releases_its_capture_on_mouse_up() {
+        let mut g = grid(5, 5);
+        g.editing = Some(CellEditState {
+            text: "hi".to_string(),
+            cursor: 2,
+            selection_anchor: None,
+            placeholder: None,
+        });
+        let layout = layout_for(&g);
+        // A drag that started before typing began — e.g. a press whose
+        // move/edit sequence is covered elsewhere; here it's injected
+        // directly, the way `mouse_up_releases_an_active_drag` injects it
+        // for the idle path.
+        let mut state = CellGridState {
+            drag_anchor: Some((1, 1)),
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+
+        let outcome = g.handle(
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Up(MouseButton::Left),
+                sub: None,
+                local: Point::new(3.0, 3.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(state.drag_anchor, None);
+        assert_eq!(host.released, 1);
+        // The edit itself is untouched — only the stale drag bookkeeping
+        // was cleaned up.
         assert_eq!(g.editing.as_ref().map(|e| e.text.as_str()), Some("hi"));
     }
 
