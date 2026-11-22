@@ -2412,6 +2412,12 @@ impl<A: AppLogic + WindowCloseHandling> AppLogic for NativeExitPolicy<A> {
         self.inner.render(backend, area);
     }
 
+    // `AppLogic::tab_stops` is `#[deprecated]` in favor of
+    // `extra_tab_stops`, but this wrapper must keep forwarding it
+    // unconditionally for as long as the deprecated method exists at all —
+    // an inner app that still overrides it must keep working through
+    // `NativeExitPolicy`.
+    #[allow(deprecated)]
     fn tab_stops(&self, area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
         self.inner.tab_stops(area)
     }
