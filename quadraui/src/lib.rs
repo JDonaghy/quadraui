@@ -595,7 +595,7 @@ mod backend_core;
 pub use a11y::{
     backend_a11y_tree, frame_to_tree, frame_to_tree_with_modal, markdown_a11y_children, A11yAction,
     A11yActionValue, A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive,
-    A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate, A11yValueRange,
+    A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate, A11yValueRange, FocusSource,
 };
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;

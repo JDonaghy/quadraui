@@ -87,7 +87,7 @@ pub use action::route_widget_action;
 pub use content::markdown_a11y_children;
 pub use tree::{
     backend_a11y_tree, frame_to_tree, frame_to_tree_with_modal, A11yChild, A11yNodeId,
-    A11yPrimitive, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate,
+    A11yPrimitive, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate, FocusSource,
 };
 
 /// A typed accessibility role, replacing a free-form role string.

@@ -366,9 +366,8 @@ pub(crate) trait PreprocessBackend {
 ///    ([`FocusTree::focus_next`]/[`FocusTree::focus_prev`] —
 ///    `NamedKey::BackTab`, or `NamedKey::Tab` with Shift held, retreats;
 ///    plain `NamedKey::Tab` advances), mirroring the result back into
-///    [`FocusManager`] so [`focused_stop_rect`] and
-///    `crate::a11y::tree::frame_to_tree` (both still flat-`FocusManager`
-///    readers) see the same focused id, then deliver
+///    [`FocusManager`] so [`focused_stop_rect`] (still a flat-`FocusManager`
+///    reader) sees the same focused id, then deliver
 ///    `UiEvent::FocusChanged` instead of the raw key press. Ctrl/Alt/Cmd
 ///    held is left alone (reserved for app-level chords like
 ///    `TabGroupController`'s Ctrl-Tab pane switching). While both stay
@@ -488,11 +487,11 @@ where
                 .is_some_and(|id| !stops.iter().any(|(stop_id, _)| stop_id == id));
             if !stops.is_empty() && !focus_excluded_from_stops {
                 // Both stores cycle together: `FocusTree` is what
-                // `route_widget_key`/`WidgetEventHost` read, `FocusManager`
-                // is what `focused_stop_rect` and `a11y::tree::frame_to_tree`
-                // still read — see [`crate::focus::FocusTree::focus_next`]'s
-                // doc for why a flat `tab_stops`/`extra_tab_stops` pair
-                // cycles the tree too rather than only the manager.
+                // `route_widget_key`/`WidgetEventHost`/`a11y::tree::frame_to_tree`
+                // read, `FocusManager` is what `focused_stop_rect` still reads
+                // — see [`crate::focus::FocusTree::focus_next`]'s doc for why
+                // a flat `tab_stops`/`extra_tab_stops` pair cycles the tree
+                // too rather than only the manager.
                 backend.focus_manager_mut().sync_tab_order(&stops);
                 backend.focus_tree_mut().sync_tab_order(&stops);
                 let retreat = matches!(named, NamedKey::BackTab) || modifiers.shift;

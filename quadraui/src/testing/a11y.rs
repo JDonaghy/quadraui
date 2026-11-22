@@ -50,7 +50,7 @@ use crate::a11y::{
     A11yTreeBuilder, A11yTreeNode, A11yUpdate,
 };
 use crate::event::UiEvent;
-use crate::focus::FocusManager;
+use crate::focus::FocusTree;
 use crate::frame::{OwnedFrame, ScreenLayout, Surface};
 use crate::WidgetId;
 
@@ -63,7 +63,7 @@ use crate::WidgetId;
 pub struct A11yScenario {
     layout: ScreenLayout,
     overrides: Vec<(usize, A11yInfo)>,
-    focus: FocusManager,
+    focus: FocusTree,
     builder: A11yTreeBuilder,
 }
 
@@ -153,7 +153,7 @@ impl A11yScenario {
 
     /// Sets (or clears) keyboard focus.
     pub fn set_focus(&mut self, id: Option<WidgetId>) {
-        self.focus.set_focus(id);
+        self.focus.set_focus(id.map(|id| (id, None)));
     }
 
     /// The frame this scenario captures, with any
@@ -384,7 +384,7 @@ window \"quadraui\" [focused]
         let scenario =
             A11yScenario::new().with_surface(list_surface("files", "Files", &["a.rs"], 0));
         let snapshot = scenario.snapshot();
-        let direct = frame_to_tree(&scenario.frame(), &FocusManager::new());
+        let direct = frame_to_tree(&scenario.frame(), &FocusTree::new());
         assert_eq!(snapshot.text(), direct.to_snapshot());
         assert_eq!(snapshot.to_string(), direct.to_snapshot());
     }
