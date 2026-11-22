@@ -50,35 +50,24 @@ fn build_grid(
                 .collect()
         })
         .collect();
-    CellGrid {
-        id: WidgetId::new("bench-cell-grid"),
-        row_count: total_rows,
-        col_count: total_cols,
-        frozen_rows: 1,
-        frozen_cols: 1,
-        row_scroll: total_rows / 2,
-        col_scroll: total_cols / 2,
-        default_row_height: 1.0,
-        default_col_width: 8.0,
-        row_heights: Default::default(),
-        col_widths: Default::default(),
-        show_row_headers: true,
-        show_col_headers: true,
-        row_labels: Default::default(),
-        col_labels: Default::default(),
-        cursor: (total_rows / 2, total_cols / 2),
-        selection_anchor: None,
-        cells,
-        // Matches `row_scroll`/`col_scroll` above (both clamped the same
-        // way `CellGrid::cells_window` clamps them) so `bench_cells_requested`
-        // exercises the "already covered, no request" fast path rather
-        // than always falling through to the allocating `Some` branch.
-        loaded_row_start: 1 + total_rows / 2,
-        loaded_col_start: 1 + total_cols / 2,
-        has_focus: true,
-        show_scrollbar: true,
-        editing: None,
-    }
+    let mut grid = CellGrid::new(WidgetId::new("bench-cell-grid"));
+    grid.row_count = total_rows;
+    grid.col_count = total_cols;
+    grid.frozen_rows = 1;
+    grid.frozen_cols = 1;
+    grid.row_scroll = total_rows / 2;
+    grid.col_scroll = total_cols / 2;
+    grid.cursor = (total_rows / 2, total_cols / 2);
+    grid.cells = cells;
+    // Matches `row_scroll`/`col_scroll` above (both clamped the same
+    // way `CellGrid::cells_window` clamps them) so `bench_cells_requested`
+    // exercises the "already covered, no request" fast path rather
+    // than always falling through to the allocating `Some` branch.
+    grid.loaded_row_start = 1 + total_rows / 2;
+    grid.loaded_col_start = 1 + total_cols / 2;
+    grid.has_focus = true;
+    grid.show_scrollbar = true;
+    grid
 }
 
 fn bench_frame_build(c: &mut Criterion) {

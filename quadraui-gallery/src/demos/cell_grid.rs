@@ -113,36 +113,23 @@ impl CellGridDemo {
 
     fn grid(&self, backend: &dyn Backend) -> CellGrid {
         let (row_height, col_width) = Self::cell_size(backend);
-        CellGrid {
-            id: WidgetId::new("gallery:cell-grid"),
-            row_count: self.row_count(),
-            col_count: self.col_count(),
-            frozen_rows: 1,
-            frozen_cols: 0,
-            row_scroll: 0,
-            col_scroll: 0,
-            default_row_height: row_height,
-            default_col_width: col_width,
-            row_heights: Default::default(),
-            col_widths: Default::default(),
-            show_row_headers: true,
-            show_col_headers: true,
-            row_labels: Default::default(),
-            col_labels: Default::default(),
-            cursor: self.cursor,
-            selection_anchor: self.selection_anchor,
-            cells: self.cells.clone(),
-            // The whole sheet is loaded at once, so the scrolled body of
-            // `cells` starts at the first row below the frozen header
-            // (`frozen_rows`) and at column 0. A virtualised app would
-            // move these to track the block it last supplied in response
-            // to `CellGridEvent::CellsRequested`.
-            loaded_row_start: 1,
-            loaded_col_start: 0,
-            has_focus: self.has_focus,
-            show_scrollbar: false,
-            editing: None,
-        }
+        let mut grid = CellGrid::new(WidgetId::new("gallery:cell-grid"));
+        grid.row_count = self.row_count();
+        grid.col_count = self.col_count();
+        grid.frozen_rows = 1;
+        grid.default_row_height = row_height;
+        grid.default_col_width = col_width;
+        grid.cursor = self.cursor;
+        grid.selection_anchor = self.selection_anchor;
+        grid.cells = self.cells.clone();
+        // The whole sheet is loaded at once, so the scrolled body of
+        // `cells` starts at the first row below the frozen header
+        // (`frozen_rows`) and at column 0. A virtualised app would move
+        // these to track the block it last supplied in response to
+        // `CellGridEvent::CellsRequested`.
+        grid.loaded_row_start = 1;
+        grid.has_focus = self.has_focus;
+        grid
     }
 
     /// The resolved rectangular selection, without needing a `Backend`

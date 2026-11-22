@@ -11735,9 +11735,9 @@ fn grid_pressing_q_exits() {
     assert!(driver.exited(), "'q' should make the app exit");
 }
 
-// ── tui_cell_grid: CellGridController ─────────────────────────────────
+// ── tui_cell_grid: CellGrid ─────────────────────────────────
 
-/// Shift held on its own — `CellGridController` reads it to extend the
+/// Shift held on its own — `CellGrid::handle` reads it to extend the
 /// selection rather than move the cursor.
 fn shift_only() -> Modifiers {
     Modifiers {

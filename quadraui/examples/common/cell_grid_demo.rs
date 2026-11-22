@@ -1,9 +1,9 @@
-//! `CellGridController` demo: a virtual quarterly-sales sheet navigated
-//! the way a spreadsheet user expects — arrows, Tab/Enter, Page
-//! Up/Down, Home/End, Ctrl+Home/End, Ctrl+Arrow, Shift to extend, click
-//! and click-drag range selection, row/column-header and corner clicks,
-//! plus in-cell editing (typing a character or F2 starts an edit at the
-//! cursor cell, Esc cancels, Enter/Tab/the arrow keys commit and move).
+//! `CellGrid` demo: a virtual quarterly-sales sheet navigated the way a
+//! spreadsheet user expects — arrows, Tab/Enter, Page Up/Down, Home/End,
+//! Ctrl+Home/End, Ctrl+Arrow, Shift to extend, click and click-drag
+//! range selection, row/column-header and corner clicks, plus in-cell
+//! editing (typing a character or F2 starts an edit at the cursor cell,
+//! Esc cancels, Enter/Tab/the arrow keys commit and move).
 //!
 //! The sheet is `ROW_COUNT` × `COL_COUNT` — far larger than any
 //! terminal or window shows at once — and every cell's text is computed
@@ -16,15 +16,14 @@
 //! status bar — is agent-visible in the a11y tree the same `draw` call
 //! captures for every other example:
 //! - a [`TabBar`] of sheet tabs — each one its own independent
-//!   [`CellGridController`] with its own cursor, selection, scroll
-//!   position and edits, so switching tabs is a real sheet switch, not
-//!   a cosmetic label change;
+//!   [`CellGrid`] with its own cursor, selection, scroll position and
+//!   edits, so switching tabs is a real sheet switch, not a cosmetic
+//!   label change;
 //! - a [`TextField`] formula bar mirroring the active sheet's cursor
-//!   cell, wired through [`CellGridController::sync_formula_bar`] and
-//!   [`CellGridController::handle_formula_bar_key`] — clicking it opens
-//!   the same in-progress edit the grid's own inline editor would, just
-//!   with the caret rendered in the formula bar instead of over the
-//!   cell;
+//!   cell and, while an edit is in progress, the same [`CellEditState`]
+//!   the grid's own inline editor is drawing from — clicking it opens
+//!   the same edit the grid's F2/typing would, just with the caret
+//!   rendered in the formula bar instead of over the cell;
 //! - the [`CellGrid`] body itself;
 //! - a [`StatusBar`] reporting the cursor/selection in spreadsheet
 //!   notation (`B3`, `B3:D7`) plus — for a selection small enough to be
@@ -32,16 +31,28 @@
 //!   semantic outcome of every key and click is readable on screen
 //!   rather than inferred from highlight colours.
 //!
-//! The controller owns the cursor, the selection anchor, the scroll
-//! offsets, the frozen panes and (while active) the in-progress edit's
-//! text buffer; this `AppLogic` owns the cell *content* and nothing
-//! else, which is the whole split `CellGrid` is built around (see
+//! This app drives [`CellGrid`] directly through its own
+//! [`Interactive`] impl rather than registering it with
+//! [`quadraui::AppLogic::frame_tree`]: like `data_table_app.rs`'s own
+//! hand-rolled hit testing, every event this demo ever hands to
+//! [`CellGrid::handle`] has already been resolved to belong to it by
+//! [`Self::handle`]'s own band checks (tabs, then the formula bar, then
+//! everything else), so there is no hit-test/focus-cycling router for
+//! [`DemoHost`] to stand in for — only [`EventHost::emit`] carries
+//! anything real, the extra [`CellGridEvent::Navigated`] a commit's
+//! `cx.emit` call attaches alongside its own `CellEditCommitted`.
+//!
+//! `CellGrid` owns the cursor, the selection anchor, the scroll offsets,
+//! the frozen panes and (while active) the in-progress edit's text
+//! buffer; this `AppLogic` owns the cell *content* and nothing else,
+//! which is the whole split `CellGrid` is built around (see
 //! `quadraui::primitives::cell_grid`'s module doc, "the grid only
-//! presents"). Each frame it asks the controller which absolute rows
-//! and columns are on screen (`CellGridController::layout`), fills only
-//! those cells, and paints the resulting descriptor through
-//! `Surface::Widget` — `CellGrid` has no bespoke `Backend::draw_cell_grid`
-//! method on any backend, pixel or terminal.
+//! presents"). Each frame it resolves `CellGrid`'s own
+//! [`crate::primitive::Primitive::layout`] to learn which absolute rows
+//! and columns are on screen, fills only those cells, and paints the
+//! resulting descriptor through `Surface::Widget` — `CellGrid` has no
+//! bespoke `Backend::draw_cell_grid` method on any backend, pixel or
+//! terminal.
 //!
 //! Committing an edit hands the raw text to this demo's own toy "engine"
 //! (`Self::evaluate`): a leading `=` sums `+`-separated integers (e.g.
@@ -51,11 +62,15 @@
 
 use std::collections::HashMap;
 
-use quadraui::primitives::cell_grid::{column_letters, Cell, CellAlign, CellStyle};
+use quadraui::interactive::SubTarget;
+use quadraui::primitive::{LayoutCtx, Primitive, Units};
+use quadraui::primitives::cell_grid::{column_letters, Cell, CellAlign, CellEditState, CellStyle};
 use quadraui::{
-    AppLogic, Backend, CellGridController, CellGridControllerEvent, Color, Key, MouseButton,
-    NamedKey, Reaction, Rect, ScreenLayout, SegmentMeasure, StatusBar, StatusBarSegment, Surface,
-    TabBar, TabBarHit, TabItem, TabMeasure, TextField, UiEvent, WidgetId,
+    AppLogic, Backend, ButtonMask, CellGrid, CellGridEvent, CellGridPrimitiveLayout, CellGridState,
+    Color, EventCx, EventHost, Handled, Interactive, Key, KeyEvent, Modifiers, MouseButton,
+    NamedKey, Point, PointerKind, PointerShape, Reaction, Rect, RoutedEvent, ScreenLayout,
+    SegmentMeasure, StatusBar, StatusBarSegment, Surface, TabBar, TabBarHit, TabItem, TabMeasure,
+    TextField, UiEvent, WidgetId,
 };
 
 /// Rows in the virtual sheet — far more than any terminal or window
@@ -74,7 +89,7 @@ pub const FROZEN_COLS: usize = 1;
 /// is still identifiable by content in a test or on screen.
 const REGIONS: [&str; 6] = ["North", "South", "East", "West", "Central", "Pacific"];
 
-/// Sheet tabs, each its own independent [`CellGridController`].
+/// Sheet tabs, each its own independent [`CellGrid`].
 const SHEET_NAMES: [&str; 3] = ["Sales", "Inventory", "Notes"];
 
 /// A selection larger than this many cells skips the sum entirely — an
@@ -82,21 +97,27 @@ const SHEET_NAMES: [&str; 3] = ["Sales", "Inventory", "Notes"];
 /// say, a Ctrl+A over the full 20,000,000-cell sheet.
 const SUM_CELL_CAP: usize = 10_000;
 
-/// One sheet tab's state: its own navigation/selection/scroll/edit
-/// state plus the raw text a user has committed for any of its cells.
+/// One sheet tab's state: the grid descriptor plus its
+/// [`Interactive::State`] (the in-progress drag anchor) and the raw text
+/// a user has committed for any of its cells.
 struct Sheet {
-    grid: CellGridController,
+    grid: CellGrid,
+    drag: CellGridState,
     edits: HashMap<(usize, usize), String>,
 }
 
 impl Sheet {
     fn new(id: &str) -> Self {
-        let mut grid = CellGridController::new(id);
-        grid.set_dimensions(ROW_COUNT, COL_COUNT);
-        grid.set_frozen(FROZEN_ROWS, FROZEN_COLS);
-        grid.set_show_scrollbar(true);
+        let mut grid = CellGrid::new(WidgetId::new(id));
+        grid.row_count = ROW_COUNT;
+        grid.col_count = COL_COUNT;
+        grid.frozen_rows = FROZEN_ROWS;
+        grid.frozen_cols = FROZEN_COLS;
+        grid.show_scrollbar = true;
+        grid.has_focus = true;
         Self {
             grid,
+            drag: CellGridState::default(),
             edits: HashMap::new(),
         }
     }
@@ -129,7 +150,72 @@ fn bands(backend: &dyn Backend) -> Bands {
     }
 }
 
-/// Quarterly-sales sheet driven entirely by [`CellGridController`]s.
+/// [`LayoutCtx`] resolved from `backend` — the same chrome-metric
+/// resolution [`Backend::draw_primitive`] applies before calling
+/// [`Primitive::layout`], built by hand here since this demo resolves
+/// `CellGrid`'s layout once per frame to window its cells rather than
+/// through `draw_primitive` itself (which would also paint).
+fn layout_ctx(backend: &dyn Backend) -> LayoutCtx {
+    LayoutCtx {
+        line_height: LayoutCtx::resolve_row_height(backend.chrome_line_height(), &backend.style()),
+        char_width: backend.char_width(),
+        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+    }
+}
+
+/// `Primitive::layout` resolved for `grid` at `rect` — called through
+/// the trait explicitly (not `grid.layout(...)`) since `CellGrid` also
+/// has its own unrelated six-argument inherent `layout` method (see that
+/// method's own doc) that dot-call syntax would otherwise prefer.
+fn grid_layout(grid: &CellGrid, backend: &dyn Backend, rect: Rect) -> CellGridPrimitiveLayout {
+    Primitive::layout(grid, &layout_ctx(backend), rect)
+}
+
+/// [`EventHost`] impl backing this demo's own hand-rolled dispatch into
+/// `CellGrid::handle` — see the module doc for why `request_focus`/
+/// `capture_pointer`/`release_pointer`/`set_cursor`/`request_redraw` are
+/// no-ops here: there is no hit-test router for them to report back to,
+/// only [`Self::emit`] (an extra [`UiEvent`] a commit attaches) matters.
+struct DemoHost {
+    units: Units,
+    emitted: Vec<UiEvent>,
+}
+
+impl DemoHost {
+    fn new(units: Units) -> Self {
+        Self {
+            units,
+            emitted: Vec::new(),
+        }
+    }
+}
+
+impl EventHost for DemoHost {
+    fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+        false
+    }
+
+    fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {}
+
+    fn capture_pointer(&mut self, _id: &WidgetId) {}
+
+    fn release_pointer(&mut self) {}
+
+    fn set_cursor(&mut self, _cursor: PointerShape) {}
+
+    fn request_redraw(&mut self) {}
+
+    fn emit(&mut self, event: UiEvent) {
+        self.emitted.push(event);
+    }
+
+    fn units(&self) -> Units {
+        self.units
+    }
+}
+
+/// Quarterly-sales sheet driven entirely by [`CellGrid`]'s own
+/// [`Interactive`] impl.
 pub struct CellGridDemo {
     sheets: Vec<Sheet>,
     active_sheet: usize,
@@ -137,7 +223,8 @@ pub struct CellGridDemo {
     /// owns the in-progress edit's caret. Always `false` when no edit
     /// is active — set by a click on the formula bar, cleared the
     /// moment that edit commits or cancels (from *either* the formula
-    /// bar or the grid's own inline editor; they share one edit).
+    /// bar or the grid's own inline editor; they share one edit, held on
+    /// [`CellGrid::editing`]).
     formula_focused: bool,
 }
 
@@ -196,9 +283,9 @@ impl CellGridDemo {
         ((row * 100 + col * 7) * 3) as f64
     }
 
-    /// The raw text [`Self::start_editing`] seeds F2/Enter editing with
-    /// — the user's own committed text if there is one, else the
-    /// placeholder's displayed text.
+    /// The raw text a fresh edit seeds itself with — the user's own
+    /// committed text if there is one, else the placeholder's displayed
+    /// text.
     fn raw_text(edits: &HashMap<(usize, usize), String>, row: usize, col: usize) -> String {
         edits
             .get(&(row, col))
@@ -256,7 +343,7 @@ impl CellGridDemo {
     /// Cursor and selection in spreadsheet notation — `B3` for a single
     /// cell, `B3:D7` for a range.
     fn selection_label(&self) -> String {
-        let (row, col) = self.sheet().grid.cursor();
+        let (row, col) = self.sheet().grid.cursor;
         let a1 = |r: usize, c: usize| format!("{}{}", column_letters(c), r + 1);
         let (top, left, bottom, right) = self.sheet().grid.selection_bounds();
         if top == bottom && left == right {
@@ -331,9 +418,19 @@ impl CellGridDemo {
     fn formula_field(&self) -> TextField {
         let mut field = TextField::new(WidgetId::new("cell-grid-formula-bar"));
         field.placeholder = "Formula".into();
-        let (row, col) = self.sheet().grid.cursor();
+        let (row, col) = self.sheet().grid.cursor;
         field.value = Self::raw_text(&self.sheet().edits, row, col);
-        self.sheet().grid.sync_formula_bar(&mut field);
+        match &self.sheet().grid.editing {
+            Some(edit) => {
+                field.value = edit.text.clone();
+                field.cursor = Some(edit.cursor);
+                field.selection_anchor = edit.selection_anchor;
+            }
+            None => {
+                field.cursor = None;
+                field.selection_anchor = None;
+            }
+        }
         field.has_focus = self.formula_focused;
         field
     }
@@ -366,31 +463,95 @@ impl CellGridDemo {
         }
     }
 
-    /// Apply one [`CellGridControllerEvent`] from either the grid's own
-    /// `handle` or the formula bar's `handle_formula_bar_key` — both
-    /// commit/cancel the exact same in-progress edit, so both end it
-    /// here the same way.
-    fn apply_controller_event(&mut self, event: CellGridControllerEvent) -> Reaction {
+    /// Seed [`CellGrid::editing`] with `text`, cursor at its end — F2,
+    /// plain typing and a formula-bar click all start an edit this way.
+    fn start_editing(&mut self, text: String) {
+        let cursor = text.len();
+        self.sheet_mut().grid.editing = Some(CellEditState {
+            text,
+            cursor,
+            selection_anchor: None,
+            placeholder: None,
+        });
+    }
+
+    /// Route one [`RoutedEvent`] into the active sheet's own
+    /// [`CellGrid::handle`], applying its [`Handled::Event`] outcome (if
+    /// any) and every extra event [`DemoHost::emit`] collected — see the
+    /// module doc for why this demo's own [`EventHost`] impl has nothing
+    /// else to do.
+    fn dispatch_to_grid(
+        &mut self,
+        routed: RoutedEvent,
+        layout: &CellGridPrimitiveLayout,
+        units: Units,
+    ) -> Reaction {
+        let mut host = DemoHost::new(units);
+        let handled = {
+            let sheet = self.sheet_mut();
+            let mut cx = EventCx::new(sheet.grid.id, &mut host);
+            sheet.grid.handle(&mut sheet.drag, &routed, layout, &mut cx)
+        };
+        let mut reaction = match handled {
+            Handled::Event(event) => self.apply_cell_grid_event(event),
+            Handled::Consumed => Reaction::Redraw,
+            Handled::Ignored => Reaction::Continue,
+        };
+        let grid_id = self.sheet().grid.id;
+        for extra in host.emitted {
+            if let UiEvent::CellGrid(id, event) = extra {
+                if id == grid_id {
+                    reaction = reaction.merge(self.apply_cell_grid_event(event));
+                }
+            }
+        }
+        reaction
+    }
+
+    /// Apply one [`CellGridEvent`] from [`Self::dispatch_to_grid`] — both
+    /// the grid's own `handle` and a formula-bar key routed through the
+    /// exact same `handle` call (see [`Self::handle`]) commit/cancel the
+    /// identical in-progress edit, so both end it here the same way.
+    fn apply_cell_grid_event(&mut self, event: CellGridEvent) -> Reaction {
         match event {
-            CellGridControllerEvent::Ignored => Reaction::Continue,
-            // The controller has no cell content of its own (see the
-            // module doc), so F2 only reports the request — seed the
-            // editor with this cell's current raw text ourselves.
-            CellGridControllerEvent::CellEditRequested { row, col } => {
+            CellGridEvent::Navigated {
+                cursor,
+                selection_anchor,
+                row_scroll,
+                col_scroll,
+            } => {
+                let grid = &mut self.sheet_mut().grid;
+                grid.cursor = cursor;
+                grid.selection_anchor = selection_anchor;
+                grid.row_scroll = row_scroll;
+                grid.col_scroll = col_scroll;
+                Reaction::Redraw
+            }
+            // `CellGrid` has no cell content of its own (see the module
+            // doc), so F2 only reports the request — seed the editor
+            // with this cell's current raw text ourselves.
+            CellGridEvent::CellEditRequested { row, col } => {
                 let text = Self::raw_text(&self.sheet().edits, row, col);
-                self.sheet_mut().grid.start_editing(text);
+                self.start_editing(text);
+                Reaction::Redraw
+            }
+            CellGridEvent::CellEditStarted { edit, .. }
+            | CellGridEvent::CellEditChanged { edit, .. } => {
+                self.sheet_mut().grid.editing = Some(edit);
                 Reaction::Redraw
             }
             // Hand the committed raw text to the toy "engine"
             // (`Self::evaluate`) — a real app calls its own `cell.set`
             // here and supplies the resulting formatted value next
             // frame via `Self::formatted_cell`.
-            CellGridControllerEvent::CellEditCommitted { row, col, text } => {
+            CellGridEvent::CellEditCommitted { row, col, text } => {
                 self.sheet_mut().edits.insert((row, col), text);
+                self.sheet_mut().grid.editing = None;
                 self.formula_focused = false;
                 Reaction::Redraw
             }
-            CellGridControllerEvent::CellEditCancelled { .. } => {
+            CellGridEvent::CellEditCancelled { .. } => {
+                self.sheet_mut().grid.editing = None;
                 self.formula_focused = false;
                 Reaction::Redraw
             }
@@ -411,23 +572,32 @@ impl AppLogic for CellGridDemo {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let bands = bands(backend);
 
-        // Ask the controller which absolute rows/columns are on screen,
-        // then fill exactly those — `CellGrid::cells` is a window, not
-        // the whole sheet.
-        let layout = self.sheet().grid.layout(backend, bands.grid).layout;
+        // Resolve the grid's own layout to learn which absolute
+        // rows/columns are on screen, then fill exactly those —
+        // `CellGrid::cells` is a window, not the whole sheet.
+        let layout = grid_layout(&self.sheet().grid, backend, bands.grid);
         let edits = &self.sheet().edits;
         let cells: Vec<Vec<Cell>> = layout
+            .layout
             .rows
             .iter()
             .map(|r| {
                 layout
+                    .layout
                     .cols
                     .iter()
                     .map(|c| Self::formatted_cell(edits, r.index, c.index))
                     .collect()
             })
             .collect();
-        let grid = self.sheet().grid.grid(cells);
+        let mut grid = self.sheet().grid.clone();
+        // `row_scroll`/`col_scroll` are ranks *past* the frozen prefix,
+        // but `loaded_row_start`/`loaded_col_start` are absolute sheet
+        // indices (see `CellGrid::cells_window`'s doc) — add the frozen
+        // count back so the two conventions agree.
+        grid.loaded_row_start = grid.frozen_rows.min(grid.row_count) + grid.row_scroll;
+        grid.loaded_col_start = grid.frozen_cols.min(grid.col_count) + grid.col_scroll;
+        grid.cells = cells;
 
         let mut frame = ScreenLayout::new();
         frame.push(Surface::TabBar {
@@ -464,7 +634,7 @@ impl AppLogic for CellGridDemo {
             if b.tabs.contains(*position) {
                 if let Some(idx) = self.tab_bar_hit(backend, b.tabs, position.x, position.y) {
                     if idx != self.active_sheet {
-                        self.sheet_mut().grid.cancel_editing();
+                        self.sheet_mut().grid.editing = None;
                         self.active_sheet = idx;
                         self.formula_focused = false;
                     }
@@ -472,10 +642,10 @@ impl AppLogic for CellGridDemo {
                 return Reaction::Redraw;
             }
             if b.formula.contains(*position) {
-                if !self.sheet().grid.is_editing() {
-                    let (row, col) = self.sheet().grid.cursor();
+                if self.sheet().grid.editing.is_none() {
+                    let (row, col) = self.sheet().grid.cursor;
                     let text = Self::raw_text(&self.sheet().edits, row, col);
-                    self.sheet_mut().grid.start_editing(text);
+                    self.start_editing(text);
                 }
                 self.formula_focused = true;
                 return Reaction::Redraw;
@@ -483,9 +653,9 @@ impl AppLogic for CellGridDemo {
         }
 
         // `q`/Escape quit only outside an active edit — while editing,
-        // both must reach the controller instead: `q` is a character to
+        // both must reach the grid instead: `q` is a character to
         // insert, and Escape cancels the edit rather than the app.
-        if !self.sheet().grid.is_editing() {
+        if self.sheet().grid.editing.is_none() {
             if let UiEvent::KeyPressed { key, .. } = &event {
                 if matches!(key, Key::Char('q') | Key::Named(NamedKey::Escape)) {
                     return Reaction::Exit;
@@ -493,20 +663,61 @@ impl AppLogic for CellGridDemo {
             }
         }
 
-        if self.formula_focused {
-            return match &event {
-                UiEvent::KeyPressed { key, modifiers, .. } => {
-                    let ev = self
-                        .sheet_mut()
-                        .grid
-                        .handle_formula_bar_key(key, modifiers, backend, b.grid);
-                    self.apply_controller_event(ev)
-                }
-                _ => Reaction::Continue,
-            };
-        }
+        let units = layout_ctx(backend).units();
+        let layout = grid_layout(&self.sheet().grid, backend, b.grid);
 
-        let ev = self.sheet_mut().grid.handle(&event, backend, b.grid);
-        self.apply_controller_event(ev)
+        // A key reaches the grid regardless of `self.formula_focused`:
+        // `CellGrid::handle` itself branches on whether
+        // `CellGrid::editing` is active, the one state the formula bar
+        // and the grid's own inline editor share, so routing every key
+        // here keeps committing/cancelling/typing identical no matter
+        // which of the two painted the caret.
+        let routed = match &event {
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                ..
+            } if b.grid.contains(*position) => Some(RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(position.x - b.grid.x, position.y - b.grid.y),
+                mods: *modifiers,
+            }),
+            UiEvent::MouseMoved {
+                position,
+                buttons: ButtonMask { left: true, .. },
+            } => Some(RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                sub: None,
+                local: Point::new(position.x - b.grid.x, position.y - b.grid.y),
+                mods: Modifiers::default(),
+            }),
+            UiEvent::MouseUp {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => Some(RoutedEvent::Pointer {
+                kind: PointerKind::Up(MouseButton::Left),
+                sub: None,
+                local: Point::new(position.x - b.grid.x, position.y - b.grid.y),
+                mods: Modifiers::default(),
+            }),
+            UiEvent::KeyPressed {
+                key,
+                modifiers,
+                repeat,
+            } => Some(RoutedEvent::Key(KeyEvent {
+                key: key.clone(),
+                modifiers: *modifiers,
+                repeat: *repeat,
+            })),
+            _ => None,
+        };
+
+        match routed {
+            Some(routed) => self.dispatch_to_grid(routed, &layout, units),
+            None => Reaction::Continue,
+        }
     }
 }

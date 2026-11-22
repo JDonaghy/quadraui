@@ -240,10 +240,9 @@ pub mod paths;
 pub mod prelude;
 pub mod primitives;
 // Pure cursor/selection arithmetic `primitives::cell_grid::CellGrid`'s
-// `Interactive` impl and `compose::CellGridController` both need against the
-// identical row/column grid — crate-private since neither caller's own
-// public shape (the descriptor, the controller's API) changes; only their
-// internals call through it instead of each hand-rolling the same geometry.
+// `Interactive` impl needs against the row/column grid — crate-private
+// since `CellGrid`'s own public shape doesn't change; its internals call
+// through it instead of hand-rolling the same geometry.
 pub(crate) mod cell_grid_nav;
 pub mod shell;
 pub mod style;
@@ -930,20 +929,19 @@ pub use compose::markdown::{
 pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, AppShell, AppShellEvent,
     AppShellLayout, BackendWidget, BottomBand, BottomPanelConfig, BottomPanelController,
-    BottomPanelEvent, BottomPanelLayout, BottomPanelTab, CellGridController,
-    CellGridControllerEvent, ChatController, ChatControllerAction, ChatRole, ChatTurn,
-    ContextMenuController, ContextMenuOutcome, DualModePaletteAction, DualModePaletteController,
-    Edge, FilePickerController, FilePickerMode, FocusGroup, FocusRing, FolderPickerController,
-    FormController, FormControllerAction, FormDialogAction, FormDialogController, GroupLayout,
-    Handled, HelpAction, HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry,
-    ListHoverTracker, MenuDef, MenuEvent, MenuSystem, MessageDialogController, NavigationMode,
-    Pane, PaneDragRect, PaneTab, PanelDefinition, PathPickerAction, SectionKind, ShellPosition,
-    SidebarEvent, SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef,
-    SidebarSystem, StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout,
-    ToastStackAction, ToastStackController, ToolbarHoverTracker, TreeController,
-    TreeControllerEvent, TreeHoverTracker, TreeTableController, TreeTableControllerEvent,
-    TreeTableNodeData, ViewHelp, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
-    WorkspaceLayout, PALETTE_CHROME_ROWS,
+    BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerAction,
+    ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteAction,
+    DualModePaletteController, Edge, FilePickerController, FilePickerMode, FocusGroup, FocusRing,
+    FolderPickerController, FormController, FormControllerAction, FormDialogAction,
+    FormDialogController, GroupLayout, Handled, HelpAction, HelpNote, HelpOverlayAction,
+    HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
+    MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition,
+    PathPickerAction, SectionKind, ShellPosition, SidebarEvent, SidebarPanelBody,
+    SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
+    StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToastStackAction,
+    ToastStackController, ToolbarHoverTracker, TreeController, TreeControllerEvent,
+    TreeHoverTracker, TreeTableController, TreeTableControllerEvent, TreeTableNodeData, ViewHelp,
+    WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
 };
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other

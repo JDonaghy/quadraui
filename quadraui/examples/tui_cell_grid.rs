@@ -1,4 +1,4 @@
-//! TUI runner for the `CellGridController` spreadsheet demo — a virtual
+//! TUI runner for the `CellGrid` spreadsheet demo — a virtual
 //! 100,000×200 sheet.
 //!
 //! Run with:

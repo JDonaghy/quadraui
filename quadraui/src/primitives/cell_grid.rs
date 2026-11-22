@@ -219,36 +219,26 @@ pub fn column_letters(index: usize) -> String {
 /// ```
 /// use quadraui::{Cell, CellGrid, CellGridHit, WidgetId};
 ///
-/// let grid = CellGrid {
-///     id: WidgetId::new("grid:sheet1"),
-///     row_count: 100,
-///     col_count: 30,
-///     frozen_rows: 1,
-///     frozen_cols: 1,
-///     row_scroll: 0,
-///     col_scroll: 0,
-///     default_row_height: 1.0,
-///     default_col_width: 8.0,
-///     row_heights: Default::default(),
-///     col_widths: Default::default(),
-///     show_row_headers: true,
-///     show_col_headers: true,
-///     row_labels: Default::default(),
-///     col_labels: Default::default(),
-///     cursor: (0, 0),
-///     selection_anchor: None,
-///     cells: vec![vec![Cell::plain("A1")]],
-///     loaded_row_start: 0,
-///     loaded_col_start: 0,
-///     has_focus: true,
-///     show_scrollbar: false,
-///     editing: None,
-/// };
+/// let mut grid = CellGrid::new(WidgetId::new("grid:sheet1"));
+/// grid.row_count = 100;
+/// grid.col_count = 30;
+/// grid.frozen_rows = 1;
+/// grid.frozen_cols = 1;
+/// grid.has_focus = true;
+/// grid.cells = vec![vec![Cell::plain("A1")]];
 ///
 /// let layout = grid.layout(80.0, 24.0, 1.0, 4.0, 1.0, 1.0);
 /// assert_eq!(layout.hit_test(0.0, 0.0), CellGridHit::Corner);
 /// ```
+///
+/// `#[non_exhaustive]` so a future field can land without breaking an
+/// external struct-literal construction — see `CLAUDE.md`'s *Downstream
+/// consumers* section. [`Self::new`] is the one way to construct a
+/// `CellGrid` from outside this crate; every field past `id` is `pub` so
+/// a caller still sets them directly afterward, the same way
+/// [`crate::TextInput::new`] works.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CellGrid {
     pub id: WidgetId,
     /// Total rows in the sheet — drives row-number headers and the
@@ -341,9 +331,10 @@ pub struct CellGrid {
     /// single-line text editor over the cursor cell in place of its
     /// plain text — see the module doc, "owns geometry, the cursor,
     /// selection and ... editing UI". `None` paints the cursor cell like
-    /// every other cell. [`crate::compose::CellGridController`] owns
-    /// this state; a host never sets it directly, only reads it back off
-    /// [`crate::compose::CellGridController::grid`].
+    /// every other cell. [`Self::handle`][crate::interactive::Interactive::handle]
+    /// owns this state; a host never sets it directly, only reads it back
+    /// off the [`CellGridEvent::CellEditStarted`]/[`CellGridEvent::CellEditChanged`]
+    /// events `handle` returns.
     #[serde(default)]
     pub editing: Option<CellEditState>,
 }
@@ -372,6 +363,41 @@ pub struct CellEditState {
 }
 
 impl CellGrid {
+    /// An empty sheet (`row_count`/`col_count` both `0`, no frozen panes,
+    /// no selection, no in-progress edit) at `id` — the one way to build
+    /// a `CellGrid` from outside this crate, since [`Self`] is
+    /// `#[non_exhaustive]`. Every other field is `pub`, so a caller sets
+    /// `row_count`/`col_count`/`cells`/etc. directly afterward, the same
+    /// way [`crate::TextInput::new`] works.
+    #[must_use]
+    pub fn new(id: WidgetId) -> Self {
+        Self {
+            id,
+            row_count: 0,
+            col_count: 0,
+            frozen_rows: 0,
+            frozen_cols: 0,
+            row_scroll: 0,
+            col_scroll: 0,
+            default_row_height: 1.0,
+            default_col_width: 8.0,
+            row_heights: BTreeMap::new(),
+            col_widths: BTreeMap::new(),
+            show_row_headers: true,
+            show_col_headers: true,
+            row_labels: BTreeMap::new(),
+            col_labels: BTreeMap::new(),
+            cursor: (0, 0),
+            selection_anchor: None,
+            cells: Vec::new(),
+            loaded_row_start: 0,
+            loaded_col_start: 0,
+            has_focus: false,
+            show_scrollbar: false,
+            editing: None,
+        }
+    }
+
     /// This row's header label: its [`Self::row_labels`] override if
     /// set, otherwise its 1-based row number.
     #[must_use]
@@ -756,8 +782,8 @@ pub enum CellGridEvent {
         edit: CellEditState,
     },
     /// The user confirmed the in-progress edit — Enter, Tab or an arrow
-    /// key, the same commit-and-move convention
-    /// [`crate::compose::CellGridController`] follows. The host hands
+    /// key, the same commit-and-move convention a real spreadsheet
+    /// follows. The host hands
     /// `text` to its engine for `(row, col)` and clears
     /// [`CellGrid::editing`]; the new cursor position arrives as a
     /// separate [`Self::Navigated`] event, emitted alongside this one via
@@ -980,9 +1006,9 @@ impl CellGrid {
 
     /// The displayed text of every *loaded* cell in the absolute,
     /// inclusive range `[top, bottom] x [left, right]`, tab-joined
-    /// within a row and newline-joined across rows — the TSV a
-    /// clipboard copy writes (see
-    /// [`crate::compose::CellGridController::copy_selection`]).
+    /// within a row and newline-joined across rows — the TSV a host's own
+    /// clipboard-copy handling writes for a selection resolved via
+    /// [`Self::selection_bounds`].
     ///
     /// Rows and columns outside [`Self::cells_window`]'s currently
     /// loaded block (the frozen rows/columns are always "loaded") are
@@ -1615,11 +1641,7 @@ impl crate::primitive::Primitive for CellGrid {
 //
 // `CellGridState` holds only the one piece of interaction state with
 // no `CellGrid` field of its own: the fixed corner of an in-progress
-// mouse drag — mirrors `crate::compose::CellGridController::drag_anchor`.
-// That controller is untouched and keeps working exactly as before;
-// this impl is an alternative, lower-level path through the generic
-// `Interactive`/`RoutedEvent` runtime for a host that doesn't want to
-// drive a bespoke controller.
+// mouse drag, cleared on release.
 
 impl WidgetAction for CellGridEvent {
     fn into_ui_event(self, id: WidgetId) -> UiEvent {
@@ -1643,13 +1665,12 @@ impl CellGrid {
     }
 
     /// Scroll offsets that bring `cursor` into view against `layout`'s
-    /// already-resolved rows/columns — the same
-    /// [`crate::cell_grid_nav::ensure_visible_scroll`]
-    /// [`crate::compose::CellGridController::ensure_cursor_visible`] calls,
-    /// except the viewport capacity comes from `layout`'s own row/column
-    /// count at the *current* scroll position rather than a fresh
-    /// zero-scroll probe (`Interactive::handle` has no `Backend`/`Rect` to
-    /// resolve one with). For a sheet with uniform row/column sizing the
+    /// already-resolved rows/columns, via
+    /// [`crate::cell_grid_nav::ensure_visible_scroll`] — the viewport
+    /// capacity comes from `layout`'s own row/column count at the
+    /// *current* scroll position rather than a fresh zero-scroll probe
+    /// (`Interactive::handle` has no `Backend`/`Rect` to resolve one
+    /// with). For a sheet with uniform row/column sizing the
     /// two agree everywhere except right at the sheet's trailing edge,
     /// where this slightly undercounts capacity and so can scroll, at
     /// most, one page short of the controller's own result.
@@ -1720,8 +1741,7 @@ impl CellGrid {
 
     /// Tab (`forward`) / Shift+Tab: across the row, wrapping to the
     /// start of the next/previous row at a row boundary — never extends
-    /// the selection, matching every spreadsheet's own Tab convention
-    /// (same as [`crate::compose::CellGridController::move_tab`]).
+    /// the selection, matching every spreadsheet's own Tab convention.
     fn navigate_tab(&self, forward: bool, layout: &CellGridLayout) -> Handled<CellGridEvent> {
         let next =
             crate::cell_grid_nav::move_tab(self.row_count, self.col_count, self.cursor, forward);
@@ -1792,9 +1812,8 @@ impl CellGrid {
     }
 
     /// A plain, unmodified character typed at the cursor with no active
-    /// edit — starts a fresh one seeded with just that text, the same
-    /// "typing replaces" convention
-    /// [`crate::compose::CellGridController::begin_typing`] follows.
+    /// edit — starts a fresh one seeded with just that text, a
+    /// spreadsheet's usual "typing replaces" convention.
     fn begin_typing(&self, text: impl Into<String>) -> Handled<CellGridEvent> {
         if self.row_count == 0 || self.col_count == 0 {
             return Handled::Ignored;
@@ -1827,7 +1846,7 @@ impl CellGrid {
 
     /// Dispatch one key with no active edit — arrows/Tab/Enter/
     /// PageUp/Down/Home/End (plain and Ctrl-jump), Ctrl+A, F2, and plain
-    /// typing. Mirrors [`crate::compose::CellGridController::handle_key`].
+    /// typing.
     fn handle_key_idle(
         &self,
         key: &Key,
@@ -1920,9 +1939,9 @@ impl CellGrid {
     }
 
     /// Dispatch one key while [`Self::editing`] is active — Escape
-    /// cancels; Enter/Tab/the arrow keys commit (the same Excel-matching
-    /// convention [`crate::compose::CellGridController::handle_edit_key`]
-    /// follows) and, via `cx`, also [`EventCx::emit`] the resulting
+    /// cancels; Enter/Tab/the arrow keys commit, the same Excel-matching
+    /// convention `handle_key_idle` already applies when nothing is being
+    /// edited, and, via `cx`, also [`EventCx::emit`] the resulting
     /// [`CellGridEvent::Navigated`] as a second, extra event —
     /// [`Interactive::handle`] can only return one [`Handled::Event`],
     /// and the commit itself is the more specific of the two; everything
@@ -1999,8 +2018,7 @@ impl CellGrid {
 
     /// `PointerKind::Down(MouseButton::Left)` with no active edit —
     /// hit-tests `local` and navigates/selects accordingly, requesting
-    /// focus and starting a drag the same way
-    /// [`crate::compose::CellGridController::mouse_down`] does.
+    /// focus and starting a drag.
     fn handle_mouse_down(
         &self,
         state: &mut CellGridState,
@@ -2028,8 +2046,7 @@ impl CellGrid {
         // selection the press just produced — never the just-clicked
         // cell itself when that differs, so a drag that follows
         // continues extending from the same corner the click
-        // established. Same convention as
-        // `CellGridController::mouse_down`'s own `drag_anchor`.
+        // established.
         if let Handled::Event(CellGridEvent::Navigated {
             cursor,
             selection_anchor,
@@ -2047,8 +2064,7 @@ impl CellGrid {
     /// captured — see [`EventHost::capture_pointer`](crate::interactive::EventHost::capture_pointer)):
     /// extends the selection to whichever cell `local` lands on, or
     /// `Consumed` with no change for a move that lands outside the body
-    /// (over a header, scrollbar or empty space) — mirrors
-    /// [`crate::compose::CellGridController::mouse_drag`].
+    /// (over a header, scrollbar or empty space).
     fn handle_mouse_move(
         &self,
         state: &CellGridState,
@@ -2113,8 +2129,7 @@ impl Interactive for CellGrid {
             // buffer describing different cells. So while editing, only
             // keyboard input (whose semantics this impl fully owns —
             // commit, cancel, insert, delete) is routed anywhere; mouse
-            // input is inert. Same rule
-            // [`crate::compose::CellGridController::handle`] follows.
+            // input is inert.
             return match event {
                 RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => {
                     self.handle_key_editing(edit, key, modifiers, &layout.layout, cx)
@@ -3697,14 +3712,13 @@ mod range_as_tsv_tests {
     #[test]
     fn frozen_pane_plus_scrolled_window_copies_the_right_absolute_cells() {
         // `frozen_rows = frozen_cols = 1`, `row_scroll = col_scroll = 5`
-        // (the controller's own convention — a rank *past* the frozen
-        // prefix, see `windowed_index_passes_through_the_frozen_block_
-        // then_adds_scroll` above): absolute row/col 6 is the first
-        // scrolled position, so `loaded_row_start`/`loaded_col_start`
-        // must be `frozen + scroll` (= 6), the convention
-        // `CellGridController::grid` reconciles to. `cells` is laid
-        // out positionally: row/col 0 is the frozen row/column, rows/
-        // cols 1.. are the scrolled body starting at absolute 6.
+        // (a rank *past* the frozen prefix, see
+        // `windowed_index_passes_through_the_frozen_block_then_adds_scroll`
+        // above): absolute row/col 6 is the first scrolled position, so
+        // `loaded_row_start`/`loaded_col_start` must be `frozen + scroll`
+        // (= 6). `cells` is laid out positionally: row/col 0 is the
+        // frozen row/column, rows/cols 1.. are the scrolled body
+        // starting at absolute 6.
         let mut grid = grid_3x3();
         grid.frozen_rows = 1;
         grid.frozen_cols = 1;
