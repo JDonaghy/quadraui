@@ -379,6 +379,8 @@ export interface CellGridDescriptor {
   loaded_col_start?: number;
   has_focus?: boolean;
   show_scrollbar?: boolean;
+  column_separators?: boolean;
+  striped?: boolean;
   editing?: CellEditStateDescriptor | null;
 }
 
