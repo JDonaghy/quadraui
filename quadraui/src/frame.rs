@@ -1075,10 +1075,10 @@ impl ScreenLayout {
 
     /// Tab order for this frame, as `(WidgetId, Rect)` pairs in reading
     /// order (top-to-bottom, then left-to-right by rect origin) — the
-    /// shared source of truth [`crate::focus::FocusManager::sync_tab_order`]
+    /// shared source of truth [`crate::focus::FocusTree::sync_tab_order`]
     /// cycles through. An app that builds its screen via
     /// `ScreenLayout` hands this straight to
-    /// [`crate::runner::AppLogic::tab_stops`]; see that method's doc for
+    /// [`crate::runner::AppLogic::extra_tab_stops`]; see that method's doc for
     /// the opt-in contract.
     ///
     /// Only surfaces that carry both a plain `rect` and an owning
@@ -1178,10 +1178,9 @@ impl ScreenLayout {
     /// `(WidgetId, Rect)`'s shape has no field for a per-child sub-target,
     /// so `FocusSpec::Children` cannot yet contribute one stop per declared
     /// child without emitting indistinguishable duplicate entries that trap
-    /// [`crate::focus::FocusManager::step`] on the first child forever;
-    /// collapsing to a single stop keeps Tab/Shift+Tab able to leave the
-    /// widget until `tab_stops`'s return type can carry
-    /// [`crate::interactive::FocusStop::sub`].
+    /// this flat stepper on the first child forever; collapsing to a single
+    /// stop keeps Tab/Shift+Tab able to leave the widget. A real per-child
+    /// stop set is [`crate::focus::FocusTree`]'s job instead.
     fn widget_tab_stops(rect: Rect, widget: &dyn DynWidget) -> Vec<(WidgetId, Rect)> {
         let Some(&id) = widget.id() else {
             return Vec::new();
@@ -3141,12 +3140,13 @@ mod tests {
     /// many children the widget declares: `tab_stops()`'s tuple shape has
     /// nowhere to carry a per-child [`crate::interactive::FocusStop::sub`],
     /// so one entry per child would be a run of byte-identical duplicates.
-    /// [`crate::focus::FocusManager::step`] resolves `tab_order.position()`
-    /// to the *first* matching entry and compares the *next* slot against
-    /// the currently focused id — with duplicates, that next slot is the
-    /// same id, so `set_focus` sees no change and Tab/Shift+Tab can never
-    /// leave the widget. A single stop keeps the widget reachable and
-    /// leavable by keyboard until a richer return shape exists.
+    /// [`crate::focus::FocusTree::focus_next`]'s flat-list stepper resolves
+    /// `tab_order.position()` to the *first* matching entry and compares
+    /// the *next* slot against the currently focused id — with
+    /// duplicates, that next slot is the same id, so `set_focus` sees no
+    /// change and Tab/Shift+Tab can never leave the widget. A single stop
+    /// keeps the widget reachable and leavable by keyboard until a richer
+    /// return shape exists.
     #[test]
     fn widget_tab_stops_collapses_focus_spec_children_to_one_stop() {
         let widget = MultiCellWidget {
@@ -3163,7 +3163,7 @@ mod tests {
 
         // Exercised end-to-end through a real `ScreenLayout` too: pushing
         // the widget and reading `tab_stops()` must still show only one
-        // stop, and `FocusManager` must therefore be able to step off it.
+        // stop, and `FocusTree` must therefore be able to step off it.
         let mut layout = ScreenLayout::new();
         layout.push(Surface::Widget {
             rect,
@@ -3182,14 +3182,14 @@ mod tests {
             "a Children-focus widget must appear exactly once in tab_stops()"
         );
 
-        let mut focus = crate::focus::FocusManager::new();
+        let mut focus = crate::focus::FocusTree::new();
         focus.sync_tab_order(&all_stops);
-        focus.set_focus(Some(widget.id));
+        focus.set_focus(Some((widget.id, None)));
         assert!(
             focus.focus_next(),
             "Tab must be able to leave a FocusSpec::Children widget"
         );
-        assert_eq!(focus.focused(), Some(&other_id));
+        assert_eq!(focus.focused(), Some(&(other_id, None)));
     }
 
     /// `FrameHitMap` is serializable: round-trips through JSON

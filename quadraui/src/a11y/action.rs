@@ -88,12 +88,10 @@ pub enum A11yActionValue {
 /// *widget* only — it cannot yet name a child (a specific list item or
 /// form field) the way a real keyboard/mouse gesture would, and a
 /// backend still has to apply the change itself via
-/// [`crate::Backend::set_focus`], which keeps both the backend's
-/// `focus::FocusManager` and `focus::FocusTree` in lockstep, since
-/// `FocusChanged` is documented as a notification the runner emits
-/// *after* the fact, not a request. `ScrollIntoView` is a deliberate,
-/// logged no-op — it must not
-/// alias `Focus` (no mouse/keyboard gesture moves focus just to scroll
+/// [`crate::Backend::set_focus`], since `FocusChanged` is documented as
+/// a notification the runner emits *after* the fact, not a request.
+/// `ScrollIntoView` is a deliberate, logged no-op — it must not alias
+/// `Focus` (no mouse/keyboard gesture moves focus just to scroll
 /// something into view) and this module has no target-offset `UiEvent`
 /// to route it to yet.
 ///

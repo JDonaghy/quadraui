@@ -2414,14 +2414,11 @@ impl<A: AppLogic + WindowCloseHandling> AppLogic for NativeExitPolicy<A> {
         self.inner.render(backend, area);
     }
 
-    // `AppLogic::tab_stops` is `#[deprecated]` in favor of
-    // `extra_tab_stops`, but this wrapper must keep forwarding it
-    // unconditionally for as long as the deprecated method exists at all —
-    // an inner app that still overrides it must keep working through
-    // `NativeExitPolicy`.
-    #[allow(deprecated)]
-    fn tab_stops(&self, area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
-        self.inner.tab_stops(area)
+    // An inner app that overrides `extra_tab_stops` must keep doing so
+    // through this wrapper — the default on `AppLogic` returns an empty
+    // list, which would silently drop the inner app's tab order.
+    fn extra_tab_stops(&self, area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
+        self.inner.extra_tab_stops(area)
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -3094,7 +3091,7 @@ mod tests {
             render_overlays(&self.engine, backend, hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -3249,7 +3246,7 @@ mod tests {
             render_overlays(&self.engine, backend, hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -3529,7 +3526,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -3663,7 +3660,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -4081,7 +4078,7 @@ mod tests {
             render_overlays(&self.engine, backend, Vec::new());
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             Vec::new()
         }
 
@@ -4200,7 +4197,7 @@ mod tests {
             render_overlays(&self.engine, backend, hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -4677,7 +4674,7 @@ mod tests {
             render_overlays(&self.engine, backend, hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 

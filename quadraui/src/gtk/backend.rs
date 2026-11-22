@@ -491,15 +491,12 @@ pub struct GtkBackend {
     /// two `MouseDown`s, not a coin-flip on `DoubleClickDetector`'s
     /// 400ms window. Mirrors `TuiBackend::double_click_folding` exactly.
     double_click_folding: bool,
-    /// Single owner of keyboard focus — see
-    /// [`crate::focus`]'s module doc. Mutated only by the shared
-    /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
-    /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
-    /// read elsewhere via [`Backend::focus_manager`].
-    focus: crate::focus::FocusManager,
-    /// Sub-target-aware focus tree built from the app's
-    /// [`crate::runner::AppLogic::frame_tree`] — see [`crate::runtime::PreprocessBackend::focus_tree`].
-    /// [`Self::set_focus`] keeps this in step with `focus` above.
+    /// Single owner of keyboard focus — see [`crate::focus`]'s module
+    /// doc. Mutated by [`Self::set_focus`] (whole-widget focus changes)
+    /// and by the shared Tab/Shift+Tab intercept in
+    /// [`crate::runtime::preprocess_event`] via
+    /// [`crate::runtime::PreprocessBackend::focus_tree_mut`]; read
+    /// elsewhere via [`Backend::focus_tree`].
     focus_tree: crate::focus::FocusTree,
     /// Backend-neutral caret-blink phase for `MultiSectionView` aux-row
     /// text inputs (`SectionAux::Input`/`Search`) — see
@@ -886,7 +883,6 @@ impl GtkBackend {
             term_paint_cache: HashMap::new(),
             double_click: DoubleClickDetector::with_radius(GTK_DOUBLE_CLICK_RADIUS),
             double_click_folding: true,
-            focus: crate::focus::FocusManager::new(),
             focus_tree: crate::focus::FocusTree::new(),
             caret_blink: crate::caret_blink::CaretBlinkState::default(),
             user_events: crate::runtime::UserEventQueue::new(),
@@ -2150,10 +2146,6 @@ impl crate::runtime::PreprocessBackend for GtkBackend {
         self.focused_activity_bar_id()
     }
 
-    fn focus_manager_mut(&mut self) -> &mut crate::focus::FocusManager {
-        &mut self.focus
-    }
-
     fn match_keypress(
         &self,
         key: &crate::Key,
@@ -2172,10 +2164,6 @@ impl crate::runtime::PreprocessBackend for GtkBackend {
     /// for what a backend keeping the trait's `None` default opts out of.
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         Some(self.core.widget_routing_mut())
-    }
-
-    fn focus_tree(&self) -> &crate::focus::FocusTree {
-        &self.focus_tree
     }
 
     fn focus_tree_mut(&mut self) -> &mut crate::focus::FocusTree {
@@ -2678,13 +2666,12 @@ impl Backend for GtkBackend {
         self.drag_state.clone()
     }
 
-    fn focus_manager(&self) -> &crate::focus::FocusManager {
-        &self.focus
+    fn focus_tree(&self) -> &crate::focus::FocusTree {
+        &self.focus_tree
     }
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-        self.focus_tree.set_focus(id.map(|id| (id, None)));
-        self.focus.set_focus(id)
+        self.focus_tree.set_focus(id.map(|id| (id, None)))
     }
 
     fn frame_capture(&mut self) -> Option<&mut crate::frame::FrameCapture> {

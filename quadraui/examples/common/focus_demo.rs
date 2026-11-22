@@ -1,15 +1,14 @@
-//! Demo for the runner-owned [`quadraui::FocusManager`]:
+//! Demo for the runner-owned [`quadraui::FocusTree`]:
 //! Tab / Shift+Tab cycle keyboard focus through a multi-widget screen,
 //! and the backend paints a focus ring around whichever widget currently
 //! owns it.
 //!
 //! The point of the demo is that **the app maintains no focus state of
-//! its own**. It doesn't track "which pane is active", it doesn't have a
-//! `FocusRing`, and it never sets `has_focus` on a primitive. All it does
-//! is:
+//! its own**. It doesn't track "which pane is active", and it never sets
+//! `has_focus` on a primitive. All it does is:
 //!
 //! 1. hand the runner this frame's tab order via
-//!    [`AppLogic::tab_stops`] — which is literally
+//!    [`AppLogic::extra_tab_stops`] — which is literally
 //!    [`ScreenLayout::tab_stops`]'s output, cached at paint time (see
 //!    `cached_tab_stops` below); and
 //! 2. redraw when [`UiEvent::FocusChanged`] arrives.
@@ -49,7 +48,7 @@ pub struct FocusDemo {
     /// Last [`UiEvent::FocusChanged`] payload, echoed in the status bar so
     /// the event is observable in text as well as in the painted ring.
     focused: Option<WidgetId>,
-    /// This frame's tab order, cached at paint time. `AppLogic::tab_stops`
+    /// This frame's tab order, cached at paint time. `AppLogic::extra_tab_stops`
     /// is `&self`-only and gets no backend, so the geometry-derived answer
     /// is computed inside `render` (where the viewport *is* available) and
     /// read back out here — `frame_demo` recomputes its own surface rects
@@ -106,7 +105,7 @@ impl FocusDemo {
             selected_idx: 0,
             scroll_offset: 0,
             // Deliberately `false` on both lists. Keyboard focus is
-            // the runner's `FocusManager`, not a per-primitive bool — the
+            // the runner's `FocusTree`, not a per-primitive bool — the
             // ring is what shows which one has it.
             has_focus: false,
             bordered: false,
@@ -122,7 +121,7 @@ impl FocusDemo {
         StatusBar {
             id: WidgetId::new(STATUS_ID),
             left_segments: vec![StatusBarSegment {
-                text: " quadraui #830 — runner-owned FocusManager ".to_string(),
+                text: " quadraui #830 — runner-owned FocusTree ".to_string(),
                 fg,
                 bg,
                 bold: false,
@@ -194,7 +193,7 @@ impl AppLogic for FocusDemo {
         frame.draw(backend);
     }
 
-    fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+    fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
         self.cached_tab_stops.borrow().clone()
     }
 

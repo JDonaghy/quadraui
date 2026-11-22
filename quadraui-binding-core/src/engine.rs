@@ -134,7 +134,7 @@ impl LayoutContent {
                 continue;
             };
             seen.push(*id);
-            let engine_focused = backend.focus_manager().focused() == Some(id);
+            let engine_focused = backend.focus_tree().focused_id() == Some(id);
             let mut controllers = self.forms.borrow_mut();
             let is_new = !controllers.contains_key(id);
             let controller = controllers
@@ -163,8 +163,8 @@ impl LayoutContent {
         // own stops, so this is a no-op once that's already true.
         let stops = tab_stops_from_hits(&painted);
         let focused_inside = backend
-            .focus_manager()
-            .focused()
+            .focus_tree()
+            .focused_id()
             .is_some_and(|focused| stops.iter().chain(extra_stops).any(|(id, _)| id == focused));
         if !focused_inside {
             if let Some((id, _)) = stops.iter().chain(extra_stops).next() {
@@ -286,7 +286,7 @@ impl LayoutContent {
                 )
             }
             UiEvent::KeyPressed { key, modifiers, .. } => {
-                let focused = backend.focus_manager().focused().copied()?;
+                let focused = backend.focus_tree().focused_id().copied()?;
                 if let Some(area) = self.form_leaf_area(focused) {
                     return self.route_form_event(focused, area, event, backend, sink);
                 }
@@ -312,7 +312,7 @@ impl LayoutContent {
                 Some(Reaction::Redraw.merge(sink.dispatch(&resolved, None)))
             }
             UiEvent::CharTyped(ch) => {
-                let focused = backend.focus_manager().focused().copied()?;
+                let focused = backend.focus_tree().focused_id().copied()?;
                 if let Some(area) = self.form_leaf_area(focused) {
                     return self.route_form_event(focused, area, event, backend, sink);
                 }
@@ -325,7 +325,7 @@ impl LayoutContent {
                 Some(Reaction::Redraw.merge(sink.dispatch(&resolved, None)))
             }
             UiEvent::ClipboardPaste(text) => {
-                let focused = backend.focus_manager().focused().copied()?;
+                let focused = backend.focus_tree().focused_id().copied()?;
                 if let Some(area) = self.form_leaf_area(focused) {
                     return self.route_form_event(focused, area, event, backend, sink);
                 }
@@ -958,7 +958,7 @@ impl LayoutDialog {
 /// all). Leaves focus alone when it already points at something outside
 /// the overlay.
 fn release_content_focus(backend: &mut dyn Backend, content: &LayoutContent) {
-    let focused = backend.focus_manager().focused().copied();
+    let focused = backend.focus_tree().focused_id().copied();
     let inside = focused.is_some_and(|id| content.tab_stops().iter().any(|(stop, _)| *stop == id));
     if inside {
         backend.set_focus(None);
@@ -1012,7 +1012,7 @@ fn dispatch_layout_dialog(
         UiEvent::KeyPressed { key, .. } => {
             let activates = matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' '));
             if activates {
-                let focused = backend.focus_manager().focused().copied();
+                let focused = backend.focus_tree().focused_id().copied();
                 let on_button = focused.filter(|id| {
                     dialog
                         .button_stops
@@ -1235,7 +1235,7 @@ pub struct InteractionEngine {
     /// click" is reproducible rather than merely usually true.
     form_order: RefCell<Vec<WidgetId>>,
     /// Which of [`Self::form_controllers`]' ids [`Self::sync_forms`] most
-    /// recently observed as `backend.focus_manager().focused()` itself —
+    /// recently observed as `backend.focus_tree().focused_id()` itself —
     /// unlike each controller's own [`FormController::has_focus`] (which
     /// ORs in the descriptor's purely cosmetic `Form.has_focus`, see
     /// [`Self::sync_forms`]'s own doc), this tracks *only* real engine
@@ -2535,7 +2535,7 @@ impl InteractionEngine {
                 continue;
             };
             seen.push(*id);
-            let engine_focused = backend.focus_manager().focused() == Some(id);
+            let engine_focused = backend.focus_tree().focused_id() == Some(id);
             if engine_focused {
                 self.form_engine_focus.borrow_mut().insert(*id);
             } else {
@@ -2609,7 +2609,7 @@ impl InteractionEngine {
                 continue;
             };
             seen.push(*id);
-            let engine_focused = backend.focus_manager().focused() == Some(id);
+            let engine_focused = backend.focus_tree().focused_id() == Some(id);
             let mut controllers = self.tree_table_controllers.borrow_mut();
             let controller = controllers
                 .entry(*id)
@@ -3435,7 +3435,7 @@ impl InteractionEngine {
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
-        let Some(focused) = backend.focus_manager().focused().copied() else {
+        let Some(focused) = backend.focus_tree().focused_id().copied() else {
             return DynWidgetClickOutcome::default();
         };
         let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), focused) else {
@@ -3837,7 +3837,7 @@ impl InteractionEngine {
             event,
             UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_)
         ) {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
+            if let Some(focused) = backend.focus_tree().focused_id().copied() {
                 if let Some(rect) = self.form_rects.borrow().get(&focused).copied() {
                     let tab_direction = match &event {
                         UiEvent::KeyPressed {
@@ -3913,7 +3913,7 @@ impl InteractionEngine {
         // Tab/BackTab, so the generic cross-widget cycle already handles
         // leaving it.
         if matches!(event, UiEvent::KeyPressed { .. }) {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
+            if let Some(focused) = backend.focus_tree().focused_id().copied() {
                 let ctx = self.tree_table_rects.borrow().get(&focused).cloned();
                 if let Some((rect, columns)) = ctx {
                     let outcome = self
@@ -4476,7 +4476,7 @@ impl InteractionEngine {
         // forces the redraw that paints the moved cursor, even when the
         // binding's own `sink.dispatch` leaves the key unhandled.
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
+            if let Some(focused) = backend.focus_tree().focused_id().copied() {
                 let nav_applied = if let Some((total_rows, viewport_rows)) =
                     tree_total_rows_and_viewport(&self.hit_map.borrow(), focused)
                 {
@@ -4601,7 +4601,7 @@ impl InteractionEngine {
         // the same way, directly against whichever `TextInput` extra
         // currently holds focus.
         if let UiEvent::CharTyped(ch) = &event {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
+            if let Some(focused) = backend.focus_tree().focused_id().copied() {
                 if let Some(form_event) = text_input_insert_event(
                     focused,
                     &self.hit_map.borrow(),
@@ -4613,7 +4613,7 @@ impl InteractionEngine {
             }
         }
         if let UiEvent::ClipboardPaste(text) = &event {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
+            if let Some(focused) = backend.focus_tree().focused_id().copied() {
                 if let Some(form_event) = text_input_insert_event(
                     focused,
                     &self.hit_map.borrow(),
@@ -5423,7 +5423,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -5477,7 +5477,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -5533,7 +5533,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -5600,7 +5600,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -5643,7 +5643,7 @@ mod tests {
             render_overlays(&self.engine, backend, hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -5707,7 +5707,7 @@ mod tests {
         driver.click(10.0, 1.5);
         driver.render();
         assert_eq!(
-            driver.backend().focus_manager().focused(),
+            driver.backend().focus_tree().focused_id(),
             Some(&WidgetId::new("tt")),
             "clicking the row should click-focus the tree-table-controller extra"
         );
@@ -5849,7 +5849,7 @@ mod tests {
         driver.render();
 
         assert_eq!(
-            driver.backend().focus_manager().focused(),
+            driver.backend().focus_tree().focused_id(),
             Some(&WidgetId::new("tt")),
             "a DoubleClick claimed by the tree-table-controller should also click-focus it"
         );
@@ -5940,7 +5940,7 @@ mod tests {
             render_overlays(&self.engine, backend, hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -6006,7 +6006,7 @@ mod tests {
         driver.render();
 
         assert_eq!(
-            driver.backend().focus_manager().focused(),
+            driver.backend().focus_tree().focused_id(),
             Some(&WidgetId::new("cg")),
             "clicking a cell should click-focus the cell_grid leaf"
         );
@@ -6478,7 +6478,7 @@ mod tests {
 
         let (backend, app) = driver.parts_mut();
         assert_eq!(
-            backend.focus_manager().focused().copied(),
+            backend.focus_tree().focused_id().copied(),
             Some(WidgetId::new("go")),
             "Tab at the last field must leave the form for the next app-level stop"
         );
@@ -6498,9 +6498,9 @@ mod tests {
     /// (and clear engine focus doing so) while a main-tree `"form"` extra
     /// holds focus, even when the form sits between *two* other app-level
     /// stops rather than next to just one. Before this is fixed,
-    /// `preprocess_event` sees `app.tab_stops()` return the non-empty
+    /// `preprocess_event` sees `app.extra_tab_stops()` return the non-empty
     /// `[before, after]` (the form's own stop excluded while it holds
-    /// focus), calls `FocusManager::sync_tab_order` on it, which clears
+    /// focus), calls `FocusTree::sync_tab_order` on it, which clears
     /// focus because `"settings"` isn't in that list, and then
     /// `focus_next()` from `None` always lands on `stops[0]` (`"before"`)
     /// regardless of which end of the form Tab was pressed from or which
@@ -6533,7 +6533,7 @@ mod tests {
         {
             let (backend, app) = driver.parts_mut();
             assert_eq!(
-                backend.focus_manager().focused().copied(),
+                backend.focus_tree().focused_id().copied(),
                 Some(WidgetId::new("settings")),
                 "the first Tab must stay inside the form, not leave it for a sibling"
             );
@@ -6558,7 +6558,7 @@ mod tests {
         {
             let (backend, app) = driver.parts_mut();
             assert_eq!(
-                backend.focus_manager().focused().copied(),
+                backend.focus_tree().focused_id().copied(),
                 Some(WidgetId::new("settings")),
                 "Tab from field \"a\" must still stay inside the form"
             );
@@ -6583,7 +6583,7 @@ mod tests {
         });
         let (backend, app) = driver.parts_mut();
         assert_eq!(
-            backend.focus_manager().focused().copied(),
+            backend.focus_tree().focused_id().copied(),
             Some(WidgetId::new("after")),
             "Tab at the last field must leave the form for the \"after\" sibling"
         );
@@ -6636,7 +6636,7 @@ mod tests {
         {
             let (backend, app) = driver.parts_mut();
             assert_eq!(
-                backend.focus_manager().focused().copied(),
+                backend.focus_tree().focused_id().copied(),
                 Some(WidgetId::new("settings")),
                 "the first Shift-Tab must stay inside the form, not leave it for a sibling"
             );
@@ -6672,7 +6672,7 @@ mod tests {
         driver.dispatch(shift_tab);
         let (backend, app) = driver.parts_mut();
         assert_eq!(
-            backend.focus_manager().focused().copied(),
+            backend.focus_tree().focused_id().copied(),
             Some(WidgetId::new("before")),
             "Shift-Tab at the first field must leave the form for the \"before\" sibling"
         );
@@ -8253,7 +8253,7 @@ mod tests {
         {
             let (backend, _) = driver.parts_mut();
             assert_eq!(
-                backend.focus_manager().focused().copied(),
+                backend.focus_tree().focused_id().copied(),
                 Some(WidgetId::new("apply")),
                 "opening the layout dialog should seed focus onto its own content"
             );
@@ -8287,7 +8287,7 @@ mod tests {
             "only the message dialog's own ModalStack entry should remain"
         );
         assert_eq!(
-            backend.focus_manager().focused().copied(),
+            backend.focus_tree().focused_id().copied(),
             None,
             "the closed dialog's content must not keep keyboard focus"
         );
@@ -8699,7 +8699,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -9158,7 +9158,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -9354,7 +9354,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -9590,7 +9590,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -9769,7 +9769,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -10036,7 +10036,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -10218,7 +10218,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -10362,7 +10362,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -10583,7 +10583,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -10770,7 +10770,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -10882,7 +10882,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -11165,7 +11165,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -11308,7 +11308,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -11783,7 +11783,7 @@ mod tests {
     /// `has_focus` is cosmetic" contract
     /// [`crate::text_input`]'s own module doc states: key routing for a
     /// focused `"text_input"`/`"password"`/`"textarea"` extra is keyed
-    /// entirely by `backend.focus_manager().focused()`
+    /// entirely by `backend.focus_tree().focused_id()`
     /// ([`focus_scoped_key_event`]/`text_input_insert_event`'s own
     /// `focused` parameter), never by the descriptor's own `has_focus`
     /// field, so a host that never echoes it still keeps every keystroke
@@ -11816,7 +11816,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -12018,7 +12018,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 
@@ -12075,7 +12075,7 @@ mod tests {
         {
             let (backend, _app) = driver.parts_mut();
             assert_eq!(
-                backend.focus_manager().focused().copied(),
+                backend.focus_tree().focused_id().copied(),
                 Some(WidgetId::new("widget")),
                 "the click above must have already focused the widget"
             );

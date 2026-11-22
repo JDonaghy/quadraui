@@ -696,11 +696,11 @@ pub struct RecordingBackend {
     /// field directly, the same two ways a real backend's own
     /// `current_style` field is written.
     pub current_style: crate::Style,
-    /// Backs [`Backend::focus_manager`] — unlike `modal_stack_handle`/
+    /// Backs [`Backend::focus_tree`] — unlike `modal_stack_handle`/
     /// `drag_state_handle`, this one *is* real state a headless mock can
     /// honestly fabricate, so it's included rather than
     /// `unimplemented!()`.
-    pub focus: crate::focus::FocusManager,
+    pub focus_tree: crate::focus::FocusTree,
     /// Backs [`Backend::invalidate_rect`]/[`Backend::invalidation_log`] —
     /// pure bookkeeping, same shape every real backend's `BackendCore`
     /// delegates to.
@@ -756,7 +756,7 @@ impl Default for RecordingBackend {
             char_width: 1.0,
             chrome_line_height: None,
             current_style: crate::Style::default(),
-            focus: crate::focus::FocusManager::new(),
+            focus_tree: crate::focus::FocusTree::new(),
             invalidation_log: crate::backend::InvalidationLog::new(),
             cursor_calls: Vec::new(),
             notifications_capable: false,
@@ -1069,11 +1069,11 @@ impl crate::Backend for RecordingBackend {
              (quadraui::tui::testing::TuiDriver) if your test needs one"
         )
     }
-    fn focus_manager(&self) -> &crate::focus::FocusManager {
-        &self.focus
+    fn focus_tree(&self) -> &crate::focus::FocusTree {
+        &self.focus_tree
     }
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-        self.focus.set_focus(id)
+        self.focus_tree.set_focus(id.map(|id| (id, None)))
     }
     fn draw_focus_ring(&mut self, _r: Rect) {
         self.record("draw_focus_ring");

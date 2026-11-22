@@ -1,32 +1,35 @@
-//! `FocusManager` — the single owner of "what widget currently has
-//! keyboard focus".
+//! `FocusTree` — the single owner of "what widget (and, for a composite
+//! widget, which of its own children) currently has keyboard focus".
 //!
 //! # Ownership: one per backend, one writer
 //!
 //! Each concrete backend (`TuiBackend`, `GtkBackend`, `MacBackend`,
-//! `WinBackend`) owns exactly one `FocusManager`, reachable read-only
-//! via [`crate::Backend::focus_manager`]. The only code that *mutates*
-//! it is the shared Tab/Shift+Tab intercept in
+//! `WinBackend`) owns exactly one `FocusTree`, reachable read-only via
+//! [`crate::Backend::focus_tree`]. The only code that *mutates* it is
+//! [`crate::Backend::set_focus`] (whole-widget focus changes, e.g.
+//! click-to-focus) and the shared Tab/Shift+Tab intercept in
 //! [`crate::runtime::preprocess_event`] (via the crate-private
-//! `PreprocessBackend::focus_manager_mut`) — every backend's `run.rs`
-//! routes through that one function, so "what's focused" can't drift
-//! between backends. Apps never construct or mutate a `FocusManager`
-//! directly; they read it off the backend, and drive it indirectly by
-//! returning tab stops from [`crate::runner::AppLogic::tab_stops`].
+//! `PreprocessBackend::focus_tree_mut`) — every backend's `run.rs` routes
+//! through those, so "what's focused" can't drift between backends. Apps
+//! never construct or mutate a `FocusTree` directly; they read it off the
+//! backend, and drive it indirectly by returning tab stops from
+//! [`crate::runner::AppLogic::extra_tab_stops`] or by declaring
+//! [`crate::interactive::Interactive::focus`] on a [`crate::runner::AppLogic::frame_tree`]
+//! node.
 //!
 //! # Opt-in, not forced
 //!
 //! An app participates purely by overriding
-//! [`crate::runner::AppLogic::tab_stops`] (default: empty). While it
+//! [`crate::runner::AppLogic::extra_tab_stops`] (default: empty). While it
 //! returns `[]`, Tab/Shift+Tab pass through to `AppLogic::handle`
 //! completely unclaimed — **zero behavior change** for every app
 //! written before this feature. Once an app returns a non-empty list
-//! from `tab_stops`, the runner claims Tab/Shift+Tab globally: they
+//! from `extra_tab_stops`, the runner claims Tab/Shift+Tab globally: they
 //! stop reaching `AppLogic::handle` as a raw `KeyPressed` and arrive
 //! instead as [`crate::UiEvent::FocusChanged`]. An app with a widget
 //! that treats a literal Tab keystroke as input (a code editor's
-//! indent command, say) should leave that widget out of `tab_stops`
-//! entirely, or keep `tab_stops` empty while that widget holds
+//! indent command, say) should leave that widget out of `extra_tab_stops`
+//! entirely, or keep `extra_tab_stops` empty while that widget holds
 //! focus — see that method's doc for the full contract.
 //!
 //! # Focus-ring paint convention
@@ -38,7 +41,7 @@
 //! own `render`, so it overlays without needing per-primitive support.
 //! Every runner (`tui::run`, `gtk::run`, `macos::run`, `win::run`) calls
 //! it once per frame, right after `AppLogic::render`, whenever
-//! `focus_manager().focused()` names a widget this frame's tab stops
+//! `focus_tree().focused()` names a widget this frame's tab stops
 //! can still resolve a rect for.
 
 use crate::event::Rect;
@@ -47,7 +50,7 @@ use crate::interactive::{FocusSpec, SubTarget};
 use crate::types::WidgetId;
 
 /// Wrap `current + delta` into `0..n`, the one index-cycling arithmetic
-/// every Tab/Shift+Tab-style stepper in this crate shares — [`FocusManager`],
+/// every Tab/Shift+Tab-style stepper in this crate shares — [`FocusTree::step`],
 /// [`crate::compose::focus_group::FocusGroup`], and the menu/workspace/
 /// dialog/toast/form controllers that step a bounded index with wrap-around.
 ///
@@ -74,104 +77,6 @@ pub fn cycle_index(current: usize, delta: isize, n: usize) -> usize {
 // TUI story (`crate::tui::draw_focus_ring` paints a 1-cell border and
 // consumes no `Style` token).
 
-/// Single owner of keyboard focus. See the module doc for
-/// the full rationale and the six representations this replaces (or, in
-/// three documented cases, deliberately leaves for a later migration).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct FocusManager {
-    focused: Option<WidgetId>,
-    tab_order: Vec<WidgetId>,
-}
-
-impl FocusManager {
-    /// A manager with nothing focused and an empty tab order.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Rebuild the tab order from this frame's tab stops — typically
-    /// [`crate::frame::ScreenLayout::tab_stops`]'s output, already
-    /// sorted in reading order.
-    ///
-    /// If the previously-focused widget's id is still present in the
-    /// new order, focus is preserved (matched **by id**, not position —
-    /// a widget that moved on screen keeps focus; one that vanished
-    /// doesn't hand focus to whatever now sits at its old index).
-    /// Otherwise focus is cleared.
-    pub fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
-        self.tab_order = stops.iter().map(|(id, _)| *id).collect();
-        if let Some(cur) = &self.focused {
-            if !self.tab_order.contains(cur) {
-                self.focused = None;
-            }
-        }
-    }
-
-    /// The current tab order, in cycle order.
-    pub fn tab_order(&self) -> &[WidgetId] {
-        &self.tab_order
-    }
-
-    /// The currently focused widget, if any.
-    pub fn focused(&self) -> Option<&WidgetId> {
-        self.focused.as_ref()
-    }
-
-    /// Whether `id` currently has focus.
-    pub fn is_focused(&self, id: &WidgetId) -> bool {
-        self.focused.as_ref() == Some(id)
-    }
-
-    /// Move focus to the next tab stop, wrapping around. Starting from
-    /// "nothing focused", lands on the first stop. No-op (returns
-    /// `false`) if the tab order is empty. Returns whether focus
-    /// actually changed.
-    pub fn focus_next(&mut self) -> bool {
-        self.step(1)
-    }
-
-    /// Move focus to the previous tab stop, wrapping around. Starting
-    /// from "nothing focused", lands on the last stop. No-op (returns
-    /// `false`) if the tab order is empty. Returns whether focus
-    /// actually changed.
-    pub fn focus_prev(&mut self) -> bool {
-        self.step(-1)
-    }
-
-    fn step(&mut self, dir: isize) -> bool {
-        if self.tab_order.is_empty() {
-            return self.set_focus(None);
-        }
-        let len = self.tab_order.len();
-        let next_idx = match &self.focused {
-            None if dir >= 0 => 0,
-            None => len - 1,
-            Some(cur) => {
-                let idx = self.tab_order.iter().position(|w| w == cur).unwrap_or(0);
-                cycle_index(idx, dir, len)
-            }
-        };
-        let next = self.tab_order[next_idx];
-        self.set_focus(Some(next))
-    }
-
-    /// Set focus explicitly — e.g. click-to-focus. `None` clears focus.
-    /// Returns whether it actually changed.
-    pub fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-        if self.focused != id {
-            self.focused = id;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Clear focus. Equivalent to `set_focus(None)`.
-    pub fn clear(&mut self) -> bool {
-        self.set_focus(None)
-    }
-}
-
 /// A tab stop's full address: a widget's own id, plus — for a composite
 /// widget's [`FocusSpec::Children`] — which sub-part this stop names.
 /// `None` addresses the whole widget, the same shape
@@ -185,10 +90,9 @@ struct FocusTreeStop {
 }
 
 /// The real, per-stop tab order for one frame's [`FrameTree`], plus the
-/// `:focus-visible` bookkeeping [`crate::compose::FocusRing`] already
-/// tracks for a flat `WidgetId` list.
+/// `:focus-visible` bookkeeping described below.
 ///
-/// # Why this exists alongside [`FocusManager`]
+/// # Why a per-stop tree, not a flat widget list
 ///
 /// [`crate::frame::ScreenLayout::tab_stops`] collapses a widget's
 /// [`FocusSpec::Children`] down to one stop for the whole widget, because
@@ -207,7 +111,7 @@ struct FocusTreeStop {
 /// widget's own child order for stops that share one rect (every child
 /// of one [`FocusSpec::Children`] widget sits at that widget's rect).
 /// Stepping through that order uses the exact same wraparound arithmetic
-/// as [`FocusManager::step`]: [`cycle_index`].
+/// as [`Self::step`]: [`cycle_index`].
 ///
 /// # Modal trapping
 ///
@@ -226,11 +130,10 @@ struct FocusTreeStop {
 ///
 /// # Focus-visible
 ///
-/// Mirrors [`crate::compose::FocusRing`]'s VS Code `:focus-visible`
-/// convention: [`Self::focus_next`]/[`Self::focus_prev`] (a keyboard
-/// move) mark the ring visible; [`Self::set_focus`] (the click-to-focus
-/// path) suppresses it. See that type's doc for how a host composes
-/// `tree.is_focused(id, sub) && tree.is_focus_visible()` into a
+/// VS Code's `:focus-visible` convention: [`Self::focus_next`]/
+/// [`Self::focus_prev`] (a keyboard move) mark the ring visible;
+/// [`Self::set_focus`] (the click-to-focus path) suppresses it. A host
+/// composes `tree.is_focused(id, sub) && tree.is_focus_visible()` into a
 /// primitive's own `has_focus`/`focused` descriptor field.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FocusTree {
@@ -292,12 +195,10 @@ impl FocusTree {
         }
     }
 
-    /// Rebuild the tab order from this frame's [`FrameTree`] in place,
-    /// the [`FocusAddress`]-keyed counterpart of
-    /// [`FocusManager::sync_tab_order`]: if the previously-focused
-    /// address is still present in the rebuilt order, focus (and its
-    /// current focus-visible state) is preserved; otherwise focus is
-    /// cleared.
+    /// Rebuild the tab order from this frame's [`FrameTree`] in place: if
+    /// the previously-focused address is still present in the rebuilt
+    /// order, focus (and its current focus-visible state) is preserved;
+    /// otherwise focus is cleared.
     pub fn sync(&mut self, tree: &FrameTree) {
         let rebuilt = Self::from_frame_tree(tree);
         let keep_focus = self
@@ -310,20 +211,17 @@ impl FocusTree {
         }
     }
 
-    /// Rebuild this tree's stops from a flat `(WidgetId, Rect)` list — the
-    /// [`FocusAddress`]-keyed counterpart of
-    /// [`FocusManager::sync_tab_order`], for a caller that has
-    /// [`crate::runner::AppLogic::tab_stops`]/
-    /// [`crate::runner::AppLogic::extra_tab_stops`]'s flat shape rather
-    /// than a [`FrameTree`] to rebuild from ([`Self::sync`]'s own source),
-    /// or a host managing its own [`FocusTree`] directly with no
-    /// [`FrameTree`]/[`crate::interactive::Interactive`] widgets at all
-    /// (see the type doc's "Modal trapping" section). Every stop is
-    /// addressed `(id, None)` — the flat shape carries no [`SubTarget`]
-    /// to preserve. If the previously-focused address is still present
-    /// in the rebuilt order, focus (and its focus-visible state) is
-    /// preserved; otherwise focus is cleared, matching
-    /// [`FocusManager::sync_tab_order`]'s own contract.
+    /// Rebuild this tree's stops from a flat `(WidgetId, Rect)` list, for
+    /// a caller that has [`crate::runner::AppLogic::extra_tab_stops`]'s
+    /// flat shape rather than a [`FrameTree`] to rebuild from
+    /// ([`Self::sync`]'s own source), or a host managing its own
+    /// [`FocusTree`] directly with no [`FrameTree`]/
+    /// [`crate::interactive::Interactive`] widgets at all (see the type
+    /// doc's "Modal trapping" section). Every stop is addressed
+    /// `(id, None)` — the flat shape carries no [`SubTarget`] to
+    /// preserve. If the previously-focused address is still present in
+    /// the rebuilt order, focus (and its focus-visible state) is
+    /// preserved; otherwise focus is cleared.
     pub fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
         let rebuilt: Vec<FocusTreeStop> = stops
             .iter()
@@ -383,6 +281,12 @@ impl FocusTree {
     /// The currently focused address, if any.
     pub fn focused(&self) -> Option<&FocusAddress> {
         self.focused.as_ref()
+    }
+
+    /// The widget id half of [`Self::focused`], for a caller that addresses
+    /// focus by whole widget and never sets a [`SubTarget`].
+    pub fn focused_id(&self) -> Option<&WidgetId> {
+        self.focused.as_ref().map(|(id, _)| id)
     }
 
     /// The screen rect of the currently focused stop's owning widget, or
@@ -490,124 +394,6 @@ impl FocusTree {
 mod tests {
     use super::*;
 
-    fn stops(ids: &[&str]) -> Vec<(WidgetId, Rect)> {
-        ids.iter()
-            .enumerate()
-            .map(|(i, id)| {
-                (
-                    WidgetId::new(*id),
-                    Rect::new(0.0, i as f32 * 3.0, 10.0, 3.0),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn new_manager_has_no_focus() {
-        let fm = FocusManager::new();
-        assert_eq!(fm.focused(), None);
-        assert!(fm.tab_order().is_empty());
-    }
-
-    #[test]
-    fn sync_tab_order_populates_order() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["a", "b", "c"]));
-        assert_eq!(
-            fm.tab_order(),
-            &[WidgetId::new("a"), WidgetId::new("b"), WidgetId::new("c")]
-        );
-    }
-
-    #[test]
-    fn focus_next_from_none_lands_on_first() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["a", "b", "c"]));
-        assert!(fm.focus_next());
-        assert_eq!(fm.focused(), Some(&WidgetId::new("a")));
-    }
-
-    #[test]
-    fn focus_prev_from_none_lands_on_last() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["a", "b", "c"]));
-        assert!(fm.focus_prev());
-        assert_eq!(fm.focused(), Some(&WidgetId::new("c")));
-    }
-
-    #[test]
-    fn focus_next_wraps() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["a", "b", "c"]));
-        fm.focus_next(); // a
-        fm.focus_next(); // b
-        fm.focus_next(); // c
-        assert_eq!(fm.focused(), Some(&WidgetId::new("c")));
-        fm.focus_next(); // wraps to a
-        assert_eq!(fm.focused(), Some(&WidgetId::new("a")));
-    }
-
-    #[test]
-    fn focus_prev_wraps() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["a", "b", "c"]));
-        fm.focus_next(); // a
-        fm.focus_prev(); // wraps to c
-        assert_eq!(fm.focused(), Some(&WidgetId::new("c")));
-    }
-
-    #[test]
-    fn focus_next_noop_on_empty_order() {
-        let mut fm = FocusManager::new();
-        assert!(!fm.focus_next());
-        assert_eq!(fm.focused(), None);
-    }
-
-    #[test]
-    fn set_focus_returns_whether_changed() {
-        let mut fm = FocusManager::new();
-        assert!(fm.set_focus(Some(WidgetId::new("a"))));
-        assert!(
-            !fm.set_focus(Some(WidgetId::new("a"))),
-            "same id is a no-op"
-        );
-        assert!(fm.set_focus(Some(WidgetId::new("b"))));
-        assert!(fm.clear());
-        assert!(!fm.clear(), "clearing an already-clear focus is a no-op");
-    }
-
-    #[test]
-    fn sync_tab_order_preserves_focus_by_id() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["a", "b", "c"]));
-        fm.set_focus(Some(WidgetId::new("b")));
-        // Geometry moved (b now at index 0), but the id is still present.
-        fm.sync_tab_order(&stops(&["b", "a", "c"]));
-        assert_eq!(
-            fm.focused(),
-            Some(&WidgetId::new("b")),
-            "focus follows the id, not the index"
-        );
-    }
-
-    #[test]
-    fn sync_tab_order_clears_focus_when_id_removed() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["a", "b", "c"]));
-        fm.set_focus(Some(WidgetId::new("b")));
-        fm.sync_tab_order(&stops(&["a", "c"]));
-        assert_eq!(fm.focused(), None);
-    }
-
-    #[test]
-    fn is_focused_checks_current_id() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["a", "b"]));
-        fm.set_focus(Some(WidgetId::new("a")));
-        assert!(fm.is_focused(&WidgetId::new("a")));
-        assert!(!fm.is_focused(&WidgetId::new("b")));
-    }
-
     #[test]
     fn cycle_index_empty_returns_zero() {
         assert_eq!(cycle_index(0, 1, 0), 0);
@@ -632,19 +418,6 @@ mod tests {
         assert_eq!(cycle_index(1, -5, 3), 2);
         assert_eq!(cycle_index(0, 7, 3), 1);
         assert_eq!(cycle_index(2, -2, 5), 0);
-    }
-
-    #[test]
-    fn single_stop_next_and_prev_stay_put() {
-        let mut fm = FocusManager::new();
-        fm.sync_tab_order(&stops(&["only"]));
-        assert!(fm.focus_next());
-        assert_eq!(fm.focused(), Some(&WidgetId::new("only")));
-        assert!(
-            !fm.focus_next(),
-            "focusing the same single stop again is a no-op"
-        );
-        assert!(!fm.focus_prev());
     }
 
     mod focus_tree {
@@ -912,9 +685,8 @@ mod tests {
         }
 
         /// The acceptance scenario for VS Code's `:focus-visible`
-        /// convention, carried over from [`crate::compose::FocusRing`]:
-        /// a Tab-reached stop shows the ring, and clicking a different
-        /// one suppresses it even though focus did move.
+        /// convention: a Tab-reached stop shows the ring, and clicking a
+        /// different one suppresses it even though focus did move.
         #[test]
         fn keyboard_move_shows_the_ring_click_suppresses_it() {
             let mut frame = FrameTree::new();
@@ -1017,9 +789,8 @@ mod tests {
         /// [`FocusTree::sync_tab_order`] — the flat `(WidgetId, Rect)`
         /// counterpart of [`Self::sync`] that
         /// `crate::runtime::preprocess_event`'s Tab/Shift+Tab step feeds
-        /// from `AppLogic::tab_stops`/`extra_tab_stops` — addresses every
-        /// stop `(id, None)` and preserves focus by id the same way
-        /// [`FocusManager::sync_tab_order`] does.
+        /// from `AppLogic::extra_tab_stops` — addresses every stop
+        /// `(id, None)` and preserves focus by id.
         #[test]
         fn sync_tab_order_preserves_focus_by_id() {
             let a = WidgetId::new("a");

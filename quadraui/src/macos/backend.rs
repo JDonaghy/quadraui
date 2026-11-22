@@ -379,15 +379,12 @@ pub struct MacBackend {
     /// [`Backend::set_nerd_fonts`]'s own doc gives for keeping TUI's
     /// default at `false`.
     nerd_fonts_enabled: bool,
-    /// Single owner of keyboard focus — see
-    /// [`crate::focus`]'s module doc. Mutated only by the shared
-    /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
-    /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
-    /// read elsewhere via [`Backend::focus_manager`].
-    focus: crate::focus::FocusManager,
-    /// Sub-target-aware focus tree built from the app's
-    /// [`crate::runner::AppLogic::frame_tree`] — see [`crate::runtime::PreprocessBackend::focus_tree`].
-    /// [`Self::set_focus`] keeps this in step with `focus` above.
+    /// Single owner of keyboard focus — see [`crate::focus`]'s module
+    /// doc. Mutated by [`Self::set_focus`] (whole-widget focus changes)
+    /// and by the shared Tab/Shift+Tab intercept in
+    /// [`crate::runtime::preprocess_event`] via
+    /// [`crate::runtime::PreprocessBackend::focus_tree_mut`]; read
+    /// elsewhere via [`Backend::focus_tree`].
     focus_tree: crate::focus::FocusTree,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`.
     /// Picks `Icon::glyph` vs `Icon::fallback` in `draw_activity_bar` and
@@ -858,7 +855,6 @@ impl MacBackend {
             pending_window_press: WindowDragArm::new(),
             requested_cursor: PointerShape::Default,
             nerd_fonts_enabled: true,
-            focus: crate::focus::FocusManager::new(),
             focus_tree: crate::focus::FocusTree::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             wake_callback,
@@ -1687,10 +1683,6 @@ impl crate::runtime::PreprocessBackend for MacBackend {
         self.focused_activity_bar_id()
     }
 
-    fn focus_manager_mut(&mut self) -> &mut crate::focus::FocusManager {
-        &mut self.focus
-    }
-
     fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId> {
         self.match_keypress(key, modifiers)
     }
@@ -1714,10 +1706,6 @@ impl crate::runtime::PreprocessBackend for MacBackend {
     /// for what a backend keeping the trait's `None` default opts out of.
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         Some(self.core.widget_routing_mut())
-    }
-
-    fn focus_tree(&self) -> &crate::focus::FocusTree {
-        &self.focus_tree
     }
 
     fn focus_tree_mut(&mut self) -> &mut crate::focus::FocusTree {
@@ -2160,13 +2148,12 @@ impl Backend for MacBackend {
         self.drag_state.clone()
     }
 
-    fn focus_manager(&self) -> &crate::focus::FocusManager {
-        &self.focus
+    fn focus_tree(&self) -> &crate::focus::FocusTree {
+        &self.focus_tree
     }
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-        self.focus_tree.set_focus(id.map(|id| (id, None)));
-        self.focus.set_focus(id)
+        self.focus_tree.set_focus(id.map(|id| (id, None)))
     }
 
     fn frame_capture(&mut self) -> Option<&mut crate::frame::FrameCapture> {

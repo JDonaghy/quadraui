@@ -208,4 +208,73 @@ mod tests {
             "focus must change the painted border colour"
         );
     }
+
+    /// A headless, end-to-end proof that [`draw_text_input`]'s border-tint
+    /// treatment (above) reflects [`crate::focus::FocusTree`]'s real
+    /// Tab-vs-click `:focus-visible` convention — composed as
+    /// `tree.is_focused(id, None) && tree.is_focus_visible()`, the bool a
+    /// host assigns to [`TextInput::has_focus`] — not just a literal
+    /// `true`/`false` this test assigns itself.
+    #[test]
+    fn focused_text_input_paints_a_different_border_after_tab_than_after_click() {
+        use crate::focus::FocusTree;
+
+        let id = WidgetId::new("search:input");
+        let mut tree = FocusTree::new();
+        tree.sync_tab_order(&[(id.clone(), crate::event::Rect::new(0.0, 0.0, 0.0, 0.0))]);
+        let mut input = mk_input(vec!["hi"]);
+        let theme = Theme::default();
+        let rect = Rect::new(0, 0, 10, 3);
+        // Sample the top border edge, not a corner (paints the same
+        // colour) and not the content row.
+        let border_fg = |buf: &Buffer| buf[(1, 0)].fg;
+
+        // Tab: `focus_next()` is the real keyboard-move path, not just
+        // construction's initial state.
+        tree.focus_next();
+        input.has_focus = tree.is_focused(&id, None) && tree.is_focus_visible();
+        assert!(
+            input.has_focus,
+            "a Tab-reached text input must report focus-visible"
+        );
+        let mut buf_tab = Buffer::empty(rect);
+        draw_text_input(&mut buf_tab, rect, &input, &theme);
+
+        // Click: `set_focus` re-focuses the same widget via the pointer path.
+        tree.set_focus(Some((id.clone(), None)));
+        input.has_focus = tree.is_focused(&id, None) && tree.is_focus_visible();
+        assert!(
+            tree.is_focused(&id, None),
+            "the click did move focus to this input"
+        );
+        assert!(
+            !input.has_focus,
+            "a mouse click must suppress the text input's focus-visible ring"
+        );
+        let mut buf_click = Buffer::empty(rect);
+        draw_text_input(&mut buf_click, rect, &input, &theme);
+
+        assert_ne!(
+            border_fg(&buf_tab),
+            border_fg(&buf_click),
+            "the painted border colour must differ between the Tab-reached \
+             and clicked states"
+        );
+
+        // Shift+Tab afterwards restores both the composed bool and the
+        // painted border.
+        tree.focus_prev();
+        input.has_focus = tree.is_focused(&id, None) && tree.is_focus_visible();
+        assert!(
+            input.has_focus,
+            "a subsequent keyboard move restores focus-visible"
+        );
+        let mut buf_retreat = Buffer::empty(rect);
+        draw_text_input(&mut buf_retreat, rect, &input, &theme);
+        assert_eq!(
+            border_fg(&buf_tab),
+            border_fg(&buf_retreat),
+            "Shift+Tab repaints the same focus-visible border Tab did"
+        );
+    }
 }

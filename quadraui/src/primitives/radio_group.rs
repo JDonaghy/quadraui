@@ -34,7 +34,7 @@
 //! division of responsibility as every other primitive here: once the
 //! group has focus, arrow keys move the cursor *within* it; Tab leaves
 //! it to the host's focus-traversal logic (see
-//! [`crate::focus::FocusManager`] for the app-wide owner of "what has
+//! [`crate::focus::FocusTree`] for the app-wide owner of "what has
 //! focus").
 
 use crate::event::{Key, NamedKey, Point, Rect};
