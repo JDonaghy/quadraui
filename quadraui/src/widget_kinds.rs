@@ -156,6 +156,16 @@ widget_kinds! {
         all(feature = "macos", target_os = "macos")
     ))]
     "icon_grid" => crate::IconGrid,
+    // Gated the same as `impl Primitive for ListView`/`impl Interactive
+    // for ListView`, so this entry exists exactly on the feature sets
+    // where `ListView` is a `DynWidget`.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    "list" => crate::ListView,
 }
 
 #[cfg(test)]
@@ -230,6 +240,65 @@ mod tests {
         let payload = serde_json::json!({"id": "icons", "items": []});
         match decode_widget("icon_grid", payload) {
             Err(KindError::Unknown(kind)) => assert_eq!(kind, "icon_grid"),
+            other => panic!("expected Err(KindError::Unknown), got {}", describe(other)),
+        }
+    }
+
+    /// Coverage for the `"list"` entry, gated exactly as that entry is:
+    /// `ListView` is only a `DynWidget` — and so only decodable — on a
+    /// feature set that compiles its `Primitive`/`Interactive` impls.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod list_kind {
+        use super::*;
+
+        #[test]
+        fn decodes_the_list_kind() {
+            let payload = serde_json::json!({
+                "id": "quickfix",
+                "items": [],
+                "selected_idx": 0,
+            });
+            let widget = decode_widget("list", payload).expect("list decodes");
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("quickfix"));
+        }
+
+        #[test]
+        fn rejects_a_malformed_list_payload() {
+            // `selected_idx` must be an integer — a string value has no
+            // sensible decode and should surface as `KindError::Decode`,
+            // not panic.
+            let payload = serde_json::json!({
+                "id": "quickfix",
+                "items": [],
+                "selected_idx": "first",
+            });
+            match decode_widget("list", payload) {
+                Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "list"),
+                other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
+            }
+        }
+    }
+
+    /// A build with no backend feature compiles `ListView`'s
+    /// `Primitive`/`Interactive` impls out, so its `widget_kinds!` entry
+    /// goes with them and the kind reads as unknown rather than failing
+    /// to build.
+    #[cfg(not(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )))]
+    #[test]
+    fn list_kind_is_unknown_without_a_backend() {
+        let payload = serde_json::json!({"id": "quickfix", "items": [], "selected_idx": 0});
+        match decode_widget("list", payload) {
+            Err(KindError::Unknown(kind)) => assert_eq!(kind, "list"),
             other => panic!("expected Err(KindError::Unknown), got {}", describe(other)),
         }
     }
