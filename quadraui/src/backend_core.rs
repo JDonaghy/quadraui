@@ -102,15 +102,15 @@ pub(crate) struct BackendCore {
     /// widget-contract routing engine — see
     /// `crate::runtime::PreprocessBackend::widget_routing_mut`'s doc for
     /// why this field, unlike every other one above, is not yet read by
-    /// every backend's `Backend`/`PreprocessBackend` impl (only
-    /// `TuiBackend` wires it up today).
+    /// every backend's `Backend`/`PreprocessBackend` impl (`TuiBackend`
+    /// and `MacBackend` wire it up today).
     ///
     /// `#[allow(dead_code)]` on both this field and
     /// [`Self::widget_routing_mut`]: a feature combination that embeds
-    /// `BackendCore` but excludes `tui` (`--features win`/`--features
-    /// macos` alone, this crate's cross-target compile-check legs) has no
-    /// caller for either — same rationale as [`Self::register_accelerator`]'s
-    /// own attribute above.
+    /// `BackendCore` but excludes every backend that wires it (`--features
+    /// win`/`--features gtk` alone, this crate's cross-target
+    /// compile-check legs) has no caller for either — same rationale as
+    /// [`Self::register_accelerator`]'s own attribute above.
     #[allow(dead_code)]
     widget_routing: WidgetRoutingState,
 }
