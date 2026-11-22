@@ -1701,6 +1701,18 @@ impl crate::runtime::PreprocessBackend for MacBackend {
     fn paste_modifier(&self) -> crate::desktop::PasteModifier {
         crate::desktop::PasteModifier::Cmd
     }
+
+    /// Wires `MacBackend` onto the widget-contract routing engine —
+    /// mirrors [`crate::tui::backend::TuiBackend`]'s own
+    /// `widget_routing_mut` override, forwarding to the
+    /// [`crate::backend_core::BackendCore`] field every backend already
+    /// embeds. See
+    /// [`crate::runtime::PreprocessBackend::widget_routing_mut`]'s doc
+    /// for why a backend returning `None` here (the trait default) opts
+    /// out of the routing step entirely.
+    fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
+        Some(self.core.widget_routing_mut())
+    }
 }
 
 impl crate::backend::sealed::Sealed for MacBackend {}
@@ -6827,6 +6839,26 @@ mod tests {
         let mut b = MacBackend::new();
         let ev = b.fold_double_click(UiEvent::WindowFocused(true));
         assert_eq!(ev, UiEvent::WindowFocused(true));
+    }
+
+    // ── Widget-contract routing engine ───────────────────────────────
+
+    /// `MacBackend::widget_routing_mut` resolves to the same persistent
+    /// `WidgetRoutingState` on every call — the counterpart of
+    /// `backend_core::tests::widget_routing_mut_is_stable_across_calls`,
+    /// proving this backend's `PreprocessBackend` override actually
+    /// forwards to `self.core` rather than, say, handing back a fresh
+    /// default each time.
+    #[test]
+    fn widget_routing_mut_is_stable_across_calls() {
+        use crate::runtime::PreprocessBackend;
+
+        let mut b = MacBackend::new();
+        b.widget_routing_mut().unwrap().hovered = Some(WidgetId::new("hovered"));
+        assert_eq!(
+            b.widget_routing_mut().unwrap().hovered,
+            Some(WidgetId::new("hovered"))
+        );
     }
 
     #[test]
