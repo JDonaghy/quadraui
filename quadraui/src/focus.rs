@@ -209,6 +209,21 @@ struct FocusTreeStop {
 /// Stepping through that order uses the exact same wraparound arithmetic
 /// as [`FocusManager::step`]: [`cycle_index`].
 ///
+/// # Modal trapping
+///
+/// [`Self::restrict`] narrows this tree's stops down to whatever a host
+/// decides is "in scope" — the primitive a modal built on top of
+/// [`crate::ModalStack`] uses to trap Tab/Shift+Tab cycling inside
+/// itself instead of letting it escape to a base-layer stop hidden
+/// behind it. A host checks [`crate::ModalStack::is_empty`] (or reads
+/// [`crate::ModalStack::top`]'s bounds) each time it resyncs this tree
+/// and, while a modal is open, calls `restrict` with a predicate that
+/// keeps only the modal's own stops — by id, or by containment against
+/// the modal's own [`crate::ModalEntry::bounds`]. `restrict` only ever
+/// narrows: resync from [`Self::sync`]/[`Self::from_frame_tree`]/
+/// [`Self::sync_tab_order`] once the modal closes to restore the full
+/// stop set.
+///
 /// # Focus-visible
 ///
 /// Mirrors [`crate::compose::FocusRing`]'s VS Code `:focus-visible`
@@ -300,24 +315,16 @@ impl FocusTree {
     /// [`FocusManager::sync_tab_order`], for a caller that has
     /// [`crate::runner::AppLogic::tab_stops`]/
     /// [`crate::runner::AppLogic::extra_tab_stops`]'s flat shape rather
-    /// than a [`FrameTree`] to rebuild from ([`Self::sync`]'s own source).
-    /// Every stop is addressed `(id, None)` — the flat shape carries no
-    /// [`SubTarget`] to preserve. If the previously-focused address is
-    /// still present in the rebuilt order, focus (and its focus-visible
-    /// state) is preserved; otherwise focus is cleared, matching
+    /// than a [`FrameTree`] to rebuild from ([`Self::sync`]'s own source),
+    /// or a host managing its own [`FocusTree`] directly with no
+    /// [`FrameTree`]/[`crate::interactive::Interactive`] widgets at all
+    /// (see the type doc's "Modal trapping" section). Every stop is
+    /// addressed `(id, None)` — the flat shape carries no [`SubTarget`]
+    /// to preserve. If the previously-focused address is still present
+    /// in the rebuilt order, focus (and its focus-visible state) is
+    /// preserved; otherwise focus is cleared, matching
     /// [`FocusManager::sync_tab_order`]'s own contract.
-    ///
-    /// Gated like `mod runtime` itself (the only caller, in
-    /// `crate::runtime::preprocess_event`'s Tab/Shift+Tab step) to avoid a
-    /// dead-code warning on a feature combination that builds this module
-    /// but not that one.
-    #[cfg(any(
-        feature = "tui",
-        feature = "gtk",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    ))]
-    pub(crate) fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
+    pub fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
         let rebuilt: Vec<FocusTreeStop> = stops
             .iter()
             .map(|(id, rect)| FocusTreeStop {
@@ -332,6 +339,29 @@ impl FocusTree {
         self.stops = rebuilt;
         if !keep_focus {
             self.focused = None;
+        }
+    }
+
+    /// Drop every stop for which `keep` answers `false`, each tested
+    /// against its own [`FocusAddress`] and rect — the primitive a host
+    /// builds "modal trapping" from (see the type doc's "Modal
+    /// trapping" section): once a modal opens, call with a predicate
+    /// that keeps only the modal's own stops, by id or by containment
+    /// against the modal's bounds, so [`Self::focus_next`]/
+    /// [`Self::focus_prev`] cycle within it instead of escaping to a
+    /// base-layer stop hidden behind it. Clears focus — same as
+    /// [`Self::sync`] — if the previously-focused stop doesn't pass.
+    ///
+    /// Only ever narrows: there is no "widen back" counterpart, because
+    /// undoing a restriction is just rebuilding from the source of
+    /// truth again — resync with [`Self::sync`]/[`Self::from_frame_tree`]/
+    /// [`Self::sync_tab_order`] once the modal closes.
+    pub fn restrict(&mut self, mut keep: impl FnMut(FocusAddress, Rect) -> bool) {
+        self.stops.retain(|s| keep(s.address, s.rect));
+        if let Some(cur) = &self.focused {
+            if !self.stops.iter().any(|s| &s.address == cur) {
+                self.focused = None;
+            }
         }
     }
 
@@ -990,12 +1020,6 @@ mod tests {
         /// from `AppLogic::tab_stops`/`extra_tab_stops` — addresses every
         /// stop `(id, None)` and preserves focus by id the same way
         /// [`FocusManager::sync_tab_order`] does.
-        #[cfg(any(
-            feature = "tui",
-            feature = "gtk",
-            feature = "win",
-            all(feature = "macos", target_os = "macos")
-        ))]
         #[test]
         fn sync_tab_order_preserves_focus_by_id() {
             let a = WidgetId::new("a");
@@ -1014,12 +1038,6 @@ mod tests {
             );
         }
 
-        #[cfg(any(
-            feature = "tui",
-            feature = "gtk",
-            feature = "win",
-            all(feature = "macos", target_os = "macos")
-        ))]
         #[test]
         fn sync_tab_order_clears_focus_when_id_removed() {
             let a = WidgetId::new("a");
@@ -1053,6 +1071,87 @@ mod tests {
             tree.sync(&rebuilt_frame);
 
             assert_eq!(tree.focused(), Some(&(id, Some(SubTarget(1)))));
+        }
+
+        // ─── Modal trapping (`restrict`) ────────────────────────────────
+
+        /// The core "modal trap" scenario: a modal's own stop sits
+        /// alongside base-layer stops in the same tree; `restrict` to
+        /// just the modal's id narrows cycling down to it alone, so
+        /// `focus_next`/`focus_prev` stay confined to the modal and
+        /// cannot reach the base layer.
+        #[test]
+        fn restrict_traps_cycling_to_the_kept_stops() {
+            let a = WidgetId::new("base-a");
+            let b = WidgetId::new("base-b");
+            let modal = WidgetId::new("modal-button");
+            let mut tree = FocusTree::new();
+            tree.sync_tab_order(&[(a, rect(0.0)), (b, rect(3.0)), (modal, rect(6.0))]);
+
+            tree.restrict(|addr, _rect| addr.0 == modal);
+            assert_eq!(tree.tab_order(), vec![(modal, None)]);
+
+            assert!(tree.focus_next());
+            assert_eq!(tree.focused(), Some(&(modal, None)));
+            assert!(
+                !tree.focus_next(),
+                "the only kept stop is the one already focused — cycling can't escape to a's or b's"
+            );
+        }
+
+        /// A geometric predicate is just as valid as an id-based one —
+        /// `restrict` hands the stop's rect to the predicate precisely so
+        /// a host can trap by containment against a modal's own bounds
+        /// ([`crate::ModalEntry::bounds`]) instead of enumerating ids.
+        #[test]
+        fn restrict_accepts_a_geometric_predicate() {
+            let outside = WidgetId::new("outside");
+            let inside = WidgetId::new("inside");
+            let mut tree = FocusTree::new();
+            tree.sync_tab_order(&[(outside, rect(0.0)), (inside, rect(10.0))]);
+
+            let modal_bounds = Rect::new(0.0, 9.0, 10.0, 5.0);
+            tree.restrict(|_addr, rect| {
+                rect.x >= modal_bounds.x
+                    && rect.y >= modal_bounds.y
+                    && rect.x < modal_bounds.x + modal_bounds.width
+                    && rect.y < modal_bounds.y + modal_bounds.height
+            });
+
+            assert_eq!(tree.tab_order(), vec![(inside, None)]);
+        }
+
+        /// Restricting away the currently-focused stop clears focus —
+        /// the same "fallback" contract [`FocusTree::sync`] already
+        /// gives a disappeared stop, not a dangling address pointing at
+        /// a stop absent from this tree.
+        #[test]
+        fn restrict_clears_focus_when_the_focused_stop_is_filtered_out() {
+            let a = WidgetId::new("a");
+            let b = WidgetId::new("b");
+            let mut tree = FocusTree::new();
+            tree.sync_tab_order(&[(a, rect(0.0)), (b, rect(3.0))]);
+            tree.focus_next();
+            assert_eq!(tree.focused(), Some(&(a, None)));
+
+            tree.restrict(|addr, _rect| addr.0 == b);
+            assert_eq!(tree.focused(), None, "a's own stop was dropped");
+            assert_eq!(tree.tab_order(), vec![(b, None)]);
+        }
+
+        /// Restricting around the currently-focused stop leaves it
+        /// focused — trapping must not itself move focus.
+        #[test]
+        fn restrict_preserves_focus_when_the_focused_stop_survives() {
+            let a = WidgetId::new("a");
+            let b = WidgetId::new("b");
+            let mut tree = FocusTree::new();
+            tree.sync_tab_order(&[(a, rect(0.0)), (b, rect(3.0))]);
+            tree.focus_next();
+            assert_eq!(tree.focused(), Some(&(a, None)));
+
+            tree.restrict(|addr, _rect| addr.0 == a);
+            assert_eq!(tree.focused(), Some(&(a, None)));
         }
     }
 }

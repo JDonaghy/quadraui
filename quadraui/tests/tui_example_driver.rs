@@ -172,6 +172,8 @@ mod message_list_demo;
 mod mini_app;
 #[path = "../examples/common/minimap_app.rs"]
 mod minimap_app;
+#[path = "../examples/common/modal_focus_demo.rs"]
+mod modal_focus_demo;
 #[path = "../examples/common/modal_occlusion_demo.rs"]
 mod modal_occlusion_demo;
 #[path = "../examples/common/multi_tree.rs"]
@@ -282,6 +284,7 @@ use message_dialog_demo::MessageDialogDemo;
 use message_list_demo::MessageListApp;
 use mini_app::MiniApp;
 use minimap_app::MinimapApp;
+use modal_focus_demo::ModalFocusDemo;
 use modal_occlusion_demo::ModalOcclusionDemo;
 use multi_tree::DebugSidebar;
 use palette_dual_mode_app::PaletteDualModeApp;
@@ -5101,6 +5104,151 @@ fn split_tree_q_exits() {
     assert!(driver.exited());
 }
 
+// ─── ModalFocusDemo: FocusTree modal trapping + fallback-on-disappear ──────
+//
+// `ModalFocusDemo` owns a `FocusTree` directly (no `AppLogic::tab_stops`,
+// no `AppLogic::frame_tree`) — see its module doc. These are the
+// acceptance tests #2899's own "Acceptance" section names for "modal
+// trap" and "fallback-on-disappear", driven end to end through a real
+// running app rather than only against a hand-built list in
+// `quadraui::focus`'s own unit tests.
+
+fn modal_focus_driver() -> TuiDriver<ModalFocusDemo> {
+    TuiDriver::new(ModalFocusDemo::new(), 60, 10)
+}
+
+#[test]
+fn modal_focus_demo_tab_cycles_through_the_three_rows_and_wraps() {
+    let mut driver = modal_focus_driver();
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus: Alpha"),
+        "{}",
+        driver.screen()
+    );
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus: Bravo"),
+        "{}",
+        driver.screen()
+    );
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus: Charlie"),
+        "{}",
+        driver.screen()
+    );
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus: Alpha"),
+        "Tab wraps from the last row back to the first:\n{}",
+        driver.screen()
+    );
+}
+
+/// The "modal trap" acceptance scenario: once the confirm dialog is
+/// open, Tab must never escape to a base-layer row even though those
+/// rows' own stops are still present in the same `FocusTree` — only
+/// `FocusTree::restrict`'s containment filter against the dialog's
+/// `ModalStack` bounds keeps cycling confined to its two buttons.
+#[test]
+fn modal_focus_demo_opening_the_dialog_traps_tab_cycling_to_its_own_buttons() {
+    let mut driver = modal_focus_driver();
+
+    // A dialog opening takes focus itself.
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("focus: Cancel"),
+        "opening the dialog moves focus into it:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Tab);
+    assert!(driver.screen_contains("focus: OK"), "{}", driver.screen());
+
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus: Cancel"),
+        "Tab wraps between the dialog's own two buttons:\n{}",
+        driver.screen()
+    );
+
+    // More Tabs than there are base rows: if trapping ever lapsed and
+    // let cycling fall through to the base layer, one of these would
+    // show a row's name instead of bouncing between the two buttons.
+    for _ in 0..5 {
+        driver.press_named(NamedKey::Tab);
+        assert!(
+            driver.screen_contains("focus: Cancel") || driver.screen_contains("focus: OK"),
+            "Tab escaped the open dialog to a base-layer row:\n{}",
+            driver.screen()
+        );
+    }
+}
+
+#[test]
+fn modal_focus_demo_closing_the_dialog_restores_row_cycling() {
+    let mut driver = modal_focus_driver();
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("focus: Cancel"),
+        "{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        !driver.screen_contains("[ Cancel ]"),
+        "the dialog's own chrome should be gone once it's closed:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus: Alpha"),
+        "Tab reaches the base rows again once the trap is lifted:\n{}",
+        driver.screen()
+    );
+}
+
+/// The "fallback-on-disappear" acceptance scenario: deleting the
+/// focused row removes its stop from the next `FocusTree::sync_tab_order`
+/// call along with it, so focus falls back to "nothing" — the
+/// documented contract — rather than a dangling address pointing at a
+/// row that no longer exists.
+#[test]
+fn modal_focus_demo_deleting_the_focused_row_falls_back_to_no_focus() {
+    let mut driver = modal_focus_driver();
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus: Alpha"),
+        "{}",
+        driver.screen()
+    );
+
+    driver.type_char('d');
+    assert!(
+        driver.screen_contains("focus: none"),
+        "the focused row's stop vanished, so focus falls back to none \
+         rather than a dangling address:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Alpha"),
+        "the deleted row's own text should no longer be painted:\n{}",
+        driver.screen()
+    );
+
+    // Recovery: Tab from "nothing focused" still lands on the first
+    // remaining row rather than getting stuck.
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus: Bravo"),
+        "{}",
+        driver.screen()
+    );
+}
+
 // ─── ModalOcclusionDemo: modal click-through guard ─────────────────────────
 //
 // `ModalOcclusionDemo` is the fixture behind
@@ -9655,7 +9803,7 @@ fn canvas_regions_demo_q_exits() {
 //
 // `examples/common/float_app.rs`'s module doc names exactly what each
 // assertion below proves end to end through `Backend::draw_float` +
-// `ModalStack::push_focusable`/`top_focusable` — not just that the
+// `ModalStack::push_with_focusable`/`top_focusable` — not just that the
 // `Float` primitive's own `layout()` resolves correctly in isolation
 // (covered by `primitives::float::tests`), but that a real app wired
 // through the TUI runner gets the same behaviour.

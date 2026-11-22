@@ -967,7 +967,7 @@ pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,
 };
-pub use modal_stack::{Focusable, ModalEntry, ModalStack};
+pub use modal_stack::{ModalEntry, ModalStack};
 pub use runner::{AppLogic, Reaction, StepOutcome};
 
 /// Crate version, sourced from `Cargo.toml`.
