@@ -17,9 +17,9 @@
 //! each deserializing `value` into that entry's own type via
 //! [`serde::de::DeserializeOwned`] and boxing the result. This module
 //! invokes it once, seeded with the two kinds [`crate::CellGrid`] and
-//! [`crate::IconGrid`] — every other built-in primitive, and any kind a
-//! future `quadraui-binding-core` wire layer needs, grows this same
-//! table rather than hand-writing another decode path.
+//! `IconGrid` — every other built-in primitive, and any kind a future
+//! `quadraui-binding-core` wire layer needs, grows this same table
+//! rather than hand-writing another decode path.
 //!
 //! Only entries whose type implements [`crate::primitive::DynWidget`] —
 //! which every [`crate::interactive::Interactive`] widget gets for free
@@ -27,6 +27,15 @@
 //! entry can never produce a value the rest of the widget-contract
 //! routing engine doesn't already know how to layout/paint/route events
 //! to.
+//!
+//! That bound is per-feature-set, not absolute: a primitive whose
+//! `Primitive`/`Interactive` impls are themselves gated on a backend
+//! feature is only decodable on a build that has one. An entry carries
+//! its type's own `#[cfg(…)]` for exactly that reason, and a `kind`
+//! whose entry is cfg'd out decodes as
+//! [`KindError::Unknown`] rather than failing to compile — a
+//! zero-backend build of this crate has no rasteriser to paint such a
+//! widget with anyway.
 
 /// Error produced by [`decode_widget`]: either `kind` has no matching
 /// [`widget_kinds!`] entry, or it does but `value` failed to deserialize
@@ -74,11 +83,18 @@ impl std::error::Error for KindError {
 /// free via that trait's blanket impl (see [`crate::primitive::DynWidget`]'s
 /// own doc).
 ///
+/// An entry may carry attributes, which land on the generated `match`
+/// arm. That is how a descriptor whose `Primitive`/`Interactive` impls
+/// are gated on a backend feature joins the table: give the entry the
+/// same `#[cfg(…)]` those impls have, and on a feature set that compiles
+/// them out its `kind` simply decodes as [`KindError::Unknown`].
+///
 /// ```
 /// use quadraui::widget_kinds;
 ///
 /// widget_kinds! {
 ///     "cell_grid" => quadraui::CellGrid,
+///     #[cfg(feature = "tui")]
 ///     "icon_grid" => quadraui::IconGrid,
 /// }
 ///
@@ -94,7 +110,7 @@ impl std::error::Error for KindError {
 /// ```
 #[macro_export]
 macro_rules! widget_kinds {
-    ( $( $kind:literal => $ty:ty ),* $(,)? ) => {
+    ( $( $( #[$meta:meta] )* $kind:literal => $ty:ty ),* $(,)? ) => {
         /// Decode `value` into the boxed, type-erased widget `kind`
         /// names — see the `widget_kinds` module doc and the
         /// `widget_kinds!` macro invocation that generated this
@@ -108,6 +124,7 @@ macro_rules! widget_kinds {
         > {
             match kind {
                 $(
+                    $( #[$meta] )*
                     $kind => {
                         let widget: $ty = ::serde_json::from_value(value).map_err(|source| {
                             $crate::widget_kinds::KindError::Decode {
@@ -128,6 +145,16 @@ macro_rules! widget_kinds {
 
 widget_kinds! {
     "cell_grid" => crate::CellGrid,
+    // Gated the same as `impl Primitive for IconGrid` (and the
+    // `non_interactive!(IconGrid)` that rides on it), so this entry
+    // exists exactly on the feature sets where `IconGrid` is a
+    // `DynWidget`.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     "icon_grid" => crate::IconGrid,
 }
 
@@ -148,18 +175,64 @@ mod tests {
         assert_eq!(widget.id().map(|id| id.as_str()), Some("sheet"));
     }
 
+    /// Coverage for the `"icon_grid"` entry, gated exactly as that entry
+    /// is: `IconGrid` is only a `DynWidget` — and so only decodable — on
+    /// a feature set that compiles its `Primitive`/`Interactive` impls.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod gated_kind {
+        use super::*;
+
+        #[test]
+        fn decodes_the_other_known_kind() {
+            // `IconGrid` doesn't override `Primitive::id` (its id lives on
+            // each `IconGridItem`, not the grid itself), so `DynWidget::id`
+            // falls back to the trait's own default of `None` — decoding
+            // without error is this kind's own round-trip signal.
+            let payload = serde_json::json!({
+                "id": "icons",
+                "items": [],
+            });
+            let widget = decode_widget("icon_grid", payload).expect("icon_grid decodes");
+            assert_eq!(widget.id(), None);
+        }
+
+        #[test]
+        fn rejects_a_malformed_payload() {
+            // `items` must be an array — a string value has no sensible
+            // decode and should surface as `KindError::Decode`, not panic.
+            let payload = serde_json::json!({
+                "id": "icons",
+                "items": "not-an-array",
+            });
+            match decode_widget("icon_grid", payload) {
+                Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "icon_grid"),
+                other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
+            }
+        }
+    }
+
+    /// A build with no backend feature compiles `IconGrid`'s
+    /// `Primitive`/`Interactive` impls out, so its `widget_kinds!` entry
+    /// goes with them and the kind reads as unknown rather than failing
+    /// to build.
+    #[cfg(not(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )))]
     #[test]
-    fn decodes_the_other_known_kind() {
-        // `IconGrid` doesn't override `Primitive::id` (its id lives on
-        // each `IconGridItem`, not the grid itself), so `DynWidget::id`
-        // falls back to the trait's own default of `None` — decoding
-        // without error is this kind's own round-trip signal.
-        let payload = serde_json::json!({
-            "id": "icons",
-            "items": [],
-        });
-        let widget = decode_widget("icon_grid", payload).expect("icon_grid decodes");
-        assert_eq!(widget.id(), None);
+    fn gated_kind_is_unknown_without_a_backend() {
+        let payload = serde_json::json!({"id": "icons", "items": []});
+        match decode_widget("icon_grid", payload) {
+            Err(KindError::Unknown(kind)) => assert_eq!(kind, "icon_grid"),
+            other => panic!("expected Err(KindError::Unknown), got {}", describe(other)),
+        }
     }
 
     #[test]
@@ -175,14 +248,17 @@ mod tests {
 
     #[test]
     fn rejects_a_malformed_payload_for_a_known_kind() {
-        // `items` must be an array — a string value has no sensible
+        // `row_count` must be an integer — a string value has no sensible
         // decode and should surface as `KindError::Decode`, not panic.
         let payload = serde_json::json!({
-            "id": "icons",
-            "items": "not-an-array",
+            "id": "sheet",
+            "row_count": "lots",
+            "col_count": 5,
+            "default_row_height": 1.0,
+            "default_col_width": 8.0,
         });
-        match decode_widget("icon_grid", payload) {
-            Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "icon_grid"),
+        match decode_widget("cell_grid", payload) {
+            Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "cell_grid"),
             other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
         }
     }
@@ -192,12 +268,12 @@ mod tests {
         let unknown = KindError::Unknown("mystery".to_string());
         assert!(unknown.to_string().contains("mystery"));
 
-        let payload = serde_json::json!({"id": "icons", "items": "nope"});
-        let decode_err = match decode_widget("icon_grid", payload) {
+        let payload = serde_json::json!({"id": "sheet", "row_count": "lots"});
+        let decode_err = match decode_widget("cell_grid", payload) {
             Err(err) => err,
             Ok(_) => panic!("expected a decode error"),
         };
-        assert!(decode_err.to_string().contains("icon_grid"));
+        assert!(decode_err.to_string().contains("cell_grid"));
         assert!(std::error::Error::source(&decode_err).is_some());
     }
 
