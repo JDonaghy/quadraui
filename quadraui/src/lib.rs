@@ -488,6 +488,11 @@ pub mod interactive;
 pub mod frame_tree;
 pub mod widget_state;
 
+// `kind` string → descriptor type registry a binding/wire layer decodes
+// a JSON-shaped widget payload against, without knowing the concrete
+// `Primitive` type that kind names — see that module's own doc.
+pub mod widget_kinds;
+
 // ── Behaviour ─────────────────────────────────────────────────────────────
 // The single shared implementation of scroll-into-view, list/tree
 // navigation and typeahead every widget's `Interactive` impl builds from —
@@ -887,6 +892,11 @@ pub use interactive::{
 // `frame_tree`/`widget_state`'s own module docs.
 pub use frame_tree::{FrameTree, FrameTreeNode};
 pub use widget_state::{WidgetRoutingState, WidgetStateStore};
+// `decode_widget`/`KindError` — see `widget_kinds`'s own module doc.
+// `widget_kinds!` itself is exported at the crate root by
+// `#[macro_export]`, not re-exported here, the same convention as
+// `non_interactive!` above.
+pub use widget_kinds::{decode_widget, KindError};
 // `InteractionState` — a single hover/pressed store keyed by `WidgetId`,
 // meant to replace the bespoke per-primitive trackers and positional arguments
 // (`hovered_id`, `pressed_id`, `hovered_toolbar_id`) the old `Backend` methods
