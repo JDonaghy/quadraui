@@ -8272,6 +8272,26 @@ mod tests {
         assert_eq!(ev, UiEvent::WindowFocused(true));
     }
 
+    /// `PreprocessBackend::widget_routing_mut` returns `Some`, wiring
+    /// `WinBackend` onto `runtime::preprocess_event`'s widget-contract
+    /// routing step — and the returned state is the same `BackendCore`
+    /// instance across calls, not a fresh one each time.
+    #[test]
+    fn widget_routing_mut_is_wired_and_stable_across_calls() {
+        use crate::runtime::PreprocessBackend;
+
+        let mut b = WinBackend::new();
+        let routing = b
+            .widget_routing_mut()
+            .expect("WinBackend must opt into widget-contract routing");
+        routing.hovered = Some(WidgetId::new("hovered"));
+
+        assert_eq!(
+            b.widget_routing_mut().unwrap().hovered,
+            Some(WidgetId::new("hovered"))
+        );
+    }
+
     // ── Event queue adapter ──────────────────────────────────────────────
     //
     // Before this issue, `WinBackend::poll_events`/`wait_events` were
