@@ -135,9 +135,9 @@ pub struct TextInput {
     /// Carries no "how did focus arrive" information, same convention
     /// as [`crate::Button::focused`]: a host that wants VS Code's
     /// `:focus-visible` suppression after a mouse click composes this
-    /// as `ring.is_focused(id) && ring.is_focus_visible()` via
-    /// [`crate::compose::FocusRing`] rather than setting it unconditionally
-    /// on focus.
+    /// as `focus.is_focused(id, None) && focus.is_focus_visible()` via
+    /// [`crate::FocusTree`] rather than setting it unconditionally on
+    /// focus.
     #[serde(default)]
     pub has_focus: bool,
 }
@@ -1259,8 +1259,8 @@ mod native_surface_paint {
         // module's doc for why it strokes square rather than at
         // `ring.corner_radius`. `ti.has_focus` already carries VS
         // Code's focus-visible suppression (composed by the caller via
-        // `crate::compose::FocusRing::is_focus_visible` before it's set
-        // on `TextInput`, same convention as `Button::focused`), so no
+        // `crate::FocusTree::is_focus_visible` before it's set on
+        // `TextInput`, same convention as `Button::focused`), so no
         // separate suppression check is needed here.
         if ti.has_focus {
             let ring = focus_ring_geometry(rect, style);

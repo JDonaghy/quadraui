@@ -795,7 +795,7 @@ pub struct TabChrome {
     /// `Some(i)` tells the rasteriser to paint a focus-visible treatment
     /// on tab `i` (reverse-video on TUI — see [`crate::tui::tab_bar`]).
     /// The caller is responsible for composing this with its own
-    /// focus-visible state (e.g. [`crate::compose::focus_ring::FocusRing`]):
+    /// focus-visible state (e.g. [`crate::FocusTree::is_focus_visible`]):
     /// pass `None` whenever the bar has keyboard focus but focus isn't
     /// currently *visible* (the most recent interaction was a click), the
     /// same convention [`Toolbar::focused_index`] documents.

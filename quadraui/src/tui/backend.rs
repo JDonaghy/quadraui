@@ -348,15 +348,12 @@ pub struct TuiBackend {
     /// bare `tui` build, same reason as `kitty_image_state` above.
     #[cfg(feature = "tui-images")]
     halfblock_image_state: crate::tui::image::HalfBlockImageState,
-    /// Single owner of keyboard focus — see
-    /// [`crate::focus`]'s module doc. Mutated only by the shared
-    /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
-    /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
-    /// read elsewhere via [`Backend::focus_manager`].
-    focus: crate::focus::FocusManager,
-    /// Sub-target-aware focus tree built from the app's
-    /// [`crate::runner::AppLogic::frame_tree`] — see [`crate::runtime::PreprocessBackend::focus_tree`].
-    /// [`Self::set_focus`] keeps this in step with `focus` above.
+    /// Single owner of keyboard focus — see [`crate::focus`]'s module
+    /// doc. Mutated by [`Self::set_focus`] (whole-widget focus changes)
+    /// and by the shared Tab/Shift+Tab intercept in
+    /// [`crate::runtime::preprocess_event`] via
+    /// [`crate::runtime::PreprocessBackend::focus_tree_mut`]; read
+    /// elsewhere via [`Backend::focus_tree`].
     focus_tree: crate::focus::FocusTree,
     /// Thread-safe inbox for [`crate::UiEvent::User`] payloads (issue
     /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
@@ -529,7 +526,6 @@ impl TuiBackend {
             kitty_image_state: crate::tui::image::KittyImageState::new(),
             #[cfg(feature = "tui-images")]
             halfblock_image_state: crate::tui::image::HalfBlockImageState::new(),
-            focus: crate::focus::FocusManager::new(),
             focus_tree: crate::focus::FocusTree::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
@@ -1632,10 +1628,6 @@ impl crate::runtime::PreprocessBackend for TuiBackend {
         self.focused_activity_bar_id()
     }
 
-    fn focus_manager_mut(&mut self) -> &mut crate::focus::FocusManager {
-        &mut self.focus
-    }
-
     fn match_keypress(
         &self,
         key: &crate::Key,
@@ -1676,10 +1668,6 @@ impl crate::runtime::PreprocessBackend for TuiBackend {
     /// for what a backend keeping the trait's `None` default opts out of.
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         Some(self.core.widget_routing_mut())
-    }
-
-    fn focus_tree(&self) -> &crate::focus::FocusTree {
-        &self.focus_tree
     }
 
     fn focus_tree_mut(&mut self) -> &mut crate::focus::FocusTree {
@@ -2745,13 +2733,12 @@ impl Backend for TuiBackend {
         self.drag_state.clone()
     }
 
-    fn focus_manager(&self) -> &crate::focus::FocusManager {
-        &self.focus
+    fn focus_tree(&self) -> &crate::focus::FocusTree {
+        &self.focus_tree
     }
 
     fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-        self.focus_tree.set_focus(id.map(|id| (id, None)));
-        self.focus.set_focus(id)
+        self.focus_tree.set_focus(id.map(|id| (id, None)))
     }
 
     fn draw_focus_ring(&mut self, rect: QRect) {
@@ -5497,7 +5484,7 @@ mod tests {
         services: crate::testing::NullPlatformServices,
         viewport: Viewport,
         theme: crate::Theme,
-        focus: crate::focus::FocusManager,
+        focus_tree: crate::focus::FocusTree,
         invalidation_log: crate::backend::InvalidationLog,
     }
 
@@ -5510,7 +5497,7 @@ mod tests {
                 services: crate::testing::NullPlatformServices::new(),
                 viewport: Viewport::new(80.0, 24.0, 1.0),
                 theme: crate::Theme::default(),
-                focus: crate::focus::FocusManager::new(),
+                focus_tree: crate::focus::FocusTree::new(),
                 invalidation_log: crate::backend::InvalidationLog::new(),
             }
         }
@@ -5559,11 +5546,11 @@ mod tests {
         fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
             self.drag_state.clone()
         }
-        fn focus_manager(&self) -> &crate::focus::FocusManager {
-            &self.focus
+        fn focus_tree(&self) -> &crate::focus::FocusTree {
+            &self.focus_tree
         }
         fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
-            self.focus.set_focus(id)
+            self.focus_tree.set_focus(id.map(|id| (id, None)))
         }
         fn draw_focus_ring(&mut self, _r: QRect) {}
         fn services(&self) -> &dyn PlatformServices {

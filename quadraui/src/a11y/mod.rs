@@ -3,7 +3,7 @@
 //! This module provides the data-field half of the accessibility plan:
 //! a typed [`A11yRole`] plus a typed state bag, carried on [`A11yInfo`].
 //! [`tree`] turns a captured [`crate::frame::OwnedFrame`] plus a
-//! [`crate::FocusManager`] into a backend-independent accessibility tree
+//! [`crate::focus::FocusTree`] into a backend-independent accessibility tree
 //! (and, behind the `a11y` cargo feature, an `accesskit::TreeUpdate`).
 //! Per-platform AT backend wiring (UI Automation / NSAccessibility /
 //! AT-SPI) consumes that update and is separate.

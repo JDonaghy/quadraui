@@ -1,18 +1,18 @@
 //! `Focus` demo — adapted from `quadraui/examples/common/focus_demo.rs`.
 //!
 //! Tab / Shift+Tab cycle keyboard focus through two lists and a status
-//! row via `compose::FocusRing` — no raw modulo arithmetic, no
-//! `FocusRing` reimplementation per app. The focused list gets
+//! row via [`quadraui::FocusTree`] — no raw modulo arithmetic, no
+//! tab-cycling reimplementation per app. The focused list gets
 //! `has_focus: true` (its selected row's highlight) **and**
 //! `draw_list_with_state`'s `focus_ring_visible: true` (a
 //! `Theme::focus_ring_color` ring around that same row); the other list
-//! gets neither. Two variants swap the ring's declared order, showing
+//! gets neither. Two variants swap the tree's declared order, showing
 //! that Tab visits whatever order the app registered.
 
 use std::cell::{Cell, RefCell};
 
 use quadraui::{
-    Backend, BackendCaps, Color, FocusRing, Key, ListItem, ListView, NamedKey, Reaction, Rect,
+    Backend, BackendCaps, Color, FocusTree, Key, ListItem, ListView, NamedKey, Reaction, Rect,
     StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
 };
 
@@ -42,11 +42,11 @@ const STATUS_ID: &str = "gallery:focus:status";
 
 pub struct FocusDemo {
     /// `RefCell`-wrapped so `render` (`&self`, called every frame with
-    /// the *current* variant) can resync the ring's order the moment the
+    /// the *current* variant) can resync the tree's order the moment the
     /// gallery's variant picker changes it, without waiting for the next
     /// `handle()` call — the variant-picker click itself is handled
     /// entirely inside the shell and never reaches `Demo::handle`.
-    focus: RefCell<FocusRing>,
+    focus: RefCell<FocusTree>,
     variant: Cell<usize>,
 }
 
@@ -58,15 +58,26 @@ impl FocusDemo {
         }
     }
 
-    fn ring_for_variant(variant: usize) -> FocusRing {
-        if variant == 1 {
-            FocusRing::new(vec![STATUS_ID, RIGHT_ID, LEFT_ID])
+    /// Builds a [`FocusTree`] over the three stops in `variant`'s declared
+    /// order, already landed on the first one so the demo opens with a
+    /// visible focus target.
+    fn ring_for_variant(variant: usize) -> FocusTree {
+        let order: [&str; 3] = if variant == 1 {
+            [STATUS_ID, RIGHT_ID, LEFT_ID]
         } else {
-            FocusRing::new(vec![LEFT_ID, RIGHT_ID, STATUS_ID])
-        }
+            [LEFT_ID, RIGHT_ID, STATUS_ID]
+        };
+        let mut tree = FocusTree::new();
+        let stops: Vec<(WidgetId, Rect)> = order
+            .iter()
+            .map(|id| (WidgetId::new(*id), Rect::new(0.0, 0.0, 0.0, 0.0)))
+            .collect();
+        tree.sync_tab_order(&stops);
+        tree.focus_next();
+        tree
     }
 
-    /// Resync the ring to `variant`'s declared order, preserving the
+    /// Resync the tree to `variant`'s declared order, preserving the
     /// cycling position only when the order hasn't actually changed
     /// (switching to the variant already active is a no-op).
     fn sync(&self, variant: usize) {
@@ -108,7 +119,7 @@ impl FocusDemo {
         let current = self
             .focus
             .borrow()
-            .current()
+            .focused_id()
             .map(|id| id.as_str().to_string())
             .unwrap_or_else(|| "none".to_string());
         StatusBar {
@@ -156,16 +167,19 @@ impl Demo for FocusDemo {
         let body_h = (area.height - status_h).max(0.0);
         let half_w = (area.width / 2.0).round();
 
-        // `&& ring.is_focus_visible()`: Tab/Shift+Tab (the only way this
-        // demo moves focus) always leaves the ring focus-visible, so the
-        // ring shows on every Tab press — see `FocusRing::is_focus_visible`'s
+        // `&& tree.is_focus_visible()`: Tab/Shift+Tab (the only way this
+        // demo moves focus) always leaves the tree focus-visible, so the
+        // ring shows on every Tab press — see `FocusTree::is_focus_visible`'s
         // doc for the click-to-focus case this guards against in a host
         // that also wires up pointer focus.
-        let ring = self.focus.borrow();
-        let left_focused = ring.is_focused(&WidgetId::new(LEFT_ID)) && ring.is_focus_visible();
-        let right_focused = ring.is_focused(&WidgetId::new(RIGHT_ID)) && ring.is_focus_visible();
-        let status_focused = ring.is_focused(&WidgetId::new(STATUS_ID)) && ring.is_focus_visible();
-        drop(ring);
+        let tree = self.focus.borrow();
+        let left_focused =
+            tree.is_focused(&WidgetId::new(LEFT_ID), None) && tree.is_focus_visible();
+        let right_focused =
+            tree.is_focused(&WidgetId::new(RIGHT_ID), None) && tree.is_focus_visible();
+        let status_focused =
+            tree.is_focused(&WidgetId::new(STATUS_ID), None) && tree.is_focus_visible();
+        drop(tree);
 
         let left = self.list(LEFT_ID, &["alpha", "bravo", "charlie"], left_focused);
         let right = self.list(RIGHT_ID, &["one", "two", "three"], right_focused);
@@ -208,14 +222,14 @@ impl Demo for FocusDemo {
                 key: Key::Named(NamedKey::Tab),
                 ..
             } => {
-                self.focus.borrow_mut().advance();
+                self.focus.borrow_mut().focus_next();
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::BackTab),
                 ..
             } => {
-                self.focus.borrow_mut().retreat();
+                self.focus.borrow_mut().focus_prev();
                 Reaction::Redraw
             }
             _ => Reaction::Continue,
@@ -228,10 +242,10 @@ impl Demo for FocusDemo {
 
     fn data(&self, variant: usize) -> serde_json::Value {
         self.sync(variant);
-        let ring = self.focus.borrow();
+        let tree = self.focus.borrow();
         serde_json::json!({
-            "order": ring.items().iter().map(|id| id.as_str()).collect::<Vec<_>>(),
-            "focused": ring.current().map(|id| id.as_str()),
+            "order": tree.tab_order().iter().map(|(id, _)| id.as_str().to_string()).collect::<Vec<_>>(),
+            "focused": tree.focused_id().map(|id| id.as_str()),
         })
     }
 
@@ -248,32 +262,50 @@ mod tests {
     #[test]
     fn new_focuses_the_left_list_first() {
         let demo = FocusDemo::new();
-        assert!(demo.focus.borrow().is_focused(&WidgetId::new(LEFT_ID)));
+        assert!(demo
+            .focus
+            .borrow()
+            .is_focused(&WidgetId::new(LEFT_ID), None));
     }
 
     #[test]
     fn advance_cycles_left_right_status_and_wraps() {
         let demo = FocusDemo::new();
-        demo.focus.borrow_mut().advance();
-        assert!(demo.focus.borrow().is_focused(&WidgetId::new(RIGHT_ID)));
-        demo.focus.borrow_mut().advance();
-        assert!(demo.focus.borrow().is_focused(&WidgetId::new(STATUS_ID)));
-        demo.focus.borrow_mut().advance();
-        assert!(demo.focus.borrow().is_focused(&WidgetId::new(LEFT_ID)));
+        demo.focus.borrow_mut().focus_next();
+        assert!(demo
+            .focus
+            .borrow()
+            .is_focused(&WidgetId::new(RIGHT_ID), None));
+        demo.focus.borrow_mut().focus_next();
+        assert!(demo
+            .focus
+            .borrow()
+            .is_focused(&WidgetId::new(STATUS_ID), None));
+        demo.focus.borrow_mut().focus_next();
+        assert!(demo
+            .focus
+            .borrow()
+            .is_focused(&WidgetId::new(LEFT_ID), None));
     }
 
     #[test]
     fn reverse_variant_starts_at_status() {
-        let ring = FocusDemo::ring_for_variant(1);
-        assert!(ring.is_focused(&WidgetId::new(STATUS_ID)));
+        let tree = FocusDemo::ring_for_variant(1);
+        assert!(tree.is_focused(&WidgetId::new(STATUS_ID), None));
     }
 
     #[test]
-    fn sync_resets_the_ring_when_the_variant_changes() {
+    fn sync_resets_the_tree_when_the_variant_changes() {
         let demo = FocusDemo::new();
-        demo.focus.borrow_mut().advance();
-        assert!(demo.focus.borrow().is_focused(&WidgetId::new(RIGHT_ID)));
+        demo.focus.borrow_mut().focus_next();
+        assert!(demo
+            .focus
+            .borrow()
+            .is_focused(&WidgetId::new(RIGHT_ID), None));
         demo.sync(1);
-        assert!(demo.focus.borrow().is_focused(&WidgetId::new(STATUS_ID)));
+        assert!(demo
+            .focus
+            .borrow()
+            .is_focused(&WidgetId::new(STATUS_ID), None));
     }
 }

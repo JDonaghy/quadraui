@@ -782,7 +782,7 @@ pub fn key_to_focus_string(key: &Key) -> String {
     }
 }
 
-/// Routes a raw `KeyPressed` to whichever leaf the `FocusManager` names as
+/// Routes a raw `KeyPressed` to whichever leaf the `FocusTree` names as
 /// focused, wrapping it into that leaf's own semantic `KeyPressed` variant
 /// (or, for a focused `DataTable`'s Up/Down/Enter, straight into
 /// [`data_table_key_event`]'s `RowSelected`/`RowActivated`; or, for a
@@ -990,7 +990,7 @@ pub fn scripted_region_click(
         .unwrap_or(false)
 }
 
-/// Forwards a focused key press to whichever leaf [`FocusManager`][quadraui::FocusManager]
+/// Forwards a focused key press to whichever leaf [`FocusTree`][quadraui::FocusTree]
 /// names as focused, if it is an `Extra` with a
 /// [`crate::scripted::ScriptedExtra`] facet — the key-press counterpart of
 /// [`scripted_region_click`] above, called alongside

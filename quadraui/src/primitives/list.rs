@@ -973,8 +973,8 @@ pub(crate) mod native_surface_paint {
     ///   flush with [`ListView::selected_idx`]'s row bounds, on top of
     ///   whatever background that row already has. Separate from
     ///   [`ListView::has_focus`] (see that field's doc for why) — the
-    ///   caller passes `ring.is_focused(&list.id) &&
-    ///   ring.is_focus_visible()` here, not `list.has_focus`. `false`
+    ///   caller passes `tree.is_focused(&list.id, None) &&
+    ///   tree.is_focus_visible()` here, not `list.has_focus`. `false`
     ///   paints byte-for-byte what this function painted before the
     ///   ring existed.
     #[allow(clippy::too_many_arguments)]
@@ -1546,6 +1546,90 @@ pub(crate) mod native_surface_paint {
                 "expected a fill at the v-scrollbar track {:?}, got fills: {:?}",
                 expected.track,
                 surface.fills
+            );
+        }
+
+        /// A headless, end-to-end proof that `focus_ring_visible` reflects
+        /// [`crate::focus::FocusTree`]'s real Tab-vs-click `:focus-visible`
+        /// convention — composed as `tree.is_focused(id, None) &&
+        /// tree.is_focus_visible()`, the bool a host passes here — and
+        /// that the painted stroke actually tracks it, not just a literal
+        /// `true`/`false` this test assigns itself.
+        #[test]
+        fn focused_list_row_paints_a_ring_after_tab_but_not_after_click() {
+            use crate::focus::FocusTree;
+
+            let id = WidgetId::new("sidebar:list");
+            let mut tree = FocusTree::new();
+            tree.sync_tab_order(&[(id, Rect::new(0.0, 0.0, 0.0, 0.0))]);
+            let theme = Theme::default();
+            let style = Style::default();
+            let list = ListView { id, ..vlist(1) };
+
+            let paint_and_count_strokes = |focus_ring_visible: bool| -> usize {
+                let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                    super::super::ListItemMeasure::new(LINE_HEIGHT)
+                });
+                let mut surface = RecordingSurface::default();
+                paint(
+                    &list,
+                    AREA,
+                    &layout,
+                    LINE_HEIGHT,
+                    false,
+                    true,
+                    true,
+                    &mut surface,
+                    &theme,
+                    &style,
+                    None,
+                    None,
+                    focus_ring_visible,
+                );
+                surface.strokes.len()
+            };
+
+            // Tab: `focus_next()` is the real keyboard-move path.
+            tree.focus_next();
+            let focus_ring_visible = tree.is_focused(&id, None) && tree.is_focus_visible();
+            assert!(
+                focus_ring_visible,
+                "a Tab-reached list must report focus-visible"
+            );
+            assert_eq!(
+                paint_and_count_strokes(focus_ring_visible),
+                1,
+                "a Tab-reached list's selected row must paint a ring"
+            );
+
+            // Click: `set_focus` re-focuses the same widget via the pointer path.
+            tree.set_focus(Some((id, None)));
+            let focus_ring_visible = tree.is_focused(&id, None) && tree.is_focus_visible();
+            assert!(
+                tree.is_focused(&id, None),
+                "the click did move focus to this list"
+            );
+            assert!(
+                !focus_ring_visible,
+                "a mouse click must suppress the list's focus-visible ring"
+            );
+            assert_eq!(
+                paint_and_count_strokes(focus_ring_visible),
+                0,
+                "a clicked list's selected row must paint no ring"
+            );
+
+            // Shift+Tab afterwards restores the ring.
+            tree.focus_prev();
+            let focus_ring_visible = tree.is_focused(&id, None) && tree.is_focus_visible();
+            assert!(
+                focus_ring_visible,
+                "a subsequent keyboard move restores focus-visible"
+            );
+            assert_eq!(
+                paint_and_count_strokes(focus_ring_visible),
+                1,
+                "Shift+Tab repaints the same ring Tab did"
             );
         }
 

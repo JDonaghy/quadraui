@@ -14,7 +14,7 @@
 //! `ClipboardPaste`/`MouseDown` routing, or
 //! [`crate::semantic::focus_scoped_key_event`]) has already resolved
 //! *which* widget a key/click targets — from
-//! `backend.focus_manager().focused()` for a key, from the hit-tested
+//! `backend.focus_tree().focused_id()` for a key, from the hit-tested
 //! click position for a pointer event. Neither path ever reads the
 //! `TextInput`/`PasswordInput`/`TextArea` descriptor's own `has_focus`
 //! field to make that decision; it is read only by [`crate::extra_paint`]

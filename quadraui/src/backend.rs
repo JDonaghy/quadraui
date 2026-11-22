@@ -39,7 +39,7 @@ use std::time::Duration;
 use crate::dispatch::DragState;
 use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
-use crate::focus::FocusManager;
+use crate::focus::FocusTree;
 use crate::frame::{FrameCapture, OwnedFrame};
 use crate::interaction::InteractionState;
 use crate::login_item::LoginItemOptions;
@@ -1991,25 +1991,26 @@ pub trait Backend: sealed::Sealed {
     fn drag_state_handle(&self) -> Rc<RefCell<DragState>>;
 
     // ─── Focus ───────────────────────────────────────────────────────────
-    /// Read-only access to this backend's [`FocusManager`] — the single
-    /// owner of "what widget currently has keyboard focus". See
-    /// [`crate::focus`]'s module doc for the full design and the six
-    /// ad-hoc representations it replaces.
+    /// Read-only access to this backend's [`FocusTree`] — the single
+    /// owner of "what widget (and, for a composite widget, which of its
+    /// own children) currently has keyboard focus". See [`crate::focus`]'s
+    /// module doc for the full design.
     ///
-    /// Deliberately `&FocusManager`, not `&mut`: the runner itself
+    /// Deliberately `&FocusTree`, not `&mut`: the runner itself
     /// (Tab/Shift+Tab cycling in [`crate::runtime::preprocess_event`])
     /// mutates it through the crate-private
-    /// `PreprocessBackend::focus_manager_mut`. Apps outside this crate
-    /// request a focus change through [`Self::set_focus`] instead — this
-    /// method stays read-only so every other reader keeps a simple
-    /// borrow. No default: every backend owns exactly one `FocusManager`,
-    /// constructed alongside its other per-frame state.
-    fn focus_manager(&self) -> &FocusManager;
+    /// `PreprocessBackend::focus_tree_mut`. Apps outside this crate
+    /// request a whole-widget focus change through [`Self::set_focus`]
+    /// instead — this method stays read-only so every other reader keeps
+    /// a simple borrow. No default: every backend owns exactly one
+    /// `FocusTree`, constructed alongside its other per-frame state.
+    fn focus_tree(&self) -> &FocusTree;
 
     /// Move keyboard focus to `id` (or clear it, for `None`) — e.g. a
     /// click landing on a focusable widget. Returns whether focus
-    /// actually changed, matching [`FocusManager::set_focus`], which
-    /// every implementer delegates to.
+    /// actually changed, matching [`FocusTree::set_focus`], which every
+    /// implementer delegates to (addressing the whole widget: `sub`
+    /// `None`).
     ///
     /// No default: a host holding only `&mut dyn Backend` needs
     /// click-to-focus to work identically on every backend, so a backend
@@ -2021,7 +2022,7 @@ pub trait Backend: sealed::Sealed {
     /// border-only stroke (`Theme::accent_fg`) with no fill, so the
     /// focused widget's own content keeps showing through underneath.
     /// Called by the runner once per frame, immediately after
-    /// `AppLogic::render`, whenever [`Self::focus_manager`]`().focused()`
+    /// `AppLogic::render`, whenever [`Self::focus_tree`]`().focused()`
     /// names a widget this frame's tab stops resolve a rect for — apps
     /// never call this directly.
     ///
@@ -2061,7 +2062,7 @@ pub trait Backend: sealed::Sealed {
     /// or this backend has no [`Self::frame_capture`] slot at all. The
     /// read side of capture, available from a shared `&dyn Backend`.
     ///
-    /// Combine with [`Self::focus_manager`] — e.g. via
+    /// Combine with [`Self::focus_tree`] — e.g. via
     /// [`crate::a11y::tree::backend_a11y_tree`] — to build an
     /// [`crate::a11y::A11yTree`] from the real screen a live runner just
     /// painted, not only from a test [`crate::testing::a11y::A11yScenario`].
@@ -2606,8 +2607,8 @@ pub trait Backend: sealed::Sealed {
     /// signal as [`crate::TreeView::has_focus`] — see that field's doc
     /// for why some hosts set it as a persistent "currently showing"
     /// indicator unrelated to real keyboard focus. Pass
-    /// `ring.is_focused(&tree.id) && ring.is_focus_visible()` from a
-    /// host's own [`crate::compose::FocusRing`] instead.
+    /// `focus.is_focused(&tree.id, None) && focus.is_focus_visible()`
+    /// from a host's own [`crate::FocusTree`] instead.
     ///
     /// `state.scroll_px`, when `Some`, is a pixel-precise scroll position
     /// a host has accumulated from fractional wheel/trackpad deltas (see
@@ -2648,8 +2649,8 @@ pub trait Backend: sealed::Sealed {
     /// signal as [`crate::ListView::has_focus`] — see that field's doc
     /// for why some hosts set it as a persistent "currently showing"
     /// indicator unrelated to real keyboard focus. Pass
-    /// `ring.is_focused(&list.id) && ring.is_focus_visible()` from a
-    /// host's own [`crate::compose::FocusRing`] instead.
+    /// `focus.is_focused(&list.id, None) && focus.is_focus_visible()`
+    /// from a host's own [`crate::FocusTree`] instead.
     ///
     /// `state.scroll_px`, when `Some`, is a pixel-precise scroll position
     /// a host has accumulated from fractional wheel/trackpad deltas — it

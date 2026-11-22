@@ -36,7 +36,7 @@
 //!   `tui_workspace` / `gtk_workspace`.
 //! - [`FocusDemo`] (in [`focus_demo`]) — two lists + a status bar whose
 //!   Tab/Shift+Tab order is derived from `ScreenLayout::tab_stops` and
-//!   cycled by the runner-owned `FocusManager`, with the backend
+//!   cycled by the runner-owned `FocusTree`, with the backend
 //!   painting the focus ring. Used by `tui_focus_ring` / `gtk_focus_ring`.
 //! - [`CaretShapeDemo`] (in [`caret_shape_demo`]) — cycles an `Editor`'s
 //!   caret through `EditorCursorShape`'s three modes, calling
@@ -72,7 +72,7 @@
 //!   with two named `CanvasRegion`s: click-per-region toggling, a
 //!   hover cursor read back from `CanvasRegion::cursor`, and
 //!   `Canvas::focusable` driving a hand-rolled single-entry
-//!   `AppLogic::tab_stops` so Tab focuses the canvas and a subsequent
+//!   `AppLogic::extra_tab_stops` so Tab focuses the canvas and a subsequent
 //!   key press reaches it. TUI-only (`tui_canvas_regions`) — see the
 //!   module's own doc for why.
 //! - [`GridApp`] (in [`grid`]) — six `Button` tiles laid out into a

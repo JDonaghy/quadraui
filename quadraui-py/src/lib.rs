@@ -1338,7 +1338,7 @@ impl AppLogic for PyAppLogic {
     /// Delegates to [`InteractionEngine::tab_stops`], which derives this
     /// frame's tab stops directly from the hit map `render` just fed it via
     /// [`InteractionEngine::set_hits`].
-    fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+    fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
         self.engine.tab_stops()
     }
 
@@ -10615,8 +10615,8 @@ def render():
     }
 
     /// Two `tree` leaves side by side in a `Row`: `Tab` cycles focus between
-    /// them (via core's shared `preprocess_event`/`FocusManager` pipeline,
-    /// driven by `PyAppLogic::tab_stops`), and a plain key then routes to
+    /// them (via core's shared `preprocess_event`/`FocusTree` pipeline,
+    /// driven by `PyAppLogic::extra_tab_stops`), and a plain key then routes to
     /// whichever leaf is focused as that leaf's own semantic
     /// `Tree(KeyPressed)` event, not a raw global `KeyPressed`.
     #[test]

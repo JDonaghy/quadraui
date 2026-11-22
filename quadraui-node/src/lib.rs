@@ -1499,7 +1499,7 @@ impl AppLogic for NodeAppLogic {
     /// Delegates to [`InteractionEngine::tab_stops`], which derives this
     /// frame's tab stops directly from the hit map [`Self::render`] just
     /// fed it via [`InteractionEngine::set_hits`].
-    fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+    fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
         self.engine.tab_stops()
     }
 

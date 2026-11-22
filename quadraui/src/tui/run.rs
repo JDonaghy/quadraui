@@ -868,7 +868,7 @@ where
             //
             // Resolved here, from this frame's own just-updated tab
             // stops, rather than before `app.render` ran above:
-            // `AppLogic::tab_stops` is `&self`-only, but for an engine
+            // `AppLogic::extra_tab_stops` is `&self`-only, but for an engine
             // backing a `"form"` extra it isn't purely a cheap read of
             // already-built layout — `InteractionEngine::tab_stops`
             // excludes a `"form"` extra's own stop only once

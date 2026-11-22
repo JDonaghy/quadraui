@@ -26,7 +26,7 @@
 //! Routing app-wide Tab into `Switch::focused` is the host's job —
 //! same division of responsibility as every other primitive here: this
 //! type owns what happens once it has focus, not how focus arrives (see
-//! [`crate::focus::FocusManager`] for the app-wide owner of "what has
+//! [`crate::focus::FocusTree`] for the app-wide owner of "what has
 //! focus").
 
 use crate::event::{Key, NamedKey, Point, Rect};

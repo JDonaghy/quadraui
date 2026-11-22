@@ -8,7 +8,6 @@
 //! open/close/navigate/hover logic.
 //!
 //! - [`FocusGroup`] — Tab/Shift+Tab cycling through N regions by index.
-//! - [`FocusRing`] — Tab/Shift+Tab cycling through widget IDs.
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
 //! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
@@ -75,7 +74,6 @@ mod divider_drag;
 pub mod dual_mode_palette;
 pub mod file_picker;
 pub mod focus_group;
-pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
 pub mod form_dialog;
@@ -129,7 +127,6 @@ pub use file_picker::{FilePickerController, FilePickerMode};
 #[allow(deprecated)]
 pub use file_picker::FilePickerEvent;
 pub use focus_group::FocusGroup;
-pub use focus_ring::FocusRing;
 pub use folder_picker::{FolderPickerController, PALETTE_CHROME_ROWS};
 // `FolderPickerEvent` is `#[deprecated]` (use `FolderPickerController::handle_event`'s
 // `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a

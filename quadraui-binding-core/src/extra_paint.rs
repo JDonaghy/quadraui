@@ -2403,7 +2403,7 @@ mod tests {
                 self.engine.set_hits(hits);
             }
 
-            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
                 self.engine.tab_stops()
             }
 
@@ -2505,7 +2505,7 @@ mod tests {
                 crate::host::render_overlays(&self.engine, backend, hits);
             }
 
-            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
                 self.engine.tab_stops()
             }
 
@@ -2734,7 +2734,7 @@ mod tests {
                 self.engine.set_hits(hits);
             }
 
-            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
                 self.engine.tab_stops()
             }
 
@@ -2893,7 +2893,7 @@ mod tests {
                 self.engine.set_hits(hits);
             }
 
-            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
                 self.engine.tab_stops()
             }
 
@@ -2986,7 +2986,7 @@ mod tests {
                 crate::host::render_overlays(&self.engine, backend, hits);
             }
 
-            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
                 self.engine.tab_stops()
             }
 
@@ -3063,7 +3063,7 @@ mod tests {
             self.engine.set_hits(hits);
         }
 
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
             self.engine.tab_stops()
         }
 

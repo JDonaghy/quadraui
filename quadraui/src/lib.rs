@@ -604,7 +604,7 @@ pub use a11y::{
 };
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;
-pub use focus::{FocusAddress, FocusManager, FocusTree};
+pub use focus::{FocusAddress, FocusTree};
 pub use font_role::{ChromePrimitive, EditorClassPrimitive, FontRole};
 pub use generic_font::GenericFamily;
 pub use primitives::activity_bar::{
@@ -931,7 +931,7 @@ pub use compose::{
     AppShellLayout, BackendWidget, BottomBand, BottomPanelConfig, BottomPanelController,
     BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerAction,
     ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteAction,
-    DualModePaletteController, Edge, FilePickerController, FilePickerMode, FocusGroup, FocusRing,
+    DualModePaletteController, Edge, FilePickerController, FilePickerMode, FocusGroup,
     FolderPickerController, FormController, FormControllerAction, FormDialogAction,
     FormDialogController, GroupLayout, Handled, HelpAction, HelpNote, HelpOverlayAction,
     HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,

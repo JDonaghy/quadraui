@@ -277,8 +277,9 @@ pub trait AppLogic {
         false
     }
 
-    /// Opt into the shared runner-owned [`crate::focus::FocusManager`]:
-    /// returns the current frame's Tab/Shift+Tab order as
+    /// Opt into the shared runner-owned [`crate::focus::FocusTree`]: tab
+    /// stops not already covered by [`Self::frame_tree`]'s own
+    /// [`crate::interactive::Interactive::focus`] declarations, as
     /// `(WidgetId, Rect)` pairs in cycle order — typically
     /// [`crate::frame::ScreenLayout::tab_stops`]'s output.
     ///
@@ -288,47 +289,9 @@ pub trait AppLogic {
     ///
     /// Once this returns a non-empty list, the runner claims
     /// Tab/Shift+Tab globally: the shared pipeline intercepts them,
-    /// cycles [`crate::Backend::focus_manager`] and
-    /// [`crate::focus::FocusTree`] together, and delivers
+    /// cycles [`crate::focus::FocusTree`], and delivers
     /// [`crate::UiEvent::FocusChanged`] to [`Self::handle`] instead of
     /// the raw key press — see that event's doc for the exact contract,
-    /// including why a widget that treats literal Tab as input (a code
-    /// editor's indent command, say) should stay out of this list.
-    ///
-    /// Called on `&self` (no interior mutability required) both when a
-    /// Tab/Shift+Tab keystroke arrives and once per frame after
-    /// `render`, to resolve the focused widget's rect for
-    /// [`crate::Backend::draw_focus_ring`].
-    ///
-    /// `quadraui-node`/`quadraui-py`/`quadraui-binding-core`'s `BindingHost`
-    /// all override this today, so the shared runner keeps reading it and
-    /// cycling it alongside [`Self::extra_tab_stops`] (concatenated, not
-    /// replacing it) for as long as any override exists — an app that
-    /// already overrides this one needs no changes to keep working.
-    #[deprecated(
-        since = "0.12.0",
-        note = "use `Self::extra_tab_stops` instead — identical shape and contract, just renamed to sit alongside `Self::frame_tree`'s own tab stops rather than being the one true list"
-    )]
-    fn tab_stops(&self, _area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
-        Vec::new()
-    }
-
-    /// Tab stops not already covered by [`Self::frame_tree`]'s own
-    /// [`crate::interactive::Interactive::focus`] declarations — same
-    /// `(WidgetId, Rect)` pairs in cycle order as [`Self::tab_stops`], read
-    /// and cycled alongside it rather than instead of it (see that method's
-    /// doc for why both exist).
-    ///
-    /// Defaults to empty, meaning **Tab/Shift+Tab pass through to
-    /// [`Self::handle`] completely unclaimed** — zero behavior change for
-    /// every app that doesn't override this.
-    ///
-    /// Once this (or [`Self::tab_stops`]) returns a non-empty list, the
-    /// runner claims Tab/Shift+Tab globally: the shared pipeline intercepts
-    /// them, cycles [`crate::Backend::focus_manager`] and
-    /// [`crate::focus::FocusTree`] together, and delivers
-    /// [`crate::UiEvent::FocusChanged`] to [`Self::handle`] instead of the
-    /// raw key press — see that event's doc for the exact contract,
     /// including why a widget that treats literal Tab as input (a code
     /// editor's indent command, say) should stay out of this list.
     ///
@@ -338,9 +301,9 @@ pub trait AppLogic {
     /// a `frame_tree` can't yet express instead, e.g. a main-tree `"form"`
     /// extra holding engine focus outside any `Interactive` widget. A
     /// `frame_tree` node's own focus stops are cycled by this same Tab
-    /// step (concatenated with whatever this method and [`Self::tab_stops`]
-    /// return) only once that node's id also appears here or there — they
-    /// aren't picked up automatically just by declaring
+    /// step (concatenated with whatever this method returns) only once
+    /// that node's id also appears here — they aren't picked up
+    /// automatically just by declaring
     /// [`crate::interactive::Interactive::focus`].
     ///
     /// Called on `&self` (no interior mutability required) both when a

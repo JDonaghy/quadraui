@@ -5,10 +5,8 @@
 //! # Shape
 //!
 //! [`A11yTreeBuilder`] consumes a [`crate::frame::OwnedFrame`] (the
-//! serde-capable per-surface snapshot) and a [`FocusSource`] — the
-//! legacy flat [`crate::focus::FocusManager`] or the richer
-//! [`crate::focus::FocusTree`], whichever a caller already has — and
-//! produces either
+//! serde-capable per-surface snapshot) and a [`FocusSource`] — today
+//! always a [`crate::focus::FocusTree`] — and produces either
 //!
 //! - a whole [`A11yTree`] — every node, in document order, root first —
 //!   which is what tests and the snapshot seam assert against, or
@@ -182,7 +180,7 @@ use serde::{Serialize, Serializer};
 
 use crate::a11y::{A11yAction, A11yChecked, A11yInfo, A11yLive, A11yRole};
 use crate::event::Rect;
-use crate::focus::{FocusManager, FocusTree};
+use crate::focus::FocusTree;
 use crate::frame::{OwnedContent, OwnedFrame, OwnedNode};
 use crate::primitives::board::{BoardColumn, BoardModel};
 use crate::primitives::completions::Completions;
@@ -772,24 +770,14 @@ impl A11yUpdate {
 /// Where [`A11yTreeBuilder`]/[`frame_to_tree`] read "what's currently
 /// focused" from.
 ///
-/// Implemented by both [`FocusManager`] (the flat, whole-widget store
-/// every existing caller already has) and [`FocusTree`] (the richer,
-/// per-[`crate::interactive::SubTarget`] store) so a caller passes
-/// whichever one it holds without converting first — adding `FocusTree`
-/// support here never breaks a `&FocusManager` call site. A11y tree
-/// building only ever needs "which whole widget is focused": a composite
-/// widget's focused *child* is resolved separately, through
+/// Implemented by [`FocusTree`]. A11y tree building only ever needs
+/// "which whole widget is focused": a composite widget's focused *child*
+/// is resolved separately, through
 /// [`crate::a11y::A11yPrimitive::a11y_focus_key`], so this trait
 /// deliberately throws away `FocusTree`'s `SubTarget` half.
 pub trait FocusSource {
     /// The widget that currently holds focus, if any.
     fn focused_widget(&self) -> Option<&WidgetId>;
-}
-
-impl FocusSource for FocusManager {
-    fn focused_widget(&self) -> Option<&WidgetId> {
-        self.focused()
-    }
 }
 
 impl FocusSource for FocusTree {
@@ -955,17 +943,12 @@ pub fn frame_to_tree_with_modal(
 /// section.
 ///
 /// Combines [`crate::Backend::last_frame`] with
-/// [`crate::Backend::focus_manager`] — the same two inputs
+/// [`crate::Backend::focus_tree`] — the same two inputs
 /// [`A11yTreeBuilder::tree`]/[`frame_to_tree`] already take explicitly,
 /// just read straight off the live backend instead of a test scenario.
-/// The sealed [`crate::Backend`] trait exposes only the flat
-/// [`FocusManager`], not [`FocusTree`] — adding the latter would grow its
-/// trait-body method count past `tests/backend_method_ratchet.rs`'s
-/// frozen baseline — but [`FocusSource`] is implemented for both, so this
-/// reads straight off `focus_manager()` without converting it first.
 pub fn backend_a11y_tree(backend: &dyn crate::Backend) -> Option<A11yTree> {
     let frame = backend.last_frame()?;
-    Some(frame_to_tree(frame, backend.focus_manager()))
+    Some(frame_to_tree(frame, backend.focus_tree()))
 }
 
 /// The identity a modal stack entry is matched against. Overlay

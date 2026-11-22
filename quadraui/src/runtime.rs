@@ -75,7 +75,7 @@
 
 use crate::backend::PointerShape;
 use crate::desktop::{is_paste_keypress, PasteModifier};
-use crate::focus::{FocusManager, FocusTree};
+use crate::focus::FocusTree;
 use crate::frame_tree::{FrameTree, FrameTreeNode};
 use crate::interactive::{EventCx, EventHost, FocusSpec, KeyEvent, PointerKind, RoutedEvent};
 use crate::primitive::Units;
@@ -220,19 +220,6 @@ pub(crate) trait PreprocessBackend {
     /// `Backend::draw_activity_bar` call, if any.
     fn focused_activity_bar_id(&self) -> Option<&WidgetId>;
 
-    /// Mutable access to this backend's [`FocusManager`] —
-    /// the counterpart to the read-only `Backend::focus_manager`. Only
-    /// [`preprocess_event`]'s Tab/Shift+Tab intercept calls this; see
-    /// `crate::focus`'s module doc for why that's the single writer.
-    ///
-    /// Every caller that mutates this must mutate [`Self::focus_tree_mut`]
-    /// in the same step for a whole-widget focus change — the two are
-    /// meant to agree on "which id is focused" at all times. Tab/Shift+Tab
-    /// cycling keeps them in step by cycling [`FocusTree`] directly and
-    /// mirroring the result here, rather than cycling this manager and
-    /// mirroring outward.
-    fn focus_manager_mut(&mut self) -> &mut FocusManager;
-
     /// Look up a registered `Global`-scope accelerator for `key`+`modifiers`.
     fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId>;
 
@@ -283,36 +270,19 @@ pub(crate) trait PreprocessBackend {
     /// (step 2 below) checks this *and* [`AppLogic::frame_tree`] before
     /// doing anything, so a backend that returns `None` here never enters
     /// that step at all, identically to how an app that never overrides
-    /// [`AppLogic::tab_stops`]/[`AppLogic::extra_tab_stops`] keeps step 4
+    /// [`AppLogic::extra_tab_stops`] keeps step 4
     /// (Tab/Shift+Tab cycling) inert. `TuiBackend` and `MacBackend` override
     /// it today — see their own `PreprocessBackend` impls.
     fn widget_routing_mut(&mut self) -> Option<&mut crate::widget_state::WidgetRoutingState> {
         None
     }
 
-    /// Read-only access to this backend's [`FocusTree`] — a richer,
-    /// [`crate::interactive::SubTarget`]-aware per-stop tab order built
-    /// from [`crate::runner::AppLogic::frame_tree`], used internally by the
-    /// widget-contract routing engine ([`route_widget_key`],
-    /// [`WidgetEventHost`]) in place of this backend's flat
-    /// [`crate::Backend::focus_manager`] — see [`FocusTree`]'s own doc for
-    /// why it exists alongside [`FocusManager`] rather than replacing it
-    /// outright. [`crate::Backend::set_focus`] keeps both in step for
-    /// every whole-widget focus change triggered by a click or a widget's
-    /// own [`EventHost::request_focus`], so no existing
-    /// `focus_manager`/`set_focus` caller needs to change; [`preprocess_event`]'s
-    /// Tab/Shift+Tab step (step 4 in its own doc) keeps them in step too,
-    /// cycling this tree directly and mirroring the result back into
-    /// [`FocusManager`].
-    ///
-    /// No default: every backend that opts into widget-contract routing
-    /// owns exactly one `FocusTree`, constructed alongside its
-    /// `FocusManager`.
-    fn focus_tree(&self) -> &FocusTree;
-
     /// Mutable access to this backend's [`FocusTree`] — the counterpart to
-    /// [`Self::focus_tree`]. The widget-contract routing engine uses this
-    /// to keep the tree's stops synced with each dispatched event's
+    /// the sealed [`crate::Backend::focus_tree`]'s read-only borrow, used
+    /// internally by the widget-contract routing engine
+    /// ([`route_widget_key`], [`WidgetEventHost`]) and by
+    /// [`preprocess_event`]'s own Tab/Shift+Tab step (step 4 in its own
+    /// doc) to keep the tree's stops synced with each dispatched event's
     /// [`crate::frame_tree::FrameTree`] ([`FocusTree::sync`]) and, once a
     /// widget resolves which of its own children a gesture or a focus
     /// request names, to set that sub-target's focus precisely —
@@ -357,23 +327,20 @@ pub(crate) trait PreprocessBackend {
 ///    `UiEvent::ActivityBar(id, KeyPressed { .. })` instead of the app's
 ///    normal `handle` — `ShellAdapter`'s built-in activity-bar keyboard
 ///    cursor depends on this.
-/// 4. Tab / Shift+Tab focus cycling, only when [`all_tab_stops`] (the
-///    concatenation of [`AppLogic::tab_stops`] and
-///    [`AppLogic::extra_tab_stops`]) returns non-empty for the current
-///    frame *and* the currently-focused id (if any) is actually named by
-///    it: sync both [`FocusManager`]'s and [`FocusTree`]'s tab order to
-///    this flat list and cycle the tree
+/// 4. Tab / Shift+Tab focus cycling, only when [`all_tab_stops`] (today
+///    just [`AppLogic::extra_tab_stops`], run through a defensive
+///    by-id dedup) returns non-empty for the current frame *and* the
+///    currently-focused id (if any) is actually named by it: sync
+///    [`FocusTree`]'s tab order to this flat list and cycle it
 ///    ([`FocusTree::focus_next`]/[`FocusTree::focus_prev`] —
 ///    `NamedKey::BackTab`, or `NamedKey::Tab` with Shift held, retreats;
-///    plain `NamedKey::Tab` advances), mirroring the result back into
-///    [`FocusManager`] so [`focused_stop_rect`] (still a flat-`FocusManager`
-///    reader) sees the same focused id, then deliver
+///    plain `NamedKey::Tab` advances), then deliver
 ///    `UiEvent::FocusChanged` instead of the raw key press. Ctrl/Alt/Cmd
 ///    held is left alone (reserved for app-level chords like
-///    `TabGroupController`'s Ctrl-Tab pane switching). While both stay
+///    `TabGroupController`'s Ctrl-Tab pane switching). While it stays
 ///    empty — the default — this step never fires and Tab/Shift+Tab pass
 ///    through unchanged, exactly as before. When the currently-focused id
-///    is focused but deliberately absent from both lists (e.g. a
+///    is focused but deliberately absent from the list (e.g. a
 ///    main-tree `"form"` extra holding engine focus — see
 ///    `InteractionEngine::tab_stops`'s own doc), this step also stays out
 ///    of the way instead of reading the omission as "this id went away"
@@ -469,30 +436,22 @@ where
     {
         if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd {
             let stops = all_tab_stops(app, A::AreaId::default());
-            let currently_focused = backend.focus_manager().focused().cloned();
+            let currently_focused = backend.focus_tree().focused().map(|(id, _)| *id);
             // A focused id this frame's `stops` doesn't name is never "an
-            // id this cycle lost track of" — `AppLogic::tab_stops`/
-            // `AppLogic::extra_tab_stops` only ever omit one deliberately,
-            // to hand the key to its own more specific handling instead
-            // (the main-tree `"form"` extra case: `InteractionEngine::tab_stops`
-            // excludes its own stop for as long as it holds engine focus, so
-            // the raw key below reaches `InteractionEngine::handle_form_tab`).
-            // Running `sync_tab_order` anyway would read that omission as
-            // "this id went away" and clear focus
-            // (`FocusManager::sync_tab_order`'s own doc), landing the next
-            // `focus_next()`/`focus_prev()` on the first/last stop instead of
-            // leaving the key alone for whoever excluded it on purpose.
+            // id this cycle lost track of" — `AppLogic::extra_tab_stops`
+            // only ever omits one deliberately, to hand the key to its own
+            // more specific handling instead (the main-tree `"form"` extra
+            // case: `InteractionEngine::tab_stops` excludes its own stop
+            // for as long as it holds engine focus, so the raw key below
+            // reaches `InteractionEngine::handle_form_tab`). Running
+            // `sync_tab_order` anyway would read that omission as "this id
+            // went away" and clear focus, landing the next
+            // `focus_next()`/`focus_prev()` on the first/last stop instead
+            // of leaving the key alone for whoever excluded it on purpose.
             let focus_excluded_from_stops = currently_focused
                 .as_ref()
                 .is_some_and(|id| !stops.iter().any(|(stop_id, _)| stop_id == id));
             if !stops.is_empty() && !focus_excluded_from_stops {
-                // Both stores cycle together: `FocusTree` is what
-                // `route_widget_key`/`WidgetEventHost`/`a11y::tree::frame_to_tree`
-                // read, `FocusManager` is what `focused_stop_rect` still reads
-                // — see [`crate::focus::FocusTree::focus_next`]'s doc for why
-                // a flat `tab_stops`/`extra_tab_stops` pair cycles the tree
-                // too rather than only the manager.
-                backend.focus_manager_mut().sync_tab_order(&stops);
                 backend.focus_tree_mut().sync_tab_order(&stops);
                 let retreat = matches!(named, NamedKey::BackTab) || modifiers.shift;
                 let tree = backend.focus_tree_mut();
@@ -503,7 +462,6 @@ where
                 };
                 if changed {
                     let focused = backend.focus_tree().focused().map(|(id, _)| *id);
-                    backend.focus_manager_mut().set_focus(focused);
                     return widget_side_reaction
                         .merge(app.handle(UiEvent::FocusChanged(focused), backend));
                 }
@@ -680,7 +638,7 @@ where
 ///   isn't `None` also moves keyboard focus to it first (click-to-focus),
 ///   before the gesture itself is delivered.
 /// - **Focus routing** (`KeyPressed`): the currently-focused widget (via
-///   [`crate::Backend::focus_manager`]), if it's named in this frame's
+///   [`crate::Backend::focus_tree`]), if it's named in this frame's
 ///   tree.
 /// - **Capture** (`MouseMoved`, [`EventHost::capture_pointer`]/
 ///   `release_pointer`): while
@@ -741,10 +699,10 @@ where
         return WidgetRouteOutcome::Bubble(Reaction::Continue);
     }
     // Keep the sub-target-aware `FocusTree` seam fresh for this event —
-    // `route_widget_key`/`WidgetEventHost` read it below instead of the
-    // flat `FocusManager`. Cheap to rebuild every routed event, same
-    // tradeoff `app.frame_tree` above already makes (see this module's
-    // doc on why a `FrameTree` node can't be cached across the frame).
+    // `route_widget_key`/`WidgetEventHost` read it below. Cheap to
+    // rebuild every routed event, same tradeoff `app.frame_tree` above
+    // already makes (see this module's doc on why a `FrameTree` node
+    // can't be cached across the frame).
     backend.focus_tree_mut().sync(&tree);
 
     match event {
@@ -872,12 +830,10 @@ where
 /// [`FrameTree`] still names it — `Bubble(Continue)` when either is
 /// missing.
 ///
-/// Reads [`PreprocessBackend::focus_tree`] rather than
-/// [`crate::Backend::focus_manager`] — the two stay in step for a
-/// whole-widget focus change (see [`crate::Backend::set_focus`]'s doc), so
-/// this is purely an internal wiring choice: it costs nothing today, and
-/// it is what lets a future hit-test that resolves a composite widget's
-/// sub-target route a key to the right address instead of always `None`.
+/// Reads [`crate::Backend::focus_tree`], which already carries a
+/// composite widget's focused sub-target rather than only the whole
+/// widget's id — the seam a future hit-test can use to route a key to
+/// the right address instead of always `None`.
 fn route_widget_key<B, A>(
     key: Key,
     modifiers: Modifiers,
@@ -1035,10 +991,10 @@ struct WidgetHostIntents {
 /// need to answer and an outbox for everything else.
 ///
 /// `currently_focused` is a [`crate::focus::FocusAddress`] — sourced from
-/// [`PreprocessBackend::focus_tree`], not the flat
-/// [`crate::Backend::focus_manager`] — so [`EventHost::is_focused`] can
-/// tell a composite widget's individually-addressed children apart
-/// instead of answering every `sub` identically for one focused id.
+/// [`crate::Backend::focus_tree`], which carries a composite widget's
+/// own sub-target — so [`EventHost::is_focused`] can tell its
+/// individually-addressed children apart instead of answering every
+/// `sub` identically for one focused id.
 struct WidgetEventHost<'a> {
     currently_focused: Option<crate::focus::FocusAddress>,
     units: Units,
@@ -1149,12 +1105,10 @@ where
     };
 
     if let Some((focus_id, sub)) = intents.focus_request {
-        // `set_focus` mirrors the whole-widget id into both
-        // `focus_manager`/`focus_tree` (sub `None`); refining the tree's
-        // own `sub` afterward is what lets a composite widget request
-        // focus for one of its own children precisely —
-        // `Backend::set_focus`'s flat signature can't express that.
-        backend.set_focus(Some(focus_id));
+        // Set the tree directly with the widget's own `sub` — letting a
+        // composite widget request focus for one of its own children
+        // precisely, which `Backend::set_focus`'s flat `WidgetId`
+        // signature can't express.
         backend.focus_tree_mut().set_focus(Some((focus_id, sub)));
     }
     if let Some(capture) = intents.capture_request {
@@ -1216,10 +1170,8 @@ where
     }
 }
 
-/// [`AppLogic::tab_stops`] and [`AppLogic::extra_tab_stops`], concatenated —
-/// the one tab order every caller in this module cycles/scans, so an app
-/// overriding either (or both) sees them merged rather than one silently
-/// shadowing the other.
+/// [`AppLogic::extra_tab_stops`], defensively deduped by id — the one tab
+/// order every caller in this module cycles/scans.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -1227,19 +1179,12 @@ where
     all(feature = "macos", target_os = "macos")
 ))]
 fn all_tab_stops<A: AppLogic>(app: &A, area: A::AreaId) -> Vec<(WidgetId, crate::event::Rect)> {
-    // `AppLogic::tab_stops` is `#[deprecated]` in favor of
-    // `extra_tab_stops`, but this is the one sanctioned caller that reads
-    // it unconditionally for as long as the deprecated method exists at
-    // all — an app that still overrides it must keep working.
-    #[allow(deprecated)]
-    let mut stops = app.tab_stops(area);
-    stops.extend(app.extra_tab_stops(area));
-    // An id present in both lists would otherwise land twice in the
-    // cycled order, shortening the effective cycle by one and stranding a
-    // later stop unreachable — both `FocusManager::step` and
-    // `FocusTree::step` resolve the *current* position by its first
-    // match. Keep the first occurrence (the one from `tab_stops`, if it
-    // appears in both) and drop any later duplicate.
+    let mut stops = app.extra_tab_stops(area);
+    // A duplicate id would otherwise land twice in the cycled order,
+    // shortening the effective cycle by one and stranding a later stop
+    // unreachable — `FocusTree::step` resolves the *current* position by
+    // its first match. Keep the first occurrence and drop any later
+    // duplicate.
     let mut seen = std::collections::HashSet::new();
     stops.retain(|(id, _)| seen.insert(*id));
     stops
@@ -1248,8 +1193,8 @@ fn all_tab_stops<A: AppLogic>(app: &A, area: A::AreaId) -> Vec<(WidgetId, crate:
 /// The screen [`Rect`] of whichever tab stop currently has focus, or
 /// `None` — the per-frame lookup every runner (`gtk::run`, `macos::run`,
 /// `win::run`, `tui::run`) performs just before painting the focus-ring
-/// convention: `backend.focus_manager().focused()` for the focused id,
-/// then a linear scan of [`all_tab_stops`] for the matching rect.
+/// convention: `backend.focus_tree().focused()` for the focused id, then
+/// a linear scan of [`all_tab_stops`] for the matching rect.
 ///
 /// Returns `None` both when nothing is focused and when the focused id
 /// isn't among this frame's tab stops (e.g. it scrolled out of view) —
@@ -1270,12 +1215,16 @@ where
     B: crate::Backend,
     A: AppLogic,
 {
-    backend.focus_manager().focused().cloned().and_then(|id| {
-        all_tab_stops(app, area)
-            .into_iter()
-            .find(|(stop_id, _)| *stop_id == id)
-            .map(|(_, rect)| rect)
-    })
+    backend
+        .focus_tree()
+        .focused()
+        .map(|(id, _)| *id)
+        .and_then(|id| {
+            all_tab_stops(app, area)
+                .into_iter()
+                .find(|(stop_id, _)| *stop_id == id)
+                .map(|(_, rect)| rect)
+        })
 }
 
 /// Trailing-edge debounce settle window for `WindowResized` dispatch.
@@ -2282,11 +2231,11 @@ mod widget_routing_tests {
     #[test]
     fn click_moves_focus_to_the_hit_widget() {
         let (mut backend, mut app) = harness();
-        assert_eq!(backend.focus_manager().focused(), None);
+        assert_eq!(backend.focus_tree().focused(), None);
 
         preprocess_event(mouse_down_at(1.0, 1.0), &mut backend, &mut app);
 
-        assert_eq!(backend.focus_manager().focused(), Some(&app.id));
+        assert_eq!(backend.focus_tree().focused(), Some(&(app.id, None)));
     }
 
     /// Key → state-change → semantic event: `Up` mutates the counter's
@@ -2677,7 +2626,7 @@ mod widget_routing_tests {
 
         preprocess_event(mouse_down_at(1.0, 1.0), &mut backend, &mut app);
 
-        assert_eq!(backend.focus_manager().focused(), None);
+        assert_eq!(backend.focus_tree().focused(), None);
     }
 
     /// `route_widget_action` produces the identical semantic event a
@@ -2713,13 +2662,12 @@ mod widget_routing_tests {
     }
 
     /// An [`AppLogic`] with independently configurable
-    /// [`AppLogic::tab_stops`]/[`AppLogic::extra_tab_stops`]/
-    /// [`AppLogic::frame_tree`] — the step-4 Tab/Shift+Tab-cycling
-    /// counterpart to [`CounterApp`], which never overrides any of them.
+    /// [`AppLogic::extra_tab_stops`]/[`AppLogic::frame_tree`] — the
+    /// step-4 Tab/Shift+Tab-cycling counterpart to [`CounterApp`], which
+    /// never overrides either.
     struct TabCycleApp {
         id: WidgetId,
         received: Vec<UiEvent>,
-        tab_stops: Vec<(WidgetId, Rect)>,
         extra_tab_stops: Vec<(WidgetId, Rect)>,
         frame_tree: bool,
     }
@@ -2732,11 +2680,6 @@ mod widget_routing_tests {
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
             self.received.push(event);
             Reaction::Redraw
-        }
-
-        #[allow(deprecated)] // the override itself; this is the shim's own definition, not a call site
-        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
-            self.tab_stops.clone()
         }
 
         fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
@@ -2752,17 +2695,14 @@ mod widget_routing_tests {
         }
     }
 
-    /// `AppLogic::extra_tab_stops` alone — no `tab_stops` override at all —
-    /// still drives step 4's Tab cycling, and the cycle writes both
-    /// `FocusManager` and `FocusTree` rather than just the former.
+    /// `AppLogic::extra_tab_stops` drives step 4's Tab cycling.
     #[test]
-    fn extra_tab_stops_alone_drives_tab_cycling_and_keeps_both_stores_in_step() {
+    fn extra_tab_stops_drives_tab_cycling() {
         let id = WidgetId::new("extra-only");
         let mut backend = TuiBackend::new();
         let mut app = TabCycleApp {
             id,
             received: Vec::new(),
-            tab_stops: Vec::new(),
             extra_tab_stops: vec![(id, COUNTER_RECT)],
             frame_tree: false,
         };
@@ -2770,40 +2710,27 @@ mod widget_routing_tests {
         let outcome = preprocess_event(key(crate::event::NamedKey::Tab), &mut backend, &mut app);
 
         assert_eq!(outcome, Reaction::Redraw);
-        assert_eq!(backend.focus_manager().focused(), Some(&id));
         assert_eq!(backend.focus_tree().focused(), Some(&(id, None)));
         assert_eq!(app.received, vec![UiEvent::FocusChanged(Some(id))]);
     }
 
-    /// `AppLogic::tab_stops` and `AppLogic::extra_tab_stops` concatenate —
-    /// neither shadows the other — and Tab visits every stop from both
-    /// lists in order.
+    /// Two stops in [`AppLogic::extra_tab_stops`] cycle in order and wrap.
     #[test]
-    fn tab_stops_and_extra_tab_stops_concatenate_not_shadow() {
+    fn extra_tab_stops_cycles_every_stop_in_order() {
         let a = WidgetId::new("a");
         let b = WidgetId::new("b");
         let mut backend = TuiBackend::new();
         let mut app = TabCycleApp {
             id: a,
             received: Vec::new(),
-            tab_stops: vec![(a, COUNTER_RECT)],
-            extra_tab_stops: vec![(b, Rect::new(0.0, 3.0, 10.0, 3.0))],
+            extra_tab_stops: vec![(a, COUNTER_RECT), (b, Rect::new(0.0, 3.0, 10.0, 3.0))],
             frame_tree: false,
         };
 
         preprocess_event(key(crate::event::NamedKey::Tab), &mut backend, &mut app);
-        assert_eq!(
-            backend.focus_manager().focused(),
-            Some(&a),
-            "tab_stops' own stop comes first"
-        );
+        assert_eq!(backend.focus_tree().focused(), Some(&(a, None)));
 
         preprocess_event(key(crate::event::NamedKey::Tab), &mut backend, &mut app);
-        assert_eq!(
-            backend.focus_manager().focused(),
-            Some(&b),
-            "extra_tab_stops' stop follows, not shadowed by tab_stops"
-        );
         assert_eq!(backend.focus_tree().focused(), Some(&(b, None)));
     }
 
@@ -2811,10 +2738,7 @@ mod widget_routing_tests {
     /// [`AppLogic::frame_tree`] (so widget-contract routing and
     /// `FocusTree` apply) and [`AppLogic::extra_tab_stops`] (so step 4's
     /// Tab cycling also applies) must have a Tab-cycled focus actually
-    /// reachable by the very next key — `route_widget_key` resolves the
-    /// focused widget through `FocusTree`, not `FocusManager`, so step 4
-    /// cycling only the latter would strand the former at `None` and the
-    /// key would never reach the widget at all.
+    /// reachable by the very next key.
     #[test]
     fn tab_cycled_focus_reaches_the_widget_on_the_next_key() {
         let id = WidgetId::new("counter");
@@ -2822,7 +2746,6 @@ mod widget_routing_tests {
         let mut app = TabCycleApp {
             id,
             received: Vec::new(),
-            tab_stops: Vec::new(),
             extra_tab_stops: vec![(id, COUNTER_RECT)],
             frame_tree: true,
         };
@@ -2843,8 +2766,7 @@ mod widget_routing_tests {
         };
         assert_eq!(
             count, 1,
-            "Up must reach the widget through FocusTree, not get stranded \
-             because step 4 only updated FocusManager"
+            "Up must reach the Tab-cycled widget through FocusTree"
         );
     }
 
@@ -2956,8 +2878,8 @@ mod widget_routing_tests {
     /// a composite widget's own children apart by
     /// [`SubTarget`](crate::interactive::SubTarget) instead of answering
     /// every child identically for one focused id — the stated point of
-    /// reading `FocusTree` (which carries the sub-target) rather than the
-    /// flat `FocusManager` (which doesn't) in `dispatch_widget_routed_event`.
+    /// `dispatch_widget_routed_event` reading `FocusTree`, which carries
+    /// the sub-target.
     #[test]
     fn composite_widget_children_are_told_apart_by_sub_target() {
         let id = WidgetId::new("table");
