@@ -80,7 +80,8 @@ const ALLOWED_NEW_FILES: &[(&str, &str)] = &[
 /// doc for why both directions are enforced.
 ///
 /// The one growth these numbers absorb is the per-backend half of a
-/// backend-neutral seam: a new required `Backend` trait method needs its
+/// backend-neutral seam: a new `Backend`/`PreprocessBackend` trait method
+/// — required, or defaulted with one backend overriding it — needs its
 /// field, its constructor initialiser and its body inside this directory,
 /// and no amount of composing shared helpers moves those few lines out. A
 /// seam implementation large enough to be worth its own file goes in one,
@@ -97,7 +98,7 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "tui",
         file_count: 65,
-        non_test_lines: 28253,
+        non_test_lines: 28261,
     },
     BackendBaseline {
         dir: "gtk",
