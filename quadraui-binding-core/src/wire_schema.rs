@@ -34,8 +34,8 @@
 //!   clean while the schema keeps emitting the old type.
 //! - A good number of the real types below (`Button`, `Toolbar`,
 //!   `TextInput`, `NumberInput`, `ComboBox`, `DatePicker`, `RadioGroup`,
-//!   `Switch`, `Scrollbar`, `ScrollView`, `Editor`, ...) are themselves
-//!   `#[non_exhaustive]` **structs**. A struct marked `#[non_exhaustive]`
+//!   `Switch`, `Scrollbar`, `ScrollView`, `Editor`, `CellGrid`, ...) are
+//!   themselves `#[non_exhaustive]` **structs**. A struct marked `#[non_exhaustive]`
 //!   requires a trailing `..` in any pattern built outside its defining
 //!   crate, so a *new field* is invisible to [`assert_fields_non_exhaustive!`]
 //!   there. Every one of those structs closes that gap with a
@@ -6132,9 +6132,9 @@ mod coverage {
         use std::collections::BTreeSet;
 
         use quadraui::{
-            Button, ButtonVariant, CalendarDate, ComboBox, DatePicker, Editor, NumberInput,
-            RadioGroup, RadioOption, Rect, ScrollView, Scrollbar, Switch, TextInput, Toolbar,
-            WidgetId,
+            Button, ButtonVariant, CalendarDate, CellGrid, ComboBox, DatePicker, Editor,
+            NumberInput, RadioGroup, RadioOption, Rect, ScrollView, Scrollbar, Switch, TextInput,
+            Toolbar, WidgetId,
         };
 
         fn keys(v: &serde_json::Value) -> BTreeSet<String> {
@@ -6395,6 +6395,38 @@ mod coverage {
                 "tabstop",
                 "cursorline",
                 "lightbulb_glyph",
+            ]
+        );
+
+        value_shape_test!(
+            cell_grid_json_keys_match_the_schema_field_list,
+            "CellGrid",
+            "CellGridDescriptor",
+            CellGrid::new(WidgetId::new("test")),
+            [
+                "id",
+                "row_count",
+                "col_count",
+                "frozen_rows",
+                "frozen_cols",
+                "row_scroll",
+                "col_scroll",
+                "default_row_height",
+                "default_col_width",
+                "row_heights",
+                "col_widths",
+                "show_row_headers",
+                "show_col_headers",
+                "row_labels",
+                "col_labels",
+                "cursor",
+                "selection_anchor",
+                "cells",
+                "loaded_row_start",
+                "loaded_col_start",
+                "has_focus",
+                "show_scrollbar",
+                "editing",
             ]
         );
     }
