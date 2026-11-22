@@ -230,7 +230,7 @@ impl FormGroupsApp {
                     row_align: None,
                 },
             ],
-            focused_field: self.focus.focused().map(|(id, _)| *id),
+            focused_field: self.focus.focused_id().copied(),
             scroll_offset: 0,
             has_focus: true,
             label_position: Default::default(),
@@ -288,6 +288,10 @@ impl FormGroupsApp {
                     self.scope = 2;
                     self.last_action = "scope=Selection".into();
                 } else {
+                    // Every id reaching here is one of this form's
+                    // declared fields (the arms above cover every other
+                    // id), so it is always present in `self.focus`'s tab
+                    // order.
                     self.focus.set_focus(Some((*id, None)));
                     self.last_action = format!("focus → {}", id.as_str());
                 }

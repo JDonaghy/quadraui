@@ -229,6 +229,9 @@ impl SearchReplaceState {
                 }
             }
             other => {
+                // Every id reaching here is one of this form's declared
+                // fields (the arms above cover every other id), so it is
+                // always present in `self.focus`'s tab order.
                 self.focus.set_focus(Some((*id, None)));
                 self.last_action = format!("focus → {other}");
             }

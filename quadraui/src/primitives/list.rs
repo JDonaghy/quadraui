@@ -1556,18 +1556,15 @@ pub(crate) mod native_surface_paint {
         /// that the painted stroke actually tracks it, not just a literal
         /// `true`/`false` this test assigns itself.
         #[test]
-        fn focused_list_row_paints_a_ring_after_tab_than_after_click() {
+        fn focused_list_row_paints_a_ring_after_tab_but_not_after_click() {
             use crate::focus::FocusTree;
 
             let id = WidgetId::new("sidebar:list");
             let mut tree = FocusTree::new();
-            tree.sync_tab_order(&[(id.clone(), Rect::new(0.0, 0.0, 0.0, 0.0))]);
+            tree.sync_tab_order(&[(id, Rect::new(0.0, 0.0, 0.0, 0.0))]);
             let theme = Theme::default();
             let style = Style::default();
-            let list = ListView {
-                id: id.clone(),
-                ..vlist(1)
-            };
+            let list = ListView { id, ..vlist(1) };
 
             let paint_and_count_strokes = |focus_ring_visible: bool| -> usize {
                 let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
@@ -1606,7 +1603,7 @@ pub(crate) mod native_surface_paint {
             );
 
             // Click: `set_focus` re-focuses the same widget via the pointer path.
-            tree.set_focus(Some((id.clone(), None)));
+            tree.set_focus(Some((id, None)));
             let focus_ring_visible = tree.is_focused(&id, None) && tree.is_focus_visible();
             assert!(
                 tree.is_focused(&id, None),
