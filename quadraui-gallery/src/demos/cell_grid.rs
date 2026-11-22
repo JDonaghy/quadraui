@@ -1,19 +1,27 @@
 //! `CellGrid` demo — a tiny budget sheet: a bold, frozen header row
-//! ("Item"/"Qty"/"Price"/"Total") plus four data rows, painted entirely
-//! through [`quadraui::DrawsPrimitives::draw_dyn`] via
-//! [`quadraui::primitive::DynWidget`] — no `Backend::draw_cell_grid`
-//! method exists or is needed.
+//! ("Item"/"Qty"/"Price"/"Total") plus four data rows, painted through
+//! one [`quadraui::ScreenLayout`] holding the grid as a
+//! [`quadraui::Surface::Widget`] (routed via
+//! [`quadraui::primitive::DynWidget`]) plus the status bar — no
+//! `Backend::draw_cell_grid` method exists or is needed.
 //!
 //! A click on a cell moves the cursor there; the four arrow keys move it
 //! by one row/column, clamped to the sheet's edges; Shift+arrow extends
 //! the rectangular selection instead of moving the cursor alone. The
 //! status bar reports the active cell's spreadsheet reference (e.g.
 //! `B3`) and its own already-formatted text.
+//!
+//! A click is resolved the same way it was painted: [`CellGridDemo::screen`]
+//! builds the frame's [`quadraui::ScreenLayout`] once, [`Demo::render`]
+//! draws it and [`Demo::handle`]'s `MouseDown` arm hit-tests the
+//! identical [`quadraui::FrameZone::Widget`] zone before falling back to
+//! the widget's own [`quadraui::CellGridHit`] fine-grained resolution —
+//! never a second, independently hand-rolled geometry computation.
 
 use quadraui::{
-    Backend, BackendCaps, Cell, CellGrid, CellGridHit, Color, DrawsPrimitives, Key, LayoutCtx,
-    MouseButton, NamedKey, Primitive, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent,
-    WidgetId,
+    Backend, BackendCaps, Cell, CellGrid, CellGridHit, CellGridPrimitiveLayout, Color, FrameZone,
+    Key, LayoutCtx, MouseButton, NamedKey, Reaction, Rect, ScreenLayout, StatusBar,
+    StatusBarSegment, Style, Surface, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -185,6 +193,32 @@ impl CellGridDemo {
         }
     }
 
+    /// This frame's [`Surface`]s — the grid itself, routed through
+    /// [`Surface::Widget`], plus the status bar — in the one z-order
+    /// both [`Demo::render`] (via [`ScreenLayout::draw`]) and
+    /// [`Demo::handle`]'s `MouseDown` arm (via [`ScreenLayout::hit_map`])
+    /// need. Building both from this one method, the same way
+    /// [`Self::grid_rect`]/[`Self::status_rect`] already keep render and
+    /// hit-test from drifting apart, means a click is resolved against
+    /// exactly the [`FrameZone::Widget`] zone that was last painted,
+    /// rather than a second hand-rolled geometry computation.
+    fn screen(&self, backend: &dyn Backend, area: Rect) -> ScreenLayout {
+        let rect = Self::grid_rect(area, backend);
+        let status_rect = Self::status_rect(area, backend);
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect,
+            widget: Box::new(self.grid(backend)),
+        });
+        frame.push(Surface::StatusBar {
+            rect: status_rect,
+            bar: self.status(),
+            hovered: None,
+            pressed: None,
+        });
+        frame
+    }
+
     /// Moves [`Self::cursor`] by `(dr, dc)`, clamped to the sheet's own
     /// bounds — never off the top/left edge (`saturating_sub`) or past
     /// the bottom/right one. `extend_selection` keeps (or starts) the
@@ -221,16 +255,7 @@ impl Demo for CellGridDemo {
     }
 
     fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let rect = Self::grid_rect(area, backend);
-        let grid = self.grid(backend);
-        backend.draw_dyn(rect, &grid, &());
-
-        let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(),
-            &quadraui::InteractionState::new(),
-        );
+        let _ = self.screen(backend, area).draw(backend);
     }
 
     fn handle(
@@ -240,13 +265,13 @@ impl Demo for CellGridDemo {
         backend: &mut dyn Backend,
         area: Rect,
     ) -> Reaction {
-        let rect = Self::grid_rect(area, backend);
         match event {
             UiEvent::MouseDown {
                 button: MouseButton::Left,
                 position,
                 ..
             } => {
+                let frame = self.screen(backend, area);
                 let ctx = LayoutCtx {
                     line_height: LayoutCtx::resolve_row_height(
                         backend.chrome_line_height(),
@@ -255,10 +280,25 @@ impl Demo for CellGridDemo {
                     char_width: backend.char_width(),
                     nerd_fonts_enabled: backend.nerd_fonts_enabled(),
                 };
-                let grid = self.grid(backend);
-                let layout = Primitive::layout(&grid, &ctx, rect);
-                match layout.hit_test(position.x, position.y) {
-                    CellGridHit::Cell(r, c) => {
+                // Route the click through the same `FrameZone::Widget`
+                // zone `Self::screen`'s `Surface::Widget` paints —
+                // confirming the position actually lands in the grid's
+                // zone (and not, say, the status bar below it) — before
+                // falling back to the widget's own `CellGridHit`
+                // fine-grained resolution, the per-surface step
+                // `ScreenLayout::draw`'s own doc calls for.
+                let hit = match frame.hit_map().hit_test(position.x, position.y) {
+                    FrameZone::Widget { idx, id: Some(_) } => match &frame.surfaces()[idx] {
+                        Surface::Widget { rect, widget } => widget
+                            .layout(&ctx, *rect)
+                            .downcast_ref::<CellGridPrimitiveLayout>()
+                            .map(|layout| layout.hit_test(position.x, position.y)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match hit {
+                    Some(CellGridHit::Cell(r, c)) => {
                         self.cursor = (r, c);
                         self.selection_anchor = None;
                         Reaction::Redraw
@@ -371,11 +411,38 @@ mod tests {
         assert_eq!(demo.selection_anchor, Some((1, 1)));
         assert_eq!(demo.selection_bounds(), (1, 1, 1, 2));
     }
+
+    /// A click in the status bar's own band must not move the cursor —
+    /// proves `Demo::handle`'s `MouseDown` arm actually routes through
+    /// the `FrameZone::Widget` zone `Self::screen` builds (which only
+    /// covers the grid's band) rather than hit-testing the whole `area`
+    /// against the grid's layout unconditionally.
+    #[test]
+    fn clicking_the_status_bar_does_not_move_the_cursor() {
+        let mut demo = CellGridDemo::new();
+        let mut backend = quadraui::testing::RecordingBackend::new();
+        let area = Rect::new(0.0, 0.0, 60.0, 20.0);
+        let before = demo.cursor;
+        let status_rect = CellGridDemo::status_rect(area, &backend);
+        let event = UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: quadraui::Point::new(
+                status_rect.x + 1.0,
+                status_rect.y + status_rect.height / 2.0,
+            ),
+            modifiers: Default::default(),
+        };
+        let reaction = demo.handle(0, &event, &mut backend, area);
+        assert!(matches!(reaction, Reaction::Continue));
+        assert_eq!(demo.cursor, before);
+    }
 }
 
 #[cfg(all(test, feature = "tui"))]
 mod tui_tests {
     use super::*;
+    use quadraui::Primitive;
 
     #[test]
     fn clicking_a_body_cell_moves_the_cursor_there() {
