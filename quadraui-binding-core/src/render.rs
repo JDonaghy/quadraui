@@ -42,6 +42,14 @@ pub struct RenderFrame {
     pub list: Option<ListView>,
     pub tree: Option<TreeView>,
     pub data_table: Option<DataTable>,
+    // TODO(#2984): fold this slot, its [`draw_bands`] paint arm, `host.rs`'s
+    // `SLOT_TAB_BAR` arms and `semantic.rs`'s per-kind routing into the
+    // generic `widgets` map below, once the TabBar seam slice lands a text
+    // measurer on `LayoutCtx` and `TabChrome`/glyph/icon descriptor fields.
+    // Until then every one of those paths needs a `Backend` tab-bar method:
+    // the widget contract measures pixel labels at a flat `char_width` and
+    // carries no chrome or icon sidecar (see
+    // `quadraui/tests/cross_backend_parity.rs`).
     pub tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name.
     pub extra: HashMap<String, Rc<dyn ExtraPaint>>,

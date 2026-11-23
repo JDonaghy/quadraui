@@ -1550,6 +1550,11 @@ fn image_menu_click_agrees_tui_and_gtk_on_activated_action() {
 // one condition that decides whether a tab-strip caller can move onto
 // `DrawsPrimitives::draw_dyn` is a test result rather than a judgement
 // call.
+//
+// TODO(#2984): delete both tests once the TabBar seam slice lands "one
+// shared pixel layout built on `LayoutCtx::measure`" — they assert the
+// absence of that measurer, so they are the gate that says when the
+// pixel tab-strip callers become migratable.
 
 /// Three short lowercase labels, one closable tab each — the shape a
 /// sidebar document strip paints.
@@ -1618,9 +1623,9 @@ fn tab_bar_widget_contract_matches_the_tui_rasteriser_geometry() {
 /// under-measured), so no scalar correction closes it: a pixel tab-strip
 /// caller cannot move onto `draw_dyn` until the contract can measure
 /// text, which means a measurer on `LayoutCtx` — a public,
-/// non-`#[non_exhaustive]`, `PartialEq`-deriving struct built by literal
-/// across this repo and its consumers, i.e. a seam change rather than a
-/// caller migration.
+/// non-`#[non_exhaustive]`, `Copy`/`PartialEq`-deriving struct built by
+/// literal across this repo and its consumers, i.e. seam work owned by
+/// the TabBar seam slice rather than a caller migration.
 ///
 /// This test pins the gap so it is a measured fact, and fails the day the
 /// seam closes — which is the signal to migrate the pixel callers and
