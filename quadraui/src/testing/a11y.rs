@@ -551,6 +551,8 @@ window \"quadraui\" [focused]
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         };
         Surface::Widget {
             rect: Rect::new(0.0, 1.0, 30.0, 11.0),

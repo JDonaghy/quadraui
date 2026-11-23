@@ -352,6 +352,8 @@ class CellGridDescriptor(TypedDict):
     loaded_col_start: NotRequired[int]
     has_focus: NotRequired[bool]
     show_scrollbar: NotRequired[bool]
+    column_separators: NotRequired[bool]
+    striped: NotRequired[bool]
     editing: NotRequired[Optional[CellEditStateDescriptor]]
 
 class TabItemDescriptor(TypedDict):

@@ -895,6 +895,8 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("loaded_col_start", int_()),
             field_opt("has_focus", bool_()),
             field_opt("show_scrollbar", bool_()),
+            field_opt("column_separators", bool_()),
+            field_opt("striped", bool_()),
             field_opt("editing", nullable(cell_edit_state_descriptor)),
         ],
         "The spreadsheet-shaped `WIDGET_KINDS` member -- a `cell_grid` leaf's raw `quadraui::CellGrid` fields, decoded straight into that type (no cached-controller indirection) and routed through `CellGridEvent` for navigation/editing/virtualisation.",
@@ -6426,6 +6428,8 @@ mod coverage {
                 "loaded_col_start",
                 "has_focus",
                 "show_scrollbar",
+                "column_separators",
+                "striped",
                 "editing",
             ]
         );

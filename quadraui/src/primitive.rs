@@ -1107,6 +1107,8 @@ mod tests {
             has_focus: false,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         };
         let erased: Box<dyn DynWidget> = Box::new(grid);
         let recovered = erased

@@ -1361,6 +1361,8 @@ The spreadsheet-shaped `WIDGET_KINDS` member -- a `cell_grid` leaf's raw `quadra
 | `loaded_col_start` | `number` | no |  |
 | `has_focus` | `boolean` | no |  |
 | `show_scrollbar` | `boolean` | no |  |
+| `column_separators` | `boolean` | no |  |
+| `striped` | `boolean` | no |  |
 | `editing` | `CellEditStateDescriptor \| null` | no |  |
 
 <a id="wire-tabitemdescriptor"></a>
