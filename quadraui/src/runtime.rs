@@ -1112,12 +1112,23 @@ where
     B: PreprocessBackend + crate::Backend,
     A: AppLogic,
 {
-    let ctx = crate::primitive::LayoutCtx {
-        line_height: backend.line_height(),
-        char_width: backend.char_width(),
-        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+    // Built by the same helper
+    // [`crate::backend::DrawsPrimitives::draw_primitive`] uses, so the
+    // scalars — including `line_height`'s row-height floor — match the
+    // paint pass exactly.
+    let ctx = crate::backend::primitive_layout_ctx(backend);
+    let layout = {
+        // The same measurer
+        // [`crate::backend::DrawsPrimitives::draw_primitive`] attaches, so
+        // the layout this hit-test runs against is the one that was
+        // painted — a widget that sizes text through
+        // [`crate::primitive::LayoutCtx::text_width`] would otherwise
+        // resolve different geometry here than on screen. Scoped so the
+        // closure's shared borrow ends before the `&mut backend` calls
+        // below.
+        let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
+        node.widget.layout(&ctx.with_measurer(&measurer), node.rect)
     };
-    let layout = node.widget.layout(&ctx, node.rect);
     let currently_focused = backend.focus_tree().focused().copied();
     let units = ctx.units();
 
@@ -2717,11 +2728,7 @@ mod widget_routing_tests {
         let id = WidgetId::new("counter:a11y");
         let tree = counter_tree(id);
         let mut states = crate::widget_state::WidgetStateStore::new();
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
 
         let via_a11y = crate::a11y::route_widget_action(
             &tree,

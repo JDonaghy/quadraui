@@ -3913,11 +3913,7 @@ mod primitive_parity_tests {
     fn data_table_primitive_paint_matches_native_surface_paint() {
         let table = sample_table();
         let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
-        let ctx = LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: true,
-        };
+        let ctx = LayoutCtx::new(16.0, 8.0, true);
         let theme = Theme::default();
         let style = Style::default();
 
@@ -3973,11 +3969,7 @@ mod primitive_parity_tests {
     fn primitive_layout_hit_test_is_relative_to_area_origin() {
         let table = sample_table();
         let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
-        let ctx = LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: true,
-        };
+        let ctx = LayoutCtx::new(16.0, 8.0, true);
 
         let layout = Primitive::layout(&table, &ctx, rect);
         let local = layout.layout.hit_test(0.0, 0.0, 0, table.rows.len());

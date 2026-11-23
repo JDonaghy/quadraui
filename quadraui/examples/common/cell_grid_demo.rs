@@ -159,12 +159,12 @@ fn bands(backend: &dyn Backend) -> Bands {
 /// [`Primitive::layout`], built by hand here since this demo resolves
 /// `CellGrid`'s layout once per frame to window its cells rather than
 /// through `draw_primitive` itself (which would also paint).
-fn layout_ctx(backend: &dyn Backend) -> LayoutCtx {
-    LayoutCtx {
-        line_height: LayoutCtx::resolve_row_height(backend.chrome_line_height(), &backend.style()),
-        char_width: backend.char_width(),
-        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-    }
+fn layout_ctx(backend: &dyn Backend) -> LayoutCtx<'static> {
+    LayoutCtx::new(
+        LayoutCtx::resolve_row_height(backend.chrome_line_height(), &backend.style()),
+        backend.char_width(),
+        backend.nerd_fonts_enabled(),
+    )
 }
 
 /// `Primitive::layout` resolved for `grid` at `rect` — called through

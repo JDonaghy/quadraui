@@ -50,11 +50,7 @@ impl FloatApp {
     }
 
     fn content_rect(&self) -> Rect {
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
         let layout = Primitive::layout(&self.float, &ctx, self.rect);
         // One content row, two columns in from the float's own border.
         Rect::new(

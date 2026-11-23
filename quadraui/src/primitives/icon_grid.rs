@@ -1055,11 +1055,7 @@ mod tests {
     #[test]
     fn primitive_layout_hit_test_is_area_relative() {
         let g = grid(20);
-        let ctx = crate::primitive::LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = crate::primitive::LayoutCtx::new(16.0, 8.0, false);
         let area = Rect::new(100.0, 50.0, 400.0, 400.0);
         let layout = crate::primitive::Primitive::layout(&g, &ctx, area);
         let tile0 = layout
@@ -1227,11 +1223,7 @@ mod tests {
         use ratatui::Terminal;
 
         fn render(g: &IconGrid, area: Rect) -> ratatui::buffer::Buffer {
-            let ctx = LayoutCtx {
-                line_height: 1.0,
-                char_width: 1.0,
-                nerd_fonts_enabled: false,
-            };
+            let ctx = LayoutCtx::new(1.0, 1.0, false);
             let layout = Primitive::layout(g, &ctx, area);
             let mut terminal =
                 Terminal::new(TestBackend::new(area.width as u16, area.height as u16))

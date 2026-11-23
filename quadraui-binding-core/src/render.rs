@@ -1707,11 +1707,11 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
             // degrades to `NaturalSize::NONE` today; a future `WIDGET_KINDS`
             // entry that does use `avail` still gets a real measurement
             // once this leaf's own container passes one through here.
-            let ctx = DynLayoutCtx {
+            let ctx = DynLayoutCtx::new(
                 line_height,
-                char_width: backend.char_width(),
-                nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-            };
+                backend.char_width(),
+                backend.nerd_fonts_enabled(),
+            );
             let natural = widget.measure(&ctx, DynSize::new(0.0, 0.0));
             NaturalSize {
                 width: natural.width,

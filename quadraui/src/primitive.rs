@@ -123,11 +123,7 @@
 //! // `DrawsPrimitives::draw_primitive`'s default body does internally, against
 //! // whatever `Backend::paint_surface` hands back.
 //! let swatch = Swatch { color: Color::rgb(255, 0, 0) };
-//! let ctx = LayoutCtx {
-//!     line_height: 16.0,
-//!     char_width: 8.0,
-//!     nerd_fonts_enabled: false,
-//! };
+//! let ctx = LayoutCtx::new(16.0, 8.0, false);
 //! let mut surface = NullSurface::default();
 //! let layout = swatch.layout(&ctx, Rect::new(0.0, 0.0, 10.0, 10.0));
 //! swatch.paint(&layout, &mut surface, &Theme::default(), &Style::default());
@@ -143,17 +139,29 @@ use crate::theme::Theme;
 use crate::types::WidgetId;
 use crate::Handled;
 
+/// The text measurer [`LayoutCtx`] carries — a borrowed closure over
+/// the calling backend's [`crate::Backend::measure_text`], spelled once
+/// here rather than inline on the field and on
+/// [`LayoutCtx::with_measurer`]'s parameter.
+type TextMeasurer<'a> = &'a dyn Fn(&str, crate::FontRole) -> f32;
+
 /// Backend-measured geometry a [`Primitive::layout`] call needs that a
 /// bare [`Rect`] doesn't carry.
 ///
 /// Mirrors the handful of [`crate::Backend`] measurement methods every
 /// pixel backend already exposes (`chrome_line_height`, `char_width`,
-/// `nerd_fonts_enabled`) — [`crate::DrawsPrimitives::draw_primitive`]'s default
-/// body builds one of these from `self` before calling
-/// [`Primitive::layout`], so a `Primitive` impl never has to reach for
-/// `&dyn Backend` itself.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LayoutCtx {
+/// `nerd_fonts_enabled`, `measure_text`) —
+/// [`crate::DrawsPrimitives::draw_primitive`]'s default body builds one of
+/// these from `self` before calling [`Primitive::layout`], so a
+/// `Primitive` impl never has to reach for `&dyn Backend` itself.
+///
+/// Built with [`Self::new`], never a struct literal: the text measurer
+/// behind [`Self::text_width`] is a private field, so a caller with a
+/// live backend attaches it with [`Self::with_measurer`] and a caller
+/// without one (a script-widget seam, a unit test) gets the
+/// `char_width` approximation by construction.
+#[derive(Clone, Copy)]
+pub struct LayoutCtx<'a> {
     /// One standard row's height, in the backend's native units — see
     /// [`crate::Backend::chrome_line_height`]. Already run through
     /// [`Self::resolve_row_height`] against the calling backend's
@@ -163,14 +171,104 @@ pub struct LayoutCtx {
     /// itself.
     pub line_height: f32,
     /// Approximate character advance, in the backend's native units —
-    /// see [`crate::Backend::char_width`].
+    /// see [`crate::Backend::char_width`]. One nominal advance for every
+    /// glyph; [`Self::text_width`] is the proportional-font-correct
+    /// measurement a layout that positions text should ask for instead.
     pub char_width: f32,
     /// Whether the backend has a Nerd Font icon face registered — see
     /// [`crate::Backend::nerd_fonts_enabled`].
     pub nerd_fonts_enabled: bool,
+    /// The calling backend's [`crate::Backend::measure_text`], bound to
+    /// that backend — see [`Self::with_measurer`] and
+    /// [`Self::text_width`]. `None` when no backend is in reach.
+    measurer: Option<TextMeasurer<'a>>,
 }
 
-impl LayoutCtx {
+/// Prints the three scalar metrics plus whether a text measurer is
+/// attached — a `&dyn Fn` has no useful `Debug`, and the closure's
+/// identity is not part of this value's meaning.
+impl std::fmt::Debug for LayoutCtx<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LayoutCtx")
+            .field("line_height", &self.line_height)
+            .field("char_width", &self.char_width)
+            .field("nerd_fonts_enabled", &self.nerd_fonts_enabled)
+            .field("measurer", &self.measurer.map(|_| "<fn>"))
+            .finish()
+    }
+}
+
+/// Compares the three scalar metrics only. The measurer is excluded:
+/// two function pointers to the same backend's
+/// [`crate::Backend::measure_text`] are not reliably equal, and a
+/// `Primitive` caching "did this frame's metrics change?" asks about the
+/// metrics, not about the closure that carried them.
+impl PartialEq for LayoutCtx<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.line_height == other.line_height
+            && self.char_width == other.char_width
+            && self.nerd_fonts_enabled == other.nerd_fonts_enabled
+    }
+}
+
+impl LayoutCtx<'static> {
+    /// A ctx with no text measurer attached: [`Self::text_width`] falls
+    /// back to `char_width * chars`.
+    ///
+    /// [`crate::DrawsPrimitives::draw_primitive`] builds its ctx this way
+    /// and then attaches the calling backend's own measurer with
+    /// [`Self::with_measurer`]; a caller with no backend in reach
+    /// (`quadraui-binding-core`'s script-widget seam, a `Primitive`
+    /// layout unit test) uses this directly and lays out against the
+    /// approximation.
+    pub fn new(line_height: f32, char_width: f32, nerd_fonts_enabled: bool) -> Self {
+        Self {
+            line_height,
+            char_width,
+            nerd_fonts_enabled,
+            measurer: None,
+        }
+    }
+}
+
+impl<'a> LayoutCtx<'a> {
+    /// This ctx with `m` attached as its text measurer, so
+    /// [`Self::text_width`] reports real glyph widths.
+    ///
+    /// `m` is a closure rather than a `&dyn Backend`:
+    /// [`crate::DrawsPrimitives`] is blanket-implemented over
+    /// `B: Backend + ?Sized`, so a generic `&B` cannot be coerced to
+    /// another trait object there — `|t, r| backend.measure_text(t, r).0`
+    /// can, and keeps this type free of any `Backend` bound.
+    pub fn with_measurer<'b>(self, m: &'b dyn Fn(&str, crate::FontRole) -> f32) -> LayoutCtx<'b> {
+        LayoutCtx {
+            line_height: self.line_height,
+            char_width: self.char_width,
+            nerd_fonts_enabled: self.nerd_fonts_enabled,
+            measurer: Some(m),
+        }
+    }
+
+    /// Width of `text` in `role`'s font, in the same units as
+    /// [`Self::char_width`] — the calling backend's real
+    /// [`crate::Backend::measure_text`] when a measurer is attached (see
+    /// [`Self::with_measurer`]), else the `char_width * chars`
+    /// approximation.
+    ///
+    /// A `Primitive::layout` that positions text must measure through
+    /// this rather than scaling [`Self::char_width`] itself: on a
+    /// proportional chrome font the error runs in both directions (GTK's
+    /// Pango measures `alpha` and `beta` *narrower* than
+    /// `chars * char_width` and `gamma` *wider*), so no scalar
+    /// correction closes it and a shared layout built on the
+    /// approximation ellipsises labels the rasteriser fits.
+    pub fn text_width(&self, text: &str, role: crate::FontRole) -> f32 {
+        match self.measurer {
+            Some(m) => m(text, role),
+            None => self.char_width * text.chars().count() as f32,
+        }
+    }
+
     /// Floor `line_height` at `style.row_height`, the same row-pitch
     /// resolution every pixel backend's own private `resolved_row_height`
     /// helper already applies on its bespoke `draw_list`/`draw_tree`/
@@ -1108,16 +1206,8 @@ mod tests {
     /// doc.
     #[test]
     fn layout_ctx_units_discriminates_cells_from_pixels() {
-        let cells = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
-        let pixels = LayoutCtx {
-            line_height: 22.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let cells = LayoutCtx::new(1.0, 1.0, false);
+        let pixels = LayoutCtx::new(22.0, 8.0, false);
         assert_eq!(cells.units(), Units::Cells);
         assert_eq!(pixels.units(), Units::Pixels);
     }
@@ -1127,11 +1217,7 @@ mod tests {
     /// recomputation of either field.
     #[test]
     fn layout_ctx_measure_bundles_its_own_fields_verbatim() {
-        let ctx = LayoutCtx {
-            line_height: 22.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: true,
-        };
+        let ctx = LayoutCtx::new(22.0, 8.0, true);
         let measure = ctx.measure(Units::Pixels);
         assert_eq!(
             measure,
@@ -1153,16 +1239,8 @@ mod tests {
     /// metric) reports [`Units::Pixels`].
     #[test]
     fn layout_ctx_units_follows_the_line_height_convention() {
-        let cells = LayoutCtx {
-            line_height: 1.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
-        let pixels = LayoutCtx {
-            line_height: 22.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let cells = LayoutCtx::new(1.0, 8.0, false);
+        let pixels = LayoutCtx::new(22.0, 8.0, false);
         assert_eq!(cells.units(), Units::Cells);
         assert_eq!(pixels.units(), Units::Pixels);
     }

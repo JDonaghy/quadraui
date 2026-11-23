@@ -3011,9 +3011,10 @@ pub mod cell_paint {
 // the measure-then-layout logic out of `Backend::tab_bar_layout*` (the
 // TUI branch mirrors `TuiBackend::draw_tab_bar_icons`'s own char-cell
 // measurer; the pixel branch is `layout_metrics::pixel_tab_bar_layout`
-// fed by `LayoutCtx::measure`'s `CharWidthMeasure` approximation, the
-// same convention `DataTable`/`TreeTable`'s own `Primitive::layout`
-// pixel branches already use). `paint`/`paint_cells` call the two
+// fed by `LayoutCtx::text_width`, i.e. the calling backend's own
+// `Backend::measure_text`, so the shared layout places tabs at the same
+// glyph widths each pixel rasteriser paints them at).
+// `paint`/`paint_cells` call the two
 // painters this module already shares with every per-backend
 // rasteriser — `native_surface_paint::paint` / `cell_paint::paint` —
 // unchanged. `Interactive::handle` folds `TabBar::handle_focus_key`'s
@@ -3170,7 +3171,23 @@ impl crate::primitive::Primitive for TabBar {
                 };
             }
         }
-        let measure = crate::primitives::layout_metrics::CharWidthMeasure(ctx.char_width);
+        // Tab labels, close glyphs and right segments are chrome —
+        // painted in the backend's UI font by every
+        // `draw_tab_bar*` rasteriser — so this measures them through the
+        // calling backend's own `Backend::measure_text` for
+        // `FontRole::Chrome`, the same font those rasterisers resolve.
+        // Without a measurer in reach (`LayoutCtx::new`) it degrades to
+        // the `ctx.char_width` approximation.
+        //
+        // Known gap: a preview tab (`TabItem::is_preview`) is rasterised
+        // in an *italic* variant of the chrome font, and `FontRole` has
+        // no italic member, so its label is measured here in the upright
+        // face. Widths for a bar containing preview tabs can therefore
+        // still drift slightly from what the pixel rasteriser paints.
+        let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+            ctx,
+            role: crate::FontRole::Chrome,
+        };
         let (tab_pad, tab_inner_gap, tab_outer_gap) = if self.compact {
             (
                 crate::primitives::layout_metrics::pixel::TAB_PAD_COMPACT,
@@ -3184,10 +3201,6 @@ impl crate::primitive::Primitive for TabBar {
                 crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP,
             )
         };
-        // No live font reaches this far (see this section's own doc) —
-        // `CharWidthMeasure` approximates every glyph as `ctx.char_width`
-        // wide, the same fallback `DataTable`/`TreeTable`'s pixel-branch
-        // `Primitive::layout` already uses.
         let tab_name_widths: Vec<f32> = self
             .tabs
             .iter()
@@ -3568,13 +3581,9 @@ mod interactive_tests {
     /// [`LayoutCtx::units`] reports [`Units::Cells`], so
     /// [`Primitive::layout`] resolves its TUI branch.
     #[cfg(feature = "tui")]
-    fn cell_regime() -> (LayoutCtx, Rect) {
+    fn cell_regime() -> (LayoutCtx<'static>, Rect) {
         (
-            LayoutCtx {
-                line_height: 1.0,
-                char_width: 1.0,
-                nerd_fonts_enabled: false,
-            },
+            LayoutCtx::new(1.0, 1.0, false),
             Rect::new(0.0, 0.0, 40.0, 1.0),
         )
     }
@@ -3585,13 +3594,9 @@ mod interactive_tests {
     /// [`crate::primitives::layout_metrics::pixel`]'s own tab padding and
     /// gaps, so the resolved layout has real tab and close-glyph bounds
     /// to hit-test against.
-    fn pixel_regime() -> (LayoutCtx, Rect) {
+    fn pixel_regime() -> (LayoutCtx<'static>, Rect) {
         (
-            LayoutCtx {
-                line_height: 24.0,
-                char_width: 8.0,
-                nerd_fonts_enabled: false,
-            },
+            LayoutCtx::new(24.0, 8.0, false),
             Rect::new(0.0, 0.0, 400.0, 24.0),
         )
     }
@@ -3629,6 +3634,65 @@ mod interactive_tests {
             modifiers: Modifiers::default(),
             repeat: false,
         })
+    }
+
+    /// Per-label widths a fake [`LayoutCtx::with_measurer`] measurer
+    /// reports, deliberately unrelated to [`pixel_regime`]'s
+    /// `char_width: 8.0`: `alpha` (5 chars) measures *wider* than its
+    /// approximation and `beta` (4 chars) *narrower*, the same
+    /// both-directions error a real proportional chrome font produces.
+    /// Anything else (the `×` close glyph) falls through to the same
+    /// `char_width` the approximation uses, so only the label widths
+    /// differ between the two layouts below.
+    fn fake_text_width(text: &str) -> f32 {
+        match text {
+            "alpha" => 100.0,
+            "beta" => 20.0,
+            other => other.chars().count() as f32 * 8.0,
+        }
+    }
+
+    /// Each visible tab's `(x, x + width)` span.
+    fn tab_spans(layout: &TabBarPrimitiveLayout) -> Vec<(f32, f32)> {
+        layout
+            .layout
+            .visible_tabs
+            .iter()
+            .map(|vt| (vt.bounds.x, vt.bounds.x + vt.bounds.width))
+            .collect()
+    }
+
+    /// `Primitive::layout`'s pixel branch sizes tabs from
+    /// [`LayoutCtx::text_width`] — the calling backend's real font
+    /// measurement — not from `char_width * chars`.
+    ///
+    /// Expected spans come straight from `pixel_tab_bar_layout`'s own
+    /// `TabMeasure::total` arithmetic at
+    /// [`crate::primitives::layout_metrics::pixel`]'s non-compact
+    /// metrics (`TAB_PAD` 14, `TAB_INNER_GAP` 10, `TAB_OUTER_GAP` 1) plus
+    /// an 8px `×`: each tab's slot is `14 + name_w + (10 + 8) + 14 + 1`
+    /// wide, so only `name_w` differs between the two layouts.
+    #[test]
+    fn primitive_layout_sizes_tabs_from_the_ctx_text_measurer() {
+        let bar = bar(&["alpha", "beta"], 0);
+        let (base, rect) = pixel_regime();
+        let measurer = |text: &str, _role: crate::FontRole| fake_text_width(text);
+
+        let measured = Primitive::layout(&bar, &base.with_measurer(&measurer), rect);
+        assert_eq!(
+            tab_spans(&measured),
+            vec![(0.0, 147.0), (147.0, 214.0)],
+            "tab widths must come from the ctx's text measurer (alpha 100px, beta 20px), \
+             not from char_width * chars"
+        );
+
+        let approximated = Primitive::layout(&bar, &base, rect);
+        assert_eq!(
+            tab_spans(&approximated),
+            vec![(0.0, 87.0), (87.0, 166.0)],
+            "with no measurer attached the same layout falls back to char_width * chars \
+             (alpha 40px, beta 32px)"
+        );
     }
 
     #[test]
@@ -3836,11 +3900,7 @@ mod interactive_tests {
         let mut tree = crate::frame_tree::FrameTree::new();
         tree.push(id, Rect::new(0.0, 0.0, 40.0, 1.0), Box::new(b.clone()));
         let mut states = crate::widget_state::WidgetStateStore::new();
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
 
         let events =
             crate::a11y::route_widget_action(&tree, &mut states, &ctx, id, A11yAction::Click);
@@ -4945,11 +5005,7 @@ mod primitive_parity_tests {
     fn tab_bar_primitive_paint_matches_native_surface_paint_at_a_nonzero_rect_x() {
         let bar = sample_bar();
         let rect = Rect::new(37.0, 5.0, 220.0, 24.0);
-        let ctx = LayoutCtx {
-            line_height: 24.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(24.0, 8.0, false);
         let theme = Theme::default();
         let style = Style::default();
 
@@ -5018,6 +5074,140 @@ mod primitive_parity_tests {
             bg_fill.contains(&format!("x: {:?}", rect.x)),
             "the background fill must start at rect.x ({}); call was {bg_fill:?}",
             rect.x,
+        );
+    }
+}
+
+/// GTK-backed proof that the shared `Primitive::layout` and the GTK
+/// rasteriser agree on where each tab sits — the whole point of
+/// `LayoutCtx::text_width`: both measure the same labels with the same
+/// Pango font instead of one guessing from `char_width`.
+#[cfg(all(test, feature = "gtk"))]
+mod gtk_measure_parity_tests {
+    use super::*;
+    use crate::backend::{Backend, DrawsPrimitives};
+    use crate::gtk::backend::GtkBackend;
+    use crate::primitive::Primitive;
+    use crate::style::Style;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+    use pangocairo::pango;
+
+    /// Labels whose Pango widths diverge from `char_width * chars` in
+    /// *both* directions, so the comparison below cannot pass on a
+    /// scalar-corrected approximation.
+    fn parity_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs:gtk-parity"),
+            tabs: ["alpha", "beta", "gamma"]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| TabItem {
+                    label: (*label).to_string(),
+                    is_active: i == 0,
+                    ..Default::default()
+                })
+                .collect(),
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    fn spans(tabs: &[VisibleTab]) -> Vec<(usize, f32, f32)> {
+        tabs.iter()
+            .map(|vt| (vt.tab_idx, vt.bounds.x, vt.bounds.x + vt.bounds.width))
+            .collect()
+    }
+
+    /// `draw_primitive` → `TabBar::layout` must resolve the same per-tab
+    /// x-ranges as `Backend::draw_tab_bar_layout` for the same bar and
+    /// rect on a live Pango context.
+    ///
+    /// `tab_padding_x` is set to `pixel::TAB_PAD` because the two paths
+    /// read that one metric from different places — the rasteriser from
+    /// `Style::tab_padding_x`, the shared layout from the
+    /// `layout_metrics::pixel` constant, since `LayoutCtx` carries no
+    /// `Style` — and this test is about the glyph widths, not that gap.
+    #[test]
+    fn primitive_layout_tab_spans_match_the_gtk_rasteriser() {
+        let bar = parity_bar();
+        let rect = Rect::new(0.0, 0.0, 600.0, 35.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 600, 35).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        // The measurer `draw_primitive` attaches reads this context, not
+        // the per-frame one, so `Backend::measure_text` resolves real
+        // Pango advances here instead of its pre-realise estimate.
+        backend.set_pango_context(pango_ctx.clone());
+        Backend::set_style(
+            &mut backend,
+            Style::default().with_tab_padding_x(crate::primitives::layout_metrics::pixel::TAB_PAD),
+        );
+
+        let (rasterised, widget) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let rasterised = Backend::draw_tab_bar_layout(b, rect, &bar, None);
+            let widget = b.draw_primitive(rect, &bar);
+            (rasterised, widget)
+        });
+
+        assert_eq!(
+            spans(&widget.layout.visible_tabs),
+            spans(&rasterised.visible_tabs),
+            "TabBar::layout through draw_primitive must place tabs where the GTK \
+             rasteriser places them — both measure labels with Backend::measure_text"
+        );
+        assert_eq!(
+            widget.layout.visible_tabs.len(),
+            bar.tabs.len(),
+            "all three tabs must fit in a 600px strip for the comparison to cover them"
+        );
+    }
+
+    /// The parity above is not vacuous: the same layout built from a
+    /// measurer-free `LayoutCtx` (the `char_width` approximation) does
+    /// *not* match the rasteriser on these labels.
+    #[test]
+    fn the_char_width_approximation_disagrees_with_the_gtk_rasteriser() {
+        let bar = parity_bar();
+        let rect = Rect::new(0.0, 0.0, 600.0, 35.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 600, 35).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        backend.set_pango_context(pango_ctx.clone());
+        Backend::set_style(
+            &mut backend,
+            Style::default().with_tab_padding_x(crate::primitives::layout_metrics::pixel::TAB_PAD),
+        );
+
+        let (rasterised, approximated) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let rasterised = Backend::draw_tab_bar_layout(b, rect, &bar, None);
+            let ctx = crate::primitive::LayoutCtx::new(
+                crate::primitive::LayoutCtx::resolve_row_height(
+                    Backend::chrome_line_height(b),
+                    &Backend::style(b),
+                ),
+                Backend::char_width(b),
+                Backend::nerd_fonts_enabled(b),
+            );
+            let approximated = Primitive::layout(&bar, &ctx, rect);
+            (rasterised, approximated)
+        });
+
+        assert_ne!(
+            spans(&approximated.layout.visible_tabs),
+            spans(&rasterised.visible_tabs),
+            "if the char_width approximation already matched Pango on these labels, the \
+             parity test above would prove nothing"
         );
     }
 }

@@ -32,11 +32,7 @@ impl TooltipApp {
     fn new(text: &str) -> Self {
         let mut tip = Tooltip::new(WidgetId::new("hover-tip"), text);
         tip.placement = TooltipPlacement::Bottom;
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
         let natural = tip.measure(&ctx, Size::new(COLS as f32, ROWS as f32));
         let measure = TooltipMeasure::new(natural.width.unwrap(), natural.height.unwrap());
         let anchor = Rect::new(10.0, 2.0, 6.0, 1.0);

@@ -1151,12 +1151,8 @@ mod tests {
 
     // ── Widget contract (`Primitive` + `Interactive`) ─────────────────
 
-    fn cell_ctx() -> crate::primitive::LayoutCtx {
-        crate::primitive::LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        }
+    fn cell_ctx() -> crate::primitive::LayoutCtx<'static> {
+        crate::primitive::LayoutCtx::new(1.0, 1.0, false)
     }
 
     /// `Primitive::layout` keeps the host-placed rect as the box and
@@ -1204,11 +1200,7 @@ mod tests {
     fn primitive_measure_in_pixels_pads_by_char_width_and_card_inset() {
         use crate::primitive::{LayoutCtx, Primitive, Size};
         let tip = Tooltip::new(WidgetId::new("tip"), "abcd\nef");
-        let ctx = LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
         let size = Primitive::measure(&tip, &ctx, Size::new(800.0, 600.0));
         assert_eq!(size.width, Some((4.0 + 2.0) * 8.0));
         assert_eq!(size.height, Some(2.0 * 16.0 + 2.0 * CARD_VPAD));
@@ -1552,11 +1544,7 @@ mod tests {
         fn primitive_paint_is_the_default_chrome_card() {
             use crate::primitive::{LayoutCtx, Primitive};
             let tooltip = Tooltip::new(WidgetId::new("tip"), "Body text");
-            let ctx = LayoutCtx {
-                line_height: 16.0,
-                char_width: 8.0,
-                nerd_fonts_enabled: false,
-            };
+            let ctx = LayoutCtx::new(16.0, 8.0, false);
             let layout = Primitive::layout(&tooltip, &ctx, Rect::new(10.0, 10.0, 120.0, 30.0));
             let mut via_primitive = RecordingSurface::default();
             Primitive::paint(
