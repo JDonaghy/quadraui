@@ -166,6 +166,16 @@ widget_kinds! {
         all(feature = "macos", target_os = "macos")
     ))]
     "list" => crate::ListView,
+    // Gated the same as `impl Primitive for TabBar`/`impl Interactive
+    // for TabBar`, so this entry exists exactly on the feature sets
+    // where `TabBar` is a `DynWidget`.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    "tab_bar" => crate::TabBar,
 }
 
 #[cfg(test)]
@@ -299,6 +309,62 @@ mod tests {
         let payload = serde_json::json!({"id": "quickfix", "items": [], "selected_idx": 0});
         match decode_widget("list", payload) {
             Err(KindError::Unknown(kind)) => assert_eq!(kind, "list"),
+            other => panic!("expected Err(KindError::Unknown), got {}", describe(other)),
+        }
+    }
+
+    /// Coverage for the `"tab_bar"` entry, gated exactly as that entry
+    /// is: `TabBar` is only a `DynWidget` — and so only decodable — on a
+    /// feature set that compiles its `Primitive`/`Interactive` impls.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod tab_bar_kind {
+        use super::*;
+
+        #[test]
+        fn decodes_the_tab_bar_kind() {
+            let payload = serde_json::json!({
+                "id": "tabs:editor",
+                "tabs": [{"label": "main.rs", "is_active": true}],
+            });
+            let widget = decode_widget("tab_bar", payload).expect("tab_bar decodes");
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("tabs:editor"));
+        }
+
+        #[test]
+        fn rejects_a_malformed_tab_bar_payload() {
+            // `tabs` must be an array — a string value has no sensible
+            // decode and should surface as `KindError::Decode`, not panic.
+            let payload = serde_json::json!({
+                "id": "tabs:editor",
+                "tabs": "not-an-array",
+            });
+            match decode_widget("tab_bar", payload) {
+                Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "tab_bar"),
+                other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
+            }
+        }
+    }
+
+    /// A build with no backend feature compiles `TabBar`'s
+    /// `Primitive`/`Interactive` impls out, so its `widget_kinds!` entry
+    /// goes with them and the kind reads as unknown rather than failing
+    /// to build.
+    #[cfg(not(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )))]
+    #[test]
+    fn tab_bar_kind_is_unknown_without_a_backend() {
+        let payload = serde_json::json!({"id": "tabs:editor", "tabs": []});
+        match decode_widget("tab_bar", payload) {
+            Err(KindError::Unknown(kind)) => assert_eq!(kind, "tab_bar"),
             other => panic!("expected Err(KindError::Unknown), got {}", describe(other)),
         }
     }

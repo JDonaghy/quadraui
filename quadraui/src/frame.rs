@@ -1308,6 +1308,15 @@ impl Default for ScreenLayout {
 pub enum OwnedContent {
     Editor(Editor),
     TabBar(TabBar),
+    /// Captured from a [`TabBar`] reached through [`Surface::Widget`] via
+    /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the same
+    /// [`FrameZone`] the live `ScreenLayout::zone_for`'s own
+    /// `Surface::Widget` arm reports, so hit-testing a captured frame
+    /// agrees with hit-testing the live one. See [`Self::List`]'s own doc
+    /// (on [`Self::ListWidget`]) for why this needs a distinct variant
+    /// rather than reusing [`Self::TabBar`], which is captured from the
+    /// legacy [`Surface::TabBar`] instead.
+    TabBarWidget(TabBar),
     StatusBar(StatusBar),
     ActivityBar(ActivityBar),
     CommandLine(CommandLine),
@@ -1392,6 +1401,32 @@ impl OwnedContent {
             }
             OwnedContent::TabBar(bar) => {
                 backend.draw_tab_bar(rect, bar, None);
+            }
+            OwnedContent::TabBarWidget(bar) => {
+                // `TabBar: Primitive` is gated the same way `impl
+                // Primitive for TabBar` itself is (see that impl's own
+                // `cfg`) — see `OwnedContent::ListWidget`'s own `draw`
+                // arm for why this is dead code rather than a real
+                // no-op fallback on a build with none of those backend
+                // features.
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                {
+                    backend.draw_primitive(rect, bar);
+                }
+                #[cfg(not(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                )))]
+                {
+                    let _ = (rect, bar, backend);
+                }
             }
             OwnedContent::StatusBar(bar) => {
                 let interaction = crate::interaction::InteractionState::from_parts(None, None);
@@ -1534,6 +1569,10 @@ impl OwnedContent {
         match self {
             OwnedContent::Editor(_) => FrameZone::Editor { idx },
             OwnedContent::TabBar(_) => FrameZone::TabBar { idx },
+            OwnedContent::TabBarWidget(bar) => FrameZone::Widget {
+                idx,
+                id: Some(bar.id),
+            },
             OwnedContent::StatusBar(_) => FrameZone::StatusBar { idx },
             OwnedContent::ActivityBar(_) => FrameZone::ActivityBar { idx },
             OwnedContent::CommandLine(_) => FrameZone::CommandLine { idx },
