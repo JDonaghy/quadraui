@@ -28,11 +28,12 @@ use crate::theme::Theme;
 pub use cell_paint::paint as draw_tab_bar_icons_with_chrome_and_glyphs;
 
 /// Compute the TUI cell-unit layout for a [`TabBar`] without painting —
-/// the same char-cell measurer every `TuiBackend::draw_tab_bar*`/
-/// `draw_tab_bar*_layout` entry point builds before calling
-/// [`TabBar::layout`], and the one [`crate::primitives::tab_bar`]'s own
-/// `Primitive::layout` TUI branch calls too, so no caller can drift from
-/// what TUI actually paints (`PRIMITIVE_RULES.md` rule 5).
+/// the chrome-less entry point into
+/// [`crate::primitives::tab_bar::cell_tab_bar_layout`], the one char-cell
+/// measurer every `TuiBackend::draw_tab_bar*`/`draw_tab_bar*_layout`
+/// method and [`crate::primitives::tab_bar`]'s own `Primitive::layout`
+/// TUI branch resolve through, so no caller can drift from what TUI
+/// actually paints (`PRIMITIVE_RULES.md` rule 5).
 ///
 /// `icons` is the sidecar slice parallel to `bar.tabs` (see
 /// [`crate::Backend::draw_tab_bar_icons`]); pass `&[]` for an icon-less
