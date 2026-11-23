@@ -1037,13 +1037,18 @@ impl TabChrome {
 /// On the wire both entries are optional, so `{}` deserialises to
 /// [`Self::new`] and `{"close": {"glyph": "X"}}` overrides just the
 /// close mark.
+///
+/// Both entries are boxed: an override is rare, while this registry is a
+/// by-value field of the [`TabBar`] descriptor every frame carries (and
+/// that descriptor rides inside the binding layer's own frame enums), so
+/// the empty case costs two pointers rather than two whole [`Icon`]s.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TabBarGlyphs {
     #[serde(default)]
-    close: Option<Icon>,
+    close: Option<Box<Icon>>,
     #[serde(default)]
-    dirty: Option<Icon>,
+    dirty: Option<Box<Icon>>,
 }
 
 impl TabBarGlyphs {
@@ -1056,27 +1061,27 @@ impl TabBarGlyphs {
     /// Override the close-button glyph (default `×`).
     #[must_use]
     pub fn with_close_glyph(mut self, glyph: impl Into<Icon>) -> Self {
-        self.close = Some(glyph.into());
+        self.close = Some(Box::new(glyph.into()));
         self
     }
 
     /// Override the dirty (unsaved) mark (default `●`).
     #[must_use]
     pub fn with_dirty_glyph(mut self, glyph: impl Into<Icon>) -> Self {
-        self.dirty = Some(glyph.into());
+        self.dirty = Some(Box::new(glyph.into()));
         self
     }
 
     /// The overridden close-button glyph, or `None` to keep the default.
     #[must_use]
     pub fn close_glyph(&self) -> Option<&Icon> {
-        self.close.as_ref()
+        self.close.as_deref()
     }
 
     /// The overridden dirty-mark glyph, or `None` to keep the default.
     #[must_use]
     pub fn dirty_glyph(&self) -> Option<&Icon> {
-        self.dirty.as_ref()
+        self.dirty.as_deref()
     }
 }
 
