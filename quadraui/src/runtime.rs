@@ -1117,7 +1117,18 @@ where
         backend.char_width(),
         backend.nerd_fonts_enabled(),
     );
-    let layout = node.widget.layout(&ctx, node.rect);
+    let layout = {
+        // The same measurer
+        // [`crate::backend::DrawsPrimitives::draw_primitive`] attaches, so
+        // the layout this hit-test runs against is the one that was
+        // painted — a widget that sizes text through
+        // [`crate::primitive::LayoutCtx::text_width`] would otherwise
+        // resolve different geometry here than on screen. Scoped so the
+        // closure's shared borrow ends before the `&mut backend` calls
+        // below.
+        let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
+        node.widget.layout(&ctx.with_measurer(&measurer), node.rect)
+    };
     let currently_focused = backend.focus_tree().focused().copied();
     let units = ctx.units();
 
