@@ -252,6 +252,12 @@ impl Float {
             .anchor
             .resolve((measure.width, measure.height), viewport);
         let bounds = Rect::new(origin.x, origin.y, measure.width, measure.height);
+        self.layout_at(bounds, resolved_side)
+    }
+
+    /// The layout of a float whose box is already placed at `bounds`:
+    /// `content_bounds` is `bounds` inset by the border, when there is one.
+    fn layout_at(&self, bounds: Rect, resolved_side: ResolvedSide) -> FloatLayout {
         let inset = if self.border { BORDER_INSET } else { 0.0 };
         let content_bounds = Rect::new(
             bounds.x + inset,
@@ -277,11 +283,186 @@ impl FloatLayout {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+//
+// `Float` reaches the frame type-erased as `Surface::Widget`. Its size is a
+// `layout()` argument rather than a descriptor field, so `Primitive::layout`
+// takes the rect the host already resolved through [`Float::layout`] as the
+// float's final box. A float paints chrome only and reacts to no input
+// itself — focus routing for a focusable float goes through
+// [`crate::ModalStack`], and the content inside it is another widget — so
+// it is `non_interactive!`.
+
+impl crate::a11y::A11yPrimitive for Float {
+    /// A generic group: the float is a container, and the content the host
+    /// paints inside it carries its own semantics.
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        crate::a11y::A11yInfo::new()
+            .with_role(crate::a11y::A11yRole::Group)
+            .with_label("Floating panel")
+    }
+}
+
+/// The [`ResolvedSide`] a preference names when no viewport flip applied —
+/// what a layout built from an already-placed rect reports.
+fn unflipped(side: Side) -> ResolvedSide {
+    match side {
+        Side::Top => ResolvedSide::Top,
+        Side::Bottom => ResolvedSide::Bottom,
+        Side::Left => ResolvedSide::Left,
+        Side::Right => ResolvedSide::Right,
+        Side::AtPoint => ResolvedSide::AtPoint,
+    }
+}
+
+impl crate::primitive::Primitive for Float {
+    type Layout = FloatLayout;
+    type Event = FloatHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Float(self.clone())
+    }
+
+    /// `rect` is the float's final box — the `bounds` a host got from
+    /// [`Float::layout`] — reported with the anchor's preferred side as
+    /// the resolved one.
+    fn layout(&self, _ctx: &crate::primitive::LayoutCtx, rect: Rect) -> FloatLayout {
+        self.layout_at(rect, unflipped(self.anchor.preferred))
+    }
+
+    fn paint(
+        &self,
+        layout: &FloatLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(self, layout, surface, theme);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_float`] because the `Buffer` → `CellSurface`
+    /// adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &FloatLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_float(buf, self, layout, theme);
+    }
+}
+
+crate::non_interactive!(Float);
+
+/// The cell-grid painter for [`Float`], written against
+/// [`crate::CellSurface`]: a filled background box and — when
+/// `float.border` is set — a square-corner border (`┌─┐`/`│`/`└─┘`).
+/// Content is the host's, painted into `layout.content_bounds`.
+///
+/// `float.transparent` skips the fill and paints the border glyphs over
+/// each cell's existing background, so the layer below shows through.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{Float, FloatLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+
+    /// Paint `float`'s chrome at `layout.bounds`, rounded to whole cells.
+    pub(crate) fn paint(
+        float: &Float,
+        layout: &FloatLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let x = layout.bounds.x.round() as u16;
+        let y = layout.bounds.y.round() as u16;
+        let w = layout.bounds.width.round() as u16;
+        let h = layout.bounds.height.round() as u16;
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let bg = float.bg.unwrap_or(theme.surface_bg);
+        if !float.transparent {
+            surface.fill(
+                layout.bounds,
+                CellStyle {
+                    fg: Some(bg),
+                    bg: Some(bg),
+                    ..CellStyle::default()
+                },
+            );
+        }
+
+        if !float.border {
+            return;
+        }
+        if w < 2 || h < 2 {
+            // Too small for a full box — leave the flat fill in place
+            // rather than a border that would overwrite all of it.
+            return;
+        }
+
+        // Per cell rather than `CellSurface::draw_border`, which takes one
+        // style for the whole border: a transparent float's border keeps
+        // each underlying cell's own background.
+        let put = |surface: &mut dyn CellSurface, cx: u16, cy: u16, ch: char| {
+            let cell_bg = if float.transparent {
+                surface.get(cx, cy).and_then(|(_, style)| style.bg)
+            } else {
+                Some(bg)
+            };
+            let style = CellStyle {
+                fg: Some(theme.border_fg),
+                bg: cell_bg,
+                ..CellStyle::default()
+            };
+            surface.put_char(cx, cy, ch, style);
+        };
+        let (right, bottom) = (x + w - 1, y + h - 1);
+        for cx in x..=right {
+            let (top_ch, bottom_ch) = if cx == x {
+                ('┌', '└')
+            } else if cx == right {
+                ('┐', '┘')
+            } else {
+                ('─', '─')
+            };
+            put(surface, cx, y, top_ch);
+            put(surface, cx, bottom, bottom_ch);
+        }
+        for cy in (y + 1)..bottom {
+            put(surface, x, cy, '│');
+            put(surface, right, cy, '│');
+        }
+    }
+}
+
 // ── PaintSurface shared chrome paint (mirrors `primitives::panel` /
 // `primitives::canvas` — GTK/macOS/Win share one implementation with
-// zero backend-specific policy; TUI has its own cell-based rasteriser
-// in `tui::float` because it has no pixel surface to route through
-// `PaintSurface`) ──────────────────────────────────────────────────────
+// zero backend-specific policy; TUI paints through `cell_paint` above
+// because it has no pixel surface to route through `PaintSurface`) ─────
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -580,5 +761,192 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: FloatMeasure = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);
+    }
+
+    // ── Widget contract (`Primitive` + `Interactive`) ─────────────────
+
+    fn ctx() -> crate::primitive::LayoutCtx {
+        crate::primitive::LayoutCtx {
+            line_height: 1.0,
+            char_width: 1.0,
+            nerd_fonts_enabled: false,
+        }
+    }
+
+    /// `Primitive::layout` keeps the host-placed rect as the box, insets
+    /// the content by the border, and reports the anchor's preferred side.
+    #[test]
+    fn primitive_layout_takes_the_rect_as_the_box() {
+        use crate::primitive::Primitive;
+        let anchor = Anchor::new(Rect::new(0.0, 0.0, 1.0, 1.0), Side::Right);
+        let f = Float::new(WidgetId::new("f"), anchor);
+        let rect = Rect::new(4.0, 2.0, 10.0, 6.0);
+        let layout = Primitive::layout(&f, &ctx(), rect);
+        assert_eq!(layout.bounds, rect);
+        assert_eq!(layout.content_bounds, Rect::new(5.0, 3.0, 8.0, 4.0));
+        assert_eq!(layout.resolved_side, ResolvedSide::Right);
+        assert_eq!(Primitive::id(&f), Some(&f.id));
+    }
+
+    /// Fed the bounds `Float::layout` resolved, `Primitive::layout`
+    /// reproduces that layout whenever the preferred side was kept.
+    #[test]
+    fn primitive_layout_reproduces_an_unflipped_float_layout() {
+        use crate::primitive::Primitive;
+        let anchor = Anchor::new(Rect::new(40.0, 10.0, 10.0, 2.0), Side::Bottom).with_margin(1.0);
+        let mut f = Float::new(WidgetId::new("f"), anchor);
+        f.border = false;
+        let resolved = f.layout(viewport(), FloatMeasure::new(20.0, 5.0));
+        assert_eq!(Primitive::layout(&f, &ctx(), resolved.bounds), resolved);
+    }
+
+    /// A float takes no focus of its own: keyboard routing to a focusable
+    /// float goes through `ModalStack`, not the widget.
+    #[test]
+    fn float_is_non_interactive() {
+        use crate::interactive::{FocusSpec, Interactive};
+        let f = Float::default();
+        assert_eq!(Interactive::focus(&f), FocusSpec::None);
+    }
+
+    /// The a11y info matches the generic "Floating panel" group the
+    /// accessibility tree already reports for a float.
+    #[test]
+    fn a11y_info_is_a_floating_panel_group() {
+        use crate::a11y::{A11yPrimitive, A11yRole};
+        let info = Float::default().a11y_info();
+        assert_eq!(info.a11y_role, Some(A11yRole::Group));
+        assert_eq!(info.a11y_label.as_deref(), Some("Floating panel"));
+    }
+
+    #[test]
+    fn primitive_capture_is_the_float_content() {
+        use crate::primitive::Primitive;
+        let f = Float::default();
+        match Primitive::capture(&f) {
+            crate::frame::OwnedContent::Float(captured) => assert_eq!(captured, f),
+            other => panic!("expected OwnedContent::Float, got {other:?}"),
+        }
+    }
+
+    // ── Cell-path paint (`cell_paint::paint`) ───────────────────────────
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::*;
+        use crate::event::Point;
+        use crate::theme::Theme;
+        use crate::tui::draw_float;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf.cell((x, y)).unwrap().symbol().chars().next().unwrap()
+        }
+
+        fn theme() -> Theme {
+            Theme::default()
+        }
+
+        #[test]
+        fn draws_bordered_box_at_resolved_bounds() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 40, 20));
+            let anchor = Anchor::new(Rect::new(5.0, 5.0, 4.0, 1.0), Side::Bottom);
+            let float = Float::new(WidgetId::new("f"), anchor);
+            let viewport = Rect::new(0.0, 0.0, 40.0, 20.0);
+            let layout = float.layout(viewport, FloatMeasure::new(10.0, 4.0));
+            draw_float(&mut buf, &float, &layout, &theme());
+
+            let x = layout.bounds.x.round() as u16;
+            let y = layout.bounds.y.round() as u16;
+            let w = layout.bounds.width.round() as u16;
+            let h = layout.bounds.height.round() as u16;
+            assert_eq!(cell_char(&buf, x, y), '┌');
+            assert_eq!(cell_char(&buf, x + w - 1, y), '┐');
+            assert_eq!(cell_char(&buf, x, y + h - 1), '└');
+            assert_eq!(cell_char(&buf, x + w - 1, y + h - 1), '┘');
+            assert_eq!(cell_char(&buf, x, y + 1), '│');
+        }
+
+        #[test]
+        fn borderless_float_paints_flat_fill_with_no_box_glyphs() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 40, 20));
+            let anchor = Anchor::new(Rect::new(5.0, 5.0, 4.0, 1.0), Side::Bottom);
+            let mut float = Float::new(WidgetId::new("f"), anchor);
+            float.border = false;
+            let viewport = Rect::new(0.0, 0.0, 40.0, 20.0);
+            let layout = float.layout(viewport, FloatMeasure::new(10.0, 4.0));
+            draw_float(&mut buf, &float, &layout, &theme());
+
+            let x = layout.bounds.x.round() as u16;
+            let y = layout.bounds.y.round() as u16;
+            assert_eq!(cell_char(&buf, x, y), ' ');
+        }
+
+        /// Paint/click round-trip (`docs/PRIMITIVE_RULES.md` rule 4): find
+        /// the painted top-left border glyph, hit-test that exact cell
+        /// against `layout.hit_test`, and assert both agree the box starts
+        /// there.
+        #[test]
+        fn paint_and_hit_test_agree_on_the_box_bounds() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 40, 20));
+            let anchor = Anchor::new(Rect::new(5.0, 5.0, 4.0, 1.0), Side::Bottom);
+            let float = Float::new(WidgetId::new("f"), anchor);
+            let viewport = Rect::new(0.0, 0.0, 40.0, 20.0);
+            let layout = float.layout(viewport, FloatMeasure::new(10.0, 4.0));
+            draw_float(&mut buf, &float, &layout, &theme());
+
+            // Find the painted top-left corner glyph by scanning the buffer —
+            // not by re-deriving it from `layout` (that would just check
+            // layout against itself).
+            let mut found: Option<(u16, u16)> = None;
+            for row in 0..20u16 {
+                for col in 0..40u16 {
+                    if cell_char(&buf, col, row) == '┌' {
+                        found = Some((col, row));
+                    }
+                }
+            }
+            let (fx, fy) = found.expect("top-left border glyph must have painted");
+
+            let p = Point::new(fx as f32, fy as f32);
+            assert_eq!(
+                layout.hit_test(p),
+                crate::primitives::float::FloatHit::Body,
+                "the painted top-left cell must hit-test as inside the float"
+            );
+            // One cell outside (up-left) must miss.
+            let outside = Point::new(fx as f32 - 1.0, fy as f32 - 1.0);
+            assert_eq!(
+                layout.hit_test(outside),
+                crate::primitives::float::FloatHit::Outside
+            );
+        }
+
+        /// `Primitive::paint_cells` paints exactly what the TUI entry
+        /// point paints.
+        #[test]
+        fn primitive_paint_cells_matches_draw_float() {
+            use crate::primitive::{LayoutCtx, Primitive};
+            let anchor = Anchor::new(Rect::new(5.0, 5.0, 4.0, 1.0), Side::Bottom);
+            let float = Float::new(WidgetId::new("f"), anchor);
+            let layout = float.layout(
+                Rect::new(0.0, 0.0, 40.0, 20.0),
+                FloatMeasure::new(10.0, 4.0),
+            );
+            let ctx = LayoutCtx {
+                line_height: 1.0,
+                char_width: 1.0,
+                nerd_fonts_enabled: false,
+            };
+            let via_layout = Primitive::layout(&float, &ctx, layout.bounds);
+            assert_eq!(via_layout, layout);
+
+            let mut via_primitive = Buffer::empty(RRect::new(0, 0, 40, 20));
+            Primitive::paint_cells(&float, &via_layout, &mut via_primitive, &theme());
+            let mut direct = Buffer::empty(RRect::new(0, 0, 40, 20));
+            draw_float(&mut direct, &float, &layout, &theme());
+            assert_eq!(via_primitive, direct);
+        }
     }
 }
