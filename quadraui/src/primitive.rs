@@ -1353,4 +1353,80 @@ mod tests {
         // panicking.
         assert!(erased.as_ref().downcast_ref::<crate::Spinner>().is_none());
     }
+
+    /// Two overlapping widgets: the one painted last is the one on
+    /// screen, so a point inside both resolves to it.
+    #[test]
+    fn painted_hit_prefers_the_widget_painted_last() {
+        let under = WidgetId::new("under");
+        let over = WidgetId::new("over");
+        let mut painted = PaintedWidgets::default();
+        painted.record(PaintedWidget {
+            id: under,
+            rect: Rect::new(0.0, 0.0, 20.0, 10.0),
+            layout: Box::new(()),
+            sub_regions: Vec::new(),
+        });
+        painted.record(PaintedWidget {
+            id: over,
+            rect: Rect::new(5.0, 0.0, 20.0, 10.0),
+            layout: Box::new(()),
+            sub_regions: Vec::new(),
+        });
+
+        assert_eq!(painted.painted_hit(6.0, 1.0), Some((over, None)));
+        assert_eq!(painted.painted_hit(1.0, 1.0), Some((under, None)));
+        assert_eq!(painted.painted_hit(40.0, 1.0), None);
+    }
+
+    /// Sub-regions are answered in the order the widget listed them, so a
+    /// widget that lists its most specific part first wins the overlap —
+    /// and a point on no sub-region still resolves the widget itself.
+    #[test]
+    fn painted_hit_answers_the_first_matching_sub_region() {
+        let id = WidgetId::new("composite");
+        let specific = crate::interactive::SubTarget(1);
+        let broad = crate::interactive::SubTarget(2);
+        let mut painted = PaintedWidgets::default();
+        painted.record(PaintedWidget {
+            id,
+            rect: Rect::new(0.0, 0.0, 20.0, 2.0),
+            layout: Box::new(()),
+            sub_regions: vec![
+                (Rect::new(8.0, 0.0, 2.0, 2.0), specific),
+                (Rect::new(0.0, 0.0, 10.0, 2.0), broad),
+            ],
+        });
+
+        assert_eq!(painted.painted_hit(8.5, 1.0), Some((id, Some(specific))));
+        assert_eq!(painted.painted_hit(1.0, 1.0), Some((id, Some(broad))));
+        assert_eq!(painted.painted_hit(15.0, 1.0), Some((id, None)));
+        assert_eq!(
+            painted.painted_sub_center(&id, specific),
+            Some((9.0, 1.0)),
+            "a sub-part's center is what a driver clicks"
+        );
+        assert_eq!(
+            painted.painted_sub_center(&WidgetId::new("other"), specific),
+            None
+        );
+    }
+
+    /// The right/bottom edge belongs to whatever sits next along, so a
+    /// point exactly on a widget's far edge is outside it.
+    #[test]
+    fn painted_hit_is_half_open_on_the_far_edges() {
+        let id = WidgetId::new("edges");
+        let mut painted = PaintedWidgets::default();
+        painted.record(PaintedWidget {
+            id,
+            rect: Rect::new(0.0, 0.0, 4.0, 2.0),
+            layout: Box::new(()),
+            sub_regions: Vec::new(),
+        });
+
+        assert_eq!(painted.painted_hit(0.0, 0.0), Some((id, None)));
+        assert_eq!(painted.painted_hit(4.0, 0.0), None);
+        assert_eq!(painted.painted_hit(0.0, 2.0), None);
+    }
 }
