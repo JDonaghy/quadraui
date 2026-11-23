@@ -124,6 +124,37 @@ use crate::event::Rect;
 use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::a11y::A11yAction;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::event::{Key, MouseButton, NamedKey};
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
+};
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::Handled;
+
 /// Declarative description of a tab bar.
 ///
 /// # Examples
@@ -2801,6 +2832,854 @@ pub mod cell_paint {
         // A cell-grid char-based fit is exact; no correction needed.
         hits.correct_scroll_offset = bar.scroll_offset;
         hits
+    }
+}
+
+// ── `crate::primitive::Primitive` + `crate::interactive::Interactive` ──
+//
+// The backend-neutral widget-contract seam for `TabBar`: `layout` moves
+// the measure-then-layout logic out of `Backend::tab_bar_layout*` (the
+// TUI branch mirrors `TuiBackend::draw_tab_bar_icons`'s own char-cell
+// measurer; the pixel branch is `layout_metrics::pixel_tab_bar_layout`
+// fed by `LayoutCtx::measure`'s `CharWidthMeasure` approximation, the
+// same convention `DataTable`/`TreeTable`'s own `Primitive::layout`
+// pixel branches already use). `paint`/`paint_cells` call the two
+// painters this module already shares with every per-backend
+// rasteriser — `native_surface_paint::paint` / `cell_paint::paint` —
+// unchanged. `Interactive::handle` folds `TabBar::handle_focus_key`'s
+// keyboard model in directly.
+//
+// Every `Backend::draw_tab_bar*`/`tab_bar_layout*` method and the four
+// per-backend `tui|gtk|macos|win/tab_bar.rs` files are untouched by this
+// slice — they stay the production path for every existing caller until
+// a sibling slice migrates callers onto `Surface::Widget`/`draw_dyn`.
+//
+// # Scope gaps against the full widget-contract recipe
+//
+// - **No icon/glyph/chrome sidecar.** `TabChrome`, `TabBarGlyphs` and the
+//   `icons: &[Option<TabIcon>]` sidecar are backend-call parameters
+//   today, not fields on `TabBar` (see that struct's own "why icons ride
+//   beside the bar" doc) — `Primitive::layout`/`paint`/`paint_cells` only
+//   ever see `&self`, so this seam always paints with
+//   `TabChrome::default()`, no icons, and no glyph overrides. Turning
+//   them into descriptor fields needs a new field on the plain,
+//   exhaustively-constructed `TabBar` struct, which breaks every
+//   existing literal — including `tests/acceptance/ms-11/*.rs`, the
+//   sealed oracle slice a work leg cannot edit — so it stays out of this
+//   slice.
+// - **Pixel-paint origin.** `native_surface_paint::paint` takes only a
+//   `bar_y` offset, not a full `(x, y)` origin — every existing
+//   GTK/macOS/Win caller supplies that by translating its own drawing
+//   context before calling it (see that function's own "Coordinate
+//   space" doc). A generic `&mut dyn PaintSurface` has no translate
+//   verb, so `Primitive::paint`'s pixel branch instead bakes the widget
+//   rect's `(x, y)` into a translated copy of the computed
+//   `TabBarLayout` (see [`translate_tab_bar_layout`]) and passes
+//   `bar_y: rect.y` to match. That is correct for every tab/segment/
+//   scroll-arrow rect, but the one rect the shared painter derives
+//   itself (the bar's background fill) still starts at `x: 0.0`, not
+//   `rect.x`. No in-tree caller reaches this branch yet — a sibling
+//   slice wires up `Surface::Widget` callers — so this is a documented,
+//   inert gap rather than a visible regression.
+// - **`focus()` is `FocusSpec::Stop`, not `Children`.** Matches
+//   `ListView`/`CellGrid`'s own precedent for a composite widget with
+//   internal keyboard navigation (one Tab stop; arrow keys move an
+//   internal cursor) rather than one `SubTarget` stop per tab. The
+//   runtime's own mouse routing
+//   (`crate::runtime::route_widget_pointer_down`) always delivers
+//   `RoutedEvent::Pointer { sub: None, .. }`, so a `SubTarget` per tab
+//   body/close button/scroll chevron would have no live caller to
+//   address it yet; `TabBarHit::{Tab, TabClose, ScrollLeft, ScrollRight}`
+//   already name those parts by index for `handle`'s own hit-testing.
+#[cfg(feature = "tui")]
+fn tui_tab_bar_primitive_layout(bar: &TabBar, width: f32, height: f32) -> TabBarLayout {
+    // Mirrors `crate::tui::backend::TuiBackend::draw_tab_bar_icons`'s own
+    // char-cell measurer with an empty icon sidecar (`tab_icon_cols(&[],
+    // _) == 0` always) — see this section's own "No icon/glyph/chrome
+    // sidecar" doc for why there is no icon slice to measure here.
+    let close_cols = if bar.show_tab_close {
+        TAB_CLOSE_COLS as usize
+    } else {
+        0
+    };
+    let tab_widths: Vec<usize> = bar
+        .tabs
+        .iter()
+        .map(|t| {
+            let tab_close = if bar.show_tab_close && t.is_closable {
+                close_cols
+            } else {
+                0
+            };
+            // No close button to reserve? Reserve a separator column
+            // instead — see `TuiBackend::draw_tab_bar_icons`'s own
+            // identical comment.
+            let sep = if tab_close == 0 {
+                TAB_SEPARATOR_COLS as usize
+            } else {
+                0
+            };
+            crate::text_util::display_width(&t.label) + tab_close + sep
+        })
+        .collect();
+    bar.layout(
+        width,
+        height,
+        0.0, // no scroll arrows in TUI
+        |i| {
+            let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
+                close_cols
+            } else {
+                0
+            };
+            TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
+        },
+        |i| SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+    )
+}
+
+/// Translate every `Rect` inside a bar-relative [`TabBarLayout`] by
+/// `(dx, dy)` — see this section's own "Pixel-paint origin" doc for why
+/// [`Primitive::paint`](crate::primitive::Primitive::paint)'s pixel
+/// branch needs this instead of passing an absolute area straight
+/// through to [`native_surface_paint::paint`].
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+fn translate_tab_bar_layout(mut layout: TabBarLayout, dx: f32, dy: f32) -> TabBarLayout {
+    let shift = |r: Rect| Rect::new(r.x + dx, r.y + dy, r.width, r.height);
+    for vt in &mut layout.visible_tabs {
+        vt.bounds = shift(vt.bounds);
+        vt.close_bounds = vt.close_bounds.map(shift);
+    }
+    for vs in &mut layout.visible_segments {
+        vs.bounds = shift(vs.bounds);
+    }
+    layout.scroll_left = layout.scroll_left.map(shift);
+    layout.scroll_right = layout.scroll_right.map(shift);
+    for (r, _) in &mut layout.hit_regions {
+        *r = shift(*r);
+    }
+    layout
+}
+
+/// [`crate::primitive::Primitive::Layout`] for [`TabBar`] — the
+/// bar-relative [`TabBarLayout`] paired with the absolute area it was
+/// laid out into and the Nerd-Font toggle resolved at layout time.
+///
+/// `layout`'s own `visible_tabs`/`visible_segments`/`hit_regions` stay
+/// bar-relative (origin at this struct's own [`Self::area`] top-left) —
+/// the same convention [`crate::interactive::RoutedEvent::Pointer`]'s own
+/// `local` field uses, so [`Interactive::handle`] hit-tests against
+/// `layout.layout` directly without subtracting [`Self::area`] first.
+///
+/// `#[non_exhaustive]`: backend-returned, never constructed by a
+/// consumer via struct literal, same convention as [`TabBarLayout`]
+/// itself.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct TabBarPrimitiveLayout {
+    /// Absolute area [`crate::primitive::Primitive::layout`] was called
+    /// with.
+    pub area: Rect,
+    /// Nerd-Font toggle resolved from
+    /// [`crate::primitive::LayoutCtx::nerd_fonts_enabled`] at layout
+    /// time.
+    pub nerd_fonts_enabled: bool,
+    /// The bar-relative layout itself.
+    pub layout: TabBarLayout,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl crate::primitive::Primitive for TabBar {
+    type Layout = TabBarPrimitiveLayout;
+    type Event = TabBarEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// Round-trips through [`crate::frame::OwnedContent::TabBarWidget`] —
+    /// distinct from [`crate::frame::OwnedContent::TabBar`] (which
+    /// [`crate::frame::capture_surface`] produces for the legacy
+    /// [`crate::frame::Surface::TabBar`] instead) so a `TabBar` reached
+    /// through [`crate::frame::Surface::Widget`] replays through
+    /// [`crate::backend::DrawsPrimitives::draw_primitive`] and
+    /// hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
+    /// exactly as it does live — see that variant's own doc.
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::TabBarWidget(self.clone())
+    }
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        // Same TUI-vs-pixel-backend discriminator `ListView`/`DataTable`'s
+        // own `Primitive::layout` use — see `LayoutCtx::units`'s own doc
+        // for why `ctx.units()` is reliable even when both features are
+        // compiled into the same binary.
+        #[cfg(feature = "tui")]
+        {
+            if matches!(ctx.units(), crate::primitive::Units::Cells) {
+                let layout = tui_tab_bar_primitive_layout(self, rect.width, rect.height);
+                return TabBarPrimitiveLayout {
+                    area: rect,
+                    nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+                    layout,
+                };
+            }
+        }
+        let measure = crate::primitives::layout_metrics::CharWidthMeasure(ctx.char_width);
+        let (tab_pad, tab_inner_gap, tab_outer_gap) = if self.compact {
+            (
+                crate::primitives::layout_metrics::pixel::TAB_PAD_COMPACT,
+                crate::primitives::layout_metrics::pixel::TAB_INNER_GAP_COMPACT,
+                crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP_COMPACT,
+            )
+        } else {
+            (
+                crate::primitives::layout_metrics::pixel::TAB_PAD,
+                crate::primitives::layout_metrics::pixel::TAB_INNER_GAP,
+                crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP,
+            )
+        };
+        // No live font reaches this far (see this section's own doc) —
+        // `CharWidthMeasure` approximates every glyph as `ctx.char_width`
+        // wide, the same fallback `DataTable`/`TreeTable`'s pixel-branch
+        // `Primitive::layout` already uses.
+        let tab_name_widths: Vec<f32> = self
+            .tabs
+            .iter()
+            .map(|t| crate::primitives::layout_metrics::TextMeasure::width_of(&measure, &t.label))
+            .collect();
+        // No icon sidecar reaches this far either (see this section's own
+        // doc) — every tab's icon-extra width is `0.0`.
+        let tab_icon_extras = vec![0.0f32; self.tabs.len()];
+        let chrome = TabChrome::default();
+        let (layout, _corrected_scroll_offset, _available_cols) =
+            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+                self,
+                rect.width,
+                rect.height,
+                tab_pad,
+                tab_inner_gap,
+                tab_outer_gap,
+                &tab_name_widths,
+                &tab_icon_extras,
+                &chrome,
+                &measure,
+            );
+        TabBarPrimitiveLayout {
+            area: rect,
+            nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+            layout,
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            // See this section's own "Pixel-paint origin" doc: bakes
+            // `layout.area`'s own origin into a translated copy of the
+            // bar-relative layout, then passes the same `dy` as `bar_y`
+            // so the shared painter's own background-fill rect lines up
+            // with it vertically.
+            let translated =
+                translate_tab_bar_layout(layout.layout.clone(), layout.area.x, layout.area.y);
+            let state = native_surface_paint::TabBarPaintState::default();
+            native_surface_paint::paint(
+                self,
+                &translated,
+                &[],
+                None,
+                layout.nerd_fonts_enabled,
+                &TabChrome::default(),
+                state,
+                surface,
+                theme,
+                style,
+                layout.area.y,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// Delegates straight to [`cell_paint::paint`] — the exact function
+    /// [`crate::tui::draw_tab_bar_icons_with_chrome_and_glyphs`] itself
+    /// re-exports — with an absolute `area` derived from
+    /// [`TabBarPrimitiveLayout::area`], so painting `TabBar` through
+    /// [`crate::primitive::Primitive`] on TUI uses byte-for-byte the same
+    /// painter every `Backend::draw_tab_bar*` entry point does.
+    #[cfg(feature = "tui")]
+    #[allow(deprecated)] // `cell_paint::paint` returns the deprecated `TabBarHits`
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        let _ = cell_paint::paint(
+            buf,
+            area,
+            self,
+            &[],
+            &TabChrome::default(),
+            &layout.layout,
+            theme,
+            None,
+            layout.nerd_fonts_enabled,
+        );
+    }
+}
+
+// ── Interactive: keyboard nav + mouse click ─────────────────────────
+//
+// `TabBar::handle_focus_key`'s model folds in directly: `state.focused_index`
+// is the live counterpart of the caller-threaded `Option<usize>` that
+// free function took, moved by Left/Right and activated by Enter/Space,
+// exactly as that function's own doc describes.
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl WidgetAction for TabBarEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::TabBar(id, self)
+    }
+}
+
+/// [`Interactive::State`] for [`TabBar`] — see this section's module doc
+/// for why it carries only the keyboard-focused tab index,
+/// [`TabChrome::focused_index`]'s live counterpart.
+///
+/// `#[non_exhaustive]`: a future field add here is additive, same
+/// convention as [`TabBarLayout`].
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TabBarState {
+    /// The tab Left/Right has moved keyboard focus to. `None` until the
+    /// first arrow press. The app threads this back onto the next
+    /// frame's [`TabChrome::focused_index`] (with its own focus-visible
+    /// composition — see that field's doc) to paint the reverse-video
+    /// treatment.
+    pub focused_index: Option<usize>,
+}
+
+/// Canonical key string for [`TabBarEvent::KeyPressed`] — the same
+/// spelling [`NamedKey::name`] already promises, mirroring
+/// `crate::primitives::list`'s own identically-named private helper so
+/// every `KeyPressed` event in the crate agrees on one spelling.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+fn tab_bar_key_to_event_string(key: &Key) -> String {
+    match key {
+        Key::Char(c) => c.to_string(),
+        Key::Named(named) => named.name().into_owned(),
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl TabBar {
+    /// Dispatch one keystroke against live [`TabBarState`] — the
+    /// `Interactive::handle` counterpart of the static
+    /// [`Self::handle_focus_key`] this crate's own backends called
+    /// directly before this seam existed. Left/Right move
+    /// `state.focused_index` (clamped into `0..tabs.len()`, starting
+    /// from tab `0` when nothing was focused yet); Enter/Space activate
+    /// the currently focused tab; every other key is reported via
+    /// [`EventCx::emit`] as the raw [`TabBarEvent::KeyPressed`] an app
+    /// may bind its own hotkeys to, then declared [`Handled::Ignored`]
+    /// rather than claimed — see [`Interactive::handle`]'s own doc for
+    /// why an unclaimed key must still bubble.
+    fn handle_key_routed(
+        &self,
+        state: &mut TabBarState,
+        key: &Key,
+        modifiers: &Modifiers,
+        cx: &mut EventCx,
+    ) -> Handled<TabBarEvent> {
+        if self.tabs.is_empty() {
+            return Handled::Ignored;
+        }
+        match key {
+            Key::Named(NamedKey::Left) => {
+                let cur = state.focused_index.unwrap_or(0);
+                let next = cur.saturating_sub(1);
+                state.focused_index = Some(next);
+                Handled::Event(TabBarEvent::FocusMoved { index: next })
+            }
+            Key::Named(NamedKey::Right) => {
+                let cur = state.focused_index.unwrap_or(0);
+                let next = (cur + 1).min(self.tabs.len() - 1);
+                state.focused_index = Some(next);
+                Handled::Event(TabBarEvent::FocusMoved { index: next })
+            }
+            Key::Named(NamedKey::Enter) | Key::Char(' ') => match state.focused_index {
+                Some(index) => Handled::Event(TabBarEvent::TabActivated { index }),
+                None => Handled::Ignored,
+            },
+            _ => {
+                cx.emit(
+                    TabBarEvent::KeyPressed {
+                        key: tab_bar_key_to_event_string(key),
+                        modifiers: *modifiers,
+                    }
+                    .into_ui_event(cx.id),
+                );
+                Handled::Ignored
+            }
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl Interactive for TabBar {
+    type State = TabBarState;
+    type Action = TabBarEvent;
+
+    /// One focus stop as a whole — see this section's parent doc's
+    /// "`focus()` is `FocusSpec::Stop`, not `Children`" bullet.
+    /// [`FocusSpec::None`] for an empty bar — there is no tab for
+    /// keyboard focus to land on.
+    fn focus(&self) -> FocusSpec {
+        if self.tabs.is_empty() {
+            FocusSpec::None
+        } else {
+            FocusSpec::Stop
+        }
+    }
+
+    fn handle(
+        &self,
+        state: &mut TabBarState,
+        event: &RoutedEvent,
+        layout: &Self::Layout,
+        cx: &mut EventCx,
+    ) -> Handled<TabBarEvent> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                local,
+                ..
+            } => match layout.layout.hit_test(local.x, local.y) {
+                TabBarHit::Tab(index) => {
+                    cx.request_focus(None);
+                    state.focused_index = Some(index);
+                    Handled::Event(TabBarEvent::TabActivated { index })
+                }
+                TabBarHit::TabClose(index) => {
+                    cx.request_focus(None);
+                    Handled::Event(TabBarEvent::TabClosed { index })
+                }
+                TabBarHit::RightSegment(id) => {
+                    cx.request_focus(None);
+                    Handled::Event(TabBarEvent::ButtonClicked { id })
+                }
+                // No `TabBarEvent` exists yet for a scroll-chevron click
+                // (see this section's parent doc) and empty space is
+                // simply not actionable.
+                TabBarHit::ScrollLeft | TabBarHit::ScrollRight | TabBarHit::Empty => {
+                    Handled::Ignored
+                }
+            },
+            RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => {
+                self.handle_key_routed(state, key, modifiers, cx)
+            }
+            // The assistive-technology default action activates whichever
+            // tab keyboard focus already names, falling back to the
+            // bar's own `is_active` tab when nothing has been
+            // keyboard-focused yet — the same "describe what a real
+            // keyboard/mouse gesture would do" contract
+            // `a11y::action::route_action`'s own doc states.
+            RoutedEvent::Action(A11yAction::Click) => {
+                let index = state
+                    .focused_index
+                    .filter(|&i| i < self.tabs.len())
+                    .or_else(|| self.tabs.iter().position(|t| t.is_active));
+                match index {
+                    Some(index) => Handled::Event(TabBarEvent::TabActivated { index }),
+                    None => Handled::Ignored,
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+#[cfg(all(
+    test,
+    any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )
+))]
+mod interactive_tests {
+    use super::*;
+    use crate::event::{NamedKey, Point};
+    use crate::interactive::EventHost;
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock — the same shape
+    /// `crate::primitives::list`'s own module tests use.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<crate::interactive::SubTarget>>,
+        emitted: Vec<crate::UiEvent>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<crate::interactive::SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<crate::interactive::SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn bar(labels: &[&str], active: usize) -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs:test"),
+            tabs: labels
+                .iter()
+                .enumerate()
+                .map(|(i, label)| TabItem {
+                    label: label.to_string(),
+                    is_active: i == active,
+                    ..Default::default()
+                })
+                .collect(),
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    fn layout_for(bar: &TabBar) -> TabBarPrimitiveLayout {
+        let ctx = LayoutCtx {
+            line_height: 1.0,
+            char_width: 1.0,
+            nerd_fonts_enabled: false,
+        };
+        Primitive::layout(bar, &ctx, Rect::new(0.0, 0.0, 40.0, 1.0))
+    }
+
+    fn key(named: NamedKey) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key: Key::Named(named),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    }
+
+    #[test]
+    fn empty_bar_has_no_focus_stop() {
+        assert_eq!(bar(&[], 0).focus(), FocusSpec::None);
+    }
+
+    #[test]
+    fn non_empty_bar_is_one_focus_stop() {
+        assert_eq!(bar(&["a.rs"], 0).focus(), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn click_on_a_tab_body_activates_it_and_requests_focus() {
+        let b = bar(&["main.rs", "lib.rs"], 0);
+        let layout = layout_for(&b);
+        let mut state = TabBarState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+
+        // "main.rs" occupies columns [0, close-button); "lib.rs" starts
+        // right after it — probe a point inside the first tab's body.
+        let click = RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(1.0, 0.0),
+            mods: Modifiers::default(),
+        };
+        let outcome = b.handle(&mut state, &click, &layout, &mut cx);
+        assert_eq!(
+            outcome,
+            Handled::Event(TabBarEvent::TabActivated { index: 0 })
+        );
+        assert_eq!(state.focused_index, Some(0));
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn click_on_a_close_glyph_closes_that_tab() {
+        let b = bar(&["main.rs"], 0);
+        let layout = layout_for(&b);
+        let close = layout
+            .layout
+            .visible_tabs
+            .first()
+            .and_then(|vt| vt.close_bounds)
+            .expect("main.rs has a close button");
+        let mut state = TabBarState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+
+        let click = RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(close.x + close.width / 2.0, 0.0),
+            mods: Modifiers::default(),
+        };
+        let outcome = b.handle(&mut state, &click, &layout, &mut cx);
+        assert_eq!(outcome, Handled::Event(TabBarEvent::TabClosed { index: 0 }));
+    }
+
+    #[test]
+    fn right_arrow_then_left_arrow_move_the_focused_index_and_clamp() {
+        let b = bar(&["a", "b", "c"], 0);
+        let layout = layout_for(&b);
+        let mut state = TabBarState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+
+        let outcome = b.handle(&mut state, &key(NamedKey::Right), &layout, &mut cx);
+        assert_eq!(
+            outcome,
+            Handled::Event(TabBarEvent::FocusMoved { index: 1 })
+        );
+        assert_eq!(state.focused_index, Some(1));
+
+        let outcome = b.handle(&mut state, &key(NamedKey::Right), &layout, &mut cx);
+        assert_eq!(
+            outcome,
+            Handled::Event(TabBarEvent::FocusMoved { index: 2 })
+        );
+
+        // Already at the last tab — Right clamps rather than panicking
+        // or wrapping.
+        let outcome = b.handle(&mut state, &key(NamedKey::Right), &layout, &mut cx);
+        assert_eq!(
+            outcome,
+            Handled::Event(TabBarEvent::FocusMoved { index: 2 })
+        );
+
+        let outcome = b.handle(&mut state, &key(NamedKey::Left), &layout, &mut cx);
+        assert_eq!(
+            outcome,
+            Handled::Event(TabBarEvent::FocusMoved { index: 1 })
+        );
+    }
+
+    #[test]
+    fn enter_with_no_focused_tab_is_ignored() {
+        let b = bar(&["a", "b"], 0);
+        let layout = layout_for(&b);
+        let mut state = TabBarState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+
+        let outcome = b.handle(&mut state, &key(NamedKey::Enter), &layout, &mut cx);
+        assert_eq!(outcome, Handled::Ignored);
+    }
+
+    #[test]
+    fn enter_activates_the_focused_tab() {
+        let b = bar(&["a", "b"], 0);
+        let layout = layout_for(&b);
+        let mut state = TabBarState {
+            focused_index: Some(1),
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+
+        let outcome = b.handle(&mut state, &key(NamedKey::Enter), &layout, &mut cx);
+        assert_eq!(
+            outcome,
+            Handled::Event(TabBarEvent::TabActivated { index: 1 })
+        );
+    }
+
+    #[test]
+    fn unbound_key_still_emits_key_pressed_and_bubbles() {
+        let b = bar(&["a"], 0);
+        let layout = layout_for(&b);
+        let mut state = TabBarState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+
+        let outcome = b.handle(&mut state, &key(NamedKey::Escape), &layout, &mut cx);
+        assert_eq!(outcome, Handled::Ignored);
+        assert_eq!(
+            host.emitted,
+            vec![TabBarEvent::KeyPressed {
+                key: "Escape".to_string(),
+                modifiers: Modifiers::default(),
+            }
+            .into_ui_event(b.id)]
+        );
+    }
+
+    #[test]
+    fn a11y_click_activates_the_focused_tab_or_falls_back_to_is_active() {
+        let b = bar(&["a", "b", "c"], 1);
+        let layout = layout_for(&b);
+        let mut host = MockHost::default();
+
+        // No keyboard focus yet — falls back to whichever tab `is_active`.
+        let mut state = TabBarState::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+        let outcome = b.handle(
+            &mut state,
+            &RoutedEvent::Action(A11yAction::Click),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(TabBarEvent::TabActivated { index: 1 })
+        );
+
+        // Keyboard focus set — wins over `is_active`.
+        state.focused_index = Some(0);
+        let mut cx = EventCx::new(b.id, &mut host);
+        let outcome = b.handle(
+            &mut state,
+            &RoutedEvent::Action(A11yAction::Click),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(TabBarEvent::TabActivated { index: 0 })
+        );
+    }
+
+    /// Three-way event parity, the narrower (in-crate) half of this
+    /// slice's parity test: an `A11yAction::Click` routed through
+    /// [`crate::a11y::route_widget_action`] (the assistive-technology
+    /// path a screen reader's default action takes) produces the exact
+    /// same [`crate::UiEvent`] a direct [`Interactive::handle`] call with
+    /// the same `RoutedEvent::Action` does — proving the generic
+    /// `FrameTree`-based a11y routing seam and this widget's own
+    /// `handle` dispatch agree by construction. The TUI mouse-click leg
+    /// of the parity triangle lives in
+    /// `tests/tab_bar_interactive_driver.rs`, which drives the real
+    /// `event -> handle -> render` path `TuiDriver` exercises; this
+    /// in-crate test is the one place that can reach
+    /// `route_widget_action`, which (like `route_action`) is not
+    /// re-exported past this crate's own private `a11y` module.
+    #[test]
+    fn route_widget_action_click_matches_direct_interactive_handle() {
+        let b = bar(&["a", "b", "c"], 0);
+        let id = b.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, Rect::new(0.0, 0.0, 40.0, 1.0), Box::new(b.clone()));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let ctx = LayoutCtx {
+            line_height: 1.0,
+            char_width: 1.0,
+            nerd_fonts_enabled: false,
+        };
+
+        let events =
+            crate::a11y::route_widget_action(&tree, &mut states, &ctx, id, A11yAction::Click);
+
+        let layout = layout_for(&b);
+        let mut state = TabBarState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(id, &mut host);
+        let direct = b.handle(
+            &mut state,
+            &RoutedEvent::Action(A11yAction::Click),
+            &layout,
+            &mut cx,
+        );
+        let expected = match direct {
+            Handled::Event(ev) => vec![ev.into_ui_event(id)],
+            _ => vec![],
+        };
+        assert_eq!(events, expected);
+        assert_eq!(
+            events,
+            vec![TabBarEvent::TabActivated { index: 0 }.into_ui_event(id)]
+        );
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn primitive_layout_round_trips_through_the_cell_paint_painter() {
+        let b = bar(&["main.rs", "lib.rs"], 0);
+        let layout = layout_for(&b);
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 1));
+        Primitive::paint_cells(&b, &layout, &mut buf, &crate::theme::Theme::default());
+        let painted: String = (0..10).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            painted.starts_with("main.rs"),
+            "expected the first tab's label to paint at the bar's own origin, got {painted:?}"
+        );
     }
 }
 
