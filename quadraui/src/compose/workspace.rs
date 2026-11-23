@@ -787,14 +787,18 @@ impl WorkspaceController {
     /// binding layer can resolve the sub-part under a point, without this
     /// controller publishing geometry of its own.
     ///
-    /// A pixel backend keeps [`Backend::draw_tab_bar`], which measures
-    /// each label with the live font (Pango, DirectWrite, Core Text). No
-    /// live font reaches `Primitive::layout` — its pixel branch
-    /// approximates every glyph as `LayoutCtx::char_width` wide, see
-    /// `primitives::tab_bar`'s own scope notes — so the contract would
-    /// fit a different number of tabs on the strip than the font needs.
-    /// Those bars resolve their geometry through each backend's
-    /// `draw_tab_bar` layout cache, which
+    /// A pixel backend keeps [`Backend::draw_tab_bar`]. Label widths
+    /// themselves agree either way — `Primitive::layout`'s pixel branch
+    /// measures through [`crate::primitive::LayoutCtx::text_width`], i.e.
+    /// the same [`Backend::measure_text`] font those rasterisers paint
+    /// with — but the contract still has no icon sidecar or
+    /// [`crate::TabChrome`] to pass (see `primitives::tab_bar`'s own
+    /// scope notes) and reads tab padding from
+    /// `layout_metrics::pixel::TAB_PAD` rather than the active
+    /// [`crate::Style::tab_padding_x`], so a pixel strip would place
+    /// tabs differently than its rasteriser does. Those bars resolve
+    /// their geometry through each backend's `draw_tab_bar` layout
+    /// cache, which
     /// [`crate::primitives::tab_bar::tab_part_center`] falls back to.
     fn paint_strip(&self, backend: &mut dyn Backend, strip: Rect) -> TabBarHits {
         // A chrome line height of one whole cell is a cell backend,
