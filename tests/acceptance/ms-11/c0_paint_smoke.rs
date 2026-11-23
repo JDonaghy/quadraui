@@ -174,6 +174,7 @@ mod ms11_492_c0_paint_smoke {
                     active_accent: None,
                     show_tab_close: false,
                     compact: false,
+                    ..Default::default()
                 };
                 let _ = b.draw_tab_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
             },
