@@ -331,6 +331,37 @@ pub trait Interactive: Primitive {
         let _ = state;
         Vec::new()
     }
+
+    /// This widget's addressable sub-parts for `layout`, each paired with
+    /// the [`SubTarget`] that names it — the pointer-side counterpart of
+    /// [`Self::focus`]'s [`FocusSpec::Children`].
+    ///
+    /// Rects are in the **widget's own local space** (origin at the
+    /// widget's painted rect, the same space [`RoutedEvent::Pointer`]'s
+    /// `local` field uses), so a widget derives them from `layout`
+    /// without knowing where it was painted.
+    ///
+    /// Order is **most-specific first**: a close button before the tab
+    /// body that contains it, so the first rect containing a point is the
+    /// right answer — the same ordering
+    /// [`crate::TabBarLayout::hit_test`] already walks its own hit
+    /// regions in.
+    ///
+    /// The host side of this is
+    /// [`crate::primitive::PaintedWidgets`]: every widget painted through
+    /// [`crate::DrawsPrimitives::draw_dyn`] gets these rects recorded
+    /// (translated into absolute coordinates) for the frame, so a driver
+    /// or binding layer can target one sub-part and
+    /// [`crate::primitive::painted_hit`] can answer "which sub-part is
+    /// under this point" for any contract widget through one code path.
+    ///
+    /// Default: empty — correct for a widget with no addressable
+    /// sub-parts (a `Button`, a `Divider`), which is then hit-tested as
+    /// one whole rect.
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(crate::Rect, SubTarget)> {
+        let _ = layout;
+        Vec::new()
+    }
 }
 
 /// Implement [`Interactive`] for a [`Primitive`] with no behaviour at all

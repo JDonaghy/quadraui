@@ -9,6 +9,7 @@
 //! exact code a user runs, not a test-only copy.
 #![cfg(feature = "tui")]
 
+use quadraui::primitives::tab_bar::TabBarSubPart;
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::{
     Backend, ButtonMask, FieldKind, Key, Modifiers, NamedKey, Point, Reaction, UiEvent,
@@ -10531,6 +10532,41 @@ fn workspace_demo_middle_click_closes_a_tab_without_activating_it() {
         !driver.screen_contains("beta×"),
         "the closed document's tab is gone from the strip (the hint bar's \
          \"closed doc:beta\" text still legitimately contains \"beta\"):\n{}",
+        driver.screen()
+    );
+}
+
+/// The demo's strip paints through the widget contract, so the bar lands
+/// in the frame's painted-layout record — the generic geometry a binding
+/// layer reads, not a per-backend tab-bar cache. Asserts the record
+/// agrees with what the driver clicks: the bar is what sits under tab 1's
+/// center, and the sub-part there is tab 1's body (its close button one
+/// glyph over, not the body).
+#[test]
+fn workspace_demo_strip_lands_in_the_painted_layout_record() {
+    let driver = workspace_driver();
+    let bar = workspace_bar_id();
+
+    let (x, y) = driver
+        .tab_center(&bar, 1)
+        .expect("tab 1 should have painted geometry");
+    assert_eq!(
+        quadraui::primitive::painted_hit(x, y)
+            .map(|(id, sub)| (id, sub.and_then(TabBarSubPart::from_sub_target))),
+        Some((bar, Some(TabBarSubPart::Tab(1)))),
+        "the record resolves the demo's own strip, and tab 1's body under \
+         its center:\n{}",
+        driver.screen()
+    );
+
+    let (cx, cy) = driver
+        .tab_close_center(&bar, 1)
+        .expect("tab 1 should paint a close glyph");
+    assert_eq!(
+        quadraui::primitive::painted_hit(cx, cy)
+            .map(|(id, sub)| (id, sub.and_then(TabBarSubPart::from_sub_target))),
+        Some((bar, Some(TabBarSubPart::TabClose(1)))),
+        "and the close glyph resolves to the close sub-part:\n{}",
         driver.screen()
     );
 }

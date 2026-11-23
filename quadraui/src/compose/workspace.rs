@@ -5,7 +5,8 @@
 //!
 //! An ordered `Vec` of *opaque* document ids plus one active id, with
 //! `open` / `close` / `activate` / `reorder`, a tab strip painted through
-//! [`Backend::draw_tab_bar`], and click + keyboard routing. Every state
+//! the widget contract ([`crate::DrawsPrimitives::draw_dyn`] against the
+//! [`TabBar`] primitive), and click + keyboard routing. Every state
 //! change is reported as a [`WorkspaceEvent`] so the host app can react
 //! (load a file, drop a buffer, persist the session) without inspecting
 //! controller internals.
@@ -147,9 +148,9 @@
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
 use crate::event::{Key, MouseButton, NamedKey, Rect};
-// This compose helper caches exactly what `Backend::draw_tab_bar` returns
-// for click dispatch — see `TabBarHits`'s own doc for its stability
-// contract.
+// This compose helper caches the same `TabBarHits` shape the legacy
+// `Backend::draw_tab_bar` returns for click dispatch — see `TabBarHits`'s
+// own doc for its stability contract.
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabItem};
 use crate::text_util::display_width;
 use crate::types::{Modifiers, WidgetId};
@@ -754,10 +755,10 @@ impl WorkspaceController {
         );
 
         self.scroll_offset = self.estimate_scroll_offset(strip.width, backend.char_width());
-        let mut hits = backend.draw_tab_bar(strip, &self.tab_bar(), None);
+        let mut hits = self.paint_strip(backend, strip);
         if hits.correct_scroll_offset != self.scroll_offset {
             self.scroll_offset = hits.correct_scroll_offset.min(self.max_scroll_offset());
-            hits = backend.draw_tab_bar(strip, &self.tab_bar(), None);
+            hits = self.paint_strip(backend, strip);
         }
 
         self.last_strip = Some(strip);
@@ -766,6 +767,71 @@ impl WorkspaceController {
             strip_bounds: strip,
             body_bounds: body,
         }
+    }
+
+    /// Paint the tab strip into `strip` and return the
+    /// target-surface-absolute [`TabBarHits`] this controller's click
+    /// routing reads.
+    ///
+    /// # Which paint path
+    ///
+    /// On a cell backend the strip goes through the widget contract —
+    /// [`crate::DrawsPrimitives::draw_dyn`] against the [`TabBar`]
+    /// primitive — because `TabBar`'s own `Primitive::layout` routes its
+    /// cell branch through the very measurer the TUI rasteriser uses, so
+    /// the contract paints cell-for-cell what [`Backend::draw_tab_bar`]
+    /// paints. Painting that way is also what registers the bar in the
+    /// frame's painted-layout record
+    /// ([`crate::primitive::PaintedWidgets`]), so a driver can target one
+    /// tab ([`crate::primitives::tab_bar::tab_part_center`]) and a
+    /// binding layer can resolve the sub-part under a point, without this
+    /// controller publishing geometry of its own.
+    ///
+    /// A pixel backend keeps [`Backend::draw_tab_bar`], which measures
+    /// each label with the live font (Pango, DirectWrite, Core Text). No
+    /// live font reaches `Primitive::layout` — its pixel branch
+    /// approximates every glyph as `LayoutCtx::char_width` wide, see
+    /// `primitives::tab_bar`'s own scope notes — so the contract would
+    /// fit a different number of tabs on the strip than the font needs.
+    /// Those bars resolve their geometry through each backend's
+    /// `draw_tab_bar` layout cache, which
+    /// [`crate::primitives::tab_bar::tab_part_center`] falls back to.
+    fn paint_strip(&self, backend: &mut dyn Backend, strip: Rect) -> TabBarHits {
+        // A chrome line height of one whole cell is a cell backend,
+        // anything taller is a real pixel font metric — the same
+        // discriminator `Self::render` applies to the strip height, and
+        // `crate::primitive::LayoutCtx::units`' own convention.
+        #[cfg(feature = "tui")]
+        if backend.chrome_line_height() <= 1.0 {
+            return self.paint_strip_as_widget(backend, strip);
+        }
+        backend.draw_tab_bar(strip, &self.tab_bar(), None)
+    }
+
+    /// [`Self::paint_strip`]'s widget-contract arm: paint through
+    /// `draw_dyn` and convert the layout it painted into [`TabBarHits`].
+    #[cfg(feature = "tui")]
+    fn paint_strip_as_widget(&self, backend: &mut dyn Backend, strip: Rect) -> TabBarHits {
+        use crate::backend::{shift_tab_bar_hits, tab_bar_hits_from_layout};
+        use crate::DrawsPrimitives;
+
+        let bar = self.tab_bar();
+        let painted = backend.draw_dyn(strip, &bar, &());
+        let Some(painted) =
+            painted.downcast_ref::<crate::primitives::tab_bar::TabBarPrimitiveLayout>()
+        else {
+            // Unreachable: `TabBar`'s own `Primitive::Layout` is the only
+            // thing `draw_dyn` can resolve for a `TabBar`. Degrading to
+            // "no hits this frame" (clicks ignored until the next paint)
+            // keeps a layout-type surprise from panicking a render pass.
+            return TabBarHits::default();
+        };
+        let mut hits = tab_bar_hits_from_layout(&painted.layout, &bar);
+        // `tab_bar_hits_from_layout` yields bar-relative spans; the
+        // `TabBarHits` contract is target-surface absolute — see
+        // `shift_tab_bar_hits`.
+        shift_tab_bar_hits(&mut hits, strip.x as f64);
+        hits
     }
 
     /// The strip rect the last [`Self::render`] painted, if any.

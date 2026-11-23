@@ -692,6 +692,16 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`Interactive::focus`].
     fn focus(&self) -> FocusSpec;
 
+    /// This widget's addressable sub-parts for `layout`, in widget-local
+    /// coordinates — see [`Interactive::sub_regions`]. Returns an empty
+    /// `Vec` when `layout` isn't this widget's own layout type, matching
+    /// [`Self::handle`]'s "wrong pairing is a programmer error reported
+    /// as nothing, not a panic" convention.
+    fn sub_regions(
+        &self,
+        layout: &dyn PrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)>;
+
     /// A fresh, default-valued interaction state for this widget — the
     /// type-erased counterpart of [`Interactive::State::default`].
     fn new_state(&self) -> Box<dyn std::any::Any>;
@@ -788,6 +798,16 @@ where
         Interactive::focus(self)
     }
 
+    fn sub_regions(
+        &self,
+        layout: &dyn PrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        match layout.downcast_ref::<W::Layout>() {
+            Some(layout) => Interactive::sub_regions(self, layout),
+            None => Vec::new(),
+        }
+    }
+
     fn new_state(&self) -> Box<dyn std::any::Any> {
         Box::new(W::State::default())
     }
@@ -831,6 +851,212 @@ impl dyn DynWidget {
     pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
         self.as_any().downcast_ref::<T>()
     }
+}
+
+// ── Painted-layout record ───────────────────────────────────────────────
+
+/// One widget's geometry as [`crate::DrawsPrimitives::draw_dyn`] painted
+/// it this frame — the entry [`PaintedWidgets`] stores per identified
+/// widget.
+///
+/// `rect` and `sub_regions` are **target-surface absolute** (the same
+/// space a [`crate::UiEvent::MouseDown`] position arrives in), so a
+/// driver or binding layer hit-tests them without knowing where the
+/// widget sits. `layout` stays exactly as [`DynWidget::layout`] produced
+/// it — in the widget's own local space — and downcasts back to the
+/// widget's concrete layout type through
+/// [`dyn PrimitiveLayout::downcast_ref`][dyn@PrimitiveLayout::downcast_ref].
+pub struct PaintedWidget {
+    /// The widget's own id — [`DynWidget::id`], which is `Some` for every
+    /// recorded entry (an anonymous widget is never recorded, since
+    /// nothing could address it afterwards).
+    pub id: WidgetId,
+    /// The absolute rect the widget was painted into.
+    pub rect: Rect,
+    /// The layout that painted, erased behind [`PrimitiveLayout`].
+    pub layout: Box<dyn PrimitiveLayout>,
+    /// This widget's addressable sub-parts, most-specific first — see
+    /// [`Interactive::sub_regions`], whose widget-local rects are
+    /// translated into absolute space here.
+    pub sub_regions: Vec<(Rect, crate::interactive::SubTarget)>,
+}
+
+/// Every widget [`crate::DrawsPrimitives::draw_dyn`] painted in the
+/// current frame, in paint order.
+///
+/// # Why this exists
+///
+/// A widget painted through the widget contract has no per-backend layout
+/// cache to read back: `draw_dyn` resolves `w.layout(&ctx, rect)`, paints
+/// it and drops it. Drivers that need to click one *sub-part* of a widget
+/// (`TuiDriver::tab_center`, the GTK equivalent) and binding layers that
+/// need the sub-part under a point therefore had nothing generic to ask.
+/// This is that record: one store, filled by `draw_dyn` for every widget
+/// whose [`DynWidget::id`] is `Some`, cleared at the start of every frame.
+///
+/// Deliberately widget-agnostic — a widget names its own sub-parts
+/// through [`Interactive::sub_regions`], so adding a widget to the
+/// contract never adds a field here.
+#[derive(Default)]
+pub struct PaintedWidgets {
+    entries: Vec<PaintedWidget>,
+}
+
+impl PaintedWidgets {
+    /// Drop every entry — called once per frame, before anything paints.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Append one painted widget, in paint order.
+    pub fn record(&mut self, widget: PaintedWidget) {
+        self.entries.push(widget);
+    }
+
+    /// Every entry, in paint order (back to front).
+    pub fn iter(&self) -> impl Iterator<Item = &PaintedWidget> {
+        self.entries.iter()
+    }
+
+    /// How many widgets painted this frame.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether nothing painted through the widget contract this frame.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The absolute rect and layout `id` painted with this frame, or
+    /// `None` if it didn't paint.
+    ///
+    /// The *last* entry wins when one id painted twice in a frame (a
+    /// two-pass paint that corrects its own scroll offset, as
+    /// [`crate::compose::WorkspaceController::render`] does), so a caller
+    /// always reads the geometry that is actually on screen.
+    pub fn painted_layout(&self, id: &WidgetId) -> Option<(Rect, &dyn PrimitiveLayout)> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| &e.id == id)
+            .map(|e| (e.rect, e.layout.as_ref()))
+    }
+
+    /// The widget under `(x, y)` and, when its layout names one, the
+    /// sub-part under that same point.
+    ///
+    /// Topmost wins: entries are searched in reverse paint order, so a
+    /// widget painted over another one answers first. `Some((id, None))`
+    /// means the point landed inside the widget but on no addressable
+    /// sub-part (dead space, or a widget that names no sub-parts at all).
+    pub fn painted_hit(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(WidgetId, Option<crate::interactive::SubTarget>)> {
+        let entry = self.entries.iter().rev().find(|e| contains(e.rect, x, y))?;
+        let sub = entry
+            .sub_regions
+            .iter()
+            .find(|(r, _)| contains(*r, x, y))
+            .map(|(_, sub)| *sub);
+        Some((entry.id, sub))
+    }
+
+    /// The absolute rect of `id`'s `sub` sub-part, as painted this frame.
+    ///
+    /// Same last-entry-wins rule as [`Self::painted_layout`].
+    pub fn painted_sub_rect(
+        &self,
+        id: &WidgetId,
+        sub: crate::interactive::SubTarget,
+    ) -> Option<Rect> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| &e.id == id)?
+            .sub_regions
+            .iter()
+            .find(|(_, s)| *s == sub)
+            .map(|(r, _)| *r)
+    }
+
+    /// The center of [`Self::painted_sub_rect`], the point a driver
+    /// clicks to land on that sub-part.
+    pub fn painted_sub_center(
+        &self,
+        id: &WidgetId,
+        sub: crate::interactive::SubTarget,
+    ) -> Option<(f32, f32)> {
+        self.painted_sub_rect(id, sub)
+            .map(|r| (r.x + r.width / 2.0, r.y + r.height / 2.0))
+    }
+}
+
+/// Half-open containment, matching [`crate::TabBarLayout::hit_test`]'s own
+/// convention: the right/bottom edge belongs to the next rect along.
+fn contains(rect: Rect, x: f32, y: f32) -> bool {
+    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+}
+
+thread_local! {
+    /// The current frame's [`PaintedWidgets`].
+    ///
+    /// A `thread_local!` rather than a [`crate::Backend`] field reached
+    /// through a trait method, for two reasons. The store has to be
+    /// writable from [`crate::DrawsPrimitives::draw_dyn`]'s blanket impl
+    /// (which only ever has `&mut dyn Backend`-shaped access, so it can
+    /// reach backend state through `Backend` methods alone) *and*
+    /// readable from a shared `&TuiBackend`/`&GtkBackend` in a driver —
+    /// two accessors, on a trait whose method count this repo ratchets
+    /// strictly downwards (`tests/backend_method_ratchet.rs`). And the
+    /// record is per-frame, per-painting-thread state with exactly one
+    /// writer: every backend paints its own frames on the thread that
+    /// owns its event loop, so thread-local storage is the same scope the
+    /// data already has. [`crate::gtk`]'s own font-override store and
+    /// [`crate::testing`]'s scenario hooks use the same shape.
+    static PAINTED_WIDGETS: std::cell::RefCell<PaintedWidgets> =
+        std::cell::RefCell::new(PaintedWidgets::default());
+}
+
+/// Drop the previous frame's painted-layout record.
+///
+/// Called once per frame from `BackendCore::begin_frame` — the shared
+/// begin-frame step every backend already runs — so a widget that stops
+/// painting stops being addressable, exactly like each backend's own
+/// per-frame caches.
+pub fn clear_painted_widgets() {
+    PAINTED_WIDGETS.with(|p| p.borrow_mut().clear());
+}
+
+/// Record one widget painted by [`crate::DrawsPrimitives::draw_dyn`].
+pub fn record_painted_widget(widget: PaintedWidget) {
+    PAINTED_WIDGETS.with(|p| p.borrow_mut().record(widget));
+}
+
+/// Read this frame's [`PaintedWidgets`].
+///
+/// A closure rather than a returned reference: the store lives in
+/// thread-local storage, so a borrow cannot outlive the call. Every query
+/// helper ([`PaintedWidgets::painted_layout`],
+/// [`PaintedWidgets::painted_hit`], …) is a method on the store itself, so
+/// a caller reads one of them inside `f`.
+pub fn with_painted_widgets<R>(f: impl FnOnce(&PaintedWidgets) -> R) -> R {
+    PAINTED_WIDGETS.with(|p| f(&p.borrow()))
+}
+
+/// The widget-contract widget under `(x, y)` this frame, and the sub-part
+/// under that same point — [`PaintedWidgets::painted_hit`] against the
+/// live record.
+pub fn painted_hit(x: f32, y: f32) -> Option<(WidgetId, Option<crate::interactive::SubTarget>)> {
+    with_painted_widgets(|p| p.painted_hit(x, y))
+}
+
+/// The absolute center of `id`'s `sub` sub-part this frame —
+/// [`PaintedWidgets::painted_sub_center`] against the live record.
+pub fn painted_sub_center(id: &WidgetId, sub: crate::interactive::SubTarget) -> Option<(f32, f32)> {
+    with_painted_widgets(|p| p.painted_sub_center(id, sub))
 }
 
 #[cfg(test)]
