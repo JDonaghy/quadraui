@@ -1363,6 +1363,7 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::MultiSectionView(_) => "Multi-section view",
         OwnedContent::Tree(_) => "Tree",
         OwnedContent::List(_) => "List",
+        OwnedContent::ListWidget(_) => "List",
         OwnedContent::Form(_) => "Form",
         OwnedContent::MenuBar(_) => "Menu bar",
         OwnedContent::Split(_) => "Split",

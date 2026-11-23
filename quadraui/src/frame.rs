@@ -1315,7 +1315,22 @@ pub enum OwnedContent {
     TextDisplay(TextDisplay),
     MultiSectionView(MultiSectionView),
     Tree(TreeView),
+    /// Captured from the legacy [`Surface::List`] — maps to
+    /// [`FrameZone::List`], distinct from [`Self::ListWidget`] below.
+    /// `Surface::List` has no [`DynWidget::capture`] override to reuse
+    /// (it is built directly by [`capture_surface`], not through
+    /// [`Surface::Widget`]), so it keeps its own variant rather than
+    /// colliding with the one [`crate::primitives::list::ListView`]'s
+    /// own `Primitive::capture` produces.
     List(ListView),
+    /// Captured from a [`ListView`] reached through
+    /// [`Surface::Widget`] via [`DynWidget::capture`] — maps to
+    /// [`FrameZone::Widget`], the same [`FrameZone`] the live
+    /// `ScreenLayout::zone_for`'s own `Surface::Widget` arm reports, so
+    /// hit-testing a captured frame agrees with hit-testing the live
+    /// one. See [`Self::List`]'s own doc for why this needs a distinct
+    /// variant rather than reusing it.
+    ListWidget(ListView),
     Form(Form),
     MenuBar(MenuBar),
     Split(Split),
@@ -1398,6 +1413,39 @@ impl OwnedContent {
             OwnedContent::Tree(tree) => backend.draw_tree(rect, tree),
             #[allow(deprecated)]
             OwnedContent::List(list) => backend.draw_list(rect, list),
+            OwnedContent::ListWidget(list) => {
+                // `ListView: Primitive` is gated the same way
+                // `impl Primitive for ListView` itself is (see that
+                // impl's own `cfg`) — unlike `CellGrid`, whose
+                // unconditional `Primitive` impl needs no such guard.
+                // On a build with none of those backend features this
+                // content never gets produced in the first place
+                // (`ListView::capture`, gated identically, is the only
+                // producer), so this is dead code rather than a real
+                // no-op fallback; it exists purely so the match stays
+                // exhaustive and `OwnedContent` need not cfg-gate the
+                // variant itself (every other variant here is
+                // unconditional too, including across the plugin/JSON
+                // wire boundary this module's doc describes).
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                {
+                    backend.draw_primitive(rect, list);
+                }
+                #[cfg(not(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                )))]
+                {
+                    let _ = (rect, list, backend);
+                }
+            }
             OwnedContent::Form(form) => backend.draw_form(rect, form),
             OwnedContent::MenuBar(bar) => {
                 backend.draw_menu_bar(rect, bar);
@@ -1494,6 +1542,10 @@ impl OwnedContent {
             OwnedContent::MultiSectionView(_) => FrameZone::MultiSectionView { idx },
             OwnedContent::Tree(_) => FrameZone::Tree { idx },
             OwnedContent::List(_) => FrameZone::List { idx },
+            OwnedContent::ListWidget(list) => FrameZone::Widget {
+                idx,
+                id: Some(list.id),
+            },
             OwnedContent::Form(_) => FrameZone::Form { idx },
             OwnedContent::MenuBar(_) => FrameZone::MenuBar { idx },
             OwnedContent::Split(_) => FrameZone::Split { idx },
@@ -3068,6 +3120,59 @@ mod tests {
             .downcast_ref::<BadgeLayout>()
             .expect("Badge's own layout downcasts back to BadgeLayout");
         assert_eq!(badge_layout.area, badge_rect);
+    }
+
+    /// A [`ListView`] reached through [`Surface::Widget`] must hit-test
+    /// as [`FrameZone::Widget`] both live (`ScreenLayout::zone_for`) and
+    /// after an [`OwnedFrame::from_layout`] capture/replay round trip
+    /// (`OwnedContent::ListWidget`'s own `zone()`) — the same parity
+    /// [`OwnedContent::zone`]'s own doc promises, and distinct from the
+    /// legacy [`Surface::List`], which still hit-tests as
+    /// [`FrameZone::List`] on both paths.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn list_view_reached_through_surface_widget_round_trips_as_frame_zone_widget() {
+        let list_rect = Rect::new(0.0, 0.0, 20.0, 5.0);
+        let list = ListView {
+            id: WidgetId::new("list:widget"),
+            title: None,
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Widget {
+            rect: list_rect,
+            widget: Box::new(list.clone()),
+        });
+
+        let live_hit_map = layout.hit_map();
+        assert_eq!(
+            live_hit_map.hit_test(1.0, 1.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some(list.id)
+            }
+        );
+
+        let captured = OwnedFrame::from_layout(&layout);
+        let json = serde_json::to_string(&captured).expect("OwnedFrame serializes");
+        let restored: OwnedFrame = serde_json::from_str(&json).expect("OwnedFrame deserializes");
+        let replayed_hit_map = restored.hit_map();
+        assert_eq!(
+            replayed_hit_map.hit_test(1.0, 1.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some(list.id)
+            },
+            "a captured Surface::Widget(ListView) must hit-test identically to the live layout"
+        );
     }
 
     /// A widget whose [`Interactive::focus`] answers [`FocusSpec::Children`]

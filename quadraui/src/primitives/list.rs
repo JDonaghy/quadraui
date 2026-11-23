@@ -22,6 +22,16 @@
 //! row" from mouse, keyboard, and a screen reader's default action alike
 //! listens for both `ItemActivated` and `ItemDoubleClicked`. The app
 //! updates `selected_idx` and `scroll_offset` for the next frame.
+//!
+//! On a feature set that compiles `impl Interactive for ListView` (see
+//! that section below), a `ListView` reached through
+//! [`crate::frame::Surface::Widget`] drives all of the above itself —
+//! keyboard nav, click/double-click hit-testing, and multi-select — via
+//! [`crate::interactive::Interactive::handle`], reporting the same
+//! `ListViewEvent`s described above plus `SelectionSet` for a
+//! multi-selection gesture. [`ListViewState`] is the one piece of
+//! per-widget state that round-trip needs that the declarative
+//! descriptor has no field for.
 
 use crate::event::Rect;
 use crate::primitives::row_stack::{self, RowPaintState};
@@ -2336,12 +2346,16 @@ impl crate::primitive::Primitive for ListView {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::List`], the
-    /// variant [`crate::frame::capture_surface`] produces for a
-    /// `ListView` reached through [`crate::frame::Surface::Widget`] via
-    /// [`crate::primitive::DynWidget::capture`].
+    /// Round-trips through [`crate::frame::OwnedContent::ListWidget`] —
+    /// distinct from [`crate::frame::OwnedContent::List`] (which
+    /// [`crate::frame::capture_surface`] produces for the legacy
+    /// [`crate::frame::Surface::List`] instead) so a `ListView` reached
+    /// through [`crate::frame::Surface::Widget`] replays through
+    /// [`crate::backend::DrawsPrimitives::draw_primitive`] and
+    /// hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
+    /// exactly as it does live — see that variant's own doc.
     fn capture(&self) -> crate::frame::OwnedContent {
-        crate::frame::OwnedContent::List(self.clone())
+        crate::frame::OwnedContent::ListWidget(self.clone())
     }
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
@@ -2516,13 +2530,18 @@ impl WidgetAction for ListViewEvent {
 }
 
 /// [`Interactive::State`] for [`ListView`] — see this section's module
-/// doc for why it carries only the multi-selection set and its anchor.
+/// doc for why it carries only the multi-selection set, its anchor and
+/// its keyboard cursor.
+///
+/// `#[non_exhaustive]`: a future field add here (e.g. an in-progress
+/// drag anchor) is additive, same convention as [`ListViewLayout`].
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListViewState {
     /// The full multi-selection set, sorted/deduped by
@@ -2532,8 +2551,16 @@ pub struct ListViewState {
     pub selected: Vec<usize>,
     /// The index a Shift range-extension grows from — the last
     /// `Replace`/`Toggle` target, per [`SelectionGesture::Range`]'s own
-    /// doc.
-    pub anchor: usize,
+    /// doc. `None` until the first extending gesture, at which point it
+    /// seeds from `cursor` (or `ListView::selected_idx` if even that is
+    /// unset yet) rather than defaulting to row `0`.
+    pub anchor: Option<usize>,
+    /// The row the last keyboard/mouse move actually landed on,
+    /// independent of whatever `ListView::selected_idx` the app echoes
+    /// back next frame (which, for a `SelectionSet`, may only carry
+    /// `indices.first()`). `None` until the first move, at which point
+    /// it falls back to `ListView::selected_idx`.
+    pub cursor: Option<usize>,
 }
 
 #[cfg(any(
@@ -2543,13 +2570,28 @@ pub struct ListViewState {
     all(feature = "macos", target_os = "macos")
 ))]
 impl ListView {
+    /// The row the next navigation/extension computes relative to:
+    /// `state.cursor` once any move has happened, falling back to
+    /// `self.selected_idx` (clamped into `self.items`) before the first
+    /// one — see [`ListViewState::cursor`]'s own doc for why the two can
+    /// disagree after a multi-select extension.
+    fn current_idx(&self, state: &ListViewState) -> usize {
+        let last = self.items.len().saturating_sub(1);
+        state.cursor.unwrap_or(self.selected_idx).min(last)
+    }
+
     /// Build the `Handled::Event` that moves the selection to `target`
     /// (already clamped into `self.items`), honouring `extend` (Shift
     /// held) the same way a click's own [`SelectionGesture`] does: a
     /// plain move collapses to a single-row `SelectionChanged` and
     /// re-anchors there; an extending move grows `state.selected` via
     /// [`apply_selection_gesture`]'s `Range` gesture from `state.anchor`
-    /// and reports the full set via `SelectionSet`.
+    /// (seeded from [`Self::current_idx`] the first time an extension
+    /// starts, not reset on every subsequent one) and reports the full
+    /// set via `SelectionSet`. Either way, `state.cursor` is updated to
+    /// `target` so the *next* call keeps extending from where this one
+    /// left off, even though the app's own echoed `selected_idx` may not
+    /// track that.
     fn navigate(
         &self,
         state: &mut ListViewState,
@@ -2559,55 +2601,60 @@ impl ListView {
         if self.items.is_empty() {
             return Handled::Ignored;
         }
+        let current = self.current_idx(state);
+        state.cursor = Some(target);
         if extend {
-            let indices = apply_selection_gesture(
-                &state.selected,
-                state.anchor,
-                target,
-                SelectionGesture::Range,
-            );
+            let anchor = *state.anchor.get_or_insert(current);
+            let indices =
+                apply_selection_gesture(&state.selected, anchor, target, SelectionGesture::Range);
             state.selected = indices.clone();
             Handled::Event(ListViewEvent::SelectionSet { indices })
         } else {
-            state.anchor = target;
+            state.anchor = Some(target);
             state.selected = vec![target];
             Handled::Event(ListViewEvent::SelectionChanged { idx: target })
         }
     }
 
-    /// Clamp `delta` applied to `self.selected_idx` into `[0,
+    /// Clamp `delta` applied to [`Self::current_idx`] into `[0,
     /// items.len())`, saturating at either edge rather than wrapping —
     /// the keyboard-navigation counterpart of
     /// [`ListViewLayout::hit_test`]'s mouse-side row resolution.
-    fn clamped_target(&self, delta: isize) -> usize {
+    fn clamped_target(&self, state: &ListViewState, delta: isize) -> usize {
         let last = self.items.len().saturating_sub(1);
-        let current = self.selected_idx.min(last);
-        current.saturating_add_signed(delta).min(last)
+        self.current_idx(state)
+            .saturating_add_signed(delta)
+            .min(last)
     }
 
     /// Dispatch one idle (no active gesture) keystroke: `j`/Down and
     /// `k`/Up move the selection by one row, Home/End jump to either
     /// edge, Page Up/Down move by one viewport page (`layout.visible_items`'s
     /// length, floored at one row), Enter activates the current
-    /// selection, and every other key falls through to the raw
-    /// `KeyPressed` an app may bind its own hotkeys to — see
-    /// [`ListViewEvent::KeyPressed`]'s own doc.
+    /// selection, and every other key is reported to the app via
+    /// [`EventCx::emit`] as the raw [`ListViewEvent::KeyPressed`] an app
+    /// may bind its own hotkeys to, then declared [`Handled::Ignored`]
+    /// rather than claimed — see that variant's own doc, and
+    /// [`Interactive::handle`]'s own doc for why an unclaimed key must
+    /// still bubble (Tab/Shift+Tab focus-cycling, Escape, and anything
+    /// else a later dispatch step owns).
     fn handle_key(
         &self,
         state: &mut ListViewState,
         key: &Key,
         modifiers: &Modifiers,
         layout: &ListViewPrimitiveLayout,
+        cx: &mut EventCx,
     ) -> Handled<ListViewEvent> {
         let extend = modifiers.shift;
         let page = layout.layout.visible_items.len().max(1) as isize;
         match key {
             Key::Named(NamedKey::Down) | Key::Char('j') => {
-                let target = self.clamped_target(1);
+                let target = self.clamped_target(state, 1);
                 self.navigate(state, target, extend)
             }
             Key::Named(NamedKey::Up) | Key::Char('k') => {
-                let target = self.clamped_target(-1);
+                let target = self.clamped_target(state, -1);
                 self.navigate(state, target, extend)
             }
             Key::Named(NamedKey::Home) => self.navigate(state, 0, extend),
@@ -2616,11 +2663,11 @@ impl ListView {
                 self.navigate(state, target, extend)
             }
             Key::Named(NamedKey::PageDown) => {
-                let target = self.clamped_target(page);
+                let target = self.clamped_target(state, page);
                 self.navigate(state, target, extend)
             }
             Key::Named(NamedKey::PageUp) => {
-                let target = self.clamped_target(-page);
+                let target = self.clamped_target(state, -page);
                 self.navigate(state, target, extend)
             }
             Key::Named(NamedKey::Enter) => {
@@ -2637,23 +2684,33 @@ impl ListView {
                     Handled::Ignored
                 } else {
                     let indices: Vec<usize> = (0..self.items.len()).collect();
+                    let last = self.items.len() - 1;
                     state.selected = indices.clone();
+                    state.anchor = Some(last);
+                    state.cursor = Some(last);
                     Handled::Event(ListViewEvent::SelectionSet { indices })
                 }
             }
-            _ => Handled::Event(ListViewEvent::KeyPressed {
-                key: format!("{key:?}"),
-                modifiers: *modifiers,
-            }),
+            _ => {
+                cx.emit(
+                    ListViewEvent::KeyPressed {
+                        key: key_to_event_string(key),
+                        modifiers: *modifiers,
+                    }
+                    .into_ui_event(cx.id),
+                );
+                Handled::Ignored
+            }
         }
     }
 
     /// `PointerKind::Down(MouseButton::Left)` — hit-tests `local` and
     /// selects the row it landed on, honouring `mods`' own
     /// [`SelectionGesture`] the same way a keyboard range-extension does
-    /// (see [`Self::navigate`]). A hit on the title row or the empty
-    /// tail below the last item is non-actionable, per
-    /// [`ListViewHit`]'s own doc.
+    /// (see [`Self::navigate`]). A hit on the title row requests focus
+    /// (so clicking a bordered list's header still focuses it) but is
+    /// otherwise non-actionable, per [`ListViewHit`]'s own doc; a hit on
+    /// the empty tail below the last item is ignored outright.
     fn handle_mouse_down(
         &self,
         state: &mut ListViewState,
@@ -2661,28 +2718,57 @@ impl ListView {
         mods: &Modifiers,
         cx: &mut EventCx,
     ) -> Handled<ListViewEvent> {
-        let ListViewHit::Item(idx) = hit else {
-            return Handled::Ignored;
+        let idx = match hit {
+            ListViewHit::Item(idx) => idx,
+            ListViewHit::Title => {
+                cx.request_focus(None);
+                return Handled::Ignored;
+            }
+            ListViewHit::Empty => return Handled::Ignored,
         };
         cx.request_focus(None);
+        let current = self.current_idx(state);
         match SelectionGesture::from_modifiers(*mods) {
             SelectionGesture::Replace => {
-                state.anchor = idx;
+                state.anchor = Some(idx);
+                state.cursor = Some(idx);
                 state.selected = vec![idx];
                 Handled::Event(ListViewEvent::SelectionChanged { idx })
             }
             gesture @ SelectionGesture::Toggle => {
-                let indices = apply_selection_gesture(&state.selected, state.anchor, idx, gesture);
+                let anchor = state.anchor.unwrap_or(current);
+                let indices = apply_selection_gesture(&state.selected, anchor, idx, gesture);
                 state.selected = indices.clone();
-                state.anchor = idx;
+                state.anchor = Some(idx);
+                state.cursor = Some(idx);
                 Handled::Event(ListViewEvent::SelectionSet { indices })
             }
             gesture @ SelectionGesture::Range => {
-                let indices = apply_selection_gesture(&state.selected, state.anchor, idx, gesture);
+                let anchor = *state.anchor.get_or_insert(current);
+                let indices = apply_selection_gesture(&state.selected, anchor, idx, gesture);
                 state.selected = indices.clone();
+                state.cursor = Some(idx);
                 Handled::Event(ListViewEvent::SelectionSet { indices })
             }
         }
+    }
+}
+
+/// Canonical key string for [`ListViewEvent::KeyPressed`] — the same
+/// spelling [`NamedKey::name`] already promises as the single source of
+/// truth, so this fallback agrees with every other backend's own
+/// `KeyPressed` event instead of carrying a `Debug`-derived string no
+/// other producer uses.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+fn key_to_event_string(key: &Key) -> String {
+    match key {
+        Key::Char(c) => c.to_string(),
+        Key::Named(named) => named.name().into_owned(),
     }
 }
 
@@ -2736,7 +2822,7 @@ impl Interactive for ListView {
                 _ => Handled::Ignored,
             },
             RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => {
-                self.handle_key(state, key, modifiers, layout)
+                self.handle_key(state, key, modifiers, layout, cx)
             }
             _ => Handled::Ignored,
         }
@@ -2765,6 +2851,7 @@ mod interactive_tests {
     #[derive(Debug, Default)]
     struct MockHost {
         focus_requests: Vec<Option<crate::interactive::SubTarget>>,
+        emitted: Vec<crate::UiEvent>,
     }
 
     impl EventHost for MockHost {
@@ -2778,7 +2865,9 @@ mod interactive_tests {
         fn release_pointer(&mut self) {}
         fn set_cursor(&mut self, _cursor: PointerShape) {}
         fn request_redraw(&mut self) {}
-        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
         fn units(&self) -> Units {
             Units::Cells
         }
@@ -2945,6 +3034,109 @@ mod interactive_tests {
         );
     }
 
+    /// Regression: a second consecutive Shift+Down must keep growing the
+    /// range from where the first one left off (`state.cursor`), not
+    /// re-derive the target from `ListView::selected_idx` — which, after
+    /// a `SelectionSet`, an app may only echo back as
+    /// `indices.first()` (as this driver app does), collapsing every
+    /// extension back to the same two rows forever.
+    #[test]
+    fn consecutive_shift_downs_keep_growing_the_range() {
+        let mut l = list(5, 0);
+        let layout = layout_for(&l);
+        let mut state = ListViewState::default();
+        let mut host = MockHost::default();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+
+        {
+            let mut cx = EventCx::new(l.id, &mut host);
+            let outcome = l.handle(
+                &mut state,
+                &key_with_mods(NamedKey::Down, shift),
+                &layout,
+                &mut cx,
+            );
+            assert_eq!(
+                outcome,
+                Handled::Event(ListViewEvent::SelectionSet {
+                    indices: vec![0, 1]
+                })
+            );
+        }
+        // The app echoes back only `indices.first()`, same as
+        // `tests/list_interactive_driver.rs`'s own `SelectionSet` arm.
+        l.selected_idx = 0;
+
+        let mut cx = EventCx::new(l.id, &mut host);
+        let outcome = l.handle(
+            &mut state,
+            &key_with_mods(NamedKey::Down, shift),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(ListViewEvent::SelectionSet {
+                indices: vec![0, 1, 2]
+            })
+        );
+    }
+
+    /// Regression: the very first Shift+Down on a list whose selection
+    /// didn't start at row 0 must anchor at the actual current row, not
+    /// row 0 — `ListViewState::anchor`'s own default (`None`) seeds from
+    /// `ListView::selected_idx` on first use rather than defaulting to
+    /// `0`.
+    #[test]
+    fn shift_down_from_a_non_zero_selection_anchors_there_not_at_row_zero() {
+        let l = list(5, 3);
+        let layout = layout_for(&l);
+        let mut state = ListViewState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(l.id, &mut host);
+
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let outcome = l.handle(
+            &mut state,
+            &key_with_mods(NamedKey::Down, shift),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(ListViewEvent::SelectionSet {
+                indices: vec![3, 4]
+            })
+        );
+    }
+
+    #[test]
+    fn clicking_the_title_requests_focus_but_is_ignored() {
+        let mut l = list(3, 0);
+        l.bordered = true;
+        l.title = Some(StyledText::plain("Picker"));
+        let layout = layout_for(&l);
+        let mut state = ListViewState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(l.id, &mut host);
+
+        let click = RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(0.0, 0.0),
+            mods: Modifiers::default(),
+        };
+        let outcome = l.handle(&mut state, &click, &layout, &mut cx);
+        assert_eq!(outcome, Handled::Ignored);
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
     #[test]
     fn ctrl_a_selects_every_row() {
         let l = list(4, 0);
@@ -2971,7 +3163,7 @@ mod interactive_tests {
     }
 
     #[test]
-    fn an_unbound_key_falls_through_to_the_raw_key_pressed_event() {
+    fn an_unbound_key_falls_through_to_the_raw_key_pressed_event_but_bubbles() {
         let l = list(3, 0);
         let layout = layout_for(&l);
         let mut state = ListViewState::default();
@@ -2984,12 +3176,47 @@ mod interactive_tests {
             repeat: false,
         });
         let outcome = l.handle(&mut state, &q, &layout, &mut cx);
+        // `Handled::Ignored`, not `Handled::Event` — an unbound key must
+        // still bubble past this widget (Tab/Shift+Tab focus-cycling,
+        // Escape, …), even though the app still sees the raw key via the
+        // emitted `UiEvent`.
+        assert_eq!(outcome, Handled::Ignored);
         assert_eq!(
-            outcome,
-            Handled::Event(ListViewEvent::KeyPressed {
-                key: format!("{:?}", Key::Char('q')),
-                modifiers: Modifiers::default(),
-            })
+            host.emitted,
+            vec![crate::UiEvent::List(
+                l.id,
+                ListViewEvent::KeyPressed {
+                    key: "q".to_string(),
+                    modifiers: Modifiers::default(),
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn an_unbound_named_key_uses_named_keys_canonical_spelling() {
+        let l = list(3, 0);
+        let layout = layout_for(&l);
+        let mut state = ListViewState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(l.id, &mut host);
+
+        let tab = RoutedEvent::Key(KeyEvent {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        let outcome = l.handle(&mut state, &tab, &layout, &mut cx);
+        assert_eq!(outcome, Handled::Ignored);
+        assert_eq!(
+            host.emitted,
+            vec![crate::UiEvent::List(
+                l.id,
+                ListViewEvent::KeyPressed {
+                    key: "Tab".to_string(),
+                    modifiers: Modifiers::default(),
+                }
+            )]
         );
     }
 
@@ -3062,7 +3289,8 @@ mod interactive_tests {
         let layout = layout_for(&l);
         let mut state = ListViewState {
             selected: vec![0],
-            anchor: 0,
+            anchor: Some(0),
+            cursor: Some(0),
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(l.id, &mut host);
