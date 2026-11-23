@@ -4702,6 +4702,11 @@ mod coverage {
         }
     );
     assert_fields!(assert_data_row_fields, DataRow { cells, decoration });
+    // `chrome` / `icons` / `glyphs` are `#[serde(default)]` descriptor
+    // state a host app sets through the Rust API: `TabBarDescriptor`'s
+    // schema above declares neither, so neither reaches the generated
+    // Python/TypeScript wire types, and a binding's tab strip gets the
+    // `TabChrome::default()` / no-icons / default-glyphs rendering.
     assert_fields!(
         assert_tab_bar_fields,
         TabBar {
@@ -4711,7 +4716,10 @@ mod coverage {
             right_segments,
             active_accent,
             show_tab_close,
-            compact
+            compact,
+            chrome,
+            icons,
+            glyphs
         }
     );
     assert_fields!(

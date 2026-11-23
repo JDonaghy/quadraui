@@ -10505,6 +10505,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let resolved = resolve_tab_bar_active(engine.widget_state(), &tab_bar);
         assert!(
@@ -10543,6 +10544,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let entries = (0..self.tab_count)
                 .map(|i| LayoutTabEntry {

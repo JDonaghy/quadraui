@@ -1541,3 +1541,237 @@ fn image_menu_click_agrees_tui_and_gtk_on_activated_action() {
          should update the status bar"
     );
 }
+
+// ─── GTK pixel parity for `TabBar`'s chrome / icon descriptor fields ───
+//
+// The pixel-backend leg of the claim `tui_example_driver.rs`'s
+// `tab_bar_descriptor_fields` module makes on the cell grid:
+// `draw_primitive(rect, &bar)` with `TabBar::chrome` / `TabBar::icons`
+// set must rasterise the same pixels, and resolve the same per-tab hit
+// ranges, as the `Backend::draw_tab_bar_with_chrome` /
+// `draw_tab_bar_icons` call that takes the same values as arguments.
+mod gtk_tab_bar_descriptor_fields {
+    use quadraui::gtk::testing::GtkDriver;
+    use quadraui::primitives::layout_metrics::pixel::TAB_PAD;
+    use quadraui::{
+        AppLogic, Backend, Color, DrawsPrimitives, Reaction, Rect, Style, TabBar, TabBarLayout,
+        TabChrome, TabFrame, TabIcon, TabItem, UiEvent, WidgetId,
+    };
+    use std::cell::RefCell;
+
+    const BAR: Rect = Rect::new(0.0, 0.0, 700.0, 35.0);
+    const LABELS: [&str; 3] = ["main.rs", "lib.rs", "mod.rs"];
+
+    fn tabs() -> Vec<TabItem> {
+        LABELS
+            .iter()
+            .enumerate()
+            .map(|(i, label)| TabItem {
+                label: (*label).to_string(),
+                is_active: i == 1,
+                is_closable: true,
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// The two configurations this lane pins: bracket framing around the
+    /// active tab, and a per-tab icon.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Case {
+        /// No frame, no icons — the baseline both other cases must
+        /// differ from.
+        Plain,
+        FocusedFrame,
+        Icons,
+    }
+
+    impl Case {
+        fn chrome(self) -> TabChrome {
+            match self {
+                Case::FocusedFrame => {
+                    TabChrome::new(TabFrame::Brackets).with_focused_index(Some(1))
+                }
+                _ => TabChrome::default(),
+            }
+        }
+
+        /// Bundled codicon glyphs rather than plain ASCII ones: GTK
+        /// measures a tab icon in a Nerd-Font/codicon family while
+        /// `Primitive::layout` measures it through `FontRole::Chrome`, so
+        /// only a glyph both resolve in the same face reserves the same
+        /// column on both paths.
+        fn icons(self) -> Vec<Option<TabIcon>> {
+            match self {
+                Case::Icons => vec![
+                    TabIcon::codicon("file-code", Color::rgb(222, 165, 132)),
+                    None,
+                    TabIcon::codicon("markdown", Color::rgb(120, 170, 240)),
+                ],
+                _ => Vec::new(),
+            }
+        }
+
+        fn descriptor(self) -> TabBar {
+            TabBar {
+                id: WidgetId::new("tabs:gtk-parity"),
+                tabs: tabs(),
+                chrome: self.chrome(),
+                icons: self.icons(),
+                ..Default::default()
+            }
+        }
+
+        fn plain_descriptor(self) -> TabBar {
+            TabBar {
+                id: WidgetId::new("tabs:gtk-parity"),
+                tabs: tabs(),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Route {
+        Seam,
+        BackendMethod,
+    }
+
+    fn tab_ranges(layout: &TabBarLayout, tab_count: usize) -> Vec<(f32, f32)> {
+        let mut ranges = vec![(0.0, 0.0); tab_count];
+        for vt in &layout.visible_tabs {
+            ranges[vt.tab_idx] = (vt.bounds.x, vt.bounds.x + vt.bounds.width);
+        }
+        ranges
+    }
+
+    struct ParityApp {
+        case: Case,
+        route: Route,
+        ranges: RefCell<Vec<(f32, f32)>>,
+    }
+
+    impl AppLogic for ParityApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            // `Primitive::layout` reserves `pixel::TAB_PAD` per side,
+            // since `LayoutCtx` carries no style token, while the GTK
+            // rasteriser reads `Style::tab_padding_x`. Hold the backend's
+            // token at the same value so this comparison is about the
+            // chrome and icon fields rather than that difference.
+            backend.set_style(Style::default().with_tab_padding_x(TAB_PAD));
+            let layout = match self.route {
+                Route::Seam => backend.draw_primitive(BAR, &self.case.descriptor()).layout,
+                // Hit ranges come from the painting method's no-paint
+                // `resolve_*` twin — the painting `*_layout` twins would
+                // overdraw the strip.
+                Route::BackendMethod => {
+                    let bar = self.case.plain_descriptor();
+                    let chrome = self.case.chrome();
+                    if self.case == Case::Icons {
+                        let icons = self.case.icons();
+                        backend.draw_tab_bar_icons(BAR, &bar, &icons, None);
+                        backend.resolve_tab_bar_layout_icons(BAR, &bar, &icons)
+                    } else {
+                        backend.draw_tab_bar_with_chrome(BAR, &bar, None, &chrome);
+                        backend.resolve_tab_bar_layout_with_chrome(BAR, &bar, &chrome)
+                    }
+                }
+            };
+            *self.ranges.borrow_mut() = tab_ranges(&layout, LABELS.len());
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// The rasterised surface, the Pango runs it painted, and the hit
+    /// ranges `route` resolved for `case`.
+    fn paint(case: Case, route: Route) -> (Vec<u8>, Vec<String>, Vec<(f32, f32)>) {
+        let mut driver = GtkDriver::new(
+            ParityApp {
+                case,
+                route,
+                ranges: RefCell::new(Vec::new()),
+            },
+            BAR.width as i32,
+            60,
+        );
+        driver.render();
+        let texts: Vec<String> = driver
+            .painted_texts()
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        let ranges = driver.app().ranges.borrow().clone();
+        let pixels = driver.screen();
+        (pixels, texts, ranges)
+    }
+
+    fn assert_pixel_parity(case: Case) {
+        let (seam_pixels, seam_texts, seam_ranges) = paint(case, Route::Seam);
+        let (method_pixels, method_texts, method_ranges) = paint(case, Route::BackendMethod);
+        assert_eq!(
+            seam_texts, method_texts,
+            "{case:?}: draw_primitive painted different text runs than the Backend method"
+        );
+        assert_eq!(
+            seam_ranges, method_ranges,
+            "{case:?}: draw_primitive resolved different per-tab hit ranges"
+        );
+        let differing = seam_pixels
+            .iter()
+            .zip(&method_pixels)
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "{case:?}: draw_primitive rasterised {differing} bytes differently \
+             from the Backend method"
+        );
+        // Non-vacuous: the case has to actually look different from a
+        // bar with neither chrome nor icons, or the comparison above
+        // would hold for a seam that ignored the fields entirely.
+        let (plain_pixels, _, _) = paint(Case::Plain, Route::Seam);
+        assert_ne!(
+            seam_pixels, plain_pixels,
+            "{case:?}: the descriptor fields should change what GTK rasterises"
+        );
+    }
+
+    #[test]
+    fn focused_frame_chrome_rasterises_the_same_pixels_through_the_seam_and_the_backend_method() {
+        assert_pixel_parity(Case::FocusedFrame);
+        let (_, texts, _) = paint(Case::FocusedFrame, Route::Seam);
+        assert!(
+            texts.iter().any(|t| t == "[") && texts.iter().any(|t| t == "]"),
+            "bracket framing should reach the painted runs: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn icon_bar_rasterises_the_same_pixels_through_the_seam_and_the_backend_method() {
+        assert_pixel_parity(Case::Icons);
+        let (_, texts, icon_ranges) = paint(Case::Icons, Route::Seam);
+        let (_, _, plain_ranges) = paint(Case::Plain, Route::Seam);
+        let expected: Vec<String> = Case::Icons
+            .icons()
+            .into_iter()
+            .flatten()
+            .map(|icon| icon.glyph)
+            .collect();
+        assert!(
+            expected
+                .iter()
+                .all(|glyph| texts.iter().any(|run| run == glyph)),
+            "the descriptor's icon glyphs {expected:?} should reach the painted runs: {texts:?}"
+        );
+        let width = |r: (f32, f32)| r.1 - r.0;
+        assert!(
+            width(icon_ranges[0]) > width(plain_ranges[0]),
+            "an icon should widen its own tab: {icon_ranges:?} vs {plain_ranges:?}"
+        );
+    }
+}

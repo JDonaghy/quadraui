@@ -277,6 +277,7 @@ impl GalleryApp {
             active_accent: Some(backend.theme().accent_bg),
             show_tab_close: false,
             compact: true,
+            ..Default::default()
         }
     }
 

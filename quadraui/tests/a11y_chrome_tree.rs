@@ -59,6 +59,7 @@ fn tab_bar_exposes_tabs_as_a_tab_list() {
         active_accent: None,
         show_tab_close: true,
         compact: false,
+        ..Default::default()
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::TabBar {

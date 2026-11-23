@@ -9780,6 +9780,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
@@ -9827,6 +9828,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -12229,6 +12231,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let diff = chrome_font_diff_pixel_count(
             300,
@@ -13268,6 +13271,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let _ = backend.draw_tab_bar(rect, &tab_bar, None);
         }

@@ -11083,6 +11083,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
 
         backend.set_painted_text_recording(true);

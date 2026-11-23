@@ -491,6 +491,7 @@ impl Pane {
             active_accent: None,
             show_tab_close: self.tabs.iter().any(|t| t.closable),
             compact: false,
+            ..Default::default()
         }
     }
 

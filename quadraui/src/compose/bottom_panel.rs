@@ -479,6 +479,7 @@ impl BottomPanelController {
             // measurement function so non-closable tabs get no close region.
             show_tab_close: self.tabs.iter().any(|t| t.closable),
             compact: true,
+            ..Default::default()
         }
     }
 }
