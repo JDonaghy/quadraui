@@ -104,6 +104,7 @@ mod ms11_554_wide_tab_labels {
                 // presence cannot move any asserted number.
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             }
         }
     }

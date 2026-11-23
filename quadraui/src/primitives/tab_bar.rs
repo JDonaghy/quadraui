@@ -222,6 +222,23 @@ fn default_true() -> bool {
     true
 }
 
+/// An empty bar with the same field values a deserialised `{}` gets, so a
+/// struct literal can name only the fields it cares about and end in
+/// `..Default::default()`.
+impl Default for TabBar {
+    fn default() -> Self {
+        Self {
+            id: WidgetId::new("tab-bar"),
+            tabs: Vec::new(),
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+}
+
 /// Optional per-tab icon drawn before the label — the coloured
 /// language/file-type glyph VS Code shows on every tab (e.g. an orange
 /// gear for `.toml`, a blue badge for `.ts`). Glyph-sourcing follows the
