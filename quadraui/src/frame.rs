@@ -268,11 +268,6 @@ pub enum Surface {
         rect: Rect,
         editor: Editor,
     },
-    TabBar {
-        rect: Rect,
-        bar: TabBar,
-        hovered_close: Option<usize>,
-    },
     StatusBar {
         rect: Rect,
         bar: StatusBar,
@@ -868,13 +863,6 @@ impl ScreenLayout {
                 Surface::Editor { rect, editor } => {
                     backend.draw_editor(*rect, editor);
                 }
-                Surface::TabBar {
-                    rect,
-                    bar,
-                    hovered_close,
-                } => {
-                    backend.draw_tab_bar(*rect, bar, *hovered_close);
-                }
                 Surface::StatusBar {
                     rect,
                     bar,
@@ -1117,7 +1105,6 @@ impl ScreenLayout {
             .iter()
             .flat_map(|s| match s {
                 Surface::Editor { rect, editor } => vec![(editor.id, *rect)],
-                Surface::TabBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::StatusBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::ActivityBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::CommandLine { rect, cmd } => vec![(cmd.id, *rect)],
@@ -1200,7 +1187,6 @@ impl ScreenLayout {
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
             Surface::Editor { rect, .. } => (*rect, FrameZone::Editor { idx }),
-            Surface::TabBar { rect, .. } => (*rect, FrameZone::TabBar { idx }),
             Surface::StatusBar { rect, .. } => (*rect, FrameZone::StatusBar { idx }),
             Surface::ActivityBar { rect, .. } => (*rect, FrameZone::ActivityBar { idx }),
             Surface::CommandLine { rect, .. } => (*rect, FrameZone::CommandLine { idx }),
@@ -1307,16 +1293,14 @@ impl Default for ScreenLayout {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum OwnedContent {
     Editor(Editor),
-    TabBar(TabBar),
     /// Captured from a [`TabBar`] reached through [`Surface::Widget`] via
     /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the same
     /// [`FrameZone`] the live `ScreenLayout::zone_for`'s own
     /// `Surface::Widget` arm reports, so hit-testing a captured frame
-    /// agrees with hit-testing the live one. See [`Self::List`]'s own doc
-    /// (on [`Self::ListWidget`]) for why this needs a distinct variant
-    /// rather than reusing [`Self::TabBar`], which is captured from the
-    /// legacy [`Surface::TabBar`] instead.
-    TabBarWidget(TabBar),
+    /// agrees with hit-testing the live one. `Surface::Widget` is the
+    /// only way a `TabBar` reaches a frame, so this is the only variant
+    /// a captured tab bar ever takes.
+    TabBar(TabBar),
     StatusBar(StatusBar),
     ActivityBar(ActivityBar),
     CommandLine(CommandLine),
@@ -1400,9 +1384,6 @@ impl OwnedContent {
                 backend.draw_editor(rect, editor);
             }
             OwnedContent::TabBar(bar) => {
-                backend.draw_tab_bar(rect, bar, None);
-            }
-            OwnedContent::TabBarWidget(bar) => {
                 // `TabBar: Primitive` is gated the same way `impl
                 // Primitive for TabBar` itself is (see that impl's own
                 // `cfg`) — see `OwnedContent::ListWidget`'s own `draw`
@@ -1568,8 +1549,7 @@ impl OwnedContent {
     fn zone(&self, idx: usize) -> FrameZone {
         match self {
             OwnedContent::Editor(_) => FrameZone::Editor { idx },
-            OwnedContent::TabBar(_) => FrameZone::TabBar { idx },
-            OwnedContent::TabBarWidget(bar) => FrameZone::Widget {
+            OwnedContent::TabBar(bar) => FrameZone::Widget {
                 idx,
                 id: Some(bar.id),
             },
@@ -1834,9 +1814,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
     match surface {
         Surface::Editor { rect, editor } => {
             (*rect, Some(editor.id), OwnedContent::Editor(editor.clone()))
-        }
-        Surface::TabBar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::TabBar(bar.clone()))
         }
         Surface::StatusBar { rect, bar, .. } => {
             (*rect, Some(bar.id), OwnedContent::StatusBar(bar.clone()))

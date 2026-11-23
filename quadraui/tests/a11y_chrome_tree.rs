@@ -61,10 +61,9 @@ fn tab_bar_exposes_tabs_as_a_tab_list() {
         compact: false,
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::TabBar {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 1.0),
-            bar,
-            hovered_close: None,
+            widget: Box::new(bar),
         })
         .snapshot();
 

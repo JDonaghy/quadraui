@@ -144,10 +144,12 @@ use crate::primitives::drop_zone::{
     DropZoneHit,
 };
 use crate::primitives::split::{Split, SplitDirection};
-// This compose helper caches exactly what `Backend::draw_tab_bar` returns
-// for click/drag dispatch — see `TabBarHits`'s own doc for its stability
-// contract.
-use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
+// This compose helper caches the `TabBar` primitive's own resolved
+// `TabBarLayout` for click/drag dispatch, and routes every strip click
+// through that layout's `hit_test` rather than comparing x-ranges itself.
+use crate::primitives::tab_bar::{
+    TabBar, TabBarHit, TabBarLayout, TabBarSegment, TabItem, VisibleTab,
+};
 use crate::types::WidgetId;
 use crate::Backend;
 
@@ -646,8 +648,9 @@ pub struct TabGroupLayout {
 /// [`tab_drag_overlay`](TabGroupController::tab_drag_overlay) all work without
 /// ever calling `render`.
 ///
-/// `tab_slots` uses the same sentinel convention as [`TabBarHits`]: pass
-/// `(0.0, 0.0)` for any tab that is scrolled off the left edge of the strip.
+/// `tab_slots` keeps one entry per tab in the controller's own tab vec:
+/// pass `(0.0, 0.0)` for any tab that is scrolled off the left edge of
+/// the strip, so the entries after it keep their original tab indices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaneDragRect {
     /// Bounds of the tab strip row (top of the pane).
@@ -722,9 +725,88 @@ pub struct TabGroupController {
 
 /// Cached hit-test state for one pane from the last render.
 struct PaneHitCache {
-    hits: TabBarHits,
+    /// The tab strip's own resolved geometry, in **strip-relative**
+    /// coordinates — the shape `TabBar`'s `Primitive::layout` produces,
+    /// so a strip click is classified by
+    /// [`TabBarLayout::hit_test`] on `(x - strip_bounds.x, y -
+    /// strip_bounds.y)` rather than by comparing absolute x-ranges here.
+    layout: TabBarLayout,
     strip_bounds: Rect,
     content_bounds: Rect,
+}
+
+/// Paint one pane's tab strip into `strip` through
+/// [`crate::backend::DrawsPrimitives::draw_dyn`] and return the
+/// strip-relative [`TabBarLayout`] it resolved.
+///
+/// `TabBar`'s `Primitive` impl is gated on there being a rasteriser
+/// feature at all, so a build with none of them paints nothing and gets
+/// an empty layout: dispatch then classifies every strip click as
+/// [`TabBarHit::Empty`], which is the only coherent answer when no
+/// backend ever measured the strip.
+fn draw_tab_strip(backend: &mut dyn Backend, strip: Rect, tab_bar: &TabBar) -> TabBarLayout {
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    let resolved = {
+        use crate::backend::DrawsPrimitives;
+        backend
+            .draw_dyn(strip, tab_bar, &())
+            .downcast_ref::<crate::primitives::tab_bar::TabBarPrimitiveLayout>()
+            .map(|l| l.layout.clone())
+    };
+    #[cfg(not(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )))]
+    let resolved = {
+        let _ = (backend, tab_bar);
+        None
+    };
+    resolved.unwrap_or_else(|| strip_layout_from_tab_slots(strip, &[]))
+}
+
+/// A strip layout carrying only tab-body hit regions, synthesised from
+/// absolute `(start_x, end_x)` tab slots relative to a `strip` of
+/// `strip.width` x `strip.height`.
+///
+/// Two callers need it: [`TabGroupController::set_drag_geometry`], whose
+/// [`PaneDragRect`] carries slot x-pairs and no close/segment geometry at
+/// all, and [`draw_tab_strip`] on a build with no rasteriser feature.
+///
+/// `slots` uses [`PaneDragRect::tab_slots`]'s own `(0.0, 0.0)` sentinel
+/// convention for a tab scrolled off the left edge: a sentinel entry
+/// contributes no visible tab, but the entries after it keep their
+/// original tab indices.
+fn strip_layout_from_tab_slots(strip: Rect, slots: &[(f32, f32)]) -> TabBarLayout {
+    let visible_tabs: Vec<VisibleTab> = slots
+        .iter()
+        .enumerate()
+        .filter(|(_, (s, e))| *s != 0.0 || *e != 0.0)
+        .map(|(tab_idx, (s, e))| VisibleTab {
+            tab_idx,
+            bounds: Rect::new(s - strip.x, 0.0, (e - s).max(0.0), strip.height),
+            close_bounds: None,
+        })
+        .collect();
+    TabBarLayout {
+        bar_width: strip.width,
+        bar_height: strip.height,
+        hit_regions: visible_tabs
+            .iter()
+            .map(|vt| (vt.bounds, TabBarHit::Tab(vt.tab_idx)))
+            .collect(),
+        visible_tabs,
+        visible_segments: vec![],
+        scroll_left: None,
+        scroll_right: None,
+        resolved_scroll_offset: 0,
+    }
 }
 
 impl TabGroupController {
@@ -997,8 +1079,9 @@ impl TabGroupController {
     // ── Render ──────────────────────────────────────────────────────
 
     /// Render all panes into `bounds`. Calls `backend.draw_split` for each
-    /// inter-pane divider and `backend.draw_tab_bar` for each pane's tab
-    /// strip. Active-pane content is rendered via [`BackendWidget::render`].
+    /// inter-pane divider and paints each pane's tab strip through the
+    /// `TabBar` primitive (see [`draw_tab_strip`]).
+    /// Active-pane content is rendered via [`BackendWidget::render`].
     /// When a tab drag is active, automatically calls
     /// `backend.draw_drop_overlay` at the end of the frame.
     ///
@@ -1069,10 +1152,15 @@ impl TabGroupController {
             strip_bounds.push(strip);
             content_bounds.push(content);
 
-            // Draw tab bar.
+            // Draw the tab strip through the widget contract: `TabBar` is
+            // a `Primitive`, so `draw_dyn` resolves its layout and paints
+            // it on whichever surface this backend exposes.
             let tab_bar = pane.build_tab_bar(pane_idx);
-            let hits = backend.draw_tab_bar(strip, &tab_bar, None);
-            pane.tab_scroll_offset = hits.correct_scroll_offset;
+            let layout = draw_tab_strip(backend, strip, &tab_bar);
+            // Per the `TabBar` contract, adopt the scroll offset this
+            // frame's real measurements resolved to, so the next frame
+            // starts coherent — see `TabBarLayout::resolved_scroll_offset`.
+            pane.tab_scroll_offset = layout.resolved_scroll_offset;
 
             // Render active content.
             if content.width > 0.0 && content.height > 0.0 {
@@ -1082,7 +1170,7 @@ impl TabGroupController {
             }
 
             self.last_pane_hits[pane_idx] = Some(PaneHitCache {
-                hits,
+                layout,
                 strip_bounds: strip,
                 content_bounds: content,
             });
@@ -1127,8 +1215,6 @@ impl TabGroupController {
     /// Typical call site: mouse-down handler after background dismissal.
     pub fn handle_click_event(&mut self, x: f32, y: f32) -> Handled<TabGroupEvent> {
         let n = self.panes.len();
-        let click_x = x as f64;
-        let in_range = |range: (f64, f64)| click_x >= range.0 && click_x < range.1;
 
         for pane_idx in 0..n {
             let Some(cache) = self.last_pane_hits[pane_idx].as_ref() else {
@@ -1136,7 +1222,6 @@ impl TabGroupController {
             };
             let strip = cache.strip_bounds;
             let content = cache.content_bounds;
-            let hits = &cache.hits;
 
             // ── Tab strip click ───────────────────────────────────
             let in_strip = y >= strip.y
@@ -1147,34 +1232,27 @@ impl TabGroupController {
                 // Focus this pane.
                 self.focus.set_active(Some(pane_idx));
 
-                // Close buttons take precedence.
-                for (idx, cb) in hits.close_bounds.iter().enumerate() {
-                    if let Some(range) = cb {
-                        if in_range(*range) {
-                            if let Some(tab) = self.panes[pane_idx].tabs.get(idx) {
-                                if tab.closable {
-                                    let tab_id = tab.id.clone();
-                                    return match self.close_tab(pane_idx, &tab_id) {
-                                        Some(ev) => Handled::Event(ev),
-                                        None => Handled::Consumed,
-                                    };
-                                }
+                // Classification order (close glyph before tab body) is
+                // the strip layout's own — see `TabBarLayout::hit_test`.
+                match cache.layout.hit_test(x - strip.x, y - strip.y) {
+                    TabBarHit::TabClose(idx) => {
+                        if let Some(tab) = self.panes[pane_idx].tabs.get(idx) {
+                            if tab.closable {
+                                let tab_id = tab.id.clone();
+                                return match self.close_tab(pane_idx, &tab_id) {
+                                    Some(ev) => Handled::Event(ev),
+                                    None => Handled::Consumed,
+                                };
                             }
-                            return Handled::Consumed;
                         }
+                        return Handled::Consumed;
                     }
-                }
-
-                // Right segments (new-tab button).
-                for rb in &hits.right_segment_bounds {
-                    if in_range(*rb) {
-                        return Handled::Event(TabGroupEvent::NewTabRequested { pane_idx });
+                    // The only right segment a pane's strip declares is
+                    // its new-tab button — see `Pane::build_tab_bar`.
+                    TabBarHit::RightSegment(_) => {
+                        return Handled::Event(TabGroupEvent::NewTabRequested { pane_idx })
                     }
-                }
-
-                // Tab body.
-                for (idx, range) in hits.slot_positions.iter().enumerate() {
-                    if in_range(*range) {
+                    TabBarHit::Tab(idx) => {
                         if let Some(tab) = self.panes[pane_idx].tabs.get(idx) {
                             let tab_id = tab.id.clone();
                             if tab_id != self.panes[pane_idx].active_tab_id {
@@ -1187,8 +1265,10 @@ impl TabGroupController {
                         }
                         return Handled::Consumed;
                     }
+                    TabBarHit::ScrollLeft | TabBarHit::ScrollRight | TabBarHit::Empty => {
+                        return Handled::Consumed
+                    }
                 }
-                return Handled::Consumed;
             }
 
             // ── Content area click → focus ────────────────────────
@@ -1304,7 +1384,7 @@ impl TabGroupController {
     /// Return [`DropGroupRect`]s for all panes from the last render, suitable
     /// for passing to [`crate::compute_drop_zone`].
     ///
-    /// Tab slot positions are derived from the last [`TabBarHits`] recorded
+    /// Tab slot positions are derived from the last [`TabBarLayout`] recorded
     /// during [`render`](Self::render). If `render` has not been called yet,
     /// the result is empty.
     pub fn drop_group_rects(&self) -> Vec<DropGroupRect> {
@@ -1320,13 +1400,19 @@ impl TabGroupController {
                     strip.width,
                     strip.height + c.content_bounds.height,
                 );
-                // Convert slot_positions (absolute x pairs) into (start, end) pairs.
+                // `visible_tabs` is strip-relative and already excludes
+                // tabs scrolled off the left edge, so no sentinel filter
+                // is needed — just re-absolutise the x pairs.
                 let tab_slots: Vec<(f32, f32)> = c
-                    .hits
-                    .slot_positions
+                    .layout
+                    .visible_tabs
                     .iter()
-                    .filter(|(s, e)| *s != 0.0 || *e != 0.0)
-                    .map(|(s, e)| (*s as f32, *e as f32))
+                    .map(|vt| {
+                        (
+                            vt.bounds.x + strip.x,
+                            vt.bounds.x + strip.x + vt.bounds.width,
+                        )
+                    })
                     .collect();
                 Some(DropGroupRect {
                     bounds: full,
@@ -1372,21 +1458,8 @@ impl TabGroupController {
             self.last_pane_hits = (0..n).map(|_| None).collect();
         }
         for (pane_idx, drag_rect) in panes.iter().enumerate().take(n) {
-            let slot_positions: Vec<(f64, f64)> = drag_rect
-                .tab_slots
-                .iter()
-                .map(|(s, e)| (*s as f64, *e as f64))
-                .collect();
-            let n_slots = slot_positions.len();
-            let hits = crate::primitives::tab_bar::TabBarHits {
-                slot_positions,
-                close_bounds: vec![None; n_slots],
-                right_segment_bounds: vec![],
-                available_cols: 0,
-                correct_scroll_offset: 0,
-            };
             self.last_pane_hits[pane_idx] = Some(PaneHitCache {
-                hits,
+                layout: strip_layout_from_tab_slots(drag_rect.strip_bounds, &drag_rect.tab_slots),
                 strip_bounds: drag_rect.strip_bounds,
                 content_bounds: drag_rect.content_bounds,
             });
@@ -1411,16 +1484,12 @@ impl TabGroupController {
     /// A tab drag and a divider drag are mutually exclusive; starting one
     /// implicitly cancels the other.
     pub fn handle_tab_drag_start(&mut self, x: f32, y: f32) -> bool {
-        let click_x = x as f64;
-        let in_range = |range: (f64, f64)| click_x >= range.0 && click_x < range.1;
-
         let n = self.panes.len();
         for pane_idx in 0..n {
             let Some(cache) = self.last_pane_hits[pane_idx].as_ref() else {
                 continue;
             };
             let strip = cache.strip_bounds;
-            let hits = &cache.hits;
 
             let in_strip = y >= strip.y
                 && y < strip.y + strip.height
@@ -1430,22 +1499,11 @@ impl TabGroupController {
                 continue;
             }
 
-            // Reject close buttons — those are click actions, not drags.
-            for range in hits.close_bounds.iter().flatten() {
-                if in_range(*range) {
-                    return false;
-                }
-            }
-            // Reject right segments (new-tab button etc.).
-            for rb in &hits.right_segment_bounds {
-                if in_range(*rb) {
-                    return false;
-                }
-            }
-
-            // Accept any tab slot.
-            for (tab_idx, range) in hits.slot_positions.iter().enumerate() {
-                if in_range(*range) {
+            // A tab body starts a drag; the close glyph and the new-tab
+            // segment are click actions, so the strip layout's own
+            // classification is also the accept/reject rule here.
+            match cache.layout.hit_test(x - strip.x, y - strip.y) {
+                TabBarHit::Tab(tab_idx) => {
                     if let Some(tab) = self.panes[pane_idx].tabs.get(tab_idx) {
                         self.dragging_divider.end();
                         self.dragging_tab = Some(TabDragState {
@@ -1459,6 +1517,8 @@ impl TabGroupController {
                     }
                     return false;
                 }
+                TabBarHit::TabClose(_) | TabBarHit::RightSegment(_) => return false,
+                TabBarHit::ScrollLeft | TabBarHit::ScrollRight | TabBarHit::Empty => {}
             }
         }
         false
@@ -1890,7 +1950,6 @@ fn update_split_ratio_preorder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::tab_bar_hits_from_layout;
     use crate::primitives::tab_bar::{SegmentMeasure, TabMeasure};
 
     // ── Minimal BackendWidget for tests ──────────────────────────────────────
@@ -1950,27 +2009,12 @@ mod tests {
             },
             |_| SegmentMeasure::new(3.0),
         );
-        let mut hits = tab_bar_hits_from_layout(&layout, &bar);
-        // Shift hits to absolute coords (mirror what backends do).
-        let ox = strip_x as f64;
-        for sp in &mut hits.slot_positions {
-            if *sp != (0.0, 0.0) {
-                sp.0 += ox;
-                sp.1 += ox;
-            }
-        }
-        for cb in hits.close_bounds.iter_mut().flatten() {
-            cb.0 += ox;
-            cb.1 += ox;
-        }
-        for rb in &mut hits.right_segment_bounds {
-            rb.0 += ox;
-            rb.1 += ox;
-        }
+        // `TabBar::layout` is already strip-relative, exactly the frame
+        // `PaneHitCache::layout` holds, so no coordinate shift is needed.
         let strip = Rect::new(strip_x, strip_y, bar_w, 1.0);
         let content = Rect::new(strip_x, strip_y + 1.0, bar_w, 10.0);
         ctrl.last_pane_hits[pane_idx] = Some(PaneHitCache {
-            hits,
+            layout,
             strip_bounds: strip,
             content_bounds: content,
         });
@@ -3731,5 +3775,59 @@ mod tests {
         let layout = ctrl.render(&mut backend, bounds);
 
         assert_eq!(layout.strip_bounds[0].height, 1.0);
+    }
+
+    // ── render -> click round-trip through the painted strip layout ───────
+
+    /// A real `render` pass caches the strip layout the `TabBar` primitive
+    /// itself resolved, so clicking the second tab's own painted x-range
+    /// (recovered through `drop_group_rects`, which re-absolutises that
+    /// same cached layout) activates that tab — the absolute/strip-relative
+    /// conversion on both sides has to agree for this to land.
+    #[test]
+    fn clicking_a_painted_tab_slot_activates_that_tab() {
+        let mut ctrl = make_group();
+        let mut backend = crate::testing::RecordingBackend::new();
+        let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
+        let strip = layout.strip_bounds[0];
+
+        let slots = ctrl.drop_group_rects();
+        let (start, end) = slots[0].tab_slots[1];
+        assert!(end > start, "tab 1 must have a painted slot: {slots:?}");
+
+        let mid_y = strip.y + strip.height / 2.0;
+        match ctrl.handle_click_event((start + end) / 2.0, mid_y) {
+            Handled::Event(TabGroupEvent::TabActivated { pane_idx, tab_id }) => {
+                assert_eq!(pane_idx, 0);
+                assert_eq!(tab_id, "t1");
+            }
+            other => panic!("expected tab 1 to activate, got {other:?}"),
+        }
+        assert_eq!(ctrl.panes[0].active_tab_id, "t1");
+    }
+
+    /// The same painted layout classifies the close glyph ahead of the tab
+    /// body, so clicking it closes rather than activates.
+    #[test]
+    fn clicking_a_painted_close_glyph_closes_that_tab() {
+        let mut ctrl = make_group();
+        let mut backend = crate::testing::RecordingBackend::new();
+        let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
+        let strip = layout.strip_bounds[0];
+
+        let (cx, cy) = ctrl.last_pane_hits[0]
+            .as_ref()
+            .expect("render primed the cache")
+            .layout
+            .tab_close_center(1)
+            .expect("tab 1 painted a close glyph");
+
+        match ctrl.handle_click_event(strip.x + cx, strip.y + cy) {
+            Handled::Event(TabGroupEvent::TabClosed { pane_idx, tab_id }) => {
+                assert_eq!(pane_idx, 0);
+                assert_eq!(tab_id, "t1");
+            }
+            other => panic!("expected tab 1 to close, got {other:?}"),
+        }
     }
 }

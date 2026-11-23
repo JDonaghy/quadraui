@@ -1,14 +1,17 @@
 //! `TabBar` demo — adapted from `quadraui/examples/common/tab_chrome_demo.rs`,
 //! `tab_icons_demo.rs` and `wide_tab_bar_demo.rs`.
 //!
-//! Three variants show sidecar decorations that are requested through a
-//! `Backend::draw_tab_bar_*` call rather than baked into `TabItem` fields:
-//! bracket chrome around the active tab (`TabChrome`), per-tab colour icons
-//! (`TabIcon`), and a CJK double-width label (a vt100 conformance fixture).
+//! Three variants: bracket chrome around the active tab (`TabChrome`) and
+//! per-tab colour icons (`TabIcon`), both sidecar decorations requested
+//! through a `Backend::draw_tab_bar_*` call rather than baked into the
+//! `TabBar` descriptor, plus a plain CJK double-width label (a vt100
+//! conformance fixture) painted through the widget contract — the `TabBar`
+//! primitive's own `draw_dyn`/`Primitive::layout` pair.
 
+use quadraui::primitive::{LayoutCtx, Primitive};
 use quadraui::{
-    Backend, BackendCaps, Color, Reaction, Rect, Style, TabBar, TabBarHit, TabChrome, TabFrame,
-    TabIcon, TabItem, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, DrawsPrimitives, Reaction, Rect, Style, TabBar, TabBarHit,
+    TabChrome, TabFrame, TabIcon, TabItem, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -208,7 +211,7 @@ impl Demo for TabBarDemo {
                 backend.draw_tab_bar_icons_layout(rect, &self.icons_bar(), &icons, None);
             }
             _ => {
-                backend.draw_tab_bar_layout(rect, &self.wide_bar(), None);
+                backend.draw_dyn(rect, &self.wide_bar(), &());
             }
         }
     }
@@ -259,8 +262,21 @@ impl Demo for TabBarDemo {
                         }
                     }
                     _ => {
-                        let layout = backend.resolve_tab_bar_layout(rect, &self.wide_bar());
-                        if let TabBarHit::Tab(i) = layout.hit_test(local_x, local_y) {
+                        // Resolved through the same `Primitive::layout`
+                        // `draw_dyn` calls in `render`, from a `LayoutCtx`
+                        // built off this backend's own metrics — so the
+                        // hit test reads exactly the geometry that was
+                        // painted, without repainting here.
+                        let ctx = LayoutCtx {
+                            line_height: LayoutCtx::resolve_row_height(
+                                backend.chrome_line_height(),
+                                &backend.style(),
+                            ),
+                            char_width: backend.char_width(),
+                            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+                        };
+                        let layout = Primitive::layout(&self.wide_bar(), &ctx, rect);
+                        if let TabBarHit::Tab(i) = layout.layout.hit_test(local_x, local_y) {
                             self.wide_active = i;
                             Reaction::Redraw
                         } else {

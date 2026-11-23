@@ -2988,16 +2988,13 @@ impl crate::primitive::Primitive for TabBar {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::TabBarWidget`] —
-    /// distinct from [`crate::frame::OwnedContent::TabBar`] (which
-    /// [`crate::frame::capture_surface`] produces for the legacy
-    /// [`crate::frame::Surface::TabBar`] instead) so a `TabBar` reached
-    /// through [`crate::frame::Surface::Widget`] replays through
-    /// [`crate::backend::DrawsPrimitives::draw_primitive`] and
+    /// Round-trips through [`crate::frame::OwnedContent::TabBar`], so a
+    /// `TabBar` reached through [`crate::frame::Surface::Widget`] replays
+    /// through [`crate::backend::DrawsPrimitives::draw_primitive`] and
     /// hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
     /// exactly as it does live — see that variant's own doc.
     fn capture(&self) -> crate::frame::OwnedContent {
-        crate::frame::OwnedContent::TabBarWidget(self.clone())
+        crate::frame::OwnedContent::TabBar(self.clone())
     }
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {

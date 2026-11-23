@@ -604,10 +604,9 @@ impl AppLogic for CellGridDemo {
         grid.cells = cells;
 
         let mut frame = ScreenLayout::new();
-        frame.push(Surface::TabBar {
+        frame.push(Surface::Widget {
             rect: bands.tabs,
-            bar: self.tab_bar(),
-            hovered_close: None,
+            widget: Box::new(self.tab_bar()),
         });
         frame.push(Surface::TextField {
             rect: bands.formula,
