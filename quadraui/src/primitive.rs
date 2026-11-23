@@ -257,9 +257,9 @@ impl<'a> LayoutCtx<'a> {
     ///
     /// A `Primitive::layout` that positions text must measure through
     /// this rather than scaling [`Self::char_width`] itself: on a
-    /// proportional chrome font the per-glyph error runs in both
-    /// directions (GTK's Pango measures `alpha`/`beta`/`gamma` narrower,
-    /// narrower and *wider* than `5 * char_width`), so no scalar
+    /// proportional chrome font the error runs in both directions (GTK's
+    /// Pango measures `alpha` and `beta` *narrower* than
+    /// `chars * char_width` and `gamma` *wider*), so no scalar
     /// correction closes it and a shared layout built on the
     /// approximation ellipsises labels the rasteriser fits.
     pub fn text_width(&self, text: &str, role: crate::FontRole) -> f32 {
@@ -268,6 +268,7 @@ impl<'a> LayoutCtx<'a> {
             None => self.char_width * text.chars().count() as f32,
         }
     }
+
     /// Floor `line_height` at `style.row_height`, the same row-pitch
     /// resolution every pixel backend's own private `resolved_row_height`
     /// helper already applies on its bespoke `draw_list`/`draw_tree`/
