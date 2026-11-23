@@ -172,6 +172,10 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         &mut surface,
         theme,
         style,
+        // Paints into `(0, y_offset, width, row_height)` per this
+        // function's own doc — `shift_layout_y` above only shifted `y`,
+        // so the background fill's `x` stays `0.0` too.
+        0.0,
         y_offset as f32,
     );
 

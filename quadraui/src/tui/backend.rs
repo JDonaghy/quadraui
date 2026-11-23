@@ -3413,56 +3413,7 @@ impl Backend for TuiBackend {
         // accepted for trait parity with GTK.
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        // Cell-unit measurer mirrors `render_impl::render_tab_bar`.
-        // Respect per-tab `is_closable`: non-closable tabs get no close-column
-        // reservation even when `show_tab_close` is set on the bar.
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        // Measure in display columns, not `char`s — a CJK/emoji
-        // glyph occupies two columns, and `draw_tab_bar_icons` paints
-        // with `char_cell_width` strides, so the budget must agree. Also
-        // add `tab_icon_cols` so a tab's optional icon glyph + gap
-        // is reserved the same way the GTK rasteriser reserves its own
-        // Pango-measured icon width.
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let tab_close = if bar.show_tab_close && t.is_closable {
-                    close_cols
-                } else {
-                    0
-                };
-                // No close button to reserve? Reserve a separator column
-                // instead, so adjacent labels on a bar with
-                // `show_tab_close: false` (or a non-closable tab) paint
-                // with a visible boundary rather than running together.
-                let sep = if tab_close == 0 {
-                    crate::tui::TAB_SEPARATOR_COLS as usize
-                } else {
-                    0
-                };
-                display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
-            })
-            .collect();
-        let layout = bar.layout(
-            area.width as f32,
-            area.height as f32,
-            0.0, // no scroll arrows in TUI
-            |i| {
-                let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
-                    close_cols
-                } else {
-                    0
-                };
-                crate::TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        );
+        let layout = crate::tui::tui_tab_bar_layout(area, bar, icons);
         // Cache the resolved layout for this bar's WidgetId before it's
         // consumed below — `TuiDriver::tab_center`/`tab_close_center`
         // resolve against this, since a driver sitting
@@ -3502,47 +3453,7 @@ impl Backend for TuiBackend {
     ) -> TabBarLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let tab_close = if bar.show_tab_close && t.is_closable {
-                    close_cols
-                } else {
-                    0
-                };
-                // No close button to reserve? Reserve a separator column
-                // instead, so adjacent labels on a bar with
-                // `show_tab_close: false` (or a non-closable tab) paint
-                // with a visible boundary rather than running together.
-                let sep = if tab_close == 0 {
-                    crate::tui::TAB_SEPARATOR_COLS as usize
-                } else {
-                    0
-                };
-                display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
-            })
-            .collect();
-        let layout = bar.layout(
-            area.width as f32,
-            area.height as f32,
-            0.0,
-            |i| {
-                let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
-                    close_cols
-                } else {
-                    0
-                };
-                crate::TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        );
+        let layout = crate::tui::tui_tab_bar_layout(area, bar, icons);
         self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(

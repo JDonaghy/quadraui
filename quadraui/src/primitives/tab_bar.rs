@@ -1337,8 +1337,9 @@ pub(crate) mod native_surface_paint {
     /// offset argument on any `surface_*` method, so this function cannot
     /// do that translation itself), or — if it instead bakes the offset
     /// into every `Rect` in `layout` directly, as `macos::tab_bar` does —
-    /// pass that same y offset as `bar_y` so the one rect this function
-    /// derives itself, the background fill, lands in the same place.
+    /// pass that same `(x, y)` offset as `bar_x`/`bar_y` so the one rect
+    /// this function derives itself, the background fill, lands in the
+    /// same place.
     ///
     /// # Visual contract
     ///
@@ -1390,10 +1391,11 @@ pub(crate) mod native_surface_paint {
     /// reserve the bracket glyphs' width (see
     /// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]'s doc),
     /// so this function only has to paint them, not re-measure the slot.
-    /// `bar_y` is the y this function's own background fill starts at —
-    /// `0.0` for a caller that translates `surface` to the bar's origin,
-    /// or the same offset already baked into `layout`'s own rects
-    /// otherwise (see "Coordinate space" above).
+    /// `bar_x`/`bar_y` are the top-left this function's own background
+    /// fill starts at — `(0.0, 0.0)` for a caller that translates
+    /// `surface` to the bar's origin, or the same offset already baked
+    /// into `layout`'s own rects otherwise (see "Coordinate space"
+    /// above).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         bar: &TabBar,
@@ -1406,6 +1408,7 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         style: &Style,
+        bar_x: f32,
         bar_y: f32,
     ) {
         if layout.bar_width <= 0.0 || layout.bar_height <= 0.0 {
@@ -1415,7 +1418,7 @@ pub(crate) mod native_surface_paint {
         let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
 
         surface.surface_fill_rect(
-            Rect::new(0.0, bar_y, layout.bar_width, layout.bar_height),
+            Rect::new(bar_x, bar_y, layout.bar_width, layout.bar_height),
             theme.tab_bar_bg,
         );
 
@@ -1778,6 +1781,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 &Style::default(),
                 0.0,
+                0.0,
             );
 
             assert!(
@@ -1815,6 +1819,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
                 0.0,
             );
 
@@ -1854,6 +1859,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 &Style::default(),
                 0.0,
+                0.0,
             );
 
             let expected = theme.list_pressed_bg(theme.tab_bar_bg);
@@ -1890,6 +1896,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 &Style::default(),
                 0.0,
+                0.0,
             );
 
             assert!(
@@ -1924,6 +1931,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
                 0.0,
             );
 
@@ -1967,6 +1975,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
                 0.0,
             );
 
@@ -2017,6 +2026,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 &Style::default(),
                 0.0,
+                0.0,
             );
 
             let open_brackets = surface
@@ -2066,6 +2076,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 &Style::default(),
                 0.0,
+                0.0,
             );
 
             assert!(
@@ -2108,6 +2119,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 &Style::default(),
                 0.0,
+                0.0,
             );
 
             assert!(
@@ -2146,6 +2158,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
                 0.0,
             );
 
@@ -2193,6 +2206,7 @@ pub(crate) mod native_surface_paint {
                     &theme,
                     &Style::default(),
                     0.0,
+                    0.0,
                 );
 
                 assert!(surface.fills.is_empty());
@@ -2227,6 +2241,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &style,
+                0.0,
                 0.0,
             );
 
@@ -2263,6 +2278,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
                 0.0,
             );
 
@@ -2313,6 +2329,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 &Style::default(),
                 0.0,
+                0.0,
             );
 
             // The bar's 20.0 row height against `RecordingSurface`'s
@@ -2353,6 +2370,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                0.0,
                 0.0,
             );
 
@@ -2403,6 +2421,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &style,
+                0.0,
                 0.0,
             );
 
@@ -2867,20 +2886,6 @@ pub mod cell_paint {
 //   existing literal — including `tests/acceptance/ms-11/*.rs`, the
 //   sealed oracle slice a work leg cannot edit — so it stays out of this
 //   slice.
-// - **Pixel-paint origin.** `native_surface_paint::paint` takes only a
-//   `bar_y` offset, not a full `(x, y)` origin — every existing
-//   GTK/macOS/Win caller supplies that by translating its own drawing
-//   context before calling it (see that function's own "Coordinate
-//   space" doc). A generic `&mut dyn PaintSurface` has no translate
-//   verb, so `Primitive::paint`'s pixel branch instead bakes the widget
-//   rect's `(x, y)` into a translated copy of the computed
-//   `TabBarLayout` (see [`translate_tab_bar_layout`]) and passes
-//   `bar_y: rect.y` to match. That is correct for every tab/segment/
-//   scroll-arrow rect, but the one rect the shared painter derives
-//   itself (the bar's background fill) still starts at `x: 0.0`, not
-//   `rect.x`. No in-tree caller reaches this branch yet — a sibling
-//   slice wires up `Surface::Widget` callers — so this is a documented,
-//   inert gap rather than a visible regression.
 // - **`focus()` is `FocusSpec::Stop`, not `Children`.** Matches
 //   `ListView`/`CellGrid`'s own precedent for a composite widget with
 //   internal keyboard navigation (one Tab stop; arrow keys move an
@@ -2893,56 +2898,27 @@ pub mod cell_paint {
 //   already name those parts by index for `handle`'s own hit-testing.
 #[cfg(feature = "tui")]
 fn tui_tab_bar_primitive_layout(bar: &TabBar, width: f32, height: f32) -> TabBarLayout {
-    // Mirrors `crate::tui::backend::TuiBackend::draw_tab_bar_icons`'s own
-    // char-cell measurer with an empty icon sidecar (`tab_icon_cols(&[],
-    // _) == 0` always) — see this section's own "No icon/glyph/chrome
-    // sidecar" doc for why there is no icon slice to measure here.
-    let close_cols = if bar.show_tab_close {
-        TAB_CLOSE_COLS as usize
-    } else {
-        0
-    };
-    let tab_widths: Vec<usize> = bar
-        .tabs
-        .iter()
-        .map(|t| {
-            let tab_close = if bar.show_tab_close && t.is_closable {
-                close_cols
-            } else {
-                0
-            };
-            // No close button to reserve? Reserve a separator column
-            // instead — see `TuiBackend::draw_tab_bar_icons`'s own
-            // identical comment.
-            let sep = if tab_close == 0 {
-                TAB_SEPARATOR_COLS as usize
-            } else {
-                0
-            };
-            crate::text_util::display_width(&t.label) + tab_close + sep
-        })
-        .collect();
-    bar.layout(
-        width,
-        height,
-        0.0, // no scroll arrows in TUI
-        |i| {
-            let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
-                close_cols
-            } else {
-                0
-            };
-            TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
-        },
-        |i| SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-    )
+    // Route through the exact resolver `crate::tui::backend::TuiBackend`'s
+    // own `draw_tab_bar_icons`/`draw_tab_bar_icons_layout` call
+    // (`crate::tui::tui_tab_bar_layout`) so this layout can never drift
+    // from what TUI actually paints — see this section's own "No
+    // icon/glyph/chrome sidecar" doc for why the icon sidecar here is
+    // always empty.
+    let area = ratatui::layout::Rect::new(0, 0, width as u16, height as u16);
+    crate::tui::tui_tab_bar_layout(area, bar, &[])
 }
 
 /// Translate every `Rect` inside a bar-relative [`TabBarLayout`] by
-/// `(dx, dy)` — see this section's own "Pixel-paint origin" doc for why
+/// `(dx, dy)` — [`native_surface_paint::paint`]'s `surface_*` calls paint
+/// every tab/segment/scroll-arrow rect verbatim from `layout` (see that
+/// function's own "Coordinate space" doc), and a generic
+/// `&mut dyn PaintSurface` has no translate verb, so
 /// [`Primitive::paint`](crate::primitive::Primitive::paint)'s pixel
-/// branch needs this instead of passing an absolute area straight
-/// through to [`native_surface_paint::paint`].
+/// branch bakes the widget rect's own `(x, y)` into a translated copy of
+/// the computed `TabBarLayout` instead of passing the bar-relative one
+/// straight through — the painter's own background fill then gets that
+/// same offset via `bar_x`/`bar_y` so it lands in the same place as
+/// every translated rect.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -3100,11 +3076,11 @@ impl crate::primitive::Primitive for TabBar {
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            // See this section's own "Pixel-paint origin" doc: bakes
+            // See `translate_tab_bar_layout`'s own doc: bakes
             // `layout.area`'s own origin into a translated copy of the
-            // bar-relative layout, then passes the same `dy` as `bar_y`
-            // so the shared painter's own background-fill rect lines up
-            // with it vertically.
+            // bar-relative layout, then passes the same `(x, y)` as
+            // `bar_x`/`bar_y` so the shared painter's own background-fill
+            // rect lines up with it too.
             let translated =
                 translate_tab_bar_layout(layout.layout.clone(), layout.area.x, layout.area.y);
             let state = native_surface_paint::TabBarPaintState::default();
@@ -3119,6 +3095,7 @@ impl crate::primitive::Primitive for TabBar {
                 surface,
                 theme,
                 style,
+                layout.area.x,
                 layout.area.y,
             );
         }
@@ -4683,5 +4660,198 @@ mod tests {
         // `None`, not a hard error — the additive-knob contract.
         let legacy: TabChrome = serde_json::from_str(r#"{"active_frame":"None"}"#).unwrap();
         assert_eq!(legacy.focused_index, None);
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[cfg(test)]
+mod primitive_parity_tests {
+    use super::*;
+    use crate::backend::ImagePaintResult;
+    use crate::event::{Point, Viewport};
+    use crate::primitive::{LayoutCtx, Primitive};
+    use crate::style::Style;
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Image;
+    use crate::PaintSurface;
+    use crate::PathVerb;
+
+    /// Records every verb call as a formatted line, in call order — a
+    /// byte-for-byte equal log from two different call paths is strong
+    /// evidence they painted the same thing. Mirrors
+    /// `crate::primitives::list::primitive_parity_tests::LogSurface`.
+    #[derive(Default)]
+    struct LogSurface {
+        calls: Vec<String>,
+    }
+
+    impl PaintSurface for LogSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(400.0, 100.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            24.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 8.0, 14.0)
+        }
+        fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+            self.calls.push(format!("fill_rect {rect:?} {color:?}"));
+        }
+        fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+            self.calls
+                .push(format!("fill_rounded_rect {rect:?} {radius} {color:?}"));
+        }
+        fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+            self.calls
+                .push(format!("stroke_rect {rect:?} {color:?} {stroke_width}"));
+        }
+        fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+            self.calls
+                .push(format!("draw_text_run {rect:?} {text:?} {color:?}"));
+        }
+        fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+            self.calls.push(format!(
+                "draw_line {from:?} {to:?} {color:?} {stroke_width}"
+            ));
+        }
+        fn surface_draw_path(&mut self, verbs: &[PathVerb], color: Color, stroke_width: f32) {
+            self.calls
+                .push(format!("draw_path {verbs:?} {color:?} {stroke_width}"));
+        }
+        fn surface_push_clip(&mut self, rect: Rect) {
+            self.calls.push(format!("push_clip {rect:?}"));
+        }
+        fn surface_pop_clip(&mut self) {
+            self.calls.push("pop_clip".to_string());
+        }
+        fn surface_draw_image(&mut self, rect: Rect, _image: &Image) -> ImagePaintResult {
+            self.calls.push(format!("draw_image {rect:?}"));
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    fn sample_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs:parity"),
+            tabs: vec![
+                TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    is_dirty: true,
+                    is_preview: false,
+                    is_closable: true,
+                },
+            ],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    /// The acceptance criterion: `TabBar`'s [`Primitive::layout`] +
+    /// [`Primitive::paint`] must produce the exact same verb log as
+    /// laying out via [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]
+    /// and calling [`native_surface_paint::paint`] directly with the
+    /// equivalent, translated arguments — including, crucially, a `rect`
+    /// whose `x` is **not** `0.0`, which is what pins the background
+    /// fill at `layout.area`'s own origin rather than the surface's.
+    #[test]
+    fn tab_bar_primitive_paint_matches_native_surface_paint_at_a_nonzero_rect_x() {
+        let bar = sample_bar();
+        let rect = Rect::new(37.0, 5.0, 220.0, 24.0);
+        let ctx = LayoutCtx {
+            line_height: 24.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: false,
+        };
+        let theme = Theme::default();
+        let style = Style::default();
+
+        let via_primitive_layout = Primitive::layout(&bar, &ctx, rect);
+        let mut via_primitive_surface = LogSurface::default();
+        Primitive::paint(
+            &bar,
+            &via_primitive_layout,
+            &mut via_primitive_surface,
+            &theme,
+            &style,
+        );
+
+        let measure = crate::primitives::layout_metrics::CharWidthMeasure(ctx.char_width);
+        let tab_name_widths: Vec<f32> = bar
+            .tabs
+            .iter()
+            .map(|t| crate::primitives::layout_metrics::TextMeasure::width_of(&measure, &t.label))
+            .collect();
+        let tab_icon_extras = vec![0.0f32; bar.tabs.len()];
+        let chrome = TabChrome::default();
+        let (direct_layout, _corrected_scroll_offset, _available_cols) =
+            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+                &bar,
+                rect.width,
+                rect.height,
+                crate::primitives::layout_metrics::pixel::TAB_PAD,
+                crate::primitives::layout_metrics::pixel::TAB_INNER_GAP,
+                crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP,
+                &tab_name_widths,
+                &tab_icon_extras,
+                &chrome,
+                &measure,
+            );
+        let translated = translate_tab_bar_layout(direct_layout, rect.x, rect.y);
+        let mut direct_surface = LogSurface::default();
+        native_surface_paint::paint(
+            &bar,
+            &translated,
+            &[],
+            None,
+            ctx.nerd_fonts_enabled,
+            &TabChrome::default(),
+            native_surface_paint::TabBarPaintState::default(),
+            &mut direct_surface,
+            &theme,
+            &style,
+            rect.x,
+            rect.y,
+        );
+
+        assert!(
+            !via_primitive_surface.calls.is_empty(),
+            "the bar must paint something for this comparison to be meaningful"
+        );
+        assert_eq!(via_primitive_surface.calls, direct_surface.calls);
+
+        // Pin the exact bug this test guards: the background fill must
+        // start at `rect.x`, not `0.0`.
+        let bg_fill = via_primitive_surface
+            .calls
+            .iter()
+            .find(|c| c.contains(&format!("{:?}", theme.tab_bar_bg)) && c.starts_with("fill_rect"))
+            .expect("the bar must fill a background rect");
+        assert!(
+            bg_fill.contains(&format!("x: {:?}", rect.x)),
+            "the background fill must start at rect.x ({}); call was {bg_fill:?}",
+            rect.x,
+        );
     }
 }

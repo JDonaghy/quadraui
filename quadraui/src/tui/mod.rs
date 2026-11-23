@@ -228,7 +228,7 @@ pub use crate::primitives::tab_bar::{
 #[doc(hidden)]
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome,
-    draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome,
+    draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome, tui_tab_bar_layout,
 };
 #[doc(hidden)]
 pub use terminal::{draw_terminal, draw_terminal_divider};
