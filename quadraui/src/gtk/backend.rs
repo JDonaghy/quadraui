@@ -1176,6 +1176,8 @@ impl GtkBackend {
     /// time and expects that shape. Returns `None` if no Pango context
     /// has been stored (mirrors [`Self::create_stable_pango_layout`]).
     pub fn editor_pango_layout(&self) -> Option<pango::Layout> {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let ctx = self.pango_ctx.as_ref()?;
         let layout = pango::Layout::new(ctx);
         let font_desc = pango::FontDescription::from_string(&self.editor_font_pango_string());
@@ -1386,6 +1388,8 @@ impl GtkBackend {
     /// occurs when creating a context from a transient Cairo surface.
     /// Returns `None` if no Pango context has been stored.
     pub fn create_stable_pango_layout(&self) -> Option<pango::Layout> {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         self.pango_ctx.as_ref().map(pango::Layout::new)
     }
 
@@ -1396,6 +1400,8 @@ impl GtkBackend {
     /// column/label widths diverge from what the painter resolves on
     /// platforms where the two descriptions shape differently.
     fn chrome_measure_layout(&self) -> Option<pango::Layout> {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let pl = self.pango_ctx.as_ref().map(pango::Layout::new)?;
         pl.set_font_description(Some(&crate::gtk::chrome_font_description(&self.ui_font)));
         Some(pl)
@@ -2976,6 +2982,8 @@ impl Backend for GtkBackend {
     /// `pango_ctx` has been set yet — e.g. a `GtkBackend` queried before
     /// its widget realizes.
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let Some(ctx) = self.pango_ctx.as_ref() else {
             let char_w = match role {
                 crate::FontRole::Chrome => self.current_chrome_char_width as f32,
@@ -3938,6 +3946,8 @@ impl Backend for GtkBackend {
     }
 
     fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let char_w = self.current_char_width as f32;
         let lh = self.current_line_height as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
@@ -3988,6 +3998,8 @@ impl Backend for GtkBackend {
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
     ) -> crate::TabBarHits {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
@@ -4114,6 +4126,8 @@ impl Backend for GtkBackend {
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarLayout {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
@@ -4205,6 +4219,8 @@ impl Backend for GtkBackend {
         bar: &TabBar,
         chrome: &TabChrome,
     ) -> crate::TabBarHits {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
@@ -4286,6 +4302,8 @@ impl Backend for GtkBackend {
         bar: &TabBar,
         chrome: &TabChrome,
     ) -> TabBarLayout {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
@@ -5348,6 +5366,8 @@ impl Backend for GtkBackend {
         rect: QRect,
         bar: &MenuBar,
     ) -> crate::primitives::menu_bar::MenuBarLayout {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
@@ -5835,6 +5855,8 @@ impl Backend for GtkBackend {
         rect: QRect,
         bar: &crate::primitives::toolbar::Toolbar,
     ) -> crate::primitives::toolbar::ToolbarLayout {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let char_w = self.current_char_width;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
@@ -5904,6 +5926,8 @@ impl Backend for GtkBackend {
         layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
         priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
     ) -> crate::primitives::toolbar::ToolbarLayout {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let char_w = self.current_char_width;
         let line_height = self.current_line_height;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
@@ -5980,6 +6004,8 @@ impl Backend for GtkBackend {
         rect: QRect,
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        #[cfg(test)]
+        let _test_render_guard = super::test_render_guard();
         let char_w = self.current_char_width;
         let line_h = self.resolved_toolbar_height(self.current_line_height);
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
