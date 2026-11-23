@@ -1042,6 +1042,12 @@ pub fn record_painted_widget(widget: PaintedWidget) {
 /// helper ([`PaintedWidgets::painted_layout`],
 /// [`PaintedWidgets::painted_hit`], …) is a method on the store itself, so
 /// a caller reads one of them inside `f`.
+///
+/// `f` reads geometry; it must not paint. The store is borrowed for the
+/// duration of the call, so a [`crate::DrawsPrimitives::draw_dyn`] call
+/// from inside `f` — which records into that same store — panics on the
+/// conflicting borrow. Copy out what is needed (a rect, a point) and
+/// paint after the call returns.
 pub fn with_painted_widgets<R>(f: impl FnOnce(&PaintedWidgets) -> R) -> R {
     PAINTED_WIDGETS.with(|p| f(&p.borrow()))
 }

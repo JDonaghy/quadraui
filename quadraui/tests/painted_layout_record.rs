@@ -38,7 +38,7 @@ fn bar_id() -> WidgetId {
 /// record.
 struct RecordApp {
     bar: TabBar,
-    /// When `false`, `render` paints nothing at all — used to prove the
+    /// When `false`, `render` paints nothing at all, which proves the
     /// record is per-frame rather than sticky.
     paint_bar: bool,
     /// When `true`, `render` also paints an id-less widget.
