@@ -103,7 +103,13 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "gtk",
         file_count: 53,
-        non_test_lines: 21224,
+        // +26: 13 more call sites take the same `#[cfg(test)]`-gated
+        // `test_render_guard()` `enter_frame_scope` already takes — test-
+        // only synchronisation against a Pango data race, not per-backend
+        // widget paint logic, and counted here (not excluded) because
+        // each guard sits on a `let` inside an `impl` method rather than
+        // a top-level item — see `non_test_line_count`'s own doc.
+        non_test_lines: 21250,
     },
     BackendBaseline {
         dir: "macos",
