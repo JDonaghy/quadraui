@@ -897,6 +897,12 @@ pub struct PaintedWidget {
 /// Deliberately widget-agnostic — a widget names its own sub-parts
 /// through [`Interactive::sub_regions`], so adding a widget to the
 /// contract never adds a field here.
+///
+/// [`crate::DrawsPrimitives::draw_primitive`] does not fill this: it
+/// paints a bare [`Primitive`], which carries no [`Interactive`] half to
+/// name sub-parts with, and its caller already holds the concrete
+/// `P::Layout` it returned. The record is for the type-erased path, where
+/// the layout is dropped as soon as the frame is painted.
 #[derive(Default)]
 pub struct PaintedWidgets {
     entries: Vec<PaintedWidget>,
