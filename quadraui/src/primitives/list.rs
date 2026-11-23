@@ -2580,6 +2580,23 @@ impl ListView {
         state.cursor.unwrap_or(self.selected_idx).min(last)
     }
 
+    /// The multi-selection set [`Self::handle_mouse_down`]'s `Toggle`/`Range`
+    /// gestures grow from: `state.selected` once any gesture has grown it
+    /// beyond a single row, falling back to `[self.selected_idx]` (or
+    /// empty, for an empty list) before the first one — the same
+    /// lazy-seed convention [`Self::current_idx`] applies to the cursor,
+    /// so a first Ctrl/Cmd-click never discards the descriptor's own
+    /// `selected_idx` the way an unseeded empty `Vec` would.
+    fn current_selected(&self, state: &ListViewState) -> Vec<usize> {
+        if !state.selected.is_empty() {
+            state.selected.clone()
+        } else if self.items.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.selected_idx.min(self.items.len() - 1)]
+        }
+    }
+
     /// Build the `Handled::Event` that moves the selection to `target`
     /// (already clamped into `self.items`), honouring `extend` (Shift
     /// held) the same way a click's own [`SelectionGesture`] does: a
@@ -2737,7 +2754,8 @@ impl ListView {
             }
             gesture @ SelectionGesture::Toggle => {
                 let anchor = state.anchor.unwrap_or(current);
-                let indices = apply_selection_gesture(&state.selected, anchor, idx, gesture);
+                let selected = self.current_selected(state);
+                let indices = apply_selection_gesture(&selected, anchor, idx, gesture);
                 state.selected = indices.clone();
                 state.anchor = Some(idx);
                 state.cursor = Some(idx);
@@ -2745,7 +2763,8 @@ impl ListView {
             }
             gesture @ SelectionGesture::Range => {
                 let anchor = *state.anchor.get_or_insert(current);
-                let indices = apply_selection_gesture(&state.selected, anchor, idx, gesture);
+                let selected = self.current_selected(state);
+                let indices = apply_selection_gesture(&selected, anchor, idx, gesture);
                 state.selected = indices.clone();
                 state.cursor = Some(idx);
                 Handled::Event(ListViewEvent::SelectionSet { indices })
