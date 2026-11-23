@@ -134,6 +134,11 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("TreeTable", "draw_tree_table"),
     ("TreeTable", "tree_table_layout"),
     ("TreeTable", "tree_layout"),
+    // Group-B ports keep these until the group's cleanup deletes them
+    // together with their wrapper files and `Surface` variants.
+    ("Tooltip", "draw_tooltip"),
+    ("Tooltip", "draw_tooltip_with_chrome"),
+    ("Float", "draw_float"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
