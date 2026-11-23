@@ -1035,8 +1035,8 @@ impl TabChrome {
 /// TUI: the glyph cell always uses the surrounding theme foreground.
 ///
 /// On the wire both entries are optional, so `{}` deserialises to
-/// [`Self::new`] and `{"close": {"glyph": "X"}}` overrides just the
-/// close mark.
+/// [`Self::new`] and `{"close": {"glyph": "X", "fallback": "x"}}`
+/// overrides just the close mark.
 ///
 /// Both entries are boxed: an override is rare, while this registry is a
 /// by-value field of the [`TabBar`] descriptor every frame carries (and
@@ -4215,6 +4215,69 @@ mod tests {
         let json = serde_json::to_string(&bar).unwrap();
         let back: TabBar = serde_json::from_str(&json).unwrap();
         assert_eq!(bar, back);
+    }
+
+    #[test]
+    fn tab_bar_round_trips_chrome_icons_and_glyph_overrides() {
+        let bar = TabBar {
+            id: WidgetId::new("tabbar:wire"),
+            tabs: vec![TabItem {
+                label: "main.rs".to_string(),
+                is_active: true,
+                is_closable: true,
+                ..Default::default()
+            }],
+            chrome: TabChrome::new(TabFrame::Brackets).with_focused_index(Some(0)),
+            icons: vec![Some(TabIcon {
+                glyph: "R".to_string(),
+                color: Color::rgb(222, 165, 132),
+            })],
+            glyphs: TabBarGlyphs::new()
+                .with_close_glyph("X")
+                .with_dirty_glyph("*"),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&bar).unwrap();
+        let back: TabBar = serde_json::from_str(&json).unwrap();
+        assert_eq!(bar, back);
+    }
+
+    /// A payload written before the three fields existed still decodes:
+    /// each is `#[serde(default)]`, so an absent one means "no chrome, no
+    /// icons, the crate's own glyphs".
+    #[test]
+    fn tab_bar_wire_payload_without_chrome_icons_or_glyphs_decodes_to_the_defaults() {
+        let bar: TabBar = serde_json::from_str(
+            r#"{"id": "tabbar:legacy", "tabs": [{"label": "main.rs", "is_active": true,
+                "is_dirty": false, "is_preview": false, "is_closable": true}]}"#,
+        )
+        .unwrap();
+        assert_eq!(bar.chrome, TabChrome::default());
+        assert!(bar.icons.is_empty());
+        assert_eq!(bar.glyphs, TabBarGlyphs::new());
+        assert_eq!(bar, {
+            let mut expected = TabBar {
+                tabs: bar.tabs.clone(),
+                ..Default::default()
+            };
+            expected.id = WidgetId::new("tabbar:legacy");
+            expected
+        });
+    }
+
+    /// Each glyph slot is independently optional on the wire, matching
+    /// the builder's own "leave a field `None`" contract.
+    #[test]
+    fn tab_bar_glyphs_wire_payload_overrides_only_the_slots_it_names() {
+        let glyphs: TabBarGlyphs =
+            serde_json::from_str(r#"{"close": {"glyph": "X", "fallback": "x"}}"#).unwrap();
+        assert_eq!(
+            glyphs.close_glyph().map(|icon| icon.glyph.as_str()),
+            Some("X")
+        );
+        assert!(glyphs.dirty_glyph().is_none());
+        let empty: TabBarGlyphs = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, TabBarGlyphs::new());
     }
 
     #[test]
