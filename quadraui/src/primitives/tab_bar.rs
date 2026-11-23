@@ -3421,13 +3421,63 @@ mod interactive_tests {
         }
     }
 
+    /// Whole-cell chrome metrics plus a 40×1 bar rect —
+    /// [`LayoutCtx::units`] reports [`Units::Cells`], so
+    /// [`Primitive::layout`] resolves its TUI branch.
+    #[cfg(feature = "tui")]
+    fn cell_regime() -> (LayoutCtx, Rect) {
+        (
+            LayoutCtx {
+                line_height: 1.0,
+                char_width: 1.0,
+                nerd_fonts_enabled: false,
+            },
+            Rect::new(0.0, 0.0, 40.0, 1.0),
+        )
+    }
+
+    /// Pixel chrome metrics plus a 400×24 bar rect — the regime every
+    /// pixel backend (GTK, Win, macOS) lays out in. The rect is wide
+    /// enough for the fixtures below to fit with
+    /// [`crate::primitives::layout_metrics::pixel`]'s own tab padding and
+    /// gaps, so the resolved layout has real tab and close-glyph bounds
+    /// to hit-test against.
+    fn pixel_regime() -> (LayoutCtx, Rect) {
+        (
+            LayoutCtx {
+                line_height: 24.0,
+                char_width: 8.0,
+                nerd_fonts_enabled: false,
+            },
+            Rect::new(0.0, 0.0, 400.0, 24.0),
+        )
+    }
+
+    /// Lay `bar` out once per unit regime this build can resolve: the
+    /// pixel regime always (its `Primitive::layout` branch compiles for
+    /// every backend feature), plus the whole-cell regime when `tui` is
+    /// compiled in. Geometry-dependent tests assert against every entry
+    /// so a hit-test holds on both branches rather than only on the one
+    /// the active feature set happens to select.
+    fn layout_regimes(bar: &TabBar) -> Vec<TabBarPrimitiveLayout> {
+        let mut out = Vec::new();
+        #[cfg(feature = "tui")]
+        {
+            let (ctx, rect) = cell_regime();
+            out.push(Primitive::layout(bar, &ctx, rect));
+        }
+        let (ctx, rect) = pixel_regime();
+        out.push(Primitive::layout(bar, &ctx, rect));
+        out
+    }
+
+    /// One representative layout, for the tests that need *a* layout
+    /// value but never read its geometry (keyboard and a11y dispatch
+    /// ignore `layout` entirely) — the whole-cell one when `tui` is
+    /// compiled in, so the cell-paint round-trip below gets a layout
+    /// matching its own 40×1 buffer.
     fn layout_for(bar: &TabBar) -> TabBarPrimitiveLayout {
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
-        Primitive::layout(bar, &ctx, Rect::new(0.0, 0.0, 40.0, 1.0))
+        layout_regimes(bar).swap_remove(0)
     }
 
     fn key(named: NamedKey) -> RoutedEvent {
@@ -3451,50 +3501,55 @@ mod interactive_tests {
     #[test]
     fn click_on_a_tab_body_activates_it_and_requests_focus() {
         let b = bar(&["main.rs", "lib.rs"], 0);
-        let layout = layout_for(&b);
-        let mut state = TabBarState::default();
-        let mut host = MockHost::default();
-        let mut cx = EventCx::new(b.id, &mut host);
+        for layout in layout_regimes(&b) {
+            let mut state = TabBarState::default();
+            let mut host = MockHost::default();
+            let mut cx = EventCx::new(b.id, &mut host);
 
-        // "main.rs" occupies columns [0, close-button); "lib.rs" starts
-        // right after it — probe a point inside the first tab's body.
-        let click = RoutedEvent::Pointer {
-            kind: PointerKind::Down(MouseButton::Left),
-            sub: None,
-            local: Point::new(1.0, 0.0),
-            mods: Modifiers::default(),
-        };
-        let outcome = b.handle(&mut state, &click, &layout, &mut cx);
-        assert_eq!(
-            outcome,
-            Handled::Event(TabBarEvent::TabActivated { index: 0 })
-        );
-        assert_eq!(state.focused_index, Some(0));
-        assert_eq!(host.focus_requests, vec![None]);
+            // The first tab's own centre, read back from the resolved
+            // layout rather than hardcoded, so the probe lands inside the
+            // tab body in whichever unit regime laid it out.
+            let (cx_pt, cy_pt) = layout
+                .layout
+                .tab_center(0)
+                .expect("the first tab is visible on a bar this wide");
+            let click = RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(cx_pt, cy_pt),
+                mods: Modifiers::default(),
+            };
+            let outcome = b.handle(&mut state, &click, &layout, &mut cx);
+            assert_eq!(
+                outcome,
+                Handled::Event(TabBarEvent::TabActivated { index: 0 })
+            );
+            assert_eq!(state.focused_index, Some(0));
+            assert_eq!(host.focus_requests, vec![None]);
+        }
     }
 
     #[test]
     fn click_on_a_close_glyph_closes_that_tab() {
         let b = bar(&["main.rs"], 0);
-        let layout = layout_for(&b);
-        let close = layout
-            .layout
-            .visible_tabs
-            .first()
-            .and_then(|vt| vt.close_bounds)
-            .expect("main.rs has a close button");
-        let mut state = TabBarState::default();
-        let mut host = MockHost::default();
-        let mut cx = EventCx::new(b.id, &mut host);
+        for layout in layout_regimes(&b) {
+            let (close_x, close_y) = layout
+                .layout
+                .tab_close_center(0)
+                .expect("main.rs has a close button");
+            let mut state = TabBarState::default();
+            let mut host = MockHost::default();
+            let mut cx = EventCx::new(b.id, &mut host);
 
-        let click = RoutedEvent::Pointer {
-            kind: PointerKind::Down(MouseButton::Left),
-            sub: None,
-            local: Point::new(close.x + close.width / 2.0, 0.0),
-            mods: Modifiers::default(),
-        };
-        let outcome = b.handle(&mut state, &click, &layout, &mut cx);
-        assert_eq!(outcome, Handled::Event(TabBarEvent::TabClosed { index: 0 }));
+            let click = RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(close_x, close_y),
+                mods: Modifiers::default(),
+            };
+            let outcome = b.handle(&mut state, &click, &layout, &mut cx);
+            assert_eq!(outcome, Handled::Event(TabBarEvent::TabClosed { index: 0 }));
+        }
     }
 
     #[test]

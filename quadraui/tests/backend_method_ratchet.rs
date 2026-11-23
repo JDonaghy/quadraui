@@ -139,6 +139,20 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Tooltip", "draw_tooltip"),
     ("Tooltip", "draw_tooltip_with_chrome"),
     ("Float", "draw_float"),
+    // `TabBar`'s widget-contract seam routes `Primitive::paint`/
+    // `paint_cells` through the same `cell_paint`/`native_surface_paint`
+    // painters its bespoke `Backend` entry points already call, so the
+    // two paths cannot diverge. The entry points themselves stay: every
+    // in-repo and downstream caller of the tab bar reaches it through
+    // them (`TabChrome`, the icon sidecar and the glyph overrides have no
+    // `Primitive` equivalent yet), and retiring them is its own
+    // migration — the same reason `ListView` keeps its own trio.
+    ("TabBar", "draw_tab_bar"),
+    ("TabBar", "draw_tab_bar_with_state"),
+    ("TabBar", "draw_tab_bar_with_chrome"),
+    ("TabBar", "draw_tab_bar_with_chrome_layout"),
+    ("TabBar", "draw_tab_bar_with_chrome_and_glyphs"),
+    ("TabBar", "tab_bar_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
