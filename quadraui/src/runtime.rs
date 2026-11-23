@@ -724,6 +724,9 @@ where
             modifiers,
             repeat,
         } => route_widget_key(key.clone(), *modifiers, *repeat, backend, app, &tree),
+        UiEvent::DoubleClick { position, .. } => {
+            route_widget_double_click(*position, backend, app, &tree)
+        }
         _ => WidgetRouteOutcome::Bubble(Reaction::Continue),
     }
 }
@@ -787,6 +790,35 @@ where
         sub: None,
         local: local_point(position, node.rect),
         mods: modifiers,
+    };
+    dispatch_widget_routed_event(id, node, &routed, backend, app)
+}
+
+/// `DoubleClick` arm of [`route_widget_event`]: hit-test, then deliver
+/// [`PointerKind::DoubleClick`] — the same hit-test-and-deliver shape as
+/// [`route_widget_pointer_down`], except [`UiEvent::DoubleClick`] carries
+/// no button or modifiers of its own, so this always resolves
+/// [`MouseButton::Left`] with [`Modifiers::default`]. `Bubble(Continue)`
+/// when the click landed on no widget.
+fn route_widget_double_click<B, A>(
+    position: Point,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> WidgetRouteOutcome
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let Some(node) = tree.hit_test(position) else {
+        return WidgetRouteOutcome::Bubble(Reaction::Continue);
+    };
+    let id = node.id;
+    let routed = RoutedEvent::Pointer {
+        kind: PointerKind::DoubleClick(MouseButton::Left),
+        sub: None,
+        local: local_point(position, node.rect),
+        mods: Modifiers::default(),
     };
     dispatch_widget_routed_event(id, node, &routed, backend, app)
 }
@@ -2074,6 +2106,10 @@ mod widget_routing_tests {
                     Handled::Consumed
                 }
                 RoutedEvent::Pointer {
+                    kind: PointerKind::DoubleClick(_),
+                    ..
+                } => Handled::Event(Activated),
+                RoutedEvent::Pointer {
                     kind: PointerKind::Enter,
                     ..
                 } => {
@@ -2210,6 +2246,13 @@ mod widget_routing_tests {
         }
     }
 
+    fn double_click_at(x: f32, y: f32) -> UiEvent {
+        UiEvent::DoubleClick {
+            widget: None,
+            position: Point::new(x, y),
+        }
+    }
+
     fn key(named: crate::event::NamedKey) -> UiEvent {
         UiEvent::KeyPressed {
             key: Key::Named(named),
@@ -2236,6 +2279,41 @@ mod widget_routing_tests {
         preprocess_event(mouse_down_at(1.0, 1.0), &mut backend, &mut app);
 
         assert_eq!(backend.focus_tree().focused(), Some(&(app.id, None)));
+    }
+
+    /// `UiEvent::DoubleClick` reaches a hit widget as
+    /// [`PointerKind::DoubleClick`] — the gap the widget-contract adversarial
+    /// review flagged: before `route_widget_event` grew this arm, a
+    /// double-click never reached `Interactive::handle` at all, so
+    /// `PointerKind::DoubleClick(_)` was dead on every `Surface::Widget`.
+    #[test]
+    fn double_click_reaches_the_hit_widget_as_pointer_double_click() {
+        let (mut backend, mut app) = harness();
+
+        let outcome = preprocess_event(double_click_at(1.0, 1.0), &mut backend, &mut app);
+
+        assert_eq!(outcome, Reaction::Redraw);
+        assert_eq!(
+            app.received,
+            vec![UiEvent::DoubleClick {
+                widget: Some(app.id),
+                position: Point::default(),
+            }]
+        );
+    }
+
+    /// A double-click landing outside every widget's bounds never reaches
+    /// `Counter::handle` — widget routing bubbles it (`WidgetRouteOutcome::Bubble`)
+    /// rather than claiming it, so the original, unclaimed `UiEvent` still
+    /// reaches `app.handle` through `preprocess_event`'s later steps, the
+    /// same as any other event no widget wanted.
+    #[test]
+    fn double_click_outside_any_widget_bubbles() {
+        let (mut backend, mut app) = harness();
+
+        preprocess_event(double_click_at(100.0, 100.0), &mut backend, &mut app);
+
+        assert_eq!(app.received, vec![double_click_at(100.0, 100.0)]);
     }
 
     /// Key → state-change → semantic event: `Up` mutates the counter's

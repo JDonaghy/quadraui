@@ -1200,6 +1200,7 @@ pub(crate) enum A11yOwnerKind {
 fn content_route_kind(content: &OwnedContent) -> A11yOwnerKind {
     match content {
         OwnedContent::List(_) => A11yOwnerKind::List,
+        OwnedContent::ListWidget(_) => A11yOwnerKind::List,
         OwnedContent::Tree(_) => A11yOwnerKind::Tree,
         OwnedContent::Form(_) => A11yOwnerKind::Form,
         OwnedContent::CellGrid(_) => A11yOwnerKind::CellGrid,
@@ -1279,6 +1280,7 @@ impl Described {
 fn describe(content: &OwnedContent) -> Described {
     match content {
         OwnedContent::List(list) => Described::from_primitive(list),
+        OwnedContent::ListWidget(list) => Described::from_primitive(list),
         OwnedContent::Toolbar(bar) => Described::from_primitive(bar),
         OwnedContent::TabBar(bar) => Described::from_primitive(bar),
         OwnedContent::ActivityBar(bar) => Described::from_primitive(bar),
@@ -1363,6 +1365,7 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::MultiSectionView(_) => "Multi-section view",
         OwnedContent::Tree(_) => "Tree",
         OwnedContent::List(_) => "List",
+        OwnedContent::ListWidget(_) => "List",
         OwnedContent::Form(_) => "Form",
         OwnedContent::MenuBar(_) => "Menu bar",
         OwnedContent::Split(_) => "Split",
