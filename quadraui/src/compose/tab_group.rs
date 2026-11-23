@@ -737,19 +737,29 @@ struct PaneHitCache {
 
 /// Paint one pane's tab strip into `strip` through
 /// [`crate::backend::DrawsPrimitives::draw_dyn`] and return the
-/// strip-relative [`TabBarLayout`] it resolved.
+/// strip-relative [`TabBarLayout`] it resolved, paired with the scroll
+/// offset that keeps the active tab visible under this frame's real
+/// measurements —
+/// [`crate::primitives::tab_bar::TabBarPrimitiveLayout::corrected_scroll_offset`],
+/// *not* `layout.resolved_scroll_offset` (merely clamped — see that
+/// field's own doc).
 ///
 /// A backend whose `draw_dyn` hands back a layout of some other concrete
-/// type never measured a tab bar, so the fallback is an empty layout:
-/// dispatch then classifies every strip click as [`TabBarHit::Empty`],
-/// which is the only coherent answer when nothing measured the strip.
-fn draw_tab_strip(backend: &mut dyn Backend, strip: Rect, tab_bar: &TabBar) -> TabBarLayout {
+/// type never measured a tab bar, so the fallback is an empty layout with
+/// no correction: dispatch then classifies every strip click as
+/// [`TabBarHit::Empty`], which is the only coherent answer when nothing
+/// measured the strip.
+fn draw_tab_strip(
+    backend: &mut dyn Backend,
+    strip: Rect,
+    tab_bar: &TabBar,
+) -> (TabBarLayout, usize) {
     use crate::backend::DrawsPrimitives;
     backend
         .draw_dyn(strip, tab_bar, &())
         .downcast_ref::<crate::primitives::tab_bar::TabBarPrimitiveLayout>()
-        .map(|l| l.layout.clone())
-        .unwrap_or_else(|| strip_layout_from_tab_slots(strip, &[]))
+        .map(|l| (l.layout.clone(), l.corrected_scroll_offset))
+        .unwrap_or_else(|| (strip_layout_from_tab_slots(strip, &[]), 0))
 }
 
 /// A strip layout carrying only tab-body hit regions, synthesised from
@@ -1137,11 +1147,11 @@ impl TabGroupController {
             // a `Primitive`, so `draw_dyn` resolves its layout and paints
             // it on whichever surface this backend exposes.
             let tab_bar = pane.build_tab_bar(pane_idx);
-            let layout = draw_tab_strip(backend, strip, &tab_bar);
-            // Per the `TabBar` contract, adopt the scroll offset this
-            // frame's real measurements resolved to, so the next frame
-            // starts coherent — see `TabBarLayout::resolved_scroll_offset`.
-            pane.tab_scroll_offset = layout.resolved_scroll_offset;
+            let (layout, corrected_scroll_offset) = draw_tab_strip(backend, strip, &tab_bar);
+            // Adopt the scroll offset this frame's real measurements
+            // resolved to, so the next frame starts coherent — see
+            // `TabBarPrimitiveLayout::corrected_scroll_offset`'s own doc.
+            pane.tab_scroll_offset = corrected_scroll_offset;
 
             // Render active content.
             if content.width > 0.0 && content.height > 0.0 {
@@ -3842,6 +3852,98 @@ mod tests {
                 assert_eq!(tab_id, "t1");
             }
             other => panic!("expected tab 1 to close, got {other:?}"),
+        }
+    }
+
+    /// A pane with far more tabs than fit the strip, whose active tab sits
+    /// near the end, must keep that tab visible after a real render on a
+    /// pixel backend — the scroll offset `render` writes back has to be
+    /// the *corrected* one ([`crate::primitives::tab_bar::
+    /// TabBarPrimitiveLayout::corrected_scroll_offset`]), not
+    /// `TabBarLayout::resolved_scroll_offset` (merely clamped), or the
+    /// strip would permanently clip from tab 0 and hide the active tab.
+    ///
+    /// Forced to the pixel regime regardless of the `tui` feature (unlike
+    /// [`click_regime`]): TUI's own cell-grid fit intentionally leaves
+    /// scroll correction to the caller (`TabBar::layout`'s own
+    /// "Two-pass-paint pattern" doc), so only a pixel backend's
+    /// `fit_active_scroll_offset` self-correction is in scope here.
+    #[test]
+    fn rendering_an_overflowing_strip_scrolls_the_active_tab_into_view() {
+        let tabs: Vec<PaneTab> = (0..40)
+            .map(|i| tab(&format!("t{i}"), &format!("tab-label-{i}"), true))
+            .collect();
+        let mut ctrl =
+            TabGroupController::with_pane("pane:0", tabs, "t39", SplitDirection::Horizontal);
+        let mut backend = crate::testing::RecordingBackend::with_viewport(
+            crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            20.0,
+            8.0,
+        );
+        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+
+        // First pass: paints from the pane's initial `scroll_offset: 0`
+        // and writes back the correction for the next frame — the
+        // "two-pass paint" pattern `TabBar::layout`'s own doc describes.
+        ctrl.render(&mut backend, bounds);
+
+        // Forty generously-labelled tabs can't possibly fit the 800px
+        // strip, so a scroll offset of `0` would leave tab 39 scrolled out
+        // of view — the regression this test guards against.
+        assert!(
+            ctrl.panes[0].tab_scroll_offset > 0,
+            "expected a non-zero corrected scroll offset to keep tab 39 visible, got 0"
+        );
+
+        // Second pass: now paints from the corrected offset, so tab 39
+        // actually appears.
+        let layout = ctrl.render(&mut backend, bounds);
+        let strip = layout.strip_bounds[0];
+
+        let active_cache = ctrl.last_pane_hits[0]
+            .as_ref()
+            .expect("render primed the cache");
+        assert!(
+            active_cache
+                .layout
+                .visible_tabs
+                .iter()
+                .any(|vt| vt.tab_idx == 39),
+            "tab 39 (the active one) must be among the painted visible tabs: {:?}",
+            active_cache.layout.visible_tabs
+        );
+
+        // Tab 38, scrolled into view alongside the active tab 39, is
+        // clickable where it painted (strip-relative bounds, re-absolutised
+        // the same way `drop_group_rects` does) and activates on click —
+        // a non-active tab, so the click produces a real `TabActivated`
+        // event rather than `Handled::Consumed`.
+        let tab_38 = active_cache
+            .layout
+            .visible_tabs
+            .iter()
+            .find(|vt| vt.tab_idx == 38)
+            .unwrap_or_else(|| {
+                panic!(
+                    "tab 38 must also be among the painted visible tabs: {:?}",
+                    active_cache.layout.visible_tabs
+                )
+            });
+        let (start, end) = (
+            tab_38.bounds.x + strip.x,
+            tab_38.bounds.x + strip.x + tab_38.bounds.width,
+        );
+        let mid_y = strip.y + strip.height / 2.0;
+        match ctrl.handle_click_event((start + end) / 2.0, mid_y) {
+            Handled::Event(TabGroupEvent::TabActivated { pane_idx, tab_id }) => {
+                assert_eq!(pane_idx, 0);
+                assert_eq!(tab_id, "t38");
+            }
+            other => panic!("expected tab 38 to activate, got {other:?}"),
         }
     }
 }

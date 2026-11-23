@@ -2941,6 +2941,20 @@ pub struct TabBarPrimitiveLayout {
     pub nerd_fonts_enabled: bool,
     /// The bar-relative layout itself.
     pub layout: TabBarLayout,
+    /// The scroll offset that keeps the active tab visible under this
+    /// frame's real measurements — [`crate::primitives::layout_metrics::
+    /// pixel_tab_bar_layout`]'s own `corrected_scroll_offset` on the pixel
+    /// branch, computed via [`TabBar::fit_active_scroll_offset`]. `layout
+    /// .resolved_scroll_offset` is `self.scroll_offset` merely clamped to
+    /// a valid index (see that field's own doc); a caller that wants the
+    /// *next* frame's strip to keep the active tab in view writes this
+    /// field back to its stored scroll state instead, the "two-pass
+    /// paint" pattern [`TabBar::layout`]'s own doc describes. On the TUI
+    /// branch this equals `layout.resolved_scroll_offset` — a cell-grid
+    /// char-based fit needs no further correction, the same contract
+    /// `crate::primitives::tab_bar::cell_paint::paint`'s own `TabBarHits
+    /// ::correct_scroll_offset` field documents.
+    pub corrected_scroll_offset: usize,
 }
 
 impl crate::primitive::Primitive for TabBar {
@@ -2969,10 +2983,12 @@ impl crate::primitive::Primitive for TabBar {
         {
             if matches!(ctx.units(), crate::primitive::Units::Cells) {
                 let layout = tui_tab_bar_primitive_layout(self, rect.width, rect.height);
+                let corrected_scroll_offset = layout.resolved_scroll_offset;
                 return TabBarPrimitiveLayout {
                     area: rect,
                     nerd_fonts_enabled: ctx.nerd_fonts_enabled,
                     layout,
+                    corrected_scroll_offset,
                 };
             }
         }
@@ -3003,7 +3019,7 @@ impl crate::primitive::Primitive for TabBar {
         // doc) — every tab's icon-extra width is `0.0`.
         let tab_icon_extras = vec![0.0f32; self.tabs.len()];
         let chrome = TabChrome::default();
-        let (layout, _corrected_scroll_offset, _available_cols) =
+        let (layout, corrected_scroll_offset, _available_cols) =
             crate::primitives::layout_metrics::pixel_tab_bar_layout(
                 self,
                 rect.width,
@@ -3020,6 +3036,7 @@ impl crate::primitive::Primitive for TabBar {
             area: rect,
             nerd_fonts_enabled: ctx.nerd_fonts_enabled,
             layout,
+            corrected_scroll_offset,
         }
     }
 
@@ -3408,6 +3425,50 @@ mod interactive_tests {
     #[test]
     fn non_empty_bar_is_one_focus_stop() {
         assert_eq!(bar(&["a.rs"], 0).focus(), FocusSpec::Stop);
+    }
+
+    /// `TabBarPrimitiveLayout::corrected_scroll_offset` on the pixel
+    /// branch is `fit_active_scroll_offset`'s real correction, distinct
+    /// from `layout.resolved_scroll_offset` (which stays `0`, merely the
+    /// starting `scroll_offset` clamped) — a caller that reads the latter
+    /// instead never scrolls an overflowing strip into view.
+    #[test]
+    fn corrected_scroll_offset_keeps_the_active_tab_visible_on_a_pixel_layout() {
+        let labels: Vec<String> = (0..20).map(|i| format!("tab-label-{i}")).collect();
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let b = bar(&label_refs, 19);
+
+        let (ctx, rect) = pixel_regime();
+        let layout = Primitive::layout(&b, &ctx, rect);
+
+        assert_eq!(
+            layout.layout.resolved_scroll_offset, 0,
+            "the pixel branch's own `resolved_scroll_offset` is only clamped"
+        );
+        assert!(
+            layout.corrected_scroll_offset > 0,
+            "expected a non-zero correction to keep tab 19 visible, got 0"
+        );
+    }
+
+    /// On the TUI branch, `corrected_scroll_offset` equals
+    /// `resolved_scroll_offset` — a cell-grid char-based fit leaves scroll
+    /// correction to the caller (`TabBar::layout`'s own "Two-pass-paint
+    /// pattern" doc), so there is no further correction to compute here.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn corrected_scroll_offset_echoes_resolved_offset_on_a_cell_layout() {
+        let labels: Vec<String> = (0..20).map(|i| format!("tab-label-{i}")).collect();
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let b = bar(&label_refs, 19);
+
+        let (ctx, rect) = cell_regime();
+        let layout = Primitive::layout(&b, &ctx, rect);
+
+        assert_eq!(
+            layout.corrected_scroll_offset,
+            layout.layout.resolved_scroll_offset
+        );
     }
 
     #[test]
