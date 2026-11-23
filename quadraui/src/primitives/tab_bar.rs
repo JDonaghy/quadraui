@@ -5054,3 +5054,137 @@ mod primitive_parity_tests {
         );
     }
 }
+
+/// GTK-backed proof that the shared `Primitive::layout` and the GTK
+/// rasteriser agree on where each tab sits — the whole point of
+/// `LayoutCtx::text_width`: both measure the same labels with the same
+/// Pango font instead of one guessing from `char_width`.
+#[cfg(all(test, feature = "gtk"))]
+mod gtk_measure_parity_tests {
+    use super::*;
+    use crate::backend::{Backend, DrawsPrimitives};
+    use crate::gtk::backend::GtkBackend;
+    use crate::primitive::Primitive;
+    use crate::style::Style;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+    use pangocairo::pango;
+
+    /// Labels whose Pango widths diverge from `char_width * chars` in
+    /// *both* directions, so the comparison below cannot pass on a
+    /// scalar-corrected approximation.
+    fn parity_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs:gtk-parity"),
+            tabs: ["alpha", "beta", "gamma"]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| TabItem {
+                    label: (*label).to_string(),
+                    is_active: i == 0,
+                    ..Default::default()
+                })
+                .collect(),
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    fn spans(tabs: &[VisibleTab]) -> Vec<(usize, f32, f32)> {
+        tabs.iter()
+            .map(|vt| (vt.tab_idx, vt.bounds.x, vt.bounds.x + vt.bounds.width))
+            .collect()
+    }
+
+    /// `draw_primitive` → `TabBar::layout` must resolve the same per-tab
+    /// x-ranges as `Backend::draw_tab_bar_layout` for the same bar and
+    /// rect on a live Pango context.
+    ///
+    /// `tab_padding_x` is set to `pixel::TAB_PAD` because the two paths
+    /// read that one metric from different places — the rasteriser from
+    /// `Style::tab_padding_x`, the shared layout from the
+    /// `layout_metrics::pixel` constant, since `LayoutCtx` carries no
+    /// `Style` — and this test is about the glyph widths, not that gap.
+    #[test]
+    fn primitive_layout_tab_spans_match_the_gtk_rasteriser() {
+        let bar = parity_bar();
+        let rect = Rect::new(0.0, 0.0, 600.0, 35.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 600, 35).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        // The measurer `draw_primitive` attaches reads this context, not
+        // the per-frame one, so `Backend::measure_text` resolves real
+        // Pango advances here instead of its pre-realise estimate.
+        backend.set_pango_context(pango_ctx.clone());
+        Backend::set_style(
+            &mut backend,
+            Style::default().with_tab_padding_x(crate::primitives::layout_metrics::pixel::TAB_PAD),
+        );
+
+        let (rasterised, widget) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let rasterised = Backend::draw_tab_bar_layout(b, rect, &bar, None);
+            let widget = b.draw_primitive(rect, &bar);
+            (rasterised, widget)
+        });
+
+        assert_eq!(
+            spans(&widget.layout.visible_tabs),
+            spans(&rasterised.visible_tabs),
+            "TabBar::layout through draw_primitive must place tabs where the GTK \
+             rasteriser places them — both measure labels with Backend::measure_text"
+        );
+        assert_eq!(
+            widget.layout.visible_tabs.len(),
+            bar.tabs.len(),
+            "all three tabs must fit in a 600px strip for the comparison to cover them"
+        );
+    }
+
+    /// The parity above is not vacuous: the same layout built from a
+    /// measurer-free `LayoutCtx` (the `char_width` approximation) does
+    /// *not* match the rasteriser on these labels.
+    #[test]
+    fn the_char_width_approximation_disagrees_with_the_gtk_rasteriser() {
+        let bar = parity_bar();
+        let rect = Rect::new(0.0, 0.0, 600.0, 35.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 600, 35).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        backend.set_pango_context(pango_ctx.clone());
+        Backend::set_style(
+            &mut backend,
+            Style::default().with_tab_padding_x(crate::primitives::layout_metrics::pixel::TAB_PAD),
+        );
+
+        let (rasterised, approximated) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let rasterised = Backend::draw_tab_bar_layout(b, rect, &bar, None);
+            let ctx = crate::primitive::LayoutCtx::new(
+                crate::primitive::LayoutCtx::resolve_row_height(
+                    Backend::chrome_line_height(b),
+                    &Backend::style(b),
+                ),
+                Backend::char_width(b),
+                Backend::nerd_fonts_enabled(b),
+            );
+            let approximated = Primitive::layout(&bar, &ctx, rect);
+            (rasterised, approximated)
+        });
+
+        assert_ne!(
+            spans(&approximated.layout.visible_tabs),
+            spans(&rasterised.visible_tabs),
+            "if the char_width approximation already matched Pango on these labels, the \
+             parity test above would prove nothing"
+        );
+    }
+}
