@@ -1112,11 +1112,11 @@ where
     B: PreprocessBackend + crate::Backend,
     A: AppLogic,
 {
-    let ctx = crate::primitive::LayoutCtx::new(
-        backend.line_height(),
-        backend.char_width(),
-        backend.nerd_fonts_enabled(),
-    );
+    // Built by the same helper
+    // [`crate::backend::DrawsPrimitives::draw_primitive`] uses, so the
+    // scalars — including `line_height`'s row-height floor — match the
+    // paint pass exactly.
+    let ctx = crate::backend::primitive_layout_ctx(backend);
     let layout = {
         // The same measurer
         // [`crate::backend::DrawsPrimitives::draw_primitive`] attaches, so

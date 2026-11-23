@@ -346,6 +346,11 @@ struct MeasureCacheKey {
 /// `'static` form a cache key can own. [`LayoutCtx`]'s own `PartialEq`
 /// compares exactly those metrics and ignores the measurer, so a key
 /// built this way still matches the live ctx it came from.
+///
+/// That measurer-blindness is also the cache's one staleness window: a
+/// script widget that sizes text through [`LayoutCtx::text_width`] keeps
+/// hitting this cache across a font change that leaves the three scalars
+/// untouched. No scripted widget measures text today.
 fn cache_key_ctx(ctx: &LayoutCtx) -> LayoutCtx<'static> {
     LayoutCtx::new(ctx.line_height, ctx.char_width, ctx.nerd_fonts_enabled)
 }

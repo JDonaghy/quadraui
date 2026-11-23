@@ -283,12 +283,13 @@ fn gtk_draw_primitive_paints_the_resolved_layout() {
 
     let mut backend = GtkBackend::new();
     let area = Rect::new(4.0, 8.0, 120.0, 40.0);
-    let (layout, painted, measured) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
-        let b: &mut dyn Backend = b;
-        draw_through_the_seam(b, area)
-    });
+    let (layout, painted, measured, measured_label) =
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let b: &mut dyn Backend = b;
+            draw_through_the_seam(b, area)
+        });
 
-    assert_layout_is_resolved(layout, area, measured);
+    assert_layout_is_resolved(layout, area, measured, measured_label);
     assert_eq!(
         painted,
         vec![area],

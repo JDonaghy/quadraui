@@ -4879,7 +4879,11 @@ pub trait DrawsPrimitives: Backend {
 /// so `&B` can't be coerced to the `&dyn Fn` [`LayoutCtx::with_measurer`]
 /// takes. Both callers build that closure over their own `self` and
 /// attach it before handing the ctx to a widget.
-fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCtx<'static> {
+///
+/// Also the ctx a widget hit-test resolves its layout against
+/// (`crate::runtime`), so that routing runs against the same geometry
+/// the paint pass produced rather than a separately-built ctx.
+pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCtx<'static> {
     let style = backend.style();
     LayoutCtx::new(
         LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),

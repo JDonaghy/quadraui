@@ -3161,6 +3161,12 @@ impl crate::primitive::Primitive for TabBar {
         // `FontRole::Chrome`, the same font those rasterisers resolve.
         // Without a measurer in reach (`LayoutCtx::new`) it degrades to
         // the `ctx.char_width` approximation.
+        //
+        // Known gap: a preview tab (`TabItem::is_preview`) is rasterised
+        // in an *italic* variant of the chrome font, and `FontRole` has
+        // no italic member, so its label is measured here in the upright
+        // face. Widths for a bar containing preview tabs can therefore
+        // still drift slightly from what the pixel rasteriser paints.
         let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
             ctx,
             role: crate::FontRole::Chrome,

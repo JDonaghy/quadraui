@@ -17,9 +17,10 @@
 //! land on the wrong tab rather than merely a few pixels off-centre.
 
 use quadraui::gtk::testing::GtkDriver;
+use quadraui::primitive::{LayoutCtx, Primitive};
 use quadraui::{
-    AppLogic, Backend, DrawsPrimitives, FrameTree, Reaction, Rect, TabBar, TabBarEvent, TabItem,
-    UiEvent, WidgetId,
+    AppLogic, Backend, DrawsPrimitives, FrameTree, Reaction, Rect, TabBar, TabBarEvent, TabBarHit,
+    TabItem, UiEvent, WidgetId,
 };
 
 const TAB_BAR_RECT: Rect = Rect::new(0.0, 0.0, 900.0, 35.0);
@@ -128,4 +129,52 @@ fn clicking_each_painted_tab_centre_activates_that_tab_on_gtk() {
         );
         assert!(driver.app().bar.tabs[tab_idx].is_active);
     }
+}
+
+/// Guards the premise [`LABELS`] is chosen for: on this backend's chrome
+/// font the drift between a real measurement and the `char_width * chars`
+/// approximation really does exceed a whole tab slot, so the test above
+/// would fail — land on a *different* tab, not merely a few pixels off
+/// its centre — if the router resolved its layout without a measurer.
+///
+/// Without this, a font change that shrank the drift to a couple of
+/// pixels would silently turn the test above into a far weaker check
+/// that still passed.
+#[test]
+fn the_measurer_free_layout_puts_a_different_tab_under_the_painted_centres() {
+    let mut driver = GtkDriver::new(TabBarRoutingApp::new(), 900, 60);
+    let id = driver.app().id;
+    driver.render();
+
+    let painted_centres: Vec<(f32, f32)> = (0..LABELS.len())
+        .map(|i| {
+            driver
+                .tab_center(&id, i)
+                .unwrap_or_else(|| panic!("tab {i} must be painted and in view"))
+        })
+        .collect();
+
+    // The same shared layout the router runs, minus the measurer: every
+    // other input (rect, padding constants, the bar itself) is identical,
+    // so any disagreement below is glyph measurement alone.
+    let backend = driver.backend();
+    let ctx = LayoutCtx::new(
+        LayoutCtx::resolve_row_height(backend.chrome_line_height(), &backend.style()),
+        backend.char_width(),
+        backend.nerd_fonts_enabled(),
+    );
+    let approximated = Primitive::layout(&driver.app().bar, &ctx, TAB_BAR_RECT);
+
+    let (x, y) = painted_centres[LABELS.len() - 1];
+    let hit = approximated
+        .layout
+        .hit_test(x - TAB_BAR_RECT.x, y - TAB_BAR_RECT.y);
+    assert_ne!(
+        hit,
+        TabBarHit::Tab(LABELS.len() - 1),
+        "the painted centre of the last tab ({x}, {y}) must fall outside that tab in the \
+         measurer-free layout — otherwise the drift these labels are chosen for no longer \
+         exceeds a tab slot and the routing test above proves little; approximated hit was \
+         {hit:?}"
+    );
 }
