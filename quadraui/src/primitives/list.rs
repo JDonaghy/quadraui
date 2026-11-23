@@ -23,15 +23,41 @@
 //! listens for both `ItemActivated` and `ItemDoubleClicked`. The app
 //! updates `selected_idx` and `scroll_offset` for the next frame.
 
-use crate::event::{Key, MouseButton, NamedKey, Point, Rect, UiEvent};
-use crate::interactive::{
-    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
-};
+use crate::event::Rect;
 use crate::primitives::row_stack::{self, RowPaintState};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
-use crate::Handled;
 use serde::{Deserialize, Serialize};
+
+// Input routing (`Interactive`, `WidgetAction`) is gated the same way the
+// `Primitive` impl below is: it is expressed in terms of
+// `ListViewPrimitiveLayout`, which only exists on a build with at least one
+// rendering backend compiled in. A descriptor-only build (no backend
+// feature) still gets the whole declarative `ListView` type and its
+// `ListViewLayout` geometry.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::event::{Key, MouseButton, NamedKey, Point, UiEvent};
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
+};
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::Handled;
 
 /// Declarative description of a `ListView` widget.
 ///
