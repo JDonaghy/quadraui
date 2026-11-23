@@ -60,12 +60,14 @@ pub trait TextMeasure {
 }
 
 /// Approximates every glyph as `char_w` wide — the
-/// [`crate::primitive::Primitive::layout`] no-live-font fallback for any
-/// [`TextMeasure`] consumer here, since [`crate::primitive::LayoutCtx`]
-/// carries only a flat `char_width`, not a live [`TextMeasure`]. Needs no
-/// backend to evaluate — gated to the same feature set as its only
-/// callers ([`crate::DataTable`]'s and [`crate::TreeTable`]'s `Primitive`
-/// impls), not to any particular pixel-backend feature.
+/// [`crate::primitive::Primitive::layout`] fallback for a [`TextMeasure`]
+/// consumer here that hasn't been ported onto
+/// [`crate::primitive::LayoutCtx::text_width`] (see [`LayoutCtxMeasure`],
+/// which routes through the calling backend's real
+/// [`crate::Backend::measure_text`] instead). Needs no backend to
+/// evaluate — gated to the same feature set as its only callers
+/// ([`crate::DataTable`]'s and [`crate::TreeTable`]'s `Primitive` impls),
+/// not to any particular pixel-backend feature.
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -83,6 +85,44 @@ pub(crate) struct CharWidthMeasure(pub f32);
 impl TextMeasure for CharWidthMeasure {
     fn width_of(&self, text: &str) -> f32 {
         text.chars().count() as f32 * self.0
+    }
+}
+
+/// Measures through a [`crate::primitive::LayoutCtx`]'s own text
+/// measurer — the [`TextMeasure`] a
+/// [`crate::primitive::Primitive::layout`] hands to the shared layout
+/// math in this module so one pixel layout serves every backend at that
+/// backend's real font widths.
+///
+/// With a measurer attached (every
+/// [`crate::DrawsPrimitives::draw_primitive`]/`draw_dyn` call) this is
+/// the calling backend's [`crate::Backend::measure_text`] for `role`;
+/// without one it degrades to [`CharWidthMeasure`]'s approximation,
+/// since that is what [`crate::primitive::LayoutCtx::text_width`] falls
+/// back to.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) struct LayoutCtxMeasure<'a, 'c> {
+    /// The ctx whose [`crate::primitive::LayoutCtx::text_width`] answers
+    /// every [`TextMeasure::width_of`] call.
+    pub ctx: &'a crate::primitive::LayoutCtx<'c>,
+    /// Which font the measured text is painted in.
+    pub role: crate::FontRole,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl TextMeasure for LayoutCtxMeasure<'_, '_> {
+    fn width_of(&self, text: &str) -> f32 {
+        self.ctx.text_width(text, self.role)
     }
 }
 

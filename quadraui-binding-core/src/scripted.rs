@@ -338,8 +338,16 @@ pub struct ScriptedLayout {
 
 #[derive(Debug, Clone, PartialEq)]
 struct MeasureCacheKey {
-    ctx: LayoutCtx,
+    ctx: LayoutCtx<'static>,
     rect: Rect,
+}
+
+/// `ctx`'s three scalar metrics with no text measurer attached — the
+/// `'static` form a cache key can own. [`LayoutCtx`]'s own `PartialEq`
+/// compares exactly those metrics and ignores the measurer, so a key
+/// built this way still matches the live ctx it came from.
+fn cache_key_ctx(ctx: &LayoutCtx) -> LayoutCtx<'static> {
+    LayoutCtx::new(ctx.line_height, ctx.char_width, ctx.nerd_fonts_enabled)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -371,7 +379,7 @@ pub struct ScriptedPrimitive<W: ScriptWidget> {
     state: RefCell<ScriptedState>,
     measure_cache: RefCell<Option<(MeasureCacheKey, ScriptedSize)>>,
     paint_cache: RefCell<Option<PaintCacheEntry>>,
-    natural_size_cache: RefCell<Option<(LayoutCtx, ScriptedSize)>>,
+    natural_size_cache: RefCell<Option<(LayoutCtx<'static>, ScriptedSize)>>,
     a11y_cache: RefCell<Option<(ScriptedProps, Option<ScriptedA11y>)>>,
     /// Total number of calls made into [`Self::widget`] across
     /// `measure`/`paint`/`on_event`/`a11y` — see module doc "Caching".
@@ -512,7 +520,10 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
     /// `measure`'s answer for `(ctx, rect)`, calling
     /// [`ScriptWidget::measure`] only on a cache miss.
     fn resolve_size(&self, ctx: &LayoutCtx, rect: Rect) -> ScriptedSize {
-        let key = MeasureCacheKey { ctx: *ctx, rect };
+        let key = MeasureCacheKey {
+            ctx: cache_key_ctx(ctx),
+            rect,
+        };
         if let Some((cached_key, cached_size)) = self.measure_cache.borrow().as_ref() {
             if *cached_key == key {
                 return *cached_size;
@@ -548,7 +559,7 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
         }
         self.record_call();
         let size = self.widget.measure(ctx, ScriptedConstraints::default());
-        *self.natural_size_cache.borrow_mut() = Some((*ctx, size));
+        *self.natural_size_cache.borrow_mut() = Some((cache_key_ctx(ctx), size));
         size
     }
 
@@ -606,11 +617,11 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
         theme: &Theme,
         style: &Style,
     ) {
-        let ctx = LayoutCtx {
-            line_height: LayoutCtx::resolve_row_height(surface.surface_line_height(), style),
-            char_width: surface.surface_char_width(),
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(
+            LayoutCtx::resolve_row_height(surface.surface_line_height(), style),
+            surface.surface_char_width(),
+            false,
+        );
         let (canvas, canvas_layout) = self.resolve_paint(&ctx, layout.rect, theme);
         native_surface_paint::paint(&canvas, &canvas_layout, surface);
     }
@@ -627,11 +638,7 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
         buf: &mut ratatui::buffer::Buffer,
         theme: &Theme,
     ) {
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
         let (canvas, _) = self.resolve_paint(&ctx, layout.rect, theme);
         let area = q_rect_to_ratatui(layout.rect);
         quadraui::tui::draw_canvas(buf, area, &canvas, theme);
@@ -686,11 +693,11 @@ impl<W: ScriptWidget + 'static> ExtraPaint for ScriptedPrimitive<W> {
     /// layout/paint pass, so an unchanged `ctx` must not re-enter the
     /// script.
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let ctx = LayoutCtx {
-            line_height: backend.line_height(),
-            char_width: backend.char_width(),
-            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-        };
+        let ctx = LayoutCtx::new(
+            backend.line_height(),
+            backend.char_width(),
+            backend.nerd_fonts_enabled(),
+        );
         let size = self.resolve_natural_size(&ctx);
         NaturalSize::new(Some(size.width), Some(size.height))
     }
@@ -764,12 +771,8 @@ mod tests {
         }
     }
 
-    fn ctx() -> LayoutCtx {
-        LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        }
+    fn ctx() -> LayoutCtx<'static> {
+        LayoutCtx::new(16.0, 8.0, false)
     }
 
     #[derive(Default)]

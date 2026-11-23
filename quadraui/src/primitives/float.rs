@@ -765,12 +765,8 @@ mod tests {
 
     // ── Widget contract (`Primitive` + `Interactive`) ─────────────────
 
-    fn ctx() -> crate::primitive::LayoutCtx {
-        crate::primitive::LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        }
+    fn ctx() -> crate::primitive::LayoutCtx<'static> {
+        crate::primitive::LayoutCtx::new(1.0, 1.0, false)
     }
 
     /// `Primitive::layout` keeps the host-placed rect as the box, insets
@@ -937,11 +933,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 40.0, 20.0),
                 FloatMeasure::new(10.0, 4.0),
             );
-            let ctx = LayoutCtx {
-                line_height: 1.0,
-                char_width: 1.0,
-                nerd_fonts_enabled: false,
-            };
+            let ctx = LayoutCtx::new(1.0, 1.0, false);
             let via_layout = Primitive::layout(&float, &ctx, layout.bounds);
             assert_eq!(via_layout, layout);
 

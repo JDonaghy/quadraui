@@ -1622,11 +1622,7 @@ mod tests {
         // `CanvasLayout` resolved yet. Paints straight through
         // `Primitive::paint_cells`, the same seam `crate::scripted`'s own
         // tests use, rather than standing up a whole `Backend`.
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
         let layout = Primitive::layout(&primitive, &ctx, area);
         let cell_area = ratatui::layout::Rect::new(0, 0, 10, 4);
         let mut buf = ratatui::buffer::Buffer::empty(cell_area);

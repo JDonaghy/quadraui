@@ -1112,11 +1112,11 @@ where
     B: PreprocessBackend + crate::Backend,
     A: AppLogic,
 {
-    let ctx = crate::primitive::LayoutCtx {
-        line_height: backend.line_height(),
-        char_width: backend.char_width(),
-        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-    };
+    let ctx = crate::primitive::LayoutCtx::new(
+        backend.line_height(),
+        backend.char_width(),
+        backend.nerd_fonts_enabled(),
+    );
     let layout = node.widget.layout(&ctx, node.rect);
     let currently_focused = backend.focus_tree().focused().copied();
     let units = ctx.units();
@@ -2717,11 +2717,7 @@ mod widget_routing_tests {
         let id = WidgetId::new("counter:a11y");
         let tree = counter_tree(id);
         let mut states = crate::widget_state::WidgetStateStore::new();
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
 
         let via_a11y = crate::a11y::route_widget_action(
             &tree,

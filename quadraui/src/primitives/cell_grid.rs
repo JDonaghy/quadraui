@@ -2981,11 +2981,7 @@ mod interactive_tests {
     /// internals too.
     fn layout_for(grid: &CellGrid) -> CellGridPrimitiveLayout {
         use crate::primitive::{LayoutCtx, Primitive};
-        let ctx = LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
         Primitive::layout(grid, &ctx, Rect::new(0.0, 0.0, 80.0, 20.0))
     }
 

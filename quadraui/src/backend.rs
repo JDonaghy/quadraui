@@ -4708,7 +4708,9 @@ pub trait DrawsPrimitives: Backend {
     ///
     /// `ctx`'s `line_height`/`char_width`/`nerd_fonts_enabled` come from
     /// [`Backend::chrome_line_height`], [`Backend::char_width`] and
-    /// [`Backend::nerd_fonts_enabled`] — the same chrome-oriented
+    /// [`Backend::nerd_fonts_enabled`], and
+    /// [`crate::primitive::LayoutCtx::text_width`] measures through this
+    /// backend's own [`Backend::measure_text`] — the same chrome-oriented
     /// metrics [`Backend::draw_list`]'s own backend wrappers resolve
     /// before calling into
     /// [`crate::primitives::list::native_surface_paint::paint`] — with
@@ -4743,8 +4745,15 @@ pub trait DrawsPrimitives: Backend {
     /// if layout.hit_test(click_x, click_y) { /* ... */ }
     /// ```
     fn draw_primitive<P: Primitive>(&mut self, rect: Rect, primitive: &P) -> P::Layout {
-        let ctx = primitive_layout_ctx(self);
-        let layout = primitive.layout(&ctx, rect);
+        let layout = {
+            // A closure over `self`, not a `&dyn Backend`: this blanket
+            // impl is generic over `B: Backend + ?Sized`, so `&B` can't
+            // be coerced to another trait object here. Scoped so the
+            // closure's shared borrow of `*self` ends before the
+            // `&mut self` paint calls below.
+            let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
+            primitive.layout(&primitive_layout_ctx(self).with_measurer(&measurer), rect)
+        };
         let style = self.style();
         let theme = self.theme();
         if let Some(surface) = self.paint_surface() {
@@ -4804,7 +4813,13 @@ pub trait DrawsPrimitives: Backend {
         state: &dyn PaintState,
     ) -> Box<dyn PrimitiveLayout> {
         let ctx = primitive_layout_ctx(self);
-        let layout = w.layout(&ctx, rect);
+        let layout = {
+            // See `draw_primitive`'s own measurer comment: a closure over
+            // `self`, scoped so its shared borrow ends before the
+            // `&mut self` paint calls below.
+            let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
+            w.layout(&ctx.with_measurer(&measurer), rect)
+        };
         let style = self.style();
         let theme = self.theme();
         let env = PaintEnv {
@@ -4839,10 +4854,12 @@ pub trait DrawsPrimitives: Backend {
                     )
                 })
                 .collect();
+            let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
+            let recorded = w.layout(&ctx.with_measurer(&measurer), rect);
             crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
                 id: *id,
                 rect,
-                layout: w.layout(&ctx, rect),
+                layout: recorded,
                 sub_regions,
             });
         }
@@ -4857,13 +4874,18 @@ pub trait DrawsPrimitives: Backend {
 /// the active [`Backend::style`]'s row-height token via
 /// [`LayoutCtx::resolve_row_height`] — see [`DrawsPrimitives::draw_primitive`]'s
 /// own doc for why that floor matters.
-fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCtx {
+///
+/// Carries no text measurer: this is generic over `B: Backend + ?Sized`,
+/// so `&B` can't be coerced to the `&dyn Fn` [`LayoutCtx::with_measurer`]
+/// takes. Both callers build that closure over their own `self` and
+/// attach it before handing the ctx to a widget.
+fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCtx<'static> {
     let style = backend.style();
-    LayoutCtx {
-        line_height: LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),
-        char_width: backend.char_width(),
-        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-    }
+    LayoutCtx::new(
+        LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),
+        backend.char_width(),
+        backend.nerd_fonts_enabled(),
+    )
 }
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}

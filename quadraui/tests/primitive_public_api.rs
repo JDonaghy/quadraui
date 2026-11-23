@@ -36,7 +36,7 @@ use std::cell::RefCell;
 
 use quadraui::primitive::{LayoutCtx, Primitive};
 use quadraui::{
-    A11yInfo, A11yPrimitive, Backend, DrawsPrimitives, PaintSurface, Rect, Style, Theme,
+    A11yInfo, A11yPrimitive, Backend, DrawsPrimitives, FontRole, PaintSurface, Rect, Style, Theme,
 };
 
 /// [`Swatch`]'s fully-resolved layout: the absolute area it was laid out
@@ -44,8 +44,21 @@ use quadraui::{
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SwatchLayout {
     area: Rect,
-    ctx: LayoutCtx,
+    /// The metrics half of the ctx `draw_primitive` built, rebuilt with
+    /// [`LayoutCtx::new`] so this layout owns a `'static` value. The
+    /// measurer half is recorded separately in [`Self::measured_label`],
+    /// since a `Primitive::Layout` cannot borrow from its ctx.
+    ctx: LayoutCtx<'static>,
+    /// `ctx.text_width(LABEL, FontRole::Chrome)` as the ctx answered it
+    /// — the calling backend's own `measure_text` when `draw_primitive`
+    /// attached one.
+    measured_label: f32,
 }
+
+/// Text [`Swatch::layout`] measures through its ctx, so a test can
+/// compare the answer against the calling backend's own
+/// [`quadraui::Backend::measure_text`].
+const LABEL: &str = "alpha beta";
 
 /// A filled square, built against the public `Primitive` seam only.
 struct Swatch {
@@ -75,7 +88,8 @@ impl Primitive for Swatch {
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> SwatchLayout {
         SwatchLayout {
             area: rect,
-            ctx: *ctx,
+            ctx: LayoutCtx::new(ctx.line_height, ctx.char_width, ctx.nerd_fonts_enabled),
+            measured_label: ctx.text_width(LABEL, FontRole::Chrome),
         }
     }
 
@@ -96,8 +110,9 @@ impl Primitive for Swatch {
 quadraui::non_interactive!(Swatch);
 
 /// Draw a `Swatch` through `&mut dyn Backend`, returning the layout
-/// `draw_primitive` handed back, the areas `paint` was called with, and the
-/// metrics read off the same backend for comparison.
+/// `draw_primitive` handed back, the areas `paint` was called with, and
+/// the metrics plus [`LABEL`] width read off the same backend for
+/// comparison.
 ///
 /// `measured.line_height` runs the same backend-measured
 /// `chrome_line_height` through [`LayoutCtx::resolve_row_height`] that
@@ -107,21 +122,32 @@ quadraui::non_interactive!(Swatch);
 fn draw_through_the_seam(
     backend: &mut dyn Backend,
     area: Rect,
-) -> (SwatchLayout, Vec<Rect>, LayoutCtx) {
+) -> (SwatchLayout, Vec<Rect>, LayoutCtx<'static>, f32) {
     let style = backend.style();
-    let measured = LayoutCtx {
-        line_height: LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),
-        char_width: backend.char_width(),
-        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-    };
+    let measured = LayoutCtx::new(
+        LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),
+        backend.char_width(),
+        backend.nerd_fonts_enabled(),
+    );
+    let measured_label = backend.measure_text(LABEL, FontRole::Chrome).0;
     let swatch = Swatch::new();
     let layout = backend.draw_primitive(area, &swatch);
-    (layout, swatch.painted.into_inner(), measured)
+    (
+        layout,
+        swatch.painted.into_inner(),
+        measured,
+        measured_label,
+    )
 }
 
 /// Every backend resolves the layout the same way; only the paint half
 /// depends on `Backend::paint_surface`.
-fn assert_layout_is_resolved(layout: SwatchLayout, area: Rect, measured: LayoutCtx) {
+fn assert_layout_is_resolved(
+    layout: SwatchLayout,
+    area: Rect,
+    measured: LayoutCtx<'static>,
+    measured_label: f32,
+) {
     assert_eq!(
         layout.area, area,
         "draw_primitive must pass the caller's rect to Primitive::layout and hand the \
@@ -132,6 +158,11 @@ fn assert_layout_is_resolved(layout: SwatchLayout, area: Rect, measured: LayoutC
         "LayoutCtx must carry the calling backend's own chrome_line_height / char_width / \
          nerd_fonts_enabled, so a Primitive impl never has to reach for &dyn Backend itself"
     );
+    assert_eq!(
+        layout.measured_label, measured_label,
+        "LayoutCtx::text_width must answer the calling backend's own Backend::measure_text \
+         for the label, not a char_width approximation of it"
+    );
 }
 
 #[cfg(feature = "tui")]
@@ -141,9 +172,9 @@ fn tui_draw_primitive_resolves_layout_without_painting() {
 
     let mut backend = TuiBackend::new();
     let area = Rect::new(1.0, 2.0, 10.0, 4.0);
-    let (layout, painted, measured) = draw_through_the_seam(&mut backend, area);
+    let (layout, painted, measured, measured_label) = draw_through_the_seam(&mut backend, area);
 
-    assert_layout_is_resolved(layout, area, measured);
+    assert_layout_is_resolved(layout, area, measured, measured_label);
     assert!(
         painted.is_empty(),
         "TuiBackend answers None from Backend::paint_surface, so draw_primitive has no \
@@ -273,9 +304,9 @@ fn win_draw_primitive_paints_the_resolved_layout() {
 
     let mut backend = WinBackend::new();
     let area = Rect::new(4.0, 8.0, 120.0, 40.0);
-    let (layout, painted, measured) = draw_through_the_seam(&mut backend, area);
+    let (layout, painted, measured, measured_label) = draw_through_the_seam(&mut backend, area);
 
-    assert_layout_is_resolved(layout, area, measured);
+    assert_layout_is_resolved(layout, area, measured, measured_label);
     assert_eq!(
         painted,
         vec![area],
