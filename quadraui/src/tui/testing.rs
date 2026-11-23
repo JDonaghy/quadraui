@@ -60,6 +60,7 @@ use ratatui::Terminal;
 pub use ratatui::style::{Color, Modifier};
 
 use crate::backend::Backend;
+use crate::primitives::tab_bar::{tab_part_center, TabBarSubPart};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
 use crate::testing::driver_core::DriverCore;
@@ -233,7 +234,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// Resize the underlying `TestBackend`'s physical cell buffer to
     /// `width`×`height` — **without** touching [`TuiBackend`]'s cached
     /// [`crate::Viewport`] or any layout state a previous [`Self::render`]
-    /// cached (e.g. [`Self::tab_center`]'s `cached_tab_bar_layout`). Those
+    /// cached (e.g. [`Self::tab_center`]'s painted geometry). Those
     /// stay exactly as they were after the last repaint, at whatever size
     /// the driver last actually painted.
     ///
@@ -826,15 +827,15 @@ impl<A: AppLogic> TuiDriver<A> {
     ///
     /// `find` can't do this job: every tab paints the same chrome (and a
     /// closed/active tab's label may repeat elsewhere on screen), so there
-    /// is no needle that disambiguates "tab 3" from "tab 0". This instead
-    /// resolves against the [`crate::TabBarLayout`] `TuiBackend::draw_tab_bar`
-    /// cached the last time `bar` painted — `None` if `bar` didn't paint
-    /// this frame, or if `tab_idx` is scrolled out of view behind the
-    /// bar's `scroll_offset`.
+    /// is no needle that disambiguates "tab 3" from "tab 0". This resolves
+    /// through [`tab_part_center`]: the frame's painted-layout record for a
+    /// bar painted through the widget contract, falling back to the
+    /// `TuiBackend::draw_tab_bar` layout cache while that legacy rasteriser
+    /// still exists. `None` if `bar` didn't paint this frame, or if
+    /// `tab_idx` is scrolled out of view behind the bar's `scroll_offset`.
     pub fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let (rect, layout) = self.core.backend().cached_tab_bar_layout(bar)?;
-        let (cx, cy) = layout.tab_center(tab_idx)?;
-        Some((rect.x + cx, rect.y + cy))
+        let cached = self.core.backend().cached_tab_bar_layout(bar);
+        tab_part_center(bar, TabBarSubPart::Tab(tab_idx), cached)
     }
 
     /// Cell coordinates of tab `tab_idx`'s close-button center in the tab
@@ -845,9 +846,8 @@ impl<A: AppLogic> TuiDriver<A> {
     /// drew no close button this frame (`is_closable: false` on the tab,
     /// or `show_tab_close: false` on the bar).
     pub fn tab_close_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let (rect, layout) = self.core.backend().cached_tab_bar_layout(bar)?;
-        let (cx, cy) = layout.tab_close_center(tab_idx)?;
-        Some((rect.x + cx, rect.y + cy))
+        let cached = self.core.backend().cached_tab_bar_layout(bar);
+        tab_part_center(bar, TabBarSubPart::TabClose(tab_idx), cached)
     }
 }
 

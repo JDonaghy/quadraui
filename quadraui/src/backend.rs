@@ -4778,6 +4778,25 @@ pub trait DrawsPrimitives: Backend {
     /// one method taking a [`PaintTarget`] — there is exactly one paint
     /// call to make here regardless of which target [`Backend::paint_surface`]/
     /// [`Backend::cell_surface`] resolved.
+    ///
+    /// # Painted-layout record
+    ///
+    /// When `w` carries an id ([`DynWidget::id`]), this also records
+    /// `(id, rect, layout, sub-regions)` into the frame's
+    /// [`crate::primitive::PaintedWidgets`] — the backend-neutral store
+    /// drivers and binding layers read back to target a contract widget,
+    /// or the sub-part under a point, without any widget keeping a
+    /// per-backend layout cache of its own. The record is dropped at the
+    /// start of every frame (`BackendCore::begin_frame`), so it always
+    /// describes the frame currently on screen.
+    ///
+    /// The recorded layout is a second [`DynWidget::layout`] resolution
+    /// for the same `ctx` and `rect`, not the painted value itself: the
+    /// painted one is owned by this method's caller (hit-testing against
+    /// the return value is the whole point of returning it), and
+    /// [`Primitive::layout`] is pure by contract — same `ctx`, same
+    /// `rect`, same layout — so the two agree. Only identified widgets
+    /// pay for it.
     fn draw_dyn(
         &mut self,
         rect: Rect,
@@ -4808,6 +4827,24 @@ pub trait DrawsPrimitives: Backend {
                  scope (TuiBackend::enter_frame_scope)",
             );
             w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
+        }
+        if let Some(id) = w.id() {
+            let sub_regions = w
+                .sub_regions(layout.as_ref())
+                .into_iter()
+                .map(|(r, sub)| {
+                    (
+                        Rect::new(r.x + rect.x, r.y + rect.y, r.width, r.height),
+                        sub,
+                    )
+                })
+                .collect();
+            crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
+                id: *id,
+                rect,
+                layout: w.layout(&ctx, rect),
+                sub_regions,
+            });
         }
         layout
     }

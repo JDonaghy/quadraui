@@ -688,6 +688,140 @@ pub enum TabBarHit {
     Empty,
 }
 
+/// Which tab-bar sub-part a [`crate::interactive::SubTarget`] names —
+/// [`TabBarHit`] re-expressed as the borrow-less, widget-agnostic tag the
+/// widget contract addresses sub-parts with.
+///
+/// [`TabBarHit`] itself can't be that tag: it carries a [`WidgetId`] for
+/// a right segment (not expressible in a `SubTarget`'s `u64`) and has an
+/// `Empty` variant, which is the *absence* of a sub-part rather than one
+/// of them. This enum carries the segment's index instead, and has no
+/// `Empty`: "no sub-part under the point" is
+/// [`crate::primitive::PaintedWidgets::painted_hit`]'s `None`.
+///
+/// Round-trips through [`Self::sub_target`]/[`Self::from_sub_target`], so
+/// a driver asks for `TabBarSubPart::TabClose(2)`'s painted rect and a
+/// binding layer turns a hit back into a part it can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TabBarSubPart {
+    /// A tab body (not its close button). Index is into `TabBar.tabs`.
+    Tab(usize),
+    /// A tab's close button. Index is into `TabBar.tabs`.
+    TabClose(usize),
+    /// The scroll-left affordance.
+    ScrollLeft,
+    /// The scroll-right affordance.
+    ScrollRight,
+    /// A right-aligned clickable segment, by index into
+    /// `TabBar.right_segments`.
+    RightSegment(usize),
+}
+
+impl TabBarSubPart {
+    /// This part's [`crate::interactive::SubTarget`] tag: an 8-bit kind
+    /// in the high bits, the index in the low 32 — the same
+    /// pack-a-pair-into-one-`u64` convention
+    /// [`crate::interactive::FocusStop`]'s own cell-packing example uses.
+    pub fn sub_target(self) -> crate::interactive::SubTarget {
+        let (kind, idx) = match self {
+            Self::Tab(i) => (1u64, i as u64),
+            Self::TabClose(i) => (2, i as u64),
+            Self::ScrollLeft => (3, 0),
+            Self::ScrollRight => (4, 0),
+            Self::RightSegment(i) => (5, i as u64),
+        };
+        crate::interactive::SubTarget((kind << 32) | (idx & 0xffff_ffff))
+    }
+
+    /// Decode a [`Self::sub_target`] tag back into a part, or `None` for
+    /// a tag this widget never produced (another widget's sub-target).
+    pub fn from_sub_target(sub: crate::interactive::SubTarget) -> Option<Self> {
+        let idx = (sub.0 & 0xffff_ffff) as usize;
+        match sub.0 >> 32 {
+            1 => Some(Self::Tab(idx)),
+            2 => Some(Self::TabClose(idx)),
+            3 => Some(Self::ScrollLeft),
+            4 => Some(Self::ScrollRight),
+            5 => Some(Self::RightSegment(idx)),
+            _ => None,
+        }
+    }
+}
+
+/// Every addressable sub-part of a resolved [`TabBarLayout`], paired with
+/// the [`crate::interactive::SubTarget`] that names it, in the layout's
+/// own bar-relative space.
+///
+/// Most-specific first: close buttons before the tab bodies that contain
+/// them, so the first rect containing a point is the right answer — the
+/// same ordering [`TabBarLayout::hit_test`] walks its own `hit_regions`
+/// in. Only *clickable* right segments are listed; a decorative one
+/// addresses nothing.
+///
+/// Shared by [`crate::interactive::Interactive::sub_regions`] (the
+/// painted-layout record's source) and [`tab_part_center`]'s legacy
+/// fallback, so both describe the same geometry.
+pub fn tab_bar_sub_regions(layout: &TabBarLayout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+    let mut out = Vec::new();
+    for vt in &layout.visible_tabs {
+        if let Some(close) = vt.close_bounds {
+            out.push((close, TabBarSubPart::TabClose(vt.tab_idx).sub_target()));
+        }
+    }
+    for vt in &layout.visible_tabs {
+        out.push((vt.bounds, TabBarSubPart::Tab(vt.tab_idx).sub_target()));
+    }
+    if let Some(r) = layout.scroll_left {
+        out.push((r, TabBarSubPart::ScrollLeft.sub_target()));
+    }
+    if let Some(r) = layout.scroll_right {
+        out.push((r, TabBarSubPart::ScrollRight.sub_target()));
+    }
+    for vs in &layout.visible_segments {
+        if vs.clickable {
+            out.push((
+                vs.bounds,
+                TabBarSubPart::RightSegment(vs.segment_idx).sub_target(),
+            ));
+        }
+    }
+    out
+}
+
+/// The absolute center of one tab-bar sub-part in the bar `bar` — the
+/// point a click must land on to hit it.
+///
+/// Resolves against the frame's painted-layout record first
+/// ([`crate::primitive::PaintedWidgets`]), which every bar painted
+/// through [`crate::DrawsPrimitives::draw_dyn`] registers itself in. A
+/// bar still painted by a legacy `Backend::draw_tab_bar*` rasteriser
+/// isn't in that record, so `legacy` is the per-backend
+/// `(bar rect, resolved layout)` cache those rasterisers fill — pass
+/// `None` to query the record alone.
+///
+/// `None` when `bar` didn't paint this frame, or when the named part
+/// isn't on screen (a tab scrolled out of view behind the bar's
+/// `scroll_offset`, a tab that drew no close button, an absent scroll
+/// chevron).
+pub fn tab_part_center(
+    bar: &WidgetId,
+    part: TabBarSubPart,
+    legacy: Option<(Rect, &TabBarLayout)>,
+) -> Option<(f32, f32)> {
+    let sub = part.sub_target();
+    if let Some(center) = crate::primitive::painted_sub_center(bar, sub) {
+        return Some(center);
+    }
+    let (rect, layout) = legacy?;
+    let (part_rect, _) = tab_bar_sub_regions(layout)
+        .into_iter()
+        .find(|(_, s)| *s == sub)?;
+    Some((
+        rect.x + part_rect.x + part_rect.width / 2.0,
+        rect.y + part_rect.y + part_rect.height / 2.0,
+    ))
+}
+
 /// Fully-resolved tab-bar layout. Backends iterate `visible_tabs` /
 /// `visible_segments` for painting; call [`Self::hit_test`] for clicks.
 ///
@@ -2869,9 +3003,10 @@ pub mod cell_paint {
 // keyboard model in directly.
 //
 // Every `Backend::draw_tab_bar*`/`tab_bar_layout*` method and the four
-// per-backend `tui|gtk|macos|win/tab_bar.rs` files are untouched by this
-// slice — they stay the production path for every existing caller until
-// a sibling slice migrates callers onto `Surface::Widget`/`draw_dyn`.
+// per-backend `tui|gtk|macos|win/tab_bar.rs` files still exist alongside
+// this seam: `compose::WorkspaceController` paints its strip through
+// `draw_dyn`, and the remaining callers stay on those rasterisers until
+// each is migrated onto `Surface::Widget`/`draw_dyn` too.
 //
 // # Scope gaps against the full widget-contract recipe
 //
@@ -2889,13 +3024,15 @@ pub mod cell_paint {
 // - **`focus()` is `FocusSpec::Stop`, not `Children`.** Matches
 //   `ListView`/`CellGrid`'s own precedent for a composite widget with
 //   internal keyboard navigation (one Tab stop; arrow keys move an
-//   internal cursor) rather than one `SubTarget` stop per tab. The
+//   internal cursor) rather than one keyboard stop per tab. The pointer
+//   side is separate and does name every part: `Interactive::sub_regions`
+//   publishes each tab body, close button, scroll chevron and clickable
+//   right segment as a `TabBarSubPart` tag, which is what the painted-
+//   layout record hit-tests. `handle` still resolves a click through
+//   `TabBarLayout::hit_test` against the `local` point, since the
 //   runtime's own mouse routing
-//   (`crate::runtime::route_widget_pointer_down`) always delivers
-//   `RoutedEvent::Pointer { sub: None, .. }`, so a `SubTarget` per tab
-//   body/close button/scroll chevron would have no live caller to
-//   address it yet; `TabBarHit::{Tab, TabClose, ScrollLeft, ScrollRight}`
-//   already name those parts by index for `handle`'s own hit-testing.
+//   (`crate::runtime::route_widget_pointer_down`) delivers
+//   `RoutedEvent::Pointer { sub: None, .. }`.
 #[cfg(feature = "tui")]
 fn tui_tab_bar_primitive_layout(bar: &TabBar, width: f32, height: f32) -> TabBarLayout {
     // Route through the exact resolver `crate::tui::backend::TuiBackend`'s
@@ -3276,6 +3413,18 @@ impl Interactive for TabBar {
         } else {
             FocusSpec::Stop
         }
+    }
+
+    /// Every tab body, close button, scroll chevron and clickable right
+    /// segment this layout resolved — [`tab_bar_sub_regions`], which also
+    /// backs [`tab_part_center`]'s legacy fallback.
+    ///
+    /// [`TabBarPrimitiveLayout::layout`] is already bar-relative (see
+    /// that field's doc), which is exactly the widget-local space
+    /// [`Interactive::sub_regions`] asks for — no translation needed
+    /// here.
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        tab_bar_sub_regions(&layout.layout)
     }
 
     fn handle(
