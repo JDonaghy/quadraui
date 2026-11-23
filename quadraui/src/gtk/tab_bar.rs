@@ -539,10 +539,8 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         &mut surface,
         theme,
         style,
-        // `cr.translate(x_offset, y_offset)` above already moved the
-        // surface's own origin to the bar's top-left, so the shared
-        // painter's background fill belongs at `(0.0, 0.0)`, not
-        // `(x_offset, y_offset)`.
+        // `cr.translate(x_offset, y_offset)` above already moved the origin
+        // to the bar's top-left, so the background fill belongs at `(0.0, 0.0)`.
         0.0,
         0.0,
     );

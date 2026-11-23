@@ -157,11 +157,10 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         icons,
         glyphs,
         nerd_fonts_enabled,
-        // `TabChrome::default()` — this rasteriser has no bracket-chrome
-        // support (see `MacBackend::draw_tab_bar_with_chrome_and_glyphs`'s
-        // doc), the same chrome `mac_tab_bar_pixel_layout` already laid
-        // the geometry out with. `focused_index` still reaches the paint
-        // through `TabBarPaintState` below.
+        // `TabChrome::default()`: this rasteriser has no bracket-chrome support (see
+        // `MacBackend::draw_tab_bar_with_chrome_and_glyphs`), matching the chrome
+        // `mac_tab_bar_pixel_layout` laid the geometry out with; `focused_index`
+        // still reaches the paint through `TabBarPaintState` below.
         &TabChrome::default(),
         TabBarPaintState {
             hovered_tab,
@@ -172,10 +171,7 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         &mut surface,
         theme,
         style,
-        // Paints into `(0, y_offset, width, row_height)` per this
-        // function's own doc — `shift_layout_y` above only shifted `y`,
-        // so the background fill's `x` stays `0.0` too.
-        0.0,
+        0.0, // `shift_layout_y` above only shifted `y`, so the fill's `x` stays 0.
         y_offset as f32,
     );
 
