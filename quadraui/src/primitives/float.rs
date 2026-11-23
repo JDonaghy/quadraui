@@ -813,10 +813,13 @@ mod tests {
     /// accessibility tree already reports for a float.
     #[test]
     fn a11y_info_is_a_floating_panel_group() {
-        use crate::a11y::{A11yPrimitive, A11yRole};
-        let info = Float::default().a11y_info();
-        assert_eq!(info.a11y_role, Some(A11yRole::Group));
-        assert_eq!(info.a11y_label.as_deref(), Some("Floating panel"));
+        use crate::a11y::{A11yInfo, A11yPrimitive, A11yRole};
+        assert_eq!(
+            Float::default().a11y_info(),
+            A11yInfo::new()
+                .with_role(A11yRole::Group)
+                .with_label("Floating panel")
+        );
     }
 
     #[test]
