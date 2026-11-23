@@ -155,6 +155,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let _ = b.draw_tab_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
         },
@@ -185,6 +186,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let _ = b.draw_tab_bar_with_state(
                 Rect::new(0.0, 0.0, area.width, lh),
@@ -214,6 +216,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             // ASCII glyph on purpose: C0 asserts the *label* text reaches
             // the frame inventory, and a Nerd Font PUA codepoint would
@@ -249,6 +252,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             };
             let chrome = TabChrome::new(TabFrame::Brackets);
             let _ = b.draw_tab_bar_with_chrome(
@@ -280,6 +284,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let _ = b.draw_tab_bar_layout(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
         },
@@ -307,6 +312,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let _ = b.draw_tab_bar_layout_with_state(
                 Rect::new(0.0, 0.0, area.width, lh),
@@ -337,6 +343,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let icons = [Some(TabIcon {
                 glyph: "R".to_string(),
@@ -373,6 +380,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             };
             let chrome = TabChrome::new(TabFrame::Brackets);
             let _ = b.draw_tab_bar_with_chrome_layout(
@@ -1946,6 +1954,7 @@ pub const CASES: &[Case] = &[
                 active_accent: None,
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             };
             let chrome = TabChrome::new(TabFrame::Brackets);
             let _ = b.draw_tab_bar_with_chrome_and_glyphs(

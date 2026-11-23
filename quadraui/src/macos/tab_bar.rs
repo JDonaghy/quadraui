@@ -302,6 +302,7 @@ mod tests {
             active_accent: Some(Color::rgb(80, 140, 255)),
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -536,6 +537,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let (_surface, hits) = paint_via_backend(&bar, None);
         assert!(
@@ -567,6 +569,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let (surface, hits) = paint_via_backend(&bar, None);
         let theme = Theme::default();
@@ -1068,6 +1071,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
@@ -1114,6 +1118,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(W as f32, canvas_h as f32, 1.0));
@@ -1286,6 +1291,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
 
         const WIDE_W: u32 = 600;
@@ -1575,6 +1581,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
 
         let label_x_for_style = |style: Style| -> (f64, f64) {
@@ -1645,6 +1652,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
 
         let surface = BitmapSurface::new(NARROW_W as u32, H);
@@ -1726,6 +1734,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             };
 
             let surface = BitmapSurface::new(W, H);
@@ -1774,6 +1783,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let icons = vec![Some(TabIcon {
             glyph: "R".into(),

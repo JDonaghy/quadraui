@@ -710,6 +710,7 @@ impl WorkspaceController {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 

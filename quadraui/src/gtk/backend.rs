@@ -9298,6 +9298,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
         let rect = QRect::new(0.0, 0.0, 400.0, 24.0);
 
@@ -9360,6 +9361,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let chrome =
             crate::primitives::tab_bar::TabChrome::new(crate::primitives::tab_bar::TabFrame::None);
@@ -11355,6 +11357,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 

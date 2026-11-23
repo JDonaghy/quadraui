@@ -1125,6 +1125,7 @@ fn layout_tabs_from_value(
             active_accent,
             show_tab_close,
             compact,
+            ..Default::default()
         },
         entries,
         selected,

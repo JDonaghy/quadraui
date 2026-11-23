@@ -1721,59 +1721,19 @@ fn ratatui_color_to_string(color: ratatui::style::Color) -> Option<String> {
 }
 
 /// Shared tab-width measurement for [`TuiBackend::draw_tab_bar_with_chrome`]
-/// and its glyph-override sibling. A bracket-framed active tab reserves
-/// one extra column on each side of its ordinary close-column
-/// reservation — see `tui::tab_bar`'s module doc for the cell-by-cell
-/// breakdown — and a glyph override only ever substitutes a single-cell
-/// glyph, never the reserved width, so both callers measure through this
-/// one helper rather than two copies that could drift apart.
+/// and its glyph-override sibling, delegating to the crate's one
+/// cell-grid tab-bar measurer with no icon sidecar: a bracket-framed
+/// active tab reserves one extra column on each side of its ordinary
+/// close-column reservation — see `tui::tab_bar`'s module doc for the
+/// cell-by-cell breakdown — and a glyph override only ever substitutes a
+/// single-cell glyph, never the reserved width.
 fn tab_bar_chrome_layout(bar: &TabBar, area: Rect, chrome: &TabChrome) -> TabBarLayout {
-    let close_cols = if bar.show_tab_close {
-        crate::tui::TAB_CLOSE_COLS as usize
-    } else {
-        0
-    };
-    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-    let tab_widths: Vec<usize> = bar
-        .tabs
-        .iter()
-        .map(|t| {
-            let has_close = bar.show_tab_close && t.is_closable;
-            let is_bracket = brackets && t.is_active;
-            let base = display_width(&t.label);
-            if is_bracket && has_close {
-                // '[' + glyph(1) + ']' , replacing the plain
-                // glyph+separator reservation.
-                base + 1 + 1 + 1
-            } else if is_bracket {
-                // '[' + ']' around a label with no close button.
-                base + 2
-            } else if has_close {
-                base + close_cols
-            } else {
-                // No close button and no bracket framing to supply a
-                // visual boundary — reserve a column for the separator
-                // glyph so adjacent labels don't run together.
-                base + crate::tui::TAB_SEPARATOR_COLS as usize
-            }
-        })
-        .collect();
-    bar.layout(
+    crate::primitives::tab_bar::cell_tab_bar_layout(
+        bar,
         area.width as f32,
         area.height as f32,
-        0.0,
-        |i| {
-            let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-            let is_bracket = brackets && bar.tabs[i].is_active;
-            if is_bracket && has_close {
-                crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
-            } else if has_close {
-                crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
-            } else {
-                crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
-            }
-        },
-        |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+        &[],
+        chrome,
     )
 }
 
@@ -7942,6 +7902,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -9908,6 +9869,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 

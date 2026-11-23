@@ -169,11 +169,7 @@ use crate::Handled;
 ///         is_active: true,
 ///         ..Default::default()
 ///     }],
-///     scroll_offset: 0,
-///     right_segments: vec![],
-///     active_accent: None,
-///     show_tab_close: true,
-///     compact: false,
+///     ..Default::default()
 /// };
 ///
 /// let layout = bar.layout(
@@ -216,6 +212,23 @@ pub struct TabBar {
     /// provide that boundary instead.
     #[serde(default)]
     pub compact: bool,
+    /// Active-tab framing and keyboard-focus request for this bar — the
+    /// decoration [`crate::primitive::Primitive::paint`] /
+    /// [`crate::primitive::Primitive::paint_cells`] draw around the
+    /// active tab, and the tab index they paint the focus-visible
+    /// treatment on. [`TabChrome::default`] asks for no frame and no
+    /// focus ring.
+    #[serde(default)]
+    pub chrome: TabChrome,
+    /// Optional per-tab leading icons, index-aligned with [`Self::tabs`].
+    /// A `None` entry — or an `icons` shorter than `tabs` — means "no
+    /// icon" for that tab, so an empty `icons` paints a plain bar.
+    #[serde(default)]
+    pub icons: Vec<Option<TabIcon>>,
+    /// Close / dirty glyph overrides for every tab in this bar.
+    /// [`TabBarGlyphs::default`] keeps the crate's own `×` / `●`.
+    #[serde(default)]
+    pub glyphs: TabBarGlyphs,
 }
 
 fn default_true() -> bool {
@@ -235,6 +248,9 @@ impl Default for TabBar {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            chrome: TabChrome::default(),
+            icons: Vec::new(),
+            glyphs: TabBarGlyphs::new(),
         }
     }
 }
@@ -247,23 +263,16 @@ impl Default for TabBar {
 /// glyph and is independent of the tab's active/inactive foreground, so
 /// the icon keeps its identity colour even on an inactive tab.
 ///
-/// # Why icons ride *beside* the bar, not inside [`TabItem`]
+/// # Where icons live: on the bar, not inside [`TabItem`]
 ///
-/// Icons are supplied as a **sidecar slice** parallel to [`TabBar::tabs`]
-/// — see [`Backend::draw_tab_bar_icons`] — rather than as a
-/// `TabItem::icon` field. `TabItem` is a plain (non-`#[non_exhaustive]`)
-/// struct that both downstream consumers and this repo's sealed
-/// acceptance slices build with **exhaustive literals**, so a new field
-/// is a hard break for every one of them (CLAUDE.md rule 8 / the
-/// `PRIMITIVE_RULES.md` rule-8 blast-radius table: *"new field on a
-/// public struct a consumer constructs"* ⇒ breaking; *"new `Backend`
-/// method, no default"* ⇒ not breaking, keep doing this). The sidecar
-/// buys the same capability at zero migration cost: callers that want
-/// icons pass a slice, callers that don't keep calling
-/// [`Backend::draw_tab_bar`] unchanged.
+/// Icons are a list *parallel to* [`TabBar::tabs`] rather than a
+/// `TabItem::icon` field: [`TabBar::icons`] for anything drawn through
+/// [`crate::primitive::Primitive`], or the equivalent sidecar slice
+/// argument for the [`Backend::draw_tab_bar_icons`] family. Both shapes
+/// index the same way — entry `i` decorates tab `i`, a short list leaves
+/// the remaining tabs plain — so [`tab_icon_at`] resolves either one.
 ///
 /// [`Backend::draw_tab_bar_icons`]: crate::Backend::draw_tab_bar_icons
-/// [`Backend::draw_tab_bar`]: crate::Backend::draw_tab_bar
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TabIcon {
     /// Icon glyph — usually a single Nerd Font character.
@@ -949,17 +958,11 @@ pub enum TabFrame {
 }
 
 /// Per-bar chrome request: which active-tab frame a backend should
-/// paint. Passed alongside a [`TabBar`] to
-/// [`crate::Backend::draw_tab_bar_with_chrome`] /
-/// [`crate::Backend::tab_bar_layout_with_chrome`].
-///
-/// A separate sidecar value rather than a field on [`TabBar`] itself,
-/// to avoid requiring a new field on the plain struct `TabBar` which
-/// is built with exhaustive literals throughout this repo. Threading
-/// the vocabulary through a new value + new trait methods (both given
-/// default bodies that ignore chrome and delegate to the plain
-/// `draw_tab_bar` / `tab_bar_layout`) adds no required field and breaks
-/// no existing `Backend` implementor or call site.
+/// paint. Carried by [`TabBar::chrome`] for anything drawn through
+/// [`crate::primitive::Primitive`], and passed alongside a [`TabBar`]
+/// to [`crate::Backend::draw_tab_bar_with_chrome`] /
+/// [`crate::Backend::tab_bar_layout_with_chrome`], which take it as an
+/// explicit argument and ignore the field.
 ///
 /// `#[non_exhaustive]`: a future chrome knob (e.g. a frame colour
 /// override) is additive. Construct with [`TabChrome::new`] /
@@ -985,12 +988,6 @@ pub struct TabChrome {
     /// An index `>= tabs.len()` paints nothing (no reverse-video, no
     /// panic) on TUI — see `tui::tab_bar::draw_tab_bar_with_chrome_*`,
     /// which only ever compares against an actually-visible tab's index.
-    ///
-    /// A sidecar field rather than one on [`TabBar`] itself, for the same
-    /// reason [`Self::active_frame`] is: `TabBar` is built with
-    /// exhaustive literals throughout this repo (including the sealed
-    /// acceptance slices), so a new field there is breaking everywhere at
-    /// once; a new [`TabChrome`] knob is additive.
     ///
     /// [`Toolbar::focused_index`]: crate::primitives::toolbar::Toolbar::focused_index
     #[serde(default)]
@@ -1023,13 +1020,11 @@ impl TabChrome {
 /// Optional app-supplied override for the close and dirty (unsaved)
 /// marks a tab bar paints.
 ///
-/// A standalone, `#[non_exhaustive]` registry — not fields on
-/// [`TabBar`]/[`TabItem`], which stay exhaustive — so a consumer that
-/// wants its own iconography (e.g. a Nerd Font glyph) passes a
-/// `TabBarGlyphs` to the rasteriser without the crate taking on a
-/// breaking field addition. Leaving a field `None`, or passing no
-/// `TabBarGlyphs` at all, keeps today's default (`×` for close, `●` for
-/// dirty) byte-for-byte unchanged.
+/// A standalone, `#[non_exhaustive]` registry a consumer builds with the
+/// `with_*` setters and either hands to a rasteriser directly or stores
+/// on [`TabBar::glyphs`]. Leaving a field `None`, or passing no
+/// `TabBarGlyphs` at all, keeps the crate's own default (`×` for close,
+/// `●` for dirty) byte-for-byte unchanged.
 ///
 /// Each glyph is an [`Icon`], so a consumer can hand it a
 /// Nerd Font form and a plain-Unicode fallback; the TUI rasteriser
@@ -1038,10 +1033,16 @@ impl TabChrome {
 /// `char` — a multi-character override silently degrades to its
 /// leading character. `Icon::color` is resolved but not painted on
 /// TUI: the glyph cell always uses the surrounding theme foreground.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// On the wire both entries are optional, so `{}` deserialises to
+/// [`Self::new`] and `{"close": {"glyph": "X"}}` overrides just the
+/// close mark.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TabBarGlyphs {
+    #[serde(default)]
     close: Option<Icon>,
+    #[serde(default)]
     dirty: Option<Icon>,
 }
 
@@ -1891,6 +1892,7 @@ pub(crate) mod native_surface_paint {
                 active_accent: None,
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             }
         }
 
@@ -3026,19 +3028,17 @@ pub mod cell_paint {
 // `draw_dyn`, and the remaining callers stay on those rasterisers until
 // each is migrated onto `Surface::Widget`/`draw_dyn` too.
 //
+// Chrome, icons and glyph overrides reach this seam as the descriptor
+// fields `TabBar::chrome`, `TabBar::icons` and `TabBar::glyphs`, since
+// `Primitive::layout`/`paint`/`paint_cells` only ever see `&self` and
+// `DynWidget::paint`'s `&dyn PaintState` carries no paint-time sidecar.
+// `layout` reserves the icon column widths, and both painters forward the
+// three fields to the same shared painters the `Backend` chrome/icon/glyph
+// methods feed from their explicit arguments — those methods read only
+// their arguments and ignore the fields.
+//
 // # Scope gaps against the full widget-contract recipe
 //
-// - **No icon/glyph/chrome sidecar.** `TabChrome`, `TabBarGlyphs` and the
-//   `icons: &[Option<TabIcon>]` sidecar are backend-call parameters
-//   today, not fields on `TabBar` (see that struct's own "why icons ride
-//   beside the bar" doc) — `Primitive::layout`/`paint`/`paint_cells` only
-//   ever see `&self`, so this seam always paints with
-//   `TabChrome::default()`, no icons, and no glyph overrides. Turning
-//   them into descriptor fields needs a new field on the plain,
-//   exhaustively-constructed `TabBar` struct, which breaks every
-//   existing literal — including `tests/acceptance/ms-11/*.rs`, the
-//   sealed oracle slice a work leg cannot edit — so it stays out of this
-//   slice.
 // - **`focus()` is `FocusSpec::Stop`, not `Children`.** Matches
 //   `ListView`/`CellGrid`'s own precedent for a composite widget with
 //   internal keyboard navigation (one Tab stop; arrow keys move an
@@ -3051,16 +3051,77 @@ pub mod cell_paint {
 //   runtime's own mouse routing
 //   (`crate::runtime::route_widget_pointer_down`) delivers
 //   `RoutedEvent::Pointer { sub: None, .. }`.
+/// Resolve a [`TabBar`]'s layout in **character cells** — the cell-grid
+/// counterpart of [`crate::primitives::layout_metrics::pixel_tab_bar_layout`],
+/// and the one measurer behind every TUI tab-bar entry point
+/// ([`crate::tui::tui_tab_bar_layout`], `TuiBackend`'s chrome methods and
+/// [`crate::primitive::Primitive::layout`]'s cell branch), so a bar drawn
+/// through any of them can never disagree about where a tab starts.
+///
+/// `width`/`height` are the bar's own cell extent. Per tab it reserves, on
+/// top of the label's display width:
+///
+/// - the icon glyph and its gap ([`tab_icon_cols`]) when `icons` has an
+///   entry for that tab;
+/// - `[` and `]` around the active tab when `chrome` requests
+///   [`TabFrame::Brackets`] — one column each, with the close glyph
+///   itself inside the frame;
+/// - [`TAB_CLOSE_COLS`] for a closable tab on a bar with
+///   [`TabBar::show_tab_close`];
+/// - [`TAB_SEPARATOR_COLS`] for a tab with neither a close glyph nor
+///   bracket framing, so adjacent labels still paint with a visible
+///   boundary (`cell_paint::paint` fills that column with
+///   [`crate::tui::TAB_SEPARATOR_CHAR`]).
+///
+/// The returned [`TabBarLayout`] is bar-relative, with no scroll arrows
+/// (TUI paints none).
 #[cfg(feature = "tui")]
-fn tui_tab_bar_primitive_layout(bar: &TabBar, width: f32, height: f32) -> TabBarLayout {
-    // Route through the exact resolver `crate::tui::backend::TuiBackend`'s
-    // own `draw_tab_bar_icons`/`draw_tab_bar_icons_layout` call
-    // (`crate::tui::tui_tab_bar_layout`) so this layout can never drift
-    // from what TUI actually paints — see this section's own "No
-    // icon/glyph/chrome sidecar" doc for why the icon sidecar here is
-    // always empty.
-    let area = ratatui::layout::Rect::new(0, 0, width as u16, height as u16);
-    crate::tui::tui_tab_bar_layout(area, bar, &[])
+pub(crate) fn cell_tab_bar_layout(
+    bar: &TabBar,
+    width: f32,
+    height: f32,
+    icons: &[Option<TabIcon>],
+    chrome: &TabChrome,
+) -> TabBarLayout {
+    let close_cols = if bar.show_tab_close {
+        TAB_CLOSE_COLS as usize
+    } else {
+        0
+    };
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let reservation = |i: usize| -> (bool, bool) {
+        let tab = &bar.tabs[i];
+        (
+            brackets && tab.is_active,
+            bar.show_tab_close && tab.is_closable,
+        )
+    };
+    let tab_widths: Vec<usize> = (0..bar.tabs.len())
+        .map(|i| {
+            let base = crate::text_util::display_width(&bar.tabs[i].label)
+                + tab_icon_cols(icons, i) as usize;
+            match reservation(i) {
+                // `[` + close glyph + `]`, replacing the plain
+                // glyph + separator reservation.
+                (true, true) => base + 3,
+                // `[` + `]` around a label with no close glyph.
+                (true, false) => base + 2,
+                (false, true) => base + close_cols,
+                (false, false) => base + TAB_SEPARATOR_COLS as usize,
+            }
+        })
+        .collect();
+    bar.layout(
+        width,
+        height,
+        0.0,
+        |i| match reservation(i) {
+            (true, true) => TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0),
+            (_, true) => TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
+            _ => TabMeasure::new(tab_widths[i] as f32, 0.0),
+        },
+        |i| SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+    )
 }
 
 /// Translate every `Rect` inside a bar-relative [`TabBarLayout`] by
@@ -3163,7 +3224,12 @@ impl crate::primitive::Primitive for TabBar {
         #[cfg(feature = "tui")]
         {
             if matches!(ctx.units(), crate::primitive::Units::Cells) {
-                let layout = tui_tab_bar_primitive_layout(self, rect.width, rect.height);
+                // The same measurer every `TuiBackend::draw_tab_bar*`
+                // entry point resolves its own layout through, so this
+                // seam can never drift from what TUI paints — fed the
+                // descriptor's own icon list and chrome request.
+                let layout =
+                    cell_tab_bar_layout(self, rect.width, rect.height, &self.icons, &self.chrome);
                 return TabBarPrimitiveLayout {
                     area: rect,
                     nerd_fonts_enabled: ctx.nerd_fonts_enabled,
@@ -3206,10 +3272,17 @@ impl crate::primitive::Primitive for TabBar {
             .iter()
             .map(|t| crate::primitives::layout_metrics::TextMeasure::width_of(&measure, &t.label))
             .collect();
-        // No icon sidecar reaches this far either (see this section's own
-        // doc) — every tab's icon-extra width is `0.0`.
-        let tab_icon_extras = vec![0.0f32; self.tabs.len()];
-        let chrome = TabChrome::default();
+        // Icon glyphs are measured through the same chrome-font measurer
+        // as the labels. A pixel rasteriser that owns a real font handle
+        // swaps to a Nerd-Font family for this pass (see
+        // `gtk::tab_bar::tab_icon_extras`), so an icon whose glyph the
+        // chrome font cannot cover can still measure slightly differently
+        // here than it paints.
+        let tab_icon_extras = crate::primitives::layout_metrics::pixel_tab_icon_extras(
+            &measure,
+            self.tabs.len(),
+            &self.icons,
+        );
         let (layout, _corrected_scroll_offset, _available_cols) =
             crate::primitives::layout_metrics::pixel_tab_bar_layout(
                 self,
@@ -3220,7 +3293,7 @@ impl crate::primitive::Primitive for TabBar {
                 tab_outer_gap,
                 &tab_name_widths,
                 &tab_icon_extras,
-                &chrome,
+                &self.chrome,
                 &measure,
             );
         TabBarPrimitiveLayout {
@@ -3250,14 +3323,22 @@ impl crate::primitive::Primitive for TabBar {
             // rect lines up with it too.
             let translated =
                 translate_tab_bar_layout(layout.layout.clone(), layout.area.x, layout.area.y);
-            let state = native_surface_paint::TabBarPaintState::default();
+            // The descriptor's focus request is the one piece of paint
+            // state that is not pointer-derived, so it comes from
+            // `chrome` here exactly as it does in every
+            // `Backend::draw_tab_bar_with_chrome*` rasteriser; hover and
+            // press have no paint-time sidecar on this path.
+            let state = native_surface_paint::TabBarPaintState {
+                focused_index: self.chrome.focused_index,
+                ..Default::default()
+            };
             native_surface_paint::paint(
                 self,
                 &translated,
-                &[],
-                None,
+                &self.icons,
+                Some(&self.glyphs),
                 layout.nerd_fonts_enabled,
-                &TabChrome::default(),
+                &self.chrome,
                 state,
                 surface,
                 theme,
@@ -3295,11 +3376,11 @@ impl crate::primitive::Primitive for TabBar {
             buf,
             area,
             self,
-            &[],
-            &TabChrome::default(),
+            &self.icons,
+            &self.chrome,
             &layout.layout,
             theme,
-            None,
+            Some(&self.glyphs),
             layout.nerd_fonts_enabled,
         );
     }
@@ -3574,6 +3655,7 @@ mod interactive_tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -4013,6 +4095,7 @@ mod hit_test_diff_tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -4122,6 +4205,7 @@ mod tests {
             active_accent: Some(Color::rgb(100, 200, 255)),
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: TabBar = serde_json::from_str(&json).unwrap();
@@ -4193,6 +4277,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -4394,6 +4479,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         // Bar 100 wide. Tab 10 wide. Right segments: 6 wide total.
         let layout = bar.layout(
@@ -4433,6 +4519,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         // Bar 50 wide. Segment is 60 wide; literally doesn't fit → drop.
         let layout = bar.layout(
@@ -4991,6 +5078,7 @@ mod primitive_parity_tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -5112,6 +5200,7 @@ mod gtk_measure_parity_tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 

@@ -1592,6 +1592,7 @@ mod tests {
                     active_accent: None,
                     show_tab_close: false,
                     compact: false,
+                    ..Default::default()
                 },
                 None,
             );
@@ -1749,6 +1750,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: false,
                 compact: true,
+                ..Default::default()
             }
         }
     }
@@ -1842,6 +1844,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             }
         }
     }
@@ -2004,6 +2007,7 @@ mod tests {
                         active_accent: None,
                         show_tab_close: true,
                         compact: false,
+                        ..Default::default()
                     },
                     None,
                 );
@@ -2073,6 +2077,7 @@ mod tests {
                         active_accent: None,
                         show_tab_close: true,
                         compact: false,
+                        ..Default::default()
                     },
                     None,
                 );

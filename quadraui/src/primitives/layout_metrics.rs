@@ -41,7 +41,7 @@ use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMea
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
 use crate::primitives::tab_bar::{
-    SegmentMeasure, TabBar, TabBarLayout, TabChrome, TabFrame, TabMeasure,
+    tab_icon_at, SegmentMeasure, TabBar, TabBarLayout, TabChrome, TabFrame, TabIcon, TabMeasure,
 };
 use crate::primitives::toast::{ToastMeasure, ToastOverlay, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
@@ -1230,6 +1230,29 @@ pub fn pixel_minimap_layout_scaled(
 
 // ── TabBar ───────────────────────────────────────────────────────────
 
+/// Per-tab extra width (px) an icon sidecar reserves, indexed like
+/// `bar.tabs` and shaped for [`pixel_tab_bar_layout`]'s own
+/// `tab_icon_extras` argument: the glyph's width through `measure` plus
+/// [`pixel::TAB_ICON_GAP`], or `0.0` for a tab with no icon.
+///
+/// This is the single-font form, for a caller whose only measurer is one
+/// [`TextMeasure`] — [`crate::primitive::Primitive::layout`]'s pixel
+/// branch. A rasteriser that swaps to a Nerd-Font family to measure icon
+/// glyphs (GTK, macOS) computes the same array through its own font
+/// instead; both agree on the `+ TAB_ICON_GAP` convention.
+pub(crate) fn pixel_tab_icon_extras(
+    measure: &dyn TextMeasure,
+    tab_count: usize,
+    icons: &[Option<TabIcon>],
+) -> Vec<f32> {
+    (0..tab_count)
+        .map(|i| match tab_icon_at(icons, i) {
+            Some(icon) => measure.width_of(&icon.glyph) + pixel::TAB_ICON_GAP,
+            None => 0.0,
+        })
+        .collect()
+}
+
 /// Compute a [`TabBar`]'s pixel-unit layout. Backends still do their own
 /// **text measurement** — Pango / Core Text / DirectWrite each need to
 /// switch fonts mid-tab (italic for a preview label, a Nerd-Font family
@@ -2150,6 +2173,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 

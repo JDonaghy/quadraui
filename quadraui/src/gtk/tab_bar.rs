@@ -616,6 +616,7 @@ mod tests {
             // close-glyph measurement.
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -719,6 +720,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
 
         let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
@@ -922,6 +924,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
 
         let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
@@ -1041,6 +1044,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
 
         let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
@@ -1354,6 +1358,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
 
         let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
@@ -1548,6 +1553,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -1579,6 +1585,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let theme = make_theme();
 
