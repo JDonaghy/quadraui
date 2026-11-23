@@ -63,23 +63,12 @@ pub trait TextMeasure {
 /// [`crate::primitive::Primitive::layout`] no-live-font fallback for any
 /// [`TextMeasure`] consumer here, since [`crate::primitive::LayoutCtx`]
 /// carries only a flat `char_width`, not a live [`TextMeasure`]. Needs no
-/// backend to evaluate — gated to the same feature set as its only
-/// callers ([`crate::DataTable`]'s and [`crate::TreeTable`]'s `Primitive`
-/// impls), not to any particular pixel-backend feature.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+/// backend to evaluate, so it carries no feature gate of its own — its
+/// callers ([`crate::TabBar`]'s, [`crate::DataTable`]'s and
+/// [`crate::TreeTable`]'s `Primitive` impls) decide which feature sets
+/// compile them in.
 pub(crate) struct CharWidthMeasure(pub f32);
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl TextMeasure for CharWidthMeasure {
     fn width_of(&self, text: &str) -> f32 {
         text.chars().count() as f32 * self.0

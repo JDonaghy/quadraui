@@ -1384,30 +1384,11 @@ impl OwnedContent {
                 backend.draw_editor(rect, editor);
             }
             OwnedContent::TabBar(bar) => {
-                // `TabBar: Primitive` is gated the same way `impl
-                // Primitive for TabBar` itself is (see that impl's own
-                // `cfg`) — see `OwnedContent::ListWidget`'s own `draw`
-                // arm for why this is dead code rather than a real
-                // no-op fallback on a build with none of those backend
-                // features.
-                #[cfg(any(
-                    feature = "gtk",
-                    feature = "tui",
-                    feature = "win",
-                    all(feature = "macos", target_os = "macos")
-                ))]
-                {
-                    backend.draw_primitive(rect, bar);
-                }
-                #[cfg(not(any(
-                    feature = "gtk",
-                    feature = "tui",
-                    feature = "win",
-                    all(feature = "macos", target_os = "macos")
-                )))]
-                {
-                    let _ = (rect, bar, backend);
-                }
+                // `impl Primitive for TabBar` is unconditional, like
+                // `CellGrid`'s, so this arm needs no backend-feature
+                // guard of the kind `OwnedContent::ListWidget` below
+                // still carries.
+                backend.draw_primitive(rect, bar);
             }
             OwnedContent::StatusBar(bar) => {
                 let interaction = crate::interaction::InteractionState::from_parts(None, None);

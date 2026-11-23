@@ -59,15 +59,16 @@ impl WideTabBarDemo {
 
     /// Readout of which tab the routing engine last activated, so the
     /// outcome of a click or an Enter press is observable as text rather
-    /// than only as the active tab's own styling.
+    /// than only as the active tab's own styling. Reports the index, not
+    /// the label: this demo's whole point is that a double-width label
+    /// paints intact in the bar, and a second copy of that same label
+    /// elsewhere on screen makes "which run is the tab's?" ambiguous for
+    /// any observer reading the painted text back.
     fn status(&self) -> StatusBar {
         StatusBar {
             id: WidgetId::new("wide-tab-bar-demo:status"),
             left_segments: vec![StatusBarSegment {
-                text: format!(
-                    " active: {} ",
-                    [WIDE_LABEL, ASCII_LABEL][self.active].trim()
-                ),
+                text: format!(" active: tab {} ", self.active),
                 fg: Color::rgb(255, 255, 255),
                 bg: Color::rgb(40, 80, 120),
                 bold: true,

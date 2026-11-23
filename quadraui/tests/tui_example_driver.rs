@@ -8804,7 +8804,7 @@ fn wide_tab_bar_demo_q_exits() {
 fn wide_tab_bar_demo_clicking_a_tab_activates_it_through_the_routing_engine() {
     let mut driver = TuiDriver::new(WideTabBarDemo::new(), 100, 10);
     assert!(
-        driver.screen_contains("active: 1: 日本語.rs"),
+        driver.screen_contains("active: tab 0"),
         "tab 0 starts active:\n{}",
         driver.screen()
     );
@@ -8813,7 +8813,7 @@ fn wide_tab_bar_demo_clicking_a_tab_activates_it_through_the_routing_engine() {
     driver.click(x, y);
 
     assert!(
-        driver.screen_contains("active: 2: main.rs"),
+        driver.screen_contains("active: tab 1"),
         "clicking the ASCII tab must activate it:\n{}",
         driver.screen()
     );
@@ -8830,7 +8830,7 @@ fn wide_tab_bar_demo_right_then_enter_activates_the_next_tab() {
     let (x, y) = driver.find("1: 日本語.rs").expect("CJK tab label visible");
     driver.click(x, y);
     assert!(
-        driver.screen_contains("active: 1: 日本語.rs"),
+        driver.screen_contains("active: tab 0"),
         "clicking tab 0 keeps it active:\n{}",
         driver.screen()
     );
@@ -8838,7 +8838,7 @@ fn wide_tab_bar_demo_right_then_enter_activates_the_next_tab() {
     driver.press_named(quadraui::NamedKey::Right);
     driver.press_named(quadraui::NamedKey::Enter);
     assert!(
-        driver.screen_contains("active: 2: main.rs"),
+        driver.screen_contains("active: tab 1"),
         "Right + Enter must activate tab 1:\n{}",
         driver.screen()
     );

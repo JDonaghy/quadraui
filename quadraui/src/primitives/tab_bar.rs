@@ -120,39 +120,14 @@
 //! `src/gtk/mod.rs::set_draw_func` for the GTK reference implementation,
 //! and `src/tui_main/mod.rs` (post-`terminal.draw` block) for TUI.
 
-use crate::event::Rect;
+use crate::event::{Key, MouseButton, NamedKey, Rect};
 use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::a11y::A11yAction;
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-use crate::event::{Key, MouseButton, NamedKey};
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
 };
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::Handled;
 
 /// Declarative description of a tab bar.
@@ -2954,12 +2929,6 @@ fn translate_tab_bar_layout(mut layout: TabBarLayout, dx: f32, dy: f32) -> TabBa
 /// `#[non_exhaustive]`: backend-returned, never constructed by a
 /// consumer via struct literal, same convention as [`TabBarLayout`]
 /// itself.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TabBarPrimitiveLayout {
@@ -2974,12 +2943,6 @@ pub struct TabBarPrimitiveLayout {
     pub layout: TabBarLayout,
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl crate::primitive::Primitive for TabBar {
     type Layout = TabBarPrimitiveLayout;
     type Event = TabBarEvent;
@@ -3142,12 +3105,6 @@ impl crate::primitive::Primitive for TabBar {
 // free function took, moved by Left/Right and activated by Enter/Space,
 // exactly as that function's own doc describes.
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl WidgetAction for TabBarEvent {
     fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
         crate::UiEvent::TabBar(id, self)
@@ -3160,12 +3117,6 @@ impl WidgetAction for TabBarEvent {
 ///
 /// `#[non_exhaustive]`: a future field add here is additive, same
 /// convention as [`TabBarLayout`].
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TabBarState {
@@ -3181,12 +3132,6 @@ pub struct TabBarState {
 /// spelling [`NamedKey::name`] already promises, mirroring
 /// `crate::primitives::list`'s own identically-named private helper so
 /// every `KeyPressed` event in the crate agrees on one spelling.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 fn tab_bar_key_to_event_string(key: &Key) -> String {
     match key {
         Key::Char(c) => c.to_string(),
@@ -3194,12 +3139,6 @@ fn tab_bar_key_to_event_string(key: &Key) -> String {
     }
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl TabBar {
     /// Dispatch one keystroke against live [`TabBarState`] — the
     /// `Interactive::handle` counterpart of the static
@@ -3253,12 +3192,6 @@ impl TabBar {
     }
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl Interactive for TabBar {
     type State = TabBarState;
     type Action = TabBarEvent;
@@ -3332,15 +3265,7 @@ impl Interactive for TabBar {
     }
 }
 
-#[cfg(all(
-    test,
-    any(
-        feature = "gtk",
-        feature = "tui",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    )
-))]
+#[cfg(test)]
 mod interactive_tests {
     use super::*;
     use crate::event::{NamedKey, Point};
@@ -3460,6 +3385,19 @@ mod interactive_tests {
             modifiers: Modifiers::default(),
             repeat: false,
         })
+    }
+
+    /// `Surface::Widget` and `FrameTree::push` both take a
+    /// `Box<dyn DynWidget>`, and the blanket impl behind that bound needs
+    /// `TabBar: Interactive`. This module carries no feature gate, so the
+    /// coercion below is checked in every configuration the crate builds
+    /// in — including a backend-free one, the regime a backend-generic
+    /// `AppLogic` type-checks against.
+    #[test]
+    fn tab_bar_boxes_as_a_dyn_widget() {
+        let boxed: Box<dyn crate::primitive::DynWidget> = Box::new(bar(&["main.rs"], 0));
+        assert_eq!(boxed.id(), Some(&WidgetId::new("tabs:test")));
+        assert_eq!(boxed.focus(), FocusSpec::Stop);
     }
 
     #[test]

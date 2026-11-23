@@ -739,36 +739,17 @@ struct PaneHitCache {
 /// [`crate::backend::DrawsPrimitives::draw_dyn`] and return the
 /// strip-relative [`TabBarLayout`] it resolved.
 ///
-/// `TabBar`'s `Primitive` impl is gated on there being a rasteriser
-/// feature at all, so a build with none of them paints nothing and gets
-/// an empty layout: dispatch then classifies every strip click as
-/// [`TabBarHit::Empty`], which is the only coherent answer when no
-/// backend ever measured the strip.
+/// A backend whose `draw_dyn` hands back a layout of some other concrete
+/// type never measured a tab bar, so the fallback is an empty layout:
+/// dispatch then classifies every strip click as [`TabBarHit::Empty`],
+/// which is the only coherent answer when nothing measured the strip.
 fn draw_tab_strip(backend: &mut dyn Backend, strip: Rect, tab_bar: &TabBar) -> TabBarLayout {
-    #[cfg(any(
-        feature = "gtk",
-        feature = "tui",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    ))]
-    let resolved = {
-        use crate::backend::DrawsPrimitives;
-        backend
-            .draw_dyn(strip, tab_bar, &())
-            .downcast_ref::<crate::primitives::tab_bar::TabBarPrimitiveLayout>()
-            .map(|l| l.layout.clone())
-    };
-    #[cfg(not(any(
-        feature = "gtk",
-        feature = "tui",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    )))]
-    let resolved = {
-        let _ = (backend, tab_bar);
-        None
-    };
-    resolved.unwrap_or_else(|| strip_layout_from_tab_slots(strip, &[]))
+    use crate::backend::DrawsPrimitives;
+    backend
+        .draw_dyn(strip, tab_bar, &())
+        .downcast_ref::<crate::primitives::tab_bar::TabBarPrimitiveLayout>()
+        .map(|l| l.layout.clone())
+        .unwrap_or_else(|| strip_layout_from_tab_slots(strip, &[]))
 }
 
 /// A strip layout carrying only tab-body hit regions, synthesised from
@@ -3779,6 +3760,39 @@ mod tests {
 
     // ── render -> click round-trip through the painted strip layout ───────
 
+    /// Backend plus bounds for the unit regime this build's
+    /// `Primitive::layout` can resolve: whole cells when `tui` is compiled
+    /// in, pixels otherwise (the branch every pixel backend takes). Both
+    /// rects are wide enough for `make_group`'s two tabs to get painted
+    /// slots in their own regime, so a geometry-dependent round-trip below
+    /// lands on whichever branch the active feature set selects.
+    fn click_regime() -> (crate::testing::RecordingBackend, Rect) {
+        #[cfg(feature = "tui")]
+        {
+            (
+                crate::testing::RecordingBackend::new(),
+                Rect::new(0.0, 0.0, 80.0, 24.0),
+            )
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            (
+                crate::testing::RecordingBackend {
+                    line_height: 20.0,
+                    chrome_line_height: Some(18.0),
+                    viewport: crate::Viewport {
+                        width: 800.0,
+                        height: 600.0,
+                        scale: 1.0,
+                    },
+                    char_width: 8.0,
+                    ..Default::default()
+                },
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            )
+        }
+    }
+
     /// A real `render` pass caches the strip layout the `TabBar` primitive
     /// itself resolved, so clicking the second tab's own painted x-range
     /// (recovered through `drop_group_rects`, which re-absolutises that
@@ -3787,8 +3801,8 @@ mod tests {
     #[test]
     fn clicking_a_painted_tab_slot_activates_that_tab() {
         let mut ctrl = make_group();
-        let mut backend = crate::testing::RecordingBackend::new();
-        let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
+        let (mut backend, bounds) = click_regime();
+        let layout = ctrl.render(&mut backend, bounds);
         let strip = layout.strip_bounds[0];
 
         let slots = ctrl.drop_group_rects();
@@ -3811,8 +3825,8 @@ mod tests {
     #[test]
     fn clicking_a_painted_close_glyph_closes_that_tab() {
         let mut ctrl = make_group();
-        let mut backend = crate::testing::RecordingBackend::new();
-        let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
+        let (mut backend, bounds) = click_regime();
+        let layout = ctrl.render(&mut backend, bounds);
         let strip = layout.strip_bounds[0];
 
         let (cx, cy) = ctrl.last_pane_hits[0]
