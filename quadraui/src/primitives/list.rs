@@ -45,6 +45,13 @@ use serde::{Deserialize, Serialize};
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
+use crate::a11y::A11yAction;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 use crate::event::{Key, MouseButton, NamedKey};
 #[cfg(any(
     feature = "gtk",
@@ -2561,6 +2568,16 @@ pub struct ListViewState {
     /// `indices.first()`). `None` until the first move, at which point
     /// it falls back to `ListView::selected_idx`.
     pub cursor: Option<usize>,
+    /// The `selected_idx` [`ListView::current_idx`] expects the app to
+    /// echo back after the move that produced [`Self::cursor`] — for a
+    /// `SelectionSet`, that is `indices.first()`, since that is all a
+    /// plain `selected_idx` field can carry. As long as the next frame's
+    /// `ListView::selected_idx` still matches this, `cursor` reflects a
+    /// move the app accepted and stays authoritative; a mismatch means
+    /// the app set `selected_idx` itself (a programmatic jump), so the
+    /// descriptor wins per the controlled-mode contract and `cursor`
+    /// resyncs to it. `None` until the first move.
+    pub cursor_echo: Option<usize>,
 }
 
 #[cfg(any(
@@ -2571,13 +2588,20 @@ pub struct ListViewState {
 ))]
 impl ListView {
     /// The row the next navigation/extension computes relative to:
-    /// `state.cursor` once any move has happened, falling back to
-    /// `self.selected_idx` (clamped into `self.items`) before the first
-    /// one — see [`ListViewState::cursor`]'s own doc for why the two can
-    /// disagree after a multi-select extension.
+    /// `state.cursor` when `self.selected_idx` still matches
+    /// [`ListViewState::cursor_echo`] (the app accepted the widget's
+    /// last move), falling back to `self.selected_idx` (clamped into
+    /// `self.items`) otherwise — either because no move has happened
+    /// yet, or because the app set `selected_idx` itself since, which
+    /// the controlled-mode contract ("if the descriptor's selection
+    /// field is set, it wins") requires this to trust over a stale
+    /// `cursor`.
     fn current_idx(&self, state: &ListViewState) -> usize {
         let last = self.items.len().saturating_sub(1);
-        state.cursor.unwrap_or(self.selected_idx).min(last)
+        match state.cursor {
+            Some(cursor) if state.cursor_echo == Some(self.selected_idx) => cursor.min(last),
+            _ => self.selected_idx.min(last),
+        }
     }
 
     /// The multi-selection set [`Self::handle_mouse_down`]'s `Toggle`/`Range`
@@ -2625,10 +2649,12 @@ impl ListView {
             let indices =
                 apply_selection_gesture(&state.selected, anchor, target, SelectionGesture::Range);
             state.selected = indices.clone();
+            state.cursor_echo = indices.first().copied();
             Handled::Event(ListViewEvent::SelectionSet { indices })
         } else {
             state.anchor = Some(target);
             state.selected = vec![target];
+            state.cursor_echo = Some(target);
             Handled::Event(ListViewEvent::SelectionChanged { idx: target })
         }
     }
@@ -2665,12 +2691,21 @@ impl ListView {
     ) -> Handled<ListViewEvent> {
         let extend = modifiers.shift;
         let page = layout.layout.visible_items.len().max(1) as isize;
+        let no_accel = !(modifiers.ctrl || modifiers.alt || modifiers.cmd);
         match key {
-            Key::Named(NamedKey::Down) | Key::Char('j') => {
+            Key::Named(NamedKey::Down) => {
                 let target = self.clamped_target(state, 1);
                 self.navigate(state, target, extend)
             }
-            Key::Named(NamedKey::Up) | Key::Char('k') => {
+            Key::Char('j') if no_accel => {
+                let target = self.clamped_target(state, 1);
+                self.navigate(state, target, extend)
+            }
+            Key::Named(NamedKey::Up) => {
+                let target = self.clamped_target(state, -1);
+                self.navigate(state, target, extend)
+            }
+            Key::Char('k') if no_accel => {
                 let target = self.clamped_target(state, -1);
                 self.navigate(state, target, extend)
             }
@@ -2687,12 +2722,12 @@ impl ListView {
                 let target = self.clamped_target(state, -page);
                 self.navigate(state, target, extend)
             }
-            Key::Named(NamedKey::Enter) => {
+            Key::Named(NamedKey::Enter) | Key::Char(' ') => {
                 if self.items.is_empty() {
                     Handled::Ignored
                 } else {
                     Handled::Event(ListViewEvent::ItemActivated {
-                        idx: self.selected_idx,
+                        idx: self.current_idx(state),
                     })
                 }
             }
@@ -2750,6 +2785,7 @@ impl ListView {
                 state.anchor = Some(idx);
                 state.cursor = Some(idx);
                 state.selected = vec![idx];
+                state.cursor_echo = Some(idx);
                 Handled::Event(ListViewEvent::SelectionChanged { idx })
             }
             gesture @ SelectionGesture::Toggle => {
@@ -2759,6 +2795,7 @@ impl ListView {
                 state.selected = indices.clone();
                 state.anchor = Some(idx);
                 state.cursor = Some(idx);
+                state.cursor_echo = indices.first().copied();
                 Handled::Event(ListViewEvent::SelectionSet { indices })
             }
             gesture @ SelectionGesture::Range => {
@@ -2767,6 +2804,7 @@ impl ListView {
                 let indices = apply_selection_gesture(&selected, anchor, idx, gesture);
                 state.selected = indices.clone();
                 state.cursor = Some(idx);
+                state.cursor_echo = indices.first().copied();
                 Handled::Event(ListViewEvent::SelectionSet { indices })
             }
         }
@@ -2842,6 +2880,27 @@ impl Interactive for ListView {
             },
             RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => {
                 self.handle_key(state, key, modifiers, layout, cx)
+            }
+            // `A11yAction` carries no row index — unlike `route_list_action`,
+            // which recovers one from the `A11yTree` owner key's
+            // `"item.{idx}"` encoding, there is no sub-target in
+            // `RoutedEvent::Action` to address a specific row through this
+            // generic `Surface::Widget` seam. `Click` is the one action
+            // meaningful without one: activate whichever row
+            // `Self::current_idx` already tracks, the same row Enter
+            // activates — the assistive-technology default-action
+            // convention and the keyboard convention land on the same
+            // `UiEvent` by construction. `ScrollIntoView` stays unrouted for
+            // the same reason `a11y::action::route_action`'s own arm
+            // documents: no generic "scroll to bounds" `UiEvent` exists yet.
+            RoutedEvent::Action(A11yAction::Click) => {
+                if self.items.is_empty() {
+                    Handled::Ignored
+                } else {
+                    Handled::Event(ListViewEvent::ItemActivated {
+                        idx: self.current_idx(state),
+                    })
+                }
             }
             _ => Handled::Ignored,
         }
@@ -3310,6 +3369,7 @@ mod interactive_tests {
             selected: vec![0],
             anchor: Some(0),
             cursor: Some(0),
+            cursor_echo: Some(0),
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(l.id, &mut host);
@@ -3331,6 +3391,39 @@ mod interactive_tests {
             })
         );
         assert_eq!(state.selected, vec![0, 2]);
+    }
+
+    /// Regression for the bug the second review round flagged: a list
+    /// with `selected_idx: 1` whose very *first* interaction is a
+    /// Ctrl-click on row 2 must grow the selection to `[1, 2]`, not
+    /// replace it with `[2]` — `ListViewState::default()`'s empty
+    /// `selected` must not be read as "nothing was ever selected" when
+    /// `ListView::selected_idx` says otherwise.
+    #[test]
+    fn first_ctrl_click_keeps_the_descriptors_own_selection() {
+        let l = list(3, 1);
+        let layout = layout_for(&l);
+        let mut state = ListViewState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(l.id, &mut host);
+
+        let ctrl_click = RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(0.0, 2.0),
+            mods: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        };
+        let outcome = l.handle(&mut state, &ctrl_click, &layout, &mut cx);
+        assert_eq!(
+            outcome,
+            Handled::Event(ListViewEvent::SelectionSet {
+                indices: vec![1, 2]
+            })
+        );
+        assert_eq!(state.selected, vec![1, 2]);
     }
 
     #[test]
