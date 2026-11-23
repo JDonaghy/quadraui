@@ -115,6 +115,10 @@ impl Sheet {
         grid.frozen_cols = FROZEN_COLS;
         grid.show_scrollbar = true;
         grid.has_focus = true;
+        // Exercise both opt-in visual aids in this demo's own sheet:
+        // TUI column separators and all-backend zebra striping.
+        grid.column_separators = true;
+        grid.striped = true;
         Self {
             grid,
             drag: CellGridState::default(),

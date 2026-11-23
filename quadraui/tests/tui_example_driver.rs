@@ -12153,6 +12153,67 @@ fn cell_grid_initial_screen_shows_the_frozen_header_row_and_region_column() {
     );
 }
 
+/// The demo's sheet opts into both of `CellGrid`'s visual aids, so its
+/// body paints `│` column separators at the visible column boundaries
+/// and tints alternating body rows — neither of which may cost a cell
+/// its own text.
+#[test]
+fn cell_grid_demo_paints_column_separators_and_zebra_striped_body_rows() {
+    let driver = TuiDriver::new(CellGridDemo::new(), 100, 20);
+    let screen = driver.screen();
+
+    // "North 1" is the first body row (absolute row 1, striped);
+    // "South 2" is the next one down (absolute row 2, plain).
+    let (_, striped_y) = driver
+        .find("North 1")
+        .unwrap_or_else(|| panic!("first body row is visible:\n{screen}"));
+    let (_, plain_y) = driver
+        .find("South 2")
+        .unwrap_or_else(|| panic!("second body row is visible:\n{screen}"));
+    // A scrolled body column, located by its own frozen header label
+    // rather than a hardcoded x.
+    let (col_x, _) = driver
+        .find("Q1 2024")
+        .unwrap_or_else(|| panic!("the first scrolled column's header is visible:\n{screen}"));
+
+    let dividers = |y: f32| {
+        driver
+            .styled_row(y as u16)
+            .into_iter()
+            .filter(|(ch, _)| *ch == '│')
+            .count()
+    };
+    assert!(
+        dividers(striped_y) >= 3,
+        "a body row should carry the frozen-pane divider plus a separator per visible column, \
+         got {}:\n{screen}",
+        dividers(striped_y)
+    );
+    assert!(
+        dividers(plain_y) >= 3,
+        "every body row carries the separators, not just the striped ones:\n{screen}"
+    );
+
+    let bg_at = |x: f32, y: f32| {
+        driver
+            .style_at(x as u16, y as u16)
+            .expect("probed cell is on screen")
+            .bg
+    };
+    assert_ne!(
+        bg_at(col_x, striped_y),
+        bg_at(col_x, plain_y),
+        "an odd body row should carry a zebra tint the even row below it does not:\n{screen}"
+    );
+
+    // The separators narrow the text, never swallow it: the body row's
+    // own value still reads in full.
+    assert!(
+        driver.screen_contains("$321"),
+        "body row 1's first scrolled cell should still paint its whole value:\n{screen}"
+    );
+}
+
 #[test]
 fn cell_grid_arrows_move_the_cursor_and_shift_arrows_extend_the_range() {
     let mut driver = TuiDriver::new(CellGridDemo::new(), 100, 20);

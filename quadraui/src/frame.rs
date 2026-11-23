@@ -2761,6 +2761,8 @@ mod tests {
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         };
 
         let mut layout = ScreenLayout::new();
@@ -2830,6 +2832,8 @@ mod tests {
             has_focus: false,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         };
 
         let mut layout = ScreenLayout::new();
@@ -2884,6 +2888,8 @@ mod tests {
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         };
 
         struct ShowGrid(CellGrid);
@@ -3016,6 +3022,8 @@ mod tests {
             has_focus: true,
             show_scrollbar: false,
             editing: None,
+            column_separators: false,
+            striped: false,
         };
         let badge_rect = Rect::new(0.0, 6.0, 4.0, 1.0);
         let badge = Badge {
