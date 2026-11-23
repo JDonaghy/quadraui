@@ -425,9 +425,8 @@ impl Tooltip {
 const CARD_VPAD: f32 = 4.0;
 
 impl TooltipPlacement {
-    /// The [`ResolvedPlacement`] this preference names when no viewport
-    /// flip applied — what a layout built from an already-placed rect
-    /// reports.
+    /// The [`ResolvedPlacement`] for this placement without a viewport
+    /// flip — what a layout built from an already-placed rect reports.
     fn unflipped(self) -> ResolvedPlacement {
         match self {
             TooltipPlacement::Top => ResolvedPlacement::Top,
