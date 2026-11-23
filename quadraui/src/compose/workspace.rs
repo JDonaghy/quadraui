@@ -5,7 +5,8 @@
 //!
 //! An ordered `Vec` of *opaque* document ids plus one active id, with
 //! `open` / `close` / `activate` / `reorder`, a tab strip painted through
-//! [`Backend::draw_tab_bar`], and click + keyboard routing. Every state
+//! the [`TabBar`] primitive's own widget contract, and click + keyboard
+//! routing. Every state
 //! change is reported as a [`WorkspaceEvent`] so the host app can react
 //! (load a file, drop a buffer, persist the session) without inspecting
 //! controller internals.
@@ -147,10 +148,13 @@
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
 use crate::event::{Key, MouseButton, NamedKey, Rect};
-// This compose helper caches exactly what `Backend::draw_tab_bar` returns
-// for click dispatch — see `TabBarHits`'s own doc for its stability
-// contract.
-use crate::primitives::tab_bar::{TabBar, TabBarHits, TabItem};
+// This compose helper caches the `TabBar` primitive's own resolved
+// `TabBarLayout` for click dispatch, and routes every strip click
+// through that layout's `hit_test` rather than comparing x-ranges
+// itself.
+use crate::primitives::tab_bar::{
+    draw_tab_strip, strip_layout_from_tab_slots, TabBar, TabBarHit, TabBarLayout, TabItem,
+};
 use crate::text_util::display_width;
 use crate::types::{Modifiers, WidgetId};
 use crate::Backend;
@@ -313,7 +317,13 @@ pub struct WorkspaceController {
     preview: Option<String>,
     scroll_offset: usize,
     last_strip: Option<Rect>,
-    last_hits: Option<TabBarHits>,
+    /// The tab strip's own resolved geometry from the last
+    /// [`WorkspaceController::render`], in **strip-relative**
+    /// coordinates — the shape `TabBar`'s `Primitive::layout` produces,
+    /// so a strip click is classified by [`TabBarLayout::hit_test`] on
+    /// `(x - strip.x, y - strip.y)` rather than by comparing absolute
+    /// x-ranges here.
+    last_layout: Option<TabBarLayout>,
 }
 
 impl WorkspaceController {
@@ -330,7 +340,7 @@ impl WorkspaceController {
             preview: None,
             scroll_offset: 0,
             last_strip: None,
-            last_hits: None,
+            last_layout: None,
         }
     }
 
@@ -722,17 +732,19 @@ impl WorkspaceController {
     ///
     /// 1. **Before painting**, the offset is recomputed from a portable
     ///    char-cell estimate via [`TabBar::fit_active_scroll_offset`].
-    ///    Backends whose rasteriser reports `correct_scroll_offset`
-    ///    verbatim — the TUI one does, because its char-based fit is
-    ///    exact and it therefore trusts whatever the caller stored —
-    ///    would otherwise paint the *previous* frame's offset, leaving a
-    ///    freshly-activated tab off-screen for a frame.
+    ///    A cell-grid layout echoes the offset it was handed back
+    ///    verbatim, because its char-based fit is already exact, so
+    ///    without this step the strip would paint the *previous* frame's
+    ///    offset and leave a freshly-activated tab off-screen for a
+    ///    frame.
     /// 2. **After painting**, a backend that measures in its own unit
-    ///    (GTK's Pango widths) may disagree with that estimate and hand
-    ///    back a corrected `correct_scroll_offset`. When it does, the
-    ///    strip is repainted inline with the corrected value — the
-    ///    two-pass-paint pattern `TabBar`'s module doc prescribes for
-    ///    event-driven backends, where a queued redraw is unreliable.
+    ///    (GTK's Pango widths) may disagree with that estimate and
+    ///    resolve a different
+    ///    [`TabBarPrimitiveLayout::corrected_scroll_offset`](crate::primitives::tab_bar::TabBarPrimitiveLayout::corrected_scroll_offset).
+    ///    When it does, the strip is repainted inline with the corrected
+    ///    value — the two-pass-paint pattern `TabBar`'s module doc
+    ///    prescribes for event-driven backends, where a queued redraw is
+    ///    unreliable.
     pub fn render(&mut self, backend: &mut dyn Backend, bounds: Rect) -> WorkspaceLayout {
         let lh = backend.chrome_line_height();
         // On a pixel backend (GUI), the tab strip is sized off
@@ -754,14 +766,21 @@ impl WorkspaceController {
         );
 
         self.scroll_offset = self.estimate_scroll_offset(strip.width, backend.char_width());
-        let mut hits = backend.draw_tab_bar(strip, &self.tab_bar(), None);
-        if hits.correct_scroll_offset != self.scroll_offset {
-            self.scroll_offset = hits.correct_scroll_offset.min(self.max_scroll_offset());
-            hits = backend.draw_tab_bar(strip, &self.tab_bar(), None);
+        // Paint through the widget contract: `TabBar` is a `Primitive`,
+        // so `draw_dyn` resolves its layout and paints it on whichever
+        // surface this backend exposes. A `None` means nothing measured a
+        // tab bar, so there is no geometry to classify clicks against.
+        let (mut layout, corrected) = draw_tab_strip(backend, strip, &self.tab_bar())
+            .unwrap_or_else(|| (strip_layout_from_tab_slots(strip, &[]), self.scroll_offset));
+        if corrected != self.scroll_offset {
+            self.scroll_offset = corrected.min(self.max_scroll_offset());
+            if let Some((repainted, _)) = draw_tab_strip(backend, strip, &self.tab_bar()) {
+                layout = repainted;
+            }
         }
 
         self.last_strip = Some(strip);
-        self.last_hits = Some(hits);
+        self.last_layout = Some(layout);
         WorkspaceLayout {
             strip_bounds: strip,
             body_bounds: body,
@@ -804,49 +823,30 @@ impl WorkspaceController {
         y: f32,
         button: MouseButton,
     ) -> Handled<Vec<WorkspaceEvent>> {
-        let (Some(strip), Some(hits)) = (self.last_strip, self.last_hits.as_ref()) else {
+        let (Some(strip), Some(layout)) = (self.last_strip, self.last_layout.as_ref()) else {
             return Handled::Ignored;
         };
         if y < strip.y || y >= strip.y + strip.height || x < strip.x || x >= strip.x + strip.width {
             return Handled::Ignored;
         }
-        let click_x = x as f64;
-        let in_range = |(start, end): (f64, f64)| end > start && click_x >= start && click_x < end;
-
-        let body_hit = hits
-            .slot_positions
-            .iter()
-            .enumerate()
-            .find(|(_, range)| in_range(**range))
-            .map(|(i, _)| i);
+        // `layout`'s regions are strip-relative — see `last_layout`.
+        let (local_x, local_y) = (x - strip.x, y - strip.y);
 
         if button == MouseButton::Middle {
             // Middle-click closes whatever tab is under the pointer,
-            // anywhere on its span — unlike the close button, it doesn't
-            // require landing on the × glyph specifically.
-            let Some(i) = body_hit else {
+            // anywhere on its full span — unlike the close button, it
+            // doesn't require landing on the × glyph specifically, so it
+            // reads `visible_tabs` (whose `bounds` include the close
+            // region) rather than classifying through `hit_test`.
+            let Some(vt) = layout.visible_tabs.iter().find(|vt| {
+                local_x >= vt.bounds.x
+                    && local_x < vt.bounds.x + vt.bounds.width
+                    && local_y >= vt.bounds.y
+                    && local_y < vt.bounds.y + vt.bounds.height
+            }) else {
                 return Handled::Consumed;
             };
-            let Some(doc) = self.docs.get(i) else {
-                return Handled::Consumed;
-            };
-            if !doc.closable {
-                return Handled::Consumed;
-            }
-            let id = doc.id.clone();
-            return events_to_handled(self.close(&id));
-        }
-
-        // Close buttons take precedence over the tab bodies that contain
-        // them.
-        let close_hit = hits
-            .close_bounds
-            .iter()
-            .enumerate()
-            .find(|(_, cb)| cb.is_some_and(in_range))
-            .map(|(i, _)| i);
-        if let Some(i) = close_hit {
-            let Some(doc) = self.docs.get(i) else {
+            let Some(doc) = self.docs.get(vt.tab_idx) else {
                 return Handled::Consumed;
             };
             if !doc.closable {
@@ -856,9 +856,28 @@ impl WorkspaceController {
             return events_to_handled(self.close(&id));
         }
 
-        match body_hit {
-            Some(i) => events_to_handled(self.activate_index(i)),
-            None => Handled::Consumed,
+        // Classification order (close glyph before tab body) is the strip
+        // layout's own — see `TabBarLayout::hit_test`.
+        match layout.hit_test(local_x, local_y) {
+            TabBarHit::TabClose(i) => {
+                let Some(doc) = self.docs.get(i) else {
+                    return Handled::Consumed;
+                };
+                if !doc.closable {
+                    return Handled::Consumed;
+                }
+                let id = doc.id.clone();
+                events_to_handled(self.close(&id))
+            }
+            TabBarHit::Tab(i) => events_to_handled(self.activate_index(i)),
+            // A workspace strip declares no right segments (see
+            // `Self::tab_bar`) and no scroll arrows (the primitive's own
+            // layout only emits them when a backend asks for arrow
+            // chrome), so every other classification is dead space.
+            TabBarHit::ScrollLeft
+            | TabBarHit::ScrollRight
+            | TabBarHit::RightSegment(_)
+            | TabBarHit::Empty => Handled::Consumed,
         }
     }
 
@@ -928,7 +947,8 @@ impl WorkspaceController {
     /// (label display width plus the close affordance) and ask the
     /// primitive where the active tab fits. Exact for the TUI rasteriser,
     /// an estimate for pixel backends — which correct it themselves via
-    /// `TabBarHits::correct_scroll_offset`, see [`Self::render`].
+    /// `TabBarPrimitiveLayout::corrected_scroll_offset`, see
+    /// [`Self::render`].
     fn estimate_scroll_offset(&self, strip_width: f32, char_width: f32) -> usize {
         let Some(active) = self.active else {
             return 0;
@@ -1765,13 +1785,8 @@ mod tests {
     /// end-to-end by the driver tests in `tests/tui_example_driver.rs`.
     fn seed_click_geometry(ws: &mut WorkspaceController, bounds: Rect, tabs: &[(f64, f64)]) {
         ws.last_strip = Some(bounds);
-        ws.last_hits = Some(TabBarHits {
-            slot_positions: tabs.to_vec(),
-            close_bounds: vec![None; tabs.len()],
-            right_segment_bounds: Vec::new(),
-            available_cols: bounds.width as usize,
-            correct_scroll_offset: 0,
-        });
+        let slots: Vec<(f32, f32)> = tabs.iter().map(|(s, e)| (*s as f32, *e as f32)).collect();
+        ws.last_layout = Some(strip_layout_from_tab_slots(bounds, &slots));
     }
 
     // ── Tab strip height ──────────────────────────────────────────────
@@ -1826,5 +1841,105 @@ mod tests {
         backend.set_style(crate::Style::default().with_tab_height(50.0));
         let layout = ws.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
         assert_eq!(layout.strip_bounds.height, 1.0);
+    }
+
+    // ── Strip geometry from a real paint ──────────────────────────────
+
+    /// `render` caches the strip-relative layout the `TabBar` primitive
+    /// resolved, so a click on a tab's own close glyph closes *that* tab
+    /// — the close-before-body classification order `hit_test` owns,
+    /// driven through the real paint path rather than seeded geometry.
+    #[test]
+    fn a_close_glyph_click_after_a_real_render_closes_that_tab() {
+        let mut ws = ws(&["a", "b", "c"]);
+        ws.activate("a");
+        let mut backend = crate::testing::RecordingBackend::new();
+        let strip = ws
+            .render(&mut backend, Rect::new(3.0, 2.0, 60.0, 10.0))
+            .strip_bounds;
+
+        let layout = ws.last_layout.as_ref().expect("render cached a layout");
+        let (cx, cy) = layout
+            .tab_close_center(1)
+            .expect("tab 1 painted a close glyph");
+
+        let handled = ws.handle_click_event(strip.x + cx, strip.y + cy, MouseButton::Left);
+        assert!(matches!(handled, Handled::Event(_)), "close emitted events");
+        assert_eq!(ids(&ws), vec!["a", "c"]);
+    }
+
+    /// Same real-paint path, but on a tab body: the click activates that
+    /// tab instead of closing it.
+    #[test]
+    fn a_tab_body_click_after_a_real_render_activates_that_tab() {
+        let mut ws = ws(&["a", "b", "c"]);
+        ws.activate("a");
+        let mut backend = crate::testing::RecordingBackend::new();
+        let strip = ws
+            .render(&mut backend, Rect::new(3.0, 2.0, 60.0, 10.0))
+            .strip_bounds;
+
+        let (cx, cy, body_x, left_edge) = {
+            let layout = ws.last_layout.as_ref().expect("render cached a layout");
+            let (cx, cy) = layout.tab_center(2).expect("tab 2 is visible");
+            // Nudge off the close glyph so the body region wins.
+            let bounds = layout.visible_tabs[2].bounds;
+            (cx, cy, bounds.x + 0.5, bounds.x)
+        };
+
+        assert!(matches!(
+            ws.handle_click_event(strip.x + body_x, strip.y + cy, MouseButton::Left),
+            Handled::Event(_)
+        ));
+        assert_eq!(ws.active_id(), Some("c"));
+        // The whole-tab span (close glyph included) is what middle-click
+        // reads, so the tab centre is inside tab 2 either way.
+        assert!(cx >= left_edge);
+        assert_eq!(ids(&ws), vec!["a", "b", "c"]);
+    }
+
+    /// A strip too narrow for every tab still keeps the active tab
+    /// clickable: `render` adopts the corrected offset the painted
+    /// layout resolved, so the active tab is in `visible_tabs`.
+    #[test]
+    fn rendering_an_overflowing_strip_keeps_the_active_tab_hittable() {
+        let labels: Vec<String> = (0..30).map(|i| format!("doc-{i:02}")).collect();
+        let mut ws = WorkspaceController::new("test:overflow");
+        for label in &labels {
+            ws.open(WorkspaceDoc::new(label.as_str(), label.as_str()));
+        }
+        ws.activate(labels[25].as_str());
+
+        let mut backend = crate::testing::RecordingBackend::new();
+        let strip = ws
+            .render(&mut backend, Rect::new(0.0, 0.0, 40.0, 10.0))
+            .strip_bounds;
+
+        let (cx, cy, body_x) = {
+            let layout = ws.last_layout.as_ref().expect("render cached a layout");
+            assert!(
+                layout.visible_tabs.iter().any(|vt| vt.tab_idx == 25),
+                "the active tab scrolled into view: {:?}",
+                layout
+                    .visible_tabs
+                    .iter()
+                    .map(|v| v.tab_idx)
+                    .collect::<Vec<_>>()
+            );
+            let (cx, cy) = layout.tab_center(25).expect("active tab is visible");
+            let body_x = layout
+                .visible_tabs
+                .iter()
+                .find(|vt| vt.tab_idx == 25)
+                .map(|vt| vt.bounds.x + 0.5)
+                .expect("active tab is visible");
+            (cx, cy, body_x)
+        };
+        assert!(cx > 0.0);
+        assert!(matches!(
+            ws.handle_click_event(strip.x + body_x, strip.y + cy, MouseButton::Left),
+            Handled::Consumed | Handled::Event(_)
+        ));
+        assert_eq!(ws.active_id(), Some("doc-25"));
     }
 }

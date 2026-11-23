@@ -2173,6 +2173,38 @@ pub trait Backend: sealed::Sealed {
         None
     }
 
+    /// Record the geometry a widget-contract paint resolved for the
+    /// widget `id` painted into `rect`.
+    /// [`DrawsPrimitives::draw_dyn`]'s default body calls this once per
+    /// paint, after the surface/cell paint, for any widget whose
+    /// [`crate::primitive::DynWidget::id`] answers `Some`.
+    ///
+    /// # Why a backend wants this
+    ///
+    /// A backend that keeps a per-`WidgetId` geometry cache for its own
+    /// bespoke `draw_*` path — the `(bar rect, TabBarLayout)` pair
+    /// `TuiBackend`/`GtkBackend` record on every `draw_tab_bar*` call, so
+    /// a headless driver can target one specific tab's body or close
+    /// glyph, which no unique on-screen text identifies — needs the same
+    /// entry when the *same* widget is painted through
+    /// [`DrawsPrimitives::draw_dyn`] instead. Without it, migrating a
+    /// caller onto the widget contract silently empties that cache.
+    ///
+    /// Each backend decides which concrete layouts it cares about by
+    /// downcasting `layout` (see
+    /// [`crate::primitive::PrimitiveLayout::as_any`]); a layout it
+    /// doesn't recognise is ignored.
+    ///
+    /// Default: a no-op, correct for any backend with no such cache.
+    fn note_widget_paint(
+        &mut self,
+        id: &WidgetId,
+        rect: Rect,
+        layout: &dyn crate::primitive::PrimitiveLayout,
+    ) {
+        let _ = (id, rect, layout);
+    }
+
     // ─── Capability declaration ─────────────────────────────────────────
     /// This backend's declared [`BackendCaps`] — which optional surfaces
     /// it actually implements, versus which ones are still sitting on the
@@ -4808,6 +4840,12 @@ pub trait DrawsPrimitives: Backend {
                  scope (TuiBackend::enter_frame_scope)",
             );
             w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
+        }
+        // Let the backend keep its own per-`WidgetId` geometry cache in
+        // step with this paint — see `Backend::note_widget_paint`.
+        if let Some(id) = w.id() {
+            let id = *id;
+            self.note_widget_paint(&id, rect, layout.as_ref());
         }
         layout
     }

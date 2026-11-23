@@ -1978,6 +1978,90 @@ mod tests {
         );
     }
 
+    /// A bar painted through the widget contract
+    /// ([`crate::DrawsPrimitives::draw_dyn`]) is just as targetable as one
+    /// painted by `draw_tab_bar`: `TuiBackend::note_widget_paint` records
+    /// the resolved geometry, so [`TuiDriver::tab_center`] /
+    /// [`TuiDriver::tab_close_center`] keep resolving and a click on
+    /// either point lands on the matching region of the painted strip.
+    #[test]
+    fn tab_center_resolves_for_a_bar_painted_through_the_widget_contract() {
+        use crate::primitives::tab_bar::TabBarHit;
+
+        struct WidgetContractTabBarApp;
+
+        impl WidgetContractTabBarApp {
+            const RECT: Rect = Rect::new(3.0, 2.0, 24.0, 1.0);
+
+            fn bar() -> TabBar {
+                TabBar {
+                    id: QWidgetId::new("widget-tabs"),
+                    tabs: (0..3)
+                        .map(|i| TabItem {
+                            label: format!("tab{i}"),
+                            is_active: i == 0,
+                            is_dirty: false,
+                            is_preview: false,
+                            is_closable: true,
+                        })
+                        .collect(),
+                    scroll_offset: 0,
+                    right_segments: vec![],
+                    active_accent: None,
+                    show_tab_close: true,
+                    compact: false,
+                }
+            }
+        }
+
+        impl AppLogic for WidgetContractTabBarApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                crate::DrawsPrimitives::draw_dyn(backend, Self::RECT, &Self::bar(), &());
+            }
+
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        let driver = TuiDriver::new(WidgetContractTabBarApp, 30, 4);
+        let bar_id = QWidgetId::new("widget-tabs");
+
+        let (bx, by) = driver
+            .tab_center(&bar_id, 1)
+            .expect("draw_dyn must record the painted geometry for tab_center");
+        let (cx, cy) = driver
+            .tab_close_center(&bar_id, 1)
+            .expect("draw_dyn must record the painted geometry for tab_close_center");
+
+        // Both points are absolute screen coordinates inside the painted
+        // strip, and each lands on its own region of the authoritative
+        // layout — body on the body, close glyph on the close glyph.
+        let rect = WidgetContractTabBarApp::RECT;
+        let layout = crate::primitive::Primitive::layout(
+            &WidgetContractTabBarApp::bar(),
+            &crate::primitive::LayoutCtx {
+                line_height: 1.0,
+                char_width: 1.0,
+                nerd_fonts_enabled: driver.core.backend().nerd_fonts_enabled(),
+            },
+            rect,
+        )
+        .layout;
+        assert_eq!(
+            layout.hit_test(bx - rect.x, by - rect.y),
+            TabBarHit::Tab(1),
+            "tab_center must land on tab 1's body"
+        );
+        assert_eq!(
+            layout.hit_test(cx - rect.x, cy - rect.y),
+            TabBarHit::TabClose(1),
+            "tab_close_center must land on tab 1's close glyph"
+        );
+    }
+
     /// Acceptance criterion: `tab_close_center` returns `None` for a tab
     /// rendered with `is_closable: false`.
     #[test]

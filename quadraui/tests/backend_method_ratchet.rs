@@ -61,7 +61,27 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 202;
+///
+/// # The one entry above the original 202
+///
+/// `Backend::note_widget_paint` is not a `draw_*`/`*_layout` rasteriser
+/// pair, and it is not what this ratchet exists to block — it is the hook
+/// that lets such a pair be *retired*. A backend that keeps a
+/// per-`WidgetId` geometry cache for its own bespoke `draw_*` path (the
+/// `(bar rect, TabBarLayout)` entry `TuiBackend`/`GtkBackend` record on
+/// every `draw_tab_bar*` call, which is the only thing
+/// `TuiDriver::tab_center` / `tab_close_center` can resolve a specific
+/// tab's body or close glyph from — no unique on-screen text identifies
+/// one tab's `×` over another's) loses that cache the moment a caller
+/// moves onto `DrawsPrimitives::draw_dyn`, because nothing on the widget
+/// contract hands a backend the layout a `draw_dyn` paint resolved. The
+/// hook closes that gap generically: one method for every widget and
+/// every backend, versus the per-widget pair this ratchet counts. Net
+/// direction stays down — each caller it unblocks removes `draw_*` calls.
+///
+/// Anything beyond this is still the ratchet's business: a new widget
+/// implements `Primitive`.
+const BACKEND_METHOD_COUNT_BASELINE: usize = 203;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
