@@ -669,6 +669,7 @@ fn tab_icons_initial_hits(driver: &MacDriver<TabIconsDemo>) -> quadraui::TabBarH
         active_accent: None,
         show_tab_close: true,
         compact: false,
+        ..Default::default()
     };
     let icons = TabIconsDemo::new().icons();
     driver.backend().tab_bar_layout_icons(

@@ -1017,6 +1017,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let icons: Vec<Option<TabIcon>> = (0..6)
             .map(|_| {
