@@ -148,8 +148,7 @@ use crate::primitives::split::{Split, SplitDirection};
 // `TabBarLayout` for click/drag dispatch, and routes every strip click
 // through that layout's `hit_test` rather than comparing x-ranges itself.
 use crate::primitives::tab_bar::{
-    draw_tab_strip, strip_layout_from_tab_slots, TabBar, TabBarHit, TabBarLayout, TabBarSegment,
-    TabItem,
+    TabBar, TabBarHit, TabBarLayout, TabBarSegment, TabItem, VisibleTab,
 };
 use crate::types::WidgetId;
 use crate::Backend;
@@ -736,18 +735,69 @@ struct PaneHitCache {
     content_bounds: Rect,
 }
 
-/// Paint one pane's tab strip and return the strip-relative
-/// [`TabBarLayout`] plus the corrected scroll offset — see
-/// [`draw_tab_strip`], whose `None` (nothing
-/// measured a tab bar) becomes an empty layout here, so dispatch
-/// classifies every strip click as [`TabBarHit::Empty`].
-fn draw_pane_tab_strip(
+/// Paint one pane's tab strip into `strip` through
+/// [`crate::backend::DrawsPrimitives::draw_dyn`] and return the
+/// strip-relative [`TabBarLayout`] it resolved, paired with the scroll
+/// offset that keeps the active tab visible under this frame's real
+/// measurements —
+/// [`crate::primitives::tab_bar::TabBarPrimitiveLayout::corrected_scroll_offset`],
+/// *not* `layout.resolved_scroll_offset` (merely clamped — see that
+/// field's own doc).
+///
+/// A backend whose `draw_dyn` hands back a layout of some other concrete
+/// type never measured a tab bar, so the fallback is an empty layout with
+/// no correction: dispatch then classifies every strip click as
+/// [`TabBarHit::Empty`], which is the only coherent answer when nothing
+/// measured the strip.
+fn draw_tab_strip(
     backend: &mut dyn Backend,
     strip: Rect,
     tab_bar: &TabBar,
 ) -> (TabBarLayout, usize) {
-    draw_tab_strip(backend, strip, tab_bar)
+    use crate::backend::DrawsPrimitives;
+    backend
+        .draw_dyn(strip, tab_bar, &())
+        .downcast_ref::<crate::primitives::tab_bar::TabBarPrimitiveLayout>()
+        .map(|l| (l.layout.clone(), l.corrected_scroll_offset))
         .unwrap_or_else(|| (strip_layout_from_tab_slots(strip, &[]), 0))
+}
+
+/// A strip layout carrying only tab-body hit regions, synthesised from
+/// absolute `(start_x, end_x)` tab slots relative to a `strip` of
+/// `strip.width` x `strip.height`.
+///
+/// Two callers need it: [`TabGroupController::set_drag_geometry`], whose
+/// [`PaneDragRect`] carries slot x-pairs and no close/segment geometry at
+/// all, and [`draw_tab_strip`] on a build with no rasteriser feature.
+///
+/// `slots` uses [`PaneDragRect::tab_slots`]'s own `(0.0, 0.0)` sentinel
+/// convention for a tab scrolled off the left edge: a sentinel entry
+/// contributes no visible tab, but the entries after it keep their
+/// original tab indices.
+fn strip_layout_from_tab_slots(strip: Rect, slots: &[(f32, f32)]) -> TabBarLayout {
+    let visible_tabs: Vec<VisibleTab> = slots
+        .iter()
+        .enumerate()
+        .filter(|(_, (s, e))| *s != 0.0 || *e != 0.0)
+        .map(|(tab_idx, (s, e))| VisibleTab {
+            tab_idx,
+            bounds: Rect::new(s - strip.x, 0.0, (e - s).max(0.0), strip.height),
+            close_bounds: None,
+        })
+        .collect();
+    TabBarLayout {
+        bar_width: strip.width,
+        bar_height: strip.height,
+        hit_regions: visible_tabs
+            .iter()
+            .map(|vt| (vt.bounds, TabBarHit::Tab(vt.tab_idx)))
+            .collect(),
+        visible_tabs,
+        visible_segments: vec![],
+        scroll_left: None,
+        scroll_right: None,
+        resolved_scroll_offset: 0,
+    }
 }
 
 impl TabGroupController {
@@ -1021,7 +1071,7 @@ impl TabGroupController {
 
     /// Render all panes into `bounds`. Calls `backend.draw_split` for each
     /// inter-pane divider and paints each pane's tab strip through the
-    /// `TabBar` primitive (see [`draw_pane_tab_strip`]).
+    /// `TabBar` primitive (see [`draw_tab_strip`]).
     /// Active-pane content is rendered via [`BackendWidget::render`].
     /// When a tab drag is active, automatically calls
     /// `backend.draw_drop_overlay` at the end of the frame.
@@ -1097,7 +1147,7 @@ impl TabGroupController {
             // a `Primitive`, so `draw_dyn` resolves its layout and paints
             // it on whichever surface this backend exposes.
             let tab_bar = pane.build_tab_bar(pane_idx);
-            let (layout, corrected_scroll_offset) = draw_pane_tab_strip(backend, strip, &tab_bar);
+            let (layout, corrected_scroll_offset) = draw_tab_strip(backend, strip, &tab_bar);
             // Adopt the scroll offset this frame's real measurements
             // resolved to, so the next frame starts coherent — see
             // `TabBarPrimitiveLayout::corrected_scroll_offset`'s own doc.

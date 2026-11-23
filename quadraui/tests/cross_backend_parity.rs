@@ -1541,3 +1541,148 @@ fn image_menu_click_agrees_tui_and_gtk_on_activated_action() {
          should update the status bar"
     );
 }
+
+// ─── TabBar: the widget contract's text-measurement gap ───────────────────
+//
+// `TabBar`'s whole geometry is label widths, so the strip a caller gets
+// depends entirely on who measured the labels. Both tests below drive the
+// same bar at the same size and pin which measurer each path uses, so the
+// one condition that decides whether a tab-strip caller can move onto
+// `DrawsPrimitives::draw_dyn` is a test result rather than a judgement
+// call.
+
+/// Three short lowercase labels, one closable tab each — the shape a
+/// sidebar document strip paints.
+fn parity_tab_bar() -> quadraui::TabBar {
+    quadraui::TabBar {
+        id: WidgetId::new("parity:tabs"),
+        tabs: ["alpha", "beta", "gamma"]
+            .iter()
+            .enumerate()
+            .map(|(i, label)| quadraui::TabItem {
+                label: (*label).to_string(),
+                is_active: i == 0,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            })
+            .collect(),
+        scroll_offset: 0,
+        right_segments: vec![],
+        active_accent: None,
+        show_tab_close: true,
+        compact: false,
+    }
+}
+
+/// On a **cell grid** the widget contract and the rasteriser measure
+/// identically — both count display columns — so a TUI tab-strip caller
+/// moving onto `draw_dyn` paints the same strip it did through
+/// `Backend::draw_tab_bar`. This is the half of the migration that is
+/// safe today.
+#[test]
+fn tab_bar_widget_contract_matches_the_tui_rasteriser_geometry() {
+    use quadraui::primitive::{LayoutCtx, Primitive};
+
+    let bar = parity_tab_bar();
+    let rect = Rect::new(0.0, 0.0, 30.0, 1.0);
+    let backend = quadraui::tui::backend::TuiBackend::new();
+
+    let native = Backend::resolve_tab_bar_layout(&backend, rect, &bar);
+    let ctx = LayoutCtx {
+        line_height: LayoutCtx::resolve_row_height(
+            Backend::chrome_line_height(&backend),
+            &Backend::style(&backend),
+        ),
+        char_width: Backend::char_width(&backend),
+        nerd_fonts_enabled: Backend::nerd_fonts_enabled(&backend),
+    };
+    let contract = <quadraui::TabBar as Primitive>::layout(&bar, &ctx, rect).layout;
+
+    let widths = |l: &quadraui::TabBarLayout| -> Vec<f32> {
+        l.visible_tabs.iter().map(|t| t.bounds.width).collect()
+    };
+    assert_eq!(
+        widths(&contract),
+        widths(&native),
+        "a cell grid's widget-contract layout must match its rasteriser's, \
+         tab for tab — contract={contract:?} native={native:?}"
+    );
+}
+
+/// On a **pixel** backend they do not. `LayoutCtx` carries `char_width`
+/// and no text measurer, so `TabBar`'s `Primitive::layout` approximates
+/// every glyph at one `char_width`, while the GTK rasteriser feeds
+/// `pixel_tab_bar_layout` real Pango widths. The error runs in *both*
+/// directions (a narrow lowercase label is over-measured, a wide one
+/// under-measured), so no scalar correction closes it: a pixel tab-strip
+/// caller cannot move onto `draw_dyn` until the contract can measure
+/// text, which means a measurer on `LayoutCtx` — a public,
+/// non-`#[non_exhaustive]`, `PartialEq`-deriving struct built by literal
+/// across this repo and its consumers, i.e. a seam change rather than a
+/// caller migration.
+///
+/// This test pins the gap so it is a measured fact, and fails the day the
+/// seam closes — which is the signal to migrate the pixel callers and
+/// delete it.
+#[test]
+fn tab_bar_widget_contract_cannot_reproduce_the_gtk_rasteriser_geometry() {
+    use quadraui::primitive::{LayoutCtx, Primitive};
+
+    let bar = parity_tab_bar();
+    let driver = gtk_driver_with_shell(AppShellDemo::new(), AppShellDemo::config(), 800, 480);
+    let backend = driver.backend();
+    let char_width = Backend::char_width(backend);
+
+    let pango: Vec<f32> = ["alpha", "beta", "gamma"]
+        .iter()
+        .map(|t| Backend::measure_text(backend, t, quadraui::FontRole::Chrome).0)
+        .collect();
+    let approx: Vec<f32> = ["alpha", "beta", "gamma"]
+        .iter()
+        .map(|t| t.chars().count() as f32 * char_width)
+        .collect();
+
+    assert_ne!(
+        pango, approx,
+        "if these agree, the contract's char-width approximation reproduces \
+         Pango and the pixel callers are migratable — pango={pango:?} \
+         approx={approx:?} char_width={char_width}"
+    );
+    assert!(
+        approx[0] > pango[0] && approx[2] < pango[2],
+        "the approximation errs in both directions, so no scalar factor \
+         fixes it — pango={pango:?} approx={approx:?}"
+    );
+
+    // And the gap is visible in the resolved strip, not just the raw
+    // measurements: the contract's layout of a narrow strip differs from
+    // what the rasteriser would paint into the same rect.
+    let rect = Rect::new(0.0, 0.0, 160.0, 35.0);
+    let ctx = LayoutCtx {
+        line_height: LayoutCtx::resolve_row_height(
+            Backend::chrome_line_height(backend),
+            &Backend::style(backend),
+        ),
+        char_width,
+        nerd_fonts_enabled: Backend::nerd_fonts_enabled(backend),
+    };
+    let contract = <quadraui::TabBar as Primitive>::layout(&bar, &ctx, rect).layout;
+    let contract_widths: Vec<f32> = contract
+        .visible_tabs
+        .iter()
+        .map(|t| t.bounds.width)
+        .collect();
+    // Each visible tab is padded label + close glyph, so a tab's own
+    // width can never match a Pango label width that the contract never
+    // saw — the per-tab geometry a caller hit-tests against is derived
+    // from the approximation, not from what the rasteriser paints.
+    for (idx, width) in contract_widths.iter().enumerate() {
+        assert!(
+            (*width - pango[idx]).abs() > f32::EPSILON,
+            "tab {idx}'s contract width {width} coincides with its Pango \
+             label width {} — re-check whether the gap still exists",
+            pango[idx]
+        );
+    }
+}

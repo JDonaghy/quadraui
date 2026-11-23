@@ -8,12 +8,16 @@
 //! conformance fixture) painted through the widget contract — the `TabBar`
 //! primitive's own `draw_dyn`/`Primitive::layout` pair.
 //!
-//! Only the plain variant can use the widget contract: a sidecar has no
-//! route through it. `TabBar` carries neither a `TabChrome` nor a
-//! `TabIcon` field, and the one paint entry point the contract exposes
-//! (`Primitive::paint`) takes no paint-time state, so chrome and icons
-//! reach a rasteriser *only* through the dedicated `Backend` methods the
-//! other two variants call.
+//! Only the plain variant can use the widget contract, and only because
+//! this demo is read on a cell grid. A sidecar has no route through the
+//! contract at all: `TabBar` carries neither a `TabChrome` nor a
+//! `TabIcon` field, and `Primitive::paint` takes no paint-time state, so
+//! chrome and icons reach a rasteriser only through the dedicated
+//! `Backend` methods the other two variants call. On a pixel backend
+//! even the plain variant measures differently from the rasteriser —
+//! `Primitive::layout` approximates every glyph at `LayoutCtx::char_width`
+//! because the contract carries no text measurer, while the GTK
+//! rasteriser feeds `pixel_tab_bar_layout` real Pango widths.
 
 use quadraui::primitive::{LayoutCtx, Primitive};
 use quadraui::{

@@ -53,7 +53,6 @@ use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, TextRegion};
 use crate::event::{Point, Rect};
 use crate::paint_surface::PaintSurface;
-use crate::primitives::tab_bar::TabBarPrimitiveLayout;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
@@ -2735,20 +2734,6 @@ impl Backend for GtkBackend {
     /// `Backend::paint_surface` falls back to.
     fn paint_surface(&mut self) -> Option<&mut dyn PaintSurface> {
         Some(self)
-    }
-
-    /// Keeps [`Self::cached_tab_bar_layout`] populated for a tab bar
-    /// painted through the widget contract; any other layout is ignored.
-    /// See [`Backend::note_widget_paint`].
-    fn note_widget_paint(
-        &mut self,
-        id: &WidgetId,
-        rect: QRect,
-        layout: &dyn crate::primitive::PrimitiveLayout,
-    ) {
-        if let Some(l) = layout.downcast_ref::<TabBarPrimitiveLayout>() {
-            self.tab_bar_layouts.insert(*id, (rect, l.layout.clone()));
-        }
     }
 
     /// Honest per-method, not aspirational.

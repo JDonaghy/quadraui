@@ -13,13 +13,12 @@ use serde::{Deserialize, Deserializer};
 use quadraui::{
     Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState, ListItem,
     ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize,
-    Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar, TabBarLayout,
-    TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme,
-    TreePath, TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
+    Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar, TabChrome,
+    TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme, TreePath,
+    TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
-use quadraui::primitives::tab_bar::TabBarPrimitiveLayout;
 use quadraui::DrawsPrimitives;
 
 use crate::extra_paint::{extra_as, ExtraPaint};
@@ -158,39 +157,6 @@ pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
             Box::leak(Box::new(HashMap::new()));
     }
     NO_WIDGETS.with(|map| *map)
-}
-
-/// Paint `tab_bar` into `rect` through the widget contract —
-/// [`quadraui::DrawsPrimitives::draw_dyn`], since [`TabBar`] is a
-/// [`quadraui::primitive::Primitive`] — and return the **bar-relative**
-/// [`quadraui::TabBarLayout`] it resolved, the space
-/// [`PaintedHit::TabBar`]'s own hit test subtracts `area`'s origin from.
-///
-/// Both tab-bar paint paths here (the fixed `"tab_bar"` slot in
-/// [`draw_bands`] and [`LeafDescriptor::TabBar`] in [`paint_leaf`]) share
-/// this one call, so neither reaches for a `Backend::draw_tab_bar*`
-/// method of its own.
-///
-/// An empty layout is the fallback when `draw_dyn` hands back a layout of
-/// some other concrete type, which means nothing measured a tab bar: the
-/// hit test then classifies every click in `rect` as
-/// [`quadraui::TabBarHit::Empty`], the only coherent answer when the bar
-/// was never measured.
-fn paint_tab_bar(backend: &mut dyn Backend, rect: Rect, tab_bar: &TabBar) -> TabBarLayout {
-    backend
-        .draw_dyn(rect, tab_bar, &())
-        .downcast_ref::<TabBarPrimitiveLayout>()
-        .map(|resolved| resolved.layout.clone())
-        .unwrap_or_else(|| TabBarLayout {
-            bar_width: rect.width,
-            bar_height: rect.height,
-            visible_tabs: Vec::new(),
-            visible_segments: Vec::new(),
-            scroll_left: None,
-            scroll_right: None,
-            hit_regions: Vec::new(),
-            resolved_scroll_offset: 0,
-        })
 }
 
 /// Allocates the next `lines`-tall band (scaled by `line_height`),
@@ -336,7 +302,7 @@ pub fn draw_bands(
     }
     if let Some(tab_bar) = refs.tab_bar {
         if let Some(rect) = band(3.0) {
-            let layout = paint_tab_bar(backend, rect, tab_bar);
+            let layout = backend.draw_tab_bar_layout(rect, tab_bar, None);
             hits.push(PaintedHit::TabBar {
                 id: tab_bar.id,
                 area: rect,
@@ -3068,7 +3034,7 @@ pub fn paint_leaf_windowed(
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {
-            let layout = paint_tab_bar(backend, area, tab_bar);
+            let layout = backend.draw_tab_bar_layout(area, tab_bar, None);
             hits.push(PaintedHit::TabBar {
                 id,
                 area,

@@ -51,7 +51,6 @@ use crate::backend::{
     activity_bar_hits, tab_bar_hits_from_layout, ColorDepth, Screenshot, ScreenshotRun,
 };
 use crate::dispatch::TextRegion;
-use crate::primitives::tab_bar::TabBarPrimitiveLayout;
 use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Backend, Color, CommandLine, DragState, Form,
@@ -2896,25 +2895,6 @@ impl Backend for TuiBackend {
         let buf = self.current_frame_mut()?.buffer_mut();
         let surface = super::cell_surface::TuiCellSurface::new(buf, depth, cursor_sink);
         Some(self.cell_surface_scratch.insert(surface))
-    }
-
-    /// Keeps [`Self::cached_tab_bar_layout`] populated for a tab bar
-    /// painted through the widget contract, so
-    /// [`crate::tui::testing::TuiDriver::tab_center`] /
-    /// [`crate::tui::testing::TuiDriver::tab_close_center`] resolve the
-    /// same geometry they do for a `draw_tab_bar*` call. Any other
-    /// widget's layout is ignored — this backend caches no geometry for
-    /// those.
-    fn note_widget_paint(
-        &mut self,
-        id: &WidgetId,
-        rect: QRect,
-        layout: &dyn crate::primitive::PrimitiveLayout,
-    ) {
-        if let Some(resolved) = layout.downcast_ref::<TabBarPrimitiveLayout>() {
-            self.tab_bar_layouts
-                .insert(*id, (rect, resolved.layout.clone()));
-        }
     }
 
     fn line_height(&self) -> f32 {
