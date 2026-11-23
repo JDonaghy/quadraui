@@ -403,6 +403,355 @@ impl Tooltip {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+//
+// `Tooltip` reaches the frame type-erased as `Surface::Widget`: its
+// `Primitive::layout` takes the rect the host already resolved through
+// [`Tooltip::layout`] (anchor, viewport, measure, margin — none of which
+// live on the descriptor) as the box's final bounds, `paint` runs the
+// shared pixel painter, and `paint_cells` runs the cell painter in
+// [`cell_paint`]. A tooltip reacts to no input of its own — hover delay,
+// pointer-leave and explicit dismissal all live in
+// [`crate::compose::HoverTooltipTracker`], which decides whether the host
+// builds a `Tooltip` at all — so it is `non_interactive!`.
+//
+// Both painters render [`TooltipChrome::default()`] on this path, since the
+// chrome request is not a field of the descriptor.
+
+/// Vertical inset between a [`TooltipBorder::Full`] card's stroked edge and
+/// its content on a pixel surface — VS Code's own hover-card inset.
+/// [`Tooltip`]'s `Primitive::measure` reserves it above and below the
+/// content; the pixel painter shrinks it to fit a tightly-sized card.
+const CARD_VPAD: f32 = 4.0;
+
+impl TooltipPlacement {
+    /// The [`ResolvedPlacement`] this preference names when no viewport
+    /// flip applied — what a layout built from an already-placed rect
+    /// reports.
+    fn unflipped(self) -> ResolvedPlacement {
+        match self {
+            TooltipPlacement::Top => ResolvedPlacement::Top,
+            TooltipPlacement::Bottom => ResolvedPlacement::Bottom,
+            TooltipPlacement::Left => ResolvedPlacement::Left,
+            TooltipPlacement::Right => ResolvedPlacement::Right,
+        }
+    }
+}
+
+impl Tooltip {
+    /// How many content rows this tooltip paints: one per `styled_lines`
+    /// entry, else one per `\n`-separated line of `text`.
+    fn content_rows(&self) -> usize {
+        match &self.styled_lines {
+            Some(lines) => lines.len(),
+            None => self.text.lines().count(),
+        }
+    }
+
+    /// The widest content row, in terminal display columns.
+    fn content_cols(&self) -> usize {
+        use crate::text_util::display_width;
+        match &self.styled_lines {
+            Some(lines) => lines
+                .iter()
+                .map(|line| line.spans.iter().map(|s| display_width(&s.text)).sum())
+                .max()
+                .unwrap_or(0),
+            None => self.text.lines().map(display_width).max().unwrap_or(0),
+        }
+    }
+}
+
+impl crate::primitive::Primitive for Tooltip {
+    type Layout = TooltipLayout;
+    type Event = TooltipHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Tooltip(self.clone())
+    }
+
+    /// The whole box — default [`TooltipBorder::Full`] chrome included —
+    /// that fits every content row, following the [`TooltipMeasure`]
+    /// contract. On a cell grid that is two leading columns (border +
+    /// pad) and one trailing border column around the widest row, plus a
+    /// top and bottom border row. On a pixel surface it is one
+    /// `char_width` of padding either side of the widest row (estimated
+    /// at `char_width` per column — no live text measurer reaches
+    /// `measure`) and a [`CARD_VPAD`] inset above and below the rows.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let rows = self.content_rows() as f32;
+        let cols = self.content_cols() as f32;
+        match ctx.units() {
+            crate::primitive::Units::Cells => {
+                crate::NaturalSize::new(Some(cols + 3.0), Some(rows + 2.0))
+            }
+            _ => crate::NaturalSize::new(
+                Some((cols + 2.0) * ctx.char_width),
+                Some(rows * ctx.line_height + 2.0 * CARD_VPAD),
+            ),
+        }
+    }
+
+    /// `rect` is the tooltip's final box — the `bounds` a host got from
+    /// [`Tooltip::layout`] — reported with the preferred placement as
+    /// the resolved one.
+    fn layout(&self, _ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TooltipLayout {
+        TooltipLayout {
+            bounds: rect,
+            resolved_placement: self.placement.unflipped(),
+        }
+    }
+
+    /// The shared pixel painter, with the surface's own line height and
+    /// character advance as the row pitch and horizontal padding — the
+    /// same metrics every pixel backend's `draw_tooltip` passes it.
+    fn paint(
+        &self,
+        layout: &TooltipLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let line_height = surface.surface_line_height();
+            let padding_x = surface.surface_char_width();
+            native_surface_paint::paint(
+                self,
+                layout,
+                &TooltipChrome::default(),
+                line_height,
+                padding_x,
+                surface,
+                theme,
+                style,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_tooltip`] because the `Buffer` → `CellSurface`
+    /// adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &TooltipLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_tooltip(buf, self, layout, theme);
+    }
+}
+
+crate::non_interactive!(Tooltip);
+
+/// The cell-grid painter for [`Tooltip`], written against
+/// [`crate::CellSurface`].
+///
+/// Border chrome follows the [`TooltipChrome`] request:
+///
+/// - [`TooltipBorder::Full`] (the default) renders a closed box —
+///   `┌─┐`/`└─┘` top and bottom rows plus `│` sides — whenever the box
+///   leaves room for both border rows and at least one content row
+///   (`height >= 3`, `width >= 2`). Below that it falls back to the
+///   `Sides` rendering rather than an empty box. An optional
+///   `chrome.title` is centred into the top row when the box closes.
+/// - [`TooltipBorder::Sides`] renders `│` on the first/last column only,
+///   regardless of height. No title (no top rule to embed it in).
+/// - [`TooltipBorder::None`] renders no border chrome at all.
+///
+/// When `tooltip.styled_lines` is `Some`, each entry renders as one row of
+/// styled spans. Otherwise `tooltip.text` is split on `\n` and each line
+/// renders plain. Lines wider than the box or beyond the available
+/// content rows are truncated.
+///
+/// `layout.bounds.height` is the *total* box height, not a content-row
+/// count — see the contract note on [`TooltipMeasure`]. A caller that
+/// wants `N` content lines visible once a bordered box is drawn
+/// (`height >= 3`) must measure `N + 2`.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::event::Rect;
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// The whole-cell bounds [`paint`] actually paints into —
+    /// `layout.bounds` rounded to integer terminal columns/rows. A
+    /// backend registers *this* as the tooltip's zone, so a
+    /// structural-parity observer sees exactly the painted cells.
+    pub(crate) fn painted_bounds(layout: &TooltipLayout) -> Rect {
+        Rect::new(
+            layout.bounds.x.round(),
+            layout.bounds.y.round(),
+            layout.bounds.width.round(),
+            layout.bounds.height.round(),
+        )
+    }
+
+    fn style(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `tooltip` into `layout`'s painted bounds on `surface`, with
+    /// the border and optional title `chrome` requests. Per-tooltip
+    /// `fg`/`bg` overrides win over the theme's hover colours; the border
+    /// always uses [`Theme::hover_border`].
+    pub(crate) fn paint(
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        chrome: &TooltipChrome,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let painted = painted_bounds(layout);
+        let x = painted.x as u16;
+        let y = painted.y as u16;
+        let w = painted.width as u16;
+        let h = painted.height as u16;
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let fg = tooltip.fg.unwrap_or(theme.hover_fg);
+        let bg = tooltip.bg.unwrap_or(theme.hover_bg);
+        let text_style = style(fg, bg);
+        let border_style = style(theme.hover_border, bg);
+
+        // `Sides` never draws top/bottom, regardless of height. `Full`
+        // draws a closed box whenever there's room for both border rows
+        // and at least one content row; below that it falls back to the
+        // side bars `Sides` uses rather than rendering an empty box.
+        // `w >= 2` keeps the left and right corner columns distinct.
+        let has_horizontal_border =
+            matches!(chrome.border, TooltipBorder::Full) && h >= 3 && w >= 2;
+        let draw_side_bars = !matches!(chrome.border, TooltipBorder::None);
+        let content_row0: u16 = if has_horizontal_border { 1 } else { 0 };
+        let content_rows: u16 = if has_horizontal_border { h - 2 } else { h };
+        // Content starts one cell past the side border when one is drawn
+        // (border column + 1 pad), or one cell of padding when it isn't,
+        // and stops one column short of the right edge.
+        let text_col_offset: u16 = if draw_side_bars { 2 } else { 1 };
+        let text_cols = w.saturating_sub(text_col_offset + 1);
+
+        if has_horizontal_border {
+            paint_border_row(
+                surface,
+                (x, y, w),
+                true,
+                chrome.title.as_deref(),
+                border_style,
+                text_style,
+            );
+            paint_border_row(
+                surface,
+                (x, y + h - 1, w),
+                false,
+                None,
+                border_style,
+                text_style,
+            );
+        }
+
+        let paint_row_background = |surface: &mut dyn CellSurface, row: u16| {
+            surface.fill(Rect::new(x as f32, row as f32, w as f32, 1.0), text_style);
+            if draw_side_bars {
+                surface.put_char(x, row, '│', border_style);
+                surface.put_char(x + w - 1, row, '│', border_style);
+            }
+        };
+
+        if let Some(ref styled_lines) = tooltip.styled_lines {
+            for (i, styled) in styled_lines.iter().enumerate().take(content_rows as usize) {
+                let row = y + content_row0 + i as u16;
+                paint_row_background(surface, row);
+                let mut col: u16 = 0;
+                for span in &styled.spans {
+                    let span_style = style(span.fg.unwrap_or(fg), span.bg.unwrap_or(bg));
+                    col += surface.put_str_clipped(
+                        x + text_col_offset + col,
+                        row,
+                        &span.text,
+                        text_cols.saturating_sub(col),
+                        span_style,
+                    );
+                }
+            }
+            return;
+        }
+
+        for (i, text_line) in tooltip.text.lines().enumerate().take(content_rows as usize) {
+            let row = y + content_row0 + i as u16;
+            paint_row_background(surface, row);
+            surface.put_str_clipped(x + text_col_offset, row, text_line, text_cols, text_style);
+        }
+    }
+
+    /// One horizontal border row of a closed box at `(x, row)`, `w`
+    /// columns wide, with `title` — framed by a single space either side
+    /// — centred among the interior columns. A title that doesn't fit the
+    /// interior is dropped rather than clipped: a truncated title reads as
+    /// a rendering bug, plain dashes don't. An odd remainder puts the
+    /// title one column left of dead-centre, matching how the rest of
+    /// this crate centres odd remainders.
+    fn paint_border_row(
+        surface: &mut dyn CellSurface,
+        (x, row, w): (u16, u16, u16),
+        top: bool,
+        title: Option<&str>,
+        border_style: CellStyle,
+        title_style: CellStyle,
+    ) {
+        let (left, right) = if top { ('┌', '┐') } else { ('└', '┘') };
+        for col in 0..w {
+            let ch = if col == 0 {
+                left
+            } else if col == w - 1 {
+                right
+            } else {
+                '─'
+            };
+            surface.put_char(x + col, row, ch, border_style);
+        }
+
+        let interior = w.saturating_sub(2);
+        let Some(framed) = title.map(|t| format!(" {t} ")) else {
+            return;
+        };
+        let title_len = framed.chars().count() as u16;
+        if title_len > interior {
+            return;
+        }
+        let title_start = 1 + (interior - title_len) / 2;
+        surface.put_str_clipped(x + title_start, row, &framed, title_len, title_style);
+    }
+}
+
 // ── PaintSurface Phase 4 slice 4/8 ─────────────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
@@ -440,7 +789,7 @@ impl Tooltip {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
+    use super::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout, CARD_VPAD};
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
     use crate::theme::Theme;
@@ -506,7 +855,6 @@ pub(crate) mod native_surface_paint {
         // with the box's top edge — callers following the
         // `TooltipMeasure` contract size those two variants to exactly the
         // content rows they hold, with no border row to spare.
-        const CARD_VPAD: f32 = 4.0;
         let title = if matches!(chrome.border, TooltipBorder::Full) {
             chrome
                 .title
@@ -802,6 +1150,91 @@ mod tests {
         assert_eq!(layout.hit_test(0.0, 0.0, &t.id), TooltipHit::Empty);
     }
 
+    // ── Widget contract (`Primitive` + `Interactive`) ─────────────────
+
+    fn cell_ctx() -> crate::primitive::LayoutCtx {
+        crate::primitive::LayoutCtx {
+            line_height: 1.0,
+            char_width: 1.0,
+            nerd_fonts_enabled: false,
+        }
+    }
+
+    /// `Primitive::layout` keeps the host-placed rect as the box and
+    /// reports the preferred placement as the resolved one.
+    #[test]
+    fn primitive_layout_takes_the_rect_as_the_box() {
+        use crate::primitive::Primitive;
+        let mut tip = Tooltip::new(WidgetId::new("tip"), "hi");
+        tip.placement = TooltipPlacement::Left;
+        let rect = Rect::new(3.0, 4.0, 12.0, 3.0);
+        let layout = Primitive::layout(&tip, &cell_ctx(), rect);
+        assert_eq!(layout.bounds, rect);
+        assert_eq!(layout.resolved_placement, ResolvedPlacement::Left);
+        assert_eq!(Primitive::id(&tip), Some(&tip.id));
+    }
+
+    /// On a cell grid the natural box is the widest row plus border and
+    /// padding columns, and every row plus the two border rows.
+    #[test]
+    fn primitive_measure_in_cells_wraps_the_widest_row_in_the_full_box() {
+        use crate::primitive::{Primitive, Size};
+        let tip = Tooltip::new(WidgetId::new("tip"), "short\na longer line");
+        let size = Primitive::measure(&tip, &cell_ctx(), Size::new(80.0, 24.0));
+        assert_eq!(size.width, Some("a longer line".len() as f32 + 3.0));
+        assert_eq!(size.height, Some(4.0));
+    }
+
+    /// Styled lines measure by the summed width of their spans.
+    #[test]
+    fn primitive_measure_counts_styled_spans() {
+        use crate::primitive::{Primitive, Size};
+        use crate::types::StyledSpan;
+        let mut tip = Tooltip::new(WidgetId::new("tip"), "");
+        tip.styled_lines = Some(vec![StyledText {
+            spans: vec![StyledSpan::plain("fn "), StyledSpan::plain("foo()")],
+        }]);
+        let size = Primitive::measure(&tip, &cell_ctx(), Size::new(80.0, 24.0));
+        assert_eq!(size.width, Some(8.0 + 3.0));
+        assert_eq!(size.height, Some(3.0));
+    }
+
+    /// On a pixel surface the natural box pads the rows by one character
+    /// advance either side and by the card inset above and below.
+    #[test]
+    fn primitive_measure_in_pixels_pads_by_char_width_and_card_inset() {
+        use crate::primitive::{LayoutCtx, Primitive, Size};
+        let tip = Tooltip::new(WidgetId::new("tip"), "abcd\nef");
+        let ctx = LayoutCtx {
+            line_height: 16.0,
+            char_width: 8.0,
+            nerd_fonts_enabled: false,
+        };
+        let size = Primitive::measure(&tip, &ctx, Size::new(800.0, 600.0));
+        assert_eq!(size.width, Some((4.0 + 2.0) * 8.0));
+        assert_eq!(size.height, Some(2.0 * 16.0 + 2.0 * CARD_VPAD));
+    }
+
+    /// A tooltip takes no focus and ignores every routed event.
+    #[test]
+    fn tooltip_is_non_interactive() {
+        use crate::interactive::{FocusSpec, Interactive};
+        let tip = Tooltip::new(WidgetId::new("tip"), "hi");
+        assert_eq!(Interactive::focus(&tip), FocusSpec::None);
+    }
+
+    /// `Primitive::capture` round-trips through the tooltip's own
+    /// `OwnedContent` variant.
+    #[test]
+    fn primitive_capture_is_the_tooltip_content() {
+        use crate::primitive::Primitive;
+        let tip = Tooltip::new(WidgetId::new("tip"), "hi");
+        match Primitive::capture(&tip) {
+            crate::frame::OwnedContent::Tooltip(captured) => assert_eq!(captured, tip),
+            other => panic!("expected OwnedContent::Tooltip, got {other:?}"),
+        }
+    }
+
     // ── Pixel-path card paint (`native_surface_paint::paint`) ──────────
 
     #[cfg(any(
@@ -825,6 +1258,10 @@ mod tests {
         struct RecordingSurface {
             /// `(rect, text, bold)` for every drawn run.
             runs: Vec<(Rect, String, bool)>,
+            /// Every rounded-rect stroke (a `Full` card's border).
+            rounded_strokes: Vec<Rect>,
+            /// Every straight line (a `Sides` card's bars).
+            lines: Vec<(Point, Point)>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -847,11 +1284,12 @@ mod tests {
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
             fn surface_stroke_rounded_rect(
                 &mut self,
-                _rect: Rect,
+                rect: Rect,
                 _radius: f32,
                 _color: Color,
                 _stroke_width: f32,
             ) {
+                self.rounded_strokes.push(rect);
             }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, _color: Color) {
                 self.runs.push((rect, text.to_string(), false));
@@ -871,11 +1309,12 @@ mod tests {
             }
             fn surface_draw_line(
                 &mut self,
-                _from: Point,
-                _to: Point,
+                from: Point,
+                to: Point,
                 _color: Color,
                 _stroke_width: f32,
             ) {
+                self.lines.push((from, to));
             }
             fn surface_push_clip(&mut self, _rect: Rect) {}
             fn surface_pop_clip(&mut self) {}
@@ -1049,6 +1488,437 @@ mod tests {
                 );
                 assert_eq!(surface.runs[0].1, "Body text");
             }
+        }
+
+        fn paint_with(border: TooltipBorder) -> RecordingSurface {
+            let tooltip = Tooltip::new(WidgetId::new("tip"), "Body text");
+            let layout = TooltipLayout {
+                bounds: Rect::new(10.0, 10.0, 120.0, 30.0),
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint(
+                &tooltip,
+                &layout,
+                &TooltipChrome::new(border),
+                16.0,
+                8.0,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+            );
+            surface
+        }
+
+        /// `Full` strokes one closed rounded card around the bounds and
+        /// draws no loose side bars.
+        #[test]
+        fn full_border_strokes_one_closed_card() {
+            let surface = paint_with(TooltipBorder::Full);
+            assert_eq!(
+                surface.rounded_strokes,
+                vec![Rect::new(10.0, 10.0, 120.0, 30.0)]
+            );
+            assert!(surface.lines.is_empty());
+        }
+
+        /// `Sides` draws exactly the left and right bars, full height,
+        /// and no closed card.
+        #[test]
+        fn sides_border_draws_only_the_left_and_right_bars() {
+            let surface = paint_with(TooltipBorder::Sides);
+            assert!(surface.rounded_strokes.is_empty());
+            assert_eq!(
+                surface.lines,
+                vec![
+                    (Point::new(10.0, 10.0), Point::new(10.0, 40.0)),
+                    (Point::new(130.0, 10.0), Point::new(130.0, 40.0)),
+                ]
+            );
+        }
+
+        /// `None` strokes nothing at all but still paints the text.
+        #[test]
+        fn none_border_strokes_nothing() {
+            let surface = paint_with(TooltipBorder::None);
+            assert!(surface.rounded_strokes.is_empty());
+            assert!(surface.lines.is_empty());
+            assert_eq!(surface.runs.len(), 1);
+        }
+
+        /// `Primitive::paint` is the shared painter with the default
+        /// chrome, the surface's line height as the row pitch and its
+        /// character advance as the padding.
+        #[test]
+        fn primitive_paint_is_the_default_chrome_card() {
+            use crate::primitive::{LayoutCtx, Primitive};
+            let tooltip = Tooltip::new(WidgetId::new("tip"), "Body text");
+            let ctx = LayoutCtx {
+                line_height: 16.0,
+                char_width: 8.0,
+                nerd_fonts_enabled: false,
+            };
+            let layout = Primitive::layout(&tooltip, &ctx, Rect::new(10.0, 10.0, 120.0, 30.0));
+            let mut via_primitive = RecordingSurface::default();
+            Primitive::paint(
+                &tooltip,
+                &layout,
+                &mut via_primitive,
+                &Theme::default(),
+                &Style::default(),
+            );
+            let direct = paint_with(TooltipBorder::Full);
+            assert_eq!(via_primitive.runs, direct.runs);
+            assert_eq!(via_primitive.rounded_strokes, direct.rounded_strokes);
+            assert_eq!(via_primitive.lines, direct.lines);
+        }
+    }
+
+    // ── Cell-path paint (`cell_paint::paint`) ───────────────────────────
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::*;
+        use crate::event::Rect as QRect;
+        use crate::theme::Theme;
+        use crate::tui::{draw_tooltip, draw_tooltip_with_chrome};
+        use crate::types::StyledSpan;
+        use cell_paint::painted_bounds;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        fn make_layout(x: f32, y: f32, w: f32, h: f32) -> TooltipLayout {
+            TooltipLayout {
+                bounds: QRect::new(x, y, w, h),
+                resolved_placement: ResolvedPlacement::Bottom,
+            }
+        }
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+        }
+
+        /// The zone a backend registers for a
+        /// tooltip must match the cells `draw_tooltip` actually painted, not
+        /// the raw float layout bounds — otherwise a structural-parity
+        /// observer sees a surface offset from what's really on screen.
+        #[test]
+        fn painted_bounds_rounds_like_draw_tooltip_does() {
+            let layout = make_layout(0.4, 1.6, 9.6, 2.5);
+            let painted = painted_bounds(&layout);
+            assert_eq!(painted, QRect::new(0.0, 2.0, 10.0, 3.0));
+        }
+
+        #[test]
+        fn paints_side_borders_and_plain_text() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+            let tt = Tooltip {
+                id: WidgetId::new("hover"),
+                text: "hello".into(),
+                styled_lines: None,
+                placement: TooltipPlacement::Bottom,
+                fg: None,
+                bg: None,
+            };
+            let layout = make_layout(0.0, 0.0, 10.0, 1.0);
+            draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+
+            // Borders at col 0 and col 9.
+            assert_eq!(cell_char(&buf, 0, 0), '│');
+            assert_eq!(cell_char(&buf, 9, 0), '│');
+            // Text starts at col 2.
+            let row: String = (2..7).map(|x| cell_char(&buf, x, 0)).collect();
+            assert_eq!(row, "hello");
+        }
+
+        /// Once there's room for both border rows (`height >= 3`),
+        /// the box must be closed on every side — not just left/right — so a
+        /// structural-parity observer sees the same chrome shape GTK has
+        /// always drawn.
+        #[test]
+        fn paints_a_full_box_when_height_allows_it() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+            let tt = Tooltip {
+                id: WidgetId::new("hover"),
+                text: "hello".into(),
+                styled_lines: None,
+                placement: TooltipPlacement::Bottom,
+                fg: None,
+                bg: None,
+            };
+            let layout = make_layout(0.0, 0.0, 10.0, 3.0);
+            draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+
+            // Top row: corners + a solid horizontal rule.
+            assert_eq!(cell_char(&buf, 0, 0), '┌');
+            assert_eq!(cell_char(&buf, 9, 0), '┐');
+            assert_eq!(cell_char(&buf, 4, 0), '─');
+            // Bottom row: corners + a solid horizontal rule.
+            assert_eq!(cell_char(&buf, 0, 2), '└');
+            assert_eq!(cell_char(&buf, 9, 2), '┘');
+            assert_eq!(cell_char(&buf, 4, 2), '─');
+            // Content moved down one row, side borders unchanged.
+            assert_eq!(cell_char(&buf, 0, 1), '│');
+            assert_eq!(cell_char(&buf, 9, 1), '│');
+            let row: String = (2..7).map(|x| cell_char(&buf, x, 1)).collect();
+            assert_eq!(row, "hello");
+        }
+
+        #[test]
+        fn styled_lines_paint_each_row() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+            let tt = Tooltip {
+                id: WidgetId::new("sig"),
+                text: String::new(),
+                styled_lines: Some(vec![
+                    StyledText {
+                        spans: vec![StyledSpan::plain("line1")],
+                    },
+                    StyledText {
+                        spans: vec![StyledSpan::plain("line2")],
+                    },
+                ]),
+                placement: TooltipPlacement::Bottom,
+                fg: None,
+                bg: None,
+            };
+            let layout = make_layout(0.0, 0.0, 12.0, 2.0);
+            draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+
+            let r0: String = (2..7).map(|x| cell_char(&buf, x, 0)).collect();
+            let r1: String = (2..7).map(|x| cell_char(&buf, x, 1)).collect();
+            assert_eq!(r0, "line1");
+            assert_eq!(r1, "line2");
+        }
+
+        #[test]
+        fn per_tooltip_bg_overrides_theme() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+            let tt = Tooltip {
+                id: WidgetId::new("hover"),
+                text: "x".into(),
+                styled_lines: None,
+                placement: TooltipPlacement::Bottom,
+                fg: None,
+                bg: Some(Color::rgb(100, 0, 0)),
+            };
+            let layout = make_layout(0.0, 0.0, 10.0, 1.0);
+            draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+            // Cell 2 should have bg = (100, 0, 0).
+            let bg = buf[(2u16, 0u16)].bg;
+            assert_eq!(bg, ratatui::style::Color::Rgb(100, 0, 0));
+        }
+
+        #[test]
+        fn zero_size_is_a_no_op() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+            let tt = Tooltip {
+                id: WidgetId::new("hover"),
+                text: "x".into(),
+                styled_lines: None,
+                placement: TooltipPlacement::Bottom,
+                fg: None,
+                bg: None,
+            };
+            let layout = make_layout(0.0, 0.0, 0.0, 1.0);
+            draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+            assert_eq!(cell_char(&buf, 0, 0), ' ');
+        }
+
+        fn tooltip_with() -> Tooltip {
+            Tooltip::new(WidgetId::new("hover"), "hi")
+        }
+
+        /// `make_layout` paired with the [`TooltipChrome`] a test
+        /// wants — the in-crate equivalent of `tooltip.layout(...)` plus a
+        /// `TooltipChrome::new(..)` sidecar with `title` set directly.
+        fn layout_with(
+            w: f32,
+            h: f32,
+            border: TooltipBorder,
+            title: Option<&str>,
+        ) -> (TooltipLayout, TooltipChrome) {
+            let mut chrome = TooltipChrome::new(border);
+            chrome.title = title.map(str::to_string);
+            (make_layout(0.0, 0.0, w, h), chrome)
+        }
+
+        /// `Sides` must never draw top/bottom rules, even at a height that
+        /// would give `Full` plenty of room for a closed box — the whole
+        /// point of separating the two is that a consumer can *ask* for the
+        /// narrow look regardless of how tall its content is.
+        #[test]
+        fn sides_border_never_closes_even_when_height_allows_it() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 8));
+            // 5 lines so every one of the 5 rows the layout reserves actually
+            // gets painted (a row with no corresponding text line is left
+            // untouched by `draw_tooltip`, which would make an empty row's
+            // "no border here" look identical to a genuinely-suppressed one).
+            let mut tt = tooltip_with();
+            tt.text = "hi\nhi\nhi\nhi\nhi".into();
+            let (layout, chrome) = layout_with(10.0, 5.0, TooltipBorder::Sides, None);
+            draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
+
+            for row in 0..5u16 {
+                assert_eq!(
+                    cell_char(&buf, 0, row),
+                    '│',
+                    "row {row}: Sides must paint the left bar on every row"
+                );
+                assert_eq!(
+                    cell_char(&buf, 9, row),
+                    '│',
+                    "row {row}: Sides must paint the right bar on every row"
+                );
+            }
+            // No corners anywhere — a top/bottom rule would introduce one.
+            for row in 0..5u16 {
+                for col in 0..10u16 {
+                    let ch = cell_char(&buf, col, row);
+                    assert!(
+                        !['┌', '┐', '└', '┘', '─'].contains(&ch),
+                        "Sides must never paint box-drawing corner/rule glyphs \
+                         (found {ch:?} at ({col}, {row}))"
+                    );
+                }
+            }
+        }
+
+        /// `None` paints no border chrome at all — not even the side bars
+        /// `Sides` (and `Full`'s too-short fallback) always paint.
+        #[test]
+        fn none_border_paints_no_chrome() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 8));
+            let tt = tooltip_with();
+            let (layout, chrome) = layout_with(10.0, 3.0, TooltipBorder::None, None);
+            draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
+
+            for row in 0..3u16 {
+                for col in 0..10u16 {
+                    let ch = cell_char(&buf, col, row);
+                    assert!(
+                        !['┌', '┐', '└', '┘', '─', '│'].contains(&ch),
+                        "None must paint no border glyph at all (found {ch:?} at ({col}, {row}))"
+                    );
+                }
+            }
+            // Content starts one column earlier than `Full`/`Sides` (padding
+            // only, no border column to clear first).
+            let row: String = (1..3).map(|x| cell_char(&buf, x, 0)).collect();
+            assert_eq!(row, "hi");
+        }
+
+        /// An optional title is centred into the top border row
+        /// when `Full` actually closes the box.
+        #[test]
+        fn full_border_centers_title_in_top_row() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+            let tt = tooltip_with();
+            let (layout, chrome) = layout_with(12.0, 3.0, TooltipBorder::default(), Some("Hi"));
+            draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
+
+            // Interior columns are 1..=10 (corners at 0 and 11); " Hi " (4
+            // chars) centred among 10 interior columns starts at col 1 + 3 = 4.
+            let top_row: String = (0..12).map(|x| cell_char(&buf, x, 0)).collect();
+            assert_eq!(top_row, "┌─── Hi ───┐");
+            // Bottom row carries no title — plain rule.
+            let bottom_row: String = (0..12).map(|x| cell_char(&buf, x, 2)).collect();
+            assert_eq!(bottom_row, "└──────────┘");
+        }
+
+        /// A title that doesn't fit the interior width is dropped rather than
+        /// clipped mid-glyph.
+        #[test]
+        fn oversized_title_is_dropped_not_truncated() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+            let tt = tooltip_with();
+            let (layout, chrome) = layout_with(
+                12.0,
+                3.0,
+                TooltipBorder::default(),
+                Some("This title is far too long for the box"),
+            );
+            draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
+
+            let top_row: String = (0..12).map(|x| cell_char(&buf, x, 0)).collect();
+            assert_eq!(
+                top_row, "┌──────────┐",
+                "an oversized title must fall back to a plain rule, not a clipped label"
+            );
+        }
+
+        /// `title` has no top rule to embed into on `Sides` or `None`, so it
+        /// must not leak into the content area either.
+        #[test]
+        fn title_is_ignored_when_border_is_not_full() {
+            for border in [TooltipBorder::Sides, TooltipBorder::None] {
+                let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+                let tt = tooltip_with();
+                let (layout, chrome) = layout_with(12.0, 3.0, border, Some("Hi"));
+                draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
+
+                let screen: String = (0..3)
+                    .flat_map(|row| (0..12).map(move |col| (col, row)))
+                    .map(|(col, row)| cell_char(&buf, col, row))
+                    .collect();
+                assert!(
+                    !screen.contains("Hi"),
+                    "{border:?}: title must not appear anywhere when there's no top rule to \
+                     embed it in (screen contents: {screen:?})"
+                );
+            }
+        }
+
+        /// `Full`'s degrade-to-`Sides` fallback (too short for a box) must
+        /// also drop the title — there's no top row to put it in once the
+        /// box doesn't close.
+        #[test]
+        fn full_border_drops_title_when_too_short_to_close() {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+            let tt = tooltip_with();
+            let (layout, chrome) = layout_with(12.0, 1.0, TooltipBorder::default(), Some("Hi"));
+            draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
+
+            assert_eq!(cell_char(&buf, 0, 0), '│');
+            let row: String = (0..12).map(|x| cell_char(&buf, x, 0)).collect();
+            assert!(
+                !row.contains("Hi"),
+                "a too-short box has no top row to embed the title in: {row:?}"
+            );
+        }
+
+        /// `Primitive::paint_cells` paints exactly what the default-chrome
+        /// entry point paints.
+        #[test]
+        fn primitive_paint_cells_is_the_default_chrome_box() {
+            use crate::primitive::Primitive;
+            let tt = tooltip_with();
+            let layout = make_layout(1.0, 1.0, 10.0, 3.0);
+            let mut via_primitive = Buffer::empty(Rect::new(0, 0, 20, 6));
+            Primitive::paint_cells(&tt, &layout, &mut via_primitive, &Theme::default());
+            let mut direct = Buffer::empty(Rect::new(0, 0, 20, 6));
+            draw_tooltip(&mut direct, &tt, &layout, &Theme::default());
+            assert_eq!(via_primitive, direct);
+        }
+
+        /// A box sized by `Primitive::measure` shows every content row
+        /// inside a closed border.
+        #[test]
+        fn measured_box_shows_every_row() {
+            use crate::primitive::{Primitive, Size};
+            let tt = Tooltip::new(WidgetId::new("tip"), "one\ntwo\nthree");
+            let size = Primitive::measure(&tt, &super::cell_ctx(), Size::new(40.0, 10.0));
+            let rect = QRect::new(0.0, 0.0, size.width.unwrap(), size.height.unwrap());
+            let layout = Primitive::layout(&tt, &super::cell_ctx(), rect);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+            Primitive::paint_cells(&tt, &layout, &mut buf, &Theme::default());
+
+            let row = |y: u16| -> String { (0..8).map(|x| cell_char(&buf, x, y)).collect() };
+            assert_eq!(row(0), "┌──────┐");
+            assert_eq!(row(1), "│ one  │");
+            assert_eq!(row(2), "│ two  │");
+            assert_eq!(row(3), "│ three│");
+            assert_eq!(row(4), "└──────┘");
         }
     }
 }
