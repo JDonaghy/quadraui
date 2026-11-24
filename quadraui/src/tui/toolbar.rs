@@ -73,75 +73,9 @@ pub(crate) fn tui_text_row(valign: ToolbarVAlign, area: Rect) -> u16 {
     }
 }
 
-/// Compute the TUI cell-unit width of a single toolbar item.
-///
-/// Action layout:
-/// - icon-only (label empty): `[ {icon} ]` = 4 + icon_w cells
-/// - normal: `[ {icon }{label}{ (key)} ]` = 4 + icon_block + label_w + hint_block
-///
-/// Separator: 2 cells (` │`). Label: text width (double-width aware).
-pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
-    match btn {
-        ToolbarButton::Action {
-            label,
-            icon,
-            key_hint,
-            ..
-        } => {
-            let label_w = display_width(label);
-            let icon_w = icon.as_ref().map(|s| display_width(s)).unwrap_or(0);
-            // Icon-only: drop the trailing space after the icon — pack
-            // glyph snug between the brackets.
-            let icon_block = if icon.is_some() && label_w > 0 {
-                icon_w + 1
-            } else {
-                icon_w
-            };
-            let hint_w = key_hint
-                .as_ref()
-                .map(|s| display_width(s) + 3) // " (xxx)"
-                .unwrap_or(0);
-            // "[ " + icon_block + label + hint_w + " ]"
-            (4 + icon_block + label_w + hint_w) as f32
-        }
-        ToolbarButton::Separator => 2.0,
-        ToolbarButton::Label { text, .. } => display_width(text) as f32,
-        // Never consulted by `tui_toolbar_layout` (`Spacer`'s slot is
-        // whatever room is left over) — zero here so a caller that
-        // measures one directly gets an inert result.
-        ToolbarButton::Spacer => 0.0,
-        // Reserves exactly as much room as `n` standalone, fully
-        // bracketed children would need, plus `n + 1` 1-cell gaps —
-        // matching `layout_group_children`'s even split of
-        // `measure(group) - sum(measure(child))`. `draw_group_horizontal`
-        // then paints only one shared `[`/`]` pair and a `│` divider
-        // into those gaps rather than per-child brackets, so each
-        // child's own slot carries a little extra blank padding where
-        // its own `[ `/` ]` would otherwise have gone — the same
-        // trade `measure_button`'s `Group` arm above makes for the
-        // pixel backends (each child still reserves its own full
-        // width; only the *painted* chrome is shared).
-        ToolbarButton::Group { items, .. } => {
-            let child_sum: f32 = items.iter().map(tui_item_width).sum();
-            child_sum + items.len() as f32 + 1.0
-        }
-        // The baseline (un-grown) cell width — `width`'s own minimum.
-        // `distribute_flex_width` grows a `Flex` field past this once
-        // every other item's width is known.
-        ToolbarButton::Field { width, .. } => width.min_width().max(0.0),
-        ToolbarButton::MenuButton { label, icon, .. } => {
-            let label_w = display_width(label);
-            let icon_w = icon.as_ref().map(|s| display_width(s)).unwrap_or(0);
-            let icon_block = if icon.is_some() && label_w > 0 {
-                icon_w + 1
-            } else {
-                icon_w
-            };
-            // "[ " + icon_block + label + " ▾" + " ]"
-            (4 + icon_block + label_w + 2) as f32
-        }
-    }
-}
+/// The cell-unit width of a single toolbar item, shared with every
+/// other cell-grid caller — see [`crate::primitives::toolbar::cell_item_width`].
+pub(crate) use crate::primitives::toolbar::cell_item_width as tui_item_width;
 
 /// How a horizontal [`ToolbarButton::Group`] degrades when the bar is too
 /// narrow to paint it at full size — tried in this order by

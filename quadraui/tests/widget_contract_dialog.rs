@@ -159,7 +159,7 @@ fn surface_widget_dialog_paints_its_chrome_title_body_and_buttons() {
         .unwrap_or_default();
     assert_eq!(row[title.x as usize - 3], '╭', "{}", driver.screen());
     assert!(
-        row.iter().any(|&c| c == '╮'),
+        row.contains(&'╮'),
         "the top rule must close: {}",
         driver.screen()
     );
