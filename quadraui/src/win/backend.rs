@@ -48,22 +48,21 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
 use crate::primitives::switch::{Switch, SwitchLayout};
-#[cfg(target_os = "windows")]
-use crate::primitives::toolbar::ToolbarButton;
-// `TabBarHits` is `#[deprecated]` — the `Backend` trait still returns it
-// alongside newer `TabBarLayout`-returning counterparts. The import needs
-// the same allow every use site below does.
-#[allow(deprecated)]
-use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::{TextDisplayLayout, TextDisplayLineMeasure};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
+#[cfg(target_os = "windows")]
+use crate::primitives::toolbar::ToolbarButton;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar, TabBar,
-    TabBarLayout, TabChrome, Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
+    Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar,
+    Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
 };
+// `TabBar` is only named by `#[cfg(test)]` code below — a tab strip
+// paints through its widget contract, not a method on this backend.
+#[cfg(test)]
+use crate::TabBar;
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
 // `AcceleratorScope` is only referenced by `#[cfg(test)]` code below.
@@ -3707,294 +3706,6 @@ impl Backend for WinBackend {
         layout
     }
 
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarHits {
-        // Icon-less bars are the empty-sidecar case of the icon path (see
-        // `crate::Backend::draw_tab_bar_icons`'s doc) — one paint loop to
-        // keep in sync, same as `GtkBackend`/`TuiBackend`.
-        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
-    }
-
-    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar`].
-    fn draw_tab_bar_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
-    }
-
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
-    ///
-    /// `TabBar` is `ChromePrimitive::TabBar` — see
-    /// [`Self::draw_tree`]'s note for the font-swap shape. The
-    /// no-paint [`Self::tab_bar_layout_icons`] twin swaps the same way,
-    /// so hit-testing agrees with what this paints.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_icons(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarHits {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::tab_bar::draw_tab_bar_icons(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                icons,
-                hovered_close_tab,
-                &self.current_theme,
-                &self.current_style,
-            );
-        }
-        // No surface/DWrite yet — compute the real layout via the same
-        // nominal measurer `tab_bar_layout_icons` falls back to, and
-        // paint nothing. `hovered_close_tab` only affects
-        // painting, so it's unused on this path.
-        let _ = hovered_close_tab;
-        super::tab_bar::win_tab_bar_layout_icons(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-            icons,
-            &self.current_style,
-        )
-    }
-
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture. `TabBarLayout`-returning
-    /// counterpart to [`Self::draw_tab_bar_icons`] above.
-    fn draw_tab_bar_icons_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::tab_bar::draw_tab_bar_icons_layout(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                icons,
-                hovered_close_tab,
-                &self.current_theme,
-                &self.current_style,
-            );
-        }
-        // See `draw_tab_bar_icons`'s doc.
-        let _ = hovered_close_tab;
-        super::tab_bar::win_tab_bar_native_layout_icons(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-            icons,
-            &self.current_style,
-        )
-    }
-
-    /// [`Self::draw_tab_bar_icons`], but honouring an optional
-    /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
-    /// close/dirty mark — `glyphs: None` reproduces
-    /// [`Self::draw_tab_bar_icons`] exactly. `chrome.active_frame` is
-    /// unused: the Windows rasteriser has no bracket-chrome support (see
-    /// `super::tab_bar`'s module doc), matching the trait default's own
-    /// posture of ignoring that knob on backends without it.
-    /// `chrome.focused_index` *is* honoured: it paints a focus-visible
-    /// ring on the named tab — see
-    /// [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s "Focus-visible
-    /// ring" doc for the geometry.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_with_chrome_and_glyphs(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-        glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
-    ) -> TabBarHits {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::tab_bar::draw_tab_bar_icons_with_glyphs(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                &[],
-                hovered_close_tab,
-                &self.current_theme,
-                &self.current_style,
-                glyphs,
-                self.nerd_fonts_enabled,
-                None,
-                None,
-                chrome.focused_index,
-            );
-        }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (chrome, glyphs);
-        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
-    }
-
-    /// Trait-level entry point the gallery and `quadraui-binding-core`'s
-    /// render path actually call (`draw_tab_bar_with_chrome_layout`'s
-    /// `TabBarHits`-returning sibling) — delegates to
-    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`] with `glyphs: None`
-    /// so `chrome.focused_index`'s ring paints from this entry point
-    /// too, not only from the `_and_glyphs` spelling.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_with_chrome(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-    ) -> TabBarHits {
-        self.draw_tab_bar_with_chrome_and_glyphs(rect, bar, hovered_close_tab, chrome, None)
-    }
-
-    /// `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar_with_chrome`] — the twin
-    /// `quadraui-binding-core`'s `render.rs` actually calls
-    /// (`TabChrome::default().with_focused_index(tabs.focused_index)`).
-    /// Paints through [`super::tab_bar::draw_tab_bar_icons_layout_with_state`]
-    /// directly, honouring `chrome.focused_index`, even though the ring
-    /// it paints plays no part in the returned [`TabBarLayout`].
-    fn draw_tab_bar_with_chrome_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-    ) -> TabBarLayout {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::tab_bar::draw_tab_bar_icons_layout_with_state(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                &[],
-                hovered_close_tab,
-                &self.current_theme,
-                &self.current_style,
-                None,
-                None,
-                chrome.focused_index,
-            );
-        }
-        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
-        #[cfg(not(target_os = "windows"))]
-        let _ = chrome;
-        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
-    }
-
-    /// [`Self::draw_tab_bar_icons`], plus `hovered_tab`/`pressed_tab`
-    /// indices naming the whole tab (not its close glyph) the mouse is
-    /// over/held down on. Paints a tinted background behind the hovered
-    /// or pressed tab — see
-    /// [`super::tab_bar::paint_tab_bar_icons_from_layout`]'s doc for the
-    /// `Theme::list_hover_bg`/`list_pressed_bg` derivation — rather than
-    /// only tinting the close glyph the way [`Self::draw_tab_bar`]
-    /// already does.
-    ///
-    /// Calls [`super::tab_bar::draw_tab_bar_icons_with_glyphs`] directly
-    /// (icon-less, glyph-less) instead of widening
-    /// [`Self::draw_tab_bar_icons`]'s own signature — the same choice
-    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`] above already makes
-    /// to reach the same painter.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        hovered_tab: Option<usize>,
-        pressed_tab: Option<usize>,
-    ) -> TabBarHits {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::tab_bar::draw_tab_bar_icons_with_glyphs(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                &[],
-                hovered_close_tab,
-                &self.current_theme,
-                &self.current_style,
-                None,
-                self.nerd_fonts_enabled,
-                hovered_tab,
-                pressed_tab,
-                None,
-            );
-        }
-        // No surface/DWrite yet — `hovered_tab`/`pressed_tab` only
-        // affect painting, so they're unused on this layout-only path.
-        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
-        let _ = (hovered_tab, pressed_tab);
-        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
-    }
-
-    /// `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar_with_state`] — the twin the
-    /// `quadraui-binding-core` paint path can actually reach, since it
-    /// calls `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`.
-    /// Same hover/pressed tint as [`Self::draw_tab_bar_with_state`]; only
-    /// the returned type differs.
-    fn draw_tab_bar_layout_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        hovered_tab: Option<usize>,
-        pressed_tab: Option<usize>,
-    ) -> TabBarLayout {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::tab_bar::draw_tab_bar_icons_layout_with_state(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                &[],
-                hovered_close_tab,
-                &self.current_theme,
-                &self.current_style,
-                hovered_tab,
-                pressed_tab,
-                None,
-            );
-        }
-        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
-        let _ = (hovered_tab, pressed_tab);
-        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
-    }
-
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
@@ -4056,79 +3767,6 @@ impl Backend for WinBackend {
             },
             rect,
             bar,
-        )
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
-        self.tab_bar_layout_icons(rect, bar, &[])
-    }
-
-    /// `TabBarLayout`-returning counterpart to [`Self::tab_bar_layout`].
-    fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
-        self.resolve_tab_bar_layout_icons(rect, bar, &[])
-    }
-
-    /// See [`Self::status_bar_layout`]'s doc for why this only needs
-    /// `self.dwrite`; see that method's doc for why this prefers
-    /// `chrome_dwrite` — must agree with [`Self::draw_tab_bar_icons`]'s
-    /// paint font.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_icons(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> TabBarHits {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tab_bar::win_tab_bar_layout_icons(
-                dwrite,
-                rect,
-                bar,
-                icons,
-                &self.current_style,
-            );
-        }
-        super::tab_bar::win_tab_bar_layout_icons(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-            icons,
-            &self.current_style,
-        )
-    }
-
-    /// See [`Self::status_bar_layout`]'s doc for why this only needs
-    /// `self.dwrite`. `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout_icons`] above; see that method's doc for
-    /// why this prefers `chrome_dwrite`.
-    fn resolve_tab_bar_layout_icons(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> TabBarLayout {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tab_bar::win_tab_bar_native_layout_icons(
-                dwrite,
-                rect,
-                bar,
-                icons,
-                &self.current_style,
-            );
-        }
-        super::tab_bar::win_tab_bar_native_layout_icons(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-            icons,
-            &self.current_style,
         )
     }
 
@@ -9741,7 +9379,7 @@ mod tests {
         );
     }
 
-    /// `paint_tab_bar_icons_from_layout` must read the live theme from
+    /// The tab strip's painter must read the live theme from
     /// `WinBackend::current_theme` rather than building its own
     /// `Theme::default()`.
     #[cfg(target_os = "windows")]
@@ -9771,7 +9409,6 @@ mod tests {
             ..Theme::default()
         });
 
-        #[allow(deprecated)]
         let tab_bar = TabBar {
             id: WidgetId::new("tab-bar"),
             tabs: Vec::new(),
@@ -9785,8 +9422,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        #[allow(deprecated)]
-        let _ = backend.draw_tab_bar(rect, &tab_bar, None);
+        crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &tab_bar, &());
         backend.end_frame();
 
         let px = surface.pixel_at(W / 2, H / 2);
@@ -9794,162 +9430,6 @@ mod tests {
             (px.r, px.g, px.b),
             (custom_bg.r, custom_bg.g, custom_bg.b),
             "tab bar background must reflect the live theme, not `Theme::default()`",
-        );
-    }
-
-    /// Two-tab fixture for the `draw_tab_bar_with_state` hover/pressed
-    /// tests below — tab 0 is active (so its resting fill is
-    /// `tab_active_bg`), tab 1 is inactive (`tab_bar_bg`, the same colour
-    /// as the surrounding strip), which is what makes a hover/pressed
-    /// tint on tab 1 visible against it.
-    #[cfg(target_os = "windows")]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn two_tab_bar() -> TabBar {
-        TabBar {
-            id: WidgetId::new("tabs"),
-            tabs: vec![
-                crate::primitives::tab_bar::TabItem {
-                    label: "main.rs".into(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: true,
-                },
-                crate::primitives::tab_bar::TabItem {
-                    label: "lib.rs".into(),
-                    is_active: false,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: true,
-                },
-            ],
-            scroll_offset: 0,
-            right_segments: Vec::new(),
-            active_accent: None,
-            show_tab_close: true,
-            compact: false,
-            ..Default::default()
-        }
-    }
-
-    /// Paints [`two_tab_bar`] through `WinBackend::draw_tab_bar_with_state`
-    /// into a fresh [`HeadlessSurface`], returning the surface (for pixel
-    /// probing) alongside the painted [`TabBarHits`] (for slot geometry).
-    #[cfg(target_os = "windows")]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn paint_two_tab_bar_with_state(
-        hovered_tab: Option<usize>,
-        pressed_tab: Option<usize>,
-    ) -> (crate::win::testing::HeadlessSurface, TabBarHits) {
-        use crate::win::testing::HeadlessSurface;
-
-        const W: u32 = 300;
-        const H: u32 = 30;
-
-        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
-        let mut backend = WinBackend::new();
-        backend
-            .attach_headless(surface.target().clone(), W, H)
-            .expect("attach headless surface");
-
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let hits =
-            backend.draw_tab_bar_with_state(rect, &two_tab_bar(), None, hovered_tab, pressed_tab);
-        backend.end_frame();
-        (surface, hits)
-    }
-
-    /// `MouseMoved` over an inactive tab (the issue's acceptance scenario)
-    /// tints its whole background, not only the close glyph —
-    /// `draw_tab_bar_with_state` with `hovered_tab: None` leaves it a flat
-    /// `tab_bar_bg`.
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
-    fn hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
-        use crate::theme::Theme;
-
-        let theme = Theme::default();
-        let (_, hits) = paint_two_tab_bar_with_state(None, None);
-        let (start, end) = hits.slot_positions[1];
-        assert!(end > start, "second tab slot must have non-zero width");
-        let probe_x = (start + 2.0) as u32;
-        let probe_y = 15;
-
-        let (resting, _) = paint_two_tab_bar_with_state(None, None);
-        let px = resting.pixel_at(probe_x, probe_y);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
-            "with no hovered_tab, tab 1's background must stay tab_bar_bg",
-        );
-
-        let (hovered, _) = paint_two_tab_bar_with_state(Some(1), None);
-        let px = hovered.pixel_at(probe_x, probe_y);
-        let expected = theme.list_hover_bg(theme.tab_bar_bg);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (expected.r, expected.g, expected.b),
-            "hovered_tab == Some(1) must tint tab 1's background toward list_hover_bg",
-        );
-    }
-
-    /// `pressed_tab` tints deeper than `hovered_tab` — `Theme::list_pressed_bg`
-    /// is a higher-alpha blend than `list_hover_bg` — and wins when both
-    /// name the same tab, matching the precedence every sibling
-    /// `_with_state` painter in this crate applies.
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
-    fn pressed_tab_tints_deeper_than_hovered_tab() {
-        use crate::theme::Theme;
-
-        let theme = Theme::default();
-        let (_, hits) = paint_two_tab_bar_with_state(None, None);
-        let (start, _) = hits.slot_positions[1];
-        let probe_x = (start + 2.0) as u32;
-        let probe_y = 15;
-
-        let (pressed, _) = paint_two_tab_bar_with_state(Some(1), Some(1));
-        let px = pressed.pixel_at(probe_x, probe_y);
-        let expected = theme.list_pressed_bg(theme.tab_bar_bg);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (expected.r, expected.g, expected.b),
-            "pressed_tab == Some(1) must tint tab 1's background toward list_pressed_bg, \
-             even though hovered_tab also names it",
-        );
-
-        let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
-        assert_ne!(
-            (expected.r, expected.g, expected.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "pressed and hover tints must read as visibly different colours",
-        );
-    }
-
-    /// Leaving the hovered tab clears the tint — `draw_tab_bar_with_state`
-    /// with both indices `None` paints exactly the untinted resting
-    /// colour, matching plain `draw_tab_bar`.
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
-    fn mouse_leaving_the_tab_clears_the_hover_tint() {
-        use crate::theme::Theme;
-
-        let theme = Theme::default();
-        let (_, hits) = paint_two_tab_bar_with_state(None, None);
-        let (start, _) = hits.slot_positions[1];
-        let probe_x = (start + 2.0) as u32;
-        let probe_y = 15;
-
-        let (after_leave, _) = paint_two_tab_bar_with_state(None, None);
-        let px = after_leave.pixel_at(probe_x, probe_y);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
-            "hovered_tab: None must repaint tab 1 back to the untinted tab_bar_bg",
         );
     }
 
@@ -12216,7 +11696,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn win_backend_draw_tab_bar_paints_tab_labels_in_the_chrome_fonts_size() {
+    fn win_backend_tab_bar_paints_tab_labels_in_the_chrome_fonts_size() {
         let bar = TabBar {
             id: WidgetId::new("tabs"),
             tabs: vec![crate::primitives::tab_bar::TabItem {
@@ -12239,12 +11719,17 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_tab_bar(Rect::new(0.0, 0.0, 300.0, 30.0), &bar, None);
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
+                    Rect::new(0.0, 0.0, 300.0, 30.0),
+                    &bar,
+                    &(),
+                );
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_tab_bar must paint tab labels through chrome_dwrite, not the \
+            "the tab strip must paint its labels through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
         );
     }
@@ -13259,22 +12744,20 @@ mod tests {
             &crate::ActivityBarStyle::default(),
         );
 
-        // `TabBarHits`/`TabBarLayout` category (nominal-measurer
-        // fallback).
-        #[allow(deprecated)]
-        {
-            let tab_bar = TabBar {
-                id: WidgetId::new("tab-bar"),
-                tabs: Vec::new(),
-                scroll_offset: 0,
-                right_segments: Vec::new(),
-                active_accent: None,
-                show_tab_close: false,
-                compact: false,
-                ..Default::default()
-            };
-            let _ = backend.draw_tab_bar(rect, &tab_bar, None);
-        }
+        // Widget-contract category (nominal-measurer fallback): a
+        // `TabBar` pushed through `draw_dyn` resolves its layout and
+        // skips paint when no surface answers.
+        let tab_bar = TabBar {
+            id: WidgetId::new("tab-bar"),
+            tabs: Vec::new(),
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+            ..Default::default()
+        };
+        let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &tab_bar, &());
 
         // `ToolbarLayout` category (nominal-measurer fallback via
         // `measure_button`).

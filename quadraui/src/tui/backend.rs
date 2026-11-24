@@ -47,26 +47,25 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::backend::{
-    activity_bar_hits, tab_bar_hits_from_layout, ColorDepth, Screenshot, ScreenshotRun,
-};
+use crate::backend::{activity_bar_hits, ColorDepth, Screenshot, ScreenshotRun};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Backend, Color, CommandLine, DragState, Form,
     ListView, MenuBar, ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split,
-    StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame, Terminal as TerminalPrim,
-    TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    StatusBar, Terminal as TerminalPrim, TerminalCellSize, TextDisplay, TreeView, UiEvent,
+    Viewport, WidgetId,
 };
-// `KeyBinding`/`DragTarget`/`AcceleratorScope` are only referenced by
-// `#[cfg(test)]` code below — `route_pointer` absorbed
-// `apply_dispatch`'s own `DragTarget::TextSelection` match, and
-// `register_accelerator`/`match_keypress` moved their `AcceleratorScope`
-// check into `BackendCore` — so this file's non-test code no
-// longer names either type directly. Gate the import so a non-test
-// build doesn't flag it as unused.
+// `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
+// only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
+// `apply_dispatch`'s own `DragTarget::TextSelection` match,
+// `register_accelerator`/`match_keypress` keep their `AcceleratorScope`
+// check in `BackendCore`, and a tab strip paints through the `TabBar`
+// widget contract rather than a method on this backend — so this file's
+// non-test code names none of them directly. Gate the import so a
+// non-test build doesn't flag it as unused.
 #[cfg(test)]
-use crate::{AcceleratorScope, DragTarget, KeyBinding};
+use crate::{AcceleratorScope, DragTarget, KeyBinding, TabBar};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
@@ -219,24 +218,6 @@ pub struct TuiBackend {
     /// clobber an active window's `Some` recorded earlier in the same
     /// frame regardless of paint order.
     last_cursor_position: Option<(u16, u16)>,
-    /// `(bar rect, resolved layout)` from the most recent `draw_tab_bar`
-    /// call, per tab-bar `WidgetId`. Cleared at the start of every frame
-    /// by [`Self::begin_frame`] (same lifecycle as `zones`) so a tab bar
-    /// that stops painting doesn't leave a stale entry that would resolve
-    /// a tab no longer on screen.
-    ///
-    /// `TabBarLayout`'s own `visible_tabs`/`close_bounds` rects are
-    /// bar-relative (origin at the bar's own top-left) — the same
-    /// convention `crate::tui::draw_tab_bar` paints with (it adds
-    /// `area.x`/`area.y` itself). [`Self::cached_tab_bar_layout`] hands
-    /// back the paired rect so callers can shift into absolute
-    /// screen-space coordinates. Read by
-    /// [`crate::tui::testing::TuiDriver::tab_center`] /
-    /// [`crate::tui::testing::TuiDriver::tab_close_center`]
-    /// — every tab paints the same close glyph, so `find` can't
-    /// disambiguate tab 3's target from tab 0's the way it can for
-    /// uniquely-labeled text.
-    tab_bar_layouts: HashMap<WidgetId, (QRect, TabBarLayout)>,
     /// Colour fidelity this backend's rasterisers should quantise to —
     /// see [`crate::backend::ColorDepth`]. Detected from the process
     /// environment (`COLORTERM`/`TERM`) at construction time via
@@ -513,7 +494,6 @@ impl TuiBackend {
             cached_selection_text: String::new(),
             focused_activity_bar: None,
             last_cursor_position: None,
-            tab_bar_layouts: HashMap::new(),
             color_depth: super::caps::detect_color_depth(),
             kitty_keyboard: super::caps::detect_kitty_keyboard(),
             mouse_enabled: true,
@@ -793,7 +773,7 @@ impl TuiBackend {
     /// Runs once per frame, over the whole buffer, from
     /// [`super::run::paint_frame`] right after every rasteriser for the
     /// frame has painted — not threaded as a parameter through
-    /// `draw_tab_bar`/`draw_editor`/`draw_terminal` (the three call
+    /// the tab strip/`draw_editor`/`draw_terminal` (the three call
     /// sites that currently set `underline_color`). A
     /// single per-frame sweep here can't miss a call site a
     /// future primitive adds, costs nothing beyond one extra `bool`
@@ -1064,18 +1044,6 @@ impl TuiBackend {
         {
             Vec::new()
         }
-    }
-
-    /// The `(bar rect, resolved layout)` cached from the most recent
-    /// `draw_tab_bar` call for tab bar `id` this frame, or `None` if that
-    /// bar didn't paint this frame. See [`Self::tab_bar_layouts`]'s docs
-    /// for the coordinate-space contract. Read by
-    /// [`crate::tui::testing::TuiDriver::tab_center`] /
-    /// [`crate::tui::testing::TuiDriver::tab_close_center`].
-    pub(crate) fn cached_tab_bar_layout(&self, id: &WidgetId) -> Option<(QRect, &TabBarLayout)> {
-        self.tab_bar_layouts
-            .get(id)
-            .map(|(rect, layout)| (*rect, layout))
     }
 
     // ── Text selection ─────────────────────────────────────────────────────
@@ -1720,23 +1688,6 @@ fn ratatui_color_to_string(color: ratatui::style::Color) -> Option<String> {
     }
 }
 
-/// Shared tab-width measurement for [`TuiBackend::draw_tab_bar_with_chrome`]
-/// and its glyph-override sibling, delegating to the crate's one
-/// cell-grid tab-bar measurer with no icon sidecar: a bracket-framed
-/// active tab reserves one extra column on each side of its ordinary
-/// close-column reservation — see `tui::tab_bar`'s module doc for the
-/// cell-by-cell breakdown — and a glyph override only ever substitutes a
-/// single-cell glyph, never the reserved width.
-fn tab_bar_chrome_layout(bar: &TabBar, area: Rect, chrome: &TabChrome) -> TabBarLayout {
-    crate::primitives::tab_bar::cell_tab_bar_layout(
-        bar,
-        area.width as f32,
-        area.height as f32,
-        &[],
-        chrome,
-    )
-}
-
 /// Reassemble one leaked SGR mouse escape sequence out of a run of
 /// individual `KeyPressed(Char(_))` events, if `events[0]` opens one.
 ///
@@ -2376,10 +2327,6 @@ impl Backend for TuiBackend {
         // produced it.
         self.last_cell_surface_cursor = None;
         self.cell_surface_scratch = None;
-        // Clear per-frame tab-bar layout cache for the same reason as
-        // `zones` — a bar that stops painting must stop resolving
-        // `tab_center`/`tab_close_center` too.
-        self.tab_bar_layouts.clear();
         // Clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.borrow_mut().reset_frame_paint();
@@ -3338,241 +3285,6 @@ impl Backend for TuiBackend {
         )
     }
 
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> crate::TabBarHits {
-        // Icon-less bars are the empty-sidecar case of the icon path, so
-        // there is exactly one measurer + one paint loop to keep in sync.
-        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
-    }
-
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar`] above — same icon-less-sidecar delegation.
-    fn draw_tab_bar_layout(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_icons(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        _hovered_close_tab: Option<usize>,
-    ) -> crate::TabBarHits {
-        // TUI doesn't render close-button hover bg; the parameter is
-        // accepted for trait parity with GTK.
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let layout = crate::tui::tui_tab_bar_layout(area, bar, icons);
-        // Cache the resolved layout for this bar's WidgetId before it's
-        // consumed below — `TuiDriver::tab_center`/`tab_close_center`
-        // resolve against this, since a driver sitting
-        // outside the app has no other way to reach a specific tab's
-        // geometry (every tab paints the same close glyph, so `find`
-        // can't disambiguate tab N's target).
-        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tab_bar called outside enter_frame_scope"
-            );
-            // `tab_bar_layout_icons` is the pure (no-frame) twin that resolves the
-            // identical `TabBarHits` geometry.
-            return self.tab_bar_layout_icons(rect, bar, icons);
-        };
-        crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme)
-    }
-
-    /// `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar_icons`] above. Computes the identical
-    /// `layout` that method's paint loop consumes, paints from it via
-    /// the same `crate::tui::draw_tab_bar_icons` (`#[doc(hidden)]`, so
-    /// not linked here) call (discarding its
-    /// `TabBarHits` return value — this method's contract is the
-    /// `TabBarLayout` it hands back instead), and caches it under
-    /// `bar.id` exactly as [`Self::draw_tab_bar_icons`] does, so
-    /// `TuiDriver::tab_center`/`tab_close_center` keep working
-    /// regardless of which of the two paint entry points a caller used
-    /// this frame.
-    fn draw_tab_bar_icons_layout(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        _hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let layout = crate::tui::tui_tab_bar_layout(area, bar, icons);
-        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tab_bar_icons_layout called outside enter_frame_scope"
-            );
-            return layout;
-        };
-        #[allow(deprecated)] // discarded `TabBarHits` — issue #823
-        let _ =
-            crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme);
-        layout
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_with_chrome(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        _hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-    ) -> crate::TabBarHits {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let layout = tab_bar_chrome_layout(bar, area, chrome);
-        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tab_bar_with_chrome called outside enter_frame_scope"
-            );
-            // `tab_bar_layout_with_chrome` is the pure (no-frame) twin that resolves
-            // the identical `TabBarHits` geometry, brackets included.
-            return self.tab_bar_layout_with_chrome(rect, bar, chrome);
-        };
-        crate::tui::draw_tab_bar_with_chrome(frame.buffer_mut(), area, bar, chrome, &layout, &theme)
-    }
-
-    /// [`Self::draw_tab_bar_with_chrome`] plus an optional
-    /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
-    /// close/dirty marks, honoured in full here (unlike the trait
-    /// default, which ignores `glyphs`).
-    ///
-    /// Shares [`tab_bar_chrome_layout`] with [`Self::draw_tab_bar_with_chrome`]
-    /// — an override only ever substitutes a single-cell glyph, it never
-    /// changes a tab's reserved width — so the two methods measure through
-    /// the same helper rather than risking the arithmetic drifting apart.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_with_chrome_and_glyphs(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        _hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-        glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
-    ) -> crate::TabBarHits {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let layout = tab_bar_chrome_layout(bar, area, chrome);
-        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tab_bar_with_chrome_and_glyphs called outside enter_frame_scope"
-            );
-            return self.tab_bar_layout_with_chrome(rect, bar, chrome);
-        };
-        crate::tui::draw_tab_bar_icons_with_chrome_and_glyphs(
-            frame.buffer_mut(),
-            area,
-            bar,
-            &[],
-            chrome,
-            &layout,
-            &theme,
-            glyphs,
-            nerd_fonts,
-        )
-    }
-
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar_with_chrome`] above — overridden (rather than
-    /// taking the trait default) because TUI, like GTK, honours
-    /// [`crate::TabFrame::Brackets`] and must reserve the same
-    /// bracket-widened columns its Hits-returning sibling does.
-    fn draw_tab_bar_with_chrome_layout(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        _hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-    ) -> TabBarLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .map(|t| {
-                let has_close = bar.show_tab_close && t.is_closable;
-                let is_bracket = brackets && t.is_active;
-                let base = display_width(&t.label);
-                if is_bracket && has_close {
-                    base + 1 + 1 + 1
-                } else if is_bracket {
-                    base + 2
-                } else if has_close {
-                    base + close_cols
-                } else {
-                    // No close button and no bracket framing to supply a
-                    // visual boundary — reserve a column for the separator
-                    // glyph so adjacent labels don't run together.
-                    base + crate::tui::TAB_SEPARATOR_COLS as usize
-                }
-            })
-            .collect();
-        let layout = bar.layout(
-            area.width as f32,
-            area.height as f32,
-            0.0,
-            |i| {
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let is_bracket = brackets && bar.tabs[i].is_active;
-                if is_bracket && has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
-                } else if has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
-                } else {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
-                }
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        );
-        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tab_bar_with_chrome_layout called outside enter_frame_scope"
-            );
-            return layout;
-        };
-        #[allow(deprecated)] // discarded `TabBarHits` — issue #823
-        let _ = crate::tui::draw_tab_bar_with_chrome(
-            frame.buffer_mut(),
-            area,
-            bar,
-            chrome,
-            &layout,
-            &theme,
-        );
-        layout
-    }
-
     /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
     /// that method for the real painting logic.
     fn draw_activity_bar(
@@ -3629,288 +3341,6 @@ impl Backend for TuiBackend {
         bar.layout(rect.width, 1.0, MIN_GAP_CELLS, |seg| {
             crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
         })
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
-        self.tab_bar_layout_icons(rect, bar, &[])
-    }
-
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout`] above.
-    fn resolve_tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> TabBarLayout {
-        self.resolve_tab_bar_layout_icons(rect, bar, &[])
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_icons(
-        &self,
-        rect: QRect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> crate::TabBarHits {
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        // Compute per-tab widths respecting `is_closable`: non-closable tabs
-        // get no close-column reservation even when `show_tab_close` is set.
-        // Measured in display columns, not `char`s — see the twin
-        // computation in `draw_tab_bar_icons` above for why. The
-        // `tab_icon_cols` term is that twin's too: the no-paint
-        // path must reserve the icon exactly as the paint does, or click
-        // routing lands left of the glyphs the user sees.
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let tab_close = if bar.show_tab_close && t.is_closable {
-                    close_cols
-                } else {
-                    0
-                };
-                // No close button to reserve? Reserve a separator column
-                // instead, so adjacent labels on a bar with
-                // `show_tab_close: false` (or a non-closable tab) paint
-                // with a visible boundary rather than running together.
-                let sep = if tab_close == 0 {
-                    crate::tui::TAB_SEPARATOR_COLS as usize
-                } else {
-                    0
-                };
-                display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
-            })
-            .collect();
-        let layout = bar.layout(
-            rect.width,
-            rect.height,
-            0.0,
-            |i| {
-                let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
-                    close_cols
-                } else {
-                    0
-                };
-                crate::TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        );
-
-        let mut hits = tab_bar_hits_from_layout(&layout, bar);
-        // `TabBarHits` are target-surface (absolute) coordinates per the
-        // trait doc — the same space `draw_tab_bar` returns. Without this
-        // the no-paint path returned bar-relative x, off by `rect.x`
-        // (nonzero for any tab bar right of a sidebar). Issue #552.
-        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-
-        let active_idx = bar.tabs.iter().position(|t| t.is_active);
-        let reserved: usize = bar
-            .right_segments
-            .iter()
-            .map(|s| s.width_cells as usize)
-            .sum();
-        let effective_tab_area = (rect.width as usize).saturating_sub(reserved);
-
-        hits.correct_scroll_offset = if let Some(active) = active_idx {
-            TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area, |i| {
-                tab_widths[i]
-            })
-        } else {
-            bar.scroll_offset
-        };
-
-        hits
-    }
-
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout_icons`] above. Computes the exact same
-    /// `layout` that method narrows down to `TabBarHits` and returns it
-    /// verbatim, bar-relative (not shifted by `rect.x`, unlike the
-    /// `TabBarHits` twin — see [`crate::Backend::resolve_tab_bar_layout`]'s
-    /// doc for why).
-    fn resolve_tab_bar_layout_icons(
-        &self,
-        rect: QRect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> TabBarLayout {
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let tab_close = if bar.show_tab_close && t.is_closable {
-                    close_cols
-                } else {
-                    0
-                };
-                // No close button to reserve? Reserve a separator column
-                // instead, so adjacent labels on a bar with
-                // `show_tab_close: false` (or a non-closable tab) paint
-                // with a visible boundary rather than running together.
-                let sep = if tab_close == 0 {
-                    crate::tui::TAB_SEPARATOR_COLS as usize
-                } else {
-                    0
-                };
-                display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
-            })
-            .collect();
-        bar.layout(
-            rect.width,
-            rect.height,
-            0.0,
-            |i| {
-                let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
-                    close_cols
-                } else {
-                    0
-                };
-                crate::TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        )
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_with_chrome(
-        &self,
-        rect: QRect,
-        bar: &TabBar,
-        chrome: &TabChrome,
-    ) -> crate::TabBarHits {
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        // Mirrors `draw_tab_bar_with_chrome`'s measurer exactly — the
-        // no-paint twin must reserve the same columns the paint path did.
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .map(|t| {
-                let has_close = bar.show_tab_close && t.is_closable;
-                let is_bracket = brackets && t.is_active;
-                let base = display_width(&t.label);
-                if is_bracket && has_close {
-                    base + 1 + 1 + 1
-                } else if is_bracket {
-                    base + 2
-                } else if has_close {
-                    base + close_cols
-                } else {
-                    // No close button and no bracket framing to supply a
-                    // visual boundary — reserve a column for the separator
-                    // glyph so adjacent labels don't run together.
-                    base + crate::tui::TAB_SEPARATOR_COLS as usize
-                }
-            })
-            .collect();
-        let layout = bar.layout(
-            rect.width,
-            rect.height,
-            0.0,
-            |i| {
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let is_bracket = brackets && bar.tabs[i].is_active;
-                if is_bracket && has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
-                } else if has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
-                } else {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
-                }
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        );
-
-        let mut hits = tab_bar_hits_from_layout(&layout, bar);
-        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-
-        let active_idx = bar.tabs.iter().position(|t| t.is_active);
-        let reserved: usize = bar
-            .right_segments
-            .iter()
-            .map(|s| s.width_cells as usize)
-            .sum();
-        let effective_tab_area = (rect.width as usize).saturating_sub(reserved);
-
-        hits.correct_scroll_offset = if let Some(active) = active_idx {
-            TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area, |i| {
-                tab_widths[i]
-            })
-        } else {
-            bar.scroll_offset
-        };
-
-        hits
-    }
-
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout_with_chrome`] above — overridden (rather
-    /// than the trait default) for the same reason
-    /// [`Self::draw_tab_bar_with_chrome_layout`] is: TUI honours
-    /// [`crate::TabFrame::Brackets`] and must reserve the bracket-widened
-    /// columns.
-    fn resolve_tab_bar_layout_with_chrome(
-        &self,
-        rect: QRect,
-        bar: &TabBar,
-        chrome: &TabChrome,
-    ) -> TabBarLayout {
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .map(|t| {
-                let has_close = bar.show_tab_close && t.is_closable;
-                let is_bracket = brackets && t.is_active;
-                let base = display_width(&t.label);
-                if is_bracket && has_close {
-                    base + 1 + 1 + 1
-                } else if is_bracket {
-                    base + 2
-                } else if has_close {
-                    base + close_cols
-                } else {
-                    // No close button and no bracket framing to supply a
-                    // visual boundary — reserve a column for the separator
-                    // glyph so adjacent labels don't run together.
-                    base + crate::tui::TAB_SEPARATOR_COLS as usize
-                }
-            })
-            .collect();
-        bar.layout(
-            rect.width,
-            rect.height,
-            0.0,
-            |i| {
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let is_bracket = brackets && bar.tabs[i].is_active;
-                if is_bracket && has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
-                } else if has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
-                } else {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
-                }
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        )
     }
 
     fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
@@ -5332,22 +4762,6 @@ mod tests {
         Palette { rect: QRect, item_count: usize },
     }
 
-    /// An empty [`TabBarLayout`] for this mock's issue #919 stubs —
-    /// `TabBarLayout` has no `Default` impl (unlike `TabBarHits`), so the
-    /// inert-but-real return value needs a literal.
-    fn mock_empty_tab_bar_layout() -> TabBarLayout {
-        TabBarLayout {
-            bar_width: 0.0,
-            bar_height: 0.0,
-            visible_tabs: Vec::new(),
-            visible_segments: Vec::new(),
-            scroll_left: None,
-            scroll_right: None,
-            hit_regions: Vec::new(),
-            resolved_scroll_offset: 0,
-        }
-    }
-
     struct MockBackend {
         calls: Vec<DrawCall>,
         modal_stack: Rc<RefCell<ModalStack>>,
@@ -5549,42 +4963,6 @@ mod tests {
                 resolved_right_start: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
-        fn draw_tab_bar(
-            &mut self,
-            _r: QRect,
-            _b: &TabBar,
-            _hovered_close_tab: Option<usize>,
-        ) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
-        fn draw_tab_bar_icons(
-            &mut self,
-            _r: QRect,
-            _b: &TabBar,
-            _icons: &[Option<crate::TabIcon>],
-            _hovered_close_tab: Option<usize>,
-        ) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        fn draw_tab_bar_layout(
-            &mut self,
-            _r: QRect,
-            _b: &TabBar,
-            _hovered_close_tab: Option<usize>,
-        ) -> TabBarLayout {
-            mock_empty_tab_bar_layout()
-        }
-        fn draw_tab_bar_icons_layout(
-            &mut self,
-            _r: QRect,
-            _b: &TabBar,
-            _icons: &[Option<crate::TabIcon>],
-            _hovered_close_tab: Option<usize>,
-        ) -> TabBarLayout {
-            mock_empty_tab_bar_layout()
-        }
         fn draw_activity_bar(
             &mut self,
             _r: QRect,
@@ -5620,30 +4998,6 @@ mod tests {
                 hit_regions: Vec::new(),
                 resolved_right_start: 0,
             }
-        }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
-        fn tab_bar_layout(&self, _r: QRect, _b: &TabBar) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
-        fn tab_bar_layout_icons(
-            &self,
-            _r: QRect,
-            _b: &TabBar,
-            _icons: &[Option<crate::TabIcon>],
-        ) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        fn resolve_tab_bar_layout(&self, _r: QRect, _b: &TabBar) -> TabBarLayout {
-            mock_empty_tab_bar_layout()
-        }
-        fn resolve_tab_bar_layout_icons(
-            &self,
-            _r: QRect,
-            _b: &TabBar,
-            _icons: &[Option<crate::TabIcon>],
-        ) -> TabBarLayout {
-            mock_empty_tab_bar_layout()
         }
         fn activity_bar_layout(
             &self,
@@ -7862,22 +7216,8 @@ mod tests {
         assert!(matches!(&out[3], UiEvent::MouseMoved { position, .. } if position.x == 10.0));
     }
 
-    // ── Issue #552 sibling audit: tab-bar hit geometry ──────────────
-    //
-    // `TabBarHits` is documented as **target-surface (absolute)**
-    // coordinates — the opposite convention from `ActivityBarRowHit`,
-    // which is bar-relative. `draw_tab_bar` honoured that on both TUI and
-    // GTK by shifting the primitive's bar-relative output by the bar's
-    // origin. `Backend::tab_bar_layout` honoured it on neither: it
-    // returned `tab_bar_hits_from_layout` verbatim, so the no-paint path
-    // was off by `rect.x` — nonzero for any tab bar sitting right of a
-    // sidebar, which is every AppShell layout.
-    //
-    // Same class of defect as #552 itself (a hit-region seam silently
-    // disagreeing about coordinate space), one primitive over, found by
-    // the audit the issue asked for. Both backends now route through the
-    // shared `backend::shift_tab_bar_hits`.
-
+    /// A two-tab, closable strip for the glyph-override reachability
+    /// test below.
     fn audit_bar() -> TabBar {
         TabBar {
             id: WidgetId::new("tabs"),
@@ -7906,21 +7246,24 @@ mod tests {
         }
     }
 
-    /// The glyph-override `Backend` trait methods are reachable through
-    /// `TuiBackend` and actually honour an app-supplied override — not
-    /// just present with an ignored default body. Drives all three
-    /// through a real frame scope, the same production path `AppLogic`
-    /// implementations use.
+    /// The glyph-override paint paths are reachable through `TuiBackend`
+    /// and actually honour an app-supplied override — not just present
+    /// with an ignored default body. Drives all three through a real
+    /// frame scope, the same production path `AppLogic` implementations
+    /// use: the tab strip through its `Primitive` contract (its glyph
+    /// override rides on the descriptor's own `glyphs` field), the menu
+    /// and table through their `Backend` methods.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn backend_trait_glyph_overrides_are_reachable_and_honoured() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
         let mut backend = TuiBackend::new();
         backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
-        let bar = audit_bar();
-        let tab_glyphs = crate::primitives::tab_bar::TabBarGlyphs::new().with_close_glyph("x");
+        let bar = TabBar {
+            glyphs: crate::primitives::tab_bar::TabBarGlyphs::new().with_close_glyph("x"),
+            ..audit_bar()
+        };
 
         let menu = crate::ContextMenu {
             id: WidgetId::new("menu"),
@@ -7975,13 +7318,7 @@ mod tests {
         tab_terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    b.draw_tab_bar_with_chrome_and_glyphs(
-                        QRect::new(0.0, 0.0, 40.0, 1.0),
-                        &bar,
-                        None,
-                        &TabChrome::default(),
-                        Some(&tab_glyphs),
-                    );
+                    crate::DrawsPrimitives::draw_dyn(b, QRect::new(0.0, 0.0, 40.0, 1.0), &bar, &());
                 });
             })
             .expect("draw");
@@ -8046,233 +7383,6 @@ mod tests {
             s.push_str(cell.symbol());
             s
         })
-    }
-
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_returns_absolute_x_not_bar_relative() {
-        let backend = TuiBackend::new();
-        let bar = audit_bar();
-
-        let at_origin = backend.tab_bar_layout(QRect::new(0.0, 0.0, 40.0, 1.0), &bar);
-        let shifted = backend.tab_bar_layout(QRect::new(12.0, 0.0, 40.0, 1.0), &bar);
-
-        assert!(
-            !at_origin.slot_positions.is_empty(),
-            "sanity: some tabs should be laid out"
-        );
-        for (i, (base, moved)) in at_origin
-            .slot_positions
-            .iter()
-            .zip(shifted.slot_positions.iter())
-            .enumerate()
-        {
-            if *base == (0.0, 0.0) {
-                // Scrolled-out sentinel — must stay recognisable, not
-                // become (12.0, 12.0).
-                assert_eq!(
-                    *moved,
-                    (0.0, 0.0),
-                    "tab {i}: the scrolled-out sentinel must not be shifted"
-                );
-                continue;
-            }
-            assert_eq!(
-                (moved.0, moved.1),
-                (base.0 + 12.0, base.1 + 12.0),
-                "tab {i}: `tab_bar_layout` is documented to return \
-                 target-surface coordinates, so moving the bar right by 12 \
-                 must move its hit spans right by 12 (issue #552 audit)"
-            );
-        }
-    }
-
-    /// The no-paint path must agree with the painting path, since callers
-    /// use them interchangeably to route the same clicks. Runs
-    /// `draw_tab_bar` through a real frame scope so it goes down the
-    /// production rasteriser, not a reimplementation of it.
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_agrees_with_draw_tab_bar_on_coordinate_space() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let mut backend = TuiBackend::new();
-        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
-        let bar = audit_bar();
-        // Nonzero x: the whole point. At x = 0 the two paths agreed even
-        // before the fix, which is exactly how the defect stayed hidden.
-        let rect = QRect::new(12.0, 0.0, 40.0, 1.0);
-
-        let from_layout = backend.tab_bar_layout(rect, &bar);
-
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
-        let mut painted = None;
-        terminal
-            .draw(|frame| {
-                painted =
-                    Some(backend.enter_frame_scope(frame, |b| b.draw_tab_bar(rect, &bar, None)));
-            })
-            .expect("draw");
-        let from_paint = painted.expect("draw closure ran");
-
-        assert!(
-            from_paint.slot_positions.iter().any(|s| *s != (0.0, 0.0)),
-            "sanity: the rasteriser should have placed at least one tab"
-        );
-        assert_eq!(
-            from_layout.slot_positions, from_paint.slot_positions,
-            "`tab_bar_layout` and `draw_tab_bar` must report tab slots in \
-             the same coordinate space (issue #552 audit)"
-        );
-        assert_eq!(
-            from_layout.close_bounds, from_paint.close_bounds,
-            "close-button spans must match between the paint and no-paint \
-             paths too"
-        );
-    }
-
-    /// Issue #919: the new `TabBarLayout`-returning accessors must report
-    /// the exact geometry their deprecated `TabBarHits`-returning siblings
-    /// do — same pattern as `gtk::testing::tab_bar_layout_twin_matches_painted_geometry_headless`.
-    /// `TabBarLayout`'s own bounds are **bar-relative** (see its doc), so
-    /// this adds `rect.x` back before comparing against the absolute
-    /// `TabBarHits` contract.
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn resolve_tab_bar_layout_matches_tab_bar_layout_hits_geometry() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let mut backend = TuiBackend::new();
-        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
-        let bar = audit_bar();
-        let rect = QRect::new(12.0, 0.0, 40.0, 1.0);
-
-        let hits = backend.tab_bar_layout(rect, &bar);
-        let resolved = backend.resolve_tab_bar_layout(rect, &bar);
-
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
-        let mut painted_hits = None;
-        let mut painted_layout = None;
-        terminal
-            .draw(|frame| {
-                backend.enter_frame_scope(frame, |b| {
-                    painted_hits = Some(b.draw_tab_bar(rect, &bar, None));
-                    painted_layout = Some(b.draw_tab_bar_layout(rect, &bar, None));
-                });
-            })
-            .expect("draw");
-        let painted_hits = painted_hits.expect("draw closure ran");
-        let painted_layout = painted_layout.expect("draw closure ran");
-
-        assert!(
-            !resolved.visible_tabs.is_empty(),
-            "sanity: some tabs should be laid out"
-        );
-
-        for vt in &resolved.visible_tabs {
-            let expected = (
-                (rect.x + vt.bounds.x) as f64,
-                (rect.x + vt.bounds.x + vt.bounds.width) as f64,
-            );
-            assert_eq!(
-                hits.slot_positions[vt.tab_idx], expected,
-                "tab {}: `resolve_tab_bar_layout` (shifted by rect.x) must \
-                 match `tab_bar_layout`'s absolute slot",
-                vt.tab_idx
-            );
-            let expected_close = vt
-                .close_bounds
-                .map(|cb| ((rect.x + cb.x) as f64, (rect.x + cb.x + cb.width) as f64));
-            assert_eq!(
-                hits.close_bounds[vt.tab_idx], expected_close,
-                "tab {}: close-button span must match too",
-                vt.tab_idx
-            );
-        }
-
-        // The paint path's `TabBarLayout` twin must report the same
-        // bar-relative geometry the paint path's `TabBarHits` reports
-        // once shifted back by `rect.x` — i.e. painting through either
-        // entry point produces one, indivisible geometry.
-        for vt in &painted_layout.visible_tabs {
-            let expected = (
-                (rect.x + vt.bounds.x) as f64,
-                (rect.x + vt.bounds.x + vt.bounds.width) as f64,
-            );
-            assert_eq!(
-                painted_hits.slot_positions[vt.tab_idx], expected,
-                "tab {}: `draw_tab_bar_layout` (shifted by rect.x) must \
-                 match `draw_tab_bar`'s absolute slot",
-                vt.tab_idx
-            );
-        }
-
-        assert_eq!(
-            resolved.visible_tabs, painted_layout.visible_tabs,
-            "the no-paint and paint `TabBarLayout` accessors must agree \
-             on geometry for the same bar and rect"
-        );
-    }
-
-    /// `Backend::draw_tab_bar_with_chrome_layout`'s own doc says a `None`
-    /// [`TabChrome::focused_index`] with no [`TabFrame`] framing request
-    /// reproduces plain [`Backend::draw_tab_bar_layout`] — the property
-    /// `quadraui-binding-core`'s `render::paint_layout` leans on for its
-    /// `LayoutNode::Tabs` arm's `focused_index: None` common case. Unlike
-    /// `empty_icon_sidecar_paints_identically_to_draw_tab_bar` (which
-    /// compares the free paint functions directly), this drives the same
-    /// comparison through the actual `Backend` trait methods a caller like
-    /// `paint_layout` holds a `&mut dyn Backend` and calls.
-    #[test]
-    fn draw_tab_bar_with_chrome_layout_default_chrome_matches_draw_tab_bar_layout() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let mut backend = TuiBackend::new();
-        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
-        let bar = audit_bar();
-        let rect = QRect::new(0.0, 0.0, 40.0, 1.0);
-
-        let mut plain_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
-        let mut plain_layout = None;
-        plain_terminal
-            .draw(|frame| {
-                backend.enter_frame_scope(frame, |b| {
-                    plain_layout = Some(b.draw_tab_bar_layout(rect, &bar, None));
-                });
-            })
-            .expect("draw");
-        let plain_layout = plain_layout.expect("draw closure ran");
-        let plain_screen = screen_text(plain_terminal.backend().buffer());
-
-        let mut chrome_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
-        let mut chrome_layout = None;
-        chrome_terminal
-            .draw(|frame| {
-                backend.enter_frame_scope(frame, |b| {
-                    chrome_layout = Some(b.draw_tab_bar_with_chrome_layout(
-                        rect,
-                        &bar,
-                        None,
-                        &TabChrome::default(),
-                    ));
-                });
-            })
-            .expect("draw");
-        let chrome_layout = chrome_layout.expect("draw closure ran");
-        let chrome_screen = screen_text(chrome_terminal.backend().buffer());
-
-        assert_eq!(
-            plain_layout, chrome_layout,
-            "draw_tab_bar_with_chrome_layout(TabChrome::default()) must \
-             report the same TabBarLayout as draw_tab_bar_layout"
-        );
-        assert_eq!(
-            plain_screen, chrome_screen,
-            "and must paint the identical screen too"
-        );
     }
 
     /// `Backend::snap_height` must agree with `q_rect_to_ratatui`'s height
@@ -9852,7 +8962,7 @@ mod tests {
     // the exact `paint_frame` the live runner and `TuiDriver` both call.
 
     /// `TabBar` with one active tab and an accent colour — the fixture
-    /// `tab_bar::draw_tab_bar`'s `set_cell_styled` call sets
+    /// the tab strip's `set_cell_styled` call sets
     /// `Cell::underline_color` for.
     fn underline_fixture_tab_bar() -> TabBar {
         TabBar {
@@ -9937,14 +9047,15 @@ mod tests {
     }
 
     /// Paints [`underline_fixture_tab_bar`] + [`underline_fixture_editor`]
-    /// through the real `Backend` trait methods — the production call
-    /// path, not the free rasteriser functions directly.
+    /// through the real production call path — the tab strip through its
+    /// `Primitive` contract, the editor through its `Backend` method —
+    /// not the free rasteriser functions directly.
     struct UnderlineFixtureApp;
     impl crate::runner::AppLogic for UnderlineFixtureApp {
         type AreaId = ();
         fn render(&self, backend: &mut dyn crate::backend::Backend, _area: ()) {
             let bar = underline_fixture_tab_bar();
-            backend.draw_tab_bar(QRect::new(0.0, 0.0, 20.0, 1.0), &bar, None);
+            crate::DrawsPrimitives::draw_dyn(backend, QRect::new(0.0, 0.0, 20.0, 1.0), &bar, &());
             let editor = underline_fixture_editor();
             backend.draw_editor(editor.rect, &editor);
         }
@@ -9961,7 +9072,7 @@ mod tests {
     /// caps, [`UnderlineFixtureApp`] must still leave a real,
     /// non-`Reset` `underline_color` painted somewhere — otherwise the
     /// "stripped on Windows" assertion below would pass vacuously even
-    /// if `draw_tab_bar`/`draw_editor` stopped setting `underline_color`
+    /// if the tab strip's or the editor's paint stopped setting `underline_color`
     /// at all. This is also the explicit non-regression case the issue
     /// asks for: a non-Windows terminal's accent underline must be
     /// unaffected by this fix.

@@ -45,12 +45,12 @@ use quadraui::{
     RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode,
     Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side,
     SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
-    StatusBarSegment, StyledSpan, StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon,
-    TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast,
-    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
-    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
-    ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
-    TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
+    StatusBarSegment, StyledSpan, StyledText, Switch, Terminal, TerminalCell, TextDisplay,
+    TextDisplayLine, TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
+    Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow,
+    ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder,
+    TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode,
+    TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -133,261 +133,6 @@ pub const CASES: &[Case] = &[
                 &bar,
                 &InteractionState::new(),
                 0.85,
-            );
-        },
-    },
-    Case {
-        method: "draw_tab_bar",
-        needle: Some("c0tabs"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar"),
-                tabs: vec![TabItem {
-                    label: " c0tabs ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: false,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: false,
-                compact: false,
-                ..Default::default()
-            };
-            let _ = b.draw_tab_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
-        },
-    },
-    Case {
-        // `hovered_tab`/`pressed_tab`-carrying counterpart to
-        // `draw_tab_bar`. Names tab 0 (the only tab) as hovered so a
-        // backend that honours the seam takes its hover branch rather
-        // than only the untinted path; the label must still reach the
-        // frame either way. Index-keyed like `hovered_close_tab`, not
-        // `InteractionState` — see `draw_tab_bar_with_state`'s own doc
-        // for why.
-        method: "draw_tab_bar_with_state",
-        needle: Some("c0tabsstate"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar-state"),
-                tabs: vec![TabItem {
-                    label: " c0tabsstate ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: false,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: false,
-                compact: false,
-                ..Default::default()
-            };
-            let _ = b.draw_tab_bar_with_state(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                None,
-                Some(0),
-                None,
-            );
-        },
-    },
-    Case {
-        method: "draw_tab_bar_icons",
-        needle: Some("c0icontabs"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar-icons"),
-                tabs: vec![TabItem {
-                    label: " c0icontabs ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: false,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: false,
-                compact: false,
-                ..Default::default()
-            };
-            // ASCII glyph on purpose: C0 asserts the *label* text reaches
-            // the frame inventory, and a Nerd Font PUA codepoint would
-            // paint as a blank box on a stock CI runner.
-            let icons = [Some(TabIcon {
-                glyph: "R".to_string(),
-                color: Color::rgb(222, 165, 132),
-            })];
-            let _ = b.draw_tab_bar_icons(Rect::new(0.0, 0.0, area.width, lh), &bar, &icons, None);
-        },
-    },
-    Case {
-        // The chrome-carrying entry point. Same content as
-        // `draw_tab_bar` above (which renders `TabFrame::None`, i.e. no
-        // framing change), but asking explicitly for `Brackets` so C0
-        // exercises a non-default request reaching the backend rather
-        // than only the delegating path.
-        method: "draw_tab_bar_with_chrome",
-        needle: Some("c0chrometabs"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar-chrome"),
-                tabs: vec![TabItem {
-                    label: " c0chrometabs ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: true,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: true,
-                compact: false,
-                ..Default::default()
-            };
-            let chrome = TabChrome::new(TabFrame::Brackets);
-            let _ = b.draw_tab_bar_with_chrome(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                None,
-                &chrome,
-            );
-        },
-    },
-    Case {
-        // `TabBarLayout`-returning counterpart to `draw_tab_bar`.
-        // Same content, same needle convention, different return type.
-        method: "draw_tab_bar_layout",
-        needle: Some("c0tabslayout"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar-layout"),
-                tabs: vec![TabItem {
-                    label: " c0tabslayout ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: false,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: false,
-                compact: false,
-                ..Default::default()
-            };
-            let _ = b.draw_tab_bar_layout(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
-        },
-    },
-    Case {
-        // `TabBarLayout`-returning counterpart to `draw_tab_bar_with_state`
-        // — the twin `quadraui-binding-core`'s paint path can actually
-        // reach, since it calls `draw_tab_bar_layout`, never the
-        // deprecated `draw_tab_bar`.
-        method: "draw_tab_bar_layout_with_state",
-        needle: Some("c0tabslayoutstate"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar-layout-state"),
-                tabs: vec![TabItem {
-                    label: " c0tabslayoutstate ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: false,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: false,
-                compact: false,
-                ..Default::default()
-            };
-            let _ = b.draw_tab_bar_layout_with_state(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                None,
-                Some(0),
-                None,
-            );
-        },
-    },
-    Case {
-        // `TabBarLayout`-returning counterpart to `draw_tab_bar_icons`.
-        method: "draw_tab_bar_icons_layout",
-        needle: Some("c0icontabslayout"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar-icons-layout"),
-                tabs: vec![TabItem {
-                    label: " c0icontabslayout ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: false,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: false,
-                compact: false,
-                ..Default::default()
-            };
-            let icons = [Some(TabIcon {
-                glyph: "R".to_string(),
-                color: Color::rgb(222, 165, 132),
-            })];
-            let _ = b.draw_tab_bar_icons_layout(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                &icons,
-                None,
-            );
-        },
-    },
-    Case {
-        // `TabBarLayout`-returning counterpart to `draw_tab_bar_with_chrome`.
-        // Same non-default `Brackets` request, exercising the override on
-        // backends that honour it (TUI/GTK) and the trait default fallback
-        // on the ones that don't (macOS/Win).
-        method: "draw_tab_bar_with_chrome_layout",
-        needle: Some("c0chrometabslayout"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar-chrome-layout"),
-                tabs: vec![TabItem {
-                    label: " c0chrometabslayout ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: true,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: true,
-                compact: false,
-                ..Default::default()
-            };
-            let chrome = TabChrome::new(TabFrame::Brackets);
-            let _ = b.draw_tab_bar_with_chrome_layout(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                None,
-                &chrome,
             );
         },
     },
@@ -1001,7 +746,7 @@ pub const CASES: &[Case] = &[
         // `draw_activity_bar` above, but asking explicitly for an
         // `ActivityBarStyle` row fill so C0 exercises a non-default
         // request reaching the backend rather than only the delegating
-        // path (mirrors `draw_tab_bar_with_chrome` above).
+        // path (mirrors `draw_tooltip_with_chrome` above).
         method: "draw_activity_bar_with_style",
         needle: None,
         paint: |b, area| {
@@ -1931,39 +1676,6 @@ pub const CASES: &[Case] = &[
                 bordered: false,
             };
             let _ = b.draw_data_table_with_glyphs(area, &table, None, None);
-        },
-    },
-    Case {
-        // Glyph-override counterpart to `draw_tab_bar_with_chrome`. Same
-        // `Brackets` framing as that case, with `None` overrides.
-        method: "draw_tab_bar_with_chrome_and_glyphs",
-        needle: Some("c0chrometabsg"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = TabBar {
-                id: id("tab-bar-chrome-glyphs"),
-                tabs: vec![TabItem {
-                    label: " c0chrometabsg ".to_string(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: true,
-                }],
-                scroll_offset: 0,
-                right_segments: vec![],
-                active_accent: None,
-                show_tab_close: true,
-                compact: false,
-                ..Default::default()
-            };
-            let chrome = TabChrome::new(TabFrame::Brackets);
-            let _ = b.draw_tab_bar_with_chrome_and_glyphs(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                None,
-                &chrome,
-                None,
-            );
         },
     },
     Case {

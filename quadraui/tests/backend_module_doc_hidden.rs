@@ -264,7 +264,7 @@ fn scanner_distinguishes_hidden_from_tracked() {
     let stacked: Vec<&str> = vec![
         "#[doc(hidden)]",
         "#[allow(deprecated)]",
-        "pub use tab_bar::draw_tab_bar_icons;",
+        "pub use status_bar::win_status_bar_layout;",
     ];
     assert!(preceded_by_doc_hidden(&stacked, 2));
 

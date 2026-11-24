@@ -143,7 +143,7 @@
 //! [`WorkspaceEvent::Promoted`] is emitted exactly once per promotion,
 //! whichever trigger caused it. [`Self::is_preview`] feeds
 //! [`TabItem::is_preview`], which every backend already renders italic
-//! (`quadraui/src/tui/tab_bar.rs`).
+//! (`quadraui/src/primitives/tab_bar.rs`).
 
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;

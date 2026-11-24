@@ -62,11 +62,9 @@ pub enum FontRole {
 /// paints in the **chrome** font, on every pixel backend, by definition.
 ///
 /// A primitive with several `draw_*`/`*_layout` entry points (e.g. the
-/// tab bar's icon-less/icon/chrome-frame/layout-returning variants, all
-/// of which paint the same tab labels) still gets exactly one variant
-/// here — the font-role question has one answer per primitive, not per
-/// method, and most of those variants delegate to one root method
-/// anyway (see `Backend::draw_tab_bar_with_chrome`'s default body).
+/// data table's state-carrying and glyph-override variants, all of which
+/// paint the same cell text) still gets exactly one variant here — the
+/// font-role question has one answer per primitive, not per method.
 ///
 /// `#[non_exhaustive]`: adding a primitive here is exactly the kind of
 /// change downstream consumers never need to match on (see

@@ -92,7 +92,6 @@ mod split_junction;
 mod split_tree;
 mod status_bar;
 mod switch;
-mod tab_bar;
 mod terminal;
 pub mod testing;
 pub mod text;
@@ -224,11 +223,6 @@ pub use switch::{draw_switch, tui_switch_layout};
 #[doc(hidden)]
 pub use crate::primitives::tab_bar::{
     TAB_CLOSE_CHAR, TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
-};
-#[doc(hidden)]
-pub use tab_bar::{
-    draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome,
-    draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome, tui_tab_bar_layout,
 };
 #[doc(hidden)]
 pub use terminal::{draw_terminal, draw_terminal_divider};

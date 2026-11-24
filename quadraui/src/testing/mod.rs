@@ -662,7 +662,7 @@ impl Drop for TreePaintsOwnScrollbar {
 /// ordinary hit-testing.
 ///
 /// Most `draw_*`/`*_layout` pairs return an inert-but-real default
-/// (`StatusBarLayout` with zeroed geometry, `TabBarHits::default()`, …)
+/// (`StatusBarLayout` with zeroed geometry, an empty hit-region list, …)
 /// rather than panicking, so a controller under test can call them
 /// without the test needing to know it did. A handful of primitives this
 /// crate's own controllers never exercise through a bare `Backend` still
@@ -890,23 +890,6 @@ impl crate::backend::PlatformServices for RecordingBackend {
 
     fn platform_name(&self) -> &'static str {
         "recording"
-    }
-}
-
-/// An empty [`crate::TabBarLayout`] — no tabs, no segments, no hit
-/// regions. `TabBarLayout` has no `Default` impl of its own (unlike
-/// `TabBarHits`), so the inert-but-real stub every other `*_layout`
-/// getter on this mock returns needs a literal instead.
-fn empty_tab_bar_layout() -> crate::TabBarLayout {
-    crate::TabBarLayout {
-        bar_width: 0.0,
-        bar_height: 0.0,
-        visible_tabs: Vec::new(),
-        visible_segments: Vec::new(),
-        scroll_left: None,
-        scroll_right: None,
-        hit_regions: Vec::new(),
-        resolved_scroll_offset: 0,
     }
 }
 
@@ -1235,53 +1218,6 @@ impl crate::Backend for RecordingBackend {
         })
     }
     /// Union note: see `draw_status_bar` above — `app_shell::MockBackend`'s
-    /// real body wins for the same reason.
-    ///
-    /// `TabBarHits` is `#[deprecated]`; this mock still
-    /// implements the trait method as declared.
-    #[allow(deprecated)]
-    fn draw_tab_bar(
-        &mut self,
-        _r: Rect,
-        _b: &crate::TabBar,
-        _h: Option<usize>,
-    ) -> crate::TabBarHits {
-        self.record("draw_tab_bar");
-        crate::TabBarHits::default()
-    }
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
-    fn draw_tab_bar_icons(
-        &mut self,
-        _r: Rect,
-        _b: &crate::TabBar,
-        _icons: &[Option<crate::TabIcon>],
-        _h: Option<usize>,
-    ) -> crate::TabBarHits {
-        self.record("draw_tab_bar_icons");
-        crate::TabBarHits::default()
-    }
-    /// `TabBarLayout`-returning counterpart to `draw_tab_bar` above.
-    fn draw_tab_bar_layout(
-        &mut self,
-        _r: Rect,
-        _b: &crate::TabBar,
-        _h: Option<usize>,
-    ) -> crate::TabBarLayout {
-        self.record("draw_tab_bar_layout");
-        empty_tab_bar_layout()
-    }
-    /// `TabBarLayout`-returning counterpart to `draw_tab_bar_icons` above.
-    fn draw_tab_bar_icons_layout(
-        &mut self,
-        _r: Rect,
-        _b: &crate::TabBar,
-        _icons: &[Option<crate::TabIcon>],
-        _h: Option<usize>,
-    ) -> crate::TabBarLayout {
-        self.record("draw_tab_bar_icons_layout");
-        empty_tab_bar_layout()
-    }
-    /// Union note: see `draw_status_bar` above — `app_shell::MockBackend`'s
     /// real body (`Vec::new()`) wins for the same reason;
     /// `AppShell::render` calls this for real.
     fn draw_activity_bar(
@@ -1331,32 +1267,6 @@ impl crate::Backend for RecordingBackend {
             hit_regions: Vec::new(),
             resolved_right_start: 0,
         }
-    }
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
-    fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
-        crate::TabBarHits::default()
-    }
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
-    fn tab_bar_layout_icons(
-        &self,
-        _r: Rect,
-        _b: &crate::TabBar,
-        _icons: &[Option<crate::TabIcon>],
-    ) -> crate::TabBarHits {
-        crate::TabBarHits::default()
-    }
-    /// `TabBarLayout`-returning counterpart to `tab_bar_layout` above.
-    fn resolve_tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarLayout {
-        empty_tab_bar_layout()
-    }
-    /// `TabBarLayout`-returning counterpart to `tab_bar_layout_icons` above.
-    fn resolve_tab_bar_layout_icons(
-        &self,
-        _r: Rect,
-        _b: &crate::TabBar,
-        _icons: &[Option<crate::TabIcon>],
-    ) -> crate::TabBarLayout {
-        empty_tab_bar_layout()
     }
     fn activity_bar_layout(
         &self,

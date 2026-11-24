@@ -48,7 +48,7 @@ use gtk4::glib;
 use gtk4::pango;
 use gtk4::prelude::*;
 
-use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout, BackendError};
+use crate::backend::{activity_bar_hits, BackendError};
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, TextRegion};
 use crate::event::{Point, Rect};
@@ -58,15 +58,16 @@ use crate::types::{Color, WidgetId};
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, FontRole,
     Form, GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
-    Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, TabBar, TabBarLayout, TabChrome,
-    TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
+    Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, Terminal as TerminalPrim,
+    TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
-// `AcceleratorScope`/`KeyBinding` are only used by `#[cfg(test)]`
-// code below — they're gated to avoid unused import warnings.
-// `register_accelerator`/`match_keypress` moved their bodies
-// into `crate::backend_core::BackendCore`.
+// `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
+// `#[cfg(test)]` code below — they're gated to avoid unused import
+// warnings. `register_accelerator`/`match_keypress` keep their bodies in
+// `crate::backend_core::BackendCore`, and a tab strip paints through the
+// `TabBar` widget contract rather than a method on this backend.
 #[cfg(test)]
-use crate::{AcceleratorScope, KeyBinding};
+use crate::{AcceleratorScope, KeyBinding, TabBar};
 
 use super::services::GtkPlatformServices;
 
@@ -448,20 +449,6 @@ pub struct GtkBackend {
     /// paint used (refcounted clone — cheap, always reflects the
     /// current editor font) closes that gap.
     last_editor_pango_layout: Option<pango::Layout>,
-    /// `(bar rect, resolved layout)` from the most recent `draw_tab_bar`
-    /// call, per tab-bar `WidgetId`. Cleared at the start of every frame
-    /// by [`Self::begin_frame`] (same lifecycle as `zones`) so a tab bar
-    /// that stops painting doesn't leave a stale entry that would resolve
-    /// a tab no longer on screen.
-    ///
-    /// `TabBarLayout`'s own `visible_tabs`/`close_bounds` rects are
-    /// bar-relative (origin at the bar's own top-left) — the same
-    /// convention `crate::gtk::draw_tab_bar`'s `x_offset`/`y_offset`
-    /// params paint against. [`Self::cached_tab_bar_layout`] hands back
-    /// the paired rect so callers can shift into absolute screen-space
-    /// coordinates. Read by [`super::testing::GtkDriver::tab_center`] /
-    /// [`super::testing::GtkDriver::tab_close_center`].
-    tab_bar_layouts: HashMap<WidgetId, (QRect, TabBarLayout)>,
     /// Monotonically increasing counter bumped once per [`Self::begin_frame`]
     /// call. Backs a dirty-row repaint fast path: a `TermPaintCache`
     /// entry is only reused when it was written during the *immediately
@@ -623,189 +610,6 @@ impl crate::primitives::layout_metrics::TextMeasure for PangoTextMeasure<'_> {
     }
 }
 
-/// Shared single source of truth for `pixel_tab_bar_layout`
-/// plus the ellipsis-fit of the one boundary tab a narrow strip can show
-/// only partially. Called by both the paint path
-/// (`gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs`) and this
-/// type's four no-paint `tab_bar_layout*`/`resolve_tab_bar_layout*` twins
-/// below — a caller that invokes
-/// `crate::primitives::layout_metrics::pixel_tab_bar_layout` directly
-/// instead disagrees with what gets painted for a strip that cuts a tab
-/// off partway through its label.
-///
-/// `pango_layout` is `Some` on every real paint (never headless) but may
-/// be `None` for a no-paint twin with no realised Pango context and no
-/// matching painted cache yet — in that case labels are measured with the
-/// `char_w`-based estimate, matching [`crate::primitives::layout_metrics`]'s
-/// own fallback convention. `tab_name_widths` are each tab's full,
-/// un-shrunk measured label width; this fn never mutates the caller's
-/// copy. `normal_font`/`italic_font` select which font measures (and, for
-/// the paint path, later paints) the boundary tab's fitted label —
-/// `italic_font` only when that tab is a preview tab.
-///
-/// Returns `(layout, corrected_scroll_offset, available_cols, fitted)`.
-/// `fitted` is `Some((idx, label))` iff tab `idx` is the boundary tab and
-/// its full label didn't fit, but an ellipsis-shortened `label` did —
-/// `layout` is then the recomputed geometry with `idx` visible at that
-/// shrunk width. `None` means `layout` is the plain, unmodified
-/// `pixel_tab_bar_layout` result: every tab fit at full width, there was
-/// no boundary tab left to shrink, or shrinking it didn't actually help
-/// (see the scroll/geometry-stability guard below).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn pixel_tab_bar_layout_fitting_boundary(
-    bar: &TabBar,
-    width: f32,
-    height: f32,
-    tab_pad: f32,
-    tab_inner_gap: f32,
-    tab_outer_gap: f32,
-    tab_name_widths: &[f32],
-    tab_icon_extras: &[f32],
-    chrome: &TabChrome,
-    measure: &dyn crate::primitives::layout_metrics::TextMeasure,
-    pango_layout: Option<&pango::Layout>,
-    char_w: f32,
-    normal_font: &pango::FontDescription,
-    italic_font: &pango::FontDescription,
-) -> (TabBarLayout, usize, usize, Option<(usize, String)>) {
-    let (layout, corrected_scroll_offset, available_cols) =
-        crate::primitives::layout_metrics::pixel_tab_bar_layout(
-            bar,
-            width,
-            height,
-            tab_pad,
-            tab_inner_gap,
-            tab_outer_gap,
-            tab_name_widths,
-            tab_icon_extras,
-            chrome,
-            measure,
-        );
-
-    // The tab right after the last one that fit — `None` (via
-    // `resolved_scroll_offset` when nothing is visible at all) iff every
-    // tab from the scroll offset onward already fit.
-    let next_idx = layout
-        .visible_tabs
-        .last()
-        .map_or(layout.resolved_scroll_offset, |vt| vt.tab_idx + 1);
-    if next_idx >= bar.tabs.len() {
-        return (layout, corrected_scroll_offset, available_cols, None);
-    }
-
-    let reserved_px: f32 = layout
-        .visible_segments
-        .iter()
-        .map(|vs| vs.bounds.width)
-        .sum();
-    let last_tab_end = layout
-        .visible_tabs
-        .last()
-        .map_or(0.0, |vt| vt.bounds.x + vt.bounds.width);
-    let remaining = (width - reserved_px - last_tab_end).max(0.0);
-    if remaining <= 0.0 {
-        return (layout, corrected_scroll_offset, available_cols, None);
-    }
-
-    // Measures through the *same* underlying layout `measure` wraps, so
-    // this can never drift from what `pixel_tab_bar_layout`'s own
-    // internal close-glyph/bracket-glyph reservations compute — both read
-    // the identical Pango object (or the identical char-width fallback).
-    let measure_px = move |text: &str| -> f32 {
-        match pango_layout {
-            Some(pl) => {
-                pl.set_text(text);
-                pl.pixel_size().0 as f32
-            }
-            None => (text.chars().count() as f32 * char_w).ceil() + 2.0,
-        }
-    };
-
-    let boundary_tab = &bar.tabs[next_idx];
-    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-    let is_bracket_tab = brackets && boundary_tab.is_active;
-
-    if let Some(pl) = pango_layout {
-        pl.set_font_description(Some(normal_font));
-    }
-    let close_extra = if bar.show_tab_close && boundary_tab.is_closable {
-        tab_inner_gap + measure_px("×")
-    } else {
-        0.0
-    };
-    let bracket_extra = if is_bracket_tab {
-        measure_px("[") + measure_px("]")
-    } else {
-        0.0
-    };
-    // Mirrors `pixel_tab_bar_layout`'s own `TabMeasure::total` grouping:
-    // `tab_pad + bracket_extra + icon_extra` ahead of the label,
-    // `close_extra + tab_pad + tab_outer_gap` after it.
-    let leading_extra = tab_pad + bracket_extra + tab_icon_extras[next_idx];
-    let trailing_extra = close_extra + tab_pad + tab_outer_gap;
-
-    if let Some(pl) = pango_layout {
-        pl.set_font_description(Some(if boundary_tab.is_preview {
-            italic_font
-        } else {
-            normal_font
-        }));
-    }
-    let fitted = crate::primitives::tab_bar::fit_tab_label(
-        &boundary_tab.label,
-        remaining,
-        leading_extra,
-        trailing_extra,
-        measure_px,
-    );
-    if fitted.is_empty() {
-        if let Some(pl) = pango_layout {
-            pl.set_font_description(Some(normal_font));
-        }
-        return (layout, corrected_scroll_offset, available_cols, None);
-    }
-    let fitted_w = measure_px(&fitted);
-    if let Some(pl) = pango_layout {
-        pl.set_font_description(Some(normal_font));
-    }
-
-    let mut widths2 = tab_name_widths.to_vec();
-    widths2[next_idx] = fitted_w;
-    let (layout2, corrected2, cols2) = crate::primitives::layout_metrics::pixel_tab_bar_layout(
-        bar,
-        width,
-        height,
-        tab_pad,
-        tab_inner_gap,
-        tab_outer_gap,
-        &widths2,
-        tab_icon_extras,
-        chrome,
-        measure,
-    );
-
-    // Adopt the recomputed layout only when it strictly gained the
-    // boundary tab and moved nothing else: shrinking the boundary label
-    // lowers `total_tab_width`, which `TabBar::layout` sums over *every*
-    // tab (not just the visible window), so on a strip only slightly over
-    // budget this can flip `resolved_scroll_offset` back to 0 and jump
-    // the whole strip to tab 0 instead of only growing it by the one
-    // boundary tab. Guard against that by requiring the scroll offset and
-    // every previously-visible tab's bounds to come out byte-identical.
-    let same_scroll = layout2.resolved_scroll_offset == layout.resolved_scroll_offset;
-    let rest_unchanged = layout
-        .visible_tabs
-        .iter()
-        .all(|vt| layout2.visible_tabs.contains(vt));
-    let gained_boundary_tab = layout2.visible_tabs.iter().any(|vt| vt.tab_idx == next_idx);
-
-    if same_scroll && rest_unchanged && gained_boundary_tab {
-        (layout2, corrected2, cols2, Some((next_idx, fitted)))
-    } else {
-        (layout, corrected_scroll_offset, available_cols, None)
-    }
-}
-
 impl GtkBackend {
     /// Construct a fresh `GtkBackend`. The viewport defaults to
     /// (0, 0, 1.0); the App component overwrites it before the first
@@ -878,7 +682,6 @@ impl GtkBackend {
             armed_window_drag: WindowDragArm::new(),
             last_menu_bar_pango_layout: None,
             last_editor_pango_layout: None,
-            tab_bar_layouts: HashMap::new(),
             frame_counter: 0,
             term_paint_cache: HashMap::new(),
             double_click: DoubleClickDetector::with_radius(GTK_DOUBLE_CLICK_RADIUS),
@@ -1498,70 +1301,6 @@ impl GtkBackend {
     #[cfg(test)]
     pub(crate) fn painted_text_for_test(&self) -> &[PaintedText] {
         &self.painted_text
-    }
-
-    /// The `(bar rect, resolved layout)` cached from the most recent
-    /// `draw_tab_bar` call for tab bar `id` this frame, or `None` if that
-    /// bar didn't paint this frame. See [`Self::tab_bar_layouts`]'s docs
-    /// for the coordinate-space contract. Read by
-    /// [`super::testing::GtkDriver::tab_center`] /
-    /// [`super::testing::GtkDriver::tab_close_center`].
-    pub(crate) fn cached_tab_bar_layout(&self, id: &WidgetId) -> Option<(QRect, &TabBarLayout)> {
-        self.tab_bar_layouts
-            .get(id)
-            .map(|(rect, layout)| (*rect, layout))
-    }
-
-    /// [`crate::TabBarHits`] derived from the layout `bar` was most
-    /// recently *painted* with, in the same target-surface coordinates
-    /// [`Backend::tab_bar_layout`] reports — or `None` when this frame
-    /// painted no such bar, painted it at a different rect, or painted
-    /// fewer tabs than `bar` now carries (a stale entry must never index
-    /// past `bar.tabs`).
-    ///
-    /// Used by the no-paint `tab_bar_layout` twin when there is no Pango
-    /// handle to measure with, so click routing follows painted pixels
-    /// instead of a char-cell estimate that drifts with the host's UI
-    /// font. Same "cache at paint, hit-test at click" pattern the rest of
-    /// the backend uses.
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
-    fn cached_tab_bar_hits(&self, rect: QRect, bar: &TabBar) -> Option<crate::TabBarHits> {
-        let (cached_rect, layout) = self.tab_bar_layouts.get(&bar.id)?;
-        if *cached_rect != rect {
-            return None;
-        }
-        if layout
-            .visible_tabs
-            .iter()
-            .any(|vt| vt.tab_idx >= bar.tabs.len())
-        {
-            return None;
-        }
-        let mut hits = crate::backend::tab_bar_hits_from_layout(layout, bar);
-        // `TabBarLayout` is bar-relative; `TabBarHits` are target-surface
-        // coordinates, exactly as the measured path below.
-        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-        Some(hits)
-    }
-
-    /// [`TabBarLayout`] most recently *painted* for `bar` at `rect`, or
-    /// `None` on the same staleness conditions as [`Self::cached_tab_bar_hits`]
-    /// — see that method's doc for the "no Pango handle" fallback this backs.
-    /// `TabBarLayout` is already bar-relative, so unlike `cached_tab_bar_hits`
-    /// there is no `TabBarHits` conversion or `rect.x` shift to apply.
-    fn cached_tab_bar_layout_matching(&self, rect: QRect, bar: &TabBar) -> Option<TabBarLayout> {
-        let (cached_rect, layout) = self.tab_bar_layouts.get(&bar.id)?;
-        if *cached_rect != rect {
-            return None;
-        }
-        if layout
-            .visible_tabs
-            .iter()
-            .any(|vt| vt.tab_idx >= bar.tabs.len())
-        {
-            return None;
-        }
-        Some(layout.clone())
     }
 
     /// Get the current cairo context + pango layout inside the
@@ -2361,7 +2100,7 @@ fn role_font_description(b: &GtkBackend, role: FontRole) -> pango::FontDescripti
     let chrome = crate::gtk::chrome_font_description(&b.ui_font);
     match role {
         FontRole::Chrome => chrome,
-        FontRole::Icon => crate::gtk::tab_bar::tab_icon_font(&chrome),
+        FontRole::Icon => crate::gtk::tab_icon_font(&chrome),
         FontRole::Editor => pango::FontDescription::from_string(&b.editor_font_pango_string()),
     }
 }
@@ -2400,10 +2139,6 @@ impl Backend for GtkBackend {
         // during the render pass if still focused. Same lifecycle as
         // text_regions.
         self.focused_activity_bar = None;
-        // Clear per-frame tab-bar layout cache for the same reason as
-        // `zones` — a bar that stops painting must stop resolving
-        // `tab_center`/`tab_close_center` too.
-        self.tab_bar_layouts.clear();
         // Clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.borrow_mut().reset_frame_paint();
@@ -2499,7 +2234,7 @@ impl Backend for GtkBackend {
 
     /// Overrides [`crate::gtk::NERD_FONT_FALLBACK_FAMILY`] for every
     /// subsequent `with_nerd_font_fallback`/`chrome_font_description`/
-    /// `tab_bar::tab_icon_font` call in this process. Process-
+    /// `tab_icon_font` call in this process. Process-
     /// wide rather than a field on `self` — see
     /// `crate::gtk::current_nerd_font_fallback_family`'s doc for why.
     fn set_nerd_font_fallback(&mut self, family: &str) {
@@ -3593,315 +3328,6 @@ impl Backend for GtkBackend {
     // funnel through — is defined in the inherent `impl GtkBackend` block.
     // A trait impl block may only contain that trait's own items.
 
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> crate::TabBarHits {
-        // Icon-less bars are the empty-sidecar case of the icon path, so
-        // there is exactly one measurer + one paint loop to keep in sync.
-        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
-    }
-
-    /// Counterpart to [`Self::draw_tab_bar`] that returns [`TabBarLayout`] instead.
-    fn draw_tab_bar_layout(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_icons(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> crate::TabBarHits {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tab_bar called outside enter_frame_scope");
-        // Tab labels/segments are chrome, not editor content —
-        // `gtk::draw_tab_bar_icons`'s own doc contract is "caller sets the
-        // desired UI font on `layout` before calling", so set `ui_font`
-        // here and restore the editor font afterward so later draws in
-        // this same frame aren't left painting chrome-sized text.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.width as f64,
-            self.current_line_height,
-            rect.y as f64,
-            rect.height as f64,
-            bar,
-            icons,
-            &self.current_theme,
-            &self.current_style,
-            hovered_close_tab,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        // Cache the resolved layout for this bar's WidgetId —
-        // `GtkDriver::tab_center`/`tab_close_center`
-        // resolve against this, since a driver sitting outside the app
-        // has no other way to reach a specific tab's geometry (every tab
-        // paints the same close glyph, so `find` can't disambiguate tab
-        // N's target).
-        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
-        hits
-    }
-
-    /// Counterpart to [`Self::draw_tab_bar_icons`] that returns [`TabBarLayout`] instead.
-    fn draw_tab_bar_icons_layout(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tab_bar_icons_layout called outside enter_frame_scope");
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        #[allow(deprecated)] // discarded `TabBarHits` half of the pair — issue #823
-        let (_hits, resolved_layout) = crate::gtk::draw_tab_bar_icons(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.width as f64,
-            self.current_line_height,
-            rect.y as f64,
-            rect.height as f64,
-            bar,
-            icons,
-            &self.current_theme,
-            &self.current_style,
-            hovered_close_tab,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        self.tab_bar_layouts
-            .insert(bar.id, (rect, resolved_layout.clone()));
-        resolved_layout
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_with_chrome(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-    ) -> crate::TabBarHits {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tab_bar_with_chrome called outside enter_frame_scope");
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.width as f64,
-            self.current_line_height,
-            rect.y as f64,
-            rect.height as f64,
-            bar,
-            &[],
-            chrome,
-            &self.current_theme,
-            &self.current_style,
-            hovered_close_tab,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
-        hits
-    }
-
-    /// [`Self::draw_tab_bar_with_chrome`] plus an optional
-    /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
-    /// close/dirty glyph, honoured in full here (unlike the trait default,
-    /// which ignores `glyphs`).
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_with_chrome_and_glyphs(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-        glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
-    ) -> crate::TabBarHits {
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self.current_frame_refs().expect(
-            "GtkBackend::draw_tab_bar_with_chrome_and_glyphs called outside enter_frame_scope",
-        );
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.width as f64,
-            self.current_line_height,
-            rect.y as f64,
-            rect.height as f64,
-            bar,
-            &[],
-            chrome,
-            &self.current_theme,
-            &self.current_style,
-            hovered_close_tab,
-            glyphs,
-            nerd_fonts_enabled,
-            None,
-            None,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
-        hits
-    }
-
-    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`], plus `hovered_tab`/
-    /// `pressed_tab` indices naming the whole tab (not its close glyph)
-    /// the mouse is over/held down on. Paints a tinted background behind
-    /// the hovered or pressed tab — `Theme::list_hover_bg`/`list_pressed_bg`,
-    /// the same derivation `crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs`'s
-    /// (`#[doc(hidden)]`, so not linked here) own doc explains — rather
-    /// than only tinting the close glyph the
-    /// way [`Self::draw_tab_bar`] already does.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_with_state(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        hovered_tab: Option<usize>,
-        pressed_tab: Option<usize>,
-    ) -> crate::TabBarHits {
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tab_bar_with_state called outside enter_frame_scope");
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.width as f64,
-            self.current_line_height,
-            rect.y as f64,
-            rect.height as f64,
-            bar,
-            &[],
-            &TabChrome::default(),
-            &self.current_theme,
-            &self.current_style,
-            hovered_close_tab,
-            None,
-            nerd_fonts_enabled,
-            hovered_tab,
-            pressed_tab,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
-        hits
-    }
-
-    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_with_state`]
-    /// — the twin the `quadraui-binding-core` paint path can actually
-    /// reach, since it calls `draw_tab_bar_layout`, never the deprecated
-    /// `draw_tab_bar`. Same hover/pressed tint as
-    /// [`Self::draw_tab_bar_with_state`]; only the returned type differs.
-    fn draw_tab_bar_layout_with_state(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        hovered_tab: Option<usize>,
-        pressed_tab: Option<usize>,
-    ) -> TabBarLayout {
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tab_bar_layout_with_state called outside enter_frame_scope");
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        #[allow(deprecated)] // discarded `TabBarHits` half of the pair — issue #823
-        let (_hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.width as f64,
-            self.current_line_height,
-            rect.y as f64,
-            rect.height as f64,
-            bar,
-            &[],
-            &TabChrome::default(),
-            &self.current_theme,
-            &self.current_style,
-            hovered_close_tab,
-            None,
-            nerd_fonts_enabled,
-            hovered_tab,
-            pressed_tab,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        self.tab_bar_layouts
-            .insert(bar.id, (rect, resolved_layout.clone()));
-        resolved_layout
-    }
-
-    /// Counterpart to [`Self::draw_tab_bar_with_chrome`] that returns [`TabBarLayout`] instead.
-    fn draw_tab_bar_with_chrome_layout(
-        &mut self,
-        rect: QRect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-    ) -> TabBarLayout {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tab_bar_with_chrome_layout called outside enter_frame_scope");
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        #[allow(deprecated)] // discarded `TabBarHits` half of the pair — issue #823
-        let (_hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.width as f64,
-            self.current_line_height,
-            rect.y as f64,
-            rect.height as f64,
-            bar,
-            &[],
-            chrome,
-            &self.current_theme,
-            &self.current_style,
-            hovered_close_tab,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        self.tab_bar_layouts
-            .insert(bar.id, (rect, resolved_layout.clone()));
-        resolved_layout
-    }
-
     /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
     /// that method for the real painting logic.
     fn draw_activity_bar(
@@ -3983,393 +3409,6 @@ impl Backend for GtkBackend {
             pl.set_font_description(saved_font.as_ref());
         }
         result
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
-        self.tab_bar_layout_icons(rect, bar, &[])
-    }
-
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout`] above.
-    fn resolve_tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> TabBarLayout {
-        self.resolve_tab_bar_layout_icons(rect, bar, &[])
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_icons(
-        &self,
-        rect: QRect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> crate::TabBarHits {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width as f32;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-
-        // No Pango handle at all — headless (`GtkDriver`) or a widget
-        // that hasn't realised yet. The char-cell estimate further down
-        // is the only measurement left, and it does *not* agree with the
-        // Pango widths the paint path used, so every click lands left or
-        // right of the glyph the user sees. Prefer the geometry the most
-        // recent `draw_tab_bar` for this bar actually resolved — the same
-        // per-frame cache `GtkDriver::tab_close_center` reads, so the
-        // driver's reported close-button centre and this twin's close
-        // region are the *same numbers* instead of two independent
-        // guesses that only happen to overlap when the host's UI font is
-        // close enough to the 8px nominal cell.
-        if pango_layout.is_none() {
-            if let Some(hits) = self.cached_tab_bar_hits(rect, bar) {
-                return hits;
-            }
-        }
-
-        // Tab labels/segments are chrome, painted with `ui_font` by
-        // `gtk::draw_tab_bar_icons` (via `GtkBackend::draw_tab_bar_icons`,
-        // which sets `ui_font` on the shared layout before calling in).
-        // This no-paint twin must measure with the same font the paint
-        // path uses, or its reported widths (and the icon-font it derives
-        // from `base` below) drift from what's actually on screen —
-        // restored to whatever was set before returning.
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-
-        // Icon reservation, measured with the same Nerd-Font swap
-        // `gtk::draw_tab_bar_icons` paints with — the no-paint twin has to
-        // reserve exactly what the paint does, or every click lands left
-        // of the glyph the user sees. Measuring leaves the shared pango
-        // layout on the icon font, so restore the caller's font before
-        // the label / right-segment measurements below.
-        let icon_extras: Vec<f32> = match &pango_layout {
-            Some(pl) => {
-                let base = pl.font_description().unwrap_or_default();
-                let icon_font = crate::gtk::tab_bar::tab_icon_font(&base);
-                let extras =
-                    crate::gtk::tab_bar::tab_icon_extras(pl, &icon_font, bar.tabs.len(), icons);
-                pl.set_font_description(Some(&base));
-                extras.into_iter().map(|w| w as f32).collect()
-            }
-            // No pango handle (headless / pre-realise): mirror
-            // `pango_str_width`'s own char-cell fallback so the two
-            // estimates stay in the same units.
-            None => (0..bar.tabs.len())
-                .map(|i| match crate::tab_icon_at(icons, i) {
-                    Some(icon) => {
-                        (icon.glyph.chars().count() as f32 * char_w).ceil()
-                            + 2.0
-                            + crate::gtk::tab_bar::TAB_ICON_GAP as f32
-                    }
-                    None => 0.0,
-                })
-                .collect(),
-        };
-
-        let tab_pad: f32 = if bar.compact {
-            2.0
-        } else {
-            self.current_style.tab_padding_x
-        };
-        let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
-        let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
-
-        let tab_name_widths: Vec<f32> = bar
-            .tabs
-            .iter()
-            .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
-            .collect();
-
-        // Single shared composition with `resolve_tab_bar_layout_icons` for close-button
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-        // Calls the same `pixel_tab_bar_layout_fitting_boundary` the paint
-        // path (`gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs`)
-        // calls, so this no-paint twin agrees with what a narrow strip
-        // actually painted instead of reporting the ellipsis-fitted
-        // boundary tab as scrolled out of view.
-        let (layout, corrected_scroll_offset, available_cols, _fitted) =
-            pixel_tab_bar_layout_fitting_boundary(
-                bar,
-                rect.width,
-                rect.height,
-                tab_pad,
-                tab_inner_gap,
-                tab_outer_gap,
-                &tab_name_widths,
-                &icon_extras,
-                &TabChrome::default(),
-                &measure,
-                pango_layout.as_ref(),
-                char_w,
-                &ui_font_desc,
-                &ui_font_desc,
-            );
-
-        let mut hits = tab_bar_hits_from_layout(&layout, bar);
-        // `TabBarHits` are target-surface coordinates; shift by rect.x to match.
-        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-        hits.correct_scroll_offset = corrected_scroll_offset;
-        hits.available_cols = available_cols;
-
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-
-        hits
-    }
-
-    /// Counterpart to [`Self::tab_bar_layout_icons`] that returns [`TabBarLayout`] instead.
-    fn resolve_tab_bar_layout_icons(
-        &self,
-        rect: QRect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> TabBarLayout {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width as f32;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-
-        if pango_layout.is_none() {
-            if let Some(layout) = self.cached_tab_bar_layout_matching(rect, bar) {
-                return layout;
-            }
-        }
-
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-
-        let icon_extras: Vec<f32> = match &pango_layout {
-            Some(pl) => {
-                let base = pl.font_description().unwrap_or_default();
-                let icon_font = crate::gtk::tab_bar::tab_icon_font(&base);
-                let extras =
-                    crate::gtk::tab_bar::tab_icon_extras(pl, &icon_font, bar.tabs.len(), icons);
-                pl.set_font_description(Some(&base));
-                extras.into_iter().map(|w| w as f32).collect()
-            }
-            None => (0..bar.tabs.len())
-                .map(|i| match crate::tab_icon_at(icons, i) {
-                    Some(icon) => {
-                        (icon.glyph.chars().count() as f32 * char_w).ceil()
-                            + 2.0
-                            + crate::gtk::tab_bar::TAB_ICON_GAP as f32
-                    }
-                    None => 0.0,
-                })
-                .collect(),
-        };
-
-        let tab_pad: f32 = if bar.compact {
-            2.0
-        } else {
-            self.current_style.tab_padding_x
-        };
-        let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
-        let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
-
-        let tab_name_widths: Vec<f32> = bar
-            .tabs
-            .iter()
-            .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
-            .collect();
-
-        // Single shared composition with `tab_bar_layout_icons` for close-button
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-        // See `tab_bar_layout_icons` for why this goes through
-        // `pixel_tab_bar_layout_fitting_boundary` rather than
-        // `pixel_tab_bar_layout` directly.
-        let (layout, _corrected_scroll_offset, _available_cols, _fitted) =
-            pixel_tab_bar_layout_fitting_boundary(
-                bar,
-                rect.width,
-                rect.height,
-                tab_pad,
-                tab_inner_gap,
-                tab_outer_gap,
-                &tab_name_widths,
-                &icon_extras,
-                &TabChrome::default(),
-                &measure,
-                pango_layout.as_ref(),
-                char_w,
-                &ui_font_desc,
-                &ui_font_desc,
-            );
-
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-
-        layout
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_with_chrome(
-        &self,
-        rect: QRect,
-        bar: &TabBar,
-        chrome: &TabChrome,
-    ) -> crate::TabBarHits {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width as f32;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-
-        // See `tab_bar_layout_icons` for why a missing Pango handle falls
-        // back to the most recent paint's cached geometry rather than a
-        // char-cell guess that would disagree with the bracket glyphs'
-        // actual measured width.
-        if pango_layout.is_none() {
-            if let Some(hits) = self.cached_tab_bar_hits(rect, bar) {
-                return hits;
-            }
-        }
-
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-
-        let tab_pad: f32 = if bar.compact {
-            2.0
-        } else {
-            self.current_style.tab_padding_x
-        };
-        let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
-        let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
-
-        let tab_name_widths: Vec<f32> = bar
-            .tabs
-            .iter()
-            .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
-            .collect();
-        // No icon sidecar on this path: zero-width icon reservation per tab.
-        let icon_extras = vec![0.0_f32; bar.tabs.len()];
-
-        // Single shared composition with `resolve_tab_bar_layout_with_chrome`.
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-        // See `tab_bar_layout_icons` for why this goes through
-        // `pixel_tab_bar_layout_fitting_boundary` rather than
-        // `pixel_tab_bar_layout` directly.
-        let (layout, corrected_scroll_offset, available_cols, _fitted) =
-            pixel_tab_bar_layout_fitting_boundary(
-                bar,
-                rect.width,
-                rect.height,
-                tab_pad,
-                tab_inner_gap,
-                tab_outer_gap,
-                &tab_name_widths,
-                &icon_extras,
-                chrome,
-                &measure,
-                pango_layout.as_ref(),
-                char_w,
-                &ui_font_desc,
-                &ui_font_desc,
-            );
-
-        let mut hits = tab_bar_hits_from_layout(&layout, bar);
-        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-        hits.correct_scroll_offset = corrected_scroll_offset;
-        hits.available_cols = available_cols;
-
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-
-        hits
-    }
-
-    /// Counterpart to [`Self::tab_bar_layout_with_chrome`] that returns [`TabBarLayout`] instead.
-    fn resolve_tab_bar_layout_with_chrome(
-        &self,
-        rect: QRect,
-        bar: &TabBar,
-        chrome: &TabChrome,
-    ) -> TabBarLayout {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width as f32;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-
-        if pango_layout.is_none() {
-            if let Some(layout) = self.cached_tab_bar_layout_matching(rect, bar) {
-                return layout;
-            }
-        }
-
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-
-        let tab_pad: f32 = if bar.compact {
-            2.0
-        } else {
-            self.current_style.tab_padding_x
-        };
-        let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
-        let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
-
-        let tab_name_widths: Vec<f32> = bar
-            .tabs
-            .iter()
-            .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
-            .collect();
-        let icon_extras = vec![0.0_f32; bar.tabs.len()];
-
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-        // See `tab_bar_layout_icons` for why this goes through
-        // `pixel_tab_bar_layout_fitting_boundary` rather than
-        // `pixel_tab_bar_layout` directly.
-        let (layout, _corrected_scroll_offset, _available_cols, _fitted) =
-            pixel_tab_bar_layout_fitting_boundary(
-                bar,
-                rect.width,
-                rect.height,
-                tab_pad,
-                tab_inner_gap,
-                tab_outer_gap,
-                &tab_name_widths,
-                &icon_extras,
-                chrome,
-                &measure,
-                pango_layout.as_ref(),
-                char_w,
-                &ui_font_desc,
-                &ui_font_desc,
-            );
-
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-
-        layout
     }
 
     fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
@@ -9280,7 +8319,7 @@ mod tests {
     }
 
     #[test]
-    fn gtk_backend_draw_tab_bar_uses_ui_font_not_editor_font() {
+    fn gtk_backend_tab_bar_uses_ui_font_not_editor_font() {
         let (surface, small_editor_font, large_editor_font) = ui_font_test_surface_and_contexts();
         let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
 
@@ -9307,14 +8346,18 @@ mod tests {
             pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            // The widget contract measures through `Backend::measure_text`,
+            // which resolves real Pango advances only against the stable
+            // context `gtk::run` installs at `DrawingArea` realize time.
+            backend.set_pango_context(pango_ctx.clone());
             if let Some(f) = ui_font {
                 Backend::set_ui_font(&mut backend, f);
             }
             backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_tab_bar(rect, &bar, None);
-                b.cached_tab_bar_layout(&bar.id)
-                    .expect("draw_tab_bar caches its layout")
-                    .1
+                crate::DrawsPrimitives::draw_dyn(b, rect, &bar, &())
+                    .downcast_ref::<crate::primitives::tab_bar::TabBarPrimitiveLayout>()
+                    .expect("draw_dyn resolves a TabBarPrimitiveLayout for a TabBar")
+                    .layout
                     .visible_tabs[0]
                     .bounds
                     .width
@@ -9337,13 +8380,12 @@ mod tests {
         );
     }
 
-    /// `draw_tab_bar_with_chrome_and_glyphs`'s `TabBarGlyphs` override
-    /// replaces the close-button glyph; `None` and an empty override (no
-    /// fields set) must paint byte-identical to each other, and a
-    /// populated `with_close_glyph` override must visibly change the
-    /// painted ink.
+    /// `TabBar::glyphs` replaces the close-button glyph; an empty
+    /// override (no fields set) must paint byte-identical to the
+    /// default, and a populated `with_close_glyph` override must visibly
+    /// change the painted ink.
     #[test]
-    fn gtk_backend_draw_tab_bar_honors_close_glyph_override() {
+    fn gtk_backend_tab_bar_honors_close_glyph_override() {
         const W: i32 = 300;
         const H: i32 = 40;
 
@@ -9367,7 +8409,12 @@ mod tests {
             crate::primitives::tab_bar::TabChrome::new(crate::primitives::tab_bar::TabFrame::None);
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let render = |glyphs: Option<&crate::TabBarGlyphs>| {
+        let render = |glyphs: crate::TabBarGlyphs| {
+            let bar = TabBar {
+                chrome: chrome.clone(),
+                glyphs,
+                ..bar.clone()
+            };
             let mut surface =
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
@@ -9381,7 +8428,7 @@ mod tests {
                 let mut backend = GtkBackend::new();
                 Backend::set_current_line_height(&mut backend, 20.0);
                 backend.enter_frame_scope(&cr, &layout, |b| {
-                    b.draw_tab_bar_with_chrome_and_glyphs(rect, &bar, None, &chrome, glyphs);
+                    crate::DrawsPrimitives::draw_dyn(b, rect, &bar, &());
                 });
             }
             surface.flush();
@@ -9390,15 +8437,14 @@ mod tests {
             data[..(H as usize) * stride].to_vec()
         };
 
-        let default_pixels = render(None);
-        let empty_override_pixels = render(Some(&crate::TabBarGlyphs::new()));
+        let default_pixels = render(crate::TabBarGlyphs::default());
+        let empty_override_pixels = render(crate::TabBarGlyphs::new());
         assert_eq!(
             default_pixels, empty_override_pixels,
-            "an empty TabBarGlyphs override must paint byte-identical to None"
+            "an empty TabBarGlyphs override must paint byte-identical to the default"
         );
 
-        let overridden = crate::TabBarGlyphs::new().with_close_glyph("X");
-        let override_pixels = render(Some(&overridden));
+        let override_pixels = render(crate::TabBarGlyphs::new().with_close_glyph("X"));
         assert_ne!(
             default_pixels, override_pixels,
             "a close_glyph override must change the painted close-button glyph"
@@ -11320,317 +10366,6 @@ mod tests {
         );
     }
 
-    // --- #615: `tab_bar_layout` must shift by `rect.x` exactly once ---
-    //
-    // Ported from `tui_main::backend::TuiBackend`'s
-    // `tab_bar_layout_returns_absolute_x_not_bar_relative` and
-    // `tab_bar_layout_agrees_with_draw_tab_bar_on_coordinate_space`
-    // (introduced for #552's audit). `GtkBackend::tab_bar_layout` had no
-    // equivalent coverage, which is how #552's shared `shift_tab_bar_hits`
-    // helper landed *alongside* a leftover hand-rolled `x_off` loop that
-    // shifted every hit range a second time — every `TabBarHits` this
-    // backend returned was one `rect.x` too far right whenever the bar
-    // wasn't flush with the surface origin (i.e. whenever the sidebar was
-    // open), silently breaking pixel-accurate close-button clicks.
-
-    fn audit_bar() -> TabBar {
-        TabBar {
-            id: WidgetId::new("tabs"),
-            tabs: vec![
-                crate::primitives::tab_bar::TabItem {
-                    label: "main.rs".into(),
-                    is_active: true,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: true,
-                },
-                crate::primitives::tab_bar::TabItem {
-                    label: "lib.rs".into(),
-                    is_active: false,
-                    is_dirty: false,
-                    is_preview: false,
-                    is_closable: true,
-                },
-            ],
-            right_segments: vec![],
-            active_accent: None,
-            scroll_offset: 0,
-            show_tab_close: true,
-            compact: false,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn gtk_backend_tab_bar_layout_returns_absolute_x_not_bar_relative() {
-        let backend = GtkBackend::new();
-        let bar = audit_bar();
-
-        let at_origin = backend.tab_bar_layout(QRect::new(0.0, 0.0, 400.0, 30.0), &bar);
-        let shifted = backend.tab_bar_layout(QRect::new(418.0, 0.0, 400.0, 30.0), &bar);
-
-        assert!(
-            !at_origin.slot_positions.is_empty(),
-            "sanity: some tabs should be laid out"
-        );
-        for (i, (base, moved)) in at_origin
-            .slot_positions
-            .iter()
-            .zip(shifted.slot_positions.iter())
-            .enumerate()
-        {
-            if *base == (0.0, 0.0) {
-                // Scrolled-out sentinel — must stay recognisable, not
-                // become (418.0, 418.0).
-                assert_eq!(
-                    *moved,
-                    (0.0, 0.0),
-                    "tab {i}: the scrolled-out sentinel must not be shifted"
-                );
-                continue;
-            }
-            assert_eq!(
-                (moved.0, moved.1),
-                (base.0 + 418.0, base.1 + 418.0),
-                "tab {i}: `tab_bar_layout` is documented to return \
-                 target-surface coordinates, so moving the bar right by \
-                 418 must move its hit spans right by 418 exactly once \
-                 (issue #615 — previously this backend applied the shift \
-                 twice, via `shift_tab_bar_hits` and a leftover hand-rolled \
-                 loop)"
-            );
-        }
-    }
-
-    /// The no-paint path must agree with the painting path, since callers
-    /// use them interchangeably to route the same clicks. Both calls run
-    /// inside the same `enter_frame_scope` so they measure text with the
-    /// identical Pango layout — isolating the coordinate-shift bug from
-    /// the separate frame-layout-vs-`pango_ctx` fallback behaviour
-    /// already covered by the `menu_bar_layout` tests above.
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn gtk_backend_tab_bar_layout_agrees_with_draw_tab_bar_on_coordinate_space() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let surface = ImageSurface::create(Format::ARgb32, 800, 40).expect("create ImageSurface");
-        let cr = Context::new(&surface).expect("Context::new");
-        let pango_ctx = pangocairo::functions::create_context(&cr);
-        let pango_layout = pango::Layout::new(&pango_ctx);
-
-        let mut backend = GtkBackend::new();
-        let bar = audit_bar();
-        // Nonzero x: the whole point. At x = 0 the two paths agreed even
-        // before the fix, which is exactly how the defect stayed hidden.
-        let rect = QRect::new(418.0, 0.0, 400.0, 30.0);
-
-        let (from_paint, from_layout) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
-            let painted = b.draw_tab_bar(rect, &bar, None);
-            let layout = b.tab_bar_layout(rect, &bar);
-            (painted, layout)
-        });
-
-        assert!(
-            from_paint.slot_positions.iter().any(|s| *s != (0.0, 0.0)),
-            "sanity: the rasteriser should have placed at least one tab"
-        );
-        assert_eq!(
-            from_layout.slot_positions, from_paint.slot_positions,
-            "`tab_bar_layout` and `draw_tab_bar` must report tab slots in \
-             the same coordinate space (issue #615)"
-        );
-        assert_eq!(
-            from_layout.close_bounds, from_paint.close_bounds,
-            "close-button spans must match between the paint and no-paint \
-             paths too"
-        );
-    }
-
-    /// The icon-aware pair must agree the same way — and must
-    /// actually differ from the icon-less pair, or the "reservation" is
-    /// a no-op nobody would notice until a user clicked a decorated tab.
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn gtk_backend_tab_bar_layout_icons_agrees_with_draw_tab_bar_icons() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let surface = ImageSurface::create(Format::ARgb32, 800, 40).expect("create ImageSurface");
-        let cr = Context::new(&surface).expect("Context::new");
-        let pango_ctx = pangocairo::functions::create_context(&cr);
-        let pango_layout = pango::Layout::new(&pango_ctx);
-
-        let mut backend = GtkBackend::new();
-        let bar = audit_bar();
-        let icons = vec![
-            Some(crate::TabIcon {
-                glyph: "R".to_string(),
-                color: crate::Color::rgb(222, 165, 132),
-            }),
-            None,
-        ];
-        let rect = QRect::new(418.0, 0.0, 400.0, 30.0);
-
-        let (from_paint, from_layout, plain_layout) =
-            backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                let painted = b.draw_tab_bar_icons(rect, &bar, &icons, None);
-                let layout = b.tab_bar_layout_icons(rect, &bar, &icons);
-                let plain = b.tab_bar_layout(rect, &bar);
-                (painted, layout, plain)
-            });
-
-        assert_eq!(
-            from_layout.slot_positions, from_paint.slot_positions,
-            "`tab_bar_layout_icons` must report the same tab slots \
-             `draw_tab_bar_icons` painted — a caller routing clicks \
-             through the no-paint twin otherwise lands left of every \
-             glyph on a decorated bar"
-        );
-        assert_eq!(
-            from_layout.close_bounds, from_paint.close_bounds,
-            "close-button spans must match between the icon-aware paint \
-             and no-paint paths too"
-        );
-        assert_ne!(
-            from_layout.slot_positions, plain_layout.slot_positions,
-            "an icon on tab 0 must widen its slot, so the icon-aware \
-             layout cannot equal the icon-less one"
-        );
-        // Tab 1 carries no icon, so only the *upstream* reservation moves
-        // it: its width must be unchanged.
-        let width = |s: &(f64, f64)| s.1 - s.0;
-        assert!(
-            (width(&from_layout.slot_positions[1]) - width(&plain_layout.slot_positions[1])).abs()
-                < 0.001,
-            "an undecorated tab must keep byte-identical width: {:?} vs {:?}",
-            from_layout.slot_positions[1],
-            plain_layout.slot_positions[1]
-        );
-    }
-
-    /// `draw_tab_bar_with_state` must tint the *whole* background of a
-    /// hovered tab — not just its close glyph, which `draw_tab_bar`'s own
-    /// `hovered_close_tab` already covers. Tab 1 ("lib.rs") is inactive, so
-    /// its resting fill is `tab_bar_bg` — the same colour as the
-    /// surrounding strip, which is what makes a hover tint visible
-    /// against it.
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn gtk_backend_hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let bar = audit_bar();
-        let theme = crate::Theme::default();
-        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
-
-        let surface = ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
-        let cr = Context::new(&surface).expect("Context::new");
-        let pango_ctx = pangocairo::functions::create_context(&cr);
-        let pango_layout = pango::Layout::new(&pango_ctx);
-        let mut backend = GtkBackend::new();
-        let hits =
-            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_tab_bar(rect, &bar, None));
-        let (start, end) = hits.slot_positions[1];
-        assert!(end > start, "second tab slot must have non-zero width");
-        let probe_x = (start + 2.0) as i32;
-        let probe_y = 15;
-
-        let resting_surface =
-            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
-        {
-            let cr = Context::new(&resting_surface).expect("Context::new");
-            let pango_ctx = pangocairo::functions::create_context(&cr);
-            let pango_layout = pango::Layout::new(&pango_ctx);
-            let mut backend = GtkBackend::new();
-            backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_tab_bar_with_state(rect, &bar, None, None, None)
-            });
-        }
-        let mut resting_surface = resting_surface;
-        resting_surface.flush();
-        let resting = pixel_argb(&mut resting_surface, probe_x, probe_y);
-        assert_eq!(
-            resting,
-            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
-            "with no hovered_tab, tab 1's background must stay tab_bar_bg"
-        );
-
-        let hovered_surface =
-            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
-        {
-            let cr = Context::new(&hovered_surface).expect("Context::new");
-            let pango_ctx = pangocairo::functions::create_context(&cr);
-            let pango_layout = pango::Layout::new(&pango_ctx);
-            let mut backend = GtkBackend::new();
-            backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_tab_bar_with_state(rect, &bar, None, Some(1), None)
-            });
-        }
-        let mut hovered_surface = hovered_surface;
-        hovered_surface.flush();
-        let hovered = pixel_argb(&mut hovered_surface, probe_x, probe_y);
-        let expected = theme.list_hover_bg(theme.tab_bar_bg);
-        assert_eq!(
-            hovered,
-            (expected.r, expected.g, expected.b),
-            "hovered_tab == Some(1) must tint tab 1's background toward list_hover_bg"
-        );
-    }
-
-    /// `pressed_tab` tints deeper than `hovered_tab` and wins when both name
-    /// the same tab — the same precedence
-    /// [`GtkBackend::draw_tab_bar_with_state`]'s doc links back to on every
-    /// sibling `_with_state` painter in this crate.
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn gtk_backend_pressed_tab_tints_deeper_than_hovered_tab() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let bar = audit_bar();
-        let theme = crate::Theme::default();
-        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
-
-        let surface = ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
-        let cr = Context::new(&surface).expect("Context::new");
-        let pango_ctx = pangocairo::functions::create_context(&cr);
-        let pango_layout = pango::Layout::new(&pango_ctx);
-        let mut backend = GtkBackend::new();
-        let hits =
-            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_tab_bar(rect, &bar, None));
-        let (start, _) = hits.slot_positions[1];
-        let probe_x = (start + 2.0) as i32;
-        let probe_y = 15;
-
-        let pressed_surface =
-            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
-        {
-            let cr = Context::new(&pressed_surface).expect("Context::new");
-            let pango_ctx = pangocairo::functions::create_context(&cr);
-            let pango_layout = pango::Layout::new(&pango_ctx);
-            let mut backend = GtkBackend::new();
-            backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_tab_bar_with_state(rect, &bar, None, Some(1), Some(1))
-            });
-        }
-        let mut pressed_surface = pressed_surface;
-        pressed_surface.flush();
-        let pressed = pixel_argb(&mut pressed_surface, probe_x, probe_y);
-        let expected = theme.list_pressed_bg(theme.tab_bar_bg);
-        assert_eq!(
-            pressed,
-            (expected.r, expected.g, expected.b),
-            "pressed_tab == Some(1) must tint tab 1's background toward \
-             list_pressed_bg, even though hovered_tab also names it"
-        );
-
-        let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
-        assert_ne!(
-            (expected.r, expected.g, expected.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "pressed and hover tints must read as visibly different colours"
-        );
-    }
-
     /// `draw_palette_with_state` must tint the pinned create-action
     /// row — the one stable id a [`Palette`] carries (`palette.id`
     /// itself) — toward `Theme::menu_item_hover_bg` when hovered and
@@ -11867,45 +10602,6 @@ mod tests {
             (pressed_expected.r, pressed_expected.g, pressed_expected.b),
             (hover_expected.r, hover_expected.g, hover_expected.b),
             "pressed and hover tints must read as visibly different colours"
-        );
-    }
-
-    /// `tab_bar_layout_with_chrome` must actually populate
-    /// `TabBarHits::available_cols` with the shared helper's estimate, not
-    /// leave it at the old bar-width-in-pixels placeholder. This compares
-    /// against the known-good value from `tab_bar_layout` with equivalent
-    /// inputs (no icons, default chrome).
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn gtk_backend_tab_bar_layout_with_chrome_populates_available_cols() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let surface = ImageSurface::create(Format::ARgb32, 800, 40).expect("create ImageSurface");
-        let cr = Context::new(&surface).expect("Context::new");
-        let pango_ctx = pangocairo::functions::create_context(&cr);
-        let pango_layout = pango::Layout::new(&pango_ctx);
-
-        let mut backend = GtkBackend::new();
-        let bar = audit_bar();
-        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
-
-        let (from_chrome, from_plain) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
-            let chrome = b.tab_bar_layout_with_chrome(rect, &bar, &TabChrome::default());
-            let plain = b.tab_bar_layout(rect, &bar);
-            (chrome, plain)
-        });
-
-        assert!(
-            from_chrome.available_cols > 0,
-            "sanity: an 800px-wide surface must yield a nonzero character-column estimate"
-        );
-        assert_eq!(
-            from_chrome.available_cols, from_plain.available_cols,
-            "`tab_bar_layout_with_chrome` (default chrome, no icons) must \
-             report the same `available_cols` as `tab_bar_layout` — both \
-             route through the shared `pixel_tab_bar_layout` with \
-             equivalent inputs, so a divergence means one of them still \
-             discards the shared estimate instead of assigning it"
         );
     }
 

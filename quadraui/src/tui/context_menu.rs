@@ -91,7 +91,7 @@ pub fn draw_context_menu(
 /// default `✓`/`▶` glyphs are unchanged. Passing `Some` only overrides the
 /// glyphs it sets; any field left `None` keeps the default for that mark.
 /// Each slot is a single cell, so only the override glyph's first
-/// character is used, mirroring [`crate::tui::tab_bar`]'s close/dirty
+/// character is used, mirroring the tab strip's close/dirty
 /// glyph overrides. `nerd_fonts_enabled` selects which half of each
 /// override [`crate::types::Icon`] is used, matching
 /// [`crate::Backend::nerd_fonts_enabled`].

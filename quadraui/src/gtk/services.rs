@@ -1299,7 +1299,7 @@ mod tests {
     /// CI and headless dev boxes don't have one, so these tests degrade
     /// to a no-op skip there rather than fail — mirrors how the crate's
     /// other GTK-object tests avoid needing a live display (see
-    /// `gtk::tab_bar` — Cairo `ImageSurface` tests intentionally sidestep
+    /// `gtk::status_bar` — Cairo `ImageSurface` tests intentionally sidestep
     /// this same problem). Cached in a `OnceLock` since `gtk4::init()`
     /// after a failed first attempt keeps failing.
     ///

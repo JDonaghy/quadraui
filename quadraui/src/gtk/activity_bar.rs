@@ -186,7 +186,7 @@ pub fn draw_activity_bar_with_style(
 // ── Tests ──────────────────────────────────────────────────────────────────
 //
 // Headless (no display required) pixel-metric test using a Cairo
-// `ImageSurface`, mirroring `gtk::tab_bar`'s test style. Gated on the
+// `ImageSurface`, mirroring `gtk::status_bar`'s test style. Gated on the
 // `gtk` feature so it only runs under `cargo test --features gtk`.
 
 #[cfg(test)]

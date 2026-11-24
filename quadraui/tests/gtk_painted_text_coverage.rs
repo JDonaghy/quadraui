@@ -339,9 +339,9 @@ fn tab_group_demo_paints_locatable_tab_labels() {
     assert_locatable(
         &driver,
         &[
-            ("draw_tab_bar", "main.rs"),
-            ("draw_tab_bar", "lib.rs"),
-            ("draw_tab_bar", "Cargo.toml"),
+            ("draw_dyn(TabBar)", "main.rs"),
+            ("draw_dyn(TabBar)", "lib.rs"),
+            ("draw_dyn(TabBar)", "Cargo.toml"),
         ],
     );
 }

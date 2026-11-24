@@ -485,20 +485,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     (
         "macos",
-        "tab_bar_layout_with_chrome",
-        "#631's `TabFrame::Brackets` isn't wired to the CoreText tab-bar rasteriser yet — the \
-         issue's acceptance bar is TUI + GTK; macOS falls back to the plain `tab_bar_layout` \
-         geometry (no bracket reservation) until that lands",
-    ),
-    (
-        "macos",
-        "resolve_tab_bar_layout_with_chrome",
-        "issue #919's `TabBarLayout`-returning counterpart to `tab_bar_layout_with_chrome` — same \
-         gap, same reason: #631's `TabFrame::Brackets` isn't wired to the CoreText tab-bar \
-         rasteriser, so this falls back to the plain `resolve_tab_bar_layout` geometry too",
-    ),
-    (
-        "macos",
         "snap_height",
         "pixel backend — CoreText paints fractional heights exactly, so the identity default is \
          correct, not unfinished work (quadraui#632)",
@@ -507,17 +493,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // backend is a stub" is exactly the kind of blanket excuse that outlives the stub.
     ("win", "scales_text_rows", "stub backend — see #19"),
     ("win", "editor_col_at_x", "stub backend — see #19"),
-    (
-        "win",
-        "tab_bar_layout_with_chrome",
-        "stub backend — see #19",
-    ),
-    (
-        "win",
-        "resolve_tab_bar_layout_with_chrome",
-        "issue #919's `TabBarLayout`-returning counterpart to `tab_bar_layout_with_chrome` — same \
-         stub-backend gap, see #19",
-    ),
     (
         "win",
         "snap_height",

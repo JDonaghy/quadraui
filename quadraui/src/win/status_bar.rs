@@ -42,7 +42,7 @@ pub const MIN_GAP_DIP: f32 = 16.0;
 /// Bold-aware text measurement for [`win_status_bar_layout`]. A status
 /// segment's `bold` flag changes its measured width, so this can't reuse
 /// [`crate::primitives::layout_metrics::TextMeasure`] (no `bold`
-/// parameter) the way `win::tab_bar`/`win::data_table` do — a real
+/// parameter) the way `win::data_table` does — a real
 /// difference this rasteriser has always had (`DWrite::measure_text_styled`
 /// vs. every other module's plain `measure_text`), not new duplication.
 pub trait StatusMeasure {
