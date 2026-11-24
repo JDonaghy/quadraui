@@ -22,9 +22,17 @@
 //! separators); Enter activates the selected item; Escape dismisses
 //! (see [`crate::UiEvent::ContextMenuDismissed`]).
 
-use crate::accelerator::Accelerator;
-use crate::event::{Point, Rect};
+use crate::a11y::A11yAction;
+use crate::accelerator::{Accelerator, Platform};
+use crate::behaviour::nav::{FlatNav, NavKey};
+use crate::behaviour::typeahead::Typeahead;
+use crate::compose::Handled;
+use crate::event::{Key, MouseButton, NamedKey, Point, Rect};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+};
 use crate::layout::{Anchor, ResolvedSide, Side};
+use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::types::{Color, Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -621,6 +629,636 @@ impl ContextMenu {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+
+/// Cells a cell-grid rasteriser paints the popup's box border on,
+/// *outside* the items region, on each side — [`cell_paint::paint`]'s own
+/// chrome reservation, and what [`Primitive::layout`] reports as
+/// [`ContextMenuPrimitiveLayout::border_inset`] on a cell grid.
+///
+/// A pixel surface reserves nothing: its border is stroked on the box's
+/// own edge ([`native_surface_paint`]'s `surface_stroke_rounded_rect`),
+/// inside the bounds, so there the inset is `0.0`.
+pub const CELL_BORDER_INSET: f32 = 1.0;
+
+/// The right-aligned shortcut hint one row shows — sourced from
+/// [`ContextMenuItem::detail`] (preferred, back-compat) or rendered from
+/// [`ContextMenuItem::key_equivalent`] for `platform` (`⌘S` on macOS,
+/// `Ctrl+S` elsewhere). `None` when the item carries neither.
+///
+/// The one hint derivation every painter reads, so a pixel surface and a
+/// cell grid never disagree about which string a row's trailing column
+/// shows.
+pub fn shortcut_text(item: &ContextMenuItem, platform: Platform) -> Option<String> {
+    if let Some(ref det) = item.detail {
+        return Some(det.spans.iter().map(|sp| sp.text.as_str()).collect());
+    }
+    item.key_equivalent
+        .as_ref()
+        .map(|acc| crate::accelerator::render_accelerator(acc, platform))
+}
+
+/// The item / separator row heights a menu lays its rows out at, from a
+/// host's line height.
+///
+/// One rule for both menu styles — a free-floating right-click popup and
+/// a bar-anchored dropdown — so the two stay geometrically identical
+/// without either controller depending on the other's state. On a cell
+/// grid (`line_height == 1.0`) both collapse to the single row a
+/// terminal has to spend.
+pub fn item_heights(line_height: f32) -> (f32, f32) {
+    let item_h = (line_height * 1.4).round().max(line_height);
+    let sep_h = (line_height * 0.5).round().max(1.0);
+    (item_h, sep_h)
+}
+
+/// The platform a shortcut hint renders for when the popup paints
+/// through [`Primitive::paint`], which carries no backend identity of its
+/// own: the host OS this build runs on. A backend's own
+/// `draw_context_menu` wrapper still passes its platform explicitly.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn host_platform() -> Platform {
+    if cfg!(target_os = "macos") {
+        Platform::Macos
+    } else if cfg!(target_os = "windows") {
+        Platform::Windows
+    } else {
+        Platform::Linux
+    }
+}
+
+/// What a pointer position resolves to against one menu level — the
+/// shared classification both [`Interactive::handle`] and
+/// [`crate::compose::ContextMenuController`]'s deepest-level-first walk
+/// resolve a click and a hover through, so the two cannot disagree about
+/// which row a point belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuClick {
+    /// An actionable leaf row: activating it fires `id`.
+    Item { idx: usize, id: WidgetId },
+    /// A submenu-parent row: activating it opens that child menu.
+    Submenu { idx: usize },
+    /// A separator, a disabled row, or the box's own interior padding —
+    /// inside the popup, but nothing to activate.
+    Inert,
+    /// Outside the popup's box entirely.
+    Outside,
+}
+
+/// The semantic outcomes a [`ContextMenu`] popup reports — its
+/// [`Interactive::Action`].
+///
+/// [`ContextMenu`] stays purely declarative: no variant below mutates the
+/// popup. Each names the state the host writes back onto its own
+/// `ContextMenu` (or, for the two closing variants, that it should drop
+/// this level) before the next frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuEvent {
+    /// Keyboard navigation, typeahead, or the pointer moved the highlight
+    /// to `idx`. The host writes it onto [`ContextMenu::selected_idx`].
+    SelectionChanged { idx: usize },
+    /// Item `idx` is a submenu parent and asked for its child popup —
+    /// Enter, Right, or a click on that row. The host opens the child
+    /// beside this menu, positioned through
+    /// [`ContextMenuLayout::submenu_anchor`].
+    SubmenuOpened { idx: usize },
+    /// Left asked to close one level: the deepest open child popup, or
+    /// this popup itself when it is the deepest.
+    SubmenuClosed,
+    /// An actionable item fired — Enter, a click, or an
+    /// assistive-technology activation. Carries that item's own
+    /// [`ContextMenuItem::id`], the identity a native menu reports too.
+    Activated { item: WidgetId },
+    /// Escape dismissed the popup without activating anything.
+    Dismissed,
+}
+
+impl WidgetAction for ContextMenuEvent {
+    /// [`Self::Activated`] and the two closing variants are the outcomes
+    /// the crate's [`crate::UiEvent`] vocabulary names directly
+    /// ([`crate::UiEvent::ContextMenuItemActivated`] /
+    /// [`crate::UiEvent::ContextMenuDismissed`]) — the same two events the
+    /// native pop-up path delivers through the event queue, so an app
+    /// routes both paths through one match arm.
+    /// [`Self::SubmenuClosed`] maps onto the dismissal too: for a single
+    /// popup, closing the deepest level *is* dismissing this one. A
+    /// multi-level composer reads [`ContextMenuEvent`] itself and keeps
+    /// the distinction.
+    ///
+    /// The other two ride [`crate::UiEvent::List`] under the popup's own
+    /// [`ContextMenu::id`], the channel [`crate::Completions`] already
+    /// uses for the same shapes: a moved highlight is exactly
+    /// [`crate::ListViewEvent::SelectionChanged`]'s `{ idx }`, and asking
+    /// for a submenu is that row's activation,
+    /// [`crate::ListViewEvent::ItemActivated`] — loss-free under one id,
+    /// rather than an unrelated event an existing handler could act on.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            ContextMenuEvent::Activated { item } => crate::UiEvent::ContextMenuItemActivated(item),
+            ContextMenuEvent::Dismissed | ContextMenuEvent::SubmenuClosed => {
+                crate::UiEvent::ContextMenuDismissed
+            }
+            ContextMenuEvent::SelectionChanged { idx } => {
+                crate::UiEvent::List(id, crate::ListViewEvent::SelectionChanged { idx })
+            }
+            ContextMenuEvent::SubmenuOpened { idx } => {
+                crate::UiEvent::List(id, crate::ListViewEvent::ItemActivated { idx })
+            }
+        }
+    }
+}
+
+/// [`ContextMenu`]'s own interaction state: the debounced typeahead
+/// buffer that lets a few quick keystrokes jump the highlight to the
+/// best prefix match, plus the monotonic origin its 500ms debounce window
+/// is measured from.
+///
+/// Everything else a popup renders — its items, the highlight, the
+/// background override — lives on the descriptor, which the host updates
+/// from [`ContextMenuEvent`]; only the keystroke *timing* can't, since it
+/// is not something a frame paints.
+#[derive(Debug, Default)]
+pub struct ContextMenuState {
+    typeahead: Typeahead,
+    origin: Option<std::time::Instant>,
+}
+
+impl ContextMenuState {
+    /// Milliseconds since this state's first keystroke — the clock
+    /// [`Typeahead::push`]'s debounce window reads. Seeded on first use,
+    /// so a state that never sees a keystroke never reads a clock.
+    fn now_ms(&mut self) -> u64 {
+        let origin = *self.origin.get_or_insert_with(std::time::Instant::now);
+        origin.elapsed().as_millis() as u64
+    }
+}
+
+/// [`ContextMenu`]'s fully-resolved widget-contract layout: the absolute
+/// `area` the popup was laid out in, the chrome reservation and inner
+/// viewport that produced its box, the row heights the items were
+/// resolved at, and the popup-local [`ContextMenuLayout`] itself.
+///
+/// `#[non_exhaustive]`: produced by [`Primitive::layout`], never built by
+/// a consumer via struct literal — the same convention
+/// [`ContextMenuLayout`] itself follows.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ContextMenuPrimitiveLayout {
+    /// The rect [`Primitive::layout`] was called with: the popup's whole
+    /// box, including the ring of chrome a cell grid paints its border
+    /// on.
+    pub area: Rect,
+    /// Units of [`Self::area`] reserved for that border on each side —
+    /// [`CELL_BORDER_INSET`] on a cell grid, `0.0` on a pixel surface.
+    /// A caller reads the reservation off the resolved layout rather than
+    /// asking a backend for it.
+    pub border_inset: f32,
+    /// [`Self::area`] inset by [`Self::border_inset`] on all four sides:
+    /// the space the items were placed in, and the one the popup's own
+    /// `bounds` is clamped inside.
+    pub viewport: Rect,
+    /// Height one actionable row was resolved at — [`item_heights`]'s
+    /// first value for the host's line height.
+    pub item_height: f32,
+    /// Height one separator row was resolved at — [`item_heights`]'s
+    /// second value.
+    pub separator_height: f32,
+    /// The resolved popup layout. Its `bounds`/`visible_items`/
+    /// `hit_regions` are in the same absolute space as [`Self::area`].
+    pub layout: ContextMenuLayout,
+}
+
+impl ContextMenuPrimitiveLayout {
+    /// Hit-test at a position relative to [`Self::area`]'s own origin —
+    /// the space [`crate::interactive::RoutedEvent::Pointer`]'s `local`
+    /// field uses.
+    pub fn hit_test_local(&self, x: f32, y: f32) -> ContextMenuHit {
+        self.layout.hit_test(self.area.x + x, self.area.y + y)
+    }
+
+    /// How many rows the popup shows at once — the page size
+    /// `PageUp`/`PageDown` move by. At least `1`, so a box too short for
+    /// a single row still pages one item at a time rather than standing
+    /// still.
+    pub fn page(&self) -> usize {
+        self.layout.visible_items.len().max(1)
+    }
+}
+
+impl ContextMenu {
+    /// Whether item `i` can take the highlight: not a separator, not
+    /// disabled.
+    fn is_selectable(&self, i: usize) -> bool {
+        self.items
+            .get(i)
+            .is_some_and(|item| !item.is_separator() && !item.disabled)
+    }
+
+    /// Item `i`'s leading label text — the string typeahead matches a
+    /// prefix against, empty for a row no keystroke may land on.
+    fn typeahead_text(&self, i: usize) -> &str {
+        if !self.is_selectable(i) {
+            return "";
+        }
+        self.items[i]
+            .label
+            .spans
+            .first()
+            .map(|s| s.text.as_str())
+            .unwrap_or("")
+    }
+
+    /// Where a [`NavKey`] moves the highlight from `current`, skipping
+    /// separators and disabled items and wrapping at both ends.
+    ///
+    /// `page` is how many rows the popup shows at once, for the two Page
+    /// keys. `current` itself counts as navigable for a stepping move, so
+    /// an app-supplied [`Self::selected_idx`] that points at a separator
+    /// still steps to the next selectable item in list order instead of
+    /// seeding at either end; `Home`/`End` ignore it and land on the
+    /// first/last selectable row.
+    pub fn navigate(&self, current: usize, key: NavKey, page: usize) -> Option<usize> {
+        let key = match key {
+            NavKey::PageUp(_) => NavKey::PageUp(page.max(1)),
+            NavKey::PageDown(_) => NavKey::PageDown(page.max(1)),
+            other => other,
+        };
+        match key {
+            NavKey::Home | NavKey::End => {
+                FlatNav::mv(self.items.len(), Some(current), key, true, |i| {
+                    self.is_selectable(i)
+                })
+            }
+            _ => FlatNav::mv(self.items.len(), Some(current), key, true, |i| {
+                i == current || self.is_selectable(i)
+            }),
+        }
+    }
+
+    /// Resolve a pointer position (in the same absolute space `layout`
+    /// reports) against this one menu level.
+    pub fn resolve_click(&self, layout: &ContextMenuLayout, x: f32, y: f32) -> ContextMenuClick {
+        match layout.hit_test(x, y) {
+            ContextMenuHit::Empty => ContextMenuClick::Outside,
+            ContextMenuHit::Inert => ContextMenuClick::Inert,
+            ContextMenuHit::Item(id) => {
+                let idx = layout
+                    .visible_items
+                    .iter()
+                    .find(|vis| vis.clickable && self.items[vis.item_idx].id == Some(id))
+                    .map(|vis| vis.item_idx);
+                match idx {
+                    Some(idx) if self.items[idx].submenu.is_some() => {
+                        ContextMenuClick::Submenu { idx }
+                    }
+                    Some(idx) => ContextMenuClick::Item { idx, id },
+                    None => ContextMenuClick::Inert,
+                }
+            }
+        }
+    }
+
+    /// Activate item `idx`: open its child popup when it is a submenu
+    /// parent, fire its id when it is an actionable leaf, and swallow the
+    /// gesture otherwise (a separator or disabled row owns the keystroke
+    /// but has nothing to report).
+    fn activate(&self, idx: usize) -> Handled<ContextMenuEvent> {
+        match self.items.get(idx) {
+            Some(item) if item.submenu.is_some() => {
+                Handled::Event(ContextMenuEvent::SubmenuOpened { idx })
+            }
+            Some(item) if !item.disabled => match item.id {
+                Some(item) => Handled::Event(ContextMenuEvent::Activated { item }),
+                None => Handled::Consumed,
+            },
+            _ => Handled::Consumed,
+        }
+    }
+
+    /// Resolve one keystroke against the popup — the single key→meaning
+    /// rule both [`Interactive::handle`] and
+    /// [`crate::compose::ContextMenuController`] dispatch through, so a
+    /// popup driven by either cannot disagree about what a key does.
+    ///
+    /// `page` is how many rows the popup shows at once (see
+    /// [`ContextMenuPrimitiveLayout::page`]); `state` carries the
+    /// debounced typeahead buffer a typed character extends.
+    pub fn handle_key(
+        &self,
+        key: &KeyEvent,
+        page: usize,
+        state: &mut ContextMenuState,
+    ) -> Handled<ContextMenuEvent> {
+        let current = self.selected_idx;
+        match key.key {
+            Key::Named(NamedKey::Escape) => Handled::Event(ContextMenuEvent::Dismissed),
+            Key::Named(NamedKey::Left) => Handled::Event(ContextMenuEvent::SubmenuClosed),
+            // Right only opens a submenu — on a leaf it belongs to
+            // whatever the popup is floating over, not to the popup.
+            Key::Named(NamedKey::Right) => {
+                if self
+                    .items
+                    .get(current)
+                    .is_some_and(|item| item.submenu.is_some())
+                {
+                    Handled::Event(ContextMenuEvent::SubmenuOpened { idx: current })
+                } else {
+                    Handled::Ignored
+                }
+            }
+            Key::Named(NamedKey::Enter) => self.activate(current),
+            // A typed character jumps the highlight to the best prefix
+            // match through the debounced buffer. Modified keystrokes
+            // (Ctrl/Alt/Super) are accelerators the host owns, not
+            // typeahead.
+            Key::Char(ch) if !key.modifiers.ctrl && !key.modifiers.alt && !key.modifiers.cmd => {
+                let now_ms = state.now_ms();
+                let len = self.items.len();
+                match state
+                    .typeahead
+                    .push(ch, now_ms, |i| self.typeahead_text(i), len, current)
+                {
+                    Some(idx) if idx != current => {
+                        Handled::Event(ContextMenuEvent::SelectionChanged { idx })
+                    }
+                    // Already on the best match: the popup owns the
+                    // keystroke (it must not reach whatever is behind
+                    // the menu) but has nothing to report.
+                    Some(_) => Handled::Consumed,
+                    None => Handled::Consumed,
+                }
+            }
+            _ => {
+                let Some(nav) = NavKey::from_key(key) else {
+                    return Handled::Ignored;
+                };
+                match self.navigate(current, nav, page) {
+                    Some(idx) if idx != current => {
+                        Handled::Event(ContextMenuEvent::SelectionChanged { idx })
+                    }
+                    Some(_) => Handled::Consumed,
+                    None => Handled::Ignored,
+                }
+            }
+        }
+    }
+}
+
+impl Primitive for ContextMenu {
+    type Layout = ContextMenuPrimitiveLayout;
+    type Event = ContextMenuEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::ContextMenu(self.clone())
+    }
+
+    /// The widest row's own content ([`Self::measure_generic_width`]) and
+    /// one [`item_heights`] row per item — plus, on a cell grid, the
+    /// border ring both axes spend a cell on at each edge.
+    fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
+        let inset = border_inset_for(ctx);
+        let (item_h, sep_h) = item_heights(row_pitch(ctx));
+        let height: f32 = self
+            .items
+            .iter()
+            .map(|item| if item.is_separator() { sep_h } else { item_h })
+            .sum();
+        crate::NaturalSize::new(
+            Some(self.measure_generic_width(ctx.char_width, 0.0) + inset * 2.0),
+            Some(height + inset * 2.0),
+        )
+    }
+
+    /// `rect` is the popup's whole box — a host has already resolved
+    /// where the popup goes (through [`ContextMenu::layout`]'s own
+    /// anchor-relative placement, or by handing this widget a rect) — so
+    /// the items region is `rect` inset by
+    /// [`ContextMenuPrimitiveLayout::border_inset`] on all four sides,
+    /// which is both the space the rows are placed in and the chrome
+    /// reservation a cell-grid border needs. Rows are [`item_heights`]
+    /// tall for the host's own line height.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> ContextMenuPrimitiveLayout {
+        let border_inset = border_inset_for(ctx);
+        let viewport = Rect::new(
+            rect.x + border_inset,
+            rect.y + border_inset,
+            (rect.width - border_inset * 2.0).max(0.0),
+            (rect.height - border_inset * 2.0).max(0.0),
+        );
+        let (item_height, separator_height) = item_heights(row_pitch(ctx));
+        // The box fills `viewport`: every `ContextMenuPlacement` resolves
+        // to the viewport's own origin for a zero-height anchor sitting
+        // there (`Anchor::resolve` clamps the box inside the viewport
+        // whichever side it prefers), so an already-placed popup paints
+        // where its host put it rather than re-running placement.
+        let layout = self.layout(viewport.x, viewport.y, viewport, viewport.width, |i| {
+            if self.items[i].is_separator() {
+                ContextMenuItemMeasure::new(separator_height)
+            } else {
+                ContextMenuItemMeasure::new(item_height)
+            }
+        });
+        ContextMenuPrimitiveLayout {
+            area: rect,
+            border_inset,
+            viewport,
+            item_height,
+            separator_height,
+            layout,
+        }
+    }
+
+    /// The shared pixel painter — the same `native_surface_paint::paint`
+    /// every pixel backend's `draw_context_menu` wrapper calls, rendering
+    /// shortcut hints for the host platform.
+    fn paint(
+        &self,
+        layout: &ContextMenuPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(
+                self,
+                &layout.layout,
+                host_platform(),
+                surface,
+                theme,
+                style,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, theme, style);
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_context_menu`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &ContextMenuPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_context_menu(buf, self, &layout.layout, theme);
+    }
+}
+
+/// The border reservation a `ctx`'s units imply — see
+/// [`CELL_BORDER_INSET`].
+fn border_inset_for(ctx: &LayoutCtx) -> f32 {
+    match ctx.units() {
+        Units::Cells => CELL_BORDER_INSET,
+        _ => 0.0,
+    }
+}
+
+/// The line height [`item_heights`] derives row pitch from, floored at
+/// one unit so a ctx carrying no line height still lays out one row per
+/// item instead of collapsing every row to zero.
+fn row_pitch(ctx: &LayoutCtx) -> f32 {
+    if ctx.line_height > 0.0 {
+        ctx.line_height
+    } else {
+        1.0
+    }
+}
+
+impl Interactive for ContextMenu {
+    type State = ContextMenuState;
+    type Action = ContextMenuEvent;
+
+    /// One focus stop as a whole while the popup is live — it navigates
+    /// internally through [`Self::handle`]'s own key dispatch rather than
+    /// declaring a stop per row. [`FocusSpec::None`] for an empty popup.
+    fn focus(&self) -> FocusSpec {
+        if self.items.is_empty() {
+            FocusSpec::None
+        } else {
+            FocusSpec::Stop
+        }
+    }
+
+    fn handle(
+        &self,
+        state: &mut ContextMenuState,
+        event: &RoutedEvent,
+        layout: &ContextMenuPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ContextMenuEvent> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                local,
+                ..
+            } => {
+                let click = self.resolve_click(
+                    &layout.layout,
+                    layout.area.x + local.x,
+                    layout.area.y + local.y,
+                );
+                match click {
+                    ContextMenuClick::Item { id, .. } => {
+                        cx.request_focus(None);
+                        Handled::Event(ContextMenuEvent::Activated { item: id })
+                    }
+                    ContextMenuClick::Submenu { idx } => {
+                        cx.request_focus(None);
+                        Handled::Event(ContextMenuEvent::SubmenuOpened { idx })
+                    }
+                    // A separator, a disabled row, or the box's own
+                    // chrome: the popup swallows the click rather than
+                    // letting it fall through to whatever it floats over.
+                    ContextMenuClick::Inert => {
+                        cx.request_focus(None);
+                        Handled::Consumed
+                    }
+                    ContextMenuClick::Outside => Handled::Event(ContextMenuEvent::Dismissed),
+                }
+            }
+            // Hover moves the highlight, and opens a submenu parent's
+            // child popup immediately — no timer, the same "open on
+            // hover" shape every menu in this crate uses.
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                local,
+                ..
+            } => {
+                let click = self.resolve_click(
+                    &layout.layout,
+                    layout.area.x + local.x,
+                    layout.area.y + local.y,
+                );
+                match click {
+                    ContextMenuClick::Submenu { idx } => {
+                        Handled::Event(ContextMenuEvent::SubmenuOpened { idx })
+                    }
+                    ContextMenuClick::Item { idx, .. } if idx != self.selected_idx => {
+                        Handled::Event(ContextMenuEvent::SelectionChanged { idx })
+                    }
+                    ContextMenuClick::Item { .. } => Handled::Consumed,
+                    ContextMenuClick::Inert | ContextMenuClick::Outside => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Key(key) => self.handle_key(key, layout.page(), state),
+            // `A11yAction` carries no row index through this generic
+            // seam, so `Click` activates whichever row is highlighted —
+            // the same one Enter activates, matching the
+            // assistive-technology default-action convention.
+            RoutedEvent::Action(A11yAction::Click) => self.activate(self.selected_idx),
+            _ => Handled::Ignored,
+        }
+    }
+
+    fn a11y_actions(&self, _state: &ContextMenuState) -> Vec<A11yAction> {
+        if self.items.is_empty() {
+            Vec::new()
+        } else {
+            vec![A11yAction::Click]
+        }
+    }
+
+    /// One sub-part per visible row, addressed by its index into
+    /// [`ContextMenu::items`], in [`Self::handle`]'s own local space.
+    fn sub_regions(&self, layout: &ContextMenuPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        layout
+            .layout
+            .visible_items
+            .iter()
+            .map(|vis| {
+                (
+                    Rect::new(
+                        vis.bounds.x - layout.area.x,
+                        vis.bounds.y - layout.area.y,
+                        vis.bounds.width,
+                        vis.bounds.height,
+                    ),
+                    SubTarget(vis.item_idx as u64),
+                )
+            })
+            .collect()
+    }
+}
+
 // `paint` below is the one shared paint implementation, written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::palette::native_surface_paint` for the
@@ -642,8 +1280,8 @@ impl ContextMenu {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{ContextMenu, ContextMenuGlyphs, ContextMenuItem, ContextMenuLayout};
-    use crate::accelerator::{render_accelerator, Platform};
+    use super::{shortcut_text, ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
+    use crate::accelerator::Platform;
     use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
@@ -657,19 +1295,6 @@ pub(crate) mod native_surface_paint {
     const ICON_COLUMN_WIDTH: f32 = 16.0;
     /// Gap between the glyph column and the label text that follows it.
     const ICON_COLUMN_GAP: f32 = 4.0;
-
-    /// Right-aligned shortcut text — sourced from `item.detail`
-    /// (preferred, back-compat) or rendered from `item.key_equivalent`
-    /// for `platform` (`⌘S` on macOS, `Ctrl+S` elsewhere). Returns
-    /// `None` if neither is set.
-    pub(super) fn shortcut_text(item: &ContextMenuItem, platform: Platform) -> Option<String> {
-        if let Some(ref det) = item.detail {
-            return Some(det.spans.iter().map(|sp| sp.text.as_str()).collect());
-        }
-        item.key_equivalent
-            .as_ref()
-            .map(|acc| render_accelerator(acc, platform))
-    }
 
     /// Paint a [`ContextMenu`] popup at its caller-resolved
     /// `menu_layout` onto `surface`. Returns the per-clickable-item hit
@@ -1007,6 +1632,1211 @@ pub(crate) mod native_surface_paint {
         surface.surface_stroke_rect(bounds, theme.hover_border, 1.0);
 
         rects
+    }
+}
+
+/// The cell-grid painter for [`ContextMenu`], written against
+/// [`crate::CellSurface`].
+///
+/// A box-bordered popup with one row per item: the border ring paints on
+/// the cells immediately *outside* [`ContextMenuLayout::bounds`] (the
+/// [`CELL_BORDER_INSET`] a caller reserves up front), and every row
+/// paints inside it.
+///
+/// - A **separator** row draws a horizontal `─` rule in
+///   [`crate::Theme::muted_fg`].
+/// - The **selected** clickable row renders inverted (fg/bg swapped);
+///   a disabled row renders dimmed.
+/// - An item with `checked == Some(true)` shows a leading `✓` in the
+///   row's left gutter column; an item with no `checked` state but an
+///   [`ContextMenuItem::icon`] shows that icon's resolved glyph in the
+///   same column instead (`checked` always wins the shared slot). When
+///   *any* item in the menu carries a checked state or an icon, every row
+///   reserves a two-column gutter (glyph plus one blank gap) ahead of its
+///   label, so a glyph never runs into the label; a menu with neither
+///   keeps the single-column left margin.
+/// - A **submenu parent** shows `▶` in the far-right column instead of a
+///   shortcut hint (it opens a child menu rather than firing an action);
+///   every other row's trailing columns show [`shortcut_text`]'s hint,
+///   right-aligned.
+///
+/// `glyphs` optionally overrides the check-mark and submenu-arrow marks;
+/// each slot is a single cell, so only an override's first `char`
+/// renders, and `nerd_fonts_enabled` picks which half of each override
+/// [`Icon`] is used. The same content
+/// [`native_surface_paint::paint`] puts on a pixel surface, degraded onto
+/// the cell grid (see [`crate::paint_surface`]'s module doc, "Why TUI
+/// stays out").
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{shortcut_text, ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
+    use crate::accelerator::Platform;
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// An opaque single-cell style — colours only, no modifier.
+    fn solid(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `menu` at its caller-resolved `layout`.
+    ///
+    /// `layout.bounds` is the **inner** items region; the box border
+    /// paints on a whole cell *outside* it on every side. For that border
+    /// to have a cell to occupy when the menu is anchored flush against a
+    /// viewport edge, the caller reserves it up front — the inset
+    /// [`crate::primitive::Primitive::layout`] reports as
+    /// [`super::ContextMenuPrimitiveLayout::border_inset`]. Reserving it
+    /// in the layout, rather than shifting only where this function
+    /// paints, keeps painted rows and the rows
+    /// [`ContextMenuLayout::hit_test`] reports in one coordinate space.
+    ///
+    /// That inset is a *recommendation*, not a precondition: a layout
+    /// built from a non-inset viewport (so `bounds.x` or `bounds.y`
+    /// rounds to `0`) still renders, and still paints every item on the
+    /// row its own `bounds` reports. The consequence is cosmetic and
+    /// confined to the near edge — the border column/row has nowhere to
+    /// go outside the surface, so it falls on the first item
+    /// column/row, which is painted after it and wins. Nothing here
+    /// panics or wraps on such a layout.
+    pub(crate) fn paint(
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+        glyphs: Option<&ContextMenuGlyphs>,
+        nerd_fonts_enabled: bool,
+    ) {
+        let bg = theme.tab_bar_bg;
+        let fg = theme.foreground;
+        let sep_fg = theme.muted_fg;
+        let dim_fg = theme.muted_fg;
+
+        // Menu-wide decision, not per-item: when any item carries a
+        // checked state or an icon, every row's label indents by two
+        // columns (glyph + gap) instead of one, so a glyph never runs
+        // straight into the label text that follows it.
+        let has_icon_gutter = menu
+            .items
+            .iter()
+            .any(|item| item.checked.is_some() || item.icon.is_some());
+        let label_col_offset: u16 = if has_icon_gutter { 2 } else { 1 };
+
+        let inner_x = layout.bounds.x.round() as u16;
+        let inner_y = layout.bounds.y.round() as u16;
+        let inner_w = layout.bounds.width.round() as u16;
+        let inner_h = layout.bounds.height.round() as u16;
+        if inner_w == 0 || inner_h == 0 {
+            return;
+        }
+        // Border box: the ring of cells immediately outside the items
+        // region. `bounds` comes from caller-supplied `f32` geometry, so
+        // a viewport that reserved no inset can put the items region at
+        // column/row 0, leaving the near border no cell inside the
+        // surface to occupy. Saturate instead of underflowing: the near
+        // border then shares the first item column/row, which is painted
+        // afterwards and wins, so the only consequence is a missing
+        // edge. Items always paint at the coordinates `bounds` reports,
+        // keeping paint and `hit_test` in agreement whichever way this
+        // lands.
+        let left = inner_x.saturating_sub(1);
+        let top = inner_y.saturating_sub(1);
+        let right = inner_x.saturating_add(inner_w);
+        let bottom = inner_y.saturating_add(inner_h);
+
+        let chrome = solid(fg, bg);
+        for cy in top..=bottom {
+            for cx in left..=right {
+                let ch = if cy == top {
+                    if cx == left {
+                        '┌'
+                    } else if cx == right {
+                        '┐'
+                    } else {
+                        '─'
+                    }
+                } else if cy == bottom {
+                    if cx == left {
+                        '└'
+                    } else if cx == right {
+                        '┘'
+                    } else {
+                        '─'
+                    }
+                } else if cx == left || cx == right {
+                    '│'
+                } else {
+                    ' '
+                };
+                surface.put_char(cx, cy, ch, chrome);
+            }
+        }
+
+        for vis in &layout.visible_items {
+            let item = &menu.items[vis.item_idx];
+            let row_y = vis.bounds.y.round() as u16;
+            if vis.is_separator {
+                for dx in 0..inner_w {
+                    surface.put_char(inner_x.saturating_add(dx), row_y, '─', solid(sep_fg, bg));
+                }
+                continue;
+            }
+            let is_selected = vis.item_idx == menu.selected_idx;
+            let (item_fg, item_bg) = if is_selected && vis.clickable {
+                (bg, fg) // inverted
+            } else if !vis.clickable {
+                (dim_fg, bg)
+            } else {
+                (fg, bg)
+            };
+            let row_style = solid(item_fg, item_bg);
+            for dx in 0..inner_w {
+                surface.put_char(inner_x.saturating_add(dx), row_y, ' ', row_style);
+            }
+            // Check prefix — sits in the left gutter column at inner_x.
+            // `Some(false)` reserves the slot without filling it (so a
+            // column of mixed checked/unchecked items aligns visually).
+            if matches!(item.checked, Some(true)) {
+                let ch = glyphs
+                    .and_then(ContextMenuGlyphs::checked_glyph)
+                    .map(|icon| icon.resolve(nerd_fonts_enabled))
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or('✓');
+                surface.put_char(inner_x, row_y, ch, row_style);
+            } else if item.checked.is_none() {
+                // No checkbox state claims the shared leading slot —
+                // show the item's own icon there instead, if it has one.
+                // A single cell, same degrade every TUI chrome-glyph slot
+                // takes: only the resolved glyph's first `char` renders.
+                if let Some(ch) = item
+                    .icon
+                    .as_ref()
+                    .and_then(|icon| icon.resolve(nerd_fonts_enabled).chars().next())
+                {
+                    surface.put_char(inner_x, row_y, ch, row_style);
+                }
+            }
+            let label = item
+                .label
+                .spans
+                .first()
+                .map(|s| s.text.as_str())
+                .unwrap_or("");
+            for (i, ch) in label.chars().enumerate() {
+                let col = inner_x
+                    .saturating_add(label_col_offset)
+                    .saturating_add(i as u16);
+                if col >= right {
+                    break;
+                }
+                surface.put_char(col, row_y, ch, row_style);
+            }
+            if item.submenu.is_some() {
+                // Submenu parent: `▶` at the far-right column. Keyboard
+                // shortcuts are not rendered for submenu parents (they
+                // open a child menu rather than dispatching an action).
+                let arrow_fg = if is_selected && vis.clickable {
+                    item_fg
+                } else {
+                    dim_fg
+                };
+                let arrow_ch = glyphs
+                    .and_then(ContextMenuGlyphs::submenu_arrow_glyph)
+                    .map(|icon| icon.resolve(nerd_fonts_enabled))
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or('▶');
+                surface.put_char(
+                    right.saturating_sub(1),
+                    row_y,
+                    arrow_ch,
+                    solid(arrow_fg, item_bg),
+                );
+            } else if let Some(shortcut) = shortcut_text(item, Platform::Tui) {
+                let sc_w = shortcut.chars().count().min(u16::MAX as usize) as u16;
+                let sc_start =
+                    inner_x.saturating_add(inner_w.saturating_sub(sc_w.saturating_add(1)));
+                let sc_fg = if is_selected && vis.clickable {
+                    item_fg
+                } else {
+                    dim_fg
+                };
+                let sc_style = solid(sc_fg, item_bg);
+                for (i, ch) in shortcut.chars().enumerate() {
+                    let col = sc_start.saturating_add(i as u16);
+                    if col >= right {
+                        break;
+                    }
+                    surface.put_char(col, row_y, ch, sc_style);
+                }
+            }
+        }
+    }
+}
+
+/// The cell painter's own coverage, run against a real ratatui buffer
+/// through [`crate::tui::draw_context_menu`] and its glyph-override and
+/// submenu-stack siblings — the thin delegates that adapt a `Buffer`
+/// into the [`crate::CellSurface`] [`cell_paint::paint`] takes.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use super::*;
+    use crate::theme::Theme;
+    use crate::tui::draw_context_menu_with_submenus;
+    use crate::tui::{draw_context_menu, draw_context_menu_with_glyphs};
+    use crate::types::{StyledSpan, StyledText, WidgetId};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn item(label: &str, clickable: bool) -> ContextMenuItem {
+        ContextMenuItem {
+            id: if clickable {
+                Some(WidgetId::new(label))
+            } else {
+                None
+            },
+            label: StyledText {
+                spans: vec![StyledSpan::plain(label)],
+            },
+            disabled: !clickable,
+            ..Default::default()
+        }
+    }
+
+    fn make_menu() -> ContextMenu {
+        ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![
+                item("Open", true),
+                item("Open to Side", true),
+                // Separator: id = None.
+                ContextMenuItem::default(),
+                item("Delete", true),
+            ],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        }
+    }
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    #[test]
+    fn paints_corner_glyphs_and_items() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        // Border corners around the inner items region (inset by 1).
+        let bx = layout.bounds.x.round() as u16 - 1;
+        let by = layout.bounds.y.round() as u16 - 1;
+        let bw = layout.bounds.width.round() as u16 + 2;
+        let bh = layout.bounds.height.round() as u16 + 2;
+        assert_eq!(cell_char(&buf, bx, by), '┌');
+        assert_eq!(cell_char(&buf, bx + bw - 1, by), '┐');
+        assert_eq!(cell_char(&buf, bx, by + bh - 1), '└');
+        assert_eq!(cell_char(&buf, bx + bw - 1, by + bh - 1), '┘');
+    }
+
+    /// An app-supplied [`ContextMenuGlyphs`] override swaps the
+    /// checked-item check-mark and submenu pull-right arrow; with no
+    /// override, [`draw_context_menu_with_glyphs`] (what
+    /// [`draw_context_menu`] always calls) paints the same `✓`/`▶`
+    /// glyphs as today's default.
+    #[test]
+    fn context_menu_glyphs_override_swaps_checked_and_arrow_default_keeps_defaults() {
+        let mut checked_item = item("Word Wrap", true);
+        checked_item.checked = Some(true);
+        let mut submenu_item = item("Share", true);
+        submenu_item.submenu = Some(vec![item("Email", true)]);
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![checked_item, submenu_item],
+            selected_idx: 2, // neither row selected
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+
+        // Default (no override): '✓' and '▶'.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        draw_context_menu_with_glyphs(&mut buf, &menu, &layout, &Theme::default(), None, false);
+        let mut found_check = false;
+        let mut found_arrow = false;
+        for y in 0..10 {
+            for x in 0..30 {
+                match cell_char(&buf, x, y) {
+                    '✓' => found_check = true,
+                    '▶' => found_arrow = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(found_check, "expected default '✓' check glyph");
+        assert!(found_arrow, "expected default '▶' submenu arrow");
+
+        // Override: the app's own glyphs replace the defaults, and the
+        // defaults no longer appear anywhere in the buffer.
+        let glyphs = ContextMenuGlyphs::new()
+            .with_checked_glyph("+")
+            .with_submenu_arrow_glyph(">");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        draw_context_menu_with_glyphs(
+            &mut buf,
+            &menu,
+            &layout,
+            &Theme::default(),
+            Some(&glyphs),
+            true,
+        );
+        let mut found_plus = false;
+        let mut found_gt = false;
+        for y in 0..10 {
+            for x in 0..30 {
+                let ch = cell_char(&buf, x, y);
+                assert_ne!(ch, '✓', "default check glyph leaked through override");
+                assert_ne!(ch, '▶', "default submenu arrow leaked through override");
+                match ch {
+                    '+' => found_plus = true,
+                    '>' => found_gt = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(found_plus, "expected overridden '+' check glyph");
+        assert!(found_gt, "expected overridden '>' submenu arrow");
+    }
+
+    #[test]
+    fn separator_paints_horizontal_dashes() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        // The third visible item is a separator — find a row that's all '─'.
+        let mut found_sep_row = false;
+        for vis in &layout.visible_items {
+            if vis.is_separator {
+                let row_y = vis.bounds.y.round() as u16;
+                let inner_x = layout.bounds.x.round() as u16;
+                let inner_w = layout.bounds.width.round() as u16;
+                let row: String = (inner_x..inner_x + inner_w)
+                    .map(|x| cell_char(&buf, x, row_y))
+                    .collect();
+                assert!(row.chars().all(|c| c == '─'), "separator row: {:?}", row);
+                found_sep_row = true;
+                break;
+            }
+        }
+        assert!(found_sep_row, "expected at least one separator row");
+    }
+
+    #[test]
+    fn selected_clickable_inverted() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu(); // selected_idx = 0 → "Open"
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        let theme = Theme {
+            tab_bar_bg: crate::types::Color::rgb(0, 0, 0),
+            foreground: crate::types::Color::rgb(255, 255, 255),
+            ..Theme::default()
+        };
+        draw_context_menu(&mut buf, &menu, &layout, &theme);
+
+        // Find the "Open" row's first cell (inner_x). The selected row has
+        // inverted bg = foreground colour.
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        let bg = buf[(inner_x, row_y)].bg;
+        assert_eq!(bg, ratatui::style::Color::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn checked_item_paints_check_glyph_in_left_padding() {
+        use crate::primitives::context_menu::ContextMenuItem;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![
+                ContextMenuItem {
+                    id: Some(WidgetId::new("toggle-sidebar")),
+                    label: StyledText {
+                        spans: vec![StyledSpan::plain("Toggle Sidebar")],
+                    },
+                    checked: Some(true),
+                    ..Default::default()
+                },
+                ContextMenuItem {
+                    id: Some(WidgetId::new("toggle-panel")),
+                    label: StyledText {
+                        spans: vec![StyledSpan::plain("Toggle Panel")],
+                    },
+                    checked: Some(false),
+                    ..Default::default()
+                },
+            ],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let checked_row = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x, checked_row),
+            '✓',
+            "checked=Some(true) item should paint ✓ at inner_x",
+        );
+        let unchecked_row = layout.visible_items[1].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x, unchecked_row),
+            ' ',
+            "checked=Some(false) item should leave the slot blank",
+        );
+    }
+
+    #[test]
+    fn item_icon_paints_resolved_glyph_in_left_padding() {
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::types::Icon;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("new-file")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("New File")],
+                },
+                icon: Some(Icon::new("G", "F")),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        // `draw_context_menu` always resolves with `nerd_fonts_enabled =
+        // false`, so the icon resolves to its ASCII fallback "F", not the
+        // glyph "G". `item_icon_paints_nerd_font_glyph_when_enabled` below
+        // pins the `nerd_fonts_enabled = true` path through
+        // `draw_context_menu_with_glyphs`.
+        assert_eq!(
+            cell_char(&buf, inner_x, row_y),
+            'F',
+            "item icon should paint its resolved fallback glyph at inner_x",
+        );
+    }
+
+    #[test]
+    fn menu_with_icon_reserves_two_cell_gutter_with_blank_gap() {
+        // A menu where any item carries an icon reserves a 2-cell gutter
+        // (icon cell + one blank gap cell) for every row, so the icon
+        // never runs straight into the label — the "XCut"/"CCopy"
+        // overprint the icon column exists to prevent.
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::types::Icon;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("cut")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("Cut")],
+                },
+                icon: Some(Icon::new("G", "X")),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x, row_y),
+            'X',
+            "icon glyph at inner_x"
+        );
+        assert_eq!(
+            cell_char(&buf, inner_x + 1, row_y),
+            ' ',
+            "gap cell between icon and label must be blank, not the label's first char"
+        );
+        assert_eq!(
+            cell_char(&buf, inner_x + 2, row_y),
+            'C',
+            "label starts two cells after inner_x, past the icon + gap"
+        );
+    }
+
+    #[test]
+    fn menu_without_icon_or_checked_keeps_single_cell_left_margin() {
+        // A plain menu (no item carries `checked`/`icon`) keeps the
+        // original compact 1-cell left margin — the 2-cell gutter is
+        // reserved only when the menu actually needs it.
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("about")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("About")],
+                },
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x + 1, row_y),
+            'A',
+            "no icon/checked anywhere in the menu: label keeps the 1-cell margin"
+        );
+    }
+
+    #[test]
+    fn item_icon_paints_nerd_font_glyph_when_enabled() {
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::types::Icon;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("new-file")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("New File")],
+                },
+                icon: Some(Icon::new("G", "F")),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu_with_glyphs(&mut buf, &menu, &layout, &Theme::default(), None, true);
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x, row_y),
+            'G',
+            "item icon should paint its Nerd Font glyph when nerd_fonts_enabled is true",
+        );
+    }
+
+    #[test]
+    fn checked_state_wins_shared_slot_over_item_icon() {
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::types::Icon;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("word-wrap")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("Word Wrap")],
+                },
+                checked: Some(true),
+                icon: Some(Icon::new("G", "F")),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x, row_y),
+            '✓',
+            "checked=Some(true) should win the shared slot over the item's own icon",
+        );
+    }
+
+    #[test]
+    fn key_equivalent_renders_as_right_aligned_shortcut() {
+        // key_equivalent set but detail unset → shortcut text comes
+        // from render_accelerator(Platform::Tui).
+        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
+        use crate::primitives::context_menu::ContextMenuItem;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("save")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("Save")],
+                },
+                key_equivalent: Some(Accelerator {
+                    id: AcceleratorId::new("editor.save"),
+                    binding: KeyBinding::Save,
+                    scope: AcceleratorScope::Global,
+                    label: None,
+                }),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        // Platform::Tui renders Save as "Ctrl+S" — look for that suffix
+        // near the right edge of the row.
+        let inner_x = layout.bounds.x.round() as u16;
+        let inner_w = layout.bounds.width.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        let row: String = (inner_x..inner_x + inner_w)
+            .map(|x| cell_char(&buf, x, row_y))
+            .collect();
+        assert!(
+            row.contains("Ctrl+S"),
+            "row should contain rendered key_equivalent: row was {row:?}",
+        );
+    }
+
+    #[test]
+    fn detail_wins_over_key_equivalent_for_back_compat() {
+        // Pre-existing apps that set `detail` directly should keep
+        // seeing that text — even when key_equivalent is also set.
+        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
+        use crate::primitives::context_menu::ContextMenuItem;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("save")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("Save")],
+                },
+                detail: Some(StyledText {
+                    spans: vec![StyledSpan::plain("⌘S-legacy")],
+                }),
+                key_equivalent: Some(Accelerator {
+                    id: AcceleratorId::new("editor.save"),
+                    binding: KeyBinding::Save,
+                    scope: AcceleratorScope::Global,
+                    label: None,
+                }),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let inner_w = layout.bounds.width.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        let row: String = (inner_x..inner_x + inner_w)
+            .map(|x| cell_char(&buf, x, row_y))
+            .collect();
+        assert!(
+            row.contains("legacy"),
+            "detail string should win over key_equivalent: row was {row:?}",
+        );
+    }
+
+    #[test]
+    fn zero_size_is_a_no_op() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            0.0,
+            0.0,
+            crate::event::Rect::new(0.0, 0.0, 0.0, 0.0),
+            0.0,
+            |_| ContextMenuItemMeasure::new(0.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── Submenu (▶ affordance + pull-right popup) ────────────────────────
+
+    fn submenu_parent_menu() -> ContextMenu {
+        use crate::types::{StyledSpan, StyledText, WidgetId};
+        let sub_item = ContextMenuItem {
+            id: Some(WidgetId::new("sub-a")),
+            label: StyledText {
+                spans: vec![StyledSpan::plain("SubItem")],
+            },
+            ..Default::default()
+        };
+        ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![
+                ContextMenuItem {
+                    id: Some(WidgetId::new("parent")),
+                    label: StyledText {
+                        spans: vec![StyledSpan::plain("Parent")],
+                    },
+                    submenu: Some(vec![sub_item]),
+                    ..Default::default()
+                },
+                ContextMenuItem {
+                    id: Some(WidgetId::new("leaf")),
+                    label: StyledText {
+                        spans: vec![StyledSpan::plain("Leaf")],
+                    },
+                    ..Default::default()
+                },
+            ],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        }
+    }
+
+    #[test]
+    fn submenu_parent_paints_arrow_affordance() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+        let menu = submenu_parent_menu();
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 40.0, 10.0),
+            16.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        // The ▶ appears at the rightmost inner column of the parent item's row.
+        let inner_x = layout.bounds.x.round() as u16;
+        let inner_w = layout.bounds.width.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x + inner_w - 1, row_y),
+            '▶',
+            "submenu-parent item should show ▶ at rightmost inner column",
+        );
+
+        // A plain leaf item (no submenu) must not show ▶.
+        let leaf_row_y = layout.visible_items[1].bounds.y.round() as u16;
+        assert_ne!(
+            cell_char(&buf, inner_x + inner_w - 1, leaf_row_y),
+            '▶',
+            "plain leaf item must not show ▶",
+        );
+    }
+
+    #[test]
+    fn submenu_popup_anchored_at_right_edge() {
+        // Root menu inner at x=2, width=16.
+        // Viewport 50 wide — plenty of room to the right.
+        // Expected: child inner left = 2 + 16 + 1 = 19.
+        //           child left border (┌) at (18, anchor_y − 1).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 50, 10));
+        let menu = submenu_parent_menu();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 50.0, 10.0);
+        let layout = menu.layout(2.0, 1.0, viewport, 16.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+
+        // submenu_path = [0] means item 0 (the submenu-parent) is open.
+        // selected_at_depth = [0] → first child selected.
+        draw_context_menu_with_submenus(
+            &mut buf,
+            &menu,
+            &layout,
+            &[0],
+            &[0],
+            viewport,
+            &Theme::default(),
+        );
+
+        // Root menu ┌ is at (inner_x − 1, inner_y − 1) = (1, 0).
+        assert_eq!(cell_char(&buf, 1, 0), '┌', "root menu top-left corner");
+
+        // Child menu: preferred_x = 2 + 16 + 1 = 19 (inner left).
+        // Child left border (┌) at inner_x − 1 = 18.
+        // anchor_y = bounds.y of visible_items[0] = 1.0
+        // by = anchor_y − 1 = 0.
+        assert_eq!(
+            cell_char(&buf, 18, 0),
+            '┌',
+            "child popup top-left corner should be at x=18 (right-edge anchor)",
+        );
+    }
+
+    #[test]
+    fn submenu_overflow_flips_left() {
+        // Viewport 50 wide.  Root menu inner at x=25, width=10.
+        // preferred_x = 25 + 10 + 1 = 36; 36 + 20 = 56 > 50 → overflow.
+        // flipped_x   = 25 − 20 − 1 = 4 ≥ 0 → use 4.
+        // Child inner left = 4 → child ┌ at (3, anchor_y − 1).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 50, 10));
+        let menu = submenu_parent_menu();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 50.0, 10.0);
+        let layout = menu.layout(25.0, 1.0, viewport, 10.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+
+        draw_context_menu_with_submenus(
+            &mut buf,
+            &menu,
+            &layout,
+            &[0],
+            &[0],
+            viewport,
+            &Theme::default(),
+        );
+
+        // anchor_y = 1.0, child border-top at y = 0.
+        assert_eq!(
+            cell_char(&buf, 3, 0),
+            '┌',
+            "flipped child popup top-left corner should be at x=3 (left-flip)",
+        );
+    }
+
+    #[test]
+    fn top_border_survives_when_menu_anchored_at_viewport_top_row() {
+        // Anchored at y=0 (e.g. a right-click on a tab bar rendered at the
+        // very top row of the viewport). Callers lay a menu out inside
+        // `Backend::context_menu_viewport` — the surface inset by one cell
+        // on every side on TUI, where the box border sits outside the item
+        // region. This test passes that inset surface directly, so
+        // `layout_at`'s own clamping puts `bounds.y` on row 1 and leaves
+        // row 0 free for the border.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            2.0,
+            0.0,
+            crate::event::Rect::new(1.0, 1.0, 29.0, 9.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        let inner_x = layout.bounds.x.round() as u16;
+        let bx = inner_x - 1;
+        // Top border must still be drawn, and on a different row than the
+        // first item's label.
+        assert_eq!(
+            cell_char(&buf, bx, 0),
+            '┌',
+            "top-left corner must be visible when anchored at y=0"
+        );
+        assert_eq!(
+            cell_char(&buf, inner_x + 1, 1),
+            'O',
+            "first item (\"Open\") must render one row below the top border"
+        );
+    }
+
+    #[test]
+    fn left_border_survives_when_menu_anchored_at_viewport_left_edge() {
+        // Symmetric case: anchored at x=0 inside the same inset surface
+        // (see the top-row test above), so `layout_at` puts `bounds.x` on
+        // column 1, leaving column 0 free for the border.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            0.0,
+            1.0,
+            crate::event::Rect::new(1.0, 1.0, 29.0, 9.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, 0, row_y),
+            '│',
+            "left border must be visible when anchored at x=0"
+        );
+        assert_eq!(
+            cell_char(&buf, 2, row_y),
+            'O',
+            "first item (\"Open\") label must still start after the left border"
+        );
+    }
+
+    #[test]
+    fn clicks_land_on_painted_row_when_menu_anchored_at_viewport_corner() {
+        // Paint↔click round-trip: a menu anchored flush against the
+        // top-left corner of `Backend::context_menu_viewport` must paint
+        // its first item on the exact row/column `hit_test` reports for
+        // that item's `WidgetId`. The border occupies the row and column
+        // outside `bounds`, so neither moves.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            0.0,
+            0.0,
+            crate::event::Rect::new(1.0, 1.0, 29.0, 9.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        let first = &layout.visible_items[0];
+        let item_x = first.bounds.x;
+        let row_y = first.bounds.y;
+
+        // Sanity: the painted label starts one column right of the item's
+        // left edge (the check-mark/padding column), on the item's row.
+        assert_eq!(
+            cell_char(&buf, item_x.round() as u16 + 1, row_y.round() as u16),
+            'O',
+            "\"Open\" must be painted at the row/column its own bounds report"
+        );
+
+        // The border occupies the row/column directly outside `bounds` —
+        // hit-testing that cell must miss the menu, not resolve to the item.
+        assert_eq!(
+            layout.hit_test(item_x - 1.0, row_y - 1.0),
+            ContextMenuHit::Empty,
+            "the border cell must not be classified as the first item"
+        );
+
+        // Hit-testing the exact cell the item was painted at must resolve
+        // to that item's id: reserving the border in the viewport the
+        // layout is built from is what keeps paint and hit-test in one
+        // coordinate space.
+        assert_eq!(
+            layout.hit_test(item_x, row_y),
+            ContextMenuHit::Item(WidgetId::new("Open")),
+            "clicking the painted row of the first item must hit \"Open\""
+        );
+    }
+
+    /// Row `y` of `buf`, as a string, for substring assertions.
+    fn buf_row(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| cell_char(buf, x, y)).collect()
+    }
+
+    #[test]
+    fn zero_origin_layout_paints_without_overflow() {
+        // A caller that lays the menu out in the raw viewport instead of
+        // `Backend::context_menu_viewport` gets an item region on column
+        // and row 0, so the near border has no cell inside the buffer to
+        // occupy. That must stay a cosmetic degrade: the `u16` border
+        // arithmetic may not underflow (a panic under `overflow-checks`,
+        // a wrap to 65535 without), and every item must still paint on
+        // the row and column its own bounds report.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            0.0,
+            0.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        assert_eq!(
+            (
+                layout.bounds.x.round() as u16,
+                layout.bounds.y.round() as u16
+            ),
+            (0, 0),
+            "test precondition: a non-inset viewport puts the item region at the origin"
+        );
+
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        let first = &layout.visible_items[0];
+        assert_eq!(
+            cell_char(
+                &buf,
+                first.bounds.x.round() as u16 + 1,
+                first.bounds.y.round() as u16
+            ),
+            'O',
+            "\"Open\" must paint at the row/column its own bounds report:\n{}",
+            buf_row(&buf, first.bounds.y.round() as u16)
+        );
+        assert_eq!(
+            layout.hit_test(first.bounds.x + 1.0, first.bounds.y),
+            ContextMenuHit::Item(WidgetId::new("Open")),
+            "paint and hit-test must agree even when the border has no cell"
+        );
+
+        // The edges that do have room are unaffected: the border still
+        // closes on the right and the bottom.
+        let right = layout.bounds.width.round() as u16;
+        let bottom = layout.bounds.height.round() as u16;
+        assert_eq!(
+            cell_char(&buf, right, bottom),
+            '┘',
+            "bottom-right corner must still be painted"
+        );
+    }
+
+    #[test]
+    fn submenu_child_keeps_its_border_at_zero_origin_viewport() {
+        // Same non-inset viewport, but through the submenu rasteriser:
+        // the parent sits at the origin, so the child's own `layout`
+        // would clamp to row 0 too. `draw_context_menu_with_submenus`
+        // insets the viewport it lays children out in, which keeps the
+        // child's chrome on-screen; either way the `u16` arithmetic must
+        // not overflow and the child's items must still render.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 50, 10));
+        let menu = submenu_parent_menu();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 50.0, 10.0);
+        let layout = menu.layout(0.0, 0.0, viewport, 16.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+        assert_eq!(
+            layout.bounds.y.round() as u16,
+            0,
+            "test precondition: the parent menu's item region starts on row 0"
+        );
+
+        draw_context_menu_with_submenus(
+            &mut buf,
+            &menu,
+            &layout,
+            &[0],
+            &[0],
+            viewport,
+            &Theme::default(),
+        );
+
+        let screen: String = (0..buf.area.height)
+            .map(|y| buf_row(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            screen.contains("SubItem"),
+            "the child menu's item must render:\n{screen}"
+        );
+        assert!(
+            screen.lines().any(|line| {
+                matches!((line.find('┌'), line.rfind('┐')), (Some(l), Some(r)) if r > l)
+            }),
+            "the child popup's top border must be fully on-screen:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn submenu_left_flip_against_left_edge_does_not_overflow() {
+        // The left-flip branch subtracts the child width from the
+        // parent's left edge, which goes negative when the parent is
+        // anchored near column 0 in a narrow viewport. The child is
+        // clamped back inside instead of wrapping, and still paints.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 24, 8));
+        let menu = submenu_parent_menu();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 24.0, 8.0);
+        let layout = menu.layout(1.0, 0.0, viewport, 16.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+
+        draw_context_menu_with_submenus(
+            &mut buf,
+            &menu,
+            &layout,
+            &[0],
+            &[0],
+            viewport,
+            &Theme::default(),
+        );
+
+        let screen: String = (0..buf.area.height)
+            .map(|y| buf_row(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            screen.contains("SubItem"),
+            "the flipped child menu's item must render inside the buffer:\n{screen}"
+        );
     }
 }
 
@@ -1538,13 +3368,8 @@ mod tests {
         assert_eq!(anchor.y, layout.bounds.y);
     }
 
-    // ── native_surface_paint::shortcut_text ───────────────────────────────
+    // ── shortcut_text ─────────────────────────────────────────────────────
 
-    #[cfg(any(
-        feature = "gtk",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    ))]
     #[test]
     fn shortcut_text_detail_wins_over_key_equivalent() {
         use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
@@ -1561,16 +3386,10 @@ mod tests {
             ..Default::default()
         };
         let shortcut =
-            super::native_surface_paint::shortcut_text(&item, crate::accelerator::Platform::Linux)
-                .expect("detail wins");
+            super::shortcut_text(&item, crate::accelerator::Platform::Linux).expect("detail wins");
         assert_eq!(shortcut, "legacy-string");
     }
 
-    #[cfg(any(
-        feature = "gtk",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    ))]
     #[test]
     fn shortcut_text_falls_back_to_key_equivalent_per_platform() {
         use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
@@ -1585,9 +3404,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        let shortcut =
-            super::native_surface_paint::shortcut_text(&item, crate::accelerator::Platform::Macos)
-                .expect("key_equivalent produces a string");
+        let shortcut = super::shortcut_text(&item, crate::accelerator::Platform::Macos)
+            .expect("key_equivalent produces a string");
         assert!(
             shortcut.contains('⌘'),
             "macOS shortcut should contain ⌘, got {shortcut:?}",
@@ -2327,6 +4145,521 @@ mod tests {
                 "a pressed item must not also paint the plain hover tint: {:?}",
                 surface.fills
             );
+        }
+    }
+}
+
+/// The widget contract's own unit coverage: [`Primitive::layout`]'s
+/// border reservation and row pitch, [`Primitive::measure`], and every
+/// key/pointer gesture [`Interactive::handle`] resolves.
+#[cfg(test)]
+mod widget_contract_tests {
+    use super::*;
+    use crate::interactive::EventHost;
+    use crate::types::Modifiers;
+    use crate::{PointerShape, UiEvent};
+
+    /// Records what `handle` asked the host for, so a test can assert on
+    /// the focus request a click makes.
+    #[derive(Default)]
+    struct RecordingHost {
+        focused: Vec<Option<SubTarget>>,
+    }
+
+    impl EventHost for RecordingHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focused.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn leaf(id: &str, label: &str) -> ContextMenuItem {
+        ContextMenuItem {
+            id: Some(WidgetId::new(id)),
+            label: StyledText::plain(label),
+            ..Default::default()
+        }
+    }
+
+    /// Copy / Paste / ─── / Delete (disabled) / Share ▶.
+    fn menu() -> ContextMenu {
+        ContextMenu {
+            id: WidgetId::new("context_menu:editor"),
+            items: vec![
+                leaf("copy", "Copy"),
+                leaf("paste", "Paste"),
+                ContextMenuItem::default(),
+                ContextMenuItem {
+                    disabled: true,
+                    ..leaf("delete", "Delete")
+                },
+                ContextMenuItem {
+                    submenu: Some(vec![leaf("email", "Email")]),
+                    ..leaf("share", "Share")
+                },
+            ],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        }
+    }
+
+    const AREA: Rect = Rect::new(2.0, 1.0, 22.0, 8.0);
+
+    fn cell_ctx() -> LayoutCtx<'static> {
+        LayoutCtx::new(1.0, 1.0, false)
+    }
+
+    fn resolved(menu: &ContextMenu) -> ContextMenuPrimitiveLayout {
+        Primitive::layout(menu, &cell_ctx(), AREA)
+    }
+
+    fn key(key: Key) -> KeyEvent {
+        KeyEvent {
+            key,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
+    }
+
+    fn press(menu: &ContextMenu, event: KeyEvent) -> Handled<ContextMenuEvent> {
+        let layout = resolved(menu);
+        let mut state = ContextMenuState::default();
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(menu.id, &mut host);
+        Interactive::handle(menu, &mut state, &RoutedEvent::Key(event), &layout, &mut cx)
+    }
+
+    fn pointer(menu: &ContextMenu, kind: PointerKind, x: f32, y: f32) -> Handled<ContextMenuEvent> {
+        let layout = resolved(menu);
+        let mut state = ContextMenuState::default();
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(menu.id, &mut host);
+        Interactive::handle(
+            menu,
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind,
+                sub: None,
+                local: Point::new(x, y),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        )
+    }
+
+    #[test]
+    fn a_cell_layout_reserves_one_cell_of_border_on_all_four_sides() {
+        let layout = resolved(&menu());
+        assert_eq!(layout.border_inset, CELL_BORDER_INSET);
+        assert_eq!(layout.viewport, Rect::new(3.0, 2.0, 20.0, 6.0));
+        assert_eq!(layout.layout.bounds.x, 3.0);
+        assert_eq!(layout.layout.bounds.y, 2.0);
+        assert_eq!(layout.layout.bounds.width, 20.0);
+        // Five rows, one cell each, all inside the inner region.
+        assert_eq!(layout.item_height, 1.0);
+        assert_eq!(layout.separator_height, 1.0);
+        assert_eq!(layout.layout.visible_items.len(), 5);
+        assert_eq!(layout.page(), 5);
+    }
+
+    #[test]
+    fn a_pixel_layout_reserves_no_border_and_uses_the_taller_row_pitch() {
+        let ctx = LayoutCtx::new(20.0, 8.0, false);
+        let layout = Primitive::layout(&menu(), &ctx, Rect::new(0.0, 0.0, 240.0, 200.0));
+        assert_eq!(layout.border_inset, 0.0);
+        assert_eq!(layout.viewport, Rect::new(0.0, 0.0, 240.0, 200.0));
+        let (item_h, sep_h) = item_heights(20.0);
+        assert_eq!(layout.item_height, item_h);
+        assert_eq!(layout.separator_height, sep_h);
+        assert_eq!(layout.layout.visible_items[0].bounds.height, item_h);
+        assert_eq!(layout.layout.visible_items[2].bounds.height, sep_h);
+    }
+
+    #[test]
+    fn item_heights_collapse_to_one_row_on_a_cell_grid() {
+        assert_eq!(item_heights(1.0), (1.0, 1.0));
+    }
+
+    #[test]
+    fn measure_reports_the_widest_row_plus_the_border_ring() {
+        let menu = menu();
+        let natural = Primitive::measure(&menu, &cell_ctx(), Size::new(80.0, 24.0));
+        assert_eq!(
+            natural.width,
+            Some(menu.measure_generic_width(1.0, 0.0) + CELL_BORDER_INSET * 2.0)
+        );
+        // Five one-cell rows plus a border cell top and bottom.
+        assert_eq!(natural.height, Some(7.0));
+    }
+
+    #[test]
+    fn hit_test_local_resolves_against_the_areas_own_origin() {
+        let layout = resolved(&menu());
+        assert_eq!(
+            layout.hit_test_local(1.0, 1.0),
+            ContextMenuHit::Item(WidgetId::new("copy"))
+        );
+        assert_eq!(
+            layout.hit_test_local(1.0, 2.0),
+            ContextMenuHit::Item(WidgetId::new("paste"))
+        );
+        // The separator row and the disabled row are both inert.
+        assert_eq!(layout.hit_test_local(1.0, 3.0), ContextMenuHit::Inert);
+        assert_eq!(layout.hit_test_local(1.0, 4.0), ContextMenuHit::Inert);
+    }
+
+    #[test]
+    fn resolve_click_classifies_every_row_shape() {
+        let menu = menu();
+        let layout = resolved(&menu);
+        let at = |row: f32| menu.resolve_click(&layout.layout, 4.0, 2.0 + row);
+        assert_eq!(
+            at(0.0),
+            ContextMenuClick::Item {
+                idx: 0,
+                id: WidgetId::new("copy")
+            }
+        );
+        assert_eq!(at(2.0), ContextMenuClick::Inert);
+        assert_eq!(at(3.0), ContextMenuClick::Inert);
+        assert_eq!(at(4.0), ContextMenuClick::Submenu { idx: 4 });
+        assert_eq!(at(-2.0), ContextMenuClick::Outside);
+    }
+
+    #[test]
+    fn a_click_on_a_leaf_activates_it_and_claims_focus() {
+        let menu = menu();
+        let layout = resolved(&menu);
+        let mut state = ContextMenuState::default();
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(menu.id, &mut host);
+        let handled = Interactive::handle(
+            &menu,
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(2.0, 2.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(ContextMenuEvent::Activated {
+                item: WidgetId::new("paste")
+            })
+        );
+        assert_eq!(host.focused, vec![None]);
+    }
+
+    #[test]
+    fn a_click_on_a_submenu_parent_asks_for_its_child_popup() {
+        assert_eq!(
+            pointer(&menu(), PointerKind::Down(MouseButton::Left), 2.0, 5.0),
+            Handled::Event(ContextMenuEvent::SubmenuOpened { idx: 4 })
+        );
+    }
+
+    #[test]
+    fn a_click_on_an_inert_row_is_swallowed_not_ignored() {
+        assert_eq!(
+            pointer(&menu(), PointerKind::Down(MouseButton::Left), 2.0, 3.0),
+            Handled::Consumed
+        );
+    }
+
+    #[test]
+    fn hover_moves_the_highlight_and_opens_a_submenu_parent() {
+        let menu = menu();
+        assert_eq!(
+            pointer(&menu, PointerKind::Move, 2.0, 2.0),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 1 })
+        );
+        assert_eq!(
+            pointer(&menu, PointerKind::Move, 2.0, 5.0),
+            Handled::Event(ContextMenuEvent::SubmenuOpened { idx: 4 })
+        );
+        // Already on the highlighted row: owned, but nothing to report.
+        assert_eq!(
+            pointer(&menu, PointerKind::Move, 2.0, 1.0),
+            Handled::Consumed
+        );
+    }
+
+    #[test]
+    fn down_and_up_skip_the_separator_and_the_disabled_row() {
+        let mut menu = menu();
+        menu.selected_idx = 1;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Down))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 4 })
+        );
+        menu.selected_idx = 4;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Up))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 1 })
+        );
+    }
+
+    #[test]
+    fn navigation_wraps_at_both_ends() {
+        let mut menu = menu();
+        menu.selected_idx = 4;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Down))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 0 })
+        );
+        menu.selected_idx = 0;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Up))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 4 })
+        );
+    }
+
+    #[test]
+    fn home_and_end_land_on_the_first_and_last_selectable_rows() {
+        let mut menu = menu();
+        menu.selected_idx = 1;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::End))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 4 })
+        );
+        menu.selected_idx = 4;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Home))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 0 })
+        );
+    }
+
+    #[test]
+    fn a_page_key_moves_by_the_rows_on_screen() {
+        let menu = menu();
+        // Five rows fit the box, so one page forward from the first
+        // selectable row runs to the last one.
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::PageDown))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 4 })
+        );
+    }
+
+    #[test]
+    fn navigating_from_a_separator_selection_steps_to_a_neighbouring_row() {
+        let mut menu = menu();
+        menu.selected_idx = 2; // the separator
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Down))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 4 })
+        );
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Up))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 1 })
+        );
+    }
+
+    #[test]
+    fn typing_jumps_the_highlight_to_the_best_prefix_match() {
+        let menu = menu();
+        assert_eq!(
+            press(&menu, key(Key::Char('s'))),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 4 })
+        );
+        // Typeahead never lands on a separator or a disabled row: "d"
+        // only matches the disabled "Delete".
+        assert_eq!(press(&menu, key(Key::Char('d'))), Handled::Consumed);
+    }
+
+    #[test]
+    fn a_typeahead_buffer_accumulates_within_its_debounce_window() {
+        let menu = menu();
+        let layout = resolved(&menu);
+        let mut state = ContextMenuState::default();
+        // "p" matches Paste; "pa" still does, so the second keystroke
+        // reports nothing new rather than jumping elsewhere.
+        assert_eq!(
+            menu.handle_key(&key(Key::Char('p')), layout.page(), &mut state),
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx: 1 })
+        );
+        let mut on_paste = menu.clone();
+        on_paste.selected_idx = 1;
+        assert_eq!(
+            on_paste.handle_key(&key(Key::Char('a')), layout.page(), &mut state),
+            Handled::Consumed
+        );
+    }
+
+    #[test]
+    fn a_modified_keystroke_is_an_accelerator_not_typeahead() {
+        let menu = menu();
+        let event = KeyEvent {
+            key: Key::Char('s'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        };
+        assert_eq!(press(&menu, event), Handled::Ignored);
+    }
+
+    #[test]
+    fn enter_activates_a_leaf_and_opens_a_submenu_parent() {
+        let mut menu = menu();
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Enter))),
+            Handled::Event(ContextMenuEvent::Activated {
+                item: WidgetId::new("copy")
+            })
+        );
+        menu.selected_idx = 4;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Enter))),
+            Handled::Event(ContextMenuEvent::SubmenuOpened { idx: 4 })
+        );
+    }
+
+    #[test]
+    fn right_only_opens_a_submenu_parent() {
+        let mut menu = menu();
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Right))),
+            Handled::Ignored
+        );
+        menu.selected_idx = 4;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Right))),
+            Handled::Event(ContextMenuEvent::SubmenuOpened { idx: 4 })
+        );
+    }
+
+    #[test]
+    fn left_closes_a_level_and_escape_dismisses() {
+        let menu = menu();
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Left))),
+            Handled::Event(ContextMenuEvent::SubmenuClosed)
+        );
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Escape))),
+            Handled::Event(ContextMenuEvent::Dismissed)
+        );
+    }
+
+    #[test]
+    fn enter_on_an_inert_row_is_swallowed() {
+        let mut menu = menu();
+        menu.selected_idx = 2;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Enter))),
+            Handled::Consumed
+        );
+        menu.selected_idx = 3;
+        assert_eq!(
+            press(&menu, key(Key::Named(NamedKey::Enter))),
+            Handled::Consumed
+        );
+    }
+
+    #[test]
+    fn an_a11y_click_activates_the_highlighted_row() {
+        let menu = menu();
+        let layout = resolved(&menu);
+        let mut state = ContextMenuState::default();
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(menu.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &menu,
+                &mut state,
+                &RoutedEvent::Action(A11yAction::Click),
+                &layout,
+                &mut cx,
+            ),
+            Handled::Event(ContextMenuEvent::Activated {
+                item: WidgetId::new("copy")
+            })
+        );
+        assert_eq!(
+            Interactive::a11y_actions(&menu, &state),
+            vec![A11yAction::Click]
+        );
+    }
+
+    #[test]
+    fn an_empty_popup_is_no_focus_stop_and_offers_no_a11y_action() {
+        let empty = ContextMenu {
+            id: WidgetId::new("context_menu:empty"),
+            items: Vec::new(),
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+        assert_eq!(Interactive::focus(&empty), FocusSpec::None);
+        assert!(Interactive::a11y_actions(&empty, &ContextMenuState::default()).is_empty());
+        assert_eq!(Interactive::focus(&menu()), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn sub_regions_name_every_visible_row_in_local_space() {
+        let menu = menu();
+        let layout = resolved(&menu);
+        let regions = Interactive::sub_regions(&menu, &layout);
+        assert_eq!(regions.len(), 5);
+        // Row 0 sits one cell in from the area's own origin, inside the
+        // border ring.
+        assert_eq!(regions[0].0.x, 1.0);
+        assert_eq!(regions[0].0.y, 1.0);
+        assert_eq!(regions[0].1, SubTarget(0));
+        assert_eq!(regions[4].1, SubTarget(4));
+    }
+
+    #[test]
+    fn each_event_rides_a_ui_event_under_the_right_id() {
+        let id = WidgetId::new("context_menu:editor");
+        assert_eq!(
+            ContextMenuEvent::Activated {
+                item: WidgetId::new("copy")
+            }
+            .into_ui_event(id),
+            UiEvent::ContextMenuItemActivated(WidgetId::new("copy"))
+        );
+        assert_eq!(
+            ContextMenuEvent::Dismissed.into_ui_event(id),
+            UiEvent::ContextMenuDismissed
+        );
+        assert_eq!(
+            ContextMenuEvent::SubmenuClosed.into_ui_event(id),
+            UiEvent::ContextMenuDismissed
+        );
+        assert_eq!(
+            ContextMenuEvent::SelectionChanged { idx: 3 }.into_ui_event(id),
+            UiEvent::List(id, crate::ListViewEvent::SelectionChanged { idx: 3 })
+        );
+        assert_eq!(
+            ContextMenuEvent::SubmenuOpened { idx: 4 }.into_ui_event(id),
+            UiEvent::List(id, crate::ListViewEvent::ItemActivated { idx: 4 })
+        );
+    }
+
+    #[test]
+    fn capture_round_trips_the_popup_as_its_own_owned_content() {
+        let menu = menu();
+        match Primitive::capture(&menu) {
+            crate::frame::OwnedContent::ContextMenu(captured) => assert_eq!(captured, menu),
+            other => panic!("expected OwnedContent::ContextMenu, got {other:?}"),
         }
     }
 }

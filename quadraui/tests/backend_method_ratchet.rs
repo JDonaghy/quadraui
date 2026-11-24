@@ -170,7 +170,11 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     // together with their wrapper files and `Surface` variants. Each of
     // these widgets already paints and routes through
     // `Primitive`/`Interactive`; the bespoke methods stay only for the
-    // per-backend wrapper files still calling them.
+    // per-backend wrapper files still calling them. The *native* menu
+    // entry points (`install_menu_bar`, `set_menu`, `show_context_menu`,
+    // `set_dock_menu`, the `menu_style` family) are platform services,
+    // not a widget's paint path, and stay on `Backend` permanently —
+    // this list only names the custom-drawn pairs.
     ("StatusBar", "draw_status_bar"),
     ("StatusBar", "draw_status_bar_interactive"),
     ("StatusBar", "draw_status_bar_interactive_scaled"),
@@ -194,6 +198,12 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("CommandLine", "command_line_layout"),
     ("TextDisplay", "draw_text_display"),
     ("TextDisplay", "text_display_layout"),
+    ("MenuBar", "draw_menu_bar"),
+    ("MenuBar", "draw_menu_bar_with_state"),
+    ("MenuBar", "menu_bar_layout"),
+    ("ContextMenu", "draw_context_menu"),
+    ("ContextMenu", "draw_context_menu_with_state"),
+    ("ContextMenu", "draw_context_menu_with_glyphs"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

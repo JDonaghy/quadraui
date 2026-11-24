@@ -90,15 +90,15 @@
 //! (`JDonaghy/vimcode#1580`).
 
 use crate::backend::{Backend, ResolvedMenuStyle};
-use crate::behaviour::nav::{FlatNav, NavKey};
+use crate::compose::Handled;
 use crate::event::{Point, UiEvent};
 use crate::interaction::InteractionState;
+use crate::interactive::KeyEvent;
 use crate::primitives::context_menu::{
-    ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
-    ContextMenuPlacement,
+    ContextMenu, ContextMenuClick, ContextMenuEvent, ContextMenuHit, ContextMenuItem,
+    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, ContextMenuState,
 };
 use crate::types::WidgetId;
-use crate::{Key, NamedKey};
 
 /// What [`ContextMenuController::handle`] did with an event.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,6 +129,10 @@ pub struct ContextMenuController {
     /// [`Self::render`] via [`Backend::draw_context_menu_with_state`],
     /// so no caller writes any hover-tracking code of its own.
     interaction: InteractionState,
+    /// The open popup's own widget state — the debounced typeahead buffer
+    /// [`ContextMenu::handle_key`] extends, which is the only thing a
+    /// keystroke needs to remember between events.
+    typeahead: ContextMenuState,
 }
 
 #[derive(Debug, Clone)]
@@ -145,19 +149,20 @@ struct OpenMenu {
     submenu_selected: Vec<usize>,
 }
 
-/// Item height / separator height in line-height units.
+/// Item height / separator height in line-height units — the widget's own
+/// [`crate::primitives::context_menu::item_heights`], which
+/// [`crate::primitive::Primitive::layout`] resolves its rows at too.
+///
 /// [`crate::compose::MenuSystem`]'s own dropdown layout
-/// (`dropdown_layout`/`dropdown_stack`) uses this same function for its
-/// item/separator heights so the two menu styles — free-floating context
-/// menu here, bar-anchored dropdown there — stay pixel-identical without
-/// either controller depending on the other's state. Menu *width* isn't
-/// included: this controller uses a fixed `20.0 * lh`, while
-/// `MenuSystem` measures its dropdown's actual item text via
-/// `dropdown_width`, so the two don't share that part.
+/// (`dropdown_layout`/`dropdown_stack`) reaches it through this name, so
+/// the two menu styles — free-floating context menu here, bar-anchored
+/// dropdown there — stay pixel-identical without either controller
+/// depending on the other's state. Menu *width* isn't included: this
+/// controller uses a fixed `20.0 * lh`, while `MenuSystem` measures its
+/// dropdown's actual item text via `dropdown_width`, so the two don't
+/// share that part.
 pub(crate) fn menu_item_heights(lh: f32) -> (f32, f32) {
-    let item_h = (lh * 1.4).round().max(lh);
-    let sep_h = (lh * 0.5).round().max(1.0);
-    (item_h, sep_h)
+    crate::primitives::context_menu::item_heights(lh)
 }
 
 impl ContextMenuController {
@@ -165,6 +170,7 @@ impl ContextMenuController {
         Self {
             open: None,
             interaction: InteractionState::new(),
+            typeahead: ContextMenuState::default(),
         }
     }
 
@@ -252,109 +258,88 @@ impl ContextMenuController {
         }
 
         match event {
+            // Every keystroke's meaning comes from the widget's own
+            // `ContextMenu::handle_key` — one navigation/typeahead/
+            // activation rule shared with `Interactive::handle`, resolved
+            // against the deepest open level. This controller only maps
+            // the resulting `ContextMenuEvent` onto its submenu stack,
+            // which is the one thing a single widget cannot know about.
             UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Escape),
-                ..
+                key,
+                modifiers,
+                repeat,
             } => {
-                if !open.submenu_path.is_empty() {
-                    self.close_deepest_submenu();
-                    ContextMenuOutcome::Consumed
-                } else {
-                    self.close(backend);
-                    ContextMenuOutcome::Event(UiEvent::ContextMenuDismissed)
-                }
-            }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Down),
-                ..
-            } => {
-                self.move_selection(&open, 1);
-                ContextMenuOutcome::Consumed
-            }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Up),
-                ..
-            } => {
-                self.move_selection(&open, -1);
-                ContextMenuOutcome::Consumed
-            }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Right),
-                ..
-            } => {
+                let stack = self.menu_stack(&open, backend);
                 let depth = open.submenu_path.len();
-                let sel = Self::current_selected(&open);
-                let has_sub = Self::items_at_depth(&open, depth)
-                    .get(sel)
-                    .is_some_and(|item| item.submenu.is_some());
-                if has_sub {
-                    self.open_submenu(sel);
-                    ContextMenuOutcome::Consumed
-                } else {
-                    ContextMenuOutcome::Ignored
-                }
-            }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Left),
-                ..
-            } => {
-                if open.submenu_path.is_empty() {
-                    ContextMenuOutcome::Ignored
-                } else {
-                    self.close_deepest_submenu();
-                    ContextMenuOutcome::Consumed
-                }
-            }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Enter),
-                ..
-            } => {
-                let depth = open.submenu_path.len();
-                let sel = Self::current_selected(&open);
-                match Self::items_at_depth(&open, depth).get(sel).cloned() {
-                    Some(item) if item.submenu.is_some() => {
-                        self.open_submenu(sel);
+                let Some((menu, layout)) = stack.last() else {
+                    return ContextMenuOutcome::Ignored;
+                };
+                let page = layout.visible_items.len().max(1);
+                let event = KeyEvent {
+                    key: key.clone(),
+                    modifiers: *modifiers,
+                    repeat: *repeat,
+                };
+                match menu.handle_key(&event, page, &mut self.typeahead) {
+                    Handled::Event(ContextMenuEvent::SelectionChanged { idx }) => {
+                        self.set_selected_at_depth(depth, idx);
                         ContextMenuOutcome::Consumed
                     }
-                    Some(item) => match item.id {
-                        Some(id) => {
-                            self.close(backend);
-                            ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(id))
+                    Handled::Event(ContextMenuEvent::SubmenuOpened { idx }) => {
+                        self.open_submenu(idx);
+                        ContextMenuOutcome::Consumed
+                    }
+                    // Left closes the deepest open level; with nothing
+                    // nested it is the host's key, not the menu's.
+                    Handled::Event(ContextMenuEvent::SubmenuClosed) => {
+                        if depth == 0 {
+                            ContextMenuOutcome::Ignored
+                        } else {
+                            self.close_deepest_submenu();
+                            ContextMenuOutcome::Consumed
                         }
-                        None => ContextMenuOutcome::Consumed,
-                    },
-                    None => ContextMenuOutcome::Consumed,
+                    }
+                    Handled::Event(ContextMenuEvent::Activated { item }) => {
+                        self.close(backend);
+                        ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(item))
+                    }
+                    // Escape: closes the deepest nested level, or the
+                    // whole menu when nothing is nested.
+                    Handled::Event(ContextMenuEvent::Dismissed) => {
+                        if depth == 0 {
+                            self.close(backend);
+                            ContextMenuOutcome::Event(UiEvent::ContextMenuDismissed)
+                        } else {
+                            self.close_deepest_submenu();
+                            ContextMenuOutcome::Consumed
+                        }
+                    }
+                    Handled::Consumed => ContextMenuOutcome::Consumed,
+                    Handled::Ignored => ContextMenuOutcome::Ignored,
                 }
             }
             UiEvent::MouseDown { position, .. } => {
                 let stack = self.menu_stack(&open, backend);
                 // Deepest level first — a click inside a submenu must not
                 // fall through and hit whatever the parent's covered row
-                // underneath reports.
+                // underneath reports. Which row a point belongs to, and
+                // whether activating it fires an id or opens a child, is
+                // the widget's own `ContextMenu::resolve_click`.
                 for (depth_idx, (menu, layout)) in stack.iter().enumerate().rev() {
-                    match layout.hit_test(position.x, position.y) {
-                        ContextMenuHit::Item(id) => {
-                            let item_idx = layout
-                                .visible_items
-                                .iter()
-                                .find(|v| {
-                                    v.clickable && menu.items[v.item_idx].id.as_ref() == Some(&id)
-                                })
-                                .map(|v| v.item_idx);
-                            return match item_idx {
-                                Some(item_idx) if menu.items[item_idx].submenu.is_some() => {
-                                    self.truncate_submenus(depth_idx);
-                                    self.open_submenu(item_idx);
-                                    ContextMenuOutcome::Consumed
-                                }
-                                _ => {
-                                    self.close(backend);
-                                    ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(id))
-                                }
-                            };
+                    match menu.resolve_click(layout, position.x, position.y) {
+                        ContextMenuClick::Submenu { idx } => {
+                            self.truncate_submenus(depth_idx);
+                            self.open_submenu(idx);
+                            return ContextMenuOutcome::Consumed;
                         }
-                        ContextMenuHit::Inert => return ContextMenuOutcome::Consumed,
-                        ContextMenuHit::Empty => continue,
+                        ContextMenuClick::Item { id, .. } => {
+                            self.close(backend);
+                            return ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(
+                                id,
+                            ));
+                        }
+                        ContextMenuClick::Inert => return ContextMenuOutcome::Consumed,
+                        ContextMenuClick::Outside => continue,
                     }
                 }
                 // Outside every open level → dismiss.
@@ -369,34 +354,27 @@ impl ContextMenuController {
                 // topmost) child row before it falls through to whatever
                 // parent row is underneath.
                 for (depth_idx, (menu, layout)) in stack.iter().enumerate().rev() {
-                    for vis in &layout.visible_items {
-                        if !vis.clickable
-                            || position.x < vis.bounds.x
-                            || position.x >= vis.bounds.x + vis.bounds.width
-                            || position.y < vis.bounds.y
-                            || position.y >= vis.bounds.y + vis.bounds.height
-                        {
-                            continue;
-                        }
-                        let item_idx = vis.item_idx;
-                        let already_open_here = open.submenu_path.get(depth_idx) == Some(&item_idx);
-                        self.set_selected_at_depth(depth_idx, item_idx);
-                        if menu.items[item_idx].submenu.is_some() {
-                            if !already_open_here {
-                                // Re-seeding the child's selection on every
-                                // jitter over an already-open parent row
-                                // would clobber a keyboard selection made
-                                // inside it since the last hover.
-                                self.truncate_submenus(depth_idx);
-                                self.open_submenu(item_idx);
-                            }
-                            return ContextMenuOutcome::Consumed;
-                        } else if open.submenu_path.len() > depth_idx {
+                    let (item_idx, is_parent) =
+                        match menu.resolve_click(layout, position.x, position.y) {
+                            ContextMenuClick::Submenu { idx } => (idx, true),
+                            ContextMenuClick::Item { idx, .. } => (idx, false),
+                            ContextMenuClick::Inert | ContextMenuClick::Outside => continue,
+                        };
+                    let already_open_here = open.submenu_path.get(depth_idx) == Some(&item_idx);
+                    self.set_selected_at_depth(depth_idx, item_idx);
+                    if is_parent {
+                        if !already_open_here {
+                            // Re-seeding the child's selection on every
+                            // jitter over an already-open parent row
+                            // would clobber a keyboard selection made
+                            // inside it since the last hover.
                             self.truncate_submenus(depth_idx);
-                            return ContextMenuOutcome::Consumed;
+                            self.open_submenu(item_idx);
                         }
-                        return ContextMenuOutcome::Consumed;
+                    } else if open.submenu_path.len() > depth_idx {
+                        self.truncate_submenus(depth_idx);
                     }
+                    return ContextMenuOutcome::Consumed;
                 }
                 ContextMenuOutcome::Ignored
             }
@@ -500,34 +478,6 @@ impl ContextMenuController {
         items
     }
 
-    /// Selected item index at the currently deepest open level.
-    fn current_selected(open: &OpenMenu) -> usize {
-        if open.submenu_path.is_empty() {
-            open.menu.selected_idx
-        } else {
-            *open.submenu_selected.last().unwrap_or(&0)
-        }
-    }
-
-    fn move_selection(&mut self, open: &OpenMenu, delta: i32) {
-        let depth = open.submenu_path.len();
-        let current = Self::current_selected(open);
-        let items = Self::items_at_depth(open, depth);
-        if items.is_empty() {
-            return;
-        }
-        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
-        // The app-supplied `selected_idx` can point at a separator or a
-        // disabled item; counting `current` as navigable keeps the move
-        // stepping to the next selectable item in list order from there
-        // instead of seeding at either end of the menu.
-        let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
-            i == current || (!items[i].is_separator() && !items[i].disabled)
-        })
-        .unwrap_or(current);
-        self.set_selected_at_depth(depth, new_sel);
-    }
-
     /// Set the selected index at depth `depth` (0 = root). Depths beyond
     /// the currently open submenu stack are ignored.
     fn set_selected_at_depth(&mut self, depth: usize, idx: usize) {
@@ -604,7 +554,7 @@ mod tests {
     use crate::primitives::context_menu::ContextMenuItem;
     use crate::tui::TuiBackend;
     use crate::types::{Modifiers, StyledText, WidgetId};
-    use crate::MouseButton;
+    use crate::{Key, MouseButton, NamedKey};
 
     fn item(id: &str, label: &str) -> ContextMenuItem {
         ContextMenuItem {
