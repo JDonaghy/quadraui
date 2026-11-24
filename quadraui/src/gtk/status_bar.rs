@@ -58,12 +58,12 @@ pub fn draw_status_bar(
     )
 }
 
-/// 16-pixel minimum gap between left and right segment groups, matching
-/// the existing vimcode GTK behaviour. Still used by
-/// `GtkBackend::status_bar_layout`'s own no-paint measurer — the shared
-/// [`crate::primitives::status_bar::native_surface_paint::paint`] carries
-/// its own independent copy of the same value (see that module's doc).
-pub const MIN_GAP_PX: f32 = 16.0;
+/// Minimum gap between the left and right segment groups, matching the
+/// existing vimcode GTK behaviour. Used by
+/// `GtkBackend::status_bar_layout`'s own no-paint measurer; the shared
+/// [`crate::primitives::status_bar::native_surface_paint::paint`] reaches
+/// the same [`crate::primitives::status_bar::PIXEL_MIN_GAP`] value.
+pub const MIN_GAP_PX: f32 = crate::primitives::status_bar::PIXEL_MIN_GAP;
 
 #[cfg(test)]
 mod tests {

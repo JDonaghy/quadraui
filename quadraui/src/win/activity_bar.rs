@@ -37,15 +37,15 @@ use crate::primitives::activity_bar::{native_surface_paint, ActivityBarStyle};
 use crate::theme::Theme;
 use crate::{ActivityBar, ActivityBarLayout, ActivityBarRowHit};
 
-/// Row height (DIPs) of a single activity-bar item — the DirectWrite twin
-/// of [`crate::gtk::activity_bar::ACTIVITY_ROW_PX`]'s 48px value.
-pub const ACTIVITY_ROW_DIP: f32 = 48.0;
+/// Row height (DIPs) of a single activity-bar item — the one row height
+/// every pixel backend's rail shares.
+pub const ACTIVITY_ROW_DIP: f32 = crate::primitives::activity_bar::PIXEL_ROW_HEIGHT;
 
 /// Compute an [`ActivityBar`]'s layout without painting — what
 /// [`crate::win::WinBackend::activity_bar_layout`] calls directly, and
 /// the twin [`draw_activity_bar`] paints from.
 pub fn win_activity_bar_layout(rect: Rect, bar: &ActivityBar) -> ActivityBarLayout {
-    bar.layout(rect.width, rect.height, ACTIVITY_ROW_DIP)
+    bar.pixel_layout(rect)
 }
 
 /// Draw an [`ActivityBar`] into `rect` (DIPs) on `target`. Returns

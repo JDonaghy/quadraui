@@ -166,6 +166,15 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Spinner", "draw_spinner"),
     ("Spinner", "spinner_layout"),
     ("Scrollbar", "draw_scrollbar"),
+    // Group-C ports keep these until the group's cleanup deletes them
+    // together with their wrapper files and `Surface` variants.
+    ("StatusBar", "draw_status_bar"),
+    ("StatusBar", "draw_status_bar_interactive"),
+    ("StatusBar", "draw_status_bar_interactive_scaled"),
+    ("StatusBar", "status_bar_layout"),
+    ("ActivityBar", "draw_activity_bar"),
+    ("ActivityBar", "draw_activity_bar_with_style"),
+    ("ActivityBar", "activity_bar_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

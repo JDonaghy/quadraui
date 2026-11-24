@@ -19,9 +19,9 @@ use crate::primitives::activity_bar::{
 };
 use crate::theme::Theme;
 
-/// Fixed height (in pixels) of a single activity bar row — matches the
-/// native-button `set_height_request: 48` baked into vimcode's GTK CSS.
-pub const ACTIVITY_ROW_PX: f64 = 48.0;
+/// Fixed height (in pixels) of a single activity bar row — the `f64`
+/// spelling of the one row height every pixel backend's rail shares.
+pub const ACTIVITY_ROW_PX: f64 = crate::primitives::activity_bar::PIXEL_ROW_HEIGHT as f64;
 
 /// Pango font description for activity-bar icon glyphs at 18pt
 /// (≈ 24px at 96 dpi), matching
@@ -161,7 +161,7 @@ pub fn draw_activity_bar_with_style(
 
     // Compute layout from the primitive — one derivation for both paint
     // and hit-test.
-    let layout = bar.layout(width as f32, height as f32, ACTIVITY_ROW_PX as f32);
+    let layout = bar.pixel_layout(crate::Rect::new(0.0, 0.0, width as f32, height as f32));
 
     let mut surface = super::surface::CairoSurface {
         cr,
