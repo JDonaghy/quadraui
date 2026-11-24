@@ -26,18 +26,7 @@ use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::menu_bar::native_surface_paint;
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
-use crate::{MenuBar, MenuBarItemMeasure, MenuBarLayout};
-
-/// Horizontal padding (DIPs) reserved on each side of an item's label —
-/// mirrors `gtk::menu_bar::gtk_menu_bar_layout`'s `+ 16.0` (8px each
-/// side).
-const ITEM_H_PADDING_DIP: f32 = 16.0;
-
-/// Strip `&` markers from a label for display — mirrors
-/// `gtk::menu_bar::display_text`.
-fn display_text(label: &str) -> String {
-    label.chars().filter(|&c| c != '&').collect()
-}
+use crate::{MenuBar, MenuBarLayout};
 
 /// Compute the [`MenuBar`]'s layout without painting — the measurer twin
 /// of [`draw_menu_bar`], and what
@@ -46,10 +35,7 @@ fn display_text(label: &str) -> String {
 /// `&DWrite` (when painting) or [`super::backend`]'s nominal measurer (no
 /// surface yet).
 pub fn win_menu_bar_layout(measure: &dyn TextMeasure, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-    bar.layout(rect, |i| {
-        let text = display_text(&bar.items[i].label);
-        MenuBarItemMeasure::new(measure.width_of(&text) + ITEM_H_PADDING_DIP)
-    })
+    bar.pixel_layout(rect, |text| measure.width_of(text))
 }
 
 /// Draw a [`MenuBar`] into `rect` (DIPs) on `target`. Returns the layout
@@ -225,16 +211,5 @@ mod tests {
 
             assert_eq!(painted, no_paint);
         }
-    }
-
-    // `alt_char_index`'s own tests (none-without-ampersand,
-    // char-after-ampersand, empty/trailing-marker) moved with it to
-    // `crate::primitives::menu_bar::native_surface_paint::tests`
-    // — `display_text` is the only helper still local to this module
-    // (still needed by `win_menu_bar_layout`).
-    #[test]
-    fn display_text_strips_ampersand() {
-        assert_eq!(display_text("&File"), "File");
-        assert_eq!(display_text("File"), "File");
     }
 }

@@ -13,9 +13,7 @@ use gtk4::pango;
 
 use crate::event::Rect;
 use crate::interaction::InteractionState;
-use crate::primitives::menu_bar::{
-    native_surface_paint, MenuBar, MenuBarItemMeasure, MenuBarLayout,
-};
+use crate::primitives::menu_bar::{native_surface_paint, MenuBar, MenuBarLayout};
 use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`MenuBar`] without painting.
@@ -30,12 +28,10 @@ pub fn gtk_menu_bar_layout(
     bar: &MenuBar,
 ) -> MenuBarLayout {
     let bounds = Rect::new(x as f32, y as f32, width as f32, height as f32);
-    bar.layout(bounds, |i| {
-        let text = display_text(&bar.items[i].label);
-        pango_layout.set_text(&text);
+    bar.pixel_layout(bounds, |text| {
+        pango_layout.set_text(text);
         pango_layout.set_attributes(None);
-        let w = pango_layout.pixel_size().0.max(0) as f32 + 16.0; // 8px padding each side
-        MenuBarItemMeasure::new(w)
+        pango_layout.pixel_size().0.max(0) as f32
     })
 }
 
@@ -125,11 +121,6 @@ pub fn draw_menu_bar_with_state(
     cr.restore().ok();
 
     layout
-}
-
-/// Strip `&` markers from a label for display.
-fn display_text(label: &str) -> String {
-    label.chars().filter(|&c| c != '&').collect()
 }
 
 #[cfg(test)]
