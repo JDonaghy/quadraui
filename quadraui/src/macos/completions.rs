@@ -17,7 +17,7 @@ use crate::theme::Theme;
 /// point carries no Nerd-Font toggle of its own, so it passes
 /// `nerd_fonts_enabled: false`. A caller that wants the Nerd-Font glyph
 /// instead paints the popup through
-/// [`crate::DrawsPrimitives::draw_primitive`](crate::backend::DrawsPrimitives::draw_primitive),
+/// [`crate::DrawsPrimitives::draw_primitive`],
 /// which resolves the toggle from the live backend.
 ///
 /// # Safety

@@ -32,7 +32,7 @@ use crate::theme::Theme;
 /// `nerd_fonts_enabled: false` and renders the same glyph the cell
 /// painter does. A caller that wants the Nerd-Font glyph instead paints
 /// the popup through
-/// [`crate::DrawsPrimitives::draw_primitive`](crate::backend::DrawsPrimitives::draw_primitive),
+/// [`crate::DrawsPrimitives::draw_primitive`],
 /// which resolves the toggle from the live backend.
 pub fn draw_completions(
     cr: &Context,
