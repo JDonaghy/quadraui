@@ -38,49 +38,28 @@ use serde::{Deserialize, Serialize};
 /// `draw_spinner` copies collapse onto it as each adopts the shared
 /// painter.
 ///
-/// Gated on the union of the rasteriser features: a backend-less
-/// `quadraui` build compiles the primitive types but nothing that
-/// paints, so an ungated table is `dead_code` — a hard error under
-/// warnings-as-errors. The gate must stay a superset of every backend
-/// that paints a spinner; adding a rasteriser feature means adding it
-/// here.
-#[cfg(any(
-    feature = "tui",
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+/// The animation lives in the shared painters, not in a backend: both
+/// [`cell_paint`] and [`native_surface_paint`] index this table through
+/// [`frame_glyph`], and so does the widget's own
+/// [`crate::primitive::Primitive::layout`], which must agree with them
+/// on how wide the glyph-plus-label text is.
 pub(crate) const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/// `FRAMES[frame_idx % FRAMES.len()]` — the glyph a backend paints for
-/// the given animation frame.
-///
-/// Gated with [`FRAMES`], for the same reason.
-#[cfg(any(
-    feature = "tui",
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+/// `FRAMES[frame_idx % FRAMES.len()]` — the glyph painted for the given
+/// animation frame.
 pub(crate) fn frame_glyph(frame_idx: usize) -> char {
     FRAMES[frame_idx % FRAMES.len()]
 }
 
-/// The exact text a backend measures and paints for `spinner`: the
-/// current animation glyph alone, or `"{glyph} {label}"` when
-/// [`Spinner::label`] is non-empty. The one shared builder every backend
+/// The exact text a pixel surface measures and paints for `spinner`:
+/// the current animation glyph alone, or `"{glyph} {label}"` when
+/// [`Spinner::label`] is non-empty. The one shared builder every pixel
 /// measurer and [`native_surface_paint::paint`] both call, instead of
 /// each carrying its own byte-for-byte-identical copy.
 ///
-/// Gated on the pixel-backend rasteriser features, matching
-/// `native_surface_paint`'s own gate: TUI paints the glyph and label into
-/// separate cells (`tui::spinner`) and never builds this combined string,
-/// so a `tui`-only build has no caller for it.
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+/// The cell painter puts the glyph and the label in separate cells
+/// (see [`cell_paint`]) and measures in whole columns instead, so it
+/// uses [`Spinner::inline_cols`] rather than this.
 pub(crate) fn spinner_text(spinner: &Spinner) -> String {
     let glyph = frame_glyph(spinner.frame_idx);
     if spinner.label.is_empty() {
@@ -185,6 +164,196 @@ impl Spinner {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+//
+// `Spinner` reaches the frame type-erased as
+// [`crate::frame::Surface::Widget`]: `layout` sizes the glyph-plus-label
+// run in the host's units, `paint` runs the shared pixel painter in
+// [`native_surface_paint`], and `paint_cells` runs the cell painter in
+// [`cell_paint`]. The animation is a pure function of
+// [`Spinner::frame_idx`] in both painters — the host advances that field
+// on its own ticker, so neither painter keeps frame state of its own.
+//
+// A spinner is purely decorative: it reacts to no input and has no
+// affordance, so it is [`crate::non_interactive!`].
+
+impl Spinner {
+    /// How many terminal columns the glyph-plus-label run occupies: one
+    /// for the glyph, plus a separator column and the label's own
+    /// display width when [`Self::label`] is non-empty.
+    ///
+    /// The cell-unit counterpart of measuring [`spinner_text`] — the
+    /// label's display width, not its `char` count, so a double-width
+    /// glyph in the label is accounted for the way the cell painter
+    /// writes it.
+    pub(crate) fn inline_cols(&self) -> usize {
+        if self.label.is_empty() {
+            1
+        } else {
+            2 + crate::text_util::display_width(&self.label)
+        }
+    }
+}
+
+/// Resolve `spinner`'s layout for a cell grid: a single row, as wide as
+/// [`Spinner::inline_cols`] but never wider than `rect`.
+///
+/// Bounds are in the absolute frame `rect` is expressed in, matching
+/// what the pixel path reports, so a
+/// [`SpinnerLayout::hit_test`] against either takes the same
+/// coordinates the host painted at.
+pub(crate) fn cell_spinner_layout(spinner: &Spinner, rect: Rect) -> SpinnerLayout {
+    let cols = (spinner.inline_cols() as f32).min(rect.width.max(0.0));
+    spinner.layout(rect.x, rect.y, SpinnerMeasure::new(cols, 1.0))
+}
+
+impl crate::primitive::Primitive for Spinner {
+    type Layout = SpinnerLayout;
+    type Event = SpinnerHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Spinner(self.clone())
+    }
+
+    /// The glyph-plus-label run's own width, one row tall — a spinner
+    /// is an inline indicator, so a container sizes it to its content
+    /// on both axes rather than stretching it.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        match ctx.units() {
+            crate::primitive::Units::Cells => {
+                crate::NaturalSize::new(Some(self.inline_cols() as f32), Some(1.0))
+            }
+            _ => crate::NaturalSize::new(
+                Some(ctx.text_width(&spinner_text(self), self.font_role())),
+                Some(ctx.line_height),
+            ),
+        }
+    }
+
+    /// On a cell grid, [`cell_spinner_layout`]. On a pixel surface, the
+    /// glyph-plus-label text measured in the backend's own chrome font
+    /// — the same text [`native_surface_paint::paint`] draws.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> SpinnerLayout {
+        match ctx.units() {
+            crate::primitive::Units::Cells => cell_spinner_layout(self, rect),
+            _ => {
+                let width = ctx.text_width(&spinner_text(self), self.font_role());
+                self.layout(
+                    rect.x,
+                    rect.y,
+                    SpinnerMeasure::new(width.max(0.0), ctx.line_height),
+                )
+            }
+        }
+    }
+
+    /// The shared pixel painter, against the already-resolved `layout`.
+    fn paint(
+        &self,
+        layout: &SpinnerLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint_resolved(self, layout, surface, theme);
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, theme);
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_spinner_layout`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &SpinnerLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_spinner_layout(buf, self, layout, theme);
+    }
+}
+
+crate::non_interactive!(Spinner);
+
+/// The cell-grid painter for [`Spinner`], written against
+/// [`crate::CellSurface`].
+///
+/// One row: [`frame_glyph`] in the leading column, then the label from
+/// the third column on (one separator column between them), clipped to
+/// `layout.bounds`.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{frame_glyph, Spinner, SpinnerLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// An opaque single-cell style — every glyph this painter writes
+    /// sets both colours and no modifier.
+    fn solid(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `spinner` into `layout.bounds` on `surface`.
+    ///
+    /// `layout` must be the value [`super::cell_spinner_layout`]
+    /// returned for the same spinner and rect, so paint and
+    /// [`SpinnerLayout::hit_test`] can never disagree. A layout with no
+    /// painted row (zero width or height) is a no-op.
+    pub(crate) fn paint(
+        spinner: &Spinner,
+        layout: &SpinnerLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        if layout.bounds.width < 1.0 || layout.bounds.height < 1.0 {
+            return;
+        }
+
+        let x = layout.bounds.x.round() as u16;
+        let y = layout.bounds.y.round() as u16;
+        let end = x + layout.bounds.width.round() as u16;
+
+        let glyph_fg = spinner.accent.unwrap_or(theme.accent_fg);
+        let bg = theme.background;
+        surface.put_char(x, y, frame_glyph(spinner.frame_idx), solid(glyph_fg, bg));
+
+        if !spinner.label.is_empty() {
+            let label_x = x + 2;
+            let max_cols = end.saturating_sub(label_x);
+            surface.put_str_clipped(
+                label_x,
+                y,
+                &spinner.label,
+                max_cols,
+                solid(theme.foreground, bg),
+            );
+        }
+    }
+}
+
 // `paint` is the shared [`crate::paint_surface::PaintSurface`]
 // implementation of spinner painting (glyph + optional label). `win`
 // routes its `draw_spinner` through this directly
@@ -201,7 +370,6 @@ impl Spinner {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{spinner_text, Spinner, SpinnerLayout, SpinnerMeasure};
-    use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
@@ -219,18 +387,32 @@ pub(crate) mod native_surface_paint {
         let text = spinner_text(spinner);
         let (w, h) = surface.surface_measure_text(&text);
         let layout = spinner.layout(x, y, SpinnerMeasure::new(w.max(0.0), h.max(0.0)));
-
-        let fg = spinner.accent.unwrap_or(theme.foreground);
-        surface.surface_draw_text_run(Rect::new(x, y, w.max(0.0), h.max(0.0)), &text, fg);
-
+        paint_resolved(spinner, &layout, surface, theme);
         layout
+    }
+
+    /// The same paint as [`paint`], against an already-resolved
+    /// `layout` — what [`crate::primitive::Primitive::paint`] calls,
+    /// since the widget contract hands a painter the layout rather than
+    /// an origin.
+    ///
+    /// `layout.bounds` is the glyph-plus-label run's own rect, origin
+    /// included, so this needs no separate `x`/`y`.
+    pub(crate) fn paint_resolved(
+        spinner: &Spinner,
+        layout: &SpinnerLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
+        let fg = spinner.accent.unwrap_or(theme.foreground);
+        surface.surface_draw_text_run(layout.bounds, &spinner_text(spinner), fg);
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
         use crate::backend::ImagePaintResult;
-        use crate::event::Viewport;
+        use crate::event::{Rect, Viewport};
         use crate::primitives::spinner::SpinnerHit;
         use crate::types::{Color, WidgetId};
         use crate::Image;

@@ -1,32 +1,32 @@
-//! TUI rasteriser for [`crate::ProgressBar`].
-//!
-//! Paints a horizontal bar with filled portion, optional label, and
-//! optional cancel `×` affordance.
+//! TUI entry points for [`crate::ProgressBar`] — thin delegates onto
+//! the widget's own cell painter,
+//! `crate::primitives::progress::cell_paint`, which documents the
+//! track/fill/label/cancel rules. This module only adapts a raw ratatui
+//! [`Buffer`] into the [`crate::CellSurface`] that painter takes, and
+//! converts a ratatui cell [`Rect`] into the quadraui one the widget's
+//! own cell layout takes.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{ratatui_color, set_cell};
-use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
+use super::cell_surface::TuiCellSurface;
+use crate::backend::ColorDepth;
+use crate::event::Rect as QRect;
+use crate::primitives::progress::{
+    cell_paint, cell_progress_layout, ProgressBar, ProgressBarLayout,
+};
 use crate::theme::Theme;
-
-const TUI_CANCEL_WIDTH: f32 = 3.0;
 
 /// Compute the TUI cell-unit layout for a [`ProgressBar`] without painting.
 pub fn tui_progress_layout(bar: &ProgressBar, area: Rect) -> ProgressBarLayout {
-    let cancel_w = if bar.cancellable {
-        TUI_CANCEL_WIDTH
-    } else {
-        0.0
-    };
-    bar.layout(
-        area.x as f32,
-        area.y as f32,
-        ProgressBarMeasure {
-            width: area.width as f32,
-            height: area.height.min(1) as f32,
-            cancel_width: cancel_w,
-        },
+    cell_progress_layout(
+        bar,
+        QRect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ),
     )
 }
 
@@ -39,73 +39,25 @@ pub fn draw_progress(
     theme: &Theme,
 ) -> ProgressBarLayout {
     let layout = tui_progress_layout(bar, area);
-
-    if area.width == 0 || area.height == 0 {
-        return layout;
-    }
-
-    let y = layout.bounds.y.round() as u16;
-    let bx = layout.bounds.x.round() as u16;
-    let bw = layout.bounds.width.round() as u16;
-
-    let fill_color = bar
-        .accent
-        .map(ratatui_color)
-        .unwrap_or_else(|| ratatui_color(theme.accent_bg));
-    let track_bg = ratatui_color(theme.surface_bg);
-    let fg = ratatui_color(theme.foreground);
-
-    // Paint track background.
-    let bar_end = if let Some(cb) = layout.cancel_bounds {
-        cb.x.round() as u16
-    } else {
-        bx + bw
-    };
-    for dx in bx..bar_end {
-        set_cell(buf, dx, y, '░', fg, track_bg);
-    }
-
-    // Paint fill.
-    if let Some(fb) = layout.fill_bounds {
-        let fill_end = (fb.x + fb.width).round() as u16;
-        for dx in bx..fill_end.min(bar_end) {
-            set_cell(buf, dx, y, '█', fill_color, fill_color);
-        }
-    } else {
-        // Indeterminate: sliding 3-cell block.
-        let track_w = (bar_end - bx) as usize;
-        if track_w > 0 {
-            let pulse_w = 3.min(track_w);
-            let pos = bar.frame_idx % (track_w.max(1));
-            for i in 0..pulse_w {
-                let dx = bx + ((pos + i) % track_w) as u16;
-                if dx < bar_end {
-                    set_cell(buf, dx, y, '█', fill_color, fill_color);
-                }
-            }
-        }
-    }
-
-    // Label overlay (left-aligned, 1 cell padding).
-    if !bar.label.is_empty() {
-        for (col, ch) in (bx + 1..).zip(bar.label.chars()) {
-            if col >= bar_end {
-                break;
-            }
-            let existing_bg = buf[(col, y)].bg;
-            set_cell(buf, col, y, ch, fg, existing_bg);
-        }
-    }
-
-    // Cancel affordance.
-    if let Some(cb) = layout.cancel_bounds {
-        let cx = cb.x.round() as u16 + 1;
-        if cx < bx + bw {
-            set_cell(buf, cx, y, '×', fg, track_bg);
-        }
-    }
-
+    draw_progress_layout(buf, bar, &layout, theme);
     layout
+}
+
+/// Draw a [`ProgressBar`] into `layout.bounds` on `buf`.
+///
+/// `layout` must be the same [`ProgressBarLayout`] the host hit-tests
+/// against (typically [`tui_progress_layout`]'s return value) so paint
+/// and click-routing can never disagree.
+pub(crate) fn draw_progress_layout(
+    buf: &mut Buffer,
+    bar: &ProgressBar,
+    layout: &ProgressBarLayout,
+    theme: &Theme,
+) {
+    // The painter never moves the cursor, so the sink is never read.
+    let mut cursor_sink = None;
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    cell_paint::paint(bar, layout, &mut surface, theme);
 }
 
 #[cfg(test)]

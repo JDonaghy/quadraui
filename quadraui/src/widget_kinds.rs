@@ -169,6 +169,14 @@ widget_kinds! {
     // Ungated, like `impl Primitive for TabBar`/`impl Interactive for
     // TabBar` — `TabBar` is a `DynWidget` on every feature set.
     "tab_bar" => crate::TabBar,
+    // Group A's small widgets, all three ungated for the same reason
+    // `TabBar` is: their `Primitive`/`Interactive` impls carry no
+    // feature gate, so each is a `DynWidget` on every feature set. The
+    // kind strings match the ones `quadraui-binding-core`'s wire schema
+    // already publishes for them.
+    "progress" => crate::ProgressBar,
+    "spinner" => crate::Spinner,
+    "scrollbar" => crate::Scrollbar,
 }
 
 #[cfg(test)]
@@ -225,6 +233,47 @@ mod tests {
                 Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "icon_grid"),
                 other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
             }
+        }
+    }
+
+    /// Group A's three kinds decode from the same wire shape their
+    /// descriptors serialize to, with every optional field defaulted —
+    /// what a binding host sends when it only sets the fields it cares
+    /// about.
+    #[test]
+    fn decodes_the_group_a_kinds() {
+        let progress = decode_widget(
+            "progress",
+            serde_json::json!({"id": "dl", "label": "Fetching", "value": 0.5}),
+        )
+        .expect("progress decodes");
+        assert_eq!(progress.id().map(|id| id.as_str()), Some("dl"));
+
+        let spinner =
+            decode_widget("spinner", serde_json::json!({"id": "boot"})).expect("spinner decodes");
+        assert_eq!(spinner.id().map(|id| id.as_str()), Some("boot"));
+
+        let scrollbar = decode_widget(
+            "scrollbar",
+            serde_json::json!({
+                "id": "gutter",
+                "axis": "Vertical",
+                "track": {"x": 79.0, "y": 0.0, "width": 1.0, "height": 24.0},
+                "thumb_start": 0.0,
+                "thumb_len": 6.0,
+            }),
+        )
+        .expect("scrollbar decodes");
+        assert_eq!(scrollbar.id().map(|id| id.as_str()), Some("gutter"));
+    }
+
+    #[test]
+    fn rejects_a_malformed_group_a_payload() {
+        // `value` is a fraction — a string has no sensible decode.
+        let payload = serde_json::json!({"id": "dl", "value": "half"});
+        match decode_widget("progress", payload) {
+            Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "progress"),
+            other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
         }
     }
 

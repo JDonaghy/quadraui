@@ -193,14 +193,16 @@ pub use palette::{draw_palette, tui_palette_layout};
 #[doc(hidden)]
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 #[doc(hidden)]
+pub(crate) use progress::draw_progress_layout;
 pub use progress::{draw_progress, tui_progress_layout};
 #[doc(hidden)]
 pub use radio_group::{draw_radio_group, tui_radio_group_layout};
 #[doc(hidden)]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig, StepOutcome, TuiRunner};
-#[doc(hidden)]
 pub use scrollbar::draw_scrollbar;
+#[doc(hidden)]
+pub(crate) use scrollbar::draw_scrollbar_layout;
 #[doc(hidden)]
 pub use services::TuiPlatformServices;
 #[doc(hidden)]
@@ -208,6 +210,7 @@ pub use sidebar_panel::{draw_sidebar_panel, tui_sidebar_panel_layout};
 #[doc(hidden)]
 pub use solid_fill::draw_solid_fill;
 #[doc(hidden)]
+pub(crate) use spinner::draw_spinner_layout;
 pub use spinner::{draw_spinner, tui_spinner_layout};
 #[doc(hidden)]
 pub use split::{draw_split, tui_split_layout};

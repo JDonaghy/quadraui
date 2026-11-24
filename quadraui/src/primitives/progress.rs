@@ -180,6 +180,237 @@ impl ProgressBar {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+//
+// `ProgressBar` reaches the frame type-erased as
+// [`crate::frame::Surface::Widget`]: `layout` resolves the bar's own
+// geometry in the host's units — [`pixel_progress_layout`] on a pixel
+// surface, [`cell_progress_layout`] on a cell grid — `paint` runs the
+// shared pixel painter in [`native_surface_paint`], and `paint_cells`
+// runs the cell painter in [`cell_paint`].
+//
+// A bar reacts to no input of its own. Even the cancel affordance is
+// the *host's* affordance: [`ProgressBarLayout::hit_test`] classifies
+// the click and the host decides what cancelling means (there is no
+// "cancel" state on the descriptor for a `handle` to flip), so the
+// widget is [`crate::non_interactive!`].
+
+/// Columns [`cell_paint`] reserves for the cancel affordance on a cell
+/// grid: one blank gutter column, the `×` glyph, one trailing column.
+/// The cell-grid twin of [`pixel::PROGRESS_CANCEL_WIDTH`].
+///
+/// [`pixel::PROGRESS_CANCEL_WIDTH`]: crate::primitives::layout_metrics::pixel::PROGRESS_CANCEL_WIDTH
+pub(crate) const CELL_CANCEL_WIDTH: f32 = 3.0;
+
+/// Cells [`cell_paint`] fills for the indeterminate pulse block. Gated
+/// with its only reader, the cell painter.
+#[cfg(feature = "tui")]
+pub(crate) const CELL_PULSE_WIDTH: usize = 3;
+
+/// Resolve `bar`'s layout for a cell grid: `rect` in whole terminal
+/// columns/rows, with [`CELL_CANCEL_WIDTH`] reserved for the cancel
+/// affordance and the height clamped to the single row the cell painter
+/// draws.
+///
+/// The cell-grid twin of
+/// [`crate::primitives::layout_metrics::pixel_progress_layout`]; both
+/// report bounds in the absolute frame `rect` is expressed in, so a
+/// [`ProgressBarLayout::hit_test`] against either takes the same
+/// coordinates the host painted at.
+pub(crate) fn cell_progress_layout(bar: &ProgressBar, rect: Rect) -> ProgressBarLayout {
+    bar.layout(
+        rect.x,
+        rect.y,
+        ProgressBarMeasure {
+            width: rect.width,
+            height: rect.height.min(1.0),
+            cancel_width: CELL_CANCEL_WIDTH,
+        },
+    )
+}
+
+impl crate::primitive::Primitive for ProgressBar {
+    type Layout = ProgressBarLayout;
+    type Event = ProgressBarHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Progress(self.clone())
+    }
+
+    /// One row tall, stretching to whatever width the container gives
+    /// it: a progress bar's length *is* the measurement it communicates,
+    /// so there is no intrinsic width to report.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        match ctx.units() {
+            crate::primitive::Units::Cells => crate::NaturalSize::new(None, Some(1.0)),
+            _ => crate::NaturalSize::new(None, Some(ctx.line_height)),
+        }
+    }
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> ProgressBarLayout {
+        match ctx.units() {
+            crate::primitive::Units::Cells => cell_progress_layout(self, rect),
+            _ => crate::primitives::layout_metrics::pixel_progress_layout(
+                self,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+            ),
+        }
+    }
+
+    /// The shared pixel painter, against the already-resolved `layout`.
+    fn paint(
+        &self,
+        layout: &ProgressBarLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint_resolved(self, layout, surface, theme, style);
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, theme, style);
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_progress_layout`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &ProgressBarLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_progress_layout(buf, self, layout, theme);
+    }
+}
+
+crate::non_interactive!(ProgressBar);
+
+/// The cell-grid painter for [`ProgressBar`], written against
+/// [`crate::CellSurface`].
+///
+/// One row: a `░` track across the bar body, a `█` run for the filled
+/// portion (determinate) or a [`CELL_PULSE_WIDTH`]-cell block sliding
+/// with `frame_idx` (indeterminate), the label overlaid from the second
+/// column, and a `×` in the cancel gutter when
+/// [`ProgressBarLayout::cancel_bounds`] is set.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{ProgressBar, ProgressBarLayout, CELL_PULSE_WIDTH};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// An opaque single-cell style — every glyph this painter writes
+    /// sets both colours and no modifier.
+    fn solid(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `bar` into `layout.bounds` on `surface`.
+    ///
+    /// `layout` must be the value
+    /// [`super::cell_progress_layout`] returned for the same bar and
+    /// rect, so paint and [`ProgressBarLayout::hit_test`] can never
+    /// disagree. A layout with no painted row (zero width or height) is
+    /// a no-op.
+    pub(crate) fn paint(
+        bar: &ProgressBar,
+        layout: &ProgressBarLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        if layout.bounds.width < 1.0 || layout.bounds.height < 1.0 {
+            return;
+        }
+
+        let y = layout.bounds.y.round() as u16;
+        let bx = layout.bounds.x.round() as u16;
+        let bw = layout.bounds.width.round() as u16;
+
+        let fill_color = bar.accent.unwrap_or(theme.accent_bg);
+        let track_bg = theme.surface_bg;
+        let fg = theme.foreground;
+
+        // Track background, stopping short of the cancel gutter.
+        let bar_end = match layout.cancel_bounds {
+            Some(cb) => cb.x.round() as u16,
+            None => bx + bw,
+        };
+        for dx in bx..bar_end {
+            surface.put_char(dx, y, '░', solid(fg, track_bg));
+        }
+
+        if let Some(fb) = layout.fill_bounds {
+            let fill_end = (fb.x + fb.width).round() as u16;
+            for dx in bx..fill_end.min(bar_end) {
+                surface.put_char(dx, y, '█', solid(fill_color, fill_color));
+            }
+        } else {
+            // Indeterminate: a short block sliding with `frame_idx`.
+            let track_w = bar_end.saturating_sub(bx) as usize;
+            if track_w > 0 {
+                let pulse_w = CELL_PULSE_WIDTH.min(track_w);
+                let pos = bar.frame_idx % track_w;
+                for i in 0..pulse_w {
+                    let dx = bx + ((pos + i) % track_w) as u16;
+                    if dx < bar_end {
+                        surface.put_char(dx, y, '█', solid(fill_color, fill_color));
+                    }
+                }
+            }
+        }
+
+        // Label overlay, left-aligned with one cell of padding. Each
+        // glyph keeps whatever background the track/fill left under it,
+        // so the label reads against both halves of a partly-filled bar.
+        if !bar.label.is_empty() {
+            for (col, ch) in (bx + 1..).zip(bar.label.chars()) {
+                if col >= bar_end {
+                    break;
+                }
+                let under = surface
+                    .get(col, y)
+                    .and_then(|(_, style)| style.bg)
+                    .unwrap_or(track_bg);
+                surface.put_char(col, y, ch, solid(fg, under));
+            }
+        }
+
+        // Cancel `×` affordance, centred in its gutter.
+        if let Some(cb) = layout.cancel_bounds {
+            let cx = cb.x.round() as u16 + 1;
+            if cx < bx + bw {
+                surface.put_char(cx, y, '×', solid(fg, track_bg));
+            }
+        }
+    }
+}
+
 // `paint` is the shared [`crate::paint_surface::PaintSurface`]
 // implementation of progress bar painting (track/fill/label/cancel),
 // replacing independent Cairo, Core Graphics, and Direct2D
@@ -214,6 +445,27 @@ pub(crate) mod native_surface_paint {
         style: &Style,
     ) -> ProgressBarLayout {
         let layout = pixel_progress_layout(bar, rect.x, rect.y, rect.width, rect.height);
+        paint_resolved(bar, &layout, surface, theme, style);
+        layout
+    }
+
+    /// The same paint as [`paint`], against an already-resolved
+    /// `layout` — what
+    /// [`crate::primitive::Primitive::paint`] calls, since the widget
+    /// contract hands a painter the layout rather than a rect.
+    ///
+    /// `layout.bounds` is the bar's own rect: both
+    /// [`pixel_progress_layout`] and
+    /// [`super::cell_progress_layout`] bake the origin they were laid
+    /// out at into it.
+    pub(crate) fn paint_resolved(
+        bar: &ProgressBar,
+        layout: &ProgressBarLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+    ) {
+        let rect = layout.bounds;
 
         // Track background.
         surface.surface_fill_rounded_rect(rect, style.corner_radius, theme.surface_bg);
@@ -271,8 +523,6 @@ pub(crate) mod native_surface_paint {
                 theme.foreground,
             );
         }
-
-        layout
     }
 
     #[cfg(test)]

@@ -727,6 +727,9 @@ where
         UiEvent::DoubleClick { position, .. } => {
             route_widget_double_click(*position, backend, app, &tree)
         }
+        UiEvent::Scroll {
+            position, delta, ..
+        } => route_widget_wheel(*position, *delta, backend, app, &tree),
         _ => WidgetRouteOutcome::Bubble(Reaction::Continue),
     }
 }
@@ -818,6 +821,41 @@ where
         kind: PointerKind::DoubleClick(MouseButton::Left),
         sub: None,
         local: local_point(position, node.rect),
+        mods: Modifiers::default(),
+    };
+    dispatch_widget_routed_event(id, node, &routed, backend, app)
+}
+
+/// `Scroll` arm of [`route_widget_event`]: hit-test and deliver
+/// [`RoutedEvent::Wheel`] to the widget under the cursor, the same
+/// hit-test-and-deliver shape as [`route_widget_pointer_down`].
+///
+/// A wheel gesture carries no button transition, so it never takes focus
+/// and never looks at the pointer capture — a wheel over a widget is
+/// about whatever is *under the cursor*, which is also what
+/// [`crate::UiEvent::Scroll`]'s own routing rule says. `Bubble(Continue)`
+/// when the gesture landed on no widget, so an app that scrolls its own
+/// non-contract surfaces still sees the plain event.
+fn route_widget_wheel<B, A>(
+    position: Point,
+    delta: crate::ScrollDelta,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> WidgetRouteOutcome
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let Some(node) = tree.hit_test(position) else {
+        return WidgetRouteOutcome::Bubble(Reaction::Continue);
+    };
+    let id = node.id;
+    let local = local_point(position, node.rect);
+    let routed = RoutedEvent::Wheel {
+        dx: delta.x,
+        dy: delta.y,
+        local,
         mods: Modifiers::default(),
     };
     dispatch_widget_routed_event(id, node, &routed, backend, app)

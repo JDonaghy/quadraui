@@ -1,28 +1,29 @@
-//! TUI rasteriser for [`crate::Spinner`].
-//!
-//! Paints a braille animation glyph + label, indexed by `frame_idx`
-//! into the frame table every backend shares —
-//! [`crate::primitives::spinner::FRAMES`].
+//! TUI entry points for [`crate::Spinner`] — thin delegates onto the
+//! widget's own cell painter, `crate::primitives::spinner::cell_paint`,
+//! which documents the glyph-plus-label rules. This module only adapts
+//! a raw ratatui [`Buffer`] into the [`crate::CellSurface`] that painter
+//! takes, and converts a ratatui cell [`Rect`] into the quadraui one the
+//! widget's own cell layout takes.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{ratatui_color, set_cell};
-use crate::primitives::spinner::{frame_glyph, Spinner, SpinnerLayout, SpinnerMeasure};
+use super::cell_surface::TuiCellSurface;
+use crate::backend::ColorDepth;
+use crate::event::Rect as QRect;
+use crate::primitives::spinner::{cell_paint, cell_spinner_layout, Spinner, SpinnerLayout};
 use crate::theme::Theme;
 
 /// Compute the TUI cell-unit layout for a [`Spinner`] without painting.
 pub fn tui_spinner_layout(spinner: &Spinner, area: Rect) -> SpinnerLayout {
-    let label_w = if spinner.label.is_empty() {
-        0
-    } else {
-        spinner.label.chars().count() + 1
-    };
-    let total_w = (1 + label_w).min(area.width as usize);
-    spinner.layout(
-        area.x as f32,
-        area.y as f32,
-        SpinnerMeasure::new(total_w as f32, 1.0),
+    cell_spinner_layout(
+        spinner,
+        QRect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ),
     )
 }
 
@@ -35,34 +36,25 @@ pub fn draw_spinner(
     theme: &Theme,
 ) -> SpinnerLayout {
     let layout = tui_spinner_layout(spinner, area);
-
-    if area.width == 0 || area.height == 0 {
-        return layout;
-    }
-
-    let x = layout.bounds.x.round() as u16;
-    let y = layout.bounds.y.round() as u16;
-
-    let glyph = frame_glyph(spinner.frame_idx);
-    let glyph_fg = spinner
-        .accent
-        .map(ratatui_color)
-        .unwrap_or_else(|| ratatui_color(theme.accent_fg));
-    let bg = ratatui_color(theme.background);
-
-    set_cell(buf, x, y, glyph, glyph_fg, bg);
-
-    if !spinner.label.is_empty() {
-        let fg = ratatui_color(theme.foreground);
-        for (col, ch) in (x + 2..).zip(spinner.label.chars()) {
-            if col >= area.x + area.width {
-                break;
-            }
-            set_cell(buf, col, y, ch, fg, bg);
-        }
-    }
-
+    draw_spinner_layout(buf, spinner, &layout, theme);
     layout
+}
+
+/// Draw a [`Spinner`] into `layout.bounds` on `buf`.
+///
+/// `layout` must be the same [`SpinnerLayout`] the host hit-tests
+/// against (typically [`tui_spinner_layout`]'s return value) so paint
+/// and hit-testing can never disagree.
+pub(crate) fn draw_spinner_layout(
+    buf: &mut Buffer,
+    spinner: &Spinner,
+    layout: &SpinnerLayout,
+    theme: &Theme,
+) {
+    // The painter never moves the cursor, so the sink is never read.
+    let mut cursor_sink = None;
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    cell_paint::paint(spinner, layout, &mut surface, theme);
 }
 
 #[cfg(test)]

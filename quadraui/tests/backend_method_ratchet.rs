@@ -153,6 +153,19 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("NumberInput", "draw_number_input"),
     ("ComboBox", "draw_combo_box"),
     ("DatePicker", "draw_date_picker"),
+    // Group-A ports, on the same terms as Group B: each now paints
+    // through `Primitive`/`Interactive`, and keeps its bespoke pair
+    // until the group's cleanup deletes the methods, the per-backend
+    // wrapper files and the `Surface` variants together. `draw_scrollbar`
+    // additionally stays because it is the shared chrome paint a dozen
+    // not-yet-ported rasterisers (`tui::editor`, `tui::list`,
+    // `tui::data_table`, `gtk::scroll_view`, …) reach for, none of which
+    // has a `PaintTarget` to route through `draw_primitive` with yet.
+    ("ProgressBar", "draw_progress"),
+    ("ProgressBar", "progress_layout"),
+    ("Spinner", "draw_spinner"),
+    ("Spinner", "spinner_layout"),
+    ("Scrollbar", "draw_scrollbar"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

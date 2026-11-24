@@ -784,6 +784,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_OpenRequestedPayload`](#wire-_openrequestedpayload)
 - [`_PowerStateChangedPayload`](#wire-_powerstatechangedpayload)
 - [`_ScrollOffsetChangedPayload`](#wire-_scrolloffsetchangedpayload)
+- [`_ScrollbarMovedPayload`](#wire-_scrollbarmovedpayload)
 - [`_TextSelectionChangedPayload`](#wire-_textselectionchangedpayload)
 - [`_SplitDividerDraggedPayload`](#wire-_splitdividerdraggedpayload)
 - [`_TrayClickedPayload`](#wire-_trayclickedpayload)
@@ -4866,6 +4867,14 @@ Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _H
 | `widget` | `WidgetId` | yes |  |
 | `new_offset` | `number` | yes |  |
 
+<a id="wire-_scrollbarmovedpayload"></a>
+#### `_ScrollbarMovedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `widget` | `WidgetId` | yes |  |
+| `fraction` | `number` | yes |  |
+
 <a id="wire-_textselectionchangedpayload"></a>
 #### `_TextSelectionChangedPayload`
 
@@ -4942,6 +4951,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `SystemThemeChanged` | `SystemTheme` |  |
 | `PowerStateChanged` | `_PowerStateChangedPayload` |  |
 | `ScrollOffsetChanged` | `_ScrollOffsetChangedPayload` |  |
+| `ScrollbarMoved` | `_ScrollbarMovedPayload` |  |
 | `TextSelectionChanged` | `_TextSelectionChangedPayload` |  |
 | `SplitDividerDragged` | `_SplitDividerDraggedPayload` |  |
 | `MenuActivated` | `WidgetId` |  |
