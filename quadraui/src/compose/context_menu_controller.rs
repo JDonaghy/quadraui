@@ -270,10 +270,16 @@ impl ContextMenuController {
                 repeat,
             } => {
                 let stack = self.menu_stack(&open, backend);
-                let depth = open.submenu_path.len();
                 let Some((menu, layout)) = stack.last() else {
                     return ContextMenuOutcome::Ignored;
                 };
+                // `menu_stack` stops at the first path entry that no
+                // longer names a submenu parent, so the depth of the
+                // level it actually built is what a selection move
+                // applies to — reading `submenu_path.len()` instead
+                // would address a level that is not there and drop the
+                // move.
+                let depth = stack.len() - 1;
                 let page = layout.visible_items.len().max(1);
                 let event = KeyEvent {
                     key: key.clone(),
@@ -824,6 +830,34 @@ mod tests {
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
             glyphs: Default::default(),
         }
+    }
+
+    /// A path entry naming an item that is not a submenu parent builds
+    /// no level for itself, so a keystroke applies to the deepest level
+    /// that *was* built rather than being discarded against a depth the
+    /// stack never reached.
+    #[test]
+    fn a_path_entry_with_no_submenu_still_moves_the_level_below_it() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        ctl.open(menu(), Point::new(0.0, 0.0), &mut backend);
+        // "Copy" has no submenu, so this names a level that cannot exist.
+        ctl.open.as_mut().unwrap().submenu_path = vec![0];
+
+        let outcome = ctl.handle(
+            &UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            &mut backend,
+        );
+        assert_eq!(outcome, ContextMenuOutcome::Consumed);
+        assert_eq!(
+            ctl.open.as_ref().unwrap().menu.selected_idx,
+            1,
+            "the root menu's own highlight must move, not be dropped"
+        );
     }
 
     #[test]
