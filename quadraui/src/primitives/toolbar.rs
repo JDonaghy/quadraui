@@ -1218,6 +1218,11 @@ impl ToolbarLayout {
     /// `cross_edge` is in the same unit and space as this layout's own
     /// bounds — `area.y + area.height` in cells for a terminal, `y + h`
     /// in px/DIPs for a pixel backend.
+    // `#[allow(dead_code)]`: only called once a backend is compiled in —
+    // every rasteriser owns one call site (`cell_layout`'s for the cell
+    // grid, each pixel backend's `draw_toolbar`) and a feature-less build
+    // compiles none of them.
+    #[allow(dead_code)]
     pub(crate) fn demote_lines_past(&mut self, options: ToolbarLayoutOptions, cross_edge: f32) {
         if options.overflow != ToolbarOverflow::Wrap
             || options.orientation != ToolbarOrientation::Horizontal
