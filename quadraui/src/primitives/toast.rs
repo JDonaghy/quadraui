@@ -37,8 +37,9 @@
 //! and removed once known consumers migrated; see `CHANGELOG.md`'s
 //! `Removed` entry.
 
-use crate::event::Rect;
-use crate::types::{Color, WidgetId};
+use crate::event::{Key, NamedKey, Rect};
+use crate::types::{Color, Modifiers, WidgetId};
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a toast stack for one corner.
@@ -748,6 +749,384 @@ impl ToastOverlay {
     }
 }
 
+// ── Cell-grid measurement ───────────────────────────────────────────────────
+
+/// Max toast width on a cell grid: a fixed `40` was too narrow for a
+/// title with an action button (e.g. "Install Markdown Language
+/// Server?" + "Install"), which got cut off mid-word. The width is a
+/// per-content floor/ceiling — see [`cell_toast_width`] — with this as
+/// the ceiling.
+const CELL_TOAST_MAX_WIDTH: f32 = 60.0;
+/// Width floor: keeps a short "Saved"-style toast from shrinking below a
+/// sensible box, and leaves room for the 2-cell border + dismiss glyph.
+const CELL_TOAST_MIN_WIDTH: f32 = 12.0;
+const CELL_TOAST_MARGIN: f32 = 1.0;
+const CELL_TOAST_GAP: f32 = 1.0;
+const CELL_DISMISS_WIDTH: f32 = 3.0;
+const CELL_ACTION_PADDING: f32 = 2.0;
+/// Horizontal gap (cells) between two adjacent action buttons on the
+/// button row.
+const CELL_ACTION_GAP: f32 = 1.0;
+/// Rows reserved for the top+bottom border.
+const CELL_BORDER_ROWS: f32 = 2.0;
+/// Columns reserved for the left+right border. Drawn in the 1-cell
+/// padding columns every toast already reserved before text/dismiss, so
+/// this doesn't change the box's overall width formula.
+const CELL_BORDER_COLS: f32 = 2.0;
+/// Toast-local inset from the box edge for the dismiss/action rows —
+/// keeps both clear of the 1-cell border.
+const CELL_INSET: f32 = 1.0;
+
+/// Per-action button width in cells: label length plus
+/// [`CELL_ACTION_PADDING`] breathing room either side.
+fn cell_action_width(action: &ToastButton) -> f32 {
+    action.label.chars().count() as f32 + CELL_ACTION_PADDING
+}
+
+/// Resolve a toast's box width in cells from its content: wide enough for
+/// the whole title plus its dismiss button, *and* wide enough for the
+/// action row (if any) to fit without its buttons overlapping — clamped
+/// to a sensible [`CELL_TOAST_MAX_WIDTH`] ceiling and
+/// [`CELL_TOAST_MIN_WIDTH`] floor, and never wider than the viewport
+/// allows. The body doesn't drive width — it wraps instead (see
+/// [`cell_body_lines`]) — so a very long body alone doesn't blow the box
+/// out sideways.
+fn cell_toast_width(toast: &Toast, viewport_width: f32) -> f32 {
+    let title_needed = toast.title.chars().count() as f32 + CELL_BORDER_COLS + CELL_DISMISS_WIDTH;
+    let action_widths: Vec<f32> = toast.actions.iter().map(cell_action_width).collect();
+    let actions_needed = if action_widths.is_empty() {
+        0.0
+    } else {
+        CELL_BORDER_COLS
+            + action_widths.iter().sum::<f32>()
+            + CELL_ACTION_GAP * (action_widths.len() as f32 - 1.0)
+    };
+    title_needed
+        .max(actions_needed)
+        .clamp(CELL_TOAST_MIN_WIDTH, CELL_TOAST_MAX_WIDTH)
+        .min((viewport_width - CELL_TOAST_MARGIN * 2.0).max(0.0))
+}
+
+/// Word-wrap `toast`'s body to fit a box of `width` columns (already
+/// resolved by [`cell_toast_width`]), capped at [`MAX_BODY_LINES`] —
+/// shared by the measure closure (for height) and the painter (for the
+/// actual text), so they always agree.
+pub(crate) fn cell_body_lines(toast: &Toast, width: f32) -> Vec<String> {
+    if toast.body.is_empty() {
+        return Vec::new();
+    }
+    let avail = (width - CELL_BORDER_COLS).max(0.0);
+    wrap_text_lines(&toast.body, avail, MAX_BODY_LINES, &|s| {
+        s.chars().count() as f32
+    })
+}
+
+/// A toast's box height in cells: title row + wrapped body rows + one
+/// button row (only when the toast has actions) + the two border rows.
+fn cell_toast_height(toast: &Toast, width: f32) -> f32 {
+    let body_lines = cell_body_lines(toast, width).len();
+    let button_row = if toast.actions.is_empty() { 0.0 } else { 1.0 };
+    1.0 + body_lines as f32 + button_row + CELL_BORDER_ROWS
+}
+
+/// Compute a [`ToastOverlay`]'s cell-unit layout — the cell-grid twin of
+/// [`crate::primitives::layout_metrics::pixel_toast_stack_layout`].
+///
+/// `area`'s origin is baked into the returned bounds (absolute buffer
+/// coordinates, matching `tui_menu_bar_layout` / `tui_sidebar_panel_layout`)
+/// — hosts call `layout.hit_test(x, y)` with raw click coordinates, no
+/// localisation needed.
+pub(crate) fn cell_toast_stack_layout(stack: &ToastOverlay, area: Rect) -> ToastStackLayout {
+    let viewport_width = area.width;
+    stack.layout(
+        area.x,
+        area.y,
+        viewport_width,
+        area.height,
+        CELL_TOAST_MARGIN,
+        CELL_TOAST_GAP,
+        |i| {
+            let toast = &stack.toasts[i];
+            let width = cell_toast_width(toast, viewport_width);
+            let height = cell_toast_height(toast, width);
+            let action_widths: Vec<f32> = toast.actions.iter().map(cell_action_width).collect();
+            let (dismiss_rect, action_rects) = toast_button_rects(
+                width,
+                height,
+                CELL_INSET,
+                CELL_DISMISS_WIDTH,
+                1.0,
+                &action_widths,
+                1.0,
+                CELL_ACTION_GAP,
+            );
+            ToastMeasure {
+                width,
+                height,
+                dismiss_rect,
+                action_rects,
+            }
+        },
+    )
+}
+
+// ── Cell-grid painter ───────────────────────────────────────────────────────
+
+/// The cell-grid painter for [`ToastOverlay`], written against
+/// [`crate::CellSurface`].
+///
+/// One call paints the whole stack: each resolved box gets a severity (or
+/// [`Toast::accent`]) background wash, a `┌─┐└─┘│` border, a title
+/// truncated clear of the dismiss `×`, up to [`MAX_BODY_LINES`] wrapped
+/// body rows, the `×` itself near the top-right, and the action row at
+/// the bottom-right. [`ToastOverlay::focus`], when it names a control on
+/// a box, inverts that control into `theme.link_fg`.
+pub(crate) mod cell_paint {
+    use super::{
+        cell_body_lines, severity_bg_cells, truncate_line, Toast, ToastFocus, ToastFocusTarget,
+        ToastStackLayout, VisibleToast, CELL_BORDER_COLS,
+    };
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    /// A foreground/background pair with no modifier bits — the only
+    /// [`CellStyle`] shape this painter builds.
+    fn ink(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint every visible toast in `layout`, clipped to `clip` (the
+    /// overlay area the host handed the stack — a box that would reach
+    /// past it is cut off rather than drawn outside).
+    pub(crate) fn paint(
+        stack: &super::ToastOverlay,
+        layout: &ToastStackLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+        clip: Rect,
+    ) {
+        for vt in &layout.visible_toasts {
+            let toast = &stack.toasts[vt.toast_idx];
+            let focus = stack.focus.as_ref().filter(|f| f.toast_id == toast.id);
+            paint_toast(surface, clip, vt, toast, theme, focus);
+        }
+    }
+
+    fn paint_toast(
+        surface: &mut dyn CellSurface,
+        clip: Rect,
+        vt: &VisibleToast,
+        toast: &Toast,
+        theme: &Theme,
+        focus: Option<&ToastFocus>,
+    ) {
+        let bg = toast
+            .accent
+            .unwrap_or_else(|| severity_bg_cells(toast.severity, theme));
+        let fg = theme.foreground;
+        let border_fg = theme.border_fg;
+
+        let bx = vt.bounds.x.round() as u16;
+        let by = vt.bounds.y.round() as u16;
+        let bw = vt.bounds.width.round() as u16;
+        let bh = vt.bounds.height.round() as u16;
+
+        let clip_x1 = (clip.x + clip.width).round() as u16;
+        let clip_y1 = (clip.y + clip.height).round() as u16;
+        let in_clip = |x: u16, y: u16| x < clip_x1 && y < clip_y1;
+
+        let body_ink = ink(fg, bg);
+        let chrome = ink(border_fg, bg);
+
+        // Fill background.
+        for dy in 0..bh {
+            for dx in 0..bw {
+                let (x, y) = (bx + dx, by + dy);
+                if in_clip(x, y) {
+                    surface.put_char(x, y, ' ', body_ink);
+                }
+            }
+        }
+
+        // Border drawn with box-drawing characters on top/bottom rows;
+        // left/right columns reuse the 1-cell padding every toast already
+        // reserves before text/dismiss, so this doesn't change the box's
+        // width. Painted cell by cell rather than through
+        // `CellSurface::draw_border` so each glyph is dropped
+        // individually when the box reaches past `clip`.
+        let bottom_y = by + bh.saturating_sub(1);
+        if bh >= 2 && bw >= 2 {
+            for dx in 0..bw {
+                let x = bx + dx;
+                let top_ch = if dx == 0 {
+                    '┌'
+                } else if dx == bw - 1 {
+                    '┐'
+                } else {
+                    '─'
+                };
+                if in_clip(x, by) {
+                    surface.put_char(x, by, top_ch, chrome);
+                }
+                let bottom_ch = if dx == 0 {
+                    '└'
+                } else if dx == bw - 1 {
+                    '┘'
+                } else {
+                    '─'
+                };
+                if in_clip(x, bottom_y) {
+                    surface.put_char(x, bottom_y, bottom_ch, chrome);
+                }
+            }
+            for dy in 1..bh.saturating_sub(1) {
+                let y = by + dy;
+                if in_clip(bx, y) {
+                    surface.put_char(bx, y, '│', chrome);
+                }
+                if in_clip(bx + bw - 1, y) {
+                    surface.put_char(bx + bw - 1, y, '│', chrome);
+                }
+            }
+        }
+
+        // Title on the first interior row (below the top border),
+        // left-aligned with 1-cell padding, truncated/ellipsized to the
+        // space left of the dismiss button — never drawn under it. The
+        // action row has its own line at the bottom, so the title only
+        // needs to dodge dismiss.
+        let title_y = by + 1;
+        let text_end = vt
+            .dismiss_bounds
+            .map(|db| db.x.round() as u16)
+            .unwrap_or(bx + bw.saturating_sub(1));
+        let dismiss_w = vt.dismiss_bounds.map(|d| d.width).unwrap_or(0.0);
+        let title_avail = (vt.bounds.width - CELL_BORDER_COLS - dismiss_w).max(0.0);
+        let title_line = truncate_line(&toast.title, title_avail, &|s| s.chars().count() as f32);
+        let title_budget = text_end
+            .saturating_sub(bx + 1)
+            .min(clip_x1.saturating_sub(bx + 1));
+        if in_clip(bx + 1, title_y) {
+            surface.put_str_clipped(bx + 1, title_y, &title_line, title_budget, body_ink);
+        }
+
+        // Body wraps across up to `MAX_BODY_LINES` rows below the title.
+        // Body rows have no action/dismiss to avoid, so they use the full
+        // interior width.
+        if !toast.body.is_empty() {
+            let body_text_end = bx + bw.saturating_sub(1);
+            let body_budget = body_text_end
+                .saturating_sub(bx + 1)
+                .min(clip_x1.saturating_sub(bx + 1));
+            for (i, line) in cell_body_lines(toast, vt.bounds.width).iter().enumerate() {
+                let body_y = title_y + 1 + i as u16;
+                if in_clip(bx + 1, body_y) {
+                    surface.put_str_clipped(bx + 1, body_y, line, body_budget, body_ink);
+                }
+            }
+        }
+
+        // Dismiss × near the top-right: a single-row square near the
+        // title row.
+        let dismiss_focused = matches!(focus, Some(f) if f.target == ToastFocusTarget::Dismiss);
+        if let Some(db) = vt.dismiss_bounds {
+            let dx = db.x.round() as u16 + (db.width as u16).saturating_sub(1) / 2;
+            let dy = db.y.round() as u16;
+            if in_clip(dx, dy) {
+                // Visible focus indicator — invert fg/bg on the dismiss
+                // cell when it's the controller's focus target.
+                let style = if dismiss_focused {
+                    ink(bg, theme.link_fg)
+                } else {
+                    body_ink
+                };
+                surface.put_char(dx, dy, '×', style);
+            }
+        }
+
+        // Action buttons on their own row at the bottom-right.
+        for (i, (ab, action)) in vt.action_rects.iter().zip(toast.actions.iter()).enumerate() {
+            let ay = ab.y.round() as u16;
+            let ax0 = ab.x.round() as u16;
+            let aw = ab.width.round() as u16;
+            let action_focused =
+                matches!(focus, Some(f) if f.target == ToastFocusTarget::Action(i));
+            let (mut row_bg, mut row_fg) = if action.primary {
+                (theme.accent_bg, theme.foreground)
+            } else {
+                (bg, theme.link_fg)
+            };
+            // An explicit `spec` override's `variant` tints the
+            // foreground in the intent colour and clears any `accent_bg`
+            // fill `primary` would otherwise set — no background fill of
+            // its own on a cell grid, the same "no-op background"
+            // convention `crate::tui::button` uses for a standalone
+            // `Danger`/`Warning` `Button`, regardless of the legacy
+            // `primary` flag. A `spec: None` action keeps its plain
+            // primary/secondary look, unaffected. Only `variant` is
+            // honoured here today — `icon`/`icon_position`/`icon_gap`/
+            // `tooltip`/`disabled` on the spec have no cell-grid toast
+            // effect yet.
+            if let Some(spec) = &action.spec {
+                match spec.variant {
+                    crate::primitives::button::ButtonVariant::Danger => {
+                        row_fg = theme.error_fg;
+                        row_bg = bg;
+                    }
+                    crate::primitives::button::ButtonVariant::Warning => {
+                        row_fg = theme.warning_fg;
+                        row_bg = bg;
+                    }
+                    _ => {}
+                }
+            }
+            if action_focused {
+                // Visible focus indicator — invert to a `theme.link_fg`
+                // filled row, same treatment as dismiss.
+                row_fg = row_bg;
+                row_bg = theme.link_fg;
+            }
+            let face = ink(row_fg, row_bg);
+            // Fill the button's own row so a primary action reads as a
+            // filled "chip".
+            for dx in 0..aw {
+                let x = ax0 + dx;
+                if in_clip(x, ay) {
+                    surface.put_char(x, ay, ' ', face);
+                }
+            }
+            let label_start = ax0 + (aw.saturating_sub(action.label.chars().count() as u16)) / 2;
+            let budget = (ax0 + aw)
+                .saturating_sub(label_start)
+                .min(clip_x1.saturating_sub(label_start));
+            if in_clip(label_start, ay) {
+                surface.put_str_clipped(label_start, ay, &action.label, budget, face);
+            }
+        }
+    }
+}
+
+/// Severity → fallback background tint on a cell grid, used when
+/// [`Toast::accent`] is `None`.
+///
+/// `Info` stays on the neutral `theme.surface_bg` panel colour rather
+/// than `Theme::info_bg`'s accent tint — see
+/// `native_surface_paint::severity_bg`'s own doc for why.
+pub(crate) fn severity_bg_cells(severity: ToastSeverity, theme: &crate::theme::Theme) -> Color {
+    match severity {
+        ToastSeverity::Info => theme.surface_bg,
+        ToastSeverity::Success => theme.success_bg(),
+        ToastSeverity::Warning => theme.warning_bg(),
+        ToastSeverity::Error => theme.danger_bg(),
+    }
+}
+
 // ── PaintSurface paint ────────────────────────────────────────────────
 //
 // This is the one shared implementation of toast painting, written against
@@ -806,25 +1185,15 @@ impl ToastOverlay {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        shift_rect, toast_button_rects, truncate_line, wrap_text_lines, Toast, ToastFocus,
-        ToastFocusTarget, ToastMeasure, ToastOverlay, ToastSeverity, ToastStackLayout,
-        VisibleToast, MAX_BODY_LINES,
+        shift_rect, truncate_line, wrap_text_lines, Toast, ToastFocus, ToastFocusTarget,
+        ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast, MAX_BODY_LINES,
     };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::layout_metrics::pixel::TOAST_PADDING;
     use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
-
-    const TOAST_WIDTH: f32 = 320.0;
-    const TOAST_MARGIN: f32 = 12.0;
-    const TOAST_GAP: f32 = 8.0;
-    const DISMISS_WIDTH: f32 = 28.0;
-    const ACTION_PADDING: f32 = 16.0;
-    /// Horizontal gap between two adjacent action buttons on the button
-    /// row.
-    const ACTION_GAP: f32 = 8.0;
-    const TOAST_PADDING: f32 = 8.0;
 
     /// Severity → fallback background tint, used when `Toast::accent` is
     /// `None`. Duplicated across `tui::toast` (out of scope for the
@@ -905,66 +1274,64 @@ pub(crate) mod native_surface_paint {
     where
         F: Fn(&WidgetId) -> f32,
     {
-        let layout = stack.layout(
-            origin_x,
-            origin_y,
-            viewport_width,
-            viewport_height,
-            TOAST_MARGIN,
-            TOAST_GAP,
-            |i| {
-                let toast = &stack.toasts[i];
-                let width = TOAST_WIDTH.min((viewport_width - TOAST_MARGIN * 2.0).max(0.0));
-                let body_avail = (width - TOAST_PADDING * 2.0).max(0.0);
-                let body_lines = if toast.body.is_empty() {
-                    0
-                } else {
-                    wrap_text_lines(&toast.body, body_avail, MAX_BODY_LINES, &|s| {
-                        surface.surface_measure_text(s).0
-                    })
-                    .len()
-                    .max(1)
-                };
-                // Button row: a separate row below the title/body, added
-                let has_actions = !toast.actions.is_empty();
-                let button_row_h = if has_actions {
-                    TOAST_PADDING + line_height
-                } else {
-                    0.0
-                };
-                let h = line_height
-                    + TOAST_PADDING * 2.0
-                    + body_lines as f32 * line_height
-                    + button_row_h;
-                let action_widths: Vec<f32> = toast
-                    .actions
-                    .iter()
-                    .map(|a| surface.surface_measure_text(&a.label).0 + ACTION_PADDING)
-                    .collect();
-                let (dismiss_rect, action_rects) = toast_button_rects(
-                    width,
-                    h,
-                    TOAST_PADDING,
-                    DISMISS_WIDTH,
-                    // Height is a single text row, not `DISMISS_WIDTH`
-                    // (a wide *click-target*, not a tall one) — a short,
-                    // body-less, action-less toast is barely taller than
-                    // one row plus padding, and a square dismiss target
-                    // that tall would reach past the button row.
-                    line_height,
-                    &action_widths,
-                    line_height,
-                    ACTION_GAP,
-                );
-                ToastMeasure {
-                    width,
-                    height: h,
-                    dismiss_rect,
-                    action_rects,
-                }
-            },
+        // The box/dismiss/action geometry comes from
+        // `pixel_toast_stack_layout`, the crate's one pixel-unit toast
+        // measurement — the same function every no-paint hit-test caller
+        // resolves its own layout through, so paint and hit-test can't
+        // drift apart.
+        let layout = {
+            let measure = SurfaceMeasure(&*surface);
+            crate::primitives::layout_metrics::pixel_toast_stack_layout(
+                stack,
+                &measure,
+                origin_x,
+                origin_y,
+                viewport_width,
+                viewport_height,
+                line_height,
+            )
+        };
+        paint_layout(
+            stack,
+            &layout,
+            surface,
+            theme,
+            style,
+            line_height,
+            x_offset_for,
         );
+        layout
+    }
 
+    /// A live [`PaintSurface`]'s own text measurement, as the
+    /// [`crate::primitives::layout_metrics::TextMeasure`]
+    /// [`crate::primitives::layout_metrics::pixel_toast_stack_layout`]
+    /// takes.
+    struct SurfaceMeasure<'a>(&'a dyn PaintSurface);
+
+    impl crate::primitives::layout_metrics::TextMeasure for SurfaceMeasure<'_> {
+        fn width_of(&self, text: &str) -> f32 {
+            self.0.surface_measure_text(text).0
+        }
+    }
+
+    /// Paint an already-resolved [`ToastStackLayout`] — the half of
+    /// [`paint_with_x_offset`] that rasterises, split out so
+    /// [`crate::primitive::Primitive::paint`] can render the layout its
+    /// own `layout()` call already produced instead of measuring the
+    /// stack a second time.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_layout<F>(
+        stack: &ToastOverlay,
+        layout: &ToastStackLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        line_height: f32,
+        x_offset_for: F,
+    ) where
+        F: Fn(&WidgetId) -> f32,
+    {
         for vt in &layout.visible_toasts {
             let toast = &stack.toasts[vt.toast_idx];
             let focus = stack.focus.as_ref().filter(|f| f.toast_id == toast.id);
@@ -986,8 +1353,6 @@ pub(crate) mod native_surface_paint {
                 paint_toast(surface, theme, style, &shifted, toast, line_height, focus);
             }
         }
-
-        layout
     }
 
     /// Paint one resolved toast box: background tint, a theme border,
@@ -1779,6 +2144,504 @@ pub(crate) mod native_surface_paint {
     }
 }
 
+// ── Widget contract ─────────────────────────────────────────────────────────
+
+/// [`ToastOverlay`]'s fully-resolved widget-contract layout: the absolute
+/// overlay area the stack was laid out into, plus the
+/// [`ToastStackLayout`] resolved inside it.
+///
+/// `layout`'s rects are **absolute** — [`ToastOverlay::layout`] bakes
+/// `area`'s origin into every bound, the same frame
+/// [`ToastStackLayout::hit_test`] has always taken — so [`Self::hit_test`]
+/// takes absolute coordinates too.
+/// [`crate::interactive::Interactive::sub_regions`], which must answer in
+/// widget-local space, subtracts `area`'s origin itself.
+///
+/// `#[non_exhaustive]`: produced by
+/// [`Primitive::layout`](crate::primitive::Primitive::layout), never built
+/// by a consumer via struct literal.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ToastOverlayPrimitiveLayout {
+    /// The rect [`Primitive::layout`](crate::primitive::Primitive::layout)
+    /// received — the app's overlay area, which the stack anchors its
+    /// corner to.
+    pub area: Rect,
+    /// The stack's own resolved layout, in absolute coordinates.
+    pub layout: ToastStackLayout,
+}
+
+impl ToastOverlayPrimitiveLayout {
+    /// Classify an absolute point against the stack — see
+    /// [`ToastStackLayout::hit_test`].
+    pub fn hit_test(&self, x: f32, y: f32) -> ToastHit {
+        self.layout.hit_test(x, y)
+    }
+}
+
+/// [`crate::interactive::Interactive::State`] for [`ToastOverlay`]: which
+/// control keyboard focus has reached.
+///
+/// A stack starts unfocused and only becomes focused when a host asks it
+/// to (a click on a toast, or a `FocusIn` from the host's own "focus
+/// notifications" command) — toasts never steal focus on their own, the
+/// same non-modal contract this module's doc describes.
+///
+/// `#[non_exhaustive]`: a future field add here is additive.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToastOverlayState {
+    /// The focused toast and control, or `None` while the stack is
+    /// unfocused. A host paints the ring by threading this back onto the
+    /// next frame's [`ToastOverlay::focus`].
+    pub focus: Option<ToastFocus>,
+}
+
+/// What a [`ToastOverlay`]'s own
+/// [`crate::interactive::Interactive::handle`] resolves one gesture to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastOverlayAction {
+    /// An action button was activated — by click, or by Enter on the
+    /// keyboard-focused action. Carries that [`ToastButton::id`],
+    /// matching [`ToastHit::Action`]'s shape so a host dispatches
+    /// identically whether the action was reached by mouse or keyboard.
+    ActionActivated(WidgetId),
+    /// A toast was dismissed — its `×` was clicked, Enter activated the
+    /// focused `×`, or Escape dismissed the focused toast. Carries the
+    /// toast's own [`Toast::id`], matching [`ToastHit::Dismiss`]'s shape.
+    /// The host removes that toast from the next frame's descriptor; this
+    /// widget never mutates the stack it was handed.
+    Dismissed(WidgetId),
+    /// Escape cleared focus with no toast left to dismiss — reachable
+    /// when the focused toast already vanished from the descriptor by
+    /// some other path (an expiry timer, a click elsewhere).
+    FocusReturned,
+}
+
+impl crate::interactive::WidgetAction for ToastOverlayAction {
+    /// An activated action rides [`crate::UiEvent::ToastActionClicked`]
+    /// under that action's own id — the variant every in-canvas toast
+    /// action click already arrives as.
+    ///
+    /// A dismissal has no dedicated `UiEvent` of its own, so it rides the
+    /// same variant under the **toast's** id instead: a host already
+    /// holds the toast list it is about to filter, so matching the id
+    /// against it is how it tells the two apart, and nothing is lost in
+    /// the mapping. [`Self::FocusReturned`] reports the overlay's own id
+    /// for the same reason — it names the stack, not a button.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            ToastOverlayAction::ActionActivated(action) => {
+                crate::UiEvent::ToastActionClicked(action)
+            }
+            ToastOverlayAction::Dismissed(toast) => crate::UiEvent::ToastActionClicked(toast),
+            ToastOverlayAction::FocusReturned => crate::UiEvent::ToastActionClicked(id),
+        }
+    }
+}
+
+/// Pack a `(toast index, control index)` pair into one
+/// [`crate::interactive::SubTarget`] — control `0` is the dismiss `×`,
+/// control `i + 1` is [`Toast::actions`]`[i]`, the same ordering
+/// [`ToastFocusTarget`] itself uses.
+fn pack_sub(toast_idx: usize, control_idx: usize) -> crate::interactive::SubTarget {
+    crate::interactive::SubTarget(((toast_idx as u64) << 32) | control_idx as u64)
+}
+
+/// Inverse of [`pack_sub`].
+fn unpack_sub(sub: crate::interactive::SubTarget) -> (usize, usize) {
+    ((sub.0 >> 32) as usize, (sub.0 & 0xffff_ffff) as usize)
+}
+
+/// A [`ToastFocusTarget`] as its control index — see [`pack_sub`].
+pub(crate) fn target_to_control_index(target: ToastFocusTarget) -> usize {
+    match target {
+        ToastFocusTarget::Dismiss => 0,
+        ToastFocusTarget::Action(i) => i + 1,
+    }
+}
+
+/// A control index as its [`ToastFocusTarget`] — see [`pack_sub`].
+pub(crate) fn control_index_to_target(index: usize) -> ToastFocusTarget {
+    if index == 0 {
+        ToastFocusTarget::Dismiss
+    } else {
+        ToastFocusTarget::Action(index - 1)
+    }
+}
+
+impl ToastOverlay {
+    /// Dispatch one keystroke against a live focus cursor — the whole
+    /// keyboard model for a focused stack, shared by
+    /// [`crate::interactive::Interactive::handle`] and
+    /// [`crate::compose::ToastStackController::handle_event`] so both
+    /// agree on every key.
+    ///
+    /// Tab/Shift-Tab and Left/Right cycle the focused toast's controls
+    /// (dismiss `×` first, then each action, wrapping at either end);
+    /// Up/Down move between toasts in [`Self::toasts`] order, clamping at
+    /// either end and resetting the in-toast cursor to the dismiss
+    /// button; Enter activates the focused control; Escape dismisses the
+    /// focused toast *and* clears focus. Every other key, and every key
+    /// while `focus` is `None`, is [`Handled::Ignored`] — the stack never
+    /// claims a key it isn't the target of.
+    ///
+    /// A `focus` naming a toast that is no longer in the descriptor is
+    /// cleared first, so a host that keeps feeding keys after an expiry
+    /// never gets an action for a toast that no longer exists.
+    pub(crate) fn handle_focus_key(
+        &self,
+        focus: &mut Option<ToastFocus>,
+        key: &Key,
+        modifiers: &Modifiers,
+    ) -> Handled<ToastOverlayAction> {
+        if let Some(f) = focus.as_ref() {
+            if !self.toasts.iter().any(|t| t.id == f.toast_id) {
+                *focus = None;
+            }
+        }
+        let Some(current) = focus.clone() else {
+            return Handled::Ignored;
+        };
+        let Some(toast_idx) = self.toasts.iter().position(|t| t.id == current.toast_id) else {
+            *focus = None;
+            return Handled::Ignored;
+        };
+        let control_count = 1 + self.toasts[toast_idx].actions.len();
+        let cur = target_to_control_index(current.target);
+        let set_control = |focus: &mut Option<ToastFocus>, index: usize| {
+            *focus = Some(ToastFocus {
+                toast_id: current.toast_id,
+                target: control_index_to_target(index),
+            });
+        };
+
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                *focus = None;
+                Handled::Event(ToastOverlayAction::Dismissed(current.toast_id))
+            }
+            Key::Named(NamedKey::Enter) => match current.target {
+                ToastFocusTarget::Dismiss => {
+                    Handled::Event(ToastOverlayAction::Dismissed(current.toast_id))
+                }
+                ToastFocusTarget::Action(i) => match self.toasts[toast_idx].actions.get(i) {
+                    Some(a) => Handled::Event(ToastOverlayAction::ActionActivated(a.id)),
+                    None => Handled::Consumed,
+                },
+            },
+            Key::Named(NamedKey::Left) => {
+                set_control(focus, crate::focus::cycle_index(cur, -1, control_count));
+                Handled::Consumed
+            }
+            Key::Named(NamedKey::Right) => {
+                set_control(focus, crate::focus::cycle_index(cur, 1, control_count));
+                Handled::Consumed
+            }
+            Key::Named(NamedKey::Tab) => {
+                let delta = if modifiers.shift { -1 } else { 1 };
+                set_control(focus, crate::focus::cycle_index(cur, delta, control_count));
+                Handled::Consumed
+            }
+            Key::Named(NamedKey::BackTab) => {
+                set_control(focus, crate::focus::cycle_index(cur, -1, control_count));
+                Handled::Consumed
+            }
+            Key::Named(NamedKey::Up) => {
+                if toast_idx > 0 {
+                    self.focus_toast_at(focus, toast_idx - 1);
+                }
+                Handled::Consumed
+            }
+            Key::Named(NamedKey::Down) => {
+                if toast_idx + 1 < self.toasts.len() {
+                    self.focus_toast_at(focus, toast_idx + 1);
+                }
+                Handled::Consumed
+            }
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// Move `focus` to the toast at `idx`, seeded on its dismiss `×`.
+    pub(crate) fn focus_toast_at(&self, focus: &mut Option<ToastFocus>, idx: usize) {
+        if let Some(t) = self.toasts.get(idx) {
+            *focus = Some(ToastFocus {
+                toast_id: t.id,
+                target: ToastFocusTarget::Dismiss,
+            });
+        }
+    }
+
+    /// Resolve whichever control `focus` names to the action it would
+    /// produce — what Enter and an assistive-technology `Click` both do.
+    fn activate_focused(&self, focus: &Option<ToastFocus>) -> Option<ToastOverlayAction> {
+        let f = focus.as_ref()?;
+        let toast = self.toasts.iter().find(|t| t.id == f.toast_id)?;
+        match f.target {
+            ToastFocusTarget::Dismiss => Some(ToastOverlayAction::Dismissed(toast.id)),
+            ToastFocusTarget::Action(i) => toast
+                .actions
+                .get(i)
+                .map(|a| ToastOverlayAction::ActionActivated(a.id)),
+        }
+    }
+}
+
+impl crate::primitive::Primitive for ToastOverlay {
+    type Layout = ToastOverlayPrimitiveLayout;
+    type Event = ToastHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Toast(self.clone())
+    }
+
+    /// `rect` is the app's overlay area — the stack anchors
+    /// [`Self::corner`] to it and sizes each box from its own content.
+    ///
+    /// On a cell grid that is [`cell_toast_stack_layout`]; on a pixel
+    /// surface it is
+    /// [`crate::primitives::layout_metrics::pixel_toast_stack_layout`],
+    /// measuring action labels through the calling backend's real
+    /// [`crate::Backend::measure_text`].
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> ToastOverlayPrimitiveLayout {
+        let layout = match ctx.units() {
+            crate::primitive::Units::Cells => cell_toast_stack_layout(self, rect),
+            _ => {
+                let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+                    ctx,
+                    role: crate::FontRole::Chrome,
+                };
+                crate::primitives::layout_metrics::pixel_toast_stack_layout(
+                    self,
+                    &measure,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    ctx.line_height,
+                )
+            }
+        };
+        ToastOverlayPrimitiveLayout { area: rect, layout }
+    }
+
+    /// The shared pixel painter over the already-resolved layout, with
+    /// the surface's own line height as the row pitch — the same metric
+    /// every pixel backend's `draw_toast_stack` passes it.
+    fn paint(
+        &self,
+        layout: &ToastOverlayPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let line_height = surface.surface_line_height();
+            native_surface_paint::paint_layout(
+                self,
+                &layout.layout,
+                surface,
+                theme,
+                style,
+                line_height,
+                |_| 0.0,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_toast_stack`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`. That
+    /// delegate re-resolves the same cell layout from
+    /// [`ToastOverlayPrimitiveLayout::area`] that this layout already
+    /// holds, so paint and hit-test stay in agreement.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &ToastOverlayPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = ratatui::layout::Rect::new(
+            layout.area.x.round() as u16,
+            layout.area.y.round() as u16,
+            layout.area.width.round() as u16,
+            layout.area.height.round() as u16,
+        );
+        crate::tui::draw_toast_stack(buf, area, self, theme);
+    }
+}
+
+impl crate::interactive::Interactive for ToastOverlay {
+    type State = ToastOverlayState;
+    type Action = ToastOverlayAction;
+
+    /// One focus stop per control of every toast — dismiss `×` first,
+    /// then each [`Toast::actions`] entry, toast by toast — so a host
+    /// that hands the stack keyboard focus can walk straight to a
+    /// control. [`crate::interactive::FocusSpec::None`] for an empty
+    /// stack: there is nothing to focus.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        if self.toasts.is_empty() {
+            return crate::interactive::FocusSpec::None;
+        }
+        crate::interactive::FocusSpec::Children(
+            self.toasts
+                .iter()
+                .enumerate()
+                .flat_map(|(ti, toast)| {
+                    (0..1 + toast.actions.len()).map(move |ci| crate::interactive::FocusStop {
+                        sub: pack_sub(ti, ci),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Each toast's dismiss `×` and action buttons, most-specific first
+    /// — translated out of [`ToastStackLayout`]'s absolute frame into the
+    /// widget-local space this method is contracted to answer in. The
+    /// toast body itself is not an addressable sub-part: it carries no
+    /// focus stop and no action.
+    fn sub_regions(
+        &self,
+        layout: &ToastOverlayPrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let (ox, oy) = (layout.area.x, layout.area.y);
+        let local = |r: Rect| Rect::new(r.x - ox, r.y - oy, r.width, r.height);
+        let mut out = Vec::new();
+        for vt in &layout.layout.visible_toasts {
+            if let Some(db) = vt.dismiss_bounds {
+                out.push((local(db), pack_sub(vt.toast_idx, 0)));
+            }
+            for (i, ab) in vt.action_rects.iter().enumerate() {
+                out.push((local(*ab), pack_sub(vt.toast_idx, i + 1)));
+            }
+        }
+        out
+    }
+
+    /// `Click` activates whichever control keyboard focus names, so a
+    /// screen reader can dismiss a toast or run its action.
+    fn a11y_actions(&self, state: &ToastOverlayState) -> Vec<crate::a11y::A11yAction> {
+        if state.focus.is_some() {
+            vec![crate::a11y::A11yAction::Click]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// A click on a toast's `×` dismisses it, a click on an action button
+    /// activates that action, and a click on a toast body focuses that
+    /// toast's `×` (the same seed [`crate::compose::ToastStackController::give_focus`]
+    /// uses) without producing an action. Keys run the shared keyboard
+    /// model — see [`ToastOverlay::handle_focus_key`]. A click that
+    /// lands on no toast at all is [`Handled::Ignored`]: the stack is
+    /// non-modal and never swallows input aimed at the app behind it.
+    fn handle(
+        &self,
+        state: &mut ToastOverlayState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &ToastOverlayPrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<ToastOverlayAction> {
+        use crate::interactive::{KeyEvent, PointerKind, RoutedEvent};
+
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                local,
+                ..
+            } => {
+                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                match layout.hit_test(x, y) {
+                    ToastHit::Dismiss(toast_id) => {
+                        state.focus = None;
+                        Handled::Event(ToastOverlayAction::Dismissed(toast_id))
+                    }
+                    ToastHit::Action(action_id) => {
+                        if let Some((ti, ci)) = self.find_action(action_id) {
+                            state.focus = Some(ToastFocus {
+                                toast_id: self.toasts[ti].id,
+                                target: control_index_to_target(ci + 1),
+                            });
+                            cx.request_focus(Some(pack_sub(ti, ci + 1)));
+                        }
+                        Handled::Event(ToastOverlayAction::ActionActivated(action_id))
+                    }
+                    ToastHit::Body(toast_id) => {
+                        if let Some(ti) = self.toasts.iter().position(|t| t.id == toast_id) {
+                            self.focus_toast_at(&mut state.focus, ti);
+                            cx.request_focus(Some(pack_sub(ti, 0)));
+                        }
+                        Handled::Consumed
+                    }
+                    ToastHit::Empty => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => {
+                self.handle_focus_key(&mut state.focus, key, modifiers)
+            }
+            RoutedEvent::Action(crate::a11y::A11yAction::Click) => {
+                match self.activate_focused(&state.focus) {
+                    Some(action) => Handled::Event(action),
+                    None => Handled::Ignored,
+                }
+            }
+            RoutedEvent::FocusIn(Some(sub)) => {
+                let (ti, ci) = unpack_sub(*sub);
+                match self.toasts.get(ti) {
+                    Some(toast) if ci <= toast.actions.len() => {
+                        state.focus = Some(ToastFocus {
+                            toast_id: toast.id,
+                            target: control_index_to_target(ci),
+                        });
+                        Handled::Consumed
+                    }
+                    _ => Handled::Ignored,
+                }
+            }
+            RoutedEvent::FocusOut => {
+                state.focus = None;
+                Handled::Consumed
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+impl ToastOverlay {
+    /// Locate an action button by its own id, as a
+    /// `(toast index, action index)` pair.
+    fn find_action(&self, action_id: WidgetId) -> Option<(usize, usize)> {
+        self.toasts.iter().enumerate().find_map(|(ti, toast)| {
+            toast
+                .actions
+                .iter()
+                .position(|a| a.id == action_id)
+                .map(|ai| (ti, ai))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2054,5 +2917,394 @@ mod tests {
             spec: Some(explicit.clone()),
         };
         assert_eq!(action.resolved_button_spec(), explicit);
+    }
+}
+
+/// The cell painter's own paint/click round-trip coverage, driven
+/// through `crate::tui::draw_toast_stack` — the delegate that wraps a
+/// ratatui `Buffer` in the `CellSurface` [`cell_paint::paint`] takes.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use super::{
+        Toast, ToastButton, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastOverlay,
+        ToastSeverity, CELL_BORDER_COLS, CELL_DISMISS_WIDTH, CELL_TOAST_MAX_WIDTH,
+        CELL_TOAST_MIN_WIDTH,
+    };
+    use crate::theme::Theme;
+    use crate::tui::{draw_toast_stack, ratatui_color};
+    use crate::types::WidgetId;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn info_toast(id: &str, title: &str) -> Toast {
+        Toast {
+            id: WidgetId::new(id),
+            title: title.into(),
+            body: String::new(),
+            severity: ToastSeverity::Info,
+            actions: Vec::new(),
+            accent: None,
+        }
+    }
+
+    fn stack_br(toasts: Vec<Toast>) -> ToastOverlay {
+        ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts,
+            focus: None,
+        }
+    }
+
+    /// Shared body for `single_toast_paint_and_click_round_trip`, run at
+    /// both the origin and a non-zero `area` origin. `tui_toast_stack_layout`
+    /// bakes `area.x`/`area.y` straight into the returned bounds (absolute
+    /// frame, matching `tui_menu_bar_layout`/`tui_sidebar_panel_layout`), so both the
+    /// painted glyph position AND the `hit_test` coordinates must shift
+    /// together with the origin.
+    fn single_toast_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 60, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
+        let stack = stack_br(vec![info_toast("t1", "Hello world")]);
+        let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
+
+        assert_eq!(layout.visible_toasts.len(), 1);
+        let vt = &layout.visible_toasts[0];
+
+        // Title should be painted inside the toast bounds, on the first
+        // interior row below the top border.
+        let tx = vt.bounds.x.round() as u16 + 1;
+        let ty = vt.bounds.y.round() as u16 + 1;
+        assert_eq!(cell_char(&buf, tx, ty), 'H');
+
+        // Hit-test on the title text → Body.
+        let hit = layout.hit_test(tx as f32 + 0.5, ty as f32 + 0.5);
+        assert_eq!(hit, ToastHit::Body(WidgetId::new("t1")));
+    }
+
+    #[test]
+    fn single_toast_paint_and_click_round_trip() {
+        single_toast_paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard: same round trip,
+    /// painted at a shifted `area` origin.
+    #[test]
+    fn single_toast_paint_and_click_round_trip_at_nonzero_origin() {
+        single_toast_paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// Shared body for `dismiss_glyph_paint_and_click_round_trip` —
+    /// see [`single_toast_paint_and_click_round_trip_at`] for the
+    /// coordinate-frame rationale.
+    fn dismiss_glyph_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 60, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
+        let stack = stack_br(vec![info_toast("t1", "Test")]);
+        let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
+
+        let vt = &layout.visible_toasts[0];
+        let db = vt.dismiss_bounds.expect("dismiss bounds present");
+        let dx = db.x.round() as u16 + (db.width as u16).saturating_sub(1) / 2;
+        // Dismiss glyph paints on its own inset row near the top-right
+        let dy = db.y.round() as u16;
+        assert_eq!(cell_char(&buf, dx, dy), '×');
+
+        let hit = layout.hit_test(dx as f32 + 0.5, dy as f32 + 0.5);
+        assert_eq!(hit, ToastHit::Dismiss(WidgetId::new("t1")));
+    }
+
+    #[test]
+    fn dismiss_glyph_paint_and_click_round_trip() {
+        dismiss_glyph_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn dismiss_glyph_paint_and_click_round_trip_at_nonzero_origin() {
+        dismiss_glyph_paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// Shared body for `action_button_paint_and_click_round_trip` —
+    /// see [`single_toast_paint_and_click_round_trip_at`] for the
+    /// coordinate-frame rationale.
+    fn action_button_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 60, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
+        let mut toast = info_toast("t1", "Error occurred");
+        toast.actions = vec![ToastButton {
+            spec: None,
+            id: WidgetId::new("retry"),
+            label: "Retry".into(),
+            primary: false,
+        }];
+        let stack = stack_br(vec![toast]);
+        let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
+
+        let vt = &layout.visible_toasts[0];
+        assert_eq!(vt.action_rects.len(), 1);
+        let ab = vt.action_rects[0];
+        let ax0 = ab.x.round() as u16;
+        let aw = ab.width.round() as u16;
+        let ax = ax0 + (aw.saturating_sub("Retry".chars().count() as u16)) / 2;
+        // Action label paints on its own row at the bottom-right.
+        let ay = ab.y.round() as u16;
+        assert_eq!(cell_char(&buf, ax, ay), 'R');
+
+        let hit = layout.hit_test(ax as f32 + 0.5, ay as f32 + 0.5);
+        assert_eq!(hit, ToastHit::Action(WidgetId::new("retry")));
+    }
+
+    #[test]
+    fn action_button_paint_and_click_round_trip() {
+        action_button_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn action_button_paint_and_click_round_trip_at_nonzero_origin() {
+        action_button_paint_and_click_round_trip_at(7, 13);
+    }
+
+    #[test]
+    fn body_text_paints_on_second_row() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut toast = info_toast("t1", "Title");
+        toast.body = "Body text here".into();
+        let stack = stack_br(vec![toast]);
+        let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
+
+        let vt = &layout.visible_toasts[0];
+        let bx = vt.bounds.x.round() as u16 + 1;
+        // Body paints below the title row, which itself sits below the
+        // top border: bounds.y (border) + 1 (title) + 1 (body).
+        let body_y = vt.bounds.y.round() as u16 + 2;
+        assert_eq!(cell_char(&buf, bx, body_y), 'B');
+    }
+
+    /// Acceptance regression: the box widens to fit the whole title
+    #[test]
+    fn long_title_with_action_widens_box_and_avoids_overlap() {
+        let area = Rect::new(0, 0, 90, 20);
+        let mut buf = Buffer::empty(area);
+        let mut toast = info_toast("t1", "Install Markdown Language Server?");
+        toast.actions = vec![ToastButton {
+            spec: None,
+            id: WidgetId::new("install"),
+            label: "Install".into(),
+            primary: true,
+        }];
+        toast.body = "N: don't ask again · :ExtInstall markdown-language-server".into();
+        let stack = stack_br(vec![toast.clone()]);
+        let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
+
+        let vt = &layout.visible_toasts[0];
+        assert_eq!(vt.action_rects.len(), 1);
+        let ab = vt.action_rects[0];
+        let db = vt.dismiss_bounds.expect("dismiss bounds present");
+
+        // Box widened to fit the whole title + dismiss, up to the
+        // configured max.
+        let title_len = toast.title.chars().count() as f32;
+        let expected_width = (title_len + CELL_BORDER_COLS + CELL_DISMISS_WIDTH)
+            .clamp(CELL_TOAST_MIN_WIDTH, CELL_TOAST_MAX_WIDTH);
+        assert_eq!(vt.bounds.width, expected_width);
+
+        // The whole title painted, ending strictly before the dismiss
+        // column — never overlapping it.
+        let bx = vt.bounds.x.round() as u16;
+        let ty = vt.bounds.y.round() as u16 + 1;
+        let dx = db.x.round() as u16;
+        let painted_title: String = (bx + 1..dx).map(|x| cell_char(&buf, x, ty)).collect();
+        assert_eq!(painted_title.trim_end(), toast.title);
+
+        // The action row is on its own line, strictly below the title
+        // row and the dismiss row — never inline with either.
+        assert!(ab.y > db.y);
+        assert!(ab.y > vt.bounds.y + 1.0);
+
+        // Border corners are visible.
+        let by = vt.bounds.y.round() as u16;
+        let bottom_y = by + vt.bounds.height.round() as u16 - 1;
+        assert_eq!(cell_char(&buf, bx, by), '┌');
+        assert_eq!(cell_char(&buf, bx, bottom_y), '└');
+
+        // Body wrapped onto a row inside the box, above the bottom border.
+        let body_y1 = ty + 1;
+        assert_ne!(cell_char(&buf, bx + 1, body_y1), ' ');
+        assert!(
+            bottom_y > body_y1,
+            "box should have room for the wrapped body before its border"
+        );
+    }
+
+    /// Two actions produce two distinct, side-by-side button
+    /// rects on the same row, with the primary action's row filled with
+    /// `theme.accent_bg`.
+    #[test]
+    fn two_actions_paint_side_by_side_with_primary_filled() {
+        let area = Rect::new(0, 0, 90, 20);
+        let mut buf = Buffer::empty(area);
+        let mut toast = info_toast("t1", "Install?");
+        toast.actions = vec![
+            ToastButton {
+                spec: None,
+                id: WidgetId::new("install"),
+                label: "Install".into(),
+                primary: true,
+            },
+            ToastButton {
+                spec: None,
+                id: WidgetId::new("skip"),
+                label: "Skip".into(),
+                primary: false,
+            },
+        ];
+        let stack = stack_br(vec![toast]);
+        let theme = Theme::default();
+        let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
+
+        let vt = &layout.visible_toasts[0];
+        assert_eq!(vt.action_rects.len(), 2);
+        let install = vt.action_rects[0];
+        let skip = vt.action_rects[1];
+        assert_eq!(install.y, skip.y);
+        assert!(install.x + install.width <= skip.x);
+
+        // Primary's row is filled with `theme.accent_bg`.
+        let ax = install.x.round() as u16;
+        let ay = install.y.round() as u16;
+        let cell = &buf[(ax, ay)];
+        assert_eq!(cell.bg, ratatui_color(theme.accent_bg));
+    }
+
+    /// A `ToastButton` with an explicit `Danger` spec tints its label
+    /// `theme.error_fg` — no background fill of its own, same "intent
+    /// via foreground only" convention `crate::tui::button` uses on TUI.
+    /// A `spec: None` action (every pre-existing construction site) keeps
+    /// its plain primary/secondary look, unaffected.
+    #[test]
+    fn danger_spec_action_tints_error_fg_with_no_background_fill() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut toast = info_toast("t1", "Delete this file?");
+        let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        toast.actions = vec![ToastButton {
+            spec: Some(spec),
+            id: WidgetId::new("delete"),
+            label: "Delete".into(),
+            primary: false,
+        }];
+        let stack = stack_br(vec![toast]);
+        let theme = Theme::default();
+        let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
+
+        let action = layout.visible_toasts[0].action_rects[0];
+        let ax = action.x.round() as u16;
+        let ay = action.y.round() as u16;
+        let cell = &buf[(ax, ay)];
+        assert_eq!(cell.fg, ratatui_color(theme.error_fg));
+        assert_ne!(
+            cell.bg,
+            ratatui_color(theme.accent_bg),
+            "Danger must not fall back to the primary accent fill"
+        );
+    }
+
+    /// A `Danger`/`Warning` spec clears `accent_bg` even when the
+    /// legacy `primary` flag is also set — "no background fill of its
+    /// own" holds regardless of `primary`, not only when it's `false`.
+    #[test]
+    fn danger_spec_action_clears_accent_bg_even_when_primary_is_set() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut toast = info_toast("t1", "Delete this file?");
+        let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        toast.actions = vec![ToastButton {
+            spec: Some(spec),
+            id: WidgetId::new("delete"),
+            label: "Delete".into(),
+            primary: true,
+        }];
+        let stack = stack_br(vec![toast]);
+        let theme = Theme::default();
+        let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
+
+        let action = layout.visible_toasts[0].action_rects[0];
+        let ax = action.x.round() as u16;
+        let ay = action.y.round() as u16;
+        let cell = &buf[(ax, ay)];
+        assert_eq!(cell.fg, ratatui_color(theme.error_fg));
+        assert_ne!(
+            cell.bg,
+            ratatui_color(theme.accent_bg),
+            "Danger must not fall back to the primary accent fill, even \
+             when the legacy `primary` flag is also set"
+        );
+    }
+
+    /// The controller's `ToastFocus` gets a visible focus
+    /// indicator (inverted colours) on the dismiss cell.
+    #[test]
+    fn focused_dismiss_paints_inverted() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut stack = stack_br(vec![info_toast("t1", "Saved")]);
+        stack.focus = Some(ToastFocus {
+            toast_id: WidgetId::new("t1"),
+            target: ToastFocusTarget::Dismiss,
+        });
+        let theme = Theme::default();
+        let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
+        let db = layout.visible_toasts[0]
+            .dismiss_bounds
+            .expect("dismiss bounds present");
+        let dx = db.x.round() as u16 + (db.width as u16).saturating_sub(1) / 2;
+        let dy = db.y.round() as u16;
+        let cell = &buf[(dx, dy)];
+        assert_eq!(cell.bg, ratatui_color(theme.link_fg));
+    }
+
+    #[test]
+    fn multiple_toasts_stack_upward_from_bottom() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let stack = stack_br(vec![
+            info_toast("first", "First"),
+            info_toast("second", "Second"),
+        ]);
+        let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
+
+        assert_eq!(layout.visible_toasts.len(), 2);
+        // Newest (second) is nearest the bottom corner.
+        assert_eq!(layout.visible_toasts[0].id.as_str(), "second");
+        assert_eq!(layout.visible_toasts[1].id.as_str(), "first");
+        // Second toast should be above the first.
+        assert!(layout.visible_toasts[1].bounds.y < layout.visible_toasts[0].bounds.y);
+    }
+
+    #[test]
+    fn empty_stack_paints_nothing() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let stack = stack_br(vec![]);
+        let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
+        assert!(layout.visible_toasts.is_empty());
+        assert_eq!(layout.hit_test(30.0, 10.0), ToastHit::Empty);
+    }
+
+    #[test]
+    fn outside_toast_returns_empty() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let stack = stack_br(vec![info_toast("t1", "Test")]);
+        let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
+        // Top-left corner is far from bottom-right toast.
+        assert_eq!(layout.hit_test(0.0, 0.0), ToastHit::Empty);
     }
 }

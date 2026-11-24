@@ -28,12 +28,13 @@
 //! native options — a pure function, unit-testable with no live surface.
 
 use crate::backend::{MessageDialogButton, MessageDialogOptions};
-use crate::event::Rect;
+use crate::event::{Key, Rect};
 use crate::primitives::form::Form;
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
 use crate::style::Style;
 use crate::types::{Color, StyledText, WidgetId};
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// A 2-D data table embedded inside a [`Dialog`] body.
@@ -1495,6 +1496,830 @@ pub(crate) mod native_surface_paint {
     }
 }
 
+// ── Cell-grid measurement ────────────────────────────────────────────────────
+
+/// The cell-grid [`DialogMeasure`] a terminal paints a [`Dialog`] at:
+/// one row per body line (capped at [`CELL_MAX_BODY_ROWS`] so a long
+/// body can't fill the whole viewport), a one-row title/button row, and
+/// a box width that fits the widest table column, clamped to
+/// 30…60 columns and never wider than the viewport minus a two-column
+/// margin either side.
+///
+/// Every other field matches what [`Dialog::measure_generic`] derives
+/// for `char_width == line_height == 1.0`; only the body-row cap is
+/// specific to the cell grid, where a dialog shares a 24-row terminal
+/// with the app behind it.
+pub(crate) fn cell_measure(dialog: &Dialog, viewport: Rect) -> DialogMeasure {
+    let body_h = (dialog.body.len() as f32).clamp(0.0, CELL_MAX_BODY_ROWS);
+
+    let (table_h, table_preferred_w) = match &dialog.table {
+        // +2 for the 1-cell padding on each side.
+        Some(t) => (
+            t.tui_total_height() as f32,
+            t.tui_total_width() as f32 + 2.0,
+        ),
+        None => (0.0, 0.0),
+    };
+
+    // A `Form` input needs one row per field, not the single row every
+    // other `DialogInput` variant occupies.
+    let input_h = match &dialog.input {
+        Some(DialogInput::Form(form)) => form.fields.len().max(1) as f32,
+        Some(_) => 1.0,
+        None => 0.0,
+    };
+
+    let default_w = (viewport.width * 0.5).clamp(30.0, 60.0);
+    let dialog_w = default_w.max(table_preferred_w).min(viewport.width - 4.0);
+
+    // Floored at an 8-cell estimate so a row of short labels ("OK" /
+    // "No") doesn't shrink below the width a plain label row renders at;
+    // widened per-button via `resolved_button_spec()` so an explicit
+    // `spec`'s icon + longer label (e.g. a `Danger` "Move to Trash")
+    // never clips its closing bracket — see
+    // `ButtonSpec::min_cell_width`'s own doc.
+    let button_width = dialog
+        .buttons
+        .iter()
+        .map(|b| b.resolved_button_spec().min_cell_width())
+        .fold(8.0_f32, f32::max);
+
+    DialogMeasure {
+        width: dialog_w,
+        title_height: if dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
+            1.0
+        } else {
+            0.0
+        },
+        body_height: body_h,
+        table_height: table_h,
+        input_height: input_h,
+        button_row_height: 1.0,
+        button_width,
+        button_gap: 2.0,
+        padding: 1.0,
+    }
+}
+
+/// Most body rows [`cell_measure`] reserves — see its own doc.
+const CELL_MAX_BODY_ROWS: f32 = 10.0;
+
+// ── Cell-grid painter ───────────────────────────────────────────────────────
+
+/// The cell-grid painter for [`Dialog`], written against
+/// [`crate::CellSurface`].
+///
+/// A bordered modal box with rounded `╭─╮ ╰─╯` corners, the title
+/// overlaid into the top rule, multi-line body text, an optional table,
+/// an optional input slot, and a row (or column) of buttons.
+///
+/// Two sub-regions reach for [`CellSurface::ratatui_buffer`] rather than
+/// a cell verb, because the widget they paint is a whole primitive of its
+/// own with its own cell rasteriser: a [`DialogButton`] carrying an
+/// explicit [`crate::ButtonSpec`] paints through `crate::tui::draw_button`
+/// (bracket chrome, icon, intent colour), and a
+/// [`DialogInput::Toolbar`] body slot paints through the toolbar
+/// rasteriser. Both move onto the widget contract with their own
+/// primitive; everything else here is `fill`/`put_char`/`put_str_clipped`.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{flatten, Dialog, DialogInput, DialogLayout, DialogTable};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    /// A foreground/background pair with no modifier bits — the only
+    /// [`CellStyle`] shape this painter builds.
+    fn ink(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Render a [`DialogTable`] inside `bounds`.
+    ///
+    /// Columns are separated by ` │ `. When headers are present the
+    /// first two rows are the header row and a `─┼─` separator.
+    fn draw_table(
+        surface: &mut dyn CellSurface,
+        table: &DialogTable,
+        bounds: &Rect,
+        fg: Color,
+        bg: Color,
+        border_fg: Color,
+    ) {
+        let col_widths = table.auto_col_widths();
+        if col_widths.is_empty() {
+            return;
+        }
+        let ncols = col_widths.len();
+        let start_x = bounds.x.round() as u16;
+        let start_y = bounds.y.round() as u16;
+        let max_w = bounds.width.round() as u16;
+        let max_h = bounds.height.round() as u16;
+
+        // Column x-offsets relative to `start_x`.
+        let mut col_offsets = Vec::with_capacity(ncols);
+        let mut cursor = 0u16;
+        for (j, &w) in col_widths.iter().enumerate() {
+            col_offsets.push(cursor);
+            cursor += w as u16;
+            if j + 1 < ncols {
+                cursor += 3; // " │ "
+            }
+        }
+
+        let mut row_idx = 0u16;
+
+        // One text run inside one column's slot, clipped to both the
+        // column's own width and the table's remaining width.
+        let paint_cell = |surface: &mut dyn CellSurface,
+                          row: u16,
+                          col_start: u16,
+                          col_max_w: u16,
+                          text: &str,
+                          text_fg: Color| {
+            let y = start_y + row;
+            if y >= start_y + max_h {
+                return;
+            }
+            let budget = col_max_w.min(max_w.saturating_sub(col_start));
+            surface.put_str_clipped(start_x + col_start, y, text, budget, ink(text_fg, bg));
+        };
+
+        // The vertical ` │ ` column separators on one row.
+        let paint_separators = |surface: &mut dyn CellSurface, row: u16, sep_ch: char| {
+            let y = start_y + row;
+            if y >= start_y + max_h {
+                return;
+            }
+            for j in 0..ncols.saturating_sub(1) {
+                let sep_x = start_x + col_offsets[j] + col_widths[j] as u16 + 1;
+                if sep_x < start_x + max_w {
+                    surface.put_char(sep_x, y, sep_ch, ink(border_fg, bg));
+                }
+            }
+        };
+
+        if let Some(headers) = &table.headers {
+            for (j, h) in headers.iter().enumerate() {
+                if j < ncols {
+                    paint_cell(
+                        surface,
+                        row_idx,
+                        col_offsets[j],
+                        col_widths[j] as u16,
+                        h,
+                        fg,
+                    );
+                }
+            }
+            paint_separators(surface, row_idx, '│');
+            row_idx += 1;
+
+            // Separator row: ────┼────
+            let y = start_y + row_idx;
+            if y < start_y + max_h {
+                let rule = ink(border_fg, bg);
+                let mut x = start_x;
+                for (j, &col_w) in col_widths.iter().enumerate().take(ncols) {
+                    for _ in 0..col_w as u16 {
+                        if x < start_x + max_w {
+                            surface.put_char(x, y, '─', rule);
+                        }
+                        x += 1;
+                    }
+                    if j + 1 < ncols {
+                        for ch in ['─', '┼', '─'] {
+                            if x < start_x + max_w {
+                                surface.put_char(x, y, ch, rule);
+                            }
+                            x += 1;
+                        }
+                    }
+                }
+            }
+            row_idx += 1;
+        }
+
+        for row in &table.rows {
+            for (j, cell) in row.iter().enumerate() {
+                if j < ncols {
+                    paint_cell(
+                        surface,
+                        row_idx,
+                        col_offsets[j],
+                        col_widths[j] as u16,
+                        cell,
+                        fg,
+                    );
+                }
+            }
+            paint_separators(surface, row_idx, '│');
+            row_idx += 1;
+        }
+    }
+
+    /// Paint `dialog` at its resolved `layout`.
+    ///
+    /// `nerd_fonts_enabled` resolves the Nerd-Font half of a
+    /// [`crate::ButtonSpec::icon`] on a button that carries one.
+    pub(crate) fn paint(
+        dialog: &Dialog,
+        layout: &DialogLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) {
+        let bg = theme.surface_bg;
+        let fg = theme.surface_fg;
+        let border_fg = theme.border_fg;
+
+        let x = layout.bounds.x.round() as u16;
+        let y = layout.bounds.y.round() as u16;
+        let w = layout.bounds.width.round() as u16;
+        let h = layout.bounds.height.round() as u16;
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let body_ink = ink(fg, bg);
+        let chrome = ink(border_fg, bg);
+
+        // Clear the box area.
+        surface.fill(Rect::new(x as f32, y as f32, w as f32, h as f32), body_ink);
+
+        // Top border with the title overlaid into the rule. Painted cell
+        // by cell rather than through `CellSurface::draw_border`: the
+        // title overlay needs the top row's glyphs chosen individually,
+        // and a degenerate one-row box still paints its bottom rule over
+        // the top one, which a whole-rect border verb cannot express.
+        for col in 0..w {
+            let ch = if col == 0 {
+                '╭'
+            } else if col == w - 1 {
+                '╮'
+            } else {
+                '─'
+            };
+            surface.put_char(x + col, y, ch, chrome);
+        }
+        let title_text = format!(" {} ", flatten(&dialog.title));
+        if w > 3 {
+            surface.put_str_clipped(x + 2, y, &title_text, w - 3, ink(theme.title_fg, bg));
+        }
+
+        // Left/right borders.
+        for row in (y + 1)..(y + h - 1) {
+            surface.put_char(x, row, '│', chrome);
+            surface.put_char(x + w - 1, row, '│', chrome);
+        }
+        // Bottom border.
+        for col in 0..w {
+            let ch = if col == 0 {
+                '╰'
+            } else if col == w - 1 {
+                '╯'
+            } else {
+                '─'
+            };
+            surface.put_char(x + col, y + h - 1, ch, chrome);
+        }
+
+        // Body text — one StyledText per line.
+        let body_x = layout.body_bounds.x.round() as u16;
+        let body_y = layout.body_bounds.y.round() as u16;
+        let body_w = layout.body_bounds.width.round() as u16;
+        let body_h = layout.body_bounds.height.round() as u16;
+        for (i, line) in dialog.body.iter().enumerate() {
+            let row = body_y + i as u16;
+            if row >= body_y + body_h {
+                break;
+            }
+            surface.put_str_clipped(body_x, row, &flatten(line), body_w, body_ink);
+        }
+
+        // Optional table slot.
+        if let (Some(table_bounds), Some(table)) = (layout.table_bounds, &dialog.table) {
+            draw_table(surface, table, &table_bounds, fg, bg, border_fg);
+        }
+
+        // Optional input slot — text input or embedded toolbar.
+        if let (Some(input_bounds), Some(input_kind)) = (layout.input_bounds, &dialog.input) {
+            let ix = input_bounds.x.round() as u16;
+            let iy = input_bounds.y.round() as u16;
+            let iw = input_bounds.width.round() as u16;
+            match input_kind {
+                DialogInput::TextInput(input) => {
+                    let field = ink(fg, theme.input_bg);
+                    surface.fill(Rect::new(ix as f32, iy as f32, iw as f32, 1.0), field);
+                    surface.put_str_clipped(ix, iy, &format!(" {}", input.value), iw, field);
+                }
+                DialogInput::Toolbar(toolbar) => {
+                    // The toolbar is its own primitive with its own cell
+                    // rasteriser — see this module's doc for why this
+                    // reaches for the raw buffer. `body_toolbar_layout`
+                    // already resolved the positions; the rasteriser
+                    // repaints from `input_bounds`, with no hover/pressed
+                    // state on the dialog paint path.
+                    if let Some(buf) = surface.ratatui_buffer() {
+                        let area = ratatui::layout::Rect::new(ix, iy, iw, 1);
+                        crate::tui::draw_toolbar(buf, area, toolbar, theme, None, None);
+                    }
+                }
+                // `FormDialogController` (`compose::form_dialog`) paints
+                // the embedded form separately, through
+                // `Backend::draw_form` inside `input_bounds`, the same
+                // cross-backend path every other `Form` host uses —
+                // nothing to draw here.
+                DialogInput::Form(_) => {}
+            }
+        }
+
+        // Buttons — the default button gets a `selected_bg` highlight.
+        for vis in &layout.visible_buttons {
+            let btn = &dialog.buttons[vis.button_idx];
+            let bx = vis.bounds.x.round() as u16;
+            let by = vis.bounds.y.round() as u16;
+            let bw = vis.bounds.width.round() as u16;
+
+            // An explicit `spec` override paints through the shared
+            // `Button` bracket-chrome/icon/intent-colour path instead of
+            // the bare highlighted row below, so e.g. a `Danger` spec
+            // reads as `[ ⚠ Move to Trash ]` in `theme.error_fg`.
+            // `btn.is_default` maps to `focused` on the materialised
+            // `Button` so the "this is the default" cue (`accent_fg`
+            // bracket chrome) survives on a spec-backed button the same
+            // way the legacy path's `selected_bg` highlight does.
+            if let Some(spec) = &btn.spec {
+                if let Some(buf) = surface.ratatui_buffer() {
+                    let area = ratatui::layout::Rect::new(bx, by, bw, 1);
+                    let button = spec.to_button(btn.id, btn.is_default);
+                    crate::tui::draw_button(buf, area, &button, theme, nerd_fonts_enabled);
+                }
+                continue;
+            }
+
+            let btn_bg = if btn.is_default {
+                theme.selected_bg
+            } else {
+                bg
+            };
+            let face = ink(fg, btn_bg);
+            surface.fill(Rect::new(bx as f32, by as f32, bw as f32, 1.0), face);
+            let label_w = btn.label.chars().count() as u16;
+            // Vertical button lists (e.g. a repo picker) read as a
+            // left-justified menu; horizontal action rows keep their
+            // centred labels.
+            let start = if dialog.vertical_buttons {
+                bx + 1
+            } else {
+                bx + (bw.saturating_sub(label_w)) / 2
+            };
+            surface.put_str_clipped(start, by, &btn.label, (bx + bw).saturating_sub(start), face);
+        }
+    }
+}
+
+// ── Widget contract ─────────────────────────────────────────────────────────
+
+/// [`Dialog`]'s fully-resolved widget-contract layout: the absolute area
+/// the modal was laid out into, plus the [`DialogLayout`] resolved inside
+/// it.
+///
+/// `layout`'s rects are **absolute** — [`DialogLayout`] bakes `area`'s
+/// origin into every bound, the same frame [`DialogLayout::hit_test`] has
+/// always taken — so [`Self::hit_test`] takes absolute coordinates too.
+/// [`crate::interactive::Interactive::sub_regions`], which must answer in
+/// widget-local space, subtracts `area`'s origin itself.
+///
+/// `#[non_exhaustive]`: produced by
+/// [`Primitive::layout`](crate::primitive::Primitive::layout), never built
+/// by a consumer via struct literal.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct DialogPrimitiveLayout {
+    /// The rect [`Primitive::layout`](crate::primitive::Primitive::layout)
+    /// received — the viewport the modal is centred in.
+    pub area: Rect,
+    /// The modal's own resolved layout, in absolute coordinates.
+    pub layout: DialogLayout,
+}
+
+impl DialogPrimitiveLayout {
+    /// Classify an absolute point against this modal — see
+    /// [`DialogLayout::hit_test`].
+    pub fn hit_test(&self, x: f32, y: f32) -> DialogHit {
+        self.layout.hit_test(x, y)
+    }
+}
+
+/// [`crate::interactive::Interactive::State`] for [`Dialog`]: which
+/// button keyboard focus has reached.
+///
+/// `#[non_exhaustive]`: a future field add here is additive, the same
+/// convention [`DialogPrimitiveLayout`] follows.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialogState {
+    /// Index into [`Dialog::buttons`] that Tab/Shift-Tab has moved
+    /// keyboard focus to. `None` until the first Tab or click, at which
+    /// point Enter falls back to [`Dialog::default_button_id`].
+    pub focused_button: Option<usize>,
+}
+
+/// What a [`Dialog`]'s own [`crate::interactive::Interactive::handle`]
+/// resolves one gesture to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogAction {
+    /// A button in the modal's button row was activated — by click, by
+    /// Enter on the keyboard-focused button, or by an assistive-technology
+    /// `Click`. Carries that [`DialogButton::id`].
+    ButtonActivated(WidgetId),
+    /// Escape asked to cancel the modal. `button` is
+    /// [`Dialog::cancel_button_id`] when the modal declares one, so a
+    /// host can report the same choice a click on that button would have;
+    /// `None` when it declares no cancel button, in which case the modal
+    /// is simply dismissed.
+    Cancelled {
+        /// The declared cancel button, if any.
+        button: Option<WidgetId>,
+    },
+    /// A button inside a [`DialogInput::Toolbar`] body slot was clicked.
+    /// `toolbar` is that [`Toolbar`]'s own id and `event` is what
+    /// [`Toolbar::click`] resolved — the body toolbar is an inline action
+    /// strip, not part of the modal's own OK/Cancel row, so it stays a
+    /// distinct outcome rather than reading as "the modal was answered".
+    BodyToolbar {
+        /// The embedded toolbar's own id.
+        toolbar: WidgetId,
+        /// What the click resolved to on that toolbar.
+        event: crate::primitives::toolbar::ToolbarEvent,
+    },
+}
+
+impl crate::interactive::WidgetAction for DialogAction {
+    /// Both modal outcomes ride
+    /// [`crate::UiEvent::MessageDialogResolved`] — the crate's one
+    /// "an in-canvas dialog was answered" channel, which already names
+    /// click, Enter and Escape-to-cancel as its three sources. A cancel
+    /// with no declared cancel button reports the modal's own id, since
+    /// there is no button id to name.
+    ///
+    /// A body-toolbar click rides [`crate::UiEvent::Toolbar`] under the
+    /// embedded toolbar's own id instead, the same variant every other
+    /// [`Toolbar`] host's clicks arrive as, so a host routes it with the
+    /// handler it already has.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            DialogAction::ButtonActivated(button) => crate::UiEvent::MessageDialogResolved(button),
+            DialogAction::Cancelled { button } => {
+                crate::UiEvent::MessageDialogResolved(button.unwrap_or(id))
+            }
+            DialogAction::BodyToolbar { toolbar, event } => crate::UiEvent::Toolbar(toolbar, event),
+        }
+    }
+}
+
+impl crate::primitive::Primitive for Dialog {
+    type Layout = DialogPrimitiveLayout;
+    type Event = DialogHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Dialog(self.clone())
+    }
+
+    /// The modal box's own size inside `avail` — what [`Self::layout`]
+    /// would centre in a viewport that big.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let bounds = crate::primitive::Primitive::layout(
+            self,
+            ctx,
+            Rect::new(0.0, 0.0, avail.width, avail.height),
+        )
+        .layout
+        .bounds;
+        crate::NaturalSize::new(Some(bounds.width), Some(bounds.height))
+    }
+
+    /// `rect` is the viewport the modal centres itself in — the same
+    /// argument [`Dialog::layout`] takes.
+    ///
+    /// On a cell grid the box is measured by [`cell_measure`]; on a pixel
+    /// surface by [`Dialog::measure_generic_measured_with_style`], so
+    /// button widths come from the calling backend's real
+    /// [`crate::Backend::measure_text`] and the button row is
+    /// [`Style::control_height`] tall.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> DialogPrimitiveLayout {
+        let layout = match ctx.units() {
+            crate::primitive::Units::Cells => {
+                #[cfg(feature = "tui")]
+                {
+                    crate::tui::tui_dialog_layout(self, rect)
+                }
+                #[cfg(not(feature = "tui"))]
+                {
+                    Dialog::layout(self, rect, cell_measure(self, rect), |_| {
+                        ToolbarItemMeasure::new(0.0)
+                    })
+                }
+            }
+            _ => {
+                let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+                    ctx,
+                    role: crate::FontRole::Chrome,
+                };
+                let dialog_measure = self.measure_generic_measured_with_style(
+                    ctx.char_width,
+                    ctx.line_height,
+                    rect,
+                    0.0,
+                    &measure,
+                    ctx.style(),
+                );
+                Dialog::layout(self, rect, dialog_measure, |btn| {
+                    ToolbarItemMeasure::new(crate::primitives::toolbar::measure_button(
+                        &measure, btn,
+                    ))
+                })
+            }
+        };
+        DialogPrimitiveLayout { area: rect, layout }
+    }
+
+    /// The shared pixel painter, with the surface's own line height as
+    /// the row pitch — the same metric every pixel backend's
+    /// `draw_dialog` passes it. A [`DialogInput::Toolbar`] body slot is
+    /// not painted here; see `native_surface_paint`'s own module doc.
+    fn paint(
+        &self,
+        layout: &DialogPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let line_height = surface.surface_line_height();
+            native_surface_paint::paint(self, &layout.layout, line_height, surface, theme, style);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_dialog`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &DialogPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_dialog(buf, self, &layout.layout, theme);
+    }
+}
+
+impl Dialog {
+    /// Move keyboard focus `delta` buttons along the row, wrapping at
+    /// either end, and tell the host which stop now holds it.
+    fn cycle_focus(
+        &self,
+        state: &mut DialogState,
+        delta: isize,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<DialogAction> {
+        let key = if delta < 0 {
+            crate::behaviour::nav::NavKey::Up
+        } else {
+            crate::behaviour::nav::NavKey::Down
+        };
+        match crate::behaviour::nav::FlatNav::mv(
+            self.buttons.len(),
+            state.focused_button,
+            key,
+            true,
+            |_| true,
+        ) {
+            Some(idx) => {
+                self.focus_button(state, idx, cx);
+                Handled::Consumed
+            }
+            None => Handled::Ignored,
+        }
+    }
+
+    /// The button Enter activates: the keyboard-focused one, else
+    /// [`Self::default_button_id`].
+    fn activation_target(&self, state: &DialogState) -> Option<WidgetId> {
+        state
+            .focused_button
+            .and_then(|i| self.buttons.get(i))
+            .map(|b| b.id)
+            .or_else(|| self.default_button_id().copied())
+    }
+
+    /// Index of the button [`Self::default_button_id`] names.
+    fn default_button_index(&self) -> Option<usize> {
+        self.buttons
+            .iter()
+            .position(|b| b.is_default)
+            .or_else(|| self.buttons.len().checked_sub(1))
+    }
+
+    /// Park keyboard focus on `idx`, both in this widget's own state and
+    /// in the host's focus tree.
+    ///
+    /// The host addresses a [`crate::interactive::FocusSpec::Children`]
+    /// widget by `(id, sub)`, so a focus request must name the stop —
+    /// the engine's own click-to-focus step can only express `(id,
+    /// None)`, which is not one of this modal's stops and would be
+    /// dropped on the next focus-tree resync.
+    fn focus_button(
+        &self,
+        state: &mut DialogState,
+        idx: usize,
+        cx: &mut crate::interactive::EventCx,
+    ) {
+        state.focused_button = Some(idx);
+        cx.request_focus(Some(crate::interactive::SubTarget(idx as u64)));
+    }
+}
+
+impl crate::interactive::Interactive for Dialog {
+    type State = DialogState;
+    type Action = DialogAction;
+
+    /// One focus stop per button, so Tab/Shift-Tab walk the modal's own
+    /// button row — the host's tab-order walk sees the real stop count
+    /// without knowing anything about the modal's internals.
+    /// [`crate::interactive::FocusSpec::None`] for a button-less dialog:
+    /// there is nothing for keyboard focus to land on.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        if self.buttons.is_empty() {
+            crate::interactive::FocusSpec::None
+        } else {
+            crate::interactive::FocusSpec::Children(
+                (0..self.buttons.len())
+                    .map(|i| crate::interactive::FocusStop {
+                        sub: crate::interactive::SubTarget(i as u64),
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    /// Every button's own rect, most-specific first, then the modal box
+    /// itself — translated out of [`DialogLayout`]'s absolute frame into
+    /// the widget-local space this method is contracted to answer in.
+    fn sub_regions(
+        &self,
+        layout: &DialogPrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let (ox, oy) = (layout.area.x, layout.area.y);
+        let local = |r: Rect| Rect::new(r.x - ox, r.y - oy, r.width, r.height);
+        layout
+            .layout
+            .visible_buttons
+            .iter()
+            .map(|vis| {
+                (
+                    local(vis.bounds),
+                    crate::interactive::SubTarget(vis.button_idx as u64),
+                )
+            })
+            .collect()
+    }
+
+    /// `Click` activates whichever button Enter would — see
+    /// [`Dialog::activation_target`].
+    fn a11y_actions(&self, _state: &DialogState) -> Vec<crate::a11y::A11yAction> {
+        if self.buttons.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::a11y::A11yAction::Click]
+        }
+    }
+
+    /// Tab/Shift-Tab cycle the button row, Enter activates the focused
+    /// button, Escape cancels, and a left click activates whatever it
+    /// lands on. A click on the modal box itself is
+    /// [`Handled::Consumed`] rather than ignored — a modal intercepts
+    /// clicks that reach it instead of letting them fall through to the
+    /// app behind it; a click outside the box is left for the host's own
+    /// dismiss-or-swallow policy.
+    fn handle(
+        &self,
+        state: &mut DialogState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &DialogPrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<DialogAction> {
+        use crate::interactive::{KeyEvent, PointerKind, RoutedEvent};
+
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                local,
+                ..
+            } => {
+                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                match layout.hit_test(x, y) {
+                    DialogHit::Button(id) => {
+                        if let Some(idx) = self.buttons.iter().position(|b| b.id == id) {
+                            self.focus_button(state, idx, cx);
+                        }
+                        Handled::Event(DialogAction::ButtonActivated(id))
+                    }
+                    DialogHit::BodyToolbarButton(button_id) => {
+                        match &self.input {
+                            Some(DialogInput::Toolbar(toolbar)) => match toolbar.click(button_id) {
+                                Some(event) => Handled::Event(DialogAction::BodyToolbar {
+                                    toolbar: toolbar.id,
+                                    event,
+                                }),
+                                // A disabled action resolves to no
+                                // toolbar event at all, but the click
+                                // still landed inside the modal.
+                                None => Handled::Consumed,
+                            },
+                            _ => Handled::Consumed,
+                        }
+                    }
+                    DialogHit::Body => {
+                        // Clicking the box gives the modal's button row
+                        // keyboard focus, seeded on the default button,
+                        // so Tab and Enter work from that click onward
+                        // without the host wiring focus itself.
+                        if let Some(idx) =
+                            state.focused_button.or_else(|| self.default_button_index())
+                        {
+                            self.focus_button(state, idx, cx);
+                        }
+                        Handled::Consumed
+                    }
+                    DialogHit::Outside => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => match key {
+                Key::Named(crate::event::NamedKey::Tab) if modifiers.shift => {
+                    self.cycle_focus(state, -1, cx)
+                }
+                Key::Named(crate::event::NamedKey::BackTab) => self.cycle_focus(state, -1, cx),
+                Key::Named(crate::event::NamedKey::Tab) => self.cycle_focus(state, 1, cx),
+                Key::Named(crate::event::NamedKey::Enter) => match self.activation_target(state) {
+                    Some(id) => Handled::Event(DialogAction::ButtonActivated(id)),
+                    None => Handled::Ignored,
+                },
+                Key::Named(crate::event::NamedKey::Escape) => {
+                    Handled::Event(DialogAction::Cancelled {
+                        button: self.cancel_button_id().copied(),
+                    })
+                }
+                _ => Handled::Ignored,
+            },
+            RoutedEvent::Action(crate::a11y::A11yAction::Click) => {
+                match self.activation_target(state) {
+                    Some(id) => Handled::Event(DialogAction::ButtonActivated(id)),
+                    None => Handled::Ignored,
+                }
+            }
+            RoutedEvent::FocusIn(Some(sub)) => {
+                let idx = sub.0 as usize;
+                if idx < self.buttons.len() {
+                    state.focused_button = Some(idx);
+                    Handled::Consumed
+                } else {
+                    Handled::Ignored
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2583,5 +3408,468 @@ mod tests {
             layout.body_toolbar_layout.is_none(),
             "body_toolbar_layout should be None for Form variant"
         );
+    }
+}
+
+/// The cell painter's own paint/click round-trip coverage, driven
+/// through `crate::tui::draw_dialog` — the delegate that wraps a ratatui
+/// `Buffer` in the `CellSurface` [`cell_paint::paint`] takes.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use super::{
+        Dialog, DialogButton, DialogHit, DialogInput, DialogLayout, DialogMeasure, DialogTextInput,
+    };
+    use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure};
+    use crate::theme::Theme;
+    use crate::tui::{draw_dialog, ratatui_color, tui_dialog_layout};
+    use crate::types::{StyledSpan, StyledText, WidgetId};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn make_dialog() -> Dialog {
+        Dialog {
+            id: WidgetId::new("d"),
+            title: StyledText {
+                spans: vec![StyledSpan::plain("Confirm")],
+            },
+            body: vec![StyledText {
+                spans: vec![StyledSpan::plain("Save before quitting?")],
+            }],
+            buttons: vec![
+                DialogButton {
+                    spec: None,
+                    id: WidgetId::new("save"),
+                    label: "Save".into(),
+                    is_default: true,
+                    is_cancel: false,
+                    tint: None,
+                },
+                DialogButton {
+                    spec: None,
+                    id: WidgetId::new("cancel"),
+                    label: "Cancel".into(),
+                    is_default: false,
+                    is_cancel: true,
+                    tint: None,
+                },
+            ],
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        }
+    }
+
+    fn make_layout(dialog: &Dialog) -> DialogLayout {
+        let measure = DialogMeasure {
+            width: 40.0,
+            title_height: 1.0,
+            body_height: 2.0,
+            table_height: 0.0,
+            input_height: 0.0,
+            button_row_height: 1.0,
+            button_width: 8.0,
+            button_gap: 2.0,
+            padding: 1.0,
+        };
+        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        dialog.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0))
+    }
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    #[test]
+    fn paints_corner_glyphs_and_title() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        let d = make_dialog();
+        let layout = make_layout(&d);
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
+
+        let bx = layout.bounds.x.round() as u16;
+        let by = layout.bounds.y.round() as u16;
+        let bw = layout.bounds.width.round() as u16;
+        let bh = layout.bounds.height.round() as u16;
+
+        assert_eq!(cell_char(&buf, bx, by), '╭');
+        assert_eq!(cell_char(&buf, bx + bw - 1, by), '╮');
+        assert_eq!(cell_char(&buf, bx, by + bh - 1), '╰');
+        assert_eq!(cell_char(&buf, bx + bw - 1, by + bh - 1), '╯');
+    }
+
+    #[test]
+    fn default_button_has_selected_bg() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        let d = make_dialog();
+        let layout = make_layout(&d);
+        let theme = Theme {
+            selected_bg: crate::types::Color::rgb(99, 0, 0),
+            ..Theme::default()
+        };
+        draw_dialog(&mut buf, &d, &layout, &theme);
+
+        // The first visible button is "Save" (is_default).
+        let vis = &layout.visible_buttons[0];
+        let bx = vis.bounds.x.round() as u16;
+        let by = vis.bounds.y.round() as u16;
+        let bg = buf[(bx, by)].bg;
+        assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
+    }
+
+    fn cell_fg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)]
+            .style()
+            .fg
+            .unwrap_or(ratatui::style::Color::Reset)
+    }
+
+    /// A `DialogButton` with an explicit `Danger` spec reads as
+    /// `[ ⚠ Move to Trash ]` in `theme.error_fg`, through the same
+    /// bracket-chrome path `crate::tui::button` paints a standalone
+    /// `Button` with — not the dialog's own bare highlighted-row look.
+    ///
+    /// Goes through the real `tui_dialog_layout` (not a hand-built
+    /// `DialogMeasure`), so the button box it hands `draw_dialog` is
+    /// exactly what every production TUI caller would compute — this
+    /// is the regression guard for `tui_dialog_layout` sizing its
+    /// button row from `resolved_button_spec()` rather than a fixed
+    /// legacy width.
+    #[test]
+    fn danger_spec_button_renders_with_the_intent_colour_and_bracket_chrome() {
+        let mut d = make_dialog();
+        let mut spec = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        spec.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
+        d.buttons[0].spec = Some(spec);
+
+        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let layout = tui_dialog_layout(&d, viewport);
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        draw_dialog(&mut buf, &d, &layout, &theme);
+
+        let vis = &layout.visible_buttons[0];
+        let bx = vis.bounds.x.round() as u16;
+        let by = vis.bounds.y.round() as u16;
+        let bw = vis.bounds.width.round() as u16;
+        let row: String = (bx..bx + bw).map(|x| cell_char(&buf, x, by)).collect();
+
+        assert!(
+            row.starts_with('['),
+            "a spec-backed button paints bracket chrome, got {row:?}"
+        );
+        assert!(
+            row.trim_end().ends_with(']'),
+            "a spec-backed button's closing bracket must not be clipped, got {row:?}"
+        );
+        assert!(row.contains("Move to Trash"));
+        // The fallback half, since this test never turns Nerd Fonts on.
+        assert!(row.contains('!'));
+        assert_eq!(cell_fg(&buf, bx + 2, by), ratatui_color(theme.error_fg));
+    }
+
+    /// The flip side of the test above: a `DialogButton` with no `spec`
+    /// paints through the plain legacy bare-highlighted-row path — no
+    /// bracket chrome, just the label text.
+    #[test]
+    fn legacy_only_button_renders_exactly_as_before() {
+        let d = make_dialog();
+        assert!(d.buttons[0].spec.is_none());
+        let layout = make_layout(&d);
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        draw_dialog(&mut buf, &d, &layout, &theme);
+
+        let vis = &layout.visible_buttons[0];
+        let bx = vis.bounds.x.round() as u16;
+        let by = vis.bounds.y.round() as u16;
+        let bw = vis.bounds.width.round() as u16;
+        let row: String = (bx..bx + bw).map(|x| cell_char(&buf, x, by)).collect();
+
+        assert!(
+            !row.contains('['),
+            "a legacy-only button must not gain bracket chrome, got {row:?}"
+        );
+        assert!(row.contains("Save"));
+        assert_eq!(cell_fg(&buf, bx + 1, by), ratatui_color(theme.surface_fg));
+    }
+
+    #[test]
+    fn renders_input_field_when_present() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        let mut d = make_dialog();
+        d.input = Some(crate::primitives::dialog::DialogInput::TextInput(
+            crate::primitives::dialog::DialogTextInput {
+                value: "hello".into(),
+                placeholder: String::new(),
+                cursor: Some(5),
+            },
+        ));
+        let measure = DialogMeasure {
+            width: 40.0,
+            title_height: 1.0,
+            body_height: 2.0,
+            table_height: 0.0,
+            input_height: 1.0,
+            button_row_height: 1.0,
+            button_width: 8.0,
+            button_gap: 2.0,
+            padding: 1.0,
+        };
+        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let layout = d.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0));
+        let theme = Theme {
+            input_bg: crate::types::Color::rgb(7, 7, 7),
+            ..Theme::default()
+        };
+        draw_dialog(&mut buf, &d, &layout, &theme);
+
+        // Input bounds carry input_bg as the row's bg.
+        let ib = layout.input_bounds.expect("input bounds present");
+        let bg = buf[(ib.x.round() as u16, ib.y.round() as u16)].bg;
+        assert_eq!(bg, ratatui::style::Color::Rgb(7, 7, 7));
+    }
+
+    #[test]
+    fn zero_size_is_a_no_op() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        let d = make_dialog();
+        // Use a zero-size viewport so the layout collapses.
+        let measure = DialogMeasure {
+            width: 0.0,
+            title_height: 0.0,
+            body_height: 0.0,
+            table_height: 0.0,
+            input_height: 0.0,
+            button_row_height: 0.0,
+            button_width: 0.0,
+            button_gap: 0.0,
+            padding: 0.0,
+        };
+        let viewport = crate::event::Rect::new(0.0, 0.0, 0.0, 0.0);
+        let layout = d.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0));
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── Gap A: DialogInput::Toolbar paint↔click round-trip ───────────────
+
+    fn make_toolbar_dialog() -> Dialog {
+        Dialog {
+            id: WidgetId::new("migrate"),
+            title: StyledText {
+                spans: vec![StyledSpan::plain("Confirm migration")],
+            },
+            body: vec![StyledText {
+                spans: vec![StyledSpan::plain("Choose an action:")],
+            }],
+            buttons: vec![DialogButton {
+                spec: None,
+                id: WidgetId::new("ok"),
+                label: "OK".into(),
+                is_default: true,
+                is_cancel: false,
+                tint: None,
+            }],
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: Some(DialogInput::Toolbar(Toolbar {
+                id: WidgetId::new("body-toolbar"),
+                buttons: vec![
+                    ToolbarButton::Action {
+                        spec: None,
+                        id: WidgetId::new("preview"),
+                        label: "Preview".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                    ToolbarButton::Separator,
+                    ToolbarButton::Action {
+                        spec: None,
+                        id: WidgetId::new("apply"),
+                        label: "Apply".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                ],
+                bg: None,
+                focused_index: None,
+            })),
+        }
+    }
+
+    #[test]
+    fn body_toolbar_paints_button_brackets() {
+        let d = make_toolbar_dialog();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let layout = tui_dialog_layout(&d, viewport);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
+
+        // The input_bounds slot should be set.
+        assert!(
+            layout.input_bounds.is_some(),
+            "input_bounds should be Some for Toolbar variant"
+        );
+        assert!(
+            layout.body_toolbar_layout.is_some(),
+            "body_toolbar_layout should be Some"
+        );
+
+        // The toolbar should have painted `[` somewhere inside the dialog.
+        let ib = layout.input_bounds.unwrap();
+        let start_y = ib.y.round() as u16;
+        let start_x = ib.x.round() as u16;
+        let end_x = (ib.x + ib.width).round() as u16;
+
+        let mut found_bracket = false;
+        for x in start_x..end_x {
+            if cell_char(&buf, x, start_y) == '[' {
+                found_bracket = true;
+                break;
+            }
+        }
+        assert!(
+            found_bracket,
+            "toolbar `[` bracket should be painted in body slot"
+        );
+    }
+
+    /// Shared body for `body_toolbar_click_routes_to_body_toolbar_button[_at_nonzero_origin]`:
+    /// `tui_dialog_layout` bakes `viewport.x`/`viewport.y` into `Dialog::layout`'s
+    /// `box_x`/`box_y` (absolute frame), so paint + click must agree at a
+    /// non-zero viewport origin too, per LESSONS.md's "layout helpers must
+    /// return coords in the same frame across backends". The
+    /// dialog is centered in an 80×30 viewport and never exceeds ~60×30, so
+    /// a buffer sized to the viewport's far corner (`origin + 80/30`) always
+    /// has room for it.
+    fn body_toolbar_click_routes_to_body_toolbar_button_at(origin_x: f32, origin_y: f32) {
+        let d = make_toolbar_dialog();
+        let viewport = crate::event::Rect::new(origin_x, origin_y, 80.0, 30.0);
+        let layout = tui_dialog_layout(&d, viewport);
+        let buf_w = (origin_x + 80.0).ceil() as u16;
+        let buf_h = (origin_y + 30.0).ceil() as u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, buf_w, buf_h));
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
+
+        let tl = layout
+            .body_toolbar_layout
+            .as_ref()
+            .expect("toolbar layout present");
+        // Find the "Preview" button in the toolbar layout.
+        let preview_vis = tl
+            .visible_items
+            .iter()
+            .find(|v| v.action_id.as_ref().map(|id| id.as_str()) == Some("preview"))
+            .expect("preview button visible");
+        assert!(preview_vis.clickable, "preview should be clickable");
+
+        // Click inside the "Preview" button bounds.
+        let cx = preview_vis.bounds.x + 1.0;
+        let cy = preview_vis.bounds.y;
+        match layout.hit_test(cx, cy) {
+            DialogHit::BodyToolbarButton(id) => {
+                assert_eq!(id.as_str(), "preview");
+            }
+            other => panic!("expected BodyToolbarButton(preview), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn body_toolbar_click_routes_to_body_toolbar_button() {
+        body_toolbar_click_routes_to_body_toolbar_button_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn body_toolbar_click_routes_to_body_toolbar_button_at_nonzero_origin() {
+        body_toolbar_click_routes_to_body_toolbar_button_at(7.0, 13.0);
+    }
+
+    /// Shared body for `body_toolbar_apply_button_also_routes[_at_nonzero_origin]`
+    /// — see `body_toolbar_click_routes_to_body_toolbar_button_at` for the
+    /// non-zero-origin rationale.
+    fn body_toolbar_apply_button_also_routes_at(origin_x: f32, origin_y: f32) {
+        let d = make_toolbar_dialog();
+        let viewport = crate::event::Rect::new(origin_x, origin_y, 80.0, 30.0);
+        let layout = tui_dialog_layout(&d, viewport);
+
+        let tl = layout
+            .body_toolbar_layout
+            .as_ref()
+            .expect("toolbar layout present");
+        let apply_vis = tl
+            .visible_items
+            .iter()
+            .find(|v| v.action_id.as_ref().map(|id| id.as_str()) == Some("apply"))
+            .expect("apply button visible");
+
+        let cx = apply_vis.bounds.x + 1.0;
+        let cy = apply_vis.bounds.y;
+        match layout.hit_test(cx, cy) {
+            DialogHit::BodyToolbarButton(id) => {
+                assert_eq!(id.as_str(), "apply");
+            }
+            other => panic!("expected BodyToolbarButton(apply), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn body_toolbar_apply_button_also_routes() {
+        body_toolbar_apply_button_also_routes_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn body_toolbar_apply_button_also_routes_at_nonzero_origin() {
+        body_toolbar_apply_button_also_routes_at(7.0, 13.0);
+    }
+
+    // ── Serde round-trip for DialogInput::Toolbar ─────────────────────────
+
+    #[test]
+    fn serde_roundtrip_dialog_input_toolbar() {
+        use crate::types::WidgetId;
+        let input = DialogInput::Toolbar(Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                ToolbarButton::Action {
+                    spec: None,
+                    id: WidgetId::new("preview"),
+                    label: "Preview".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+                ToolbarButton::Separator,
+            ],
+            bg: None,
+            focused_index: None,
+        });
+        let json = serde_json::to_string(&input).unwrap();
+        let back: DialogInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(input, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_dialog_input_text_input() {
+        let input = DialogInput::TextInput(DialogTextInput {
+            value: "hello".into(),
+            placeholder: "placeholder".into(),
+            cursor: Some(5),
+        });
+        let json = serde_json::to_string(&input).unwrap();
+        let back: DialogInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(input, back);
     }
 }

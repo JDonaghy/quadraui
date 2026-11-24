@@ -74,9 +74,9 @@
 //! and `tui::toast::paint_toast`.
 
 use crate::compose::Handled;
-use crate::primitives::toast::{ToastFocus, ToastFocusTarget, ToastOverlay};
+use crate::primitives::toast::{ToastFocus, ToastOverlay, ToastOverlayAction};
 use crate::types::WidgetId;
-use crate::{Key, NamedKey, UiEvent};
+use crate::UiEvent;
 
 /// Semantic payload of [`Handled::Event`] returned by
 /// [`ToastStackController::handle_event`].
@@ -166,16 +166,11 @@ impl ToastStackController {
     /// "focus notifications" — this controller never claims focus on
     /// its own initiative.
     pub fn give_focus(&mut self, stack: &ToastOverlay) -> bool {
-        match stack.toasts.last() {
-            Some(t) => {
-                self.focus = Some(ToastFocus {
-                    toast_id: t.id,
-                    target: ToastFocusTarget::Dismiss,
-                });
-                true
-            }
-            None => false,
+        if stack.toasts.is_empty() {
+            return false;
         }
+        stack.focus_toast_at(&mut self.focus, stack.toasts.len() - 1);
+        self.focus.is_some()
     }
 
     /// Clear focus, returning it to the app — the same end state
@@ -197,68 +192,23 @@ impl ToastStackController {
         let UiEvent::KeyPressed { key, modifiers, .. } = event else {
             return Handled::Ignored;
         };
-        self.resync(stack);
-        let Some(focus) = self.focus.clone() else {
-            return Handled::Ignored;
-        };
-        let Some(toast_idx) = stack.toasts.iter().position(|t| t.id == focus.toast_id) else {
-            // Resync above should have already cleared this; defensive.
-            self.focus = None;
-            return Handled::Ignored;
-        };
-        let control_count = 1 + stack.toasts[toast_idx].actions.len();
-        let cur = target_to_index(focus.target);
-
-        match key {
-            Key::Named(NamedKey::Escape) => {
-                self.focus = None;
-                Handled::Event(ToastStackAction::Dismiss(focus.toast_id))
+        // The whole keyboard model — control cycling, toast-to-toast
+        // movement, Enter/Escape, and the stale-focus resync — lives on
+        // the widget, shared with its own `Interactive::handle`, so the
+        // controller and the widget contract can never disagree about a
+        // key.
+        match stack.handle_focus_key(&mut self.focus, key, modifiers) {
+            Handled::Event(ToastOverlayAction::ActionActivated(id)) => {
+                Handled::Event(ToastStackAction::Action(id))
             }
-            Key::Named(NamedKey::Enter) => match focus.target {
-                ToastFocusTarget::Dismiss => {
-                    Handled::Event(ToastStackAction::Dismiss(focus.toast_id))
-                }
-                ToastFocusTarget::Action(i) => match stack.toasts[toast_idx].actions.get(i) {
-                    Some(a) => Handled::Event(ToastStackAction::Action(a.id)),
-                    None => Handled::Consumed,
-                },
-            },
-            Key::Named(NamedKey::Left) => {
-                self.set_index(
-                    &focus.toast_id,
-                    crate::focus::cycle_index(cur, -1, control_count),
-                );
-                Handled::Consumed
+            Handled::Event(ToastOverlayAction::Dismissed(id)) => {
+                Handled::Event(ToastStackAction::Dismiss(id))
             }
-            Key::Named(NamedKey::Right) => {
-                self.set_index(
-                    &focus.toast_id,
-                    crate::focus::cycle_index(cur, 1, control_count),
-                );
-                Handled::Consumed
+            Handled::Event(ToastOverlayAction::FocusReturned) => {
+                Handled::Event(ToastStackAction::FocusReturned)
             }
-            Key::Named(NamedKey::Tab) => {
-                let next = crate::focus::cycle_index(
-                    cur,
-                    if modifiers.shift { -1 } else { 1 },
-                    control_count,
-                );
-                self.set_index(&focus.toast_id, next);
-                Handled::Consumed
-            }
-            Key::Named(NamedKey::Up) => {
-                if toast_idx > 0 {
-                    self.focus_toast_at(stack, toast_idx - 1);
-                }
-                Handled::Consumed
-            }
-            Key::Named(NamedKey::Down) => {
-                if toast_idx + 1 < stack.toasts.len() {
-                    self.focus_toast_at(stack, toast_idx + 1);
-                }
-                Handled::Consumed
-            }
-            _ => Handled::Ignored,
+            Handled::Consumed => Handled::Consumed,
+            Handled::Ignored => Handled::Ignored,
         }
     }
 
@@ -277,57 +227,15 @@ impl ToastStackController {
             Handled::Ignored => ToastStackEvent::Ignored,
         }
     }
-
-    /// Drop focus if it names a toast no longer present in `stack` (e.g.
-    /// dismissed by a mouse click, or auto-expired) — an app that keeps
-    /// calling `handle` after that shouldn't get stale
-    /// `ToastStackEvent::Action`/`Dismiss` results for a toast that no
-    /// longer exists.
-    fn resync(&mut self, stack: &ToastOverlay) {
-        if let Some(f) = &self.focus {
-            if !stack.toasts.iter().any(|t| t.id == f.toast_id) {
-                self.focus = None;
-            }
-        }
-    }
-
-    fn set_index(&mut self, toast_id: &WidgetId, index: usize) {
-        self.focus = Some(ToastFocus {
-            toast_id: *toast_id,
-            target: index_to_target(index),
-        });
-    }
-
-    fn focus_toast_at(&mut self, stack: &ToastOverlay, idx: usize) {
-        if let Some(t) = stack.toasts.get(idx) {
-            self.focus = Some(ToastFocus {
-                toast_id: t.id,
-                target: ToastFocusTarget::Dismiss,
-            });
-        }
-    }
-}
-
-fn target_to_index(target: ToastFocusTarget) -> usize {
-    match target {
-        ToastFocusTarget::Dismiss => 0,
-        ToastFocusTarget::Action(i) => i + 1,
-    }
-}
-
-fn index_to_target(index: usize) -> ToastFocusTarget {
-    if index == 0 {
-        ToastFocusTarget::Dismiss
-    } else {
-        ToastFocusTarget::Action(index - 1)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::toast::{Toast, ToastButton, ToastCorner, ToastSeverity};
-    use crate::Modifiers;
+    use crate::primitives::toast::{
+        Toast, ToastButton, ToastCorner, ToastFocusTarget, ToastSeverity,
+    };
+    use crate::{Key, Modifiers, NamedKey};
 
     fn toast(id: &str) -> Toast {
         Toast {
