@@ -507,9 +507,11 @@ impl WidgetAction for MenuBarEvent {
 pub struct MenuBarPrimitiveLayout {
     /// The rect [`Primitive::layout`] was called with.
     pub area: Rect,
-    /// Row height the items were resolved at — [`resolve_bar_height`]
-    /// applied to the host's own line height on a pixel surface, one
-    /// cell on a cell grid.
+    /// Row height the items were resolved at: [`Self::area`]'s own
+    /// height, since every item claims one row of the strip's full
+    /// height. A host that wants the strip's *natural* height asks
+    /// [`Primitive::measure`], which applies [`resolve_bar_height`] to
+    /// its line height.
     pub bar_height: f32,
     /// The resolved strip layout. Its `bounds`/`visible_items`/
     /// `hit_regions` are in the same absolute space as [`Self::area`].
@@ -541,6 +543,11 @@ impl Primitive for MenuBar {
     /// — and one [`resolve_bar_height`] row tall. A strip wider than its
     /// container simply drops the items that do not fit (see
     /// [`MenuBar::layout`]), so this is a natural size, not a minimum.
+    ///
+    /// The line height is floored at one unit first, so a ctx carrying
+    /// none still reports a one-row strip rather than a zero-height one
+    /// — the same floor [`crate::ContextMenu`]'s own `measure` applies
+    /// to its row pitch.
     fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
         let width: f32 = match ctx.units() {
             Units::Cells => self
@@ -557,7 +564,12 @@ impl Primitive for MenuBar {
                 })
                 .sum(),
         };
-        crate::NaturalSize::new(Some(width), Some(resolve_bar_height(ctx.line_height)))
+        let line_height = if ctx.line_height > 0.0 {
+            ctx.line_height
+        } else {
+            1.0
+        };
+        crate::NaturalSize::new(Some(width), Some(resolve_bar_height(line_height)))
     }
 
     /// `rect` is the whole strip: items start at its leading edge and
@@ -918,36 +930,6 @@ pub(crate) mod native_surface_paint {
     #[cfg(test)]
     mod tests {
         use super::*;
-
-        #[test]
-        fn alt_char_index_none_without_ampersand() {
-            assert_eq!(alt_char_index("File"), None);
-        }
-
-        #[test]
-        fn alt_char_index_marks_char_after_ampersand() {
-            assert_eq!(alt_char_index("&File"), Some(0));
-            // '&' isn't necessarily the first char — "Sa&ve" underlines
-            // 'v' (char index 2 in "Save").
-            assert_eq!(alt_char_index("Sa&ve"), Some(2));
-        }
-
-        #[test]
-        fn alt_char_index_handles_empty_and_trailing_marker() {
-            assert_eq!(alt_char_index(""), None);
-            // A trailing `&` marks a char index past the display
-            // string's end — `paint`'s `text.chars().nth(idx)` guard
-            // turns that into "no underline" rather than panicking.
-            assert_eq!(alt_char_index("File&"), Some(4));
-            assert_eq!(display_text("File&").chars().nth(4), None);
-        }
-
-        #[test]
-        fn display_text_strips_ampersand() {
-            assert_eq!(display_text("&File"), "File");
-            assert_eq!(display_text("Sa&ve"), "Save");
-            assert_eq!(display_text("File"), "File");
-        }
 
         // ── paint()'s Alt-underline drift fix ───────────────────────────
         //
@@ -1443,6 +1425,41 @@ pub(crate) mod cell_paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `display_text` / `alt_char_index` are the label-parsing rule both
+    // `cell_paint` and `native_surface_paint` resolve an item's
+    // Alt-mnemonic through, so their coverage is unconditional rather
+    // than tied to a GUI feature.
+
+    #[test]
+    fn alt_char_index_none_without_ampersand() {
+        assert_eq!(alt_char_index("File"), None);
+    }
+
+    #[test]
+    fn alt_char_index_marks_char_after_ampersand() {
+        assert_eq!(alt_char_index("&File"), Some(0));
+        // '&' isn't necessarily the first char — "Sa&ve" underlines
+        // 'v' (char index 2 in "Save").
+        assert_eq!(alt_char_index("Sa&ve"), Some(2));
+    }
+
+    #[test]
+    fn alt_char_index_handles_empty_and_trailing_marker() {
+        assert_eq!(alt_char_index(""), None);
+        // A trailing `&` marks a char index past the display string's
+        // end — a painter's `text.chars().nth(idx)` guard turns that
+        // into "no underline" rather than panicking.
+        assert_eq!(alt_char_index("File&"), Some(4));
+        assert_eq!(display_text("File&").chars().nth(4), None);
+    }
+
+    #[test]
+    fn display_text_strips_ampersand() {
+        assert_eq!(display_text("&File"), "File");
+        assert_eq!(display_text("Sa&ve"), "Save");
+        assert_eq!(display_text("File"), "File");
+    }
 
     fn bar(n: usize) -> MenuBar {
         MenuBar {
@@ -1978,6 +1995,18 @@ mod widget_contract_tests {
         let natural = Primitive::measure(&bar(), &cell_ctx(), Size::new(80.0, 24.0));
         // "File" + "Edit" + "View", six columns each.
         assert_eq!(natural.width, Some(18.0));
+        assert_eq!(natural.height, Some(1.0));
+    }
+
+    /// A ctx carrying no line height still reports a one-row strip, the
+    /// same floor `ContextMenu::measure` applies to its own row pitch.
+    #[test]
+    fn measure_floors_a_missing_line_height_at_one_row() {
+        let natural = Primitive::measure(
+            &bar(),
+            &LayoutCtx::new(0.0, 1.0, false),
+            Size::new(80.0, 24.0),
+        );
         assert_eq!(natural.height, Some(1.0));
     }
 
