@@ -17,9 +17,17 @@
 //! keyboard navigation emits the respective events; Escape / Enter /
 //! Tab follow their typical IDE semantics.
 
-use crate::event::Rect;
+use crate::a11y::A11yAction;
+use crate::behaviour::nav::{FlatNav, NavKey};
+use crate::behaviour::scroll::ensure_visible;
+use crate::event::{Key, MouseButton, NamedKey, Rect};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+};
 use crate::layout::{Anchor, ResolvedSide, Side};
+use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::types::{Icon, StyledText, WidgetId};
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a completion popup.
@@ -359,21 +367,45 @@ impl Completions {
             .max(0.0);
         let bounds = Rect::new(x, y, popup_width, clipped_h);
 
+        self.resolve_at(bounds, placement, resolved_scroll_offset, measure_item)
+    }
+
+    /// Resolve per-item bounds and hit regions for a popup box already
+    /// placed at `bounds`, starting at item `resolved_scroll_offset` and
+    /// reporting `placement` as the resolved side.
+    ///
+    /// The shared core of [`Self::layout`] — which picks `bounds` against
+    /// a cursor anchor first — and
+    /// [`Primitive::layout`](crate::primitive::Primitive::layout), which
+    /// is handed the already-placed box by its caller. Rows stop at the
+    /// box's bottom edge; the last one is clipped to whatever height is
+    /// left rather than overflowing it.
+    fn resolve_at<F>(
+        &self,
+        bounds: Rect,
+        placement: CompletionsPlacement,
+        resolved_scroll_offset: usize,
+        measure_item: F,
+    ) -> CompletionsLayout
+    where
+        F: Fn(usize) -> CompletionItemMeasure,
+    {
         let mut visible_items: Vec<VisibleCompletion> = Vec::new();
         let mut hit_regions: Vec<(Rect, CompletionsHit)> = Vec::new();
 
-        let mut cursor_row = y;
+        let bottom = bounds.y + bounds.height;
+        let mut cursor_row = bounds.y;
         for i in resolved_scroll_offset..self.items.len() {
-            if cursor_row >= y + clipped_h {
+            if cursor_row >= bottom {
                 break;
             }
             let m = measure_item(i);
-            let remaining = y + clipped_h - cursor_row;
+            let remaining = bottom - cursor_row;
             let draw_h = m.height.min(remaining).max(0.0);
             if draw_h <= 0.0 {
                 break;
             }
-            let item_bounds = Rect::new(x, cursor_row, popup_width, draw_h);
+            let item_bounds = Rect::new(bounds.x, cursor_row, bounds.width, draw_h);
             visible_items.push(VisibleCompletion {
                 item_idx: i,
                 bounds: item_bounds,
@@ -392,6 +424,573 @@ impl Completions {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+
+/// The semantic outcomes a [`Completions`] popup reports — its
+/// [`Interactive::Action`].
+///
+/// [`Completions`] stays purely declarative: no variant below mutates the
+/// popup. Each reports the state the host should write back onto its own
+/// `Completions` (or, for [`Self::Dismissed`], that it should drop the
+/// popup) before the next frame, the same contract
+/// [`crate::ListViewEvent`] carries for a list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionsEvent {
+    /// Keyboard navigation, or a single click on a row, moved the
+    /// highlight to `idx`. The host writes it onto
+    /// [`Completions::selected_idx`]; the next
+    /// [`Primitive::layout`](crate::primitive::Primitive::layout) scrolls
+    /// it back into view on its own, so there is no companion
+    /// scroll-offset event to apply.
+    SelectionChanged { idx: usize },
+    /// Enter, Tab, a double-click, or an assistive-technology
+    /// [`A11yAction::Click`] accepted `idx` — the host inserts that
+    /// candidate and closes the popup.
+    Accepted { idx: usize },
+    /// Escape dismissed the popup without accepting anything.
+    Dismissed,
+}
+
+impl WidgetAction for CompletionsEvent {
+    /// [`Self::Accepted`] is the one completion outcome the crate's
+    /// [`crate::UiEvent`] vocabulary names directly
+    /// ([`crate::UiEvent::CompletionItemActivated`]).
+    ///
+    /// The other two ride [`crate::UiEvent::List`] under the popup's own
+    /// [`Completions::id`]: a moved highlight is exactly
+    /// [`crate::ListViewEvent::SelectionChanged`]'s `{ idx }` payload, and
+    /// a dismissal is the Escape keystroke the popup saw but did not act
+    /// on itself, which is what
+    /// [`crate::ListViewEvent::KeyPressed`] carries. Reusing that channel
+    /// keeps both outcomes loss-free under one id instead of mapping them
+    /// onto an unrelated event an existing handler could act on.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            CompletionsEvent::Accepted { idx } => crate::UiEvent::CompletionItemActivated(id, idx),
+            CompletionsEvent::SelectionChanged { idx } => {
+                crate::UiEvent::List(id, crate::ListViewEvent::SelectionChanged { idx })
+            }
+            CompletionsEvent::Dismissed => crate::UiEvent::List(
+                id,
+                crate::ListViewEvent::KeyPressed {
+                    key: NamedKey::Escape.name().into_owned(),
+                    modifiers: crate::Modifiers::default(),
+                },
+            ),
+        }
+    }
+}
+
+/// [`Completions`]'s fully-resolved widget-contract layout: the absolute
+/// `area` the popup was laid out in, the metrics it was resolved against,
+/// and the popup-local [`CompletionsLayout`] itself.
+///
+/// `#[non_exhaustive]`: produced by
+/// [`Primitive::layout`](crate::primitive::Primitive::layout), never built
+/// by a consumer via struct literal — same convention
+/// [`CompletionsLayout`] itself follows.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct CompletionsPrimitiveLayout {
+    /// The rect [`Primitive::layout`](crate::primitive::Primitive::layout)
+    /// was called with — the popup's whole box, already placed by the
+    /// host.
+    pub area: Rect,
+    /// Row pitch the rows were resolved at, from
+    /// [`crate::LayoutCtx::line_height`].
+    pub row_height: f32,
+    /// Nerd-Font toggle resolved the same way — which of
+    /// [`Icon::glyph`]/[`Icon::fallback`] the pixel painter paints.
+    pub nerd_fonts_enabled: bool,
+    /// The resolved popup layout. Its `bounds`/`visible_items`/
+    /// `hit_regions` are in the same absolute space as [`Self::area`].
+    pub layout: CompletionsLayout,
+}
+
+impl CompletionsPrimitiveLayout {
+    /// Hit-test at a position relative to [`Self::area`]'s own origin —
+    /// the space [`RoutedEvent::Pointer`]'s `local` field uses.
+    pub fn hit_test_local(&self, x: f32, y: f32) -> CompletionsHit {
+        self.layout.hit_test(self.area.x + x, self.area.y + y)
+    }
+
+    /// How many rows the box shows at once — the page size
+    /// `PageUp`/`PageDown` move by. At least `1`, so a box too short for
+    /// a single row still pages one item at a time rather than standing
+    /// still.
+    pub fn page(&self) -> usize {
+        self.layout.visible_items.len().max(1)
+    }
+}
+
+impl Completions {
+    /// The widest row's content, in the units `ctx` measures in — the
+    /// kind icon, a one-advance gap, the label, and (when present) a gap
+    /// plus the right-aligned `detail`.
+    fn widest_row(&self, ctx: &LayoutCtx) -> f32 {
+        let cells = matches!(ctx.units(), Units::Cells);
+        let width_of = |text: &str| -> f32 {
+            if cells {
+                crate::text_util::display_width(text) as f32
+            } else {
+                ctx.text_width(text, crate::FontRole::Chrome)
+            }
+        };
+        let gap = if cells { 1.0 } else { ctx.char_width };
+        self.items
+            .iter()
+            .map(|item| {
+                let icon = item.resolved_icon();
+                let glyph = if ctx.nerd_fonts_enabled && !cells {
+                    icon.glyph
+                } else {
+                    icon.fallback
+                };
+                let label: f32 = item.label.spans.iter().map(|s| width_of(&s.text)).sum();
+                let detail = item
+                    .detail
+                    .as_ref()
+                    .map(|d| gap + d.spans.iter().map(|s| width_of(&s.text)).sum::<f32>())
+                    .unwrap_or(0.0);
+                width_of(&glyph) + gap + label + detail
+            })
+            .fold(0.0_f32, f32::max)
+    }
+}
+
+impl Primitive for Completions {
+    type Layout = CompletionsPrimitiveLayout;
+    type Event = CompletionsEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Completions(self.clone())
+    }
+
+    /// One row per candidate, plus the two side-border columns the
+    /// rasterisers frame each row with and the widest row's own content
+    /// ([`Self::widest_row`]).
+    fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
+        let rows = self.items.len() as f32;
+        let chrome = match ctx.units() {
+            Units::Cells => 2.0,
+            _ => 2.0 * ctx.char_width + ctx.style().row_padding_x,
+        };
+        crate::NaturalSize::new(
+            Some(self.widest_row(ctx) + chrome),
+            Some(rows * ctx.line_height),
+        )
+    }
+
+    /// `rect` is the popup's final box — the `bounds` a host already
+    /// resolved through [`Completions::layout`]'s cursor-anchored
+    /// placement — so this reports [`CompletionsPlacement::Below`], the
+    /// preferred (unflipped) side, the same way an already-placed
+    /// [`crate::Tooltip`] reports its preferred placement.
+    ///
+    /// Rows are `ctx.line_height` tall. The scroll offset is clamped and
+    /// then run through [`ensure_visible`], so moving
+    /// [`Completions::selected_idx`] past the window's edge scrolls the
+    /// highlighted candidate back into view without the host tracking a
+    /// second scroll field — the same derivation
+    /// [`crate::Palette`]'s own layout applies.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> CompletionsPrimitiveLayout {
+        let row_height = if ctx.line_height > 0.0 {
+            ctx.line_height
+        } else {
+            1.0
+        };
+        let rows = (rect.height / row_height).floor().max(0.0) as usize;
+        let clamped =
+            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.items.len());
+        let selected = self.selected_idx.min(self.items.len().saturating_sub(1));
+        let max_scroll = self.items.len().saturating_sub(rows.max(1));
+        let resolved = ensure_visible(clamped, rows, selected).min(max_scroll);
+        let layout = self.resolve_at(rect, CompletionsPlacement::Below, resolved, |_| {
+            CompletionItemMeasure::new(row_height)
+        });
+        CompletionsPrimitiveLayout {
+            area: rect,
+            row_height,
+            nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+            layout,
+        }
+    }
+
+    /// The shared pixel painter — the same
+    /// [`native_surface_paint::paint`] every pixel backend's
+    /// `draw_completions` wrapper calls.
+    fn paint(
+        &self,
+        layout: &CompletionsPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(
+                self,
+                &layout.layout,
+                surface,
+                theme,
+                style,
+                layout.nerd_fonts_enabled,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_completions`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &CompletionsPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_completions(buf, self, &layout.layout, theme);
+    }
+}
+
+impl Completions {
+    /// The candidate a keyboard accept lands on — [`Self::selected_idx`]
+    /// clamped into `items`, or `None` for an empty popup.
+    fn current_idx(&self) -> Option<usize> {
+        if self.items.is_empty() {
+            None
+        } else {
+            Some(self.selected_idx.min(self.items.len() - 1))
+        }
+    }
+
+    /// Resolve a keystroke against the popup: Escape dismisses, Enter/Tab
+    /// accept the highlighted candidate, and every
+    /// [`NavKey`] moves the highlight through [`FlatNav`] with the box's
+    /// own row count as the page size.
+    fn handle_key(
+        &self,
+        key: &KeyEvent,
+        layout: &CompletionsPrimitiveLayout,
+    ) -> Handled<CompletionsEvent> {
+        match key.key {
+            Key::Named(NamedKey::Escape) => Handled::Event(CompletionsEvent::Dismissed),
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => match self.current_idx() {
+                Some(idx) => Handled::Event(CompletionsEvent::Accepted { idx }),
+                None => Handled::Ignored,
+            },
+            _ => {
+                let Some(nav) = NavKey::from_key(key) else {
+                    return Handled::Ignored;
+                };
+                // `NavKey::from_key` can't know this box's page size, so
+                // it reports the physical Page keys as a 1-step move —
+                // see its own doc. Re-magnify them here against the rows
+                // actually on screen.
+                let nav = match nav {
+                    NavKey::PageUp(_) => NavKey::PageUp(layout.page()),
+                    NavKey::PageDown(_) => NavKey::PageDown(layout.page()),
+                    other => other,
+                };
+                let target =
+                    FlatNav::mv(self.items.len(), self.current_idx(), nav, false, |_| true);
+                match target {
+                    Some(idx) if Some(idx) != self.current_idx() => {
+                        Handled::Event(CompletionsEvent::SelectionChanged { idx })
+                    }
+                    // Already at the edge the key moves toward: the popup
+                    // owns the keystroke (an editor must not also move its
+                    // caret) but has nothing to report.
+                    Some(_) => Handled::Consumed,
+                    None => Handled::Ignored,
+                }
+            }
+        }
+    }
+}
+
+impl Interactive for Completions {
+    /// Nothing: the highlight lives on [`Completions::selected_idx`] and
+    /// the scroll offset is derived in
+    /// [`Primitive::layout`](crate::primitive::Primitive::layout), so this
+    /// widget has no interaction state the descriptor doesn't already
+    /// carry.
+    type State = ();
+    type Action = CompletionsEvent;
+
+    /// One focus stop as a whole while the popup is live — it navigates
+    /// internally through [`Self::handle`]'s own key dispatch rather than
+    /// declaring a stop per row. [`FocusSpec::None`] for an empty popup,
+    /// and for a suppressed one ([`Completions::has_focus`] `false`),
+    /// which the host renders but does not route keys to.
+    fn focus(&self) -> FocusSpec {
+        if self.items.is_empty() || !self.has_focus {
+            FocusSpec::None
+        } else {
+            FocusSpec::Stop
+        }
+    }
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &RoutedEvent,
+        layout: &CompletionsPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<CompletionsEvent> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                local,
+                ..
+            } => match layout.hit_test_local(local.x, local.y) {
+                CompletionsHit::Item(idx) => {
+                    cx.request_focus(None);
+                    if Some(idx) == self.current_idx() {
+                        Handled::Consumed
+                    } else {
+                        Handled::Event(CompletionsEvent::SelectionChanged { idx })
+                    }
+                }
+                // Border padding inside the box: the popup swallows the
+                // click rather than letting it fall through to the editor
+                // behind it.
+                CompletionsHit::Inert => Handled::Consumed,
+                CompletionsHit::Empty => Handled::Event(CompletionsEvent::Dismissed),
+            },
+            RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(MouseButton::Left),
+                local,
+                ..
+            } => match layout.hit_test_local(local.x, local.y) {
+                CompletionsHit::Item(idx) => Handled::Event(CompletionsEvent::Accepted { idx }),
+                _ => Handled::Ignored,
+            },
+            RoutedEvent::Key(key) => self.handle_key(key, layout),
+            // `A11yAction` carries no row index through this generic seam,
+            // so `Click` activates whichever candidate is highlighted —
+            // the same one Enter accepts, matching the
+            // assistive-technology default-action convention.
+            RoutedEvent::Action(A11yAction::Click) => match self.current_idx() {
+                Some(idx) => Handled::Event(CompletionsEvent::Accepted { idx }),
+                None => Handled::Ignored,
+            },
+            _ => Handled::Ignored,
+        }
+    }
+
+    fn a11y_actions(&self, _state: &()) -> Vec<A11yAction> {
+        if self.items.is_empty() {
+            Vec::new()
+        } else {
+            vec![A11yAction::Click]
+        }
+    }
+
+    /// One sub-part per visible candidate, addressed by its index into
+    /// [`Completions::items`], in [`Self::handle`]'s own local space.
+    fn sub_regions(&self, layout: &CompletionsPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        layout
+            .layout
+            .visible_items
+            .iter()
+            .map(|vis| {
+                (
+                    Rect::new(
+                        vis.bounds.x - layout.area.x,
+                        vis.bounds.y - layout.area.y,
+                        vis.bounds.width,
+                        vis.bounds.height,
+                    ),
+                    SubTarget(vis.item_idx as u64),
+                )
+            })
+            .collect()
+    }
+}
+
+/// The cell-grid painter for [`Completions`], written against
+/// [`crate::CellSurface`].
+///
+/// A thin vertical list: side `│` borders frame every row — the row
+/// geometry has no top/bottom rows to spend on chrome — and the selected
+/// row's background is tinted. Each row paints, left to right: the kind
+/// icon ([`CompletionItem::resolved_icon`]'s `fallback`, since TUI has no
+/// Nerd Font glyph distinct from it to offer), every span of `label`, and
+/// — right-aligned, pinned to the row's own width — `detail`, muted. The
+/// same content [`native_surface_paint::paint`] puts on a pixel surface,
+/// degraded onto the cell grid (see [`crate::paint_surface`]'s module
+/// doc, "Why TUI stays out").
+///
+/// Colours: [`crate::Theme::completion_bg`] for the row background,
+/// [`crate::Theme::completion_selected_bg`] for the selected row,
+/// [`crate::Theme::completion_fg`] for item text,
+/// [`crate::Theme::muted_fg`] for `detail`, and
+/// [`crate::Theme::completion_border`] for the side borders. A box
+/// narrower than three columns (two borders plus one content column)
+/// paints nothing.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{Completions, CompletionsLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::text_util::display_width;
+    use crate::theme::Theme;
+    use crate::types::{Color, Decoration, StyledText};
+
+    fn style(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `text`'s spans at `(x + start_col, y)`, clipped to
+    /// `max_cols` display columns, and return the column past the last
+    /// glyph written. A span with no `fg` of its own takes `default_fg`,
+    /// or `dim_fg` when `decoration` is [`Decoration::Muted`] — the one
+    /// colour rule the cell-grid row content shares with every other
+    /// styled-text row in this crate.
+    #[allow(clippy::too_many_arguments)]
+    fn put_styled(
+        surface: &mut dyn CellSurface,
+        x: u16,
+        y: u16,
+        start_col: u16,
+        text: &StyledText,
+        default_fg: Color,
+        bg: Color,
+        decoration: Decoration,
+        dim_fg: Color,
+        max_cols: u16,
+    ) -> u16 {
+        let mut col = start_col;
+        for span in &text.spans {
+            if col >= max_cols {
+                break;
+            }
+            let fg = span
+                .fg
+                .unwrap_or(if matches!(decoration, Decoration::Muted) {
+                    dim_fg
+                } else {
+                    default_fg
+                });
+            let mut span_style = style(fg, span.bg.unwrap_or(bg));
+            span_style.bold = span.bold;
+            span_style.italic = span.italic;
+            col += surface.put_str_clipped(x + col, y, &span.text, max_cols - col, span_style);
+        }
+        col
+    }
+
+    /// Paint `completions` at its resolved `layout` onto `surface`.
+    pub(crate) fn paint(
+        completions: &Completions,
+        layout: &CompletionsLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let bg = theme.completion_bg;
+        let sel_bg = theme.completion_selected_bg;
+        let fg = theme.completion_fg;
+        let dim_fg = theme.muted_fg;
+        let border = theme.completion_border;
+
+        let x = layout.bounds.x.round() as u16;
+        let y = layout.bounds.y.round() as u16;
+        let w = layout.bounds.width.round() as u16;
+        if w < 3 {
+            return;
+        }
+
+        for vis in &layout.visible_items {
+            let Some(item) = completions.items.get(vis.item_idx) else {
+                continue;
+            };
+            let row_y = y + (vis.bounds.y - layout.bounds.y).round() as u16;
+            let is_selected = vis.item_idx == completions.selected_idx;
+            let row_bg = if is_selected { sel_bg } else { bg };
+
+            surface.fill(
+                crate::Rect::new(x as f32, row_y as f32, w as f32, 1.0),
+                style(fg, row_bg),
+            );
+            surface.put_char(x, row_y, '│', style(border, bg));
+            surface.put_char(x + w - 1, row_y, '│', style(border, bg));
+
+            // Row content lives between the two side borders.
+            let content_x = x + 1;
+            let content_w = w - 2;
+
+            // Kind icon + one trailing pad column. Every completion
+            // paints an icon — `resolved_icon` always has one (`item.icon`
+            // or the kind's own default).
+            let icon = item.resolved_icon();
+            let mut col = surface.put_str_clipped(
+                content_x,
+                row_y,
+                &icon.fallback,
+                content_w,
+                style(fg, row_bg),
+            );
+            if !icon.fallback.is_empty() && col < content_w {
+                col += 1;
+            }
+
+            let label_end = put_styled(
+                surface,
+                content_x,
+                row_y,
+                col,
+                &item.label,
+                fg,
+                row_bg,
+                Decoration::Normal,
+                dim_fg,
+                content_w,
+            );
+
+            // Detail text — right-aligned within the row, muted, painted
+            // only if it would not collide with the label just drawn.
+            if let Some(ref detail) = item.detail {
+                let detail_w: usize = detail.spans.iter().map(|s| display_width(&s.text)).sum();
+                let start = (content_w as usize).saturating_sub(detail_w + 1) as u16;
+                if start > label_end {
+                    put_styled(
+                        surface,
+                        content_x,
+                        row_y,
+                        start,
+                        detail,
+                        dim_fg,
+                        row_bg,
+                        Decoration::Muted,
+                        dim_fg,
+                        content_w,
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Shared pixel-surface paint for [`Completions`] — the single place a
 /// GUI backend's popup paint logic lives, instead of each pixel backend
 /// (GTK/Cairo, macOS/CoreGraphics, Windows/Direct2D) carrying its own
@@ -401,16 +1000,16 @@ impl Completions {
 /// content (kind icon, every label span, detail) onto a cell grid
 /// instead of this trait's pixel-`Rect` verbs.
 ///
-/// Wiring GTK's/macOS's/Windows' own `draw_completions` through this is
-/// follow-on, per-backend work (this issue is backend-neutral); until
-/// then this module is reachable only from its own tests, same as any
-/// shared painter added ahead of its backend adoption.
+/// Every pixel backend reaches it the same two ways: through
+/// [`Primitive::paint`](crate::primitive::Primitive::paint), and through
+/// its own `gtk`/`macos`/`win::completions::draw_completions` wrapper,
+/// which is a thin adapter from that backend's drawing context onto a
+/// [`PaintSurface`] plus this call.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-#[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Completions, CompletionsLayout};
     use crate::paint_surface::PaintSurface;
@@ -928,5 +1527,506 @@ mod tests {
         assert_eq!(layout.bounds.x, 40.0);
         // Above: y = cursor_y - desired_height = 20 - 10 = 10.
         assert_eq!(layout.bounds.y, 10.0);
+    }
+
+    // ── Cell-path paint (`cell_paint::paint`) ───────────────────────────
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::*;
+        use crate::event::Rect as QRect;
+        use crate::theme::Theme;
+        use crate::tui::{draw_completions, ratatui_color};
+        use crate::types::StyledSpan;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+        }
+
+        fn cell_at(buf: &Buffer, x: u16, y: u16) -> &ratatui::buffer::Cell {
+            &buf[(x, y)]
+        }
+
+        fn completions_with(items: Vec<CompletionItem>, selected_idx: usize) -> Completions {
+            Completions {
+                id: WidgetId::new("c"),
+                items,
+                selected_idx,
+                scroll_offset: 0,
+                has_focus: true,
+            }
+        }
+
+        /// Anchors the cursor one line above the viewport's top edge, so
+        /// `below_y = cursor_y + line_height` lands the popup's first row
+        /// at buffer row `0` — the tests below index `buf` directly by
+        /// row, so they need a fixed, known `bounds.y`.
+        fn layout_for(c: &Completions, w: u16, h: u16) -> CompletionsLayout {
+            let viewport = QRect::new(0.0, 0.0, w as f32, h as f32);
+            c.layout(0.0, -1.0, 1.0, viewport, w as f32, h as f32, |_| {
+                CompletionItemMeasure::new(1.0)
+            })
+        }
+
+        #[test]
+        fn paints_the_kind_icon_ahead_of_the_label() {
+            let items = vec![CompletionItem {
+                label: StyledText::plain("map"),
+                detail: None,
+                documentation: None,
+                kind: CompletionKind::Function,
+                icon: None,
+            }];
+            let c = completions_with(items, 0);
+            let l = layout_for(&c, 20, 3);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 3));
+            draw_completions(&mut buf, &c, &l, &Theme::default());
+
+            let icon = CompletionKind::Function.default_icon();
+            let painted: String = icon
+                .fallback
+                .chars()
+                .enumerate()
+                .map(|(i, _)| cell_char(&buf, 1 + i as u16, 0))
+                .collect();
+            assert_eq!(painted, icon.fallback);
+        }
+
+        #[test]
+        fn paints_every_label_span() {
+            let items = vec![CompletionItem {
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("fn "), StyledSpan::plain("main")],
+                },
+                detail: None,
+                documentation: None,
+                kind: CompletionKind::Text,
+                icon: None,
+            }];
+            let c = completions_with(items, 0);
+            let l = layout_for(&c, 20, 3);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 3));
+            draw_completions(&mut buf, &c, &l, &Theme::default());
+
+            // Icon ("tx") + pad occupies cols 1..3; the label starts at col 4.
+            let label_start = 1 + CompletionKind::Text.default_icon().fallback.chars().count() + 1;
+            let painted: String = "fn main"
+                .chars()
+                .enumerate()
+                .map(|(i, _)| cell_char(&buf, label_start as u16 + i as u16, 0))
+                .collect();
+            assert_eq!(painted, "fn main");
+        }
+
+        #[test]
+        fn paints_detail_right_aligned_and_muted() {
+            let items = vec![CompletionItem {
+                label: StyledText::plain("map"),
+                detail: Some(StyledText::plain("fn(T) -> U")),
+                documentation: None,
+                kind: CompletionKind::Method,
+                icon: None,
+            }];
+            let c = completions_with(items, 0);
+            let w = 24u16;
+            let l = layout_for(&c, w, 3);
+            let mut buf = Buffer::empty(RRect::new(0, 0, w, 3));
+            let theme = Theme::default();
+            draw_completions(&mut buf, &c, &l, &theme);
+
+            let detail = "fn(T) -> U";
+            // Detail is right-aligned within the row, one cell before the
+            // right border.
+            let start = (w - 2) as usize - detail.chars().count() - 1 + 1; // content_x offset
+            let painted: String = detail
+                .chars()
+                .enumerate()
+                .map(|(i, _)| cell_char(&buf, start as u16 + i as u16, 0))
+                .collect();
+            assert_eq!(painted, detail);
+            let fg = cell_at(&buf, start as u16, 0).fg;
+            assert_eq!(fg, ratatui_color(theme.muted_fg));
+        }
+
+        #[test]
+        fn selected_row_gets_completion_selected_bg() {
+            let items = vec![
+                CompletionItem {
+                    label: StyledText::plain("a"),
+                    detail: None,
+                    documentation: None,
+                    kind: CompletionKind::Text,
+                    icon: None,
+                },
+                CompletionItem {
+                    label: StyledText::plain("b"),
+                    detail: None,
+                    documentation: None,
+                    kind: CompletionKind::Text,
+                    icon: None,
+                },
+            ];
+            let c = completions_with(items, 1);
+            let l = layout_for(&c, 20, 3);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 3));
+            let theme = Theme::default();
+            draw_completions(&mut buf, &c, &l, &theme);
+
+            assert_eq!(
+                cell_at(&buf, 2, 1).bg,
+                ratatui_color(theme.completion_selected_bg)
+            );
+            assert_eq!(cell_at(&buf, 2, 0).bg, ratatui_color(theme.completion_bg));
+        }
+
+        #[test]
+        fn side_borders_frame_every_row() {
+            let items = vec![CompletionItem {
+                label: StyledText::plain("map"),
+                detail: None,
+                documentation: None,
+                kind: CompletionKind::Text,
+                icon: None,
+            }];
+            let c = completions_with(items, 0);
+            let l = layout_for(&c, 20, 3);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 3));
+            draw_completions(&mut buf, &c, &l, &Theme::default());
+            assert_eq!(cell_char(&buf, 0, 0), '│');
+            assert_eq!(cell_char(&buf, 19, 0), '│');
+        }
+
+        /// A box narrower than the two borders plus one content column
+        /// has nowhere to paint, so it paints nothing at all rather than
+        /// a stray border column.
+        #[test]
+        fn a_box_under_three_columns_wide_paints_nothing() {
+            let items = vec![CompletionItem {
+                label: StyledText::plain("map"),
+                detail: None,
+                documentation: None,
+                kind: CompletionKind::Text,
+                icon: None,
+            }];
+            let c = completions_with(items, 0);
+            let l = layout_for(&c, 2, 3);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 10, 3));
+            draw_completions(&mut buf, &c, &l, &Theme::default());
+            assert_eq!(cell_char(&buf, 0, 0), ' ');
+            assert_eq!(cell_char(&buf, 1, 0), ' ');
+        }
+    }
+
+    // ── Widget contract: `Primitive` + `Interactive` ────────────────────
+
+    mod contract {
+        use super::*;
+        use crate::interactive::{EventHost, FocusSpec, PointerKind, SubTarget};
+        use crate::primitive::{LayoutCtx, Primitive, Size, Units};
+        use crate::types::Modifiers;
+        use crate::{Point, PointerShape};
+
+        /// Minimal [`EventHost`] mock: records every call so a test can
+        /// assert on what [`Interactive::handle`] asked for — the same
+        /// shape `interactive`'s own module tests use.
+        #[derive(Debug, Default)]
+        struct MockHost {
+            focus_requests: Vec<Option<SubTarget>>,
+            emitted: Vec<crate::UiEvent>,
+        }
+
+        impl EventHost for MockHost {
+            fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+                false
+            }
+            fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+                self.focus_requests.push(sub);
+            }
+            fn capture_pointer(&mut self, _id: &WidgetId) {}
+            fn release_pointer(&mut self) {}
+            fn set_cursor(&mut self, _cursor: PointerShape) {}
+            fn request_redraw(&mut self) {}
+            fn emit(&mut self, event: crate::UiEvent) {
+                self.emitted.push(event);
+            }
+            fn units(&self) -> Units {
+                Units::Cells
+            }
+        }
+
+        fn popup(items: usize, selected_idx: usize, scroll_offset: usize) -> Completions {
+            Completions {
+                id: WidgetId::new("completions:test"),
+                items: (0..items)
+                    .map(|i| make_completion(&format!("cand{i}"), CompletionKind::Function))
+                    .collect(),
+                selected_idx,
+                scroll_offset,
+                has_focus: true,
+            }
+        }
+
+        fn ctx() -> LayoutCtx<'static> {
+            LayoutCtx::new(1.0, 1.0, false)
+        }
+
+        fn layout_for(c: &Completions, rows: f32) -> CompletionsPrimitiveLayout {
+            Primitive::layout(c, &ctx(), Rect::new(4.0, 2.0, 20.0, rows))
+        }
+
+        fn key(named: NamedKey) -> RoutedEvent {
+            RoutedEvent::Key(KeyEvent {
+                key: Key::Named(named),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            })
+        }
+
+        fn down_at(x: f32, y: f32) -> RoutedEvent {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(x, y),
+                mods: Modifiers::default(),
+            }
+        }
+
+        fn double_click_at(x: f32, y: f32) -> RoutedEvent {
+            RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(MouseButton::Left),
+                sub: None,
+                local: Point::new(x, y),
+                mods: Modifiers::default(),
+            }
+        }
+
+        fn handle(
+            c: &Completions,
+            event: &RoutedEvent,
+            layout: &CompletionsPrimitiveLayout,
+        ) -> (Handled<CompletionsEvent>, MockHost) {
+            let mut host = MockHost::default();
+            let mut cx = EventCx::new(c.id, &mut host);
+            let out = Interactive::handle(c, &mut (), event, layout, &mut cx);
+            (out, host)
+        }
+
+        #[test]
+        fn layout_places_every_row_inside_the_host_resolved_box() {
+            let c = popup(3, 0, 0);
+            let layout = layout_for(&c, 3.0);
+            assert_eq!(layout.area, Rect::new(4.0, 2.0, 20.0, 3.0));
+            assert_eq!(layout.layout.bounds, layout.area);
+            assert_eq!(layout.layout.visible_items.len(), 3);
+            assert_eq!(layout.layout.visible_items[0].bounds.y, 2.0);
+            assert_eq!(layout.layout.visible_items[2].bounds.y, 4.0);
+            assert_eq!(layout.layout.placement, CompletionsPlacement::Below);
+        }
+
+        /// A selection past the bottom of the box scrolls it back into
+        /// view without the host tracking a second scroll field.
+        #[test]
+        fn layout_scrolls_the_selected_candidate_into_view() {
+            let c = popup(10, 7, 0);
+            let layout = layout_for(&c, 3.0);
+            assert_eq!(layout.layout.resolved_scroll_offset, 5);
+            let shown: Vec<usize> = layout
+                .layout
+                .visible_items
+                .iter()
+                .map(|v| v.item_idx)
+                .collect();
+            assert_eq!(shown, vec![5, 6, 7]);
+        }
+
+        #[test]
+        fn layout_never_scrolls_past_the_last_full_window() {
+            let c = popup(10, 0, 99);
+            let layout = layout_for(&c, 3.0);
+            assert_eq!(layout.layout.resolved_scroll_offset, 0);
+            assert_eq!(layout.layout.visible_items[0].item_idx, 0);
+        }
+
+        #[test]
+        fn measure_reports_one_cell_row_per_candidate() {
+            let c = popup(4, 0, 0);
+            let natural = Primitive::measure(&c, &ctx(), Size::new(80.0, 24.0));
+            assert_eq!(natural.height, Some(4.0));
+            // "fn" icon + pad + "cand0" + two border columns.
+            assert_eq!(natural.width, Some(2.0 + 1.0 + 5.0 + 2.0));
+        }
+
+        #[test]
+        fn hit_test_local_resolves_each_visible_row() {
+            let c = popup(3, 0, 0);
+            let layout = layout_for(&c, 3.0);
+            assert_eq!(layout.hit_test_local(1.0, 0.5), CompletionsHit::Item(0));
+            assert_eq!(layout.hit_test_local(1.0, 2.5), CompletionsHit::Item(2));
+            assert_eq!(layout.hit_test_local(1.0, 9.0), CompletionsHit::Empty);
+        }
+
+        #[test]
+        fn sub_regions_name_every_visible_candidate_in_local_space() {
+            let c = popup(10, 7, 0);
+            let layout = layout_for(&c, 3.0);
+            let regions = Interactive::sub_regions(&c, &layout);
+            assert_eq!(
+                regions.iter().map(|(_, s)| s.0).collect::<Vec<_>>(),
+                vec![5, 6, 7]
+            );
+            assert_eq!(regions[0].0, Rect::new(0.0, 0.0, 20.0, 1.0));
+        }
+
+        #[test]
+        fn an_empty_or_suppressed_popup_is_not_a_focus_stop() {
+            assert_eq!(Interactive::focus(&popup(0, 0, 0)), FocusSpec::None);
+            let mut suppressed = popup(3, 0, 0);
+            suppressed.has_focus = false;
+            assert_eq!(Interactive::focus(&suppressed), FocusSpec::None);
+            assert_eq!(Interactive::focus(&popup(3, 0, 0)), FocusSpec::Stop);
+        }
+
+        #[test]
+        fn arrow_keys_move_the_highlight_by_one() {
+            let c = popup(4, 1, 0);
+            let layout = layout_for(&c, 4.0);
+            let (down, _) = handle(&c, &key(NamedKey::Down), &layout);
+            assert_eq!(
+                down,
+                Handled::Event(CompletionsEvent::SelectionChanged { idx: 2 })
+            );
+            let (up, _) = handle(&c, &key(NamedKey::Up), &layout);
+            assert_eq!(
+                up,
+                Handled::Event(CompletionsEvent::SelectionChanged { idx: 0 })
+            );
+        }
+
+        #[test]
+        fn page_keys_move_by_the_rows_actually_on_screen() {
+            let c = popup(10, 0, 0);
+            let layout = layout_for(&c, 3.0);
+            assert_eq!(layout.page(), 3);
+            let (paged, _) = handle(&c, &key(NamedKey::PageDown), &layout);
+            assert_eq!(
+                paged,
+                Handled::Event(CompletionsEvent::SelectionChanged { idx: 3 })
+            );
+        }
+
+        #[test]
+        fn home_and_end_jump_to_the_first_and_last_candidate() {
+            let c = popup(10, 4, 0);
+            let layout = layout_for(&c, 3.0);
+            let (home, _) = handle(&c, &key(NamedKey::Home), &layout);
+            assert_eq!(
+                home,
+                Handled::Event(CompletionsEvent::SelectionChanged { idx: 0 })
+            );
+            let (end, _) = handle(&c, &key(NamedKey::End), &layout);
+            assert_eq!(
+                end,
+                Handled::Event(CompletionsEvent::SelectionChanged { idx: 9 })
+            );
+        }
+
+        /// Navigation does not wrap: at the last candidate, Down keeps the
+        /// keystroke (so an editor behind the popup never sees it) but
+        /// reports nothing to apply.
+        #[test]
+        fn navigation_at_the_edge_is_consumed_without_an_event() {
+            let c = popup(3, 2, 0);
+            let layout = layout_for(&c, 3.0);
+            let (out, _) = handle(&c, &key(NamedKey::Down), &layout);
+            assert_eq!(out, Handled::Consumed);
+        }
+
+        #[test]
+        fn enter_and_tab_accept_the_highlighted_candidate() {
+            let c = popup(4, 2, 0);
+            let layout = layout_for(&c, 4.0);
+            for named in [NamedKey::Enter, NamedKey::Tab] {
+                let (out, _) = handle(&c, &key(named), &layout);
+                assert_eq!(out, Handled::Event(CompletionsEvent::Accepted { idx: 2 }));
+            }
+        }
+
+        #[test]
+        fn escape_dismisses() {
+            let c = popup(4, 2, 0);
+            let layout = layout_for(&c, 4.0);
+            let (out, _) = handle(&c, &key(NamedKey::Escape), &layout);
+            assert_eq!(out, Handled::Event(CompletionsEvent::Dismissed));
+        }
+
+        #[test]
+        fn an_unrelated_key_is_ignored() {
+            let c = popup(4, 2, 0);
+            let layout = layout_for(&c, 4.0);
+            let event = RoutedEvent::Key(KeyEvent {
+                key: Key::Char('x'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let (out, _) = handle(&c, &event, &layout);
+            assert_eq!(out, Handled::Ignored);
+        }
+
+        #[test]
+        fn a_click_selects_the_row_and_takes_focus() {
+            let c = popup(4, 0, 0);
+            let layout = layout_for(&c, 4.0);
+            let (out, host) = handle(&c, &down_at(3.0, 2.5), &layout);
+            assert_eq!(
+                out,
+                Handled::Event(CompletionsEvent::SelectionChanged { idx: 2 })
+            );
+            assert_eq!(host.focus_requests, vec![None]);
+        }
+
+        #[test]
+        fn a_double_click_accepts_the_row_under_the_pointer() {
+            let c = popup(4, 0, 0);
+            let layout = layout_for(&c, 4.0);
+            let (out, _) = handle(&c, &double_click_at(3.0, 1.5), &layout);
+            assert_eq!(out, Handled::Event(CompletionsEvent::Accepted { idx: 1 }));
+        }
+
+        #[test]
+        fn a_click_outside_the_box_dismisses() {
+            let c = popup(4, 0, 0);
+            let layout = layout_for(&c, 4.0);
+            let (out, _) = handle(&c, &down_at(3.0, 40.0), &layout);
+            assert_eq!(out, Handled::Event(CompletionsEvent::Dismissed));
+        }
+
+        #[test]
+        fn an_a11y_click_accepts_the_highlighted_candidate() {
+            let c = popup(4, 3, 0);
+            let layout = layout_for(&c, 4.0);
+            let (out, _) = handle(&c, &RoutedEvent::Action(A11yAction::Click), &layout);
+            assert_eq!(out, Handled::Event(CompletionsEvent::Accepted { idx: 3 }));
+            assert_eq!(Interactive::a11y_actions(&c, &()), vec![A11yAction::Click]);
+            assert!(Interactive::a11y_actions(&popup(0, 0, 0), &()).is_empty());
+        }
+
+        #[test]
+        fn actions_map_onto_the_crates_own_ui_events() {
+            let id = WidgetId::new("completions:test");
+            assert_eq!(
+                CompletionsEvent::Accepted { idx: 2 }.into_ui_event(id),
+                crate::UiEvent::CompletionItemActivated(id, 2)
+            );
+            assert_eq!(
+                CompletionsEvent::SelectionChanged { idx: 1 }.into_ui_event(id),
+                crate::UiEvent::List(id, crate::ListViewEvent::SelectionChanged { idx: 1 })
+            );
+            assert!(matches!(
+                CompletionsEvent::Dismissed.into_ui_event(id),
+                crate::UiEvent::List(_, crate::ListViewEvent::KeyPressed { .. })
+            ));
+        }
     }
 }

@@ -1,11 +1,9 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::Completions`].
-//!
-//! Mirrors `gtk::completions`'s structure: the layout is fully resolved
-//! upstream (host calls [`crate::primitives::completions::Completions::layout`]
-//! with the cursor anchor, viewport, popup size, and a per-item measure
-//! closure); this module paints the resolved [`CompletionsLayout`]
-//! verbatim — background fill, full 4-side border stroke, per-item
-//! selected-row highlight, `" {label}"` text.
+//! Direct2D / DirectWrite entry point for [`crate::Completions`] — a
+//! thin delegate onto the widget's own shared pixel painter,
+//! [`crate::primitives::completions::native_surface_paint::paint`], which
+//! documents the popup chrome and row content it paints. This module only
+//! adapts a render target plus its DirectWrite handle into the
+//! [`crate::PaintSurface`] that painter takes.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod completions;` and `backend.rs`'s
@@ -13,12 +11,18 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, stroke_rect, DWrite};
-use crate::event::Rect;
-use crate::primitives::completions::{Completions, CompletionsLayout};
+use super::text::DWrite;
+use crate::primitives::completions::{native_surface_paint, Completions, CompletionsLayout};
 use crate::theme::Theme;
 
 /// Paint a [`Completions`] popup at its resolved `layout`.
+///
+/// Kind icons paint their [`crate::Icon::fallback`] text: this entry
+/// point carries no Nerd-Font toggle of its own, so it passes
+/// `nerd_fonts_enabled: false`. A caller that wants the Nerd-Font glyph
+/// instead paints the popup through
+/// [`crate::DrawsPrimitives::draw_primitive`](crate::backend::DrawsPrimitives::draw_primitive),
+/// which resolves the toggle from the live backend.
 pub fn draw_completions(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -26,47 +30,24 @@ pub fn draw_completions(
     layout: &CompletionsLayout,
     theme: &Theme,
 ) {
-    let bounds = layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return;
-    }
-
-    let _ = fill_rect(target, bounds, theme.completion_bg);
-    let _ = stroke_rect(target, bounds, theme.completion_border, 1.0);
-
-    for vis in &layout.visible_items {
-        let Some(item) = completions.items.get(vis.item_idx) else {
-            continue;
-        };
-
-        if vis.item_idx == completions.selected_idx {
-            let _ = fill_rect(target, vis.bounds, theme.completion_selected_bg);
-        }
-
-        let label = item
-            .label
-            .spans
-            .first()
-            .map(|s| s.text.as_str())
-            .unwrap_or("");
-        let display = format!(" {label}");
-        let _ = dwrite.draw_text(target, &display, vis.bounds, theme.completion_fg);
-
-        if let Some(ref detail) = item.detail {
-            let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
-            if !detail_text.is_empty() {
-                let (dw, _) = dwrite.measure_text(&detail_text).unwrap_or((0.0, 0.0));
-                let dx = vis.bounds.x + vis.bounds.width - dw - 4.0;
-                let detail_rect = Rect::new(dx, vis.bounds.y, dw.max(1.0), vis.bounds.height);
-                let _ = dwrite.draw_text(target, &detail_text, detail_rect, theme.muted_fg);
-            }
-        }
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    native_surface_paint::paint(
+        completions,
+        layout,
+        &mut surface,
+        theme,
+        &crate::style::Style::default(),
+        /* nerd_fonts_enabled */ false,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::Rect;
     use crate::primitives::completions::{CompletionItem, CompletionItemMeasure};
     use crate::types::{StyledText, WidgetId};
     use crate::win::testing::HeadlessSurface;

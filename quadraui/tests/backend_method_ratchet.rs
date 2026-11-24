@@ -144,6 +144,9 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Tooltip", "draw_tooltip"),
     ("Tooltip", "draw_tooltip_with_chrome"),
     ("Float", "draw_float"),
+    ("Completions", "draw_completions"),
+    ("RichTextPopup", "draw_rich_text_popup"),
+    ("RichTextPopup", "draw_rich_text_popup_with_font_role"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
