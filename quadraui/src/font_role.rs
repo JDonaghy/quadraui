@@ -43,9 +43,16 @@
 //! widget. Keep new cross-cutting policy modules at the crate root.
 
 /// Which font a primitive paints in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` and `Default` are derived because the role
+/// is also a *descriptor* field on the primitives that carry one
+/// ([`crate::RichTextPopup::font_role`]), and descriptors must round-trip
+/// through serde (`PRIMITIVE_RULES.md` rule 8). [`Self::Chrome`] is the
+/// `Default`, matching this module's chrome-unless-editor-class rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FontRole {
     /// The host chrome / UI font — [`crate::Backend::set_ui_font`].
+    #[default]
     Chrome,
     /// The user's configured editor font — [`crate::Backend::set_editor_font`].
     Editor,

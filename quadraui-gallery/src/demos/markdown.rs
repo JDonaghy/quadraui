@@ -126,6 +126,7 @@ impl MarkdownDemo {
             padding: 1.0,
             fg: None,
             bg: None,
+            font_role: Default::default(),
         };
 
         let anchor_x = area.x + area.width * 0.05;

@@ -89,6 +89,7 @@ mod tests {
             padding: 1.0,
             fg: None,
             bg: None,
+            font_role: Default::default(),
         }
     }
 

@@ -11951,6 +11951,7 @@ mod tests {
                 padding: 0.0,
                 fg: Some(Color::rgb(255, 255, 255)),
                 bg: Some(Color::rgb(0, 0, 0)),
+                font_role: Default::default(),
             }
         }
 

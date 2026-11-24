@@ -38,21 +38,19 @@
 //! # Font role (editor vs chrome)
 //!
 //! This primitive is classified [`crate::ChromePrimitive::RichTextPopup`]
-//! — by default every backend paints its content in the chrome (UI)
-//! font via [`crate::Backend::draw_rich_text_popup`], same as before a
-//! choice existed. A consumer rendering editor content (hover docs,
-//! signatures, diagnostics) that wants the popup measured and painted
-//! with the editor's monospace metrics instead — keeping link
-//! hit-testing in sync with the glyphs actually painted — calls
-//! [`crate::Backend::draw_rich_text_popup_with_font_role`] with
-//! [`crate::FontRole::Editor`] instead. The role is requested per call,
-//! not stored on this struct: adding a required field here would break
-//! every downstream consumer that constructs `RichTextPopup` with an
-//! exhaustive literal (see `CLAUDE.md`'s *Downstream consumers*
-//! section), so the extra method — alongside the old one, not replacing
-//! it — is the non-breaking shape, mirroring
-//! [`crate::Backend::draw_tooltip_with_chrome`]'s [`crate::TooltipChrome`]
-//! precedent.
+//! — its content paints in the chrome (UI) font unless the descriptor
+//! says otherwise. [`RichTextPopup::font_role`] is that say: a consumer
+//! rendering editor content (hover docs, signatures, diagnostics) sets
+//! it to [`crate::FontRole::Editor`] so the body is measured, laid out
+//! and link-hit-tested in the editor's monospace metrics, keeping the
+//! hit regions in sync with the glyphs actually painted.
+//!
+//! The role lives on the descriptor rather than in the call, so the one
+//! widget-contract path ([`Primitive::measure`], [`Primitive::layout`],
+//! [`Primitive::font_role`]) covers both fonts. The field is
+//! `#[serde(default)]` and [`crate::FontRole`]'s own `Default` is
+//! [`crate::FontRole::Chrome`], so a frame deserialized without the
+//! field keeps the chrome metrics.
 
 use crate::event::{Key, MouseButton, NamedKey, Rect};
 use crate::interactive::{
@@ -62,7 +60,7 @@ use crate::layout::{Anchor, Side};
 use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta};
 use crate::types::{Color, StyledText, WidgetId};
-use crate::Handled;
+use crate::{FontRole, Handled};
 use serde::{Deserialize, Serialize};
 
 /// Width of the popup's frame, in the host's own units — one cell on a
@@ -94,6 +92,7 @@ const BORDER: f32 = 1.0;
 ///     padding: 1.0,
 ///     fg: None,
 ///     bg: None,
+///     font_role: Default::default(),
 /// };
 ///
 /// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
@@ -159,6 +158,13 @@ pub struct RichTextPopup {
     /// Override background colour. `None` = theme `hover_bg`.
     #[serde(default)]
     pub bg: Option<Color>,
+    /// Which font the body is measured, laid out and link-hit-tested in
+    /// (see this module's *Font role* section).
+    /// [`FontRole::Chrome`] renders the popup as host chrome;
+    /// [`FontRole::Editor`] gives it the editor's monospace metrics, for
+    /// hover docs and signature help that sit inside editor text.
+    #[serde(default)]
+    pub font_role: FontRole,
 }
 
 /// Preferred placement of the popup relative to its anchor.
@@ -687,6 +693,13 @@ impl Primitive for RichTextPopup {
         crate::frame::OwnedContent::RichTextPopup(self.clone())
     }
 
+    /// [`RichTextPopup::font_role`] — the descriptor decides, rather
+    /// than the trait's chrome-only default, so an editor-role popup is
+    /// measured and link-hit-tested in the editor font.
+    fn font_role(&self) -> FontRole {
+        self.font_role
+    }
+
     /// The box that shows every line the popup is willing to show at
     /// once ([`RichTextPopup::max_visible_rows`], capped by the line
     /// count): the widest line's own measured width plus
@@ -855,6 +868,15 @@ impl Interactive for RichTextPopup {
     /// a body that overflows its box (Page keys scroll it) or at least
     /// one clickable link. A short, link-free popup is pure content, so
     /// it stays out of the tab order.
+    ///
+    /// "Overflows" is measured against
+    /// [`RichTextPopup::max_visible_rows`], the descriptor's own ask,
+    /// because [`FocusSpec`] is resolved before any box exists;
+    /// [`Primitive::layout`] caps the row count again by what the box it
+    /// is given can actually hold. A link-free popup whose line count
+    /// fits `max_visible_rows` but not a box shorter than that is
+    /// therefore not a focus stop even though its body is clipped — the
+    /// descriptor asked for a box that would have shown it all.
     fn focus(&self) -> FocusSpec {
         if self.links.is_empty() && self.lines.len() <= self.max_visible_rows.max(1) {
             FocusSpec::None
@@ -1001,6 +1023,11 @@ pub(crate) mod cell_paint {
 
         // Content wash first, then the frame on top of it, so the inner
         // rows start from the popup's own background.
+        //
+        // [`CellSurface::draw_border`] paints nothing below 2x2, so a
+        // box that degenerate shows the wash alone. Both `layout` paths
+        // size the box around at least one content row plus the frame on
+        // each side, so 2x2 is the floor they can produce.
         surface.fill(
             Rect::new(bx as f32, by as f32, bw as f32, bh as f32),
             style(fg, bg),
@@ -1386,6 +1413,7 @@ mod tests {
             padding: 0.0,
             fg: None,
             bg: None,
+            font_role: FontRole::Chrome,
         }
     }
 
@@ -1521,6 +1549,7 @@ mod tests {
             padding: 1.0,
             fg: None,
             bg: None,
+            font_role: FontRole::Chrome,
         }
     }
 
@@ -1794,6 +1823,7 @@ mod tests {
                 padding: 0.0,
                 fg: None,
                 bg: None,
+                font_role: FontRole::Chrome,
             }
         }
 
@@ -2036,6 +2066,58 @@ mod tests {
             // "line 00" is 7 cells wide, plus one border column each side.
             assert_eq!(natural.width, Some(9.0));
             assert_eq!(natural.height, Some(5.0));
+        }
+
+        /// A pixel-unit measurer that gives the two font roles different
+        /// advances, so a role-sensitive measurement is observable.
+        fn role_measurer(text: &str, role: FontRole) -> f32 {
+            let advance = if role == FontRole::Editor { 10.0 } else { 6.0 };
+            text.chars().count() as f32 * advance
+        }
+
+        /// The descriptor's `font_role` is what [`Primitive::font_role`]
+        /// reports, and it is the role `measure` and `layout` measure
+        /// through — so an editor-role popup is sized and link-hit-tested
+        /// in the editor font rather than always in chrome.
+        #[test]
+        fn the_descriptor_font_role_drives_measure_and_link_hit_regions() {
+            let measurer = role_measurer;
+            let base = LayoutCtx::new(16.0, 6.0, false);
+            let ctx = base.with_measurer(&measurer);
+
+            let mut chrome = popup(3, 8, 0);
+            chrome.links.push(RichTextLink {
+                line: 0,
+                start_byte: 0,
+                end_byte: 4,
+                url: "https://example.com".into(),
+            });
+            let mut editor = chrome.clone();
+            editor.font_role = FontRole::Editor;
+
+            assert_eq!(Primitive::font_role(&chrome), FontRole::Chrome);
+            assert_eq!(Primitive::font_role(&editor), FontRole::Editor);
+
+            // "line 00" is 7 chars: 42px chrome / 70px editor, plus the
+            // one-pixel border on each side (padding is 0 here).
+            let width_of = |p: &RichTextPopup| {
+                Primitive::measure(p, &ctx, Size::new(400.0, 200.0))
+                    .width
+                    .expect("popup measures its own width")
+            };
+            assert_eq!(width_of(&chrome), 44.0);
+            assert_eq!(width_of(&editor), 72.0);
+
+            // The link's hit region spans `line 00`'s first four chars,
+            // measured in the popup's own role.
+            let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let link_width = |p: &RichTextPopup| {
+                Primitive::layout(p, &ctx, rect).layout.link_hit_regions[0]
+                    .0
+                    .width
+            };
+            assert_eq!(link_width(&chrome), 24.0);
+            assert_eq!(link_width(&editor), 40.0);
         }
 
         #[test]

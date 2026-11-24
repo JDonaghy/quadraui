@@ -58,6 +58,7 @@ impl PopupApp {
             padding: 0.0,
             fg: None,
             bg: None,
+            font_role: Default::default(),
         };
         Self {
             popup,

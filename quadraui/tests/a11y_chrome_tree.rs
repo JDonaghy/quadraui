@@ -607,6 +607,7 @@ fn overlays_and_containers_report_their_own_structure() {
         padding: 1.0,
         fg: None,
         bg: None,
+        font_role: Default::default(),
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Spinner {

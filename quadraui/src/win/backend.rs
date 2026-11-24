@@ -10377,6 +10377,7 @@ mod tests {
                 padding: 0.0,
                 fg: Some(fg),
                 bg: Some(bg),
+                font_role: Default::default(),
             }
         }
 
