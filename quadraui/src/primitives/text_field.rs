@@ -1280,12 +1280,15 @@ mod interactive_tests {
         let mut host = MockHost::default();
         let mut state = TextFieldState::default();
         let mut cx = EventCx::new(tf.id, &mut host);
-        Interactive::handle(
-            &tf,
-            &mut state,
-            &key(Key::Char('a'), ctrl()),
-            &layout,
-            &mut cx,
+        assert_eq!(
+            Interactive::handle(
+                &tf,
+                &mut state,
+                &key(Key::Char('a'), ctrl()),
+                &layout,
+                &mut cx,
+            ),
+            Handled::Consumed
         );
         let handled = Interactive::handle(
             &tf,
@@ -1356,26 +1359,32 @@ mod interactive_tests {
         let mut host = MockHost::default();
         let mut state = TextFieldState::default();
         let mut cx = EventCx::new(tf.id, &mut host);
-        Interactive::handle(
-            &tf,
-            &mut state,
-            &click(text_x + 1.0, Modifiers::default()),
-            &layout,
-            &mut cx,
+        assert_eq!(
+            Interactive::handle(
+                &tf,
+                &mut state,
+                &click(text_x + 1.0, Modifiers::default()),
+                &layout,
+                &mut cx,
+            ),
+            Handled::Consumed
         );
         assert_eq!(state.cursor, Some(1));
-        Interactive::handle(
-            &tf,
-            &mut state,
-            &click(
-                text_x + 4.0,
-                Modifiers {
-                    shift: true,
-                    ..Default::default()
-                },
+        assert_eq!(
+            Interactive::handle(
+                &tf,
+                &mut state,
+                &click(
+                    text_x + 4.0,
+                    Modifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
+                ),
+                &layout,
+                &mut cx,
             ),
-            &layout,
-            &mut cx,
+            Handled::Consumed
         );
         assert_eq!(state.cursor, Some(4));
         assert_eq!(state.anchor, Some(1));
@@ -1409,17 +1418,23 @@ mod interactive_tests {
             anchor: Some(4),
         };
         let mut cx = EventCx::new(tf.id, &mut host);
-        Interactive::handle(
-            &tf,
-            &mut state,
-            &RoutedEvent::FocusIn(None),
-            &layout,
-            &mut cx,
+        assert_eq!(
+            Interactive::handle(
+                &tf,
+                &mut state,
+                &RoutedEvent::FocusIn(None),
+                &layout,
+                &mut cx
+            ),
+            Handled::Consumed
         );
         assert_eq!(state.cursor, Some(2));
         assert_eq!(state.anchor, None);
 
-        Interactive::handle(&tf, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx);
+        assert_eq!(
+            Interactive::handle(&tf, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx),
+            Handled::Consumed
+        );
         assert_eq!(state.cursor, None);
     }
 

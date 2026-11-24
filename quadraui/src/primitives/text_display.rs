@@ -2088,7 +2088,10 @@ mod interactive_tests {
             local: Point::new(0.0, 0.0),
             mods: Modifiers::default(),
         };
-        handle(&td, &mut state, &release, &layout, &mut host);
+        assert_eq!(
+            handle(&td, &mut state, &release, &layout, &mut host),
+            Handled::Consumed
+        );
         assert!(!state.dragging_thumb);
         assert_eq!(host.releases, 1);
     }

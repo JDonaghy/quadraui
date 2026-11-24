@@ -1785,17 +1785,23 @@ mod interactive_tests {
             anchor: Some((0, 1)),
         };
         let mut cx = EventCx::new(ti.id, &mut host);
-        Interactive::handle(
-            &ti,
-            &mut state,
-            &RoutedEvent::FocusIn(None),
-            &layout,
-            &mut cx,
+        assert_eq!(
+            Interactive::handle(
+                &ti,
+                &mut state,
+                &RoutedEvent::FocusIn(None),
+                &layout,
+                &mut cx
+            ),
+            Handled::Consumed
         );
         assert_eq!(state.caret, Some((0, 3)));
         assert_eq!(state.anchor, None);
 
-        Interactive::handle(&ti, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx);
+        assert_eq!(
+            Interactive::handle(&ti, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx),
+            Handled::Consumed
+        );
         assert_eq!(state.caret, None);
     }
 
@@ -1867,35 +1873,41 @@ mod interactive_tests {
         let mut state = TextInputState::default();
         let mut cx = EventCx::new(ti.id, &mut host);
         // Park the caret at column 1 with a plain click first.
-        Interactive::handle(
-            &ti,
-            &mut state,
-            &RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Left),
-                sub: None,
-                local: Point::new(3.0, 1.0),
-                mods: Modifiers::default(),
-            },
-            &layout,
-            &mut cx,
+        assert_eq!(
+            Interactive::handle(
+                &ti,
+                &mut state,
+                &RoutedEvent::Pointer {
+                    kind: PointerKind::Down(MouseButton::Left),
+                    sub: None,
+                    local: Point::new(3.0, 1.0),
+                    mods: Modifiers::default(),
+                },
+                &layout,
+                &mut cx,
+            ),
+            Handled::Consumed
         );
         assert_eq!(state.caret, Some((0, 1)));
         assert_eq!(state.anchor, None);
 
-        Interactive::handle(
-            &ti,
-            &mut state,
-            &RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Left),
-                sub: None,
-                local: Point::new(6.0, 1.0),
-                mods: Modifiers {
-                    shift: true,
-                    ..Default::default()
+        assert_eq!(
+            Interactive::handle(
+                &ti,
+                &mut state,
+                &RoutedEvent::Pointer {
+                    kind: PointerKind::Down(MouseButton::Left),
+                    sub: None,
+                    local: Point::new(6.0, 1.0),
+                    mods: Modifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
                 },
-            },
-            &layout,
-            &mut cx,
+                &layout,
+                &mut cx,
+            ),
+            Handled::Consumed
         );
         assert_eq!(state.caret, Some((0, 4)));
         assert_eq!(state.anchor, Some((0, 1)));
@@ -1908,17 +1920,22 @@ mod interactive_tests {
         let mut host = MockHost::default();
         let mut state = TextInputState::default();
         let mut cx = EventCx::new(ti.id, &mut host);
-        Interactive::handle(
-            &ti,
-            &mut state,
-            &RoutedEvent::Pointer {
-                kind: PointerKind::Move,
-                sub: None,
-                local: Point::new(3.0, 1.0),
-                mods: Modifiers::default(),
-            },
-            &layout,
-            &mut cx,
+        // A hover only hints the shape: the move stays available to
+        // whatever else the host routes it to.
+        assert_eq!(
+            Interactive::handle(
+                &ti,
+                &mut state,
+                &RoutedEvent::Pointer {
+                    kind: PointerKind::Move,
+                    sub: None,
+                    local: Point::new(3.0, 1.0),
+                    mods: Modifiers::default(),
+                },
+                &layout,
+                &mut cx,
+            ),
+            Handled::Ignored
         );
         assert_eq!(host.cursors, vec![PointerShape::Text]);
     }
