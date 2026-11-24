@@ -725,7 +725,12 @@ impl ComboBox {
     /// - `Alt+Down` and, while closed, `Down`/`Enter` drop the list open.
     ///   (`Space`, like every other printable character, types — and
     ///   [`ComboBoxEvent::TextChanged`]'s apply contract opens the list
-    ///   as a result, so it opens too.)
+    ///   as a result, so it opens too.) This is the one place the
+    ///   standalone box's key map is wider than
+    ///   [`ComboBox::handle_key`]'s: a `Form` row reaches its fields
+    ///   through the form's own focus model and so has no need of an
+    ///   Enter-to-open affordance, where a standalone box is the only
+    ///   thing on screen and does.
     /// - While open, `Up`/`Down` move the highlight through
     ///   [`crate::behaviour::nav::FlatNav`], `Enter` commits the
     ///   highlighted option and `Escape` cancels the edit — all of them
