@@ -126,11 +126,18 @@ impl Primitive for Toolbar {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::Toolbar`], so a
-    /// `Toolbar` reached through [`crate::frame::Surface::Widget`]
-    /// replays through
-    /// [`crate::backend::DrawsPrimitives::draw_primitive`] after capture
-    /// exactly as it does live.
+    /// Round-trips through [`crate::frame::OwnedContent::Toolbar`] — the
+    /// same owned snapshot [`crate::frame::Surface::Toolbar`] captures
+    /// into, so a bar reached through [`crate::frame::Surface::Widget`]
+    /// replays byte-identically: that variant's own replay paints
+    /// through [`crate::Backend::draw_toolbar_interactive`], which
+    /// reaches this module's own painter with the same resting
+    /// hover/press/valign state [`Self::paint_cells`] passes it.
+    ///
+    /// The replayed bar reports
+    /// [`crate::frame::FrameZone::Toolbar`] rather than
+    /// [`crate::frame::FrameZone::Widget`], since that mapping belongs
+    /// to `OwnedContent` itself.
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::Toolbar(self.clone())
     }
