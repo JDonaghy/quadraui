@@ -683,12 +683,6 @@ impl CommandLinePrimitiveLayout {
     }
 }
 
-impl crate::a11y::A11yPrimitive for CommandLinePrimitiveLayout {
-    fn a11y_info(&self) -> crate::a11y::A11yInfo {
-        crate::a11y::A11yInfo::default()
-    }
-}
-
 impl crate::primitive::Primitive for CommandLine {
     type Layout = CommandLinePrimitiveLayout;
     type Event = usize;
@@ -861,12 +855,11 @@ impl CommandLine {
     /// own state has walked to, else [`Self::cursor_offset`], else the
     /// end of the text — snapped to a char boundary either way.
     fn effective_cursor(&self, state: &CommandLineState) -> usize {
-        let raw = state
-            .cursor
-            .or(self.cursor_offset)
-            .unwrap_or(self.text.len())
-            .min(self.text.len());
-        crate::text_util::snap_to_char_boundary(&self.text, raw)
+        crate::behaviour::text_edit::effective_flat_cursor(
+            &self.text,
+            state.cursor,
+            self.cursor_offset,
+        )
     }
 
     /// Apply one [`crate::EditOp`] against this bar's text and the
@@ -889,12 +882,11 @@ impl CommandLine {
     /// The selected text, as the shared flat-value selection span
     /// resolves it against this bar's text and `state`'s caret/anchor.
     fn selection_text(&self, state: &CommandLineState) -> Option<String> {
-        let (lo, hi) = crate::behaviour::text_edit::flat_selection_range(
+        crate::behaviour::text_edit::flat_selected_text(
             &self.text,
             self.effective_cursor(state),
             state.anchor,
-        )?;
-        Some(self.text[lo..hi].to_string())
+        )
     }
 
     /// Apply `op` and report it: a text change as
@@ -915,10 +907,10 @@ impl CommandLine {
         }
     }
 
-    /// One keystroke, with Enter/Escape and the Ctrl-chorded clipboard /
-    /// select-all keys claimed ahead of [`crate::EditOp::from_key`]
-    /// (which maps Enter to a newline and would read `Ctrl+A` as typing
-    /// an `a`).
+    /// One keystroke, with Enter/Escape claimed ahead of the shared chord
+    /// vocabulary (which maps Enter to a newline) and the Ctrl-chorded
+    /// clipboard / select-all keys resolved by
+    /// [`EditIntent::from_key`](crate::behaviour::text_edit::EditIntent::from_key).
     fn handle_key(
         &self,
         state: &mut CommandLineState,
@@ -926,48 +918,39 @@ impl CommandLine {
         modifiers: crate::types::Modifiers,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<CommandLineAction> {
+        use crate::behaviour::text_edit::EditIntent;
         use crate::event::{Key, NamedKey};
         use crate::EditOp;
 
-        if modifiers.ctrl || modifiers.cmd {
-            match key {
-                Key::Char('a') | Key::Char('A') => {
-                    return self.commit(state, EditOp::SelectAll, cx);
-                }
-                Key::Char('c') | Key::Char('C') => {
-                    return match self.selection_text(state) {
-                        Some(text) => Handled::Event(CommandLineAction::Copied(text)),
-                        None => Handled::Consumed,
-                    };
-                }
-                Key::Char('x') | Key::Char('X') => {
-                    return match self.selection_text(state) {
-                        Some(text) => {
-                            cx.emit(crate::UiEvent::TextCopied(text));
-                            self.commit(state, EditOp::DeleteSelection, cx)
-                        }
-                        None => Handled::Consumed,
-                    };
-                }
-                // Paste is the host's: the clipboard text arrives as
-                // `UiEvent::ClipboardPaste`, which a host feeds back in
-                // as `RoutedEvent::Text`.
-                Key::Char('v') | Key::Char('V') => return Handled::Ignored,
-                _ => {}
-            }
-        }
         match key {
             // A command bar is one line: Enter submits rather than
             // splitting the text, so the newline `EditOp::from_key`
             // would resolve never reaches the buffer.
             Key::Named(NamedKey::Enter) => {
-                Handled::Event(CommandLineAction::Submitted(self.text.clone()))
+                return Handled::Event(CommandLineAction::Submitted(self.text.clone()));
             }
-            Key::Named(NamedKey::Escape) => Handled::Event(CommandLineAction::Cancelled),
-            _ => match EditOp::from_key(key, modifiers) {
-                Some(op) => self.commit(state, op, cx),
-                None => Handled::Ignored,
+            Key::Named(NamedKey::Escape) => return Handled::Event(CommandLineAction::Cancelled),
+            _ => {}
+        }
+        match EditIntent::from_key(key, modifiers) {
+            Some(EditIntent::SelectAll) => self.commit(state, EditOp::SelectAll, cx),
+            Some(EditIntent::Copy) => match self.selection_text(state) {
+                Some(text) => Handled::Event(CommandLineAction::Copied(text)),
+                None => Handled::Consumed,
             },
+            Some(EditIntent::Cut) => match self.selection_text(state) {
+                Some(text) => {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                    self.commit(state, EditOp::DeleteSelection, cx)
+                }
+                None => Handled::Consumed,
+            },
+            // Paste is the host's: the clipboard text arrives as
+            // `UiEvent::ClipboardPaste`, which a host feeds back in as
+            // `RoutedEvent::Text`.
+            Some(EditIntent::Paste) => Handled::Ignored,
+            Some(EditIntent::Op(op)) => self.commit(state, op, cx),
+            None => Handled::Ignored,
         }
     }
 }

@@ -1566,10 +1566,14 @@ impl crate::interactive::Interactive for TextInput {
                 }
             }
             RoutedEvent::Pointer {
-                kind: PointerKind::Move,
+                kind: PointerKind::Enter,
                 local,
                 ..
             } => {
+                // Hinted on entry, not on every move: a plain move only
+                // reaches a widget holding an active pointer capture, and
+                // this one doesn't take one, so entry is the event this
+                // widget actually gets.
                 let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
                 cx.set_cursor(layout.layout.pointer_shape(x, y));
                 Handled::Ignored
@@ -1597,8 +1601,10 @@ impl crate::interactive::Interactive for TextInput {
 
 impl TextInput {
     /// One keystroke, with the Ctrl-chorded clipboard/select-all keys
-    /// claimed ahead of [`EditOp::from_key`] (which would otherwise read
-    /// `Ctrl+A` as typing an `a`).
+    /// resolved by
+    /// [`EditIntent::from_key`](text_edit::EditIntent::from_key) ahead of
+    /// [`EditOp::from_key`] (which would otherwise read `Ctrl+A` as
+    /// typing an `a`).
     fn handle_key(
         &self,
         state: &mut TextInputState,
@@ -1606,37 +1612,26 @@ impl TextInput {
         modifiers: crate::types::Modifiers,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<TextInputAction> {
-        use crate::event::Key;
+        use text_edit::EditIntent;
 
-        if modifiers.ctrl || modifiers.cmd {
-            match key {
-                Key::Char('a') | Key::Char('A') => {
-                    return self.commit(state, &EditOp::SelectAll, cx);
+        match EditIntent::from_key(key, modifiers) {
+            Some(EditIntent::SelectAll) => self.commit(state, &EditOp::SelectAll, cx),
+            Some(EditIntent::Copy) => match self.selection_text(state) {
+                Some(text) => Handled::Event(TextInputAction::Copied(text)),
+                None => Handled::Consumed,
+            },
+            Some(EditIntent::Cut) => match self.selection_text(state) {
+                Some(text) => {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                    self.commit(state, &EditOp::DeleteSelection, cx)
                 }
-                Key::Char('c') | Key::Char('C') => {
-                    return match self.selection_text(state) {
-                        Some(text) => Handled::Event(TextInputAction::Copied(text)),
-                        None => Handled::Consumed,
-                    };
-                }
-                Key::Char('x') | Key::Char('X') => {
-                    return match self.selection_text(state) {
-                        Some(text) => {
-                            cx.emit(crate::UiEvent::TextCopied(text));
-                            self.commit(state, &EditOp::DeleteSelection, cx)
-                        }
-                        None => Handled::Consumed,
-                    };
-                }
-                // Paste is the host's: the clipboard text arrives as
-                // `UiEvent::ClipboardPaste`, which a host feeds back in
-                // as `RoutedEvent::Text`.
-                Key::Char('v') | Key::Char('V') => return Handled::Ignored,
-                _ => {}
-            }
-        }
-        match EditOp::from_key(key, modifiers) {
-            Some(op) => self.commit(state, &op, cx),
+                None => Handled::Consumed,
+            },
+            // Paste is the host's: the clipboard text arrives as
+            // `UiEvent::ClipboardPaste`, which a host feeds back in as
+            // `RoutedEvent::Text`.
+            Some(EditIntent::Paste) => Handled::Ignored,
+            Some(EditIntent::Op(op)) => self.commit(state, &op, cx),
             None => Handled::Ignored,
         }
     }
@@ -1914,20 +1909,20 @@ mod interactive_tests {
     }
 
     #[test]
-    fn a_pointer_move_over_the_text_asks_for_an_i_beam() {
+    fn a_pointer_entering_over_the_text_asks_for_an_i_beam() {
         let ti = sample(&["alpha"]);
         let layout = layout_of(&ti);
         let mut host = MockHost::default();
         let mut state = TextInputState::default();
         let mut cx = EventCx::new(ti.id, &mut host);
-        // A hover only hints the shape: the move stays available to
-        // whatever else the host routes it to.
+        // A hover only hints the shape: entry stays available to whatever
+        // else the host routes it to.
         assert_eq!(
             Interactive::handle(
                 &ti,
                 &mut state,
                 &RoutedEvent::Pointer {
-                    kind: PointerKind::Move,
+                    kind: PointerKind::Enter,
                     sub: None,
                     local: Point::new(3.0, 1.0),
                     mods: Modifiers::default(),
