@@ -192,6 +192,58 @@ impl EditOp {
     }
 }
 
+/// A keystroke's clipboard/select-all intent — the chord vocabulary
+/// [`crate::TextInput`], [`crate::TextField`] and [`crate::CommandLine`]
+/// all recognize the same way before falling back to [`EditOp::from_key`]
+/// (which would otherwise read `Ctrl+A` as typing an `a`).
+///
+/// [`EditIntent::from_key`] is the one place that chord-to-intent mapping
+/// lives; a widget's `handle_key` matches the result and keeps its own
+/// clipboard I/O and side effects local:
+/// * [`Self::SelectAll`] — apply [`EditOp::SelectAll`] through the
+///   widget's own `commit`.
+/// * [`Self::Copy`] — read the widget's own selected text and emit its
+///   own `Copied` action; no buffer change.
+/// * [`Self::Cut`] — same read, plus apply [`EditOp::DeleteSelection`].
+/// * [`Self::Paste`] — always the host's: the clipboard text arrives as
+///   [`crate::UiEvent::ClipboardPaste`], fed back in as a text-insert
+///   event, so every widget answers this with `Handled::Ignored`.
+/// * [`Self::Op`] — whatever [`EditOp::from_key`] resolved the key to,
+///   for every key this vocabulary doesn't claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditIntent {
+    /// Ctrl/Cmd+A.
+    SelectAll,
+    /// Ctrl/Cmd+C.
+    Copy,
+    /// Ctrl/Cmd+X.
+    Cut,
+    /// Ctrl/Cmd+V.
+    Paste,
+    /// Any other key [`EditOp::from_key`] interprets.
+    Op(EditOp),
+}
+
+impl EditIntent {
+    /// Map a keypress to the [`EditIntent`] it means: the Ctrl/Cmd-chorded
+    /// clipboard and select-all keys first, else whatever
+    /// [`EditOp::from_key`] resolves the key to (`None` for keys neither
+    /// layer interprets — function keys, Escape, Tab, a bare Enter a
+    /// single-line widget means to claim itself, …).
+    pub fn from_key(key: &Key, modifiers: Modifiers) -> Option<EditIntent> {
+        if modifiers.ctrl || modifiers.cmd {
+            match key {
+                Key::Char('a') | Key::Char('A') => return Some(EditIntent::SelectAll),
+                Key::Char('c') | Key::Char('C') => return Some(EditIntent::Copy),
+                Key::Char('x') | Key::Char('X') => return Some(EditIntent::Cut),
+                Key::Char('v') | Key::Char('V') => return Some(EditIntent::Paste),
+                _ => {}
+            }
+        }
+        EditOp::from_key(key, modifiers).map(EditIntent::Op)
+    }
+}
+
 /// Whether `op` rewrites buffer content (as opposed to only moving the
 /// caret or changing the selection).
 ///
@@ -281,11 +333,24 @@ pub fn selection_range(caret: Caret, anchor: Option<Caret>) -> Option<(Caret, Ca
     })
 }
 
+/// Clamp a selection's line indices into `lines_len`'s bounds. A
+/// (`sl`, `el`) pair can arrive pointing past the end of the current
+/// buffer — the caller's position was captured against a longer
+/// `lines`, and the buffer has since shrunk — so both indices are
+/// pulled back to the last valid line (`0` for an empty buffer)
+/// before any indexing happens. `sl <= el` on the way in is preserved
+/// on the way out, since clamping is monotonic.
+fn clamp_line_range(lines_len: usize, sl: usize, el: usize) -> (usize, usize) {
+    let max = lines_len.saturating_sub(1);
+    (sl.min(max), el.min(max))
+}
+
 /// The buffer text between two ordered positions, lines joined with
 /// `'\n'` — what [`EditView::selected_text`] answers with.
 pub fn text_in_range(lines: &[String], start: Caret, end: Caret) -> String {
     let (sl, sc) = start;
     let (el, ec) = end;
+    let (sl, el) = clamp_line_range(lines.len(), sl, el);
     if sl == el {
         let line = lines.get(sl).map(String::as_str).unwrap_or("");
         let sb = col_to_byte(line, sc);
@@ -572,6 +637,7 @@ impl EditView<'_> {
     fn delete_range(&mut self, start: Caret, end: Caret) {
         let (sl, sc) = start;
         let (el, ec) = end;
+        let (sl, el) = clamp_line_range(self.lines.len(), sl, el);
         if sl == el {
             if let Some(line) = self.lines.get_mut(sl) {
                 let sb = col_to_byte(line, sc);
@@ -733,6 +799,33 @@ pub fn apply_flat_edit_op(
     (new_value, new_cursor, new_anchor)
 }
 
+/// The caret a flat-value widget's `handle` call starts from — shared by
+/// [`crate::TextField`] and [`crate::CommandLine`], the two widgets that
+/// store their value as a flat `String` plus a byte-offset caret: whatever
+/// the widget's own per-focus `state_cursor` has walked to, else the
+/// descriptor's own `descriptor_cursor`, else the end of `value` —
+/// snapped to a char boundary either way.
+pub fn effective_flat_cursor(
+    value: &str,
+    state_cursor: Option<usize>,
+    descriptor_cursor: Option<usize>,
+) -> usize {
+    let raw = state_cursor
+        .or(descriptor_cursor)
+        .unwrap_or(value.len())
+        .min(value.len());
+    crate::text_util::snap_to_char_boundary(value, raw)
+}
+
+/// The text currently selected in a flat-value widget, as
+/// [`flat_selection_range`] resolves it against `value` — what a Ctrl-C
+/// in [`crate::TextField`] or [`crate::CommandLine`] reads before
+/// emitting its own `Copied` action.
+pub fn flat_selected_text(value: &str, cursor: usize, anchor: Option<usize>) -> Option<String> {
+    let (lo, hi) = flat_selection_range(value, cursor, anchor)?;
+    Some(value[lo..hi].to_string())
+}
+
 /// The selected span of a flat `value`, as an ordered byte-offset
 /// `(start, end)` pair, or `None` when `anchor` is absent or equal to
 /// `cursor`.
@@ -850,6 +943,65 @@ mod tests {
     }
 
     #[test]
+    fn edit_intent_claims_the_clipboard_chords_ahead_of_edit_op() {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('a'), ctrl),
+            Some(EditIntent::SelectAll)
+        );
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('C'), ctrl),
+            Some(EditIntent::Copy)
+        );
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('x'), ctrl),
+            Some(EditIntent::Cut)
+        );
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('V'), ctrl),
+            Some(EditIntent::Paste)
+        );
+        // Unmodified, the same letter is ordinary typing, not a chord.
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('a'), Modifiers::default()),
+            Some(EditIntent::Op(EditOp::InsertChar('a')))
+        );
+        // A key the chord vocabulary doesn't claim falls back to
+        // `EditOp::from_key`.
+        assert_eq!(
+            EditIntent::from_key(&Key::Named(NamedKey::Left), Modifiers::default()),
+            Some(EditIntent::Op(EditOp::MoveLeft { extend: false }))
+        );
+    }
+
+    #[test]
+    fn effective_flat_cursor_prefers_state_then_descriptor_then_end() {
+        assert_eq!(effective_flat_cursor("hello", Some(2), Some(4)), 2);
+        assert_eq!(effective_flat_cursor("hello", None, Some(4)), 4);
+        assert_eq!(effective_flat_cursor("hello", None, None), 5);
+        // A stale offset past the current value clamps instead of
+        // panicking on the slice it feeds.
+        assert_eq!(effective_flat_cursor("hi", Some(99), None), 2);
+    }
+
+    #[test]
+    fn flat_selected_text_reads_the_ordered_span() {
+        assert_eq!(
+            flat_selected_text("hello", 1, Some(4)),
+            Some("ell".to_string())
+        );
+        assert_eq!(
+            flat_selected_text("hello", 4, Some(1)),
+            Some("ell".to_string())
+        );
+        assert_eq!(flat_selected_text("hello", 2, Some(2)), None);
+        assert_eq!(flat_selected_text("hello", 2, None), None);
+    }
+
+    #[test]
     fn flat_bridge_round_trips_byte_offsets() {
         let (value, cursor, anchor) =
             apply_flat_edit_op("héllo", 1, None, EditOp::MoveWordRight { extend: true });
@@ -891,5 +1043,30 @@ mod tests {
         assert!(mutates_content(&EditOp::DeleteWordForward));
         assert!(!mutates_content(&EditOp::MoveWordLeft { extend: false }));
         assert!(!mutates_content(&EditOp::SelectAll));
+    }
+
+    #[test]
+    fn text_in_range_clamps_an_end_line_past_the_buffer() {
+        // `lines` has shrunk to 2 entries, but `end` still names line 4 —
+        // the shape a stale anchor takes once content changes out from
+        // under it. The end line clamps to the last real line (1) instead
+        // of indexing past it.
+        let lines = vec!["ab".to_string(), "cd".to_string()];
+        assert_eq!(text_in_range(&lines, (0, 1), (4, 2)), "b\ncd");
+    }
+
+    #[test]
+    fn delete_range_clamps_an_end_line_past_the_buffer() {
+        // Same shape, driven through the selection-delete path a keystroke
+        // takes: anchor at line 4 against a buffer that now has only 2
+        // lines. Deleting the (clamped) selection must not panic, and
+        // leaves a sane, fully-clamped result.
+        let mut lines = vec!["ab".to_string(), "cd".to_string()];
+        let mut caret = (0usize, 1usize);
+        let mut anchor = Some((4usize, 2usize));
+        assert!(view(&mut lines, &mut caret, &mut anchor).delete_selection());
+        assert_eq!(lines, vec!["a".to_string()]);
+        assert_eq!(caret, (0, 1));
+        assert_eq!(anchor, None);
     }
 }

@@ -519,6 +519,7 @@ pub fn cell_layout(tf: &TextField, rect: Rect) -> TextFieldLayout {
 pub(crate) mod cell_paint {
     use super::{TextField, TextFieldLayout};
     use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::event::Rect;
     use crate::theme::Theme;
     use crate::types::Color;
 
@@ -552,9 +553,13 @@ pub(crate) mod cell_paint {
         let x0 = rect.x as u16;
         let x1 = x0 + (rect.width as u16).saturating_sub(1);
 
-        // Clear the whole row first — the same "paint the background,
-        // then overlay content" order every cell rasteriser uses.
-        surface.fill(rect, style(field_fg));
+        // Clear this single row first — the same "paint the background,
+        // then overlay content" order every cell rasteriser uses. Only
+        // `rect.y`'s row, never the full `rect` height: a caller that
+        // lays this field out taller than one cell must not get extra
+        // background rows below the bracketed line.
+        let row_rect = Rect::new(rect.x, rect.y, rect.width, 1.0);
+        surface.fill(row_rect, style(field_fg));
 
         surface.put_char(x0, y, '[', style(bracket_fg));
         if x1 > x0 {
@@ -930,12 +935,7 @@ impl TextField {
     /// own state has walked to, else [`Self::cursor`], else the end of
     /// the value — snapped to a char boundary either way.
     fn effective_cursor(&self, state: &TextFieldState) -> usize {
-        let raw = state
-            .cursor
-            .or(self.cursor)
-            .unwrap_or(self.value.len())
-            .min(self.value.len());
-        crate::text_util::snap_to_char_boundary(&self.value, raw)
+        crate::behaviour::text_edit::effective_flat_cursor(&self.value, state.cursor, self.cursor)
     }
 
     /// Apply one [`EditOp`] against this field's value and the
@@ -955,12 +955,11 @@ impl TextField {
     /// resolves it against this field's value and `state`'s
     /// caret/anchor.
     fn selection_text(&self, state: &TextFieldState) -> Option<String> {
-        let (lo, hi) = crate::behaviour::text_edit::flat_selection_range(
+        crate::behaviour::text_edit::flat_selected_text(
             &self.value,
             self.effective_cursor(state),
             state.anchor,
-        )?;
-        Some(self.value[lo..hi].to_string())
+        )
     }
 
     /// Apply `op` and report it: a value change as
@@ -981,9 +980,10 @@ impl TextField {
         }
     }
 
-    /// One keystroke, with Enter and the Ctrl-chorded clipboard /
-    /// select-all keys claimed ahead of [`EditOp::from_key`] (which maps
-    /// Enter to a newline and would read `Ctrl+A` as typing an `a`).
+    /// One keystroke, with Enter claimed ahead of the shared chord
+    /// vocabulary (which maps it to a newline) and the Ctrl-chorded
+    /// clipboard / select-all keys resolved by
+    /// [`EditIntent::from_key`](crate::behaviour::text_edit::EditIntent::from_key).
     fn handle_key(
         &self,
         state: &mut TextFieldState,
@@ -991,43 +991,33 @@ impl TextField {
         modifiers: crate::types::Modifiers,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<TextFieldAction> {
+        use crate::behaviour::text_edit::EditIntent;
         use crate::event::{Key, NamedKey};
 
-        if modifiers.ctrl || modifiers.cmd {
-            match key {
-                Key::Char('a') | Key::Char('A') => {
-                    return self.commit(state, EditOp::SelectAll, cx);
-                }
-                Key::Char('c') | Key::Char('C') => {
-                    return match self.selection_text(state) {
-                        Some(text) => Handled::Event(TextFieldAction::Copied(text)),
-                        None => Handled::Consumed,
-                    };
-                }
-                Key::Char('x') | Key::Char('X') => {
-                    return match self.selection_text(state) {
-                        Some(text) => {
-                            cx.emit(crate::UiEvent::TextCopied(text));
-                            self.commit(state, EditOp::DeleteSelection, cx)
-                        }
-                        None => Handled::Consumed,
-                    };
-                }
-                // Paste is the host's: the clipboard text arrives as
-                // `UiEvent::ClipboardPaste`, which a host feeds back in
-                // as `RoutedEvent::Text`.
-                Key::Char('v') | Key::Char('V') => return Handled::Ignored,
-                _ => {}
-            }
-        }
         // Single-line field: Enter commits instead of splitting the
         // value, so the newline `EditOp::from_key` would resolve never
         // reaches the buffer.
         if matches!(key, Key::Named(NamedKey::Enter)) {
             return Handled::Event(TextFieldAction::Committed(self.value.clone()));
         }
-        match EditOp::from_key(key, modifiers) {
-            Some(op) => self.commit(state, op, cx),
+        match EditIntent::from_key(key, modifiers) {
+            Some(EditIntent::SelectAll) => self.commit(state, EditOp::SelectAll, cx),
+            Some(EditIntent::Copy) => match self.selection_text(state) {
+                Some(text) => Handled::Event(TextFieldAction::Copied(text)),
+                None => Handled::Consumed,
+            },
+            Some(EditIntent::Cut) => match self.selection_text(state) {
+                Some(text) => {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                    self.commit(state, EditOp::DeleteSelection, cx)
+                }
+                None => Handled::Consumed,
+            },
+            // Paste is the host's: the clipboard text arrives as
+            // `UiEvent::ClipboardPaste`, which a host feeds back in as
+            // `RoutedEvent::Text`.
+            Some(EditIntent::Paste) => Handled::Ignored,
+            Some(EditIntent::Op(op)) => self.commit(state, op, cx),
             None => Handled::Ignored,
         }
     }
