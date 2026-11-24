@@ -121,7 +121,6 @@ pub mod switch;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 #[doc(hidden)]
-pub mod tab_bar;
 #[doc(hidden)]
 pub mod terminal;
 pub mod testing;
@@ -222,7 +221,6 @@ pub use status_bar::mac_status_bar_layout;
 #[doc(hidden)]
 pub use switch::mac_switch_layout;
 #[doc(hidden)]
-pub use tab_bar::{draw_tab_bar, mac_tab_bar_pixel_layout};
 #[doc(hidden)]
 pub use text_display::mac_text_display_layout;
 #[doc(hidden)]

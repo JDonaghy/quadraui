@@ -6,7 +6,7 @@
 //! check --features win` still type-checks `WinBackend`'s trait
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
 //! `win` feature comment). Chrome-strip rasterisers include
-//! `status_bar`/`tab_bar`/`activity_bar`/`menu_bar`; content-area
+//! `status_bar`/`activity_bar`/`menu_bar`; content-area
 //! rasterisers include `tree`/`list`/`form`/`data_table`/`editor`/`chart`;
 //! overlay/popup rasterisers include `tooltip`/`context_menu`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
@@ -214,9 +214,6 @@ mod surface;
 /// in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod switch;
-/// Direct2D / DirectWrite rasteriser for [`crate::TabBar`]. Issue
-/// Only its paint fns are Windows-only — see its module docs.
-mod tab_bar;
 /// Direct2D / DirectWrite rasteriser for [`crate::Terminal`] cell grids.
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -243,7 +240,7 @@ pub mod testing;
 /// line-by-line like `backend.rs`.
 ///
 /// `pub` rather than `pub(crate)`: the chrome rasterisers re-exported
-/// below (`draw_tab_bar`, …) take a `&DWrite` measurer in
+/// below (`draw_status_bar`, …) take a `&DWrite` measurer in
 /// their signatures, exactly as [`crate::macos`]'s take a `&CTFont` from its
 /// own `pub mod text`. A `pub` function whose parameter type is `pub(crate)`
 /// is a `private_interfaces` warning — and this repo's CI runs with
@@ -397,25 +394,6 @@ pub use status_bar::{win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use switch::win_switch_layout;
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-#[doc(hidden)]
-pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons};
-#[allow(deprecated)]
-#[doc(hidden)]
-pub use tab_bar::{win_tab_bar_layout, win_tab_bar_layout_icons};
-// The `TabBarLayout`-returning counterparts to the four above —
-// exported for the same reason: a consumer holding only the free
-// rasteriser fns (not going through `Backend`) gets the same additive
-// pair every other new-method site does. The `win_tab_bar_*` no-paint
-// fns are pure geometry (generic over `TextMeasure`) and compile
-// everywhere; only the two `draw_tab_bar_*` paint fns are Windows-only.
-// Zero reachers for either pair, like their siblings above — `#[doc(hidden)]`.
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use tab_bar::{draw_tab_bar_icons_layout, draw_tab_bar_layout};
-#[doc(hidden)]
-pub use tab_bar::{win_tab_bar_native_layout, win_tab_bar_native_layout_icons};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use text_display::win_text_display_layout;

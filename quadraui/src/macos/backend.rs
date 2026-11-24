@@ -91,11 +91,6 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::switch::{Switch, SwitchLayout};
-// `TabBarHits` is deprecated — this backend constructs it directly
-// (per the audit: `macos::tab_bar` has no intermediate `TabBarLayout`),
-// so the import needs the same allow every use site below does.
-#[allow(deprecated)]
-use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastCorner, ToastOverlay, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
@@ -106,9 +101,13 @@ use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, FieldKind, Form, Key, ListView, Modifiers, Palette,
-    ParsedBinding, PlatformServices, StatusBar, TabBar, TabBarLayout, Terminal, TextDisplay, Theme,
-    TreeView,
+    ParsedBinding, PlatformServices, StatusBar, Terminal, TextDisplay, Theme, TreeView,
 };
+// The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
+// strip paints through its widget contract, not a method on this
+// backend.
+#[cfg(test)]
+use crate::TabBar;
 
 use super::services::MacPlatformServices;
 
@@ -1062,7 +1061,7 @@ impl MacBackend {
     /// Unlike previous versions, `chrome_font` now *does* consult
     /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
     /// cascade [`Self::set_current_font`] applies. Icon glyphs in
-    /// `draw_tree`/`draw_tab_bar_icons`/`draw_activity_bar_with_style`/
+    /// `draw_tree`/`draw_activity_bar_with_style`/
     /// `draw_toolbar_interactive`/`draw_sidebar_panel_interactive` now
     /// paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
@@ -3131,395 +3130,6 @@ impl Backend for MacBackend {
     ) -> StatusBarLayout {
         self.status_bar_paint_scaled(rect, bar, interaction, font_scale)
     }
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarHits {
-        // Icon-less spelling of `draw_tab_bar_icons` — an empty sidecar
-        // reproduces this bar pixel for pixel, so the two share
-        // one implementation rather than two paint paths that can drift.
-        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
-    }
-    /// Per-tab icon glyphs, implemented on macOS via
-    /// [`super::tab_bar::mac_tab_bar_pixel_layout`], which measures each
-    /// glyph with CoreText and every geometry consumer reserves that
-    /// width, so a decorated tab's label and close-button hit
-    /// box shift together and a click on the painted × still closes the tab.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_icons(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarHits {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tab_bar called outside enter_frame_scope",
-        );
-        // Chrome primitives are drawn through `chrome_font` — see
-        // `draw_tree`'s comment. This method covers both `draw_tab_bar`
-        // and `draw_tab_bar_with_chrome`: both delegate here with
-        // an empty icon sidecar. The centring math below must use
-        // `chrome_line_height`, not `current_line_height` (the editor
-        // metric) — same hazard `Self::draw_text_input`'s doc documents —
-        // or the label centres against a line height that doesn't
-        // describe the font actually painting it, leaving the row taller
-        // than the label needs and the label off-centre within it.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
-        // SAFETY: `ctx` is non-null inside the frame scope.
-        // `super::tab_bar::draw_tab_bar_icons` honours `rect.y`
-        // via its own `y_offset` parameter, but is never handed `rect.x`
-        // and always paints/measures from `x = 0`. The
-        // `CGContextTranslateCTM` X-only shift places the ink at
-        // `rect.x` (mirroring `Self::draw_activity_bar`'s CTM treatment);
-        // `y_offset` stays `rect.y` as before. `shift_tab_bar_hits`
-        // afterward makes the returned `TabBarHits` honour
-        // `Backend::tab_bar_layout`'s documented absolute-x contract.
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
-            let mut hits = super::tab_bar::draw_tab_bar_icons(
-                ctx,
-                font,
-                rect.width as f64,
-                line_height,
-                rect.y as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                &self.current_style,
-                hovered_close_tab,
-                icons,
-            );
-            CGContextRestoreGState(ctx);
-            crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-            hits
-        }
-    }
-    /// Trait-level entry point the gallery and `quadraui-binding-core`'s
-    /// render path actually call (`draw_tab_bar_with_chrome_layout`'s
-    /// sibling) — delegates to [`Self::draw_tab_bar_with_chrome_and_glyphs`]
-    /// with `glyphs: None` so `chrome.focused_index`'s ring paints from
-    /// this entry point too, not only from the `_and_glyphs` spelling.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits`
-    fn draw_tab_bar_with_chrome(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &crate::primitives::tab_bar::TabChrome,
-    ) -> TabBarHits {
-        self.draw_tab_bar_with_chrome_and_glyphs(rect, bar, hovered_close_tab, chrome, None)
-    }
-    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_with_chrome`]
-    /// — the twin `quadraui-binding-core`'s `render.rs` actually calls
-    /// (`TabChrome::default().with_focused_index(tabs.focused_index)`).
-    /// Paints through [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]
-    /// directly, honouring `chrome.focused_index`, even though the ring
-    /// it paints plays no part in the returned [`TabBarLayout`] — then
-    /// resolves that layout the same icon-less way
-    /// [`Self::draw_tab_bar_layout`] does.
-    fn draw_tab_bar_with_chrome_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &crate::primitives::tab_bar::TabChrome,
-    ) -> TabBarLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tab_bar_with_chrome_layout called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
-        // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
-        // CTM translate as `Self::draw_tab_bar_icons_layout` — this call
-        // discards the painted `TabBarHits`, so only the ink needs to
-        // land at `rect.x`.
-        #[allow(deprecated)] // discarded `TabBarHits`
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
-            let _ = super::tab_bar::draw_tab_bar_icons_with_glyphs(
-                ctx,
-                font,
-                rect.width as f64,
-                line_height,
-                rect.y as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                &self.current_style,
-                hovered_close_tab,
-                &[],
-                None,
-                self.nerd_fonts_enabled,
-                None,
-                None,
-                chrome.focused_index,
-            );
-            CGContextRestoreGState(ctx);
-        }
-        super::tab_bar::mac_tab_bar_pixel_layout(
-            font,
-            rect.width,
-            rect.height,
-            bar,
-            &[],
-            &self.current_style,
-        )
-        .0
-    }
-    /// [`Self::draw_tab_bar_icons`], but honouring an optional
-    /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
-    /// close/dirty mark — `glyphs: None` reproduces
-    /// [`Self::draw_tab_bar_icons`] exactly. `chrome.active_frame` is
-    /// unused: this rasteriser has no bracket-chrome support, matching the
-    /// trait default's own posture of ignoring that knob on backends
-    /// without it. `chrome.focused_index` *is* honoured: it paints a
-    /// focus-visible ring on the named tab (see
-    /// [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s paint-loop
-    /// comment for the ring geometry).
-    #[allow(deprecated)] // returns the deprecated `TabBarHits`
-    fn draw_tab_bar_with_chrome_and_glyphs(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &crate::primitives::tab_bar::TabChrome,
-        glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
-    ) -> TabBarHits {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tab_bar_with_chrome_and_glyphs called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
-        // SAFETY: `ctx` is non-null inside the frame scope. See
-        // `Self::draw_tab_bar_icons`'s doc for the CTM-translate / hit-shift
-        // dance this mirrors.
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
-            let mut hits = super::tab_bar::draw_tab_bar_icons_with_glyphs(
-                ctx,
-                font,
-                rect.width as f64,
-                line_height,
-                rect.y as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                &self.current_style,
-                hovered_close_tab,
-                &[],
-                glyphs,
-                self.nerd_fonts_enabled,
-                None,
-                None,
-                chrome.focused_index,
-            );
-            CGContextRestoreGState(ctx);
-            crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-            hits
-        }
-    }
-    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar`],
-    /// via [`super::tab_bar::mac_tab_bar_pixel_layout`].
-    fn draw_tab_bar_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        // Icon-less spelling of `draw_tab_bar_icons_layout` — see
-        // `draw_tab_bar` above for why the empty sidecar shares one path.
-        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
-    }
-    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_icons`]
-    /// — same [`super::tab_bar::mac_tab_bar_pixel_layout`] call feeds both
-    /// the paint and the returned layout, so the latter describes exactly
-    /// the pixels this call just painted.
-    fn draw_tab_bar_icons_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tab_bar_layout called outside enter_frame_scope",
-        );
-        // Chrome primitives are drawn through `chrome_font` — see
-        // `draw_tab_bar_icons`' comment, including why centring uses
-        // `chrome_line_height` rather than the editor's.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
-        // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
-        // CTM translate as `Self::draw_tab_bar_icons` above — this call
-        // discards the painted `TabBarHits` anyway, so there is no return
-        // value left to shift; only the ink needs to land at `rect.x`.
-        #[allow(deprecated)] // discarded `TabBarHits` — issue #823
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
-            let _ = super::tab_bar::draw_tab_bar_icons(
-                ctx,
-                font,
-                rect.width as f64,
-                line_height,
-                rect.y as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                &self.current_style,
-                hovered_close_tab,
-                icons,
-            );
-            CGContextRestoreGState(ctx);
-        }
-        super::tab_bar::mac_tab_bar_pixel_layout(
-            font,
-            rect.width,
-            rect.height,
-            bar,
-            icons,
-            &self.current_style,
-        )
-        .0
-    }
-    /// [`Self::draw_tab_bar_icons`], plus `hovered_tab`/`pressed_tab`
-    /// indices naming the whole tab (not its close glyph) the mouse is
-    /// over/held down on. Paints a tinted background behind the hovered
-    /// or pressed tab — `Theme::list_hover_bg`/`list_pressed_bg`, the
-    /// same derivation [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s
-    /// own doc explains — rather than only tinting the close glyph the
-    /// way [`Self::draw_tab_bar`] already does.
-    ///
-    /// Calls [`super::tab_bar::draw_tab_bar_icons_with_glyphs`] directly
-    /// (icon-less, glyph-less) instead of widening [`Self::draw_tab_bar_icons`]'s
-    /// own signature — the same choice [`Self::draw_tab_bar_with_chrome_and_glyphs`]
-    /// already makes to reach the same painter.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits`
-    fn draw_tab_bar_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        hovered_tab: Option<usize>,
-        pressed_tab: Option<usize>,
-    ) -> TabBarHits {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tab_bar_with_state called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
-        // SAFETY: `ctx` is non-null inside the frame scope. See
-        // `Self::draw_tab_bar_icons`'s doc for the CTM-translate /
-        // hit-shift dance this mirrors.
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
-            let mut hits = super::tab_bar::draw_tab_bar_icons_with_glyphs(
-                ctx,
-                font,
-                rect.width as f64,
-                line_height,
-                rect.y as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                &self.current_style,
-                hovered_close_tab,
-                &[],
-                None,
-                self.nerd_fonts_enabled,
-                hovered_tab,
-                pressed_tab,
-                None,
-            );
-            CGContextRestoreGState(ctx);
-            crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-            hits
-        }
-    }
-    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_with_state`]
-    /// — the twin the `quadraui-binding-core` paint path can actually
-    /// reach, since it calls `draw_tab_bar_layout`, never the deprecated
-    /// `draw_tab_bar`. Same hover/pressed tint as
-    /// [`Self::draw_tab_bar_with_state`]; only the returned type differs.
-    fn draw_tab_bar_layout_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        hovered_tab: Option<usize>,
-        pressed_tab: Option<usize>,
-    ) -> TabBarLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tab_bar_layout_with_state called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
-        // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
-        // CTM translate as `Self::draw_tab_bar_icons` above — this call
-        // discards the painted `TabBarHits` anyway, so there is no
-        // return value left to shift; only the ink needs to land at
-        // `rect.x`.
-        #[allow(deprecated)] // discarded `TabBarHits`
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
-            let _ = super::tab_bar::draw_tab_bar_icons_with_glyphs(
-                ctx,
-                font,
-                rect.width as f64,
-                line_height,
-                rect.y as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                &self.current_style,
-                hovered_close_tab,
-                &[],
-                None,
-                self.nerd_fonts_enabled,
-                hovered_tab,
-                pressed_tab,
-                None,
-            );
-            CGContextRestoreGState(ctx);
-        }
-        super::tab_bar::mac_tab_bar_pixel_layout(
-            font,
-            rect.width,
-            rect.height,
-            bar,
-            &[],
-            &self.current_style,
-        )
-        .0
-    }
     /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
     /// that method for the real painting logic.
     fn draw_activity_bar(
@@ -3620,78 +3230,6 @@ impl Backend for MacBackend {
             self.chrome_line_height,
             bar,
         )
-    }
-
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
-        // No-paint twin of `draw_tab_bar`, routed through the same
-        // `tab_bar_layout_icons` below uses, so both agree on the
-        // documented absolute contract.
-        self.tab_bar_layout_icons(rect, bar, &[])
-    }
-
-    /// No-paint twin of [`Self::draw_tab_bar_icons`], routed through the
-    /// same [`super::tab_bar::mac_tab_bar_pixel_layout`] with the same
-    /// sidecar — so the load-bearing macOS invariant (`tab_bar_layout*`
-    /// returns exactly what `draw_tab_bar*` painted) holds for decorated
-    /// tabs too, not just icon-less ones.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_icons(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> TabBarHits {
-        // No-paint twin of `draw_tab_bar_icons` — must agree with what
-        // that method painted, so it measures against `chrome_font` too.
-        // `height: 1.0` matches the deprecated `TabBarHits`' own
-        // height-agnostic contract (it carries only x-ranges).
-        let (layout, corrected_scroll_offset, available_cols) =
-            super::tab_bar::mac_tab_bar_pixel_layout(
-                &self.chrome_font,
-                rect.width,
-                1.0,
-                bar,
-                icons,
-                &self.current_style,
-            );
-        let mut hits = crate::backend::tab_bar_hits_from_layout(&layout, bar);
-        hits.correct_scroll_offset = corrected_scroll_offset;
-        hits.available_cols = available_cols;
-        // Bar-relative → target-surface-absolute, the same
-        // shift `Self::draw_tab_bar_icons` applies to its own returned
-        // hits after painting, so a caller that measures here and paints
-        // there sees one agreed geometry.
-        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-        hits
-    }
-
-    /// `TabBarLayout`-returning counterpart to [`Self::tab_bar_layout`].
-    fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
-        self.resolve_tab_bar_layout_icons(rect, bar, &[])
-    }
-
-    /// No-paint twin of [`Self::draw_tab_bar_icons_layout`], routed
-    /// through [`super::tab_bar::mac_tab_bar_pixel_layout`] with the same
-    /// sidecar — so a consumer that measures with this and paints with
-    /// `draw_tab_bar_icons` gets one agreed geometry.
-    fn resolve_tab_bar_layout_icons(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> TabBarLayout {
-        // No-paint twin of `draw_tab_bar_icons_layout` — must agree with
-        // what that method painted, so it measures against `chrome_font` too.
-        super::tab_bar::mac_tab_bar_pixel_layout(
-            &self.chrome_font,
-            rect.width,
-            rect.height,
-            bar,
-            icons,
-            &self.current_style,
-        )
-        .0
     }
 
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
@@ -11037,12 +10575,12 @@ mod tests {
         );
     }
 
-    /// `draw_tab_bar_icons` paints labels through `chrome_font`, so the
-    /// vertical-centring math it feeds `tab_bar::draw_tab_bar_icons` must
-    /// use `chrome_line_height`, not the editor's `current_line_height` —
-    /// otherwise a tab bar painted with a chrome font that differs from
-    /// the editor font centres the label against a line height that
-    /// doesn't describe the font actually painting it.
+    /// A tab strip paints labels through `chrome_font`, so the
+    /// vertical-centring math behind it must use `chrome_line_height`,
+    /// not the editor's `current_line_height` — otherwise a tab bar
+    /// painted with a chrome font that differs from the editor font
+    /// centres the label against a line height that doesn't describe the
+    /// font actually painting it.
     ///
     /// Pins a tiny editor font against a much larger chrome font (mirrors
     /// `mac_backend_chart_axis_label_space_is_reserved_in_chrome_metrics`'s
@@ -11051,7 +10589,6 @@ mod tests {
     /// asserts the painted label's recorded top edge matches centring on
     /// `chrome_line_height`.
     #[test]
-    #[allow(deprecated)] // `draw_tab_bar` returns the deprecated `TabBarHits` — issue #823
     fn mac_backend_tab_bar_label_centres_on_chrome_line_height() {
         const CW: u32 = 320;
         const CH: u32 = 80;
@@ -11089,7 +10626,7 @@ mod tests {
         backend.set_painted_text_recording(true);
         backend.begin_frame(Viewport::new(CW as f32, CH as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_tab_bar(Rect::new(0.0, ROW_Y, CW as f32, ROW_H), &bar, None);
+            crate::DrawsPrimitives::draw_dyn(b, Rect::new(0.0, ROW_Y, CW as f32, ROW_H), &bar, &());
         });
         backend.end_frame();
 

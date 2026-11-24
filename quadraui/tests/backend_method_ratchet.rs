@@ -4,7 +4,7 @@
 //! [`quadraui::backend::DrawsPrimitives::draw_primitive`], it does not add a
 //! fresh `draw_*`/`*_layout` pair to the sealed `Backend` trait.
 //!
-//! Three tests, all parsing real source with [`syn`] rather than grepping
+//! Four tests, all parsing real source with [`syn`] rather than grepping
 //! line counts (mirrors `tests/backend_todo_gate.rs`'s approach):
 //!
 //! 1. [`backend_trait_method_count_may_only_shrink`] counts `Backend`'s
@@ -17,22 +17,15 @@
 //!    leading-word stem of `X`'s name (`ListView` -> `list_view` or
 //!    `list`), except the pre-existing legacy pairs this test grandfathers
 //!    explicitly.
-//! 3. [`only_the_rasterisers_call_a_backend_tab_bar_method`] walks `src/`
-//!    and `examples/` and asserts no production call site outside the four
-//!    rasterisers reaches a `Backend` tab-bar method: a tab strip is
-//!    painted through `TabBar`'s widget contract, and the legacy methods
-//!    kept on the trait for downstream callers stay unused in-repo until
-//!    they are deleted outright.
+//! 3. [`the_backend_trait_declares_no_tab_bar_method`] pins `TabBar`'s
+//!    completed port: the trait declares no `*tab_bar*` method at all.
+//! 4. [`no_backend_directory_carries_a_tab_bar_file`] pins the file-level
+//!    half of the same claim.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use quote::ToTokens;
-use syn::visit::{self, Visit};
-use syn::{
-    Attribute, Expr, ExprCall, ExprMethodCall, ImplItemFn, Item, ItemFn, ItemImpl, ItemMod,
-    ItemTrait, TraitItem, Type,
-};
+use syn::{Item, ItemImpl, ItemTrait, TraitItem, Type};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -73,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 202;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 187;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -151,21 +144,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Tooltip", "draw_tooltip"),
     ("Tooltip", "draw_tooltip_with_chrome"),
     ("Float", "draw_float"),
-    // `TabBar`'s widget-contract seam routes `Primitive::paint`/
-    // `paint_cells` through the same `cell_paint`/`native_surface_paint`
-    // painters its bespoke `Backend` entry points already call, so the
-    // two paths cannot diverge. The entry points themselves stay for
-    // downstream callers that still reach the tab bar through them —
-    // no in-repo caller does, which
-    // `only_the_rasterisers_call_a_backend_tab_bar_method` below pins —
-    // and deleting them outright is its own migration, the same reason
-    // `ListView` keeps its own trio.
-    ("TabBar", "draw_tab_bar"),
-    ("TabBar", "draw_tab_bar_with_state"),
-    ("TabBar", "draw_tab_bar_with_chrome"),
-    ("TabBar", "draw_tab_bar_with_chrome_layout"),
-    ("TabBar", "draw_tab_bar_with_chrome_and_glyphs"),
-    ("TabBar", "tab_bar_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
@@ -356,24 +334,9 @@ fn primitives_dir_types_skip_bespoke_backend_methods() {
     );
 }
 
-/// Paths under this crate, relative to its root, whose call sites may
-/// still name a `Backend` tab-bar method: the four rasterisers that
-/// implement them, and the trait that declares them — several of its
-/// default bodies forward to a sibling method (`draw_tab_bar_with_chrome`
-/// falls back to `draw_tab_bar`).
-const TAB_BAR_CALL_EXEMPT_PATHS: [&str; 5] = [
-    "src/backend.rs",
-    "src/gtk",
-    "src/macos",
-    "src/tui",
-    "src/win",
-];
-
-/// Every `Backend` trait method whose name names a tab bar — the paint
-/// entry points (`draw_tab_bar*`) and their no-paint layout twins
-/// (`tab_bar_layout*`, `resolve_tab_bar_layout*`). Read off the trait body
-/// rather than hardcoded, so a method renamed or added on the trait is
-/// covered by this ratchet the day it lands.
+/// Every `Backend` trait method whose name names a tab bar. Read off
+/// the trait body rather than hardcoded, so a method re-added under any
+/// `*tab_bar*` spelling is caught the day it lands.
 fn tab_bar_method_names(backend_trait: &ItemTrait) -> HashSet<String> {
     trait_method_names(backend_trait)
         .into_iter()
@@ -381,122 +344,48 @@ fn tab_bar_method_names(backend_trait: &ItemTrait) -> HashSet<String> {
         .collect()
 }
 
-/// Whether `rel` — a `/`-separated path relative to this crate's root — is
-/// one of [`TAB_BAR_CALL_EXEMPT_PATHS`] or sits under one of them.
-fn tab_bar_call_exempt(rel: &str) -> bool {
-    TAB_BAR_CALL_EXEMPT_PATHS
-        .iter()
-        .any(|exempt| rel == *exempt || rel.starts_with(&format!("{exempt}/")))
-}
-
-/// Whether `attrs` carries a `#[cfg(test)]`.
-fn is_cfg_test(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg") && attr.to_token_stream().to_string().contains("test")
-    })
-}
-
-/// Collects call sites naming any method in `names`, skipping
-/// `#[cfg(test)]` items: a unit test may legitimately drive a `Backend`
-/// tab-bar method to compare its geometry against the widget contract's,
-/// which is exactly what `src/primitives/tab_bar.rs`'s own parity tests
-/// do. Matches both the method-call spelling (`backend.draw_tab_bar(..)`)
-/// and the qualified one (`Backend::draw_tab_bar(b, ..)`); a `fn
-/// draw_tab_bar` *definition* — a stub backend in a test support module,
-/// say — is not a call and so is not a hit.
-struct TabBarCallFinder<'a> {
-    names: &'a HashSet<String>,
-    found: Vec<String>,
-}
-
-impl<'ast> Visit<'ast> for TabBarCallFinder<'_> {
-    fn visit_item_mod(&mut self, node: &'ast ItemMod) {
-        if is_cfg_test(&node.attrs) {
-            return;
-        }
-        visit::visit_item_mod(self, node);
-    }
-
-    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        if is_cfg_test(&node.attrs) {
-            return;
-        }
-        visit::visit_item_fn(self, node);
-    }
-
-    fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
-        if is_cfg_test(&node.attrs) {
-            return;
-        }
-        visit::visit_impl_item_fn(self, node);
-    }
-
-    fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
-        let name = node.method.to_string();
-        if self.names.contains(&name) {
-            self.found.push(name);
-        }
-        visit::visit_expr_method_call(self, node);
-    }
-
-    fn visit_expr_call(&mut self, node: &'ast ExprCall) {
-        if let Expr::Path(path) = &*node.func {
-            if let Some(name) = path.path.segments.last().map(|seg| seg.ident.to_string()) {
-                if self.names.contains(&name) {
-                    self.found.push(name);
-                }
-            }
-        }
-        visit::visit_expr_call(self, node);
-    }
-}
-
+/// `Backend` must declare **no** tab-bar method at all: a tab strip is
+/// painted by pushing the `TabBar` descriptor through
+/// `DrawsPrimitives::draw_dyn` (or `Surface::Widget`), its geometry comes
+/// back as the `TabBarPrimitiveLayout` that paint resolved
+/// (`DrawsPrimitives::layout_primitive` when no paint happened), and
+/// `TabBar::chrome` / `icons` / `glyphs` carry what the old sidecar
+/// entry points took as explicit arguments.
 #[test]
-fn only_the_rasterisers_call_a_backend_tab_bar_method() {
+fn the_backend_trait_declares_no_tab_bar_method() {
     let root = repo_root();
     let backend_file = parse_rust_file(&root.join("src/backend.rs"));
     let names = tab_bar_method_names(find_trait(&backend_file, "Backend"));
+
     assert!(
-        names.len() >= 9,
-        "expected `Backend` to still declare its tab-bar methods (at least the nine \
-         `draw_tab_bar*` paint entry points); found {names:#?} — if they were deleted, delete \
-         this test with them"
+        names.is_empty(),
+        "`Backend` declares {} tab-bar method(s) again: {names:#?} — a tab strip reaches \
+         every backend through `TabBar`'s `Primitive`/`Interactive` impls, not a \
+         per-backend `draw_tab_bar*`/`tab_bar_layout*` pair on the sealed trait. Put the \
+         new behaviour on the descriptor (`TabBar::chrome`/`icons`/`glyphs`) or in \
+         `primitives::tab_bar`, and keep this ratchet at zero.",
+        names.len(),
     );
+}
 
-    let mut sources = Vec::new();
-    collect_rs_files(&root.join("src"), &mut sources);
-    collect_rs_files(&root.join("examples"), &mut sources);
-
-    let mut callers: Vec<String> = Vec::new();
-    for path in &sources {
-        let rel = path
-            .strip_prefix(&root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if tab_bar_call_exempt(&rel) {
-            continue;
-        }
-        let mut finder = TabBarCallFinder {
-            names: &names,
-            found: Vec::new(),
-        };
-        finder.visit_file(&parse_rust_file(path));
-        for method in finder.found {
-            callers.push(format!("{rel}: Backend::{method}"));
-        }
-    }
+/// No backend directory may carry a `tab_bar.rs` of its own either —
+/// the file-level half of the same claim. `TabBar`'s cell and pixel
+/// painters both live in `src/primitives/tab_bar.rs`, reached through
+/// `Primitive::paint`/`paint_cells`.
+#[test]
+fn no_backend_directory_carries_a_tab_bar_file() {
+    let root = repo_root();
+    let strays: Vec<String> = ["tui", "gtk", "macos", "win"]
+        .into_iter()
+        .map(|dir| format!("src/{dir}/tab_bar.rs"))
+        .filter(|rel| root.join(rel).exists())
+        .collect();
 
     assert!(
-        callers.is_empty(),
-        "found call site(s) outside the four rasterisers reaching a `Backend` tab-bar method \
-         (quadraui#2985): a tab strip is painted by pushing the `TabBar` descriptor through \
-         `DrawsPrimitives::draw_dyn` (or `Surface::Widget`), and clicks are classified with \
-         the `TabBarLayout` that paint resolved — `DrawsPrimitives::layout_primitive` when no \
-         paint happened. `TabBar::chrome` / `icons` / `glyphs` carry what the \
-         `with_chrome`/`icons` entry points took as sidecar arguments. The trait methods \
-         remain only for downstream callers:\n{}",
-        callers.join("\n"),
+        strays.is_empty(),
+        "found per-backend tab-bar rasteriser file(s): {strays:?} — `TabBar` paints through \
+         `src/primitives/tab_bar.rs`'s shared `cell_paint`/`native_surface_paint` on every \
+         backend, so a backend directory needs no tab-bar file of its own."
     );
 }
 
@@ -520,38 +409,6 @@ mod tests {
                 .map(str::to_string)
                 .collect::<HashSet<String>>()
         );
-    }
-
-    #[test]
-    fn tab_bar_call_exempt_covers_a_rasteriser_dir_but_not_compose() {
-        assert!(tab_bar_call_exempt("src/backend.rs"));
-        assert!(tab_bar_call_exempt("src/gtk/backend.rs"));
-        assert!(tab_bar_call_exempt("src/tui"));
-        assert!(!tab_bar_call_exempt("src/compose/workspace.rs"));
-        assert!(!tab_bar_call_exempt("examples/common/demo.rs"));
-        // A sibling whose name merely starts with an exempt path's text is
-        // not under it.
-        assert!(!tab_bar_call_exempt("src/win_helpers.rs"));
-    }
-
-    #[test]
-    fn the_finder_reports_both_call_spellings_and_skips_cfg_test_and_definitions() {
-        let names: HashSet<String> = ["draw_tab_bar"].into_iter().map(str::to_string).collect();
-        let file: syn::File = syn::parse_str(
-            "fn paints(b: &mut dyn Backend) { b.draw_tab_bar(); } \
-             fn qualified(b: &mut dyn Backend) { Backend::draw_tab_bar(b); } \
-             impl Backend for Stub { fn draw_tab_bar(&mut self) {} } \
-             #[cfg(test)] mod tests { fn parity(b: &mut dyn Backend) { b.draw_tab_bar(); } }",
-        )
-        .unwrap();
-
-        let mut finder = TabBarCallFinder {
-            names: &names,
-            found: Vec::new(),
-        };
-        finder.visit_file(&file);
-
-        assert_eq!(finder.found, vec!["draw_tab_bar", "draw_tab_bar"]);
     }
 
     #[test]

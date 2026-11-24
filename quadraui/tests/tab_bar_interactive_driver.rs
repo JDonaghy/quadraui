@@ -19,11 +19,10 @@
 //! past this crate's private `a11y` module, so it cannot be named from
 //! here.
 //!
-//! `TabBar` still has its own bespoke `Backend::draw_tab_bar*`, but this
-//! test routes it through `Backend::draw_primitive`, the same generic
-//! path every other `Primitive`-only widget goes through once it also
-//! joins `Interactive` — proving the paint half and the behaviour half
-//! agree on one `TabBar`, not just byte-matching rasterisers.
+//! The test routes `TabBar` through `Backend::draw_primitive`, the same
+//! generic path every other `Primitive`-only widget goes through once it
+//! also joins `Interactive` — proving the paint half and the behaviour
+//! half agree on one `TabBar`, not just byte-matching rasterisers.
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{

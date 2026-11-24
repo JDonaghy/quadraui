@@ -506,19 +506,19 @@ fn image_app_logo_paints_and_menu_click_routing_still_works() {
 
 // ─── TabIconsDemo: the CoreText icon-width pass ───────────────────────────
 //
-// The macOS half of icon-width handling. `MacBackend::draw_tab_bar_icons`
-// processes the sidecar for decorated tabs, so glyphs paint and labels shift
-// correctly. The pixel-level paint↔hit round trip lives in
-// `src/macos/tab_bar.rs`'s `#[cfg(test)]` block; this file covers the same
-// behaviour through the example an operator actually runs.
+// The macOS half of icon-width handling. The tab strip's shared pixel
+// painter processes the `TabBar::icons` sidecar for decorated tabs, so
+// glyphs paint and labels shift correctly. The pixel-level paint↔hit
+// round trip lives in `src/primitives/tab_bar.rs`'s `#[cfg(test)]`
+// block; this file covers the same behaviour through the example an
+// operator actually runs.
 
 const TAB_ICONS_W: u32 = 640;
 const TAB_ICONS_H: u32 = 120;
 
-/// Mirrors the private `macos::tab_bar::TAB_ICON_GAP` (and GTK's
-/// `TAB_ICON_GAP`, deliberately the same value) — duplicated here on
-/// purpose so a backend that quietly changes its gap has to come and
-/// change this cross-backend parity number too.
+/// Mirrors `primitives::layout_metrics::pixel::TAB_ICON_GAP` —
+/// duplicated here on purpose so a change to the shared gap has to come
+/// and change this cross-backend parity number too.
 const TAB_ICON_GAP_PT: f32 = 6.0;
 
 #[test]
@@ -643,13 +643,15 @@ fn tab_icons_demo_pressing_q_exits() {
 /// `tab_close_center` helper of its own (unlike `TuiDriver`/`GtkDriver`,
 /// which cache a `TabBarLayout` per paint), so this resolves the same
 /// geometry `TabIconsDemo::handle` does: build the identical `TabBar` +
-/// icon sidecar and run them through `Backend::tab_bar_layout_icons`,
-/// the no-paint twin of the call `TabIconsDemo::render` paints with.
-/// `rect.x` is `0.0`, so the returned bounds are already in the surface
-/// coordinates `MacDriver::click` takes. Shared by
+/// icon sidecar and run them through
+/// `DrawsPrimitives::layout_primitive`, the no-paint twin of the
+/// `draw_dyn` call `TabIconsDemo::render` paints with, narrowed to the
+/// legacy span shape by `backend::tab_bar_hits_from_layout`. `rect.x` is
+/// `0.0`, so the returned bounds are already in the surface coordinates
+/// `MacDriver::click` takes. Shared by
 /// [`tab_icons_initial_close_center`] and [`tab_icons_initial_slot_tail`],
 /// which each read a different span out of the same hits.
-#[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits`
+#[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
 fn tab_icons_initial_hits(driver: &MacDriver<TabIconsDemo>) -> quadraui::TabBarHits {
     let viewport = driver.backend().viewport();
     let lh = driver.backend().line_height();
@@ -669,19 +671,20 @@ fn tab_icons_initial_hits(driver: &MacDriver<TabIconsDemo>) -> quadraui::TabBarH
         active_accent: None,
         show_tab_close: true,
         compact: false,
+        icons: TabIconsDemo::new().icons(),
         ..Default::default()
     };
-    let icons = TabIconsDemo::new().icons();
-    driver.backend().tab_bar_layout_icons(
+    let strip = quadraui::DrawsPrimitives::layout_primitive(
+        driver.backend(),
         quadraui::Rect::new(0.0, 0.0, viewport.width, lh),
         &bar,
-        &icons,
-    )
+    );
+    quadraui::backend::tab_bar_hits_from_layout(&strip.layout, &bar)
 }
 
 /// Close-glyph center for tab `tab_idx` in `TabIconsDemo`'s initial
 /// layout — see [`tab_icons_initial_hits`].
-#[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits`
+#[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
 fn tab_icons_initial_close_center(driver: &MacDriver<TabIconsDemo>, tab_idx: usize) -> (f32, f32) {
     let lh = driver.backend().line_height();
     let hits = tab_icons_initial_hits(driver);
@@ -693,7 +696,7 @@ fn tab_icons_initial_close_center(driver: &MacDriver<TabIconsDemo>, tab_idx: usi
 /// hit region — the tab's own trailing padding, flush against the next
 /// tab's leading edge (or the bar's own right edge, for the last tab) —
 /// for [`TabIconsDemo`]'s initial layout. See [`tab_icons_initial_hits`].
-#[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits`
+#[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
 fn tab_icons_initial_slot_tail(driver: &MacDriver<TabIconsDemo>, tab_idx: usize) -> (f32, f32) {
     let lh = driver.backend().line_height();
     let hits = tab_icons_initial_hits(driver);

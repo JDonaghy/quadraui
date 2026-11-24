@@ -54,7 +54,7 @@ use crate::Color;
 ///
 /// `pub` (with a `pub` constructor and measure/draw methods) rather than
 /// `pub(crate)`: it appears by reference in the signatures of the chrome
-/// rasterisers `super::mod` re-exports (`draw_status_bar`, `draw_tab_bar`,
+/// rasterisers `super::mod` re-exports (`draw_status_bar`,
 /// `draw_activity_bar`, `draw_menu_bar`, and their `*_layout` twins), so a
 /// crate-private type here is a `private_interfaces` warning — i.e. a build
 /// failure under CI's `-D warnings`. Same posture as
@@ -751,7 +751,7 @@ fn measure_text(
 /// `ID2D1SolidColorBrush` instead of creating a fresh one per call.
 ///
 /// This is the single choke point every Win-GUI chrome rasteriser paints
-/// text through (`win::status_bar`, `win::tab_bar`, `win::activity_bar`,
+/// text through (`win::status_bar`, `win::activity_bar`,
 /// …, via [`DWrite::draw_text`]/[`DWrite::draw_text_styled`]), so it's
 /// also where paint-time text-run recording hooks in for
 /// [`super::testing::WinDriver::find`]/`find_bounds`/`inventory`

@@ -228,7 +228,7 @@ fn form_all_field_kinds_render_on_macos() {
 
 // ─── TabChrome parity: bracket framing encloses the close glyph on both
 // backends, and a click on it resolves to *close*, never *activate* — the
-// logical distinction made declarative through `Backend::draw_tab_bar_with_chrome`.
+// logical distinction made declarative through `TabBar::chrome`.
 
 /// Script: read the hint bar before touching anything, click the `×` glyph
 /// (unique on screen — only the active tab in [`TabChromeDemo`] is
@@ -1542,14 +1542,13 @@ fn image_menu_click_agrees_tui_and_gtk_on_activated_action() {
     );
 }
 
-// ─── GTK pixel parity for `TabBar`'s chrome / icon descriptor fields ───
+// ─── GTK pixel effect of `TabBar`'s chrome / icon descriptor fields ───
 //
 // The pixel-backend leg of the claim `tui_example_driver.rs`'s
 // `tab_bar_descriptor_fields` module makes on the cell grid:
-// `draw_primitive(rect, &bar)` with `TabBar::chrome` / `TabBar::icons`
-// set must rasterise the same pixels, and resolve the same per-tab hit
-// ranges, as the `Backend::draw_tab_bar_with_chrome` /
-// `draw_tab_bar_icons` call that takes the same values as arguments.
+// `draw_primitive(rect, &bar)` honours `TabBar::chrome` / `TabBar::icons`
+// — each field changes the rasterised pixels, puts its own glyphs in the
+// painted Pango runs, and (for an icon) widens the tab that carries it.
 mod gtk_tab_bar_descriptor_fields {
     use quadraui::gtk::testing::GtkDriver;
     use quadraui::primitives::layout_metrics::pixel::TAB_PAD;
@@ -1621,20 +1620,6 @@ mod gtk_tab_bar_descriptor_fields {
                 ..Default::default()
             }
         }
-
-        fn plain_descriptor(self) -> TabBar {
-            TabBar {
-                id: WidgetId::new("tabs:gtk-parity"),
-                tabs: tabs(),
-                ..Default::default()
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Route {
-        Seam,
-        BackendMethod,
     }
 
     fn tab_ranges(layout: &TabBarLayout, tab_count: usize) -> Vec<(f32, f32)> {
@@ -1645,40 +1630,22 @@ mod gtk_tab_bar_descriptor_fields {
         ranges
     }
 
-    struct ParityApp {
+    struct SeamApp {
         case: Case,
-        route: Route,
         ranges: RefCell<Vec<(f32, f32)>>,
     }
 
-    impl AppLogic for ParityApp {
+    impl AppLogic for SeamApp {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             // `Primitive::layout` reserves `pixel::TAB_PAD` per side,
-            // since `LayoutCtx` carries no style token, while the GTK
-            // rasteriser reads `Style::tab_padding_x`. Hold the backend's
-            // token at the same value so this comparison is about the
-            // chrome and icon fields rather than that difference.
+            // since `LayoutCtx` carries no style token. Hold the
+            // backend's own token at the same value so a case-to-case
+            // comparison is about the chrome and icon fields rather than
+            // that difference.
             backend.set_style(Style::default().with_tab_padding_x(TAB_PAD));
-            let layout = match self.route {
-                Route::Seam => backend.draw_primitive(BAR, &self.case.descriptor()).layout,
-                // Hit ranges come from the painting method's no-paint
-                // `resolve_*` twin — the painting `*_layout` twins would
-                // overdraw the strip.
-                Route::BackendMethod => {
-                    let bar = self.case.plain_descriptor();
-                    let chrome = self.case.chrome();
-                    if self.case == Case::Icons {
-                        let icons = self.case.icons();
-                        backend.draw_tab_bar_icons(BAR, &bar, &icons, None);
-                        backend.resolve_tab_bar_layout_icons(BAR, &bar, &icons)
-                    } else {
-                        backend.draw_tab_bar_with_chrome(BAR, &bar, None, &chrome);
-                        backend.resolve_tab_bar_layout_with_chrome(BAR, &bar, &chrome)
-                    }
-                }
-            };
+            let layout = backend.draw_primitive(BAR, &self.case.descriptor()).layout;
             *self.ranges.borrow_mut() = tab_ranges(&layout, LABELS.len());
         }
 
@@ -1688,12 +1655,11 @@ mod gtk_tab_bar_descriptor_fields {
     }
 
     /// The rasterised surface, the Pango runs it painted, and the hit
-    /// ranges `route` resolved for `case`.
-    fn paint(case: Case, route: Route) -> (Vec<u8>, Vec<String>, Vec<(f32, f32)>) {
+    /// ranges the seam resolved for `case`.
+    fn paint(case: Case) -> (Vec<u8>, Vec<String>, Vec<(f32, f32)>) {
         let mut driver = GtkDriver::new(
-            ParityApp {
+            SeamApp {
                 case,
-                route,
                 ranges: RefCell::new(Vec::new()),
             },
             BAR.width as i32,
@@ -1710,41 +1676,26 @@ mod gtk_tab_bar_descriptor_fields {
         (pixels, texts, ranges)
     }
 
-    fn assert_pixel_parity(case: Case) {
-        let (seam_pixels, seam_texts, seam_ranges) = paint(case, Route::Seam);
-        let (method_pixels, method_texts, method_ranges) = paint(case, Route::BackendMethod);
-        assert_eq!(
-            seam_texts, method_texts,
-            "{case:?}: draw_primitive painted different text runs than the Backend method"
-        );
-        assert_eq!(
-            seam_ranges, method_ranges,
-            "{case:?}: draw_primitive resolved different per-tab hit ranges"
-        );
-        let differing = seam_pixels
-            .iter()
-            .zip(&method_pixels)
-            .filter(|(a, b)| a != b)
-            .count();
-        assert_eq!(
-            differing, 0,
-            "{case:?}: draw_primitive rasterised {differing} bytes differently \
-             from the Backend method"
-        );
-        // Non-vacuous: the case has to actually look different from a
-        // bar with neither chrome nor icons, or the comparison above
-        // would hold for a seam that ignored the fields entirely.
-        let (plain_pixels, _, _) = paint(Case::Plain, Route::Seam);
+    /// The baseline every case shares: the field has to actually change
+    /// what GTK rasterises, relative to a bar with neither chrome nor
+    /// icons, and every tab still has to resolve a non-empty hit range.
+    fn assert_field_changes_the_raster(case: Case) {
+        let (case_pixels, _, case_ranges) = paint(case);
+        let (plain_pixels, _, _) = paint(Case::Plain);
         assert_ne!(
-            seam_pixels, plain_pixels,
+            case_pixels, plain_pixels,
             "{case:?}: the descriptor fields should change what GTK rasterises"
+        );
+        assert!(
+            case_ranges.iter().all(|(lo, hi)| hi > lo),
+            "{case:?}: every tab should have a non-empty hit range: {case_ranges:?}"
         );
     }
 
     #[test]
-    fn focused_frame_chrome_rasterises_the_same_pixels_through_the_seam_and_the_backend_method() {
-        assert_pixel_parity(Case::FocusedFrame);
-        let (_, texts, _) = paint(Case::FocusedFrame, Route::Seam);
+    fn focused_frame_chrome_reaches_the_gtk_raster_through_the_seam() {
+        assert_field_changes_the_raster(Case::FocusedFrame);
+        let (_, texts, _) = paint(Case::FocusedFrame);
         assert!(
             texts.iter().any(|t| t == "[") && texts.iter().any(|t| t == "]"),
             "bracket framing should reach the painted runs: {texts:?}"
@@ -1752,10 +1703,10 @@ mod gtk_tab_bar_descriptor_fields {
     }
 
     #[test]
-    fn icon_bar_rasterises_the_same_pixels_through_the_seam_and_the_backend_method() {
-        assert_pixel_parity(Case::Icons);
-        let (_, texts, icon_ranges) = paint(Case::Icons, Route::Seam);
-        let (_, _, plain_ranges) = paint(Case::Plain, Route::Seam);
+    fn icon_bar_reaches_the_gtk_raster_through_the_seam() {
+        assert_field_changes_the_raster(Case::Icons);
+        let (_, texts, icon_ranges) = paint(Case::Icons);
+        let (_, _, plain_ranges) = paint(Case::Plain);
         let expected: Vec<String> = Case::Icons
             .icons()
             .into_iter()
@@ -1772,96 +1723,6 @@ mod gtk_tab_bar_descriptor_fields {
         assert!(
             width(icon_ranges[0]) > width(plain_ranges[0]),
             "an icon should widen its own tab: {icon_ranges:?} vs {plain_ranges:?}"
-        );
-    }
-}
-
-// ─── TabBar: the widget contract reproduces each rasteriser's geometry ───
-//
-// `TabBar`'s whole geometry is label widths, so the strip a caller gets
-// depends entirely on who measured the labels. Both tests below drive the
-// same bar at the same size through the widget contract and through the
-// backend's own `draw_tab_bar` layout, and require the two to agree tab for
-// tab — the condition for a tab-strip caller painting through
-// `DrawsPrimitives::draw_dyn` instead of a `Backend` tab-bar method.
-
-/// Three short lowercase labels, one closable tab each — the shape a
-/// sidebar document strip paints.
-fn parity_tab_bar() -> quadraui::TabBar {
-    quadraui::TabBar {
-        id: WidgetId::new("parity:tabs"),
-        tabs: ["alpha", "beta", "gamma"]
-            .iter()
-            .enumerate()
-            .map(|(i, label)| quadraui::TabItem {
-                label: (*label).to_string(),
-                is_active: i == 0,
-                is_dirty: false,
-                is_preview: false,
-                is_closable: true,
-            })
-            .collect(),
-        scroll_offset: 0,
-        right_segments: vec![],
-        active_accent: None,
-        show_tab_close: true,
-        compact: false,
-        ..Default::default()
-    }
-}
-
-/// The layout `draw_dyn` resolves `bar` to on `backend`.
-fn layout_with_backend_ctx<B: Backend + ?Sized>(
-    backend: &B,
-    bar: &quadraui::TabBar,
-    rect: Rect,
-) -> quadraui::TabBarLayout {
-    quadraui::DrawsPrimitives::layout_primitive(backend, rect, bar).layout
-}
-
-fn tab_spans(l: &quadraui::TabBarLayout) -> Vec<(f32, f32)> {
-    l.visible_tabs
-        .iter()
-        .map(|t| (t.bounds.x, t.bounds.x + t.bounds.width))
-        .collect()
-}
-
-/// On a **cell grid** both paths count display columns.
-#[test]
-fn tab_bar_widget_contract_matches_the_tui_rasteriser_geometry() {
-    let bar = parity_tab_bar();
-    let rect = Rect::new(0.0, 0.0, 30.0, 1.0);
-    let backend = quadraui::tui::backend::TuiBackend::new();
-
-    let native = Backend::resolve_tab_bar_layout(&backend, rect, &bar);
-    let contract = layout_with_backend_ctx(&backend, &bar, rect);
-    assert_eq!(
-        tab_spans(&contract),
-        tab_spans(&native),
-        "a cell grid's widget-contract layout must match its rasteriser's, \
-         tab for tab — contract={contract:?} native={native:?}"
-    );
-}
-
-/// On a **pixel** backend the contract measures labels through the same
-/// `Backend::measure_text` font the GTK rasteriser paints with, so a narrow
-/// strip — where an approximated width would ellipsise or scroll
-/// differently — resolves to the same tabs at the same spans.
-#[test]
-fn tab_bar_widget_contract_matches_the_gtk_rasteriser_geometry() {
-    let bar = parity_tab_bar();
-    let driver = gtk_driver_with_shell(AppShellDemo::new(), AppShellDemo::config(), 800, 480);
-    let backend = driver.backend();
-
-    for width in [160.0, 200.0, 700.0] {
-        let rect = Rect::new(0.0, 0.0, width, 35.0);
-        let native = Backend::resolve_tab_bar_layout(backend, rect, &bar);
-        let contract = layout_with_backend_ctx(backend, &bar, rect);
-        assert_eq!(
-            tab_spans(&contract),
-            tab_spans(&native),
-            "at {width}px the widget contract must lay out the same tabs at the \
-             same spans as the GTK rasteriser — contract={contract:?} native={native:?}"
         );
     }
 }

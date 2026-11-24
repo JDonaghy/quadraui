@@ -159,7 +159,6 @@ mod split;
 mod split_tree;
 mod status_bar;
 mod surface;
-mod tab_bar;
 mod terminal;
 pub mod testing;
 mod text_display;
@@ -258,11 +257,6 @@ pub use split_tree::gtk_split_tree_layout;
 #[doc(hidden)]
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};
 #[doc(hidden)]
-pub use tab_bar::{
-    draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome,
-    draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome,
-    draw_tab_bar_with_chrome_and_glyphs,
-};
 #[doc(hidden)]
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 #[doc(hidden)]
@@ -345,7 +339,7 @@ pub use pango::Layout as PangoLayout;
 /// overrides it.
 ///
 /// Matches the family [`activity_bar::ICON_FONT_DESC`] and
-/// [`tab_bar::tab_icon_font`] already pin for the activity bar and tab
+/// [`tab_icon_font`] already pin for the activity bar and tab
 /// icons — kept as one named constant so retargeting to a
 /// differently-named Nerd Font patch (or a consumer's fontconfig alias)
 /// is a one-line change instead of hunting every rasteriser that
@@ -371,7 +365,7 @@ thread_local! {
 }
 
 /// The family [`with_nerd_font_fallback`]/[`chrome_font_description`]/
-/// [`tab_bar::tab_icon_font`] currently append/substitute for Nerd-Font
+/// [`tab_icon_font`] currently append/substitute for Nerd-Font
 /// glyphs — [`NERD_FONT_FALLBACK_FAMILY`] until
 /// [`set_current_nerd_font_fallback_family`] overrides it.
 pub(crate) fn current_nerd_font_fallback_family() -> String {
@@ -380,7 +374,7 @@ pub(crate) fn current_nerd_font_fallback_family() -> String {
 
 /// Override the family every subsequent call on this thread to
 /// [`with_nerd_font_fallback`]/[`chrome_font_description`]/
-/// [`tab_bar::tab_icon_font`] resolves against — thread-wide, not
+/// [`tab_icon_font`] resolves against — thread-wide, not
 /// process-wide, since the backing store is a `thread_local` (see its
 /// doc above); GTK's single-threaded glib main loop is what makes that
 /// equivalent to "process-wide" in practice for a real app. Backs
@@ -446,6 +440,27 @@ pub(crate) fn with_nerd_font_fallback(base: &pango::FontDescription) -> pango::F
     };
     desc.set_family(&with_fallback);
     desc
+}
+
+/// The Nerd-Font-swapped variant of the tab bar's label font, used to
+/// measure [`crate::TabIcon`] glyph widths — the space the tab strip's
+/// layout and its paint must agree to reserve. Painting itself goes
+/// through the ambient font the strip's paint surface already carries.
+///
+/// Unlike [`with_nerd_font_fallback`], this *replaces* the family
+/// entirely rather than appending — tab icons are always measured as a
+/// Nerd-Font glyph with no ASCII-fallback text form (`TabIcon` carries
+/// just one `glyph` field, unlike `Icon`'s `glyph`/`fallback` pair), so
+/// there's no caller-family text to preserve for this geometry-only
+/// pass.
+pub(crate) fn tab_icon_font(base: &pango::FontDescription) -> pango::FontDescription {
+    let mut f = base.clone();
+    f.set_family(&format!(
+        "{}, {}, monospace",
+        current_nerd_font_fallback_family(),
+        crate::codicon::FONT_FAMILY
+    ));
+    f
 }
 
 #[cfg(test)]
@@ -534,7 +549,7 @@ mod tests {
         assert_eq!(family, "Sans,Consumer Icons,codicon");
     }
 
-    /// [`tab_bar::tab_icon_font`] replaces the family entirely (see its
+    /// [`tab_icon_font`] replaces the family entirely (see its
     /// own doc for why) rather than appending — confirm it also tracks
     /// the override, not just `with_nerd_font_fallback`'s append path.
     #[test]
@@ -543,7 +558,7 @@ mod tests {
         set_current_nerd_font_fallback_family("Consumer Icons");
 
         let base = pango::FontDescription::from_string("Sans 11");
-        let desc = tab_bar::tab_icon_font(&base);
+        let desc = tab_icon_font(&base);
         let family = desc.family().expect("family set").to_string();
         assert_eq!(family, "Consumer Icons, codicon, monospace");
     }

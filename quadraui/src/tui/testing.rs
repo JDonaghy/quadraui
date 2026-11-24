@@ -828,14 +828,12 @@ impl<A: AppLogic> TuiDriver<A> {
     /// `find` can't do this job: every tab paints the same chrome (and a
     /// closed/active tab's label may repeat elsewhere on screen), so there
     /// is no needle that disambiguates "tab 3" from "tab 0". This resolves
-    /// through [`tab_part_center`]: the frame's painted-layout record for a
-    /// bar painted through the widget contract, falling back to the
-    /// `TuiBackend::draw_tab_bar` layout cache while that legacy rasteriser
-    /// still exists. `None` if `bar` didn't paint this frame, or if
+    /// through [`tab_part_center`]: the frame's painted-layout record,
+    /// which every bar painted through the widget contract registers
+    /// itself in. `None` if `bar` didn't paint this frame, or if
     /// `tab_idx` is scrolled out of view behind the bar's `scroll_offset`.
     pub fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let cached = self.core.backend().cached_tab_bar_layout(bar);
-        tab_part_center(bar, TabBarSubPart::Tab(tab_idx), cached)
+        tab_part_center(bar, TabBarSubPart::Tab(tab_idx))
     }
 
     /// Cell coordinates of tab `tab_idx`'s close-button center in the tab
@@ -846,8 +844,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// drew no close button this frame (`is_closable: false` on the tab,
     /// or `show_tab_close: false` on the bar).
     pub fn tab_close_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let cached = self.core.backend().cached_tab_bar_layout(bar);
-        tab_part_center(bar, TabBarSubPart::TabClose(tab_idx), cached)
+        tab_part_center(bar, TabBarSubPart::TabClose(tab_idx))
     }
 }
 
@@ -1556,8 +1553,8 @@ mod tests {
 
     /// Paints a two-tab `TabBar` — one permanent, one preview — so a test
     /// can assert `style_at`/`styled_row` distinguish them. Mirrors the
-    /// `OneLineApp` pattern above but drives `draw_tab_bar` instead of
-    /// `draw_status_bar`.
+    /// `OneLineApp` pattern above but pushes a `TabBar` through the
+    /// widget contract instead of drawing a status bar.
     struct TabBarApp {
         theme: Theme,
     }
@@ -1567,7 +1564,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             backend.set_theme(self.theme);
-            backend.draw_tab_bar(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, 20.0, 1.0),
                 &TabBar {
                     id: QWidgetId::new("tabs"),
@@ -1594,7 +1592,7 @@ mod tests {
                     compact: false,
                     ..Default::default()
                 },
-                None,
+                &(),
             );
         }
 
@@ -1715,7 +1713,7 @@ mod tests {
     }
 
     /// A compact tab bar with no close buttons (`show_tab_close: false`).
-    /// Drives the real `TuiBackend::draw_tab_bar`/`tab_bar_layout`
+    /// Drives the real `TabBar` widget-contract paint/layout
     /// measurer end to end — not a hand-rolled `TabMeasure` — so a
     /// regression in any of the backend's own measurer call sites breaks
     /// here, not only in `tab_bar.rs`'s rasteriser-level unit test.
@@ -1758,25 +1756,23 @@ mod tests {
     impl AppLogic for NoCloseTabBarApp {
         type AreaId = ();
 
-        #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_tab_bar(Self::RECT, &self.bar(), None);
+            crate::DrawsPrimitives::draw_dyn(backend, Self::RECT, &self.bar(), &());
         }
 
-        #[allow(deprecated)] // `Backend::tab_bar_layout` returns `TabBarHits` — issue #823
         fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
             let UiEvent::MouseDown { position, .. } = event else {
                 return Reaction::Continue;
             };
-            let hits = backend.tab_bar_layout(Self::RECT, &self.bar());
-            let x = position.x as f64;
-            for (i, (sx, ex)) in hits.slot_positions.iter().enumerate() {
-                if x >= *sx && x < *ex {
+            let resolved =
+                crate::DrawsPrimitives::layout_primitive(backend, Self::RECT, &self.bar()).layout;
+            match resolved.hit_test(position.x - Self::RECT.x, position.y - Self::RECT.y) {
+                crate::primitives::tab_bar::TabBarHit::Tab(i) => {
                     self.active = i;
-                    return Reaction::Redraw;
+                    Reaction::Redraw
                 }
+                _ => Reaction::Continue,
             }
-            Reaction::Continue
         }
     }
 
@@ -1811,7 +1807,7 @@ mod tests {
 
     /// Three closable tabs on a 20-cell bar. `handle()` hit-tests raw
     /// `MouseDown` clicks against the *live*, non-painting
-    /// [`crate::Backend::tab_bar_layout`] query (mirrors the "cached
+    /// [`crate::DrawsPrimitives::layout_primitive`] query (mirrors the "cached
     /// layout hit-test pattern" `gtk/testing.rs`'s `ToggleStatusBarApp`
     /// uses) — close regions win over tab bodies, matching
     /// `TabBarLayout::hit_regions`' close-before-body ordering. Exercises
@@ -1852,35 +1848,29 @@ mod tests {
     impl AppLogic for InteractiveTabBarApp {
         type AreaId = ();
 
-        #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_tab_bar(Self::RECT, &self.bar(), None);
+            crate::DrawsPrimitives::draw_dyn(backend, Self::RECT, &self.bar(), &());
         }
 
-        #[allow(deprecated)] // `Backend::tab_bar_layout` returns `TabBarHits` — issue #823
         fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
             let UiEvent::MouseDown { position, .. } = event else {
                 return Reaction::Continue;
             };
-            let hits = backend.tab_bar_layout(Self::RECT, &self.bar());
-            let x = position.x as f64;
-            // Close regions before tab bodies — mirrors
-            // `TabBarLayout::hit_regions`' ordering (close-before-body).
-            for (i, close) in hits.close_bounds.iter().enumerate() {
-                if let Some((sx, ex)) = close {
-                    if x >= *sx && x < *ex {
-                        self.closed_idx = Some(i);
-                        return Reaction::Redraw;
-                    }
+            let resolved =
+                crate::DrawsPrimitives::layout_primitive(backend, Self::RECT, &self.bar()).layout;
+            // `hit_test` walks close regions before tab bodies, so a
+            // click on a close glyph never reads as its tab's body.
+            match resolved.hit_test(position.x - Self::RECT.x, position.y - Self::RECT.y) {
+                crate::primitives::tab_bar::TabBarHit::TabClose(i) => {
+                    self.closed_idx = Some(i);
+                    Reaction::Redraw
                 }
-            }
-            for (i, (sx, ex)) in hits.slot_positions.iter().enumerate() {
-                if x >= *sx && x < *ex {
+                crate::primitives::tab_bar::TabBarHit::Tab(i) => {
                     self.active = i;
-                    return Reaction::Redraw;
+                    Reaction::Redraw
                 }
+                _ => Reaction::Continue,
             }
-            Reaction::Continue
         }
     }
 
@@ -1936,13 +1926,12 @@ mod tests {
         );
     }
 
-    /// The rect a consumer hit-tests against must be the *same* rect
-    /// `draw_tab_bar` painted. `tab_close_center` resolves against the
-    /// [`crate::TabBarLayout`] `TuiBackend` cached at paint time; this test
-    /// takes that exact point and runs it back through the authoritative
-    /// no-paint accessor, [`crate::Backend::resolve_tab_bar_layout`] +
-    /// [`crate::TabBarLayout::hit_test`] — not the deprecated
-    /// `TabBarHits`/`tab_bar_layout` pair — and asserts it resolves to
+    /// The rect a consumer hit-tests against must be the *same* rect the
+    /// strip painted. `tab_close_center` resolves against the painted-
+    /// layout record the widget contract writes at paint time; this test
+    /// takes that exact point and runs it back through the no-paint
+    /// accessor, [`crate::DrawsPrimitives::layout_primitive`] +
+    /// [`crate::TabBarLayout::hit_test`], and asserts it resolves to
     /// `TabBarHit::TabClose(1)`, not a plain tab-select. If this is green,
     /// the TUI backend's paint and hit-test rects agree.
     #[test]
@@ -1961,29 +1950,30 @@ mod tests {
             .tab_close_center(&bar_id, 1)
             .expect("tab 1 is closable and should have a close button");
 
-        let resolved = crate::Backend::resolve_tab_bar_layout(
+        let resolved = crate::DrawsPrimitives::layout_primitive(
             driver.core.backend_mut(),
             InteractiveTabBarApp::RECT,
             &bar,
-        );
-        // `resolve_tab_bar_layout` is bar-relative (see its doc), while
-        // `tab_close_center` returns absolute driver/screen coordinates —
-        // undo the `rect.x`/`rect.y` shift `TuiDriver::tab_close_center`
-        // applied before handing the point to `hit_test`.
+        )
+        .layout;
+        // The resolved layout is bar-relative (see `TabBarLayout`'s doc),
+        // while `tab_close_center` returns absolute driver/screen
+        // coordinates — undo the `rect.x`/`rect.y` shift before handing
+        // the point to `hit_test`.
         let local_x = x - InteractiveTabBarApp::RECT.x;
         let local_y = y - InteractiveTabBarApp::RECT.y;
 
         assert_eq!(
             resolved.hit_test(local_x, local_y),
             TabBarHit::TabClose(1),
-            "the close-glyph rect `draw_tab_bar` painted must be the same \
+            "the close-glyph rect the strip painted must be the same \
              rect a consumer hit-tests against"
         );
     }
 
     /// A bar painted through the widget contract
     /// ([`crate::DrawsPrimitives::draw_dyn`]) is just as targetable as one
-    /// painted by `draw_tab_bar`: `draw_dyn` records
+    /// painted by any other route: `draw_dyn` records
     /// the resolved geometry, so [`TuiDriver::tab_center`] /
     /// [`TuiDriver::tab_close_center`] keep resolving and a click on
     /// either point lands on the matching region of the painted strip.
@@ -2072,7 +2062,8 @@ mod tests {
             type AreaId = ();
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                backend.draw_tab_bar(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, 20.0, 1.0),
                     &TabBar {
                         id: QWidgetId::new("tabs"),
@@ -2090,7 +2081,7 @@ mod tests {
                         compact: false,
                         ..Default::default()
                     },
-                    None,
+                    &(),
                 );
             }
 
@@ -2122,7 +2113,8 @@ mod tests {
             type AreaId = ();
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                backend.draw_tab_bar(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, 5.0, 1.0),
                     &TabBar {
                         id: QWidgetId::new("tabs"),
@@ -2160,7 +2152,7 @@ mod tests {
                         compact: false,
                         ..Default::default()
                     },
-                    None,
+                    &(),
                 );
             }
 

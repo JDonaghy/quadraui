@@ -9,7 +9,7 @@
 //!
 //! Renders into a headless `cairo::ImageSurface` (`Format::ARgb32`) — no
 //! `gtk::init`, no `Application`, no window, no `GdkDisplay`. This is the
-//! exact display-free path `gtk/pipeline_view.rs` and `gtk/tab_bar.rs`
+//! exact display-free path `gtk/pipeline_view.rs` and `gtk/status_bar.rs`
 //! already prove works for per-primitive paint tests; `GtkDriver` lifts
 //! it to the whole-`AppLogic` level.
 //!
@@ -447,7 +447,7 @@ impl<A: AppLogic> GtkDriver<A> {
     ///
     /// Cairo's `ARgb32` stores each pixel as four bytes in native
     /// (little-endian) byte order: `[B, G, R, A]` — the same decode
-    /// `gtk/tab_bar.rs`'s and `gtk/pipeline_view.rs`'s paint tests use.
+    /// `gtk/status_bar.rs`'s and `gtk/pipeline_view.rs`'s paint tests use.
     /// Flushes pending Cairo operations first so the readback reflects
     /// the last [`Self::render`].
     pub fn pixel(&mut self, x: i32, y: i32) -> (u8, u8, u8) {
@@ -539,14 +539,12 @@ impl<A: AppLogic> GtkDriver<A> {
     /// `find` can't do this job: every tab paints the same chrome (and a
     /// closed/active tab's label may repeat elsewhere on screen), so there
     /// is no needle that disambiguates "tab 3" from "tab 0". This resolves
-    /// through [`tab_part_center`]: the frame's painted-layout record for a
-    /// bar painted through the widget contract, falling back to the
-    /// `GtkBackend::draw_tab_bar` layout cache while that legacy rasteriser
-    /// still exists. `None` if `bar` didn't paint this frame, or if
+    /// through [`tab_part_center`]: the frame's painted-layout record,
+    /// which every bar painted through the widget contract registers
+    /// itself in. `None` if `bar` didn't paint this frame, or if
     /// `tab_idx` is scrolled out of view behind the bar's `scroll_offset`.
     pub fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let cached = self.core.backend().cached_tab_bar_layout(bar);
-        tab_part_center(bar, TabBarSubPart::Tab(tab_idx), cached)
+        tab_part_center(bar, TabBarSubPart::Tab(tab_idx))
     }
 
     /// Pixel coordinates of tab `tab_idx`'s close-button center in the tab
@@ -557,8 +555,7 @@ impl<A: AppLogic> GtkDriver<A> {
     /// drew no close button this frame (`is_closable: false` on the tab,
     /// or `show_tab_close: false` on the bar).
     pub fn tab_close_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let cached = self.core.backend().cached_tab_bar_layout(bar);
-        tab_part_center(bar, TabBarSubPart::TabClose(tab_idx), cached)
+        tab_part_center(bar, TabBarSubPart::TabClose(tab_idx))
     }
 }
 
@@ -1093,7 +1090,7 @@ mod tests {
 
     /// Three closable tabs on a wide bar. `handle()` hit-tests raw
     /// `MouseDown` clicks against the *live*, non-painting
-    /// [`crate::Backend::tab_bar_layout`] query (mirrors the "cached
+    /// [`crate::DrawsPrimitives::layout_primitive`] query (mirrors the "cached
     /// layout hit-test pattern" [`ToggleStatusBarApp`] above uses) — close
     /// regions win over tab bodies, matching `TabBarLayout::hit_regions`'
     /// close-before-body ordering. Exercises `GtkDriver::tab_center`/
@@ -1160,36 +1157,48 @@ mod tests {
             }
         }
 
-        #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_tab_bar(Self::RECT, &self.bar(), None);
+            crate::DrawsPrimitives::draw_dyn(backend, Self::RECT, &self.bar(), &());
         }
 
-        #[allow(deprecated)] // `Backend::tab_bar_layout` returns `TabBarHits` — issue #823
         fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
             let UiEvent::MouseDown { position, .. } = event else {
                 return Reaction::Continue;
             };
-            let hits = backend.tab_bar_layout(Self::RECT, &self.bar());
-            let x = position.x as f64;
-            // Close regions before tab bodies — mirrors
-            // `TabBarLayout::hit_regions`' ordering (close-before-body).
-            for (i, close) in hits.close_bounds.iter().enumerate() {
-                if let Some((sx, ex)) = close {
-                    if x >= *sx && x < *ex {
-                        self.closed_idx = Some(i);
-                        return Reaction::Redraw;
-                    }
+            let resolved =
+                crate::DrawsPrimitives::layout_primitive(backend, Self::RECT, &self.bar()).layout;
+            // `hit_test` walks close regions before tab bodies, so a
+            // click on a close glyph never reads as its tab's body.
+            match resolved.hit_test(position.x - Self::RECT.x, position.y - Self::RECT.y) {
+                crate::primitives::tab_bar::TabBarHit::TabClose(i) => {
+                    self.closed_idx = Some(i);
+                    Reaction::Redraw
                 }
-            }
-            for (i, (sx, ex)) in hits.slot_positions.iter().enumerate() {
-                if x >= *sx && x < *ex {
+                crate::primitives::tab_bar::TabBarHit::Tab(i) => {
                     self.active = i;
-                    return Reaction::Redraw;
+                    Reaction::Redraw
                 }
+                _ => Reaction::Continue,
             }
-            Reaction::Continue
         }
+    }
+
+    /// The `(bar rect, resolved layout)` the widget contract recorded
+    /// for `id` on the frame just painted — the record
+    /// [`crate::primitive::with_painted_widgets`] exposes, narrowed back
+    /// to `TabBar`'s own layout type.
+    fn painted_tab_bar_layout(
+        id: &WidgetId,
+    ) -> Option<(Rect, crate::primitives::tab_bar::TabBarPrimitiveLayout)> {
+        crate::primitive::with_painted_widgets(|p| {
+            let (rect, layout) = p.painted_layout(id)?;
+            Some((
+                rect,
+                layout
+                    .downcast_ref::<crate::primitives::tab_bar::TabBarPrimitiveLayout>()?
+                    .clone(),
+            ))
+        })
     }
 
     /// Acceptance criterion: with a 3-tab bar rendered,
@@ -1213,60 +1222,45 @@ mod tests {
         );
     }
 
-    /// The no-paint [`Backend::tab_bar_layout`] twin an app hit-tests
-    /// clicks against must report the geometry the bar was *painted*
-    /// with — not an independent estimate. In headless testing there is
-    /// no Pango handle outside the frame scope, so both the paint path
-    /// and the layout twin must measure the same fonts identically;
-    /// this test pins them as exact equality so the two paths can't
-    /// drift apart on any font.
+    /// The no-paint [`crate::DrawsPrimitives::layout_primitive`] twin an
+    /// app hit-tests clicks against must report the geometry the bar was
+    /// *painted* with — not an independent estimate. In headless testing
+    /// there is no Pango handle outside the frame scope, so both the
+    /// paint path and the layout twin must measure the same fonts
+    /// identically; this test pins them as exact equality so the two
+    /// paths can't drift apart on any font.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_twin_matches_painted_geometry_headless() {
+    fn layout_twin_matches_painted_geometry_headless() {
         let app = InteractiveTabBarApp::new(0);
         let mut driver = GtkDriver::new(app, TAB_BAR_W, TAB_BAR_H);
         let bar = driver.app().bar();
 
-        let (rect, painted) = driver
-            .core
-            .backend()
-            .cached_tab_bar_layout(&bar.id)
-            .map(|(r, l)| (r, l.clone()))
-            .expect("the first frame painted the tab bar");
-        let hits = crate::Backend::tab_bar_layout(driver.core.backend_mut(), rect, &bar);
+        let (rect, painted) =
+            painted_tab_bar_layout(&bar.id).expect("the first frame painted the tab bar");
+        assert!(
+            !painted.layout.visible_tabs.is_empty(),
+            "sanity: the painted strip must show at least one tab"
+        );
+        let twin =
+            crate::DrawsPrimitives::layout_primitive(driver.core.backend_mut(), rect, &bar).layout;
 
-        for vt in &painted.visible_tabs {
-            let painted_slot = (
-                (rect.x + vt.bounds.x) as f64,
-                (rect.x + vt.bounds.x + vt.bounds.width) as f64,
-            );
-            assert_eq!(
-                hits.slot_positions[vt.tab_idx], painted_slot,
-                "tab {} body: click-time region must equal the painted one",
-                vt.tab_idx
-            );
-            let painted_close = vt
-                .close_bounds
-                .map(|cb| ((rect.x + cb.x) as f64, (rect.x + cb.x + cb.width) as f64));
-            assert_eq!(
-                hits.close_bounds[vt.tab_idx], painted_close,
-                "tab {} close button: click-time region must equal the painted one",
-                vt.tab_idx
-            );
-        }
+        assert_eq!(
+            twin, painted.layout,
+            "the no-paint layout twin must report exactly the `TabBarLayout` \
+             the bar was last painted with"
+        );
     }
 
     /// Narrow-strip counterpart to
-    /// [`tab_bar_layout_twin_matches_painted_geometry_headless`]: a tab
-    /// whose full label doesn't fit the remaining strip width gets
-    /// ellipsis-fitted at *paint* time (`gtk::tab_bar`'s rasteriser) —
-    /// the no-paint [`Backend::tab_bar_layout`] twin must report that
+    /// [`layout_twin_matches_painted_geometry_headless`]: a tab whose
+    /// full label doesn't fit the remaining strip width gets
+    /// ellipsis-fitted at *paint* time — the no-paint
+    /// [`crate::DrawsPrimitives::layout_primitive`] twin must report that
     /// same fitted tab as visible, with the same slot and close-button
     /// bounds, not fall back to the pre-fit geometry that would have
     /// dropped it off the strip entirely.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_twin_matches_painted_geometry_headless_narrow_strip() {
+    fn layout_twin_matches_painted_geometry_headless_narrow_strip() {
         let long_label = "a_very_long_filename_for_this_single_tab_that_never_fits.rs";
         let make_bar = || TabBar {
             id: WidgetId::new("tabs"),
@@ -1303,10 +1297,11 @@ mod tests {
             type AreaId = ();
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                backend.draw_tab_bar(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, self.width as f32, TAB_BAR_H as f32),
                     &self.bar,
-                    None,
+                    &(),
                 );
             }
 
@@ -1328,17 +1323,15 @@ mod tests {
             TAB_BAR_H,
         );
         let bar_id = WidgetId::new("tabs");
-        let (_, probe_layout) = probe
-            .core
-            .backend()
-            .cached_tab_bar_layout(&bar_id)
-            .expect("the first frame painted the tab bar");
+        let (_, probe_layout) =
+            painted_tab_bar_layout(&bar_id).expect("the first frame painted the tab bar");
         assert_eq!(
-            probe_layout.visible_tabs.len(),
+            probe_layout.layout.visible_tabs.len(),
             2,
             "both tabs must fit at a generous width"
         );
-        let tab0_w = probe_layout.visible_tabs[0].bounds.width;
+        let tab0_w = probe_layout.layout.visible_tabs[0].bounds.width;
+        drop(probe);
 
         // A strip that fits tab 0 plus only a little over 80px of tab
         // 1 — nowhere near the long label's full width, so tab 1 must
@@ -1351,66 +1344,21 @@ mod tests {
         let mut driver = GtkDriver::new(app, narrow_w, TAB_BAR_H);
         let bar = make_bar();
 
-        let (rect, painted) = driver
-            .core
-            .backend()
-            .cached_tab_bar_layout(&bar_id)
-            .map(|(r, l)| (r, l.clone()))
-            .expect("the first frame painted the tab bar");
+        let (rect, painted) =
+            painted_tab_bar_layout(&bar_id).expect("the first frame painted the tab bar");
         assert_eq!(
-            painted.visible_tabs.len(),
+            painted.layout.visible_tabs.len(),
             2,
             "tab 1 must still appear, ellipsis-fitted, instead of being dropped"
         );
 
-        let hits = crate::Backend::tab_bar_layout(driver.core.backend_mut(), rect, &bar);
-
-        for vt in &painted.visible_tabs {
-            let painted_slot = (
-                (rect.x + vt.bounds.x) as f64,
-                (rect.x + vt.bounds.x + vt.bounds.width) as f64,
-            );
-            assert_eq!(
-                hits.slot_positions[vt.tab_idx], painted_slot,
-                "tab {} body: the no-paint twin must report the same slot the \
-                 narrow strip actually painted, not fall back to pre-fit geometry",
-                vt.tab_idx
-            );
-            let painted_close = vt
-                .close_bounds
-                .map(|cb| ((rect.x + cb.x) as f64, (rect.x + cb.x + cb.width) as f64));
-            assert_eq!(
-                hits.close_bounds[vt.tab_idx], painted_close,
-                "tab {} close button: the no-paint twin must report the close box \
-                 the narrow strip actually painted, not `None`",
-                vt.tab_idx
-            );
-        }
-    }
-
-    /// [`Backend::resolve_tab_bar_layout`] must report the exact
-    /// geometry the bar was painted with, headless and all.
-    /// Both the paint cache and this accessor deal in [`TabBarLayout`]
-    /// directly.
-    #[test]
-    fn resolve_tab_bar_layout_matches_painted_geometry_headless() {
-        let app = InteractiveTabBarApp::new(0);
-        let mut driver = GtkDriver::new(app, TAB_BAR_W, TAB_BAR_H);
-        let bar = driver.app().bar();
-
-        let (rect, painted) = driver
-            .core
-            .backend()
-            .cached_tab_bar_layout(&bar.id)
-            .map(|(r, l)| (r, l.clone()))
-            .expect("the first frame painted the tab bar");
-        let resolved =
-            crate::Backend::resolve_tab_bar_layout(driver.core.backend_mut(), rect, &bar);
+        let twin =
+            crate::DrawsPrimitives::layout_primitive(driver.core.backend_mut(), rect, &bar).layout;
 
         assert_eq!(
-            resolved, painted,
-            "`resolve_tab_bar_layout` must report exactly the `TabBarLayout` \
-             the bar was last painted with"
+            twin, painted.layout,
+            "the no-paint twin must report the same fitted strip the narrow \
+             bar actually painted, not fall back to pre-fit geometry"
         );
     }
 
@@ -1482,7 +1430,8 @@ mod tests {
             type AreaId = ();
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                backend.draw_tab_bar(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, TAB_BAR_W as f32, TAB_BAR_H as f32),
                     &TabBar {
                         id: WidgetId::new("tabs"),
@@ -1500,7 +1449,7 @@ mod tests {
                         compact: false,
                         ..Default::default()
                     },
-                    None,
+                    &(),
                 );
             }
 
@@ -1532,7 +1481,8 @@ mod tests {
             type AreaId = ();
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                backend.draw_tab_bar(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     // Tab 0's 80-char label alone vastly exceeds this
                     // width, so the full set can never fit — guarantees
                     // the "everything fits" layout branch (which would
@@ -1577,7 +1527,7 @@ mod tests {
                         compact: false,
                         ..Default::default()
                     },
-                    None,
+                    &(),
                 );
             }
 

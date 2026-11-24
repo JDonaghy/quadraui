@@ -8849,8 +8849,8 @@ fn wide_tab_bar_demo_right_then_enter_activates_the_next_tab() {
 //
 // The icon sidecar's whole contract is geometric: a decorated tab must
 // reserve exactly the columns it paints, on both the paint path
-// (`draw_tab_bar_icons`) and its no-paint twin (`tab_bar_layout_icons`).
-// These drive the shipping `tui_tab_icons` example through both.
+// (`draw_dyn`) and its no-paint twin (`layout_primitive`). These drive
+// the shipping `tui_tab_icons` example through both.
 
 /// The demo's own tab bar id — `tab_center` needs it to resolve a
 /// specific tab's painted geometry (labels alone can't disambiguate).
@@ -8925,11 +8925,11 @@ fn tab_icons_demo_toggling_the_sidecar_shifts_labels_by_the_reservation() {
 
 #[test]
 fn tab_icons_demo_clicking_a_tab_close_glyph_closes_that_tab() {
-    // Round-trips paint → `tab_bar_layout_icons` → handle → re-render.
+    // Round-trips paint → `layout_primitive` → handle → re-render.
     // `tab_close_center` resolves tab 2's close-glyph geometry through the
     // icon-decorated layout, same as activation clicks do — three icon
     // reservations upstream have pushed this column past where an
-    // icon-blind `tab_bar_layout` would put it.
+    // icon-blind layout would put it.
     let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
     assert!(
         driver.find_bounds("README.md").is_some(),
@@ -9135,8 +9135,7 @@ fn tab_icons_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the tab icons demo");
 }
 
-// ─── TabChromeDemo: active-tab bracket framing through
-//     Backend::draw_tab_bar_with_chrome ──────────────────────────────────
+// ─── TabChromeDemo: active-tab bracket framing through TabBar::chrome ───
 //
 // A consumer never has to bake `[`/`]` into `TabItem::label` to get bracket
 // framing around the close glyph; instead use the declarative chrome path.
@@ -9162,7 +9161,7 @@ fn tab_chrome_demo_active_tab_is_enclosed_in_brackets() {
 
 #[test]
 fn tab_chrome_demo_click_on_close_glyph_closes_not_activates() {
-    // Round-trips paint -> `tab_bar_layout_with_chrome` -> handle ->
+    // Round-trips paint -> `layout_primitive` -> handle ->
     // re-render, exactly like a real consumer's click routing. If the
     // close click were mis-resolved as a tab-body click, the hint bar
     // would say "activated main.rs" instead of "closed main.rs" — and
@@ -13105,10 +13104,10 @@ fn tui_mcp_demo_filter_then_act_moves_the_painted_detail_pane() {
 // ── `TabBar`'s chrome / icon / glyph descriptor fields ───────────────
 //
 // `draw_primitive(rect, &bar)` paints a chrome, icon or glyph-override
-// tab strip from the descriptor's own `chrome`/`icons`/`glyphs` fields.
-// These tests pin it against the `Backend::draw_tab_bar_*` call that
-// takes the same three values as explicit arguments: same cells, same
-// per-tab hit ranges.
+// tab strip from the descriptor's own `chrome`/`icons`/`glyphs` fields —
+// the only route a tab strip paints by. These tests pin each field's
+// visible effect on the painted row and on the per-tab hit ranges the
+// seam resolves.
 mod tab_bar_descriptor_fields {
     use quadraui::tui::testing::{CellStyle, TuiDriver};
     use quadraui::{
@@ -13139,10 +13138,8 @@ mod tab_bar_descriptor_fields {
             .collect()
     }
 
-    /// One chrome/icon/glyph configuration, in both of its spellings:
-    /// [`Self::descriptor`] carries it on the `TabBar`, while
-    /// [`Self::chrome`]/[`Self::icons`]/[`Self::glyphs`] feed the
-    /// `Backend` method that takes it as an argument.
+    /// One chrome/icon/glyph configuration, carried on the descriptor
+    /// by [`Self::descriptor`].
     #[derive(Clone, Copy, Debug)]
     enum Case {
         /// No frame, no focus ring, no icons, default glyphs.
@@ -13202,27 +13199,6 @@ mod tab_bar_descriptor_fields {
                 ..Default::default()
             }
         }
-
-        /// The same bar with the three fields left at their defaults —
-        /// what a `Backend::draw_tab_bar_*` caller passes alongside the
-        /// explicit chrome/icons/glyphs arguments.
-        fn plain_descriptor(self) -> TabBar {
-            TabBar {
-                id: WidgetId::new("tabs:parity"),
-                tabs: tabs(),
-                ..Default::default()
-            }
-        }
-    }
-
-    /// Which of the two paint routes an app instance takes.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Route {
-        /// `DrawsPrimitives::draw_primitive` with the descriptor fields.
-        Seam,
-        /// The `Backend::draw_tab_bar_*` method taking the same values
-        /// as arguments.
-        BackendMethod,
     }
 
     /// `[(start, end)]` per tab index, in the bar's own coordinate
@@ -13236,52 +13212,18 @@ mod tab_bar_descriptor_fields {
         ranges
     }
 
-    /// Paints one strip, by one route, and records the per-tab hit
-    /// ranges that route resolved.
-    struct ParityApp {
+    /// Paints one strip through the widget seam and records the per-tab
+    /// hit ranges it resolved.
+    struct SeamApp {
         case: Case,
-        route: Route,
         ranges: RefCell<Vec<(f32, f32)>>,
     }
 
-    impl AppLogic for ParityApp {
+    impl AppLogic for SeamApp {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let layout = match self.route {
-                Route::Seam => backend.draw_primitive(BAR, &self.case.descriptor()).layout,
-                // Each arm paints through the `draw_tab_bar_*` method
-                // that takes this case's chrome/icons/glyphs as
-                // arguments, then reads its hit ranges back from that
-                // method's own no-paint `resolve_*` twin (the painting
-                // `*_layout` twins would overdraw the strip).
-                Route::BackendMethod => {
-                    let bar = self.case.plain_descriptor();
-                    let chrome = self.case.chrome();
-                    match self.case {
-                        Case::Icons => {
-                            let icons = self.case.icons();
-                            backend.draw_tab_bar_icons(BAR, &bar, &icons, None);
-                            backend.resolve_tab_bar_layout_icons(BAR, &bar, &icons)
-                        }
-                        Case::CloseGlyph => {
-                            let glyphs = self.case.glyphs();
-                            backend.draw_tab_bar_with_chrome_and_glyphs(
-                                BAR,
-                                &bar,
-                                None,
-                                &chrome,
-                                Some(&glyphs),
-                            );
-                            backend.resolve_tab_bar_layout_with_chrome(BAR, &bar, &chrome)
-                        }
-                        _ => {
-                            backend.draw_tab_bar_with_chrome(BAR, &bar, None, &chrome);
-                            backend.resolve_tab_bar_layout_with_chrome(BAR, &bar, &chrome)
-                        }
-                    }
-                }
-            };
+            let layout = backend.draw_primitive(BAR, &self.case.descriptor()).layout;
             *self.ranges.borrow_mut() = tab_ranges(&layout, LABELS.len());
         }
 
@@ -13290,13 +13232,12 @@ mod tab_bar_descriptor_fields {
         }
     }
 
-    /// The painted bar row, its text, and the hit ranges `route`
+    /// The painted bar row, its text, and the hit ranges the seam
     /// resolved for `case`.
-    fn paint(case: Case, route: Route) -> (Vec<(char, CellStyle)>, String, Vec<(f32, f32)>) {
+    fn paint(case: Case) -> (Vec<(char, CellStyle)>, String, Vec<(f32, f32)>) {
         let mut driver = TuiDriver::new(
-            ParityApp {
+            SeamApp {
                 case,
-                route,
                 ranges: RefCell::new(Vec::new()),
             },
             BAR.width as u16,
@@ -13309,42 +13250,41 @@ mod tab_bar_descriptor_fields {
         (row, text, ranges)
     }
 
-    /// The acceptance bar for one case: identical cells (symbol *and*
-    /// style) and identical per-tab hit ranges on both routes.
-    fn assert_parity(case: Case) {
-        let (seam_row, seam_text, seam_ranges) = paint(case, Route::Seam);
-        let (method_row, method_text, method_ranges) = paint(case, Route::BackendMethod);
-        assert_eq!(
-            seam_text, method_text,
-            "{case:?}: draw_primitive painted different text than the Backend method\n\
-             seam:   {seam_text:?}\nmethod: {method_text:?}"
-        );
-        assert_eq!(
-            seam_row, method_row,
-            "{case:?}: draw_primitive painted different cell styles than the Backend method"
-        );
-        assert_eq!(
-            seam_ranges, method_ranges,
-            "{case:?}: draw_primitive resolved different per-tab hit ranges"
-        );
+    /// The baseline every case shares: the seam painted the labels and
+    /// resolved a non-empty hit range for every tab, so a per-field
+    /// assertion below can't pass vacuously over an unpainted strip.
+    fn assert_strip_painted(case: Case) {
+        let (row, text, ranges) = paint(case);
         assert!(
-            seam_ranges.iter().all(|(lo, hi)| hi > lo),
-            "{case:?}: every tab should have a non-empty hit range: {seam_ranges:?}"
+            !row.is_empty(),
+            "{case:?}: the seam should have painted the bar row"
+        );
+        for label in LABELS {
+            assert!(
+                text.contains(label),
+                "{case:?}: tab label {label:?} should reach the painted row: {text:?}"
+            );
+        }
+        assert!(
+            ranges.iter().all(|(lo, hi)| hi > lo),
+            "{case:?}: every tab should have a non-empty hit range: {ranges:?}"
         );
     }
 
     #[test]
-    fn default_chrome_paints_the_same_cells_through_the_seam_and_the_backend_method() {
-        assert_parity(Case::DefaultChrome);
+    fn default_chrome_paints_every_label_through_the_seam() {
+        assert_strip_painted(Case::DefaultChrome);
+        let (_, text, _) = paint(Case::DefaultChrome);
+        assert!(
+            !text.contains('['),
+            "default chrome draws no bracket frame: {text:?}"
+        );
     }
 
     #[test]
-    fn focused_frame_chrome_paints_the_same_cells_through_the_seam_and_the_backend_method() {
-        assert_parity(Case::FocusedFrame);
-        // Guard against a vacuous pass: the bracket frame has to be
-        // visible in the first place for the comparison to mean
-        // anything.
-        let (_, text, _) = paint(Case::FocusedFrame, Route::Seam);
+    fn focused_frame_chrome_brackets_the_active_tab_through_the_seam() {
+        assert_strip_painted(Case::FocusedFrame);
+        let (_, text, _) = paint(Case::FocusedFrame);
         assert!(
             text.contains('[') && text.contains(']'),
             "bracket framing should reach the painted row: {text:?}"
@@ -13352,10 +13292,10 @@ mod tab_bar_descriptor_fields {
     }
 
     #[test]
-    fn icon_bar_paints_the_same_cells_through_the_seam_and_the_backend_method() {
-        assert_parity(Case::Icons);
-        let (_, with_icons, icon_ranges) = paint(Case::Icons, Route::Seam);
-        let (_, without, plain_ranges) = paint(Case::DefaultChrome, Route::Seam);
+    fn icon_descriptor_field_paints_and_widens_its_own_tab_through_the_seam() {
+        assert_strip_painted(Case::Icons);
+        let (_, with_icons, icon_ranges) = paint(Case::Icons);
+        let (_, without, plain_ranges) = paint(Case::DefaultChrome);
         assert!(
             with_icons.contains('R') && with_icons.contains('M'),
             "the descriptor's icon glyphs should reach the painted row: {with_icons:?}"
@@ -13375,10 +13315,10 @@ mod tab_bar_descriptor_fields {
     }
 
     #[test]
-    fn close_glyph_override_paints_the_same_cells_through_the_seam_and_the_backend_method() {
-        assert_parity(Case::CloseGlyph);
-        let (_, overridden, _) = paint(Case::CloseGlyph, Route::Seam);
-        let (_, default_glyphs, _) = paint(Case::DefaultChrome, Route::Seam);
+    fn close_glyph_descriptor_field_overrides_the_default_through_the_seam() {
+        assert_strip_painted(Case::CloseGlyph);
+        let (_, overridden, _) = paint(Case::CloseGlyph);
+        let (_, default_glyphs, _) = paint(Case::DefaultChrome);
         assert!(
             overridden.contains('X'),
             "the overridden close glyph should reach the painted row: {overridden:?}"

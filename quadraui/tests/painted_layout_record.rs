@@ -12,7 +12,7 @@
 //!
 //! The driver half of the same seam — `TuiDriver::tab_center` /
 //! `tab_close_center` resolving a bar that only ever painted through
-//! `draw_dyn`, with no legacy `draw_tab_bar` layout cache behind it — is
+//! `draw_dyn`, with no per-backend layout cache behind it — is
 //! the last test in this file. The GTK driver resolves through the same
 //! shared helper (`primitives::tab_bar::tab_part_center`), and the
 //! workspace demo's end-to-end tab clicks live in
@@ -33,7 +33,7 @@ fn bar_id() -> WidgetId {
 }
 
 /// An `AppLogic` that paints one `TabBar` through `draw_dyn` — the widget
-/// contract's paint path, with no `Backend::draw_tab_bar` call anywhere,
+/// contract's paint path, with no per-backend rasteriser anywhere,
 /// so the only geometry anything can read back is the painted-layout
 /// record.
 struct RecordApp {
@@ -223,7 +223,7 @@ fn painted_hit_resolves_the_tab_body_the_close_button_and_dead_space() {
     let _driver = quadraui::tui::testing::TuiDriver::new(RecordApp::new(), 60, 10);
 
     let (body_x, body_y) =
-        tab_part_center(&bar_id(), TabBarSubPart::Tab(1), None).expect("tab 1 painted a body");
+        tab_part_center(&bar_id(), TabBarSubPart::Tab(1)).expect("tab 1 painted a body");
     let (id, sub) = painted_hit(body_x, body_y).expect("the bar is under its own tab 1");
     assert_eq!(id, bar_id());
     assert_eq!(
@@ -232,7 +232,7 @@ fn painted_hit_resolves_the_tab_body_the_close_button_and_dead_space() {
         "a point on tab 1's body resolves to that tab"
     );
 
-    let (close_x, close_y) = tab_part_center(&bar_id(), TabBarSubPart::TabClose(1), None)
+    let (close_x, close_y) = tab_part_center(&bar_id(), TabBarSubPart::TabClose(1))
         .expect("tab 1 painted a close button");
     let (id, sub) = painted_hit(close_x, close_y).expect("the bar is under tab 1's close button");
     assert_eq!(id, bar_id());

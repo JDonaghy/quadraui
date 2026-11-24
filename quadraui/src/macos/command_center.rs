@@ -17,7 +17,7 @@
 //! rather than full-weight Unicode triangles — `font` is always built
 //! through [`super::text::font_with_builtin_fallback`], so its cascade
 //! list already carries the bundled codicon font, and these glyphs
-//! resolve the same way [`super::tab_bar`]'s close/dirty glyphs do.
+//! resolve the same way the tab strip's close/dirty glyphs do.
 
 use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;

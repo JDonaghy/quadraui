@@ -5,7 +5,7 @@
 //!
 //! [`win_form_layout`] computes one [`crate::FormLayout`] — the same
 //! "one layout, paint and hit-test both consume it" contract
-//! `win::tab_bar` / `win::status_bar` established — consumed both by
+//! `win::status_bar` established — consumed both by
 //! `WinBackend::form_layout` (hit-testing) and by `WinBackend::draw_form`
 //! (which feeds it to `paint`).
 //!

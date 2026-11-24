@@ -231,9 +231,7 @@ pub mod pixel {
     pub const MINIMAP_LINES_PER_ROW: usize = 1;
 
     /// [`crate::TabBar`] non-compact per-tab horizontal padding (left +
-    /// right) inside the tab background fill. `gtk::tab_bar::TAB_PAD`,
-    /// `macos::tab_bar::TAB_PAD`, and `win::tab_bar::TAB_PAD_DIP` were all
-    /// `14.0` independently.
+    /// right) inside the tab background fill.
     pub const TAB_PAD: f32 = 14.0;
     /// [`crate::TabBar`] gap between a tab's label and its close glyph.
     pub const TAB_INNER_GAP: f32 = 10.0;
@@ -245,54 +243,42 @@ pub mod pixel {
     /// 15-glyph sample string every pixel backend measures once per frame
     /// to estimate an average glyph advance for
     /// [`super::pixel_tab_bar_layout`]'s `available_cols` — proportional
-    /// fonts have no single "char width", so this is the same estimate
-    /// convention `gtk`/`macos` already used independently.
+    /// fonts have no single "char width", so an estimate is the best
+    /// answer available.
     pub const TAB_CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
 
     /// [`crate::TabBar`] per-tab horizontal padding (left + right) when
-    /// [`crate::TabBar::compact`] is set — [`TAB_PAD`]'s narrower sibling.
-    /// `gtk::tab_bar::TAB_PAD_COMPACT`, `macos::tab_bar::TAB_PAD_COMPACT`,
-    /// and `win::tab_bar::TAB_PAD_COMPACT` are all `2.0` independently.
+    /// [`crate::TabBar::compact`] is set — [`TAB_PAD`]'s narrower
+    /// sibling.
     pub const TAB_PAD_COMPACT: f32 = 2.0;
     /// [`TAB_INNER_GAP`]'s narrower sibling when [`crate::TabBar::compact`]
-    /// is set. Every pixel backend inlines this as a literal `4.0`
-    /// alongside its own `TAB_PAD_COMPACT`.
+    /// is set.
     pub const TAB_INNER_GAP_COMPACT: f32 = 4.0;
     /// [`TAB_OUTER_GAP`]'s narrower sibling when [`crate::TabBar::compact`]
     /// is set — compact mode removes the gap between adjacent tabs
-    /// entirely. Every pixel backend inlines this as a literal `0.0`.
+    /// entirely.
     pub const TAB_OUTER_GAP_COMPACT: f32 = 0.0;
 
     /// [`crate::TabBar`] vertical inset (top and bottom) of the active
     /// tab's rounded chip from the bar's own row height.
-    /// `gtk::tab_bar::TAB_CHIP_INSET_Y`, `macos::tab_bar::TAB_CHIP_INSET_Y`,
-    /// and `win::tab_bar::TAB_CHIP_INSET_Y` are all `4.0` independently.
     pub const TAB_CHIP_INSET_Y: f32 = 4.0;
     /// [`crate::TabBar`] corner radius of the active tab's chip fill.
-    /// `gtk::tab_bar::TAB_CHIP_RADIUS`, `macos::tab_bar::TAB_CHIP_RADIUS`,
-    /// and `win::tab_bar::TAB_CHIP_RADIUS` are all `4.0` independently.
     pub const TAB_CHIP_RADIUS: f32 = 4.0;
     /// [`crate::TabBar`] thickness of the active-tab top accent line
     /// painted on the chip's own inset top edge when
     /// [`crate::TabBar::active_accent`] is `Some`.
-    /// `gtk::tab_bar::TAB_ACTIVE_BORDER_TOP_PX` and
-    /// `win::tab_bar::TAB_ACTIVE_ACCENT_DIP` are both `1.0` independently.
     pub const TAB_ACCENT_THICKNESS: f32 = 1.0;
 
     /// Alpha [`super::tab_close_hover_bg`] blends `foreground` into a
     /// tab's own resting background at, to derive the hover backdrop
     /// painted behind a tab's close glyph while the pointer is over it.
-    /// Matches `gtk::tab_bar`'s own close-glyph hover wash — the reference
-    /// value for this backdrop; `macos::tab_bar` currently paints none at
-    /// all and `win::tab_bar` lightens its base colour toward white
-    /// instead (see `primitives::tab_bar`'s module doc table).
+    /// Read by `primitives::tab_bar`'s shared pixel painter, so every
+    /// pixel backend gets the same wash.
     pub const TAB_CLOSE_HOVER_ALPHA: f64 = 0.15;
     /// Padding (px) around the close glyph's own measured width that the
     /// hover backdrop rectangle/rounded-rect extends by on every side.
-    /// Matches `gtk::tab_bar`'s own close-hover backdrop inset.
     pub const TAB_CLOSE_HOVER_PAD: f32 = 2.0;
-    /// Corner radius of the close-glyph hover backdrop. Matches
-    /// `gtk::tab_bar`'s own close-hover backdrop radius.
+    /// Corner radius of the close-glyph hover backdrop.
     pub const TAB_CLOSE_HOVER_RADIUS: f32 = 3.0;
 }
 
@@ -302,12 +288,9 @@ pub mod pixel {
 /// [`pixel::TAB_CLOSE_HOVER_ALPHA`].
 ///
 /// One derivation for every pixel backend's close-glyph hover backdrop,
-/// rather than each independently picking its own tint math: `gtk::tab_bar`
-/// already computes exactly this blend; `win::tab_bar` instead lightens
-/// its base colour toward white, and `macos::tab_bar` paints no backdrop
-/// at all. Adopting this helper is a per-backend follow-up outside this
-/// primitive's own scope — see `primitives::tab_bar`'s module doc table
-/// for the current three-way split this unifies.
+/// rather than each independently picking its own tint math:
+/// `primitives::tab_bar`'s shared pixel painter is the only caller, so
+/// GTK, macOS and Windows all paint the identical blend.
 pub fn tab_close_hover_bg(
     base: crate::types::Color,
     foreground: crate::types::Color,
@@ -2397,7 +2380,7 @@ mod tests {
     // icons ────────────────────────────────────────────────────────────
     //
     // Each fixture reproduces, with `FakeTabMeasure`'s fixed 6px-per-char
-    // metric, the same per-tab width math `gtk::tab_bar` computes with a
+    // metric, the same per-tab width math the shared pixel layout computes with a
     // real Pango measurer — the union behaviour this module now shares
     // with every pixel backend's tab strip.
 
@@ -2437,7 +2420,7 @@ mod tests {
     fn fixture_overflow_scrolls_to_keep_the_active_tab_visible() {
         // 10 two-char-label tabs; a narrow bar forces a scroll correction
         // to keep the active (last) tab on-screen — the same overflow
-        // path `gtk::tab_bar`'s own scroll-offset reconciliation hits.
+        // path the shared scroll-offset reconciliation hits.
         let tabs: Vec<_> = (0..10)
             .map(|i| closable_tab(&format!("t{i}"), i == 9))
             .collect();

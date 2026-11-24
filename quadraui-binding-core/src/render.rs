@@ -179,7 +179,7 @@ pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
 /// All three tab-bar paint paths here (the fixed `"tab_bar"` slot in
 /// [`draw_bands`], [`LayoutNode::Tabs`]'s strip in [`paint_layout`] and
 /// [`LeafDescriptor::TabBar`] in [`paint_leaf`]) share this one call, so
-/// none reaches for a `Backend::draw_tab_bar*` method of its own.
+/// none reaches for a per-backend tab-bar rasteriser of its own.
 ///
 /// An empty layout is the fallback when `draw_dyn` hands back a layout of
 /// some other concrete type, which means nothing measured a tab bar: the
@@ -1716,7 +1716,7 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
                 .map(|tab| backend.measure_text(&tab.label, FontRole::Chrome).0)
                 .sum::<f32>();
             // Top border + one row of labels + bottom border, TUI's own
-            // `quadraui::tui::tab_bar` chrome frame -- three line-heights
+            // tab-strip chrome frame -- three line-heights
             // regardless of backend, since no pixel backend reports a
             // narrower natural height for the same chrome today.
             const BORDER_LABEL_BORDER_ROWS: f32 = 3.0;

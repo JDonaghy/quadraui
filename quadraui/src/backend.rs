@@ -91,7 +91,7 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::switch::{Switch, SwitchLayout};
-use crate::primitives::tab_bar::{TabBarGlyphs, TabBarHits, TabBarLayout, TabChrome, TabIcon};
+use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_field::{TextField, TextFieldLayout, TextFieldMeasure};
 use crate::primitives::text_input::{TextInput, TextInputLayout};
@@ -2970,220 +2970,6 @@ pub trait Backend: sealed::Sealed {
         self.draw_status_bar_interactive(rect, bar, &interaction)
     }
 
-    /// Draw a tab bar. `hovered_close_tab` carries per-frame hover
-    /// state so the rasteriser can paint a hover background behind the
-    /// hovered tab's close glyph (the primitive itself carries no
-    /// mouse state). Returns [`TabBarHits`] for click dispatch +
-    /// scroll-offset reconciliation.
-    fn draw_tab_bar(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarHits;
-
-    /// [`Self::draw_tab_bar`], plus a `hovered_tab` index naming the
-    /// whole tab (not its close glyph) the mouse is over, and a
-    /// `pressed_tab` index naming the tab a mouse-down is currently held
-    /// on.
-    ///
-    /// Both are index-keyed, like the existing `hovered_close_tab`,
-    /// rather than [`InteractionState`]-keyed by [`WidgetId`]: [`TabItem`]
-    /// carries no id of its own — only [`TabBar::id`], one per *bar*,
-    /// which can't name *which* tab within it is hovered or pressed — so
-    /// this joins `draw_tab_bar`'s own `hovered_close_tab` in
-    /// `interaction.rs`'s "Methods that remain positional" table rather
-    /// than taking an `InteractionState`. Mirrors the shape
-    /// [`ListPaintState`]/[`TreePaintState`] already use for the same
-    /// "no stable per-item id" reason: a plain `hovered_idx` /
-    /// `pressed_idx` pair rather than a struct, since a tab bar's only
-    /// other positional slot (`hovered_close_tab`) is already a bare
-    /// argument, not a state struct.
-    ///
-    /// Additive over [`Self::draw_tab_bar`], not a replacement — the
-    /// default forwards to it (ignoring `hovered_tab`/`pressed_tab`), so
-    /// every existing implementor keeps compiling unchanged. A backend's
-    /// own whole-tab hover/pressed treatment (painting a tab's own
-    /// background when `Some(i) == hovered_tab` / `Some(i) ==
-    /// pressed_tab`) is implemented per backend, not here.
-    ///
-    /// [`ListPaintState`]: crate::primitives::list::ListPaintState
-    /// [`TreePaintState`]: crate::primitives::tree::TreePaintState
-    fn draw_tab_bar_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        _hovered_tab: Option<usize>,
-        _pressed_tab: Option<usize>,
-    ) -> TabBarHits {
-        self.draw_tab_bar(rect, bar, hovered_close_tab)
-    }
-
-    /// Draw a tab bar, returning [`TabBarLayout`] instead of
-    /// [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
-    /// rather than in place of it, so no existing caller breaks.
-    /// Paints exactly what [`Self::draw_tab_bar`] paints (icon-less
-    /// sidecar of [`Self::draw_tab_bar_icons_layout`]); the two must never
-    /// drift apart, same invariant [`Self::draw_tab_bar`] already holds
-    /// against [`Self::draw_tab_bar_icons`].
-    ///
-    /// Returned in [`TabBarLayout`]'s own **bar-relative** coordinate
-    /// space (origin at `rect`'s top-left) — see that struct's doc. This
-    /// is deliberately *not* the target-surface-absolute space
-    /// [`TabBarHits`] uses; the two return types have different,
-    /// independently-documented contracts, and this method follows
-    /// `TabBarLayout`'s.
-    ///
-    /// No default impl — every backend implementer sees this as a
-    /// compile error and fills in a real rasteriser, mirroring
-    /// [`Self::draw_tab_bar`]'s own no-default rule (rule 7).
-    fn draw_tab_bar_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout;
-
-    /// [`Self::draw_tab_bar_layout`], plus a `hovered_tab`/`pressed_tab`
-    /// index pair naming the whole tab the mouse is over/held down on —
-    /// the [`TabBarLayout`]-returning twin of
-    /// [`Self::draw_tab_bar_with_state`], reachable from the `py`/`node`
-    /// paint path (`quadraui-binding-core`'s renderer calls
-    /// `draw_tab_bar_layout`, not `draw_tab_bar`).
-    ///
-    /// Additive over [`Self::draw_tab_bar_layout`], not a replacement —
-    /// the default forwards to it (ignoring `hovered_tab`/`pressed_tab`),
-    /// so every existing implementor keeps compiling unchanged.
-    fn draw_tab_bar_layout_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        _hovered_tab: Option<usize>,
-        _pressed_tab: Option<usize>,
-    ) -> TabBarLayout {
-        self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
-    }
-    /// Draw a tab bar with per-tab icon glyphs — VS Code's coloured
-    /// language/file-type badge on each tab.
-    ///
-    /// `icons` is a **sidecar slice parallel to `bar.tabs`**: entry `i`
-    /// decorates tab `i`, `None` (or an index past the slice's end)
-    /// means "no icon", and `&[]` is exactly equivalent to
-    /// [`Self::draw_tab_bar`]. Resolve entries with
-    /// [`crate::tab_icon_at`] / [`crate::tab_icon_cols`] rather than
-    /// indexing, so every backend shares one short-slice convention.
-    ///
-    /// The icons ride *beside* the primitive instead of inside
-    /// [`crate::TabItem`] because a new field on that struct is a hard
-    /// break for both downstream consumers and the sealed acceptance
-    /// slices, which build it with exhaustive literals — whereas a new
-    /// `Backend` method with no default breaks nobody
-    /// (`PRIMITIVE_RULES.md` rule 8's blast-radius table). See
-    /// [`crate::TabIcon`] for the full rationale.
-    ///
-    /// Implementors: put the real rasteriser **here** and let
-    /// [`Self::draw_tab_bar`] forward with `&[]`, so an icon-less bar
-    /// and an icon bar can never drift apart. An icon must widen its
-    /// tab by exactly what the paint reserves, so close-button and
-    /// tab-slot hit geometry stay on the glyphs the user sees; icon-less
-    /// tabs must keep byte-identical geometry to `draw_tab_bar`.
-    ///
-    /// No default impl — every backend implementer sees this as a
-    /// compile error and fills in a real rasteriser
-    /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
-    ///
-    fn draw_tab_bar_icons(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarHits;
-    /// Draw a tab bar with per-tab icon glyphs, returning [`TabBarLayout`]
-    /// instead of [`TabBarHits`]. The icon-aware twin of
-    /// [`Self::draw_tab_bar_layout`], exactly as
-    /// [`Self::draw_tab_bar_icons`] is the twin of [`Self::draw_tab_bar`]
-    /// — same `icons` sidecar convention, same bar-relative coordinate
-    /// space as [`Self::draw_tab_bar_layout`].
-    ///
-    /// No default impl — same rule-7 reasoning as
-    /// [`Self::draw_tab_bar_icons`].
-    fn draw_tab_bar_icons_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout;
-    /// Draw a tab bar with an explicit [`TabChrome`] request: which
-    /// decoration, if any, should enclose the active tab's full content
-    /// (label *and* close glyph).
-    ///
-    /// Added rather than folded into [`Self::draw_tab_bar`]'s signature,
-    /// and given a default body, so it breaks no existing `Backend`
-    /// implementor and no existing call site — see `primitives::tab_bar`'s
-    /// [`TabChrome`] doc, which mirrors [`crate::TooltipChrome`]'s shape
-    /// for exactly this reason.
-    ///
-    /// The default body **ignores `chrome`** and delegates to
-    /// [`Self::draw_tab_bar`], i.e. renders [`crate::TabFrame::None`] —
-    /// the correct fallback for a backend with no frame vocabulary of its
-    /// own. The TUI and GTK backends override it and honour
-    /// [`crate::TabFrame::Brackets`] in full.
-    ///
-    fn draw_tab_bar_with_chrome(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-    ) -> TabBarHits {
-        let _ = chrome;
-        self.draw_tab_bar(rect, bar, hovered_close_tab)
-    }
-    /// Draw a tab bar with an explicit [`TabChrome`] request, returning
-    /// [`TabBarLayout`] instead of [`TabBarHits`] — the
-    /// `TabBarLayout`-returning twin of [`Self::draw_tab_bar_with_chrome`].
-    ///
-    /// Default body **ignores `chrome`** and delegates to
-    /// [`Self::draw_tab_bar_layout`], matching
-    /// [`Self::draw_tab_bar_with_chrome`]'s own default exactly.
-    fn draw_tab_bar_with_chrome_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-    ) -> TabBarLayout {
-        let _ = chrome;
-        self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
-    }
-    /// Draw a tab bar with an explicit [`TabChrome`] request, plus an
-    /// optional [`TabBarGlyphs`] override for the close/dirty glyphs.
-    ///
-    /// Added rather than folded into [`Self::draw_tab_bar_with_chrome`]'s
-    /// signature, and given a default body, so it breaks no existing
-    /// `Backend` implementor and no existing call site.
-    ///
-    /// The default body **ignores `glyphs`** and delegates to
-    /// [`Self::draw_tab_bar_with_chrome`], i.e. renders the default
-    /// close/dirty glyphs. That is the correct fallback for a backend
-    /// that hasn't opted in to overrides yet. The TUI backend overrides
-    /// it and honours `glyphs` in full.
-    ///
-    fn draw_tab_bar_with_chrome_and_glyphs(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        hovered_close_tab: Option<usize>,
-        chrome: &TabChrome,
-        glyphs: Option<&TabBarGlyphs>,
-    ) -> TabBarHits {
-        let _ = glyphs;
-        self.draw_tab_bar_with_chrome(rect, bar, hovered_close_tab, chrome)
-    }
     /// Draw an activity bar. `hovered_idx` carries per-frame hover
     /// state so the rasteriser can paint a tint on the hovered row.
     /// Returns per-row hit regions for click + tooltip dispatch.
@@ -3198,8 +2984,8 @@ pub trait Backend: sealed::Sealed {
     /// themselves (`hit.y_start + rect.y`).
     ///
     /// Note this is deliberately the *opposite* convention from
-    /// [`Self::tab_bar_layout`] / [`Self::draw_tab_bar`], whose
-    /// [`TabBarHits`] spans are absolute. The split is historical but now
+    /// [`TabBarHits`], whose x spans are absolute. The split is
+    /// historical but now
     /// pinned: the activity bar's space is what GTK, macOS, and the
     /// shared [`activity_bar_hits`] helper already produced, and what
     /// `AppShell` assumes in both its click and hover readers.
@@ -3237,10 +3023,10 @@ pub trait Backend: sealed::Sealed {
     /// Added rather than folded into [`Self::draw_activity_bar`]'s
     /// signature, and given a default body, so it breaks no existing
     /// `Backend` implementor and no existing call site — mirrors
-    /// [`crate::TooltipChrome`] / [`Self::draw_tooltip_with_chrome`] and
-    /// [`TabChrome`] / [`Self::draw_tab_bar_with_chrome`], which solve the
+    /// [`crate::TooltipChrome`] / [`Self::draw_tooltip_with_chrome`],
+    /// which solves the
     /// identical "additive field would break exhaustive downstream
-    /// literals" problem for `Tooltip` and `TabBar`. See
+    /// literals" problem for `Tooltip`. See
     /// [`ActivityBarStyle`]'s doc for the full reasoning.
     ///
     /// The default body **ignores `style`** and delegates to
@@ -3272,123 +3058,6 @@ pub trait Backend: sealed::Sealed {
     /// output, so paint and no-paint already agree and no backend folds
     /// the origin in.
     fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout;
-
-    /// Compute the tab bar layout without painting. Returns the same
-    /// `TabBarHits` as `draw_tab_bar` — slot positions, close bounds, and
-    /// right-segment bounds are all in **target-surface (absolute)
-    /// coordinates**, i.e. shifted by `rect.x` / `rect.y` so callers can
-    /// compare them directly against raw click coordinates without any
-    /// further adjustment. Every backend routes through
-    /// [`shift_tab_bar_hits`], the same helper the rasterisers use. Note
-    /// the tab bar's absolute convention is the opposite of
-    /// [`Self::draw_activity_bar`]'s bar-relative one — deliberate, and
-    /// stated on both.
-    ///
-    fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
-
-    /// Compute the tab bar layout without painting, returning
-    /// [`TabBarLayout`] instead of [`TabBarHits`]. The
-    /// `TabBarLayout`-returning twin of [`Self::tab_bar_layout`], added
-    /// alongside it rather than in place of it — every backend already
-    /// resolves this geometry internally before narrowing it down to
-    /// `TabBarHits`; this exposes it directly.
-    ///
-    /// Returned in `TabBarLayout`'s own **bar-relative** space — see that
-    /// struct's doc — which is the *opposite* convention from
-    /// [`Self::tab_bar_layout`]'s documented absolute one. This is not a
-    /// coordinate-space bug: the two return types each follow their own
-    /// struct's contract, same split `TabBarLayout`'s own doc draws
-    /// against `Self::draw_activity_bar` / `Self::activity_bar_layout`.
-    /// A caller wanting an absolute point adds the bar's own `rect.x` /
-    /// `rect.y` origin, exactly as [`TabBarLayout::tab_center`] /
-    /// [`TabBarLayout::tab_close_center`]'s docs already describe for
-    /// `TuiDriver` / `GtkDriver`.
-    ///
-    /// No default impl — same rule-7 reasoning as
-    /// [`Self::tab_bar_layout_icons`].
-    fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout;
-
-    /// Compute the tab bar layout without painting, for a bar painted
-    /// with per-tab icons. The no-paint twin of
-    /// [`Self::draw_tab_bar_icons`], exactly as [`Self::tab_bar_layout`]
-    /// is the twin of [`Self::draw_tab_bar`] — same absolute-coordinate
-    /// contract, same `icons` sidecar convention.
-    ///
-    /// A caller that paints with icons **must** route its no-paint click
-    /// geometry through this method rather than [`Self::tab_bar_layout`]:
-    /// the icon reservation widens every decorated tab, so the icon-less
-    /// twin would report slot and close-button bounds shifted left of
-    /// the painted glyphs. `&[]` makes the two identical.
-    ///
-    /// No default impl — same rule-7 reasoning as
-    /// [`Self::draw_tab_bar_icons`].
-    ///
-    fn tab_bar_layout_icons(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<TabIcon>],
-    ) -> TabBarHits;
-
-    /// Compute the tab bar layout without painting, for a bar painted
-    /// with per-tab icons, returning [`TabBarLayout`] instead of
-    /// [`TabBarHits`]. The icon-aware twin of
-    /// [`Self::resolve_tab_bar_layout`], exactly as
-    /// [`Self::tab_bar_layout_icons`] is the twin of
-    /// [`Self::tab_bar_layout`] — same `icons` sidecar convention, same
-    /// bar-relative coordinate space as [`Self::resolve_tab_bar_layout`].
-    ///
-    /// No default impl — same rule-7 reasoning as
-    /// [`Self::tab_bar_layout_icons`].
-    fn resolve_tab_bar_layout_icons(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<TabIcon>],
-    ) -> TabBarLayout;
-
-    /// Compute the tab bar layout without painting, for a bar painted
-    /// with [`Self::draw_tab_bar_with_chrome`]. The no-paint twin of that
-    /// method, exactly as [`Self::tab_bar_layout`] is the twin of
-    /// [`Self::draw_tab_bar`] — same absolute-coordinate contract.
-    ///
-    /// A caller that paints with chrome **must** route its no-paint click
-    /// geometry through this method rather than [`Self::tab_bar_layout`]:
-    /// [`crate::TabFrame::Brackets`] widens the active tab and moves its
-    /// close-button hit region, so the chrome-less twin would report it
-    /// shifted from the painted glyph.
-    ///
-    /// Default body ignores `chrome` and delegates to
-    /// [`Self::tab_bar_layout`], matching [`Self::draw_tab_bar_with_chrome`]'s
-    /// default.
-    ///
-    fn tab_bar_layout_with_chrome(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        chrome: &TabChrome,
-    ) -> TabBarHits {
-        let _ = chrome;
-        self.tab_bar_layout(rect, bar)
-    }
-
-    /// Compute the tab bar layout without painting, for a bar painted
-    /// with chrome, returning [`TabBarLayout`] instead of
-    /// [`TabBarHits`] — the `TabBarLayout`-returning twin of
-    /// [`Self::tab_bar_layout_with_chrome`].
-    ///
-    /// Default body ignores `chrome` and delegates to
-    /// [`Self::resolve_tab_bar_layout`], matching
-    /// [`Self::tab_bar_layout_with_chrome`]'s own default exactly.
-    fn resolve_tab_bar_layout_with_chrome(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        chrome: &TabChrome,
-    ) -> TabBarLayout {
-        let _ = chrome;
-        self.resolve_tab_bar_layout(rect, bar)
-    }
 
     /// Compute activity bar row hit regions without painting. Returns
     /// the same **bar-relative** spans as [`Self::draw_activity_bar`] —
@@ -4956,9 +4625,9 @@ pub enum ImagePaintResult {
 ///
 /// [`tab_bar_hits_from_layout`] yields **bar-relative** x (the primitive
 /// measures from `0.0`), but the [`TabBarHits`] contract is
-/// target-surface (absolute) coordinates. Rasterisers and the no-paint
-/// `tab_bar_layout` variants both call this with `rect.x` so the two
-/// paths return the same space.
+/// target-surface (absolute) coordinates. A caller that resolved a strip
+/// through [`DrawsPrimitives::layout_primitive`] and wants the legacy
+/// [`TabBarHits`] shape calls this with the bar rect's own `x`.
 pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
     if dx == 0.0 {
         return;
@@ -4991,11 +4660,9 @@ pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
 /// convention (`Point`/`Rect`), and this converter is the thing that
 /// keeps constructing them. `vimcode` holds a real, non-doc-only
 /// dependency on `TabBarHits`'s field types (`src/core/engine/mod.rs`,
-/// `src/core/engine/terminal_ops.rs`, `src/gtk/mod.rs`), and two of the
-/// four backends (`macos::tab_bar`, `win::tab_bar`) construct
-/// `TabBarHits` directly without ever computing an intermediate
-/// `TabBarLayout` — this converter is the one in-tree spot that builds a
-/// `TabBarHits` from a `TabBarLayout` instead.
+/// `src/core/engine/terminal_ops.rs`, `src/gtk/mod.rs`), so this stays
+/// as the bridge from the [`TabBarLayout`] the widget contract resolves
+/// to the shape such a caller already reads.
 pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
     let mut close_bounds = vec![None; bar.tabs.len()];
