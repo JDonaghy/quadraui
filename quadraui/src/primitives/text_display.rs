@@ -32,6 +32,7 @@
 
 use crate::event::Rect;
 use crate::types::{Decoration, Modifiers, StyledSpan, StyledText, WidgetId};
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a `TextDisplay`.
@@ -1149,6 +1150,1493 @@ mod native_surface_paint {
 ))]
 #[allow(unused_imports)]
 pub(crate) use native_surface_paint::paint;
+
+// ── Layout + cell paint for the widget contract ────────────────────────
+
+/// Scrollbar gutter width on a pixel surface, in surface-native units —
+/// the 12-unit gutter every pixel backend's own
+/// `*_text_display_layout` reserves.
+const PIXEL_GUTTER: f32 = 12.0;
+
+/// Minimum scrollbar thumb length on a pixel surface.
+const PIXEL_MIN_THUMB: f32 = 8.0;
+
+/// How many rows line `line` occupies at a `cols` column budget.
+///
+/// A rasteriser feature compiled in gets [`wrap_row_count`]'s real
+/// wrapped row count. A build with no rasteriser at all has no `wrap`
+/// module (see that module's own gate) and also nothing that could paint
+/// a wrapped row, so it counts one row per line — the layout is still
+/// resolvable, just never painted. Keeping the fork inside this one
+/// helper is what lets [`crate::primitive::Primitive::layout`] stay a
+/// single shared path across every feature set.
+fn layout_row_count(line: &TextDisplayLine, cols: usize) -> usize {
+    #[cfg(any(
+        feature = "tui",
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    {
+        wrap_row_count(line, cols)
+    }
+    #[cfg(not(any(
+        feature = "tui",
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )))]
+    {
+        let _ = (line, cols);
+        1
+    }
+}
+
+/// Resolve this display's layout in **whole cell** units (one row per
+/// line, a 1-cell scrollbar gutter) — the one cell-grid entry point
+/// [`crate::primitive::Primitive::layout`] and
+/// [`crate::tui::tui_text_display_layout`] share, so paint and hit-test
+/// agree on every row.
+pub fn cell_layout(display: &TextDisplay, area: Rect) -> TextDisplayPrimitiveLayout {
+    let body = body_rect(display, area, 1.0);
+    if body.height < 1.0 {
+        return TextDisplayPrimitiveLayout {
+            area,
+            body,
+            layout: display.layout(0.0, 0.0, |_| TextDisplayLineMeasure::new(1.0)),
+        };
+    }
+    let line_end = if display.show_scrollbar {
+        (body.width - 1.0).max(0.0)
+    } else {
+        body.width
+    };
+    let col_budget = line_end as usize;
+    let measure = |i: usize| {
+        TextDisplayLineMeasure::new(layout_row_count(&display.lines[i], col_budget) as f32)
+    };
+    let layout = if display.show_scrollbar {
+        display.layout_with_scrollbar(body.width, body.height, 1.0, 1.0, measure)
+    } else {
+        display.layout(body.width, body.height, measure)
+    };
+    TextDisplayPrimitiveLayout { area, body, layout }
+}
+
+/// Resolve this display's layout in **pixel** units, with the calling
+/// backend's own line height and character advance — the shared twin of
+/// [`cell_layout`], and the same math every pixel backend's own
+/// `*_text_display_layout` helper performs.
+pub fn pixel_layout(
+    display: &TextDisplay,
+    area: Rect,
+    line_height: f32,
+    char_width: f32,
+) -> TextDisplayPrimitiveLayout {
+    let row_h = line_height.max(1.0);
+    let body = body_rect(display, area, row_h);
+    if body.height <= 0.0 {
+        return TextDisplayPrimitiveLayout {
+            area,
+            body,
+            layout: display.layout(0.0, 0.0, |_| TextDisplayLineMeasure::new(row_h)),
+        };
+    }
+    let body_width = if display.show_scrollbar {
+        (area.width - PIXEL_GUTTER).max(0.0)
+    } else {
+        area.width
+    };
+    let advance = char_width.max(1.0);
+    let col_budget = (body_width / advance).floor().max(0.0) as usize;
+    let measure = |i: usize| {
+        TextDisplayLineMeasure::new(layout_row_count(&display.lines[i], col_budget) as f32 * row_h)
+    };
+    let layout = if display.show_scrollbar {
+        display.layout_with_scrollbar(
+            area.width,
+            body.height,
+            PIXEL_GUTTER,
+            PIXEL_MIN_THUMB,
+            measure,
+        )
+    } else {
+        display.layout(area.width, body.height, measure)
+    };
+    TextDisplayPrimitiveLayout { area, body, layout }
+}
+
+/// The body strip inside `area`: the whole of it, or everything below
+/// the one-`row_h` title row when [`TextDisplay::title`] is set.
+fn body_rect(display: &TextDisplay, area: Rect, row_h: f32) -> Rect {
+    if display.title.is_some() {
+        Rect::new(
+            area.x,
+            area.y + row_h,
+            area.width,
+            (area.height - row_h).max(0.0),
+        )
+    } else {
+        area
+    }
+}
+
+/// `TextDisplay`'s cell-grid rasteriser, written against
+/// [`crate::CellSurface`]'s verbs — the cell-grid twin of
+/// [`native_surface_paint::paint`].
+///
+/// # Visual contract
+///
+/// - Background: filled with [`crate::Theme::background`].
+/// - An optional title row at the top; the body shrinks by one row when
+///   present.
+/// - Per-line decoration → default fg: `Error → error_fg`,
+///   `Warning → warning_fg`, `Muted → muted_fg`, others →
+///   [`crate::Theme::foreground`]; per-span `fg`/`bg` win over it.
+/// - Timestamp prefix (when present) in [`crate::Theme::muted_fg`] on a
+///   line's first row only; a wrapped continuation row carries
+///   [`WRAP_CONTINUATION_MARKER`] instead, so it never reads as an
+///   unrelated new line.
+/// - A scrollbar gutter (`░`) plus thumb (`█`) in the trailing column
+///   when [`TextDisplay::show_scrollbar`].
+///
+/// One terminal cell is exactly one [`crate::text_util::display_width`]
+/// column, so the column-budget wrap decision is exact here, unlike the
+/// pixel backends' `char_width` approximation.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{
+        content_budget_cols, wrap_display_line, TextDisplay, TextDisplayLine,
+        TextDisplayPrimitiveLayout, WRAP_CONTINUATION_MARKER,
+    };
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::{Decoration, StyledSpan};
+
+    /// Word-wrap one [`TextDisplayLine`] to `line_end` columns, reserving
+    /// gutter width for its timestamp prefix / the continuation marker
+    /// via [`content_budget_cols`] — the single shared formula also used
+    /// by [`super::wrap_row_count`] and the pixel backends' paint path,
+    /// so none of the three can drift out of step.
+    fn line_rows(line: &TextDisplayLine, line_end: u16) -> Vec<Vec<StyledSpan>> {
+        wrap_display_line(line, content_budget_cols(line, line_end as usize))
+    }
+
+    /// Paint `display` at the already-resolved `resolved` layout onto
+    /// `surface`.
+    pub(crate) fn paint(
+        display: &TextDisplay,
+        resolved: &TextDisplayPrimitiveLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let area = resolved.area;
+        if area.width < 1.0 || area.height < 1.0 {
+            return;
+        }
+        let plain = CellStyle {
+            fg: Some(theme.foreground),
+            bg: Some(theme.background),
+            ..CellStyle::default()
+        };
+        let muted = CellStyle {
+            fg: Some(theme.muted_fg),
+            ..plain
+        };
+        let bg = theme.background;
+
+        surface.fill(area, plain);
+
+        // Optional title row at the top.
+        if let Some(title) = &display.title {
+            let row_y = area.y as u16;
+            let mut col = 0u16;
+            for span in &title.spans {
+                let style = CellStyle {
+                    fg: Some(span.fg.unwrap_or(theme.foreground)),
+                    bg: Some(span.bg.unwrap_or(bg)),
+                    ..CellStyle::default()
+                };
+                for ch in span.text.chars() {
+                    if col >= area.width as u16 {
+                        break;
+                    }
+                    surface.put_char(area.x as u16 + col, row_y, ch, style);
+                    col += 1;
+                }
+            }
+        }
+
+        let body = resolved.body;
+        if body.height < 1.0 {
+            return;
+        }
+        let body_x = body.x as u16;
+        let body_y = body.y as u16;
+        let body_h = body.height as u16;
+        let line_end = if display.show_scrollbar {
+            (body.width as u16).saturating_sub(1)
+        } else {
+            body.width as u16
+        };
+
+        for vis in &resolved.layout.visible_lines {
+            let line = &display.lines[vis.line_idx];
+            let row0_y = body_y + vis.bounds.y.round() as u16;
+            if row0_y >= body_y + body_h {
+                break;
+            }
+
+            let line_fg = match line.decoration {
+                Decoration::Error => theme.error_fg,
+                Decoration::Warning => theme.warning_fg,
+                Decoration::Muted => theme.muted_fg,
+                _ => theme.foreground,
+            };
+
+            for (row_i, row_spans) in line_rows(line, line_end).iter().enumerate() {
+                let row_y = row0_y + row_i as u16;
+                if row_y >= body_y + body_h {
+                    break;
+                }
+
+                let mut col: u16 = 0;
+
+                if row_i == 0 {
+                    // Timestamp prefix (if present) — first row only.
+                    if let Some(ts) = &line.timestamp {
+                        for ch in ts.chars() {
+                            if col >= line_end {
+                                break;
+                            }
+                            surface.put_char(body_x + col, row_y, ch, muted);
+                            col += 1;
+                        }
+                        if col < line_end {
+                            surface.put_char(body_x + col, row_y, ' ', muted);
+                            col += 1;
+                        }
+                    }
+                } else {
+                    // Continuation-row marker — a wrapped row must not
+                    // read as an unrelated new line.
+                    for ch in WRAP_CONTINUATION_MARKER.chars() {
+                        if col >= line_end {
+                            break;
+                        }
+                        surface.put_char(body_x + col, row_y, ch, muted);
+                        col += 1;
+                    }
+                }
+
+                for span in row_spans {
+                    let style = CellStyle {
+                        fg: Some(span.fg.unwrap_or(line_fg)),
+                        bg: Some(span.bg.unwrap_or(bg)),
+                        ..CellStyle::default()
+                    };
+                    for ch in span.text.chars() {
+                        if col >= line_end {
+                            break;
+                        }
+                        surface.put_char(body_x + col, row_y, ch, style);
+                        col += 1;
+                    }
+                }
+            }
+        }
+
+        // Scrollbar gutter.
+        if display.show_scrollbar {
+            let gutter_x = body_x + body.width as u16 - 1;
+            let track = CellStyle {
+                fg: Some(theme.scrollbar_track),
+                bg: Some(bg),
+                ..CellStyle::default()
+            };
+            for dy in 0..body_h {
+                surface.put_char(gutter_x, body_y + dy, '░', track);
+            }
+            if let Some(thumb) = resolved.layout.thumb_bounds {
+                let thumb_y = body_y + thumb.y.round() as u16;
+                let thumb_h = thumb.height.round() as u16;
+                let thumb_style = CellStyle {
+                    fg: Some(theme.scrollbar_thumb),
+                    bg: Some(bg),
+                    ..CellStyle::default()
+                };
+                for dy in 0..thumb_h {
+                    let y = thumb_y + dy;
+                    if y < body_y + body_h {
+                        surface.put_char(gutter_x, y, '█', thumb_style);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Widget contract ────────────────────────────────────────────────────
+
+/// [`crate::primitive::Primitive::Layout`] for [`TextDisplay`]: the
+/// absolute area the display was laid out into, the body strip inside it
+/// (the area minus a title row), and the resolved
+/// [`TextDisplayLayout`].
+///
+/// [`TextDisplayLayout`]'s own coordinates are **body-local** (`y = 0` at
+/// the top of the body), which is why the body strip is carried
+/// alongside: the paint path and [`Self::hit_test`] both need the origin
+/// those coordinates are relative to.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextDisplayPrimitiveLayout {
+    /// The absolute rect the display was laid out into.
+    pub area: Rect,
+    /// The body strip inside [`Self::area`], below any title row.
+    pub body: Rect,
+    /// The resolved display layout, in body-local coordinates.
+    pub layout: TextDisplayLayout,
+}
+
+impl TextDisplayPrimitiveLayout {
+    /// Classify an **absolute** point against this display, translating
+    /// it into the body-local frame [`TextDisplayLayout::hit_test`]
+    /// answers in.
+    pub fn hit_test(&self, x: f32, y: f32) -> TextDisplayHit {
+        self.layout.hit_test(x - self.body.x, y - self.body.y)
+    }
+
+    /// How many whole lines one page of scrolling moves — the visible
+    /// line count, floored at one so a viewport too short for a single
+    /// line still scrolls.
+    pub fn page(&self) -> usize {
+        self.layout.visible_lines.len().max(1)
+    }
+}
+
+impl crate::primitive::Primitive for TextDisplay {
+    type Layout = TextDisplayPrimitiveLayout;
+    type Event = TextDisplayHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::TextDisplay(self.clone())
+    }
+
+    /// One row per buffer line (unwrapped) plus a title row when one is
+    /// set — what a container sizing this display to its content would
+    /// give it.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let row_h = ctx.line_height.max(1.0);
+        let rows = self.lines.len() as f32 + f32::from(u8::from(self.title.is_some()));
+        crate::NaturalSize::new(None, Some((rows * row_h).min(avail.height)))
+    }
+
+    /// `rect` is the display's own area, title row included. On a cell
+    /// grid the layout comes from [`cell_layout`]; on a pixel surface
+    /// from [`pixel_layout`] with the backend's own line height and
+    /// character advance.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextDisplayPrimitiveLayout {
+        match ctx.units() {
+            crate::primitive::Units::Cells => cell_layout(self, rect),
+            _ => pixel_layout(self, rect, ctx.line_height, ctx.char_width),
+        }
+    }
+
+    /// The shared pixel painter — the same one every pixel backend's
+    /// `draw_text_display` routes through.
+    fn paint(
+        &self,
+        layout: &TextDisplayPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let line_height = surface.surface_line_height();
+            let char_width = surface.surface_char_width();
+            native_surface_paint::paint(self, layout.area, surface, theme, line_height, char_width);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_text_display`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`. That
+    /// entry point re-resolves the layout from the same area through the
+    /// same [`cell_layout`] this `Primitive` laid out with, so the glyphs
+    /// land exactly where `layout` says they do.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &TextDisplayPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = layout.area;
+        crate::tui::draw_text_display(
+            buf,
+            ratatui::layout::Rect::new(
+                area.x as u16,
+                area.y as u16,
+                area.width as u16,
+                area.height as u16,
+            ),
+            self,
+            theme,
+        );
+    }
+}
+
+/// [`crate::interactive::Interactive::State`] for [`TextDisplay`]:
+/// whether a scrollbar-thumb drag is in progress.
+///
+/// The scroll offset itself is **not** here — it is
+/// [`TextDisplay::scroll_offset`] on the descriptor, which the app owns
+/// and updates from [`TextDisplayEvent::Scrolled`], the same contract
+/// [`TextDisplayLayout::resolved_scroll_offset`] already documents.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextDisplayState {
+    /// `true` between a press on the scrollbar thumb and its release.
+    pub dragging_thumb: bool,
+}
+
+impl crate::interactive::WidgetAction for TextDisplayEvent {
+    /// Every outcome rides [`crate::UiEvent::TextDisplay`] under this
+    /// display's own id — the channel a host already routes a
+    /// `Backend::draw_text_display` consumer's scroll and copy through.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::TextDisplay(id, self)
+    }
+}
+
+impl TextDisplay {
+    /// The scroll offset currently on screen — what the layout resolved,
+    /// which auto-scroll may have moved past the descriptor's own
+    /// [`Self::scroll_offset`].
+    fn resolved_offset(&self, layout: &TextDisplayPrimitiveLayout) -> usize {
+        layout.layout.resolved_scroll_offset
+    }
+
+    /// The largest offset that still shows content — one page back from
+    /// the end of the buffer.
+    fn max_offset(&self, layout: &TextDisplayPrimitiveLayout) -> usize {
+        self.lines.len().saturating_sub(layout.page())
+    }
+
+    /// Report a scroll to `target`, clamped, as
+    /// [`TextDisplayEvent::Scrolled`] — or [`Handled::Consumed`] when it
+    /// wouldn't move.
+    fn scroll_to(
+        &self,
+        layout: &TextDisplayPrimitiveLayout,
+        target: usize,
+    ) -> Handled<TextDisplayEvent> {
+        let new_offset = target.min(self.max_offset(layout));
+        if new_offset == self.resolved_offset(layout) {
+            Handled::Consumed
+        } else {
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset })
+        }
+    }
+
+    /// Scroll `delta` lines from the offset currently on screen.
+    fn scroll_by(
+        &self,
+        layout: &TextDisplayPrimitiveLayout,
+        delta: isize,
+    ) -> Handled<TextDisplayEvent> {
+        let current = self.resolved_offset(layout);
+        let target = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize)
+        };
+        self.scroll_to(layout, target)
+    }
+
+    /// The offset a drag or track click at absolute `y` asks for: the
+    /// fraction of the track the point sits at, mapped onto the
+    /// scrollable range.
+    fn offset_for_track_y(&self, layout: &TextDisplayPrimitiveLayout, y: f32) -> usize {
+        let track = match layout.layout.scrollbar_bounds {
+            Some(t) if t.height > 0.0 => t,
+            _ => return self.resolved_offset(layout),
+        };
+        let local = (y - layout.body.y - track.y).clamp(0.0, track.height);
+        let fraction = local / track.height;
+        let max = self.max_offset(layout);
+        (fraction * max as f32).round().max(0.0) as usize
+    }
+}
+
+impl crate::interactive::Interactive for TextDisplay {
+    type State = TextDisplayState;
+    type Action = TextDisplayEvent;
+
+    /// One focus stop as a whole: a read-only log pane takes focus so
+    /// the keyboard can scroll it, but has no focusable sub-parts.
+    /// [`crate::interactive::FocusSpec::None`] for an empty buffer —
+    /// there is nothing to scroll.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        if self.lines.is_empty() {
+            crate::interactive::FocusSpec::None
+        } else {
+            crate::interactive::FocusSpec::Stop
+        }
+    }
+
+    /// The scrollbar gutter, then each visible line — most specific
+    /// first, translated out of the layout's body-local frame into the
+    /// widget-local space this method answers in.
+    fn sub_regions(
+        &self,
+        layout: &TextDisplayPrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let (ox, oy) = (layout.area.x, layout.area.y);
+        let local = |r: Rect| {
+            Rect::new(
+                layout.body.x + r.x - ox,
+                layout.body.y + r.y - oy,
+                r.width,
+                r.height,
+            )
+        };
+        let mut out = Vec::new();
+        if let Some(gutter) = layout.layout.scrollbar_bounds {
+            out.push((local(gutter), crate::interactive::SubTarget(SUB_SCROLLBAR)));
+        }
+        out.extend(layout.layout.visible_lines.iter().map(|vis| {
+            (
+                local(vis.bounds),
+                crate::interactive::SubTarget(SUB_LINE_BASE + vis.line_idx as u64),
+            )
+        }));
+        out
+    }
+
+    /// A screen reader can focus the pane and scroll it a step either
+    /// way.
+    fn a11y_actions(&self, _state: &TextDisplayState) -> Vec<crate::a11y::A11yAction> {
+        if self.lines.is_empty() {
+            Vec::new()
+        } else {
+            vec![
+                crate::a11y::A11yAction::Focus,
+                crate::a11y::A11yAction::ScrollUp,
+                crate::a11y::A11yAction::ScrollDown,
+            ]
+        }
+    }
+
+    /// Read-only and scrollable: the arrow keys move one line, PageUp/
+    /// PageDown one viewport, Home/End the ends (through
+    /// [`crate::behaviour::scroll::ensure_visible`], so this pane and
+    /// every other scroller agree on where an edge lands), the wheel
+    /// scrolls, a click on the scrollbar track pages toward it, and a
+    /// drag on the thumb scrubs. Every other key is handed back to the
+    /// app as [`TextDisplayEvent::KeyPressed`].
+    fn handle(
+        &self,
+        state: &mut TextDisplayState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &TextDisplayPrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TextDisplayEvent> {
+        use crate::behaviour::scroll::ensure_visible;
+        use crate::event::{Key, NamedKey};
+        use crate::interactive::{PointerKind, RoutedEvent};
+
+        let page = layout.page();
+        match event {
+            RoutedEvent::Key(key) => match key.key {
+                Key::Named(NamedKey::Up) => self.scroll_by(layout, -1),
+                Key::Named(NamedKey::Down) => self.scroll_by(layout, 1),
+                Key::Named(NamedKey::PageUp) => self.scroll_by(layout, -(page as isize)),
+                Key::Named(NamedKey::PageDown) => self.scroll_by(layout, page as isize),
+                Key::Named(NamedKey::Home) => self.scroll_to(
+                    layout,
+                    ensure_visible(self.resolved_offset(layout), page, 0),
+                ),
+                Key::Named(NamedKey::End) => self.scroll_to(
+                    layout,
+                    ensure_visible(
+                        self.resolved_offset(layout),
+                        page,
+                        self.lines.len().saturating_sub(1),
+                    ),
+                ),
+                _ => Handled::Event(TextDisplayEvent::KeyPressed {
+                    key: format!("{:?}", key.key),
+                    modifiers: key.modifiers,
+                }),
+            },
+            RoutedEvent::Wheel { dy, .. } if *dy != 0.0 => {
+                // A positive `dy` scrolls the content down, i.e. toward
+                // later lines — the same sign convention every other
+                // wheel-scrolling widget uses.
+                self.scroll_by(layout, if *dy > 0.0 { 1 } else { -1 })
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                local,
+                ..
+            } => {
+                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                cx.request_focus(None);
+                match layout.hit_test(x, y) {
+                    TextDisplayHit::ScrollbarThumb => {
+                        state.dragging_thumb = true;
+                        cx.capture_pointer();
+                        Handled::Consumed
+                    }
+                    TextDisplayHit::ScrollbarTrackBefore => {
+                        self.scroll_by(layout, -(page as isize))
+                    }
+                    TextDisplayHit::ScrollbarTrackAfter => self.scroll_by(layout, page as isize),
+                    _ => Handled::Consumed,
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                local,
+                ..
+            } if state.dragging_thumb => {
+                let y = layout.area.y + local.y;
+                self.scroll_to(layout, self.offset_for_track_y(layout, y))
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Up(crate::event::MouseButton::Left),
+                ..
+            } if state.dragging_thumb => {
+                state.dragging_thumb = false;
+                cx.release_pointer();
+                Handled::Consumed
+            }
+            RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
+                cx.request_focus(None);
+                Handled::Consumed
+            }
+            RoutedEvent::Action(crate::a11y::A11yAction::ScrollUp) => self.scroll_by(layout, -1),
+            RoutedEvent::Action(crate::a11y::A11yAction::ScrollDown) => self.scroll_by(layout, 1),
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+/// [`crate::interactive::SubTarget`] for the scrollbar gutter — see
+/// [`crate::interactive::Interactive::sub_regions`].
+const SUB_SCROLLBAR: u64 = 0;
+/// First [`crate::interactive::SubTarget`] a visible line claims; line
+/// `i` is `SUB_LINE_BASE + i`.
+const SUB_LINE_BASE: u64 = 1;
+
+/// Routes a headless `TuiDriver` test can't reach: the
+/// assistive-technology scroll actions, the widget-local `sub_regions`
+/// translation out of the layout's body-local frame, and the
+/// scrollbar-thumb drag.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::event::{Key, MouseButton, NamedKey, Point};
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::types::Modifiers;
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock — the same shape every other widget
+    /// module's own `Interactive` tests use.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+        captures: usize,
+        releases: usize,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {
+            self.captures += 1;
+        }
+        fn release_pointer(&mut self) {
+            self.releases += 1;
+        }
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn plain_line(text: &str) -> TextDisplayLine {
+        TextDisplayLine {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        }
+    }
+
+    fn display(count: usize, show_scrollbar: bool) -> TextDisplay {
+        TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..count)
+                .map(|i| plain_line(&format!("L{i:02}")))
+                .collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: true,
+            title: None,
+            show_scrollbar,
+        }
+    }
+
+    fn area() -> Rect {
+        Rect::new(0.0, 0.0, 20.0, 5.0)
+    }
+
+    fn layout_of(td: &TextDisplay) -> TextDisplayPrimitiveLayout {
+        Primitive::layout(td, &LayoutCtx::new(1.0, 1.0, false), area())
+    }
+
+    fn key(named: NamedKey) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key: Key::Named(named),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    }
+
+    fn handle(
+        td: &TextDisplay,
+        state: &mut TextDisplayState,
+        event: &RoutedEvent,
+        layout: &TextDisplayPrimitiveLayout,
+        host: &mut MockHost,
+    ) -> Handled<TextDisplayEvent> {
+        let mut cx = EventCx::new(td.id, host);
+        Interactive::handle(td, state, event, layout, &mut cx)
+    }
+
+    #[test]
+    fn an_empty_display_is_not_a_focus_stop() {
+        assert_eq!(Interactive::focus(&display(0, false)), FocusSpec::None);
+        assert_eq!(Interactive::focus(&display(3, false)), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn page_down_then_page_up_walks_a_viewport_at_a_time() {
+        let td = display(20, false);
+        let layout = layout_of(&td);
+        let mut host = MockHost::default();
+        let mut state = TextDisplayState::default();
+        assert_eq!(
+            handle(
+                &td,
+                &mut state,
+                &key(NamedKey::PageDown),
+                &layout,
+                &mut host
+            ),
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset: 5 })
+        );
+        // The descriptor still reports offset 0 (the app owns it), so a
+        // page up from the painted offset lands back at the top.
+        assert_eq!(
+            handle(&td, &mut state, &key(NamedKey::PageUp), &layout, &mut host),
+            Handled::Consumed
+        );
+    }
+
+    #[test]
+    fn end_scrolls_to_the_last_page_and_home_back_to_the_top() {
+        let mut td = display(20, false);
+        let layout = layout_of(&td);
+        let mut host = MockHost::default();
+        let mut state = TextDisplayState::default();
+        assert_eq!(
+            handle(&td, &mut state, &key(NamedKey::End), &layout, &mut host),
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset: 15 })
+        );
+        td.scroll_offset = 15;
+        let layout = layout_of(&td);
+        assert_eq!(
+            handle(&td, &mut state, &key(NamedKey::Home), &layout, &mut host),
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset: 0 })
+        );
+    }
+
+    #[test]
+    fn an_unhandled_key_is_handed_back_to_the_app() {
+        let td = display(3, false);
+        let layout = layout_of(&td);
+        let mut host = MockHost::default();
+        let mut state = TextDisplayState::default();
+        let handled = handle(
+            &td,
+            &mut state,
+            &RoutedEvent::Key(KeyEvent {
+                key: Key::Char('?'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            }),
+            &layout,
+            &mut host,
+        );
+        assert!(matches!(
+            handled,
+            Handled::Event(TextDisplayEvent::KeyPressed { .. })
+        ));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_one_line_per_notch() {
+        let td = display(20, false);
+        let layout = layout_of(&td);
+        let mut host = MockHost::default();
+        let mut state = TextDisplayState::default();
+        let handled = handle(
+            &td,
+            &mut state,
+            &RoutedEvent::Wheel {
+                dx: 0.0,
+                dy: 1.0,
+                local: Point::new(1.0, 1.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut host,
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset: 1 })
+        );
+    }
+
+    #[test]
+    fn a_thumb_drag_scrubs_the_offset_and_releases_the_capture() {
+        let td = display(20, true);
+        let layout = layout_of(&td);
+        let thumb = layout.layout.thumb_bounds.expect("thumb");
+        let track = layout.layout.scrollbar_bounds.expect("track");
+        let mut host = MockHost::default();
+        let mut state = TextDisplayState::default();
+
+        let press = RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(
+                layout.body.x + thumb.x + 0.5 - layout.area.x,
+                layout.body.y + thumb.y + 0.5 - layout.area.y,
+            ),
+            mods: Modifiers::default(),
+        };
+        assert_eq!(
+            handle(&td, &mut state, &press, &layout, &mut host),
+            Handled::Consumed
+        );
+        assert!(state.dragging_thumb);
+        assert_eq!(host.captures, 1);
+
+        // Drag to the bottom of the track: the full scrollable range.
+        let drag = RoutedEvent::Pointer {
+            kind: PointerKind::Move,
+            sub: None,
+            local: Point::new(
+                layout.body.x + track.x - layout.area.x,
+                layout.body.y + track.y + track.height - layout.area.y,
+            ),
+            mods: Modifiers::default(),
+        };
+        assert_eq!(
+            handle(&td, &mut state, &drag, &layout, &mut host),
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset: 15 })
+        );
+
+        let release = RoutedEvent::Pointer {
+            kind: PointerKind::Up(MouseButton::Left),
+            sub: None,
+            local: Point::new(0.0, 0.0),
+            mods: Modifiers::default(),
+        };
+        handle(&td, &mut state, &release, &layout, &mut host);
+        assert!(!state.dragging_thumb);
+        assert_eq!(host.releases, 1);
+    }
+
+    #[test]
+    fn a_click_on_the_track_pages_toward_it() {
+        let td = display(20, true);
+        let layout = layout_of(&td);
+        let track = layout.layout.scrollbar_bounds.expect("track");
+        let mut host = MockHost::default();
+        let mut state = TextDisplayState::default();
+        let press = RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(
+                layout.body.x + track.x + 0.5 - layout.area.x,
+                layout.body.y + track.y + track.height - 0.5 - layout.area.y,
+            ),
+            mods: Modifiers::default(),
+        };
+        assert_eq!(
+            handle(&td, &mut state, &press, &layout, &mut host),
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset: 5 })
+        );
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn a11y_scroll_actions_move_one_line_either_way() {
+        let mut td = display(20, false);
+        td.scroll_offset = 4;
+        let layout = layout_of(&td);
+        let mut host = MockHost::default();
+        let mut state = TextDisplayState::default();
+        assert_eq!(
+            handle(
+                &td,
+                &mut state,
+                &RoutedEvent::Action(A11yAction::ScrollDown),
+                &layout,
+                &mut host
+            ),
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset: 5 })
+        );
+        assert_eq!(
+            handle(
+                &td,
+                &mut state,
+                &RoutedEvent::Action(A11yAction::ScrollUp),
+                &layout,
+                &mut host
+            ),
+            Handled::Event(TextDisplayEvent::Scrolled { new_offset: 3 })
+        );
+    }
+
+    #[test]
+    fn sub_regions_name_the_gutter_then_each_visible_line_in_widget_local_space() {
+        let mut td = display(20, true);
+        td.title = Some(crate::types::StyledText {
+            spans: vec![StyledSpan::plain("Output")],
+        });
+        let layout = layout_of(&td);
+        let regions = Interactive::sub_regions(&td, &layout);
+        assert_eq!(regions[0].1, SubTarget(0), "the gutter comes first");
+        assert_eq!(regions[1].1, SubTarget(1), "then line 0");
+        // The title row shifts every body region down one row in
+        // widget-local space.
+        assert_eq!(regions[1].0.y, 1.0);
+    }
+
+    #[test]
+    fn a_pixel_layout_reserves_the_shared_twelve_unit_gutter() {
+        let td = display(40, true);
+        let layout = Primitive::layout(
+            &td,
+            &LayoutCtx::new(16.0, 8.0, false),
+            Rect::new(0.0, 0.0, 200.0, 160.0),
+        );
+        let track = layout.layout.scrollbar_bounds.expect("track");
+        assert_eq!(track.width, 12.0);
+        assert_eq!(track.x, 200.0 - 12.0);
+    }
+
+    #[test]
+    fn measure_reports_a_row_per_line_plus_the_title_row() {
+        let mut td = display(3, false);
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let avail = crate::primitive::Size::new(40.0, 40.0);
+        assert_eq!(Primitive::measure(&td, &ctx, avail).height, Some(3.0));
+        td.title = Some(crate::types::StyledText {
+            spans: vec![StyledSpan::plain("Output")],
+        });
+        assert_eq!(Primitive::measure(&td, &ctx, avail).height, Some(4.0));
+    }
+}
+
+/// Cell-grid paint tests for [`cell_paint`], driven through
+/// [`crate::tui::draw_text_display`] — the delegate that owns the
+/// `Buffer` → [`crate::CellSurface`] adapter the painter needs.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use super::{TextDisplay, TextDisplayHit, TextDisplayLine, TextDisplayLineMeasure};
+    use crate::theme::Theme;
+    use crate::tui::{draw_text_display, tui_text_display_layout};
+    use crate::types::{Color, Decoration, StyledSpan, WidgetId};
+
+    fn line(text: &str) -> TextDisplayLine {
+        TextDisplayLine {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        }
+    }
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    #[test]
+    fn paints_lines_top_to_bottom() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![line("alpha"), line("beta"), line("gamma")],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 20, 5),
+            &display,
+            &Theme::default(),
+        );
+        let row0: String = (0..5).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..4).map(|x| cell_char(&buf, x, 1)).collect();
+        let row2: String = (0..5).map(|x| cell_char(&buf, x, 2)).collect();
+        assert_eq!(row0, "alpha");
+        assert_eq!(row1, "beta");
+        assert_eq!(row2, "gamma");
+    }
+
+    #[test]
+    fn span_fg_override_wins() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![TextDisplayLine {
+                spans: vec![
+                    StyledSpan {
+                        text: "key:".into(),
+                        fg: Some(Color::rgb(99, 0, 0)),
+                        bg: None,
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                    },
+                    StyledSpan::plain(" value"),
+                ],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 20, 5),
+            &display,
+            &Theme::default(),
+        );
+        // 'k' at col 0 should be in (99, 0, 0).
+        let fg = buf[(0u16, 0u16)].fg;
+        assert_eq!(fg, ratatui::style::Color::Rgb(99, 0, 0));
+    }
+
+    #[test]
+    fn auto_scroll_pins_to_bottom() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..10).map(|i| line(&format!("line{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: true,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 20, 3),
+            &display,
+            &Theme::default(),
+        );
+        // Last 3 lines visible (line7, line8, line9).
+        let row0: String = (0..5).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..5).map(|x| cell_char(&buf, x, 1)).collect();
+        let row2: String = (0..5).map(|x| cell_char(&buf, x, 2)).collect();
+        assert_eq!(row0, "line7");
+        assert_eq!(row1, "line8");
+        assert_eq!(row2, "line9");
+    }
+
+    #[test]
+    fn zero_size_is_a_no_op() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![line("x")],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        draw_text_display(&mut buf, Rect::new(0, 0, 0, 5), &display, &Theme::default());
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends".
+    // `tui_text_display_layout` is local-frame (it only takes `body`
+    // width/height, never `area.x`/`area.y`), but `draw_text_display`
+    // paints each row at `body.y + vis.bounds.y` (and the scrollbar gutter
+    // at `body.x`/`body.y`) — untested at a non-zero `area.y`/`area.x`
+    // until now.
+    fn scrollbar_thumb_round_trip_at(origin_x: u16, origin_y: u16) {
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 20, origin_y + 5));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(origin_x, origin_y, 20, 5),
+            &display,
+            &Theme::default(),
+        );
+
+        // Scrollbar gutter at the last column of the area. Thumb should be
+        // at top (scroll_offset=0).
+        assert_eq!(cell_char(&buf, origin_x + 19, origin_y), '█');
+
+        // Use layout for hit-test — layout is local-frame (0,0-based), so
+        // the hit_test coordinates are NOT shifted by origin_x/origin_y.
+        let layout = display
+            .layout_with_scrollbar(20.0, 5.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        let thumb = layout.thumb_bounds.expect("thumb bounds present");
+        let hit = layout.hit_test(thumb.x + 0.5, thumb.y + 0.5);
+        assert_eq!(hit, TextDisplayHit::ScrollbarThumb);
+    }
+
+    #[test]
+    fn scrollbar_thumb_paint_and_click_round_trip() {
+        scrollbar_thumb_round_trip_at(0, 0);
+    }
+
+    /// Regression guard: the same scrollbar paint + hit_test round trip must
+    /// hold when the display isn't painted at the screen origin.
+    #[test]
+    fn scrollbar_thumb_paint_and_click_round_trip_at_nonzero_origin() {
+        scrollbar_thumb_round_trip_at(7, 13);
+    }
+
+    #[test]
+    fn scrollbar_track_after_hit() {
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        let layout = display
+            .layout_with_scrollbar(20.0, 5.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        // Click below the thumb → TrackAfter.
+        let hit = layout.hit_test(19.5, 4.5);
+        assert_eq!(hit, TextDisplayHit::ScrollbarTrackAfter);
+    }
+
+    #[test]
+    fn no_scrollbar_when_disabled() {
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        let layout = display.layout(20.0, 5.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert!(layout.scrollbar_bounds.is_none());
+        assert!(layout.thumb_bounds.is_none());
+    }
+
+    #[test]
+    fn scrollbar_body_width_reduced() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        // 26-char line in a 5-cell-tall viewport: at a 19-col (20 - 1
+        // scrollbar) budget it wraps onto a second row
+        // rather than being cut mid-word — this test now asserts the
+        // scrollbar gutter still lands in the same column either way.
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![line("abcdefghijklmnopqrstuvwxyz")],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 20, 5),
+            &display,
+            &Theme::default(),
+        );
+        // Row 0 holds the first wrapped chunk, stopping before the
+        // scrollbar column (col 19); row 1 is the continuation, marked
+        // so it isn't mistaken for an unrelated new line.
+        let row0: String = (0..19).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..19).map(|x| cell_char(&buf, x, 1)).collect();
+        assert!(
+            !row0.contains('…'),
+            "wrap mode must not truncate, got {row0:?}"
+        );
+        assert!(
+            row1.starts_with('↳'),
+            "continuation row should carry the wrap marker, got {row1:?}"
+        );
+        assert_ne!(cell_char(&buf, 19, 0), 't');
+    }
+
+    #[test]
+    fn track_before_page_up_reaches_line_zero() {
+        // Scenario: 40 lines, 30-row viewport, scrolled to bottom
+        // (offset=10, showing lines 10..39). Consumer clicks TrackBefore
+        // and pages up by visible_lines.len(). After paging, offset
+        // should be 0 and lines 0..29 should be visible.
+        let viewport_h = 30.0_f32;
+        let total_lines = 40;
+
+        // Step 1: layout at the bottom (scroll_offset=10).
+        let display_bottom = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..total_lines)
+                .map(|i| line(&format!("L{i:02}")))
+                .collect(),
+            scroll_offset: 10,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        let layout_bottom =
+            display_bottom.layout_with_scrollbar(40.0, viewport_h, 1.0, 1.0, |_| {
+                TextDisplayLineMeasure::new(1.0)
+            });
+        assert_eq!(layout_bottom.resolved_scroll_offset, 10);
+        assert_eq!(layout_bottom.visible_lines.len(), 30);
+        assert_eq!(layout_bottom.visible_lines[0].line_idx, 10);
+        assert_eq!(layout_bottom.visible_lines[29].line_idx, 39);
+
+        // Thumb should be at the bottom of the track.
+        let thumb = layout_bottom.thumb_bounds.expect("thumb");
+        assert!(
+            thumb.y > 0.0,
+            "thumb should not be at top when scrolled to bottom"
+        );
+
+        // TrackBefore should exist above the thumb.
+        let hit_top = layout_bottom.hit_test(39.5, 0.5);
+        assert_eq!(hit_top, TextDisplayHit::ScrollbarTrackBefore);
+
+        // Step 2: consumer pages up by visible_lines.len().
+        let page_size = layout_bottom.visible_lines.len();
+        let new_offset = 10_usize.saturating_sub(page_size);
+        assert_eq!(new_offset, 0, "page-up from 10 by 30 should reach 0");
+
+        // Step 3: re-layout at offset 0.
+        let display_top = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..total_lines)
+                .map(|i| line(&format!("L{i:02}")))
+                .collect(),
+            scroll_offset: new_offset,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        let layout_top = display_top.layout_with_scrollbar(40.0, viewport_h, 1.0, 1.0, |_| {
+            TextDisplayLineMeasure::new(1.0)
+        });
+        assert_eq!(layout_top.resolved_scroll_offset, 0);
+        assert_eq!(
+            layout_top.visible_lines[0].line_idx, 0,
+            "first visible line should be 0 after paging to top"
+        );
+        assert_eq!(layout_top.visible_lines.len(), 30);
+
+        // Thumb should now be at y=0.
+        let thumb_top = layout_top.thumb_bounds.expect("thumb at top");
+        assert_eq!(
+            thumb_top.y, 0.0,
+            "thumb should be at top when scroll_offset=0"
+        );
+    }
+
+    #[test]
+    fn wrap_splits_long_line_and_shows_continuation_marker() {
+        // 12-col viewport, no scrollbar, no timestamp: gutter reserved
+        // for the continuation marker is 2 cols (see
+        // `wrap_continuation_marker_width`), leaving a 10-col content
+        // budget — the same budget `text_util`'s own
+        // `word_wrap_packs_multiple_words_per_row` test wraps "the quick
+        // brown fox" at, into exactly ["the quick", "brown fox"].
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 5));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![line("the quick brown fox")],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 12, 5),
+            &display,
+            &Theme::default(),
+        );
+        let row0: String = (0..12).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..12).map(|x| cell_char(&buf, x, 1)).collect();
+        assert_eq!(row0.trim_end(), "the quick");
+        assert!(
+            row1.starts_with('↳'),
+            "continuation row should start with the wrap marker, got {row1:?}"
+        );
+        assert!(
+            row1.contains("brown fox"),
+            "continuation row should carry the rest of the line, got {row1:?}"
+        );
+    }
+
+    #[test]
+    fn tui_text_display_layout_row_count_matches_paint_for_wrapped_line() {
+        // The pure hit-testing layout must agree with what `draw_text_display`
+        // actually paints — a wrapped line occupies more
+        // than one visible row in both.
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![
+                line("the quick brown fox jumps over the lazy dog"),
+                line("short"),
+            ],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        let layout = tui_text_display_layout(&display, Rect::new(0, 0, 10, 10));
+        // One `VisibleTextDisplayLine` per source line, with `bounds.height`
+        // equal to its wrapped row count (see `text_display_layout_wrap_heights`
+        // in `primitives::text_display`). Line 0 must wrap to >1 row, and
+        // line 1 ("short") must start immediately after all of line 0's
+        // wrapped rows — never overlapping them.
+        let line0 = layout
+            .visible_lines
+            .iter()
+            .find(|v| v.line_idx == 0)
+            .expect("line 0 visible");
+        assert!(
+            line0.bounds.height > 1.0,
+            "expected line 0 to occupy multiple visual rows, layout: {:?}",
+            layout.visible_lines
+        );
+        let line1 = layout
+            .visible_lines
+            .iter()
+            .find(|v| v.line_idx == 1)
+            .expect("line 1 visible");
+        assert!(
+            line1.bounds.y >= line0.bounds.height,
+            "line 1 must start after all of line 0's wrapped rows"
+        );
+    }
+
+    #[test]
+    fn title_row_paints_above_a_body_that_shrinks_by_one_row() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 4));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![line("alpha"), line("beta")],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: Some(crate::types::StyledText {
+                spans: vec![StyledSpan::plain("Output")],
+            }),
+            show_scrollbar: false,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 20, 4),
+            &display,
+            &Theme::default(),
+        );
+        let row0: String = (0..6).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..5).map(|x| cell_char(&buf, x, 1)).collect();
+        let row2: String = (0..4).map(|x| cell_char(&buf, x, 2)).collect();
+        assert_eq!(row0, "Output");
+        assert_eq!(row1, "alpha");
+        assert_eq!(row2, "beta");
+    }
+}
 
 #[cfg(test)]
 mod tests {
