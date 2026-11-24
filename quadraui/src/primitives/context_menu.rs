@@ -3733,6 +3733,43 @@ mod tests {
             assert!(!surface.runs.iter().any(|r| r == &default_codicon));
         }
 
+        /// [`Primitive::paint`] takes no glyph argument, so a pixel
+        /// surface can only reach an app's own marks through
+        /// [`ContextMenu::glyphs`] — and resolves them at the Nerd Font
+        /// half the [`LayoutCtx`] reports.
+        #[test]
+        fn descriptor_glyphs_reach_the_pixel_widget_contract_paint() {
+            let mut item = cm_action("a", "Save");
+            item.checked = Some(true);
+            let (mut m, _) = popup_layout(item);
+            m.glyphs =
+                ContextMenuGlyphs::new().with_checked_glyph(crate::types::Icon::new("V", "v"));
+
+            let paint = |nerd: bool| {
+                let ctx = LayoutCtx::new(20.0, 8.0, nerd);
+                let layout = Primitive::layout(&m, &ctx, Rect::new(0.0, 0.0, 200.0, 100.0));
+                let mut surface = RecordingSurface::default();
+                Primitive::paint(
+                    &m,
+                    &layout,
+                    &mut surface,
+                    &Theme::default(),
+                    &Style::default(),
+                );
+                surface.runs
+            };
+            assert!(
+                paint(true).iter().any(|r| r == "V"),
+                "the descriptor's Nerd Font check glyph must reach the pixel painter"
+            );
+            assert!(
+                paint(false).iter().any(|r| r == "v"),
+                "with no Nerd Font face the descriptor's fallback must paint instead"
+            );
+            let default_codicon = crate::codicon::CHECK.to_string();
+            assert!(!paint(true).iter().any(|r| r == &default_codicon));
+        }
+
         /// Same override/default contract for the submenu pull-right arrow.
         #[test]
         fn override_replaces_submenu_arrow_glyph() {
