@@ -3745,6 +3745,10 @@ pub fn schema() -> Vec<DefJson> {
         "_ScrollOffsetChangedPayload",
         vec![field("widget", re("WidgetId")), field("new_offset", int_())],
     ));
+    let scrollbar_moved_payload = b.define(obj(
+        "_ScrollbarMovedPayload",
+        vec![field("widget", re("WidgetId")), field("fraction", float_())],
+    ));
     let text_selection_changed_payload = b.define(obj(
         "_TextSelectionChangedPayload",
         vec![
@@ -3821,6 +3825,7 @@ pub fn schema() -> Vec<DefJson> {
             ("SystemThemeChanged", system_theme),
             ("PowerStateChanged", power_state_changed_payload),
             ("ScrollOffsetChanged", scroll_offset_changed_payload),
+            ("ScrollbarMoved", scrollbar_moved_payload),
             ("TextSelectionChanged", text_selection_changed_payload),
             ("SplitDividerDragged", split_divider_dragged_payload),
             ("MenuActivated", re("WidgetId")),
@@ -3991,6 +3996,10 @@ mod coverage {
             UiEvent::ScrollOffsetChanged {
                 widget: _,
                 new_offset: _,
+            } => {}
+            UiEvent::ScrollbarMoved {
+                widget: _,
+                fraction: _,
             } => {}
             UiEvent::TextSelectionChanged {
                 region: _,
@@ -6664,6 +6673,7 @@ mod coverage {
                 "DisplaysChanged",
                 "PowerStateChanged",
                 "ScrollOffsetChanged",
+                "ScrollbarMoved",
                 "TextSelectionChanged",
                 "SplitDividerDragged",
                 "MenuActivated",

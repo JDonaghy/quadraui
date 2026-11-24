@@ -902,6 +902,26 @@ pub enum UiEvent {
         new_offset: usize,
     },
 
+    /// A standalone [`crate::Scrollbar`] widget resolved a gesture —
+    /// thumb drag, track page, or wheel — to a new thumb position,
+    /// expressed as `fraction` of the thumb's available travel
+    /// (`0.0` = start of the track, `1.0` = end).
+    ///
+    /// A fraction rather than an item index because the `Scrollbar`
+    /// descriptor is geometry-only: it carries the track and thumb it
+    /// paints, never the content length or viewport size the offset in
+    /// [`Self::ScrollOffsetChanged`] counts in. The host owns that
+    /// content extent, so it maps `fraction` onto its own scroll state
+    /// (`fraction * (total - visible)` for a row-indexed list,
+    /// `fraction * max_scroll_px` for a pixel viewport).
+    ///
+    /// Routing: emitted by the widget that was hit, so `widget` is
+    /// always the scrollbar's own id.
+    ScrollbarMoved {
+        widget: WidgetId,
+        fraction: f32,
+    },
+
     // ── Text selection ────────────────────────────────────────────────
     /// A mouse text-selection drag extended or finalised its range.
     /// Emitted by [`crate::dispatch::dispatch_mouse_drag`] while a

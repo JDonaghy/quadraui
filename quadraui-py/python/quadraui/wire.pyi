@@ -2455,6 +2455,10 @@ class _ScrollOffsetChangedPayload(TypedDict):
     widget: WidgetId
     new_offset: int
 
+class _ScrollbarMovedPayload(TypedDict):
+    widget: WidgetId
+    fraction: float
+
 class _TextSelectionChangedPayload(TypedDict):
     region: WidgetId
     anchor: Point
@@ -2503,6 +2507,7 @@ class _UiEventDict(TypedDict):
     SystemThemeChanged: NotRequired[SystemTheme]
     PowerStateChanged: NotRequired[_PowerStateChangedPayload]
     ScrollOffsetChanged: NotRequired[_ScrollOffsetChangedPayload]
+    ScrollbarMoved: NotRequired[_ScrollbarMovedPayload]
     TextSelectionChanged: NotRequired[_TextSelectionChangedPayload]
     SplitDividerDragged: NotRequired[_SplitDividerDraggedPayload]
     MenuActivated: NotRequired[WidgetId]
