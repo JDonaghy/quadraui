@@ -9,9 +9,9 @@
 
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit};
 
-/// Fixed row height in points. Matches `crate::gtk::activity_bar::ACTIVITY_ROW_PX`
-/// (= the vimcode native-button height baked into the GTK CSS).
-pub const ACTIVITY_ROW_PX: f64 = 48.0;
+/// Fixed row height in points — the `f64` spelling of the one row height
+/// every pixel backend's rail shares.
+pub const ACTIVITY_ROW_PX: f64 = crate::primitives::activity_bar::PIXEL_ROW_HEIGHT as f64;
 
 /// Compute the per-row hit spans `MacBackend::draw_activity_bar` would
 /// produce for `bar` in a `width` × `height` strip, without painting.
@@ -28,7 +28,7 @@ pub fn mac_activity_bar_layout(
     height: f64,
     bar: &ActivityBar,
 ) -> Vec<ActivityBarRowHit> {
-    bar.layout(width as f32, height as f32, ACTIVITY_ROW_PX as f32)
+    bar.pixel_layout(crate::Rect::new(0.0, 0.0, width as f32, height as f32))
         .visible_items
         .into_iter()
         .map(|vi| {

@@ -1,33 +1,26 @@
-//! Keyboard cursor + hover state for `AppShell`'s activity bar.
+//! `AppShell`'s view of [`crate::ActivityBar`]'s own keyboard/hover state.
 //!
-//! Split out of `app_shell.rs`, which otherwise interleaves this bar's own
-//! focus/cursor/hover bookkeeping with its builder methods, click
-//! dispatch, and layout. [`ActivityBarKeyboard`] owns only the four pieces
-//! of state the keyboard model needs; it has no notion of `PanelDefinition`
-//! or `WidgetId` — `AppShell` still resolves "which item is at this index"
-//! itself, passing in `total` (the combined top-panel + bottom-item count)
-//! each time a bound is needed.
+//! [`ActivityBarKeyboard`] is a borrow-friendly handle onto an
+//! [`ActivityBarState`] — the widget's own
+//! [`crate::interactive::Interactive::State`], where the cursor model
+//! lives ([`ActivityBarState::select_next`] /
+//! [`select_prev`](ActivityBarState::select_prev) /
+//! [`set_cursor`](ActivityBarState::set_cursor), all driven by
+//! [`crate::behaviour::nav::FlatNav`]). `AppShell` otherwise interleaves
+//! this bar's focus/cursor/hover bookkeeping with its builder methods,
+//! click dispatch and layout, so it keeps reaching the state through the
+//! accessors here; it has no notion of `PanelDefinition` or `WidgetId`
+//! either — `AppShell` still resolves "which item is at this index"
+//! itself, passing in `total` (the combined top-panel + bottom-item
+//! count) each time a bound is needed.
 
-use crate::behaviour::nav::{FlatNav, NavKey};
+use crate::primitives::activity_bar::ActivityBarState;
 
 /// Keyboard focus/cursor + mouse-hover state for an activity bar's
 /// logical item sequence (top panels first, then bottom items).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct ActivityBarKeyboard {
-    /// Whether the bar currently holds keyboard focus — see
-    /// [`crate::compose::AppShell::activity_keyboard_focused`].
-    focused: bool,
-    /// Cursor position in the logical item sequence. Saturates at the
-    /// ends; does not wrap. Meaningful even when `!focused`, so a
-    /// `cursor_visible`-only host (see below) still has somewhere to
-    /// paint the highlight.
-    cursor: usize,
-    /// Show the keyboard cursor highlight without the key-event redirect
-    /// `focused` triggers — see
-    /// [`crate::compose::AppShell::set_activity_cursor_visible`].
-    cursor_visible: bool,
-    /// Index of the item currently under the mouse pointer, if any.
-    hovered_idx: Option<usize>,
+    state: ActivityBarState,
 }
 
 impl ActivityBarKeyboard {
@@ -37,78 +30,55 @@ impl ActivityBarKeyboard {
     }
 
     pub(crate) fn focused(&self) -> bool {
-        self.focused
+        self.state.focused
     }
 
     pub(crate) fn set_focused(&mut self, focused: bool) {
-        self.focused = focused;
+        self.state.focused = focused;
     }
 
     pub(crate) fn cursor_visible(&self) -> bool {
-        self.cursor_visible
+        self.state.cursor_visible
     }
 
     pub(crate) fn set_cursor_visible(&mut self, visible: bool) {
-        self.cursor_visible = visible;
+        self.state.cursor_visible = visible;
     }
 
     pub(crate) fn hovered_idx(&self) -> Option<usize> {
-        self.hovered_idx
+        self.state.hovered_idx
     }
 
     pub(crate) fn set_hovered_idx(&mut self, idx: Option<usize>) {
-        self.hovered_idx = idx;
+        self.state.hovered_idx = idx;
     }
 
     pub(crate) fn cursor(&self) -> usize {
-        self.cursor
+        self.state.cursor
     }
 
-    /// Set the cursor to an exact index with no clamping against `total`.
-    /// For callers that have already computed a valid index themselves
-    /// (`AppShell`'s panel add/remove bookkeeping, which knows the new
-    /// item count) — [`Self::set_cursor`] below is the clamping entry
-    /// point for the public-facing navigation API.
+    /// Set the cursor to an exact index with no clamping against `total`
+    /// — see [`ActivityBarState::set_cursor_raw`].
     pub(crate) fn set_cursor_raw(&mut self, idx: usize) {
-        self.cursor = idx;
+        self.state.set_cursor_raw(idx);
     }
 
     /// Move the cursor to the next item. Saturates at `total - 1` —
     /// does not wrap. No-op when `total == 0`.
     pub(crate) fn select_next(&mut self, total: usize) {
-        // A cursor past `total` (reachable via `set_cursor_raw` when the
-        // item count shrinks afterwards) is clamped into range first, so a
-        // forward move lands on the last item rather than seeding at the
-        // first one — `FlatNav` treats an out-of-range `current` as "no
-        // selection yet".
-        let current = self.cursor.min(total.saturating_sub(1));
-        self.cursor =
-            FlatNav::mv(total, Some(current), NavKey::Down, false, |_| true).unwrap_or(self.cursor);
+        self.state.select_next(total);
     }
 
     /// Move the cursor to the previous item. Saturates at index 0 —
     /// does not wrap.
     pub(crate) fn select_prev(&mut self) {
-        // No `total` bound is needed for an upward move: `self.cursor + 1`
-        // is always a valid length for the current cursor position, so
-        // `FlatNav` clamps at 0 exactly like the plain `saturating_sub(1)`
-        // this replaces.
-        self.cursor = FlatNav::mv(
-            self.cursor + 1,
-            Some(self.cursor),
-            NavKey::Up,
-            false,
-            |_| true,
-        )
-        .unwrap_or(self.cursor);
+        self.state.select_prev();
     }
 
     /// Set the cursor to `idx`, clamped to `[0, total - 1]`. No-op when
     /// `total == 0`.
     pub(crate) fn set_cursor(&mut self, idx: usize, total: usize) {
-        if total > 0 {
-            self.cursor = idx.min(total - 1);
-        }
+        self.state.set_cursor(idx, total);
     }
 }
 
