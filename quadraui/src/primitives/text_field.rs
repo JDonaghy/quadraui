@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use crate::event::{Point, Rect};
 use crate::primitives::text_input::{apply_flat_edit_op, EditOp};
 use crate::types::{Icon, WidgetId};
+use crate::Handled;
 
 /// Standalone single-line framed text field. See the module doc.
 ///
@@ -482,6 +483,1069 @@ pub(crate) fn paint_text_field_gui(
 
     if let Some(clear_rect) = layout.clear_rect {
         surface.surface_draw_text_run(clear_rect, "\u{00D7}", dim_fg);
+    }
+}
+
+// ── Cell-grid layout + paint ───────────────────────────────────────────
+
+/// Resolve this field's layout in **whole cell** units — the one
+/// cell-grid entry point [`crate::primitive::Primitive::layout`] and
+/// [`crate::tui::tui_text_field_layout`] share, so the widget contract
+/// and the legacy `Backend::draw_text_field` path can never disagree
+/// about where the icon, text column or clear button sit.
+pub fn cell_layout(tf: &TextField, rect: Rect) -> TextFieldLayout {
+    tf.layout(rect, TextFieldMeasure::new(1.0, 1.0))
+}
+
+/// `TextField`'s cell-grid rasteriser, written against
+/// [`crate::CellSurface`]'s verbs — the cell-grid twin of
+/// [`paint_text_field_gui`].
+///
+/// One row: `[` + optional leading-icon glyph + text + optional `×`
+/// clear button + `]`, with a block caret (reverse video on the cursor's
+/// own cell). The brackets tint [`crate::Theme::accent_fg`] while
+/// focused and [`crate::Theme::muted_fg`] otherwise.
+///
+/// [`put_text_row`] is the "paint the text between the brackets" half,
+/// shared with [`crate::tui::form::draw_form`]'s own `TextInput` row, so
+/// the two can never drift apart on cursor/selection math. The field's
+/// brackets/icon/clear button paint separately from `Form`'s row because
+/// only `TextField` scrolls — `Form`'s row truncates instead.
+pub(crate) mod cell_paint {
+    use super::{TextField, TextFieldLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// Paint `tf` at the already-resolved `layout` onto `surface`.
+    pub(crate) fn paint(
+        tf: &TextField,
+        layout: &TextFieldLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) {
+        let rect = layout.bounds;
+        if rect.width < 1.0 || rect.height < 1.0 {
+            return;
+        }
+        let row_bg = theme.input_bg;
+        let field_fg = theme.foreground;
+        let dim_fg = theme.muted_fg;
+        let bracket_fg = if tf.has_focus {
+            theme.accent_fg
+        } else {
+            dim_fg
+        };
+        let style = |fg: Color| CellStyle {
+            fg: Some(fg),
+            bg: Some(row_bg),
+            ..CellStyle::default()
+        };
+
+        let y = rect.y as u16;
+        let x0 = rect.x as u16;
+        let x1 = x0 + (rect.width as u16).saturating_sub(1);
+
+        // Clear the whole row first — the same "paint the background,
+        // then overlay content" order every cell rasteriser uses.
+        surface.fill(rect, style(field_fg));
+
+        surface.put_char(x0, y, '[', style(bracket_fg));
+        if x1 > x0 {
+            surface.put_char(x1, y, ']', style(bracket_fg));
+        }
+
+        if let Some(icon_rect) = layout.icon_rect {
+            let glyph = tf
+                .leading_icon
+                .as_ref()
+                .and_then(|icon| icon.resolve(nerd_fonts_enabled).chars().next())
+                .unwrap_or(' ');
+            surface.put_char(icon_rect.x as u16, y, glyph, style(dim_fg));
+        }
+
+        let text_col = layout.text_rect.x as u16;
+        let text_cols = layout.text_rect.width as usize;
+        put_text_row(
+            surface,
+            y,
+            text_col,
+            text_col + text_cols as u16,
+            text_cols,
+            layout.resolved_scroll_chars,
+            &tf.value,
+            &tf.placeholder,
+            tf.cursor,
+            tf.selection_anchor,
+            field_fg,
+            dim_fg,
+            row_bg,
+        );
+
+        if let Some(clear_rect) = layout.clear_rect {
+            surface.put_char(clear_rect.x as u16, y, '\u{00D7}', style(dim_fg));
+        }
+    }
+
+    /// Paint the inside-the-brackets text content: `value` (or dimmed
+    /// `placeholder` when empty) starting at column `text_col`, clipped
+    /// to `max_cols`, with a selection highlight between the byte
+    /// offsets `cursor`/`selection_anchor` bracket and a reverse-video
+    /// block caret at `cursor`.
+    ///
+    /// `skip_chars` is how many leading characters of the shown text are
+    /// scrolled out of view before painting starts — `0` for `Form`'s
+    /// row (which has no scroll, only truncation),
+    /// [`TextFieldLayout::resolved_scroll_chars`] for `TextField`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn put_text_row(
+        surface: &mut dyn CellSurface,
+        y: u16,
+        text_col: u16,
+        right_bound: u16,
+        max_cols: usize,
+        skip_chars: usize,
+        value: &str,
+        placeholder: &str,
+        cursor: Option<usize>,
+        selection_anchor: Option<usize>,
+        field_fg: Color,
+        dim_fg: Color,
+        row_bg: Color,
+    ) {
+        let shown = if value.is_empty() { placeholder } else { value };
+        let input_fg = if value.is_empty() { dim_fg } else { field_fg };
+        let visible_chars = shown.chars().count().saturating_sub(skip_chars);
+        let desired = max_cols.min(visible_chars);
+
+        let (sel_lo, sel_hi) = if value.is_empty() {
+            (0, 0)
+        } else {
+            match (cursor, selection_anchor) {
+                (Some(c), Some(a)) if c != a => (c.min(a), c.max(a)),
+                _ => (0, 0),
+            }
+        };
+
+        let mut byte = 0usize;
+        let mut chars = shown.chars();
+        for _ in 0..skip_chars {
+            match chars.next() {
+                Some(ch) => byte += ch.len_utf8(),
+                None => break,
+            }
+        }
+        for (i, ch) in chars.take(desired).enumerate() {
+            let col = text_col + i as u16;
+            if col >= right_bound {
+                break;
+            }
+            let in_selection = sel_hi > sel_lo && byte >= sel_lo && byte < sel_hi;
+            let (ch_fg, ch_bg) = if in_selection {
+                (row_bg, input_fg)
+            } else {
+                (input_fg, row_bg)
+            };
+            surface.put_char(
+                col,
+                y,
+                ch,
+                CellStyle {
+                    fg: Some(ch_fg),
+                    bg: Some(ch_bg),
+                    ..CellStyle::default()
+                },
+            );
+            byte += ch.len_utf8();
+        }
+
+        // The caret itself is bound only by `right_bound` (the same bound
+        // the text loop above uses), not by `desired` — a cursor sitting
+        // just past the last visible character (typing at the end of a
+        // field that exactly fills its column budget) still needs a
+        // paintable cell there, even though the text loop above painted
+        // nothing that far right.
+        if let Some(cur) = cursor {
+            if !value.is_empty() {
+                let mut byte2 = 0usize;
+                let mut char_idx = 0usize;
+                for ch in shown.chars() {
+                    if byte2 >= cur {
+                        break;
+                    }
+                    byte2 += ch.len_utf8();
+                    char_idx += 1;
+                }
+                if char_idx >= skip_chars {
+                    // Bound `rel` by the same text-column budget the
+                    // visible text loop above uses (`max_cols`). `Form`'s
+                    // row (which always passes `skip_chars = 0`)
+                    // truncates rather than scrolls, so a cursor sitting
+                    // past the truncated window would otherwise paint the
+                    // caret outside the field's brackets; `TextField`'s
+                    // own scrolling layout already guarantees
+                    // `rel <= max_cols` here, so the clamp is a no-op for
+                    // it.
+                    let rel = (char_idx - skip_chars).min(max_cols);
+                    let cursor_col = text_col + rel as u16;
+                    if cursor_col < right_bound {
+                        let ch = shown.chars().nth(char_idx).unwrap_or(' ');
+                        surface.put_char(
+                            cursor_col,
+                            y,
+                            ch,
+                            CellStyle {
+                                fg: Some(row_bg),
+                                bg: Some(field_fg),
+                                ..CellStyle::default()
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Widget contract ────────────────────────────────────────────────────
+
+/// [`crate::primitive::Primitive::Layout`] for [`TextField`]: the
+/// absolute area the field was laid out into, the resolved
+/// [`TextFieldLayout`], the character advance the laying-out backend
+/// measured with, and whether that backend has a Nerd Font registered.
+///
+/// `char_width` is carried because [`crate::interactive::Interactive`]
+/// gets no [`crate::primitive::LayoutCtx`] of its own and resolving a
+/// click's character offset needs the same advance the layout positioned
+/// glyphs with; `nerd_fonts` because
+/// [`crate::primitive::Primitive::paint_cells`] takes none either and a
+/// [`crate::types::Icon`] resolves a different glyph with and without
+/// one.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextFieldPrimitiveLayout {
+    /// The absolute rect the field was laid out into.
+    pub area: Rect,
+    /// The resolved field layout, in absolute coordinates.
+    pub layout: TextFieldLayout,
+    /// One character's advance, in the laying-out backend's units.
+    pub char_width: f32,
+    /// Whether the laying-out backend has a Nerd Font icon face.
+    pub nerd_fonts: bool,
+}
+
+impl TextFieldPrimitiveLayout {
+    /// Classify an absolute point against this field — see
+    /// [`TextFieldLayout::hit_test`].
+    pub fn hit_test(&self, x: f32, y: f32) -> TextFieldHit {
+        self.layout.hit_test(x, y)
+    }
+
+    /// The character offset (not byte offset) an absolute `x` resolves
+    /// to inside the visible text window, rounded to the nearest
+    /// boundary so a click on a glyph's right half puts the caret after
+    /// it.
+    pub fn char_offset_at(&self, x: f32) -> usize {
+        let char_w = self.char_width.max(1.0);
+        let offset = ((x - self.layout.text_rect.x) / char_w).round().max(0.0) as usize;
+        self.layout.resolved_scroll_chars + offset
+    }
+}
+
+impl crate::primitive::Primitive for TextField {
+    type Layout = TextFieldPrimitiveLayout;
+    type Event = TextFieldHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::TextField(self.clone())
+    }
+
+    /// One row tall, and as wide as the value (or placeholder) plus the
+    /// two brackets and whatever icon/clear columns this field requests.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let char_w = ctx.char_width.max(1.0);
+        let shown = if self.value.is_empty() {
+            self.placeholder.as_str()
+        } else {
+            self.value.as_str()
+        };
+        let chrome = 2
+            + usize::from(self.leading_icon.is_some())
+            + usize::from(self.clearable && !self.value.is_empty());
+        let cols = shown.chars().count() + chrome;
+        crate::NaturalSize::new(
+            Some((cols as f32 * char_w).min(avail.width)),
+            Some(ctx.line_height.max(1.0)),
+        )
+    }
+
+    /// `rect` is the field's own one-row box. On a cell grid the layout
+    /// comes from [`cell_layout`]; on a pixel surface from
+    /// [`TextField::layout`] with the backend's own advance and line
+    /// height.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextFieldPrimitiveLayout {
+        let (layout, char_width) = match ctx.units() {
+            crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0),
+            _ => (
+                self.layout(rect, TextFieldMeasure::new(ctx.char_width, ctx.line_height)),
+                ctx.char_width.max(1.0),
+            ),
+        };
+        TextFieldPrimitiveLayout {
+            area: rect,
+            layout,
+            char_width,
+            nerd_fonts: ctx.nerd_fonts_enabled,
+        }
+    }
+
+    /// The shared pixel painter — the same one every pixel backend's
+    /// `draw_text_field` routes through.
+    fn paint(
+        &self,
+        layout: &TextFieldPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            paint_text_field_gui(
+                surface,
+                layout.area,
+                &layout.layout,
+                self,
+                theme,
+                layout.nerd_fonts,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_text_field`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`. That
+    /// entry point re-resolves the layout from the same area through the
+    /// same [`cell_layout`] this `Primitive` laid out with, so the glyphs
+    /// land exactly where `layout` says they do.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &TextFieldPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = layout.area;
+        crate::tui::draw_text_field(
+            buf,
+            ratatui::layout::Rect::new(
+                area.x as u16,
+                area.y as u16,
+                area.width as u16,
+                area.height as u16,
+            ),
+            self,
+            theme,
+            layout.nerd_fonts,
+        );
+    }
+}
+
+/// [`crate::interactive::Interactive::State`] for [`TextField`]: the
+/// caret and selection anchor this widget's own key handling moves, as
+/// byte offsets into [`TextField::value`].
+///
+/// Same division of labour as [`crate::primitives::text_input::TextInputState`]
+/// — see that type's doc for why the caret is interaction state rather
+/// than something read back off the descriptor.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextFieldState {
+    /// The caret byte offset this widget's own editing has moved to, or
+    /// `None` while it still follows [`TextField::cursor`].
+    pub cursor: Option<usize>,
+    /// The selection's fixed end, as a byte offset.
+    pub anchor: Option<usize>,
+}
+
+/// What a [`TextField`]'s own [`crate::interactive::Interactive::handle`]
+/// resolves one gesture to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextFieldAction {
+    /// The value changed — a keystroke, a cut, or a click on the clear
+    /// (×) button. Carries the whole new value, the shape
+    /// [`crate::primitives::form::FormEvent::TextInputChanged`] already
+    /// names.
+    Changed(String),
+    /// Enter committed the field's current value.
+    Committed(String),
+    /// Ctrl-C (or the copy half of Ctrl-X) put the selection on the
+    /// clipboard.
+    Copied(String),
+}
+
+impl crate::interactive::WidgetAction for TextFieldAction {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            TextFieldAction::Changed(value) => crate::UiEvent::Form(
+                id,
+                crate::primitives::form::FormEvent::TextInputChanged { id, value },
+            ),
+            TextFieldAction::Committed(value) => crate::UiEvent::Form(
+                id,
+                crate::primitives::form::FormEvent::TextInputCommitted { id, value },
+            ),
+            TextFieldAction::Copied(text) => crate::UiEvent::TextCopied(text),
+        }
+    }
+}
+
+impl TextField {
+    /// The caret one `handle` call starts from: whatever this widget's
+    /// own state has walked to, else [`Self::cursor`], else the end of
+    /// the value — snapped to a char boundary either way.
+    fn effective_cursor(&self, state: &TextFieldState) -> usize {
+        let raw = state
+            .cursor
+            .or(self.cursor)
+            .unwrap_or(self.value.len())
+            .min(self.value.len());
+        crate::text_util::snap_to_char_boundary(&self.value, raw)
+    }
+
+    /// Apply one [`EditOp`] against this field's value and the
+    /// caret/anchor in `state`, writing the resulting caret back.
+    ///
+    /// Returns the new value when it changed, `None` when the op only
+    /// moved the caret or the selection.
+    fn apply_op(&self, state: &mut TextFieldState, op: EditOp) -> Option<String> {
+        let (value, cursor, anchor) =
+            apply_flat_edit_op(&self.value, self.effective_cursor(state), state.anchor, op);
+        state.cursor = Some(cursor);
+        state.anchor = anchor;
+        (value != self.value).then_some(value)
+    }
+
+    /// The selected text, as the shared flat-value selection span
+    /// resolves it against this field's value and `state`'s
+    /// caret/anchor.
+    fn selection_text(&self, state: &TextFieldState) -> Option<String> {
+        let (lo, hi) = crate::behaviour::text_edit::flat_selection_range(
+            &self.value,
+            self.effective_cursor(state),
+            state.anchor,
+        )?;
+        Some(self.value[lo..hi].to_string())
+    }
+
+    /// Apply `op` and report it: a value change as
+    /// [`TextFieldAction::Changed`], a caret-only move as
+    /// [`Handled::Consumed`] plus a redraw request.
+    fn commit(
+        &self,
+        state: &mut TextFieldState,
+        op: EditOp,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TextFieldAction> {
+        match self.apply_op(state, op) {
+            Some(value) => Handled::Event(TextFieldAction::Changed(value)),
+            None => {
+                cx.request_redraw();
+                Handled::Consumed
+            }
+        }
+    }
+
+    /// One keystroke, with Enter and the Ctrl-chorded clipboard /
+    /// select-all keys claimed ahead of [`EditOp::from_key`] (which maps
+    /// Enter to a newline and would read `Ctrl+A` as typing an `a`).
+    fn handle_key(
+        &self,
+        state: &mut TextFieldState,
+        key: &crate::event::Key,
+        modifiers: crate::types::Modifiers,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TextFieldAction> {
+        use crate::event::{Key, NamedKey};
+
+        if modifiers.ctrl || modifiers.cmd {
+            match key {
+                Key::Char('a') | Key::Char('A') => {
+                    return self.commit(state, EditOp::SelectAll, cx);
+                }
+                Key::Char('c') | Key::Char('C') => {
+                    return match self.selection_text(state) {
+                        Some(text) => Handled::Event(TextFieldAction::Copied(text)),
+                        None => Handled::Consumed,
+                    };
+                }
+                Key::Char('x') | Key::Char('X') => {
+                    return match self.selection_text(state) {
+                        Some(text) => {
+                            cx.emit(crate::UiEvent::TextCopied(text));
+                            self.commit(state, EditOp::DeleteSelection, cx)
+                        }
+                        None => Handled::Consumed,
+                    };
+                }
+                // Paste is the host's: the clipboard text arrives as
+                // `UiEvent::ClipboardPaste`, which a host feeds back in
+                // as `RoutedEvent::Text`.
+                Key::Char('v') | Key::Char('V') => return Handled::Ignored,
+                _ => {}
+            }
+        }
+        // Single-line field: Enter commits instead of splitting the
+        // value, so the newline `EditOp::from_key` would resolve never
+        // reaches the buffer.
+        if matches!(key, Key::Named(NamedKey::Enter)) {
+            return Handled::Event(TextFieldAction::Committed(self.value.clone()));
+        }
+        match EditOp::from_key(key, modifiers) {
+            Some(op) => self.commit(state, op, cx),
+            None => Handled::Ignored,
+        }
+    }
+}
+
+impl crate::interactive::Interactive for TextField {
+    type State = TextFieldState;
+    type Action = TextFieldAction;
+
+    /// One focus stop as a whole — a single-line field routes every
+    /// keystroke itself.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// The clear (×) button first, then the text column — most specific
+    /// first, translated into the widget-local space this method answers
+    /// in.
+    fn sub_regions(
+        &self,
+        layout: &TextFieldPrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let (ox, oy) = (layout.area.x, layout.area.y);
+        let local = |r: Rect| Rect::new(r.x - ox, r.y - oy, r.width, r.height);
+        let mut out = Vec::new();
+        if let Some(clear) = layout.layout.clear_rect {
+            out.push((local(clear), crate::interactive::SubTarget(SUB_CLEAR)));
+        }
+        out.push((
+            local(layout.layout.text_rect),
+            crate::interactive::SubTarget(SUB_TEXT),
+        ));
+        out
+    }
+
+    /// A screen reader can focus the field and replace its whole value.
+    fn a11y_actions(&self, _state: &TextFieldState) -> Vec<crate::a11y::A11yAction> {
+        vec![
+            crate::a11y::A11yAction::Focus,
+            crate::a11y::A11yAction::SetValue,
+        ]
+    }
+
+    /// Keystrokes go through [`EditOp::from_key`] and the shared
+    /// flat-value bridge, so this field, `Form`'s own text row and
+    /// [`crate::TextEditor`] can never disagree about what a key means.
+    /// Enter commits, Ctrl-A/C/X select-all/copy/cut, a click on the
+    /// text parks the caret at the clicked character, and a click on the
+    /// clear button empties the field.
+    fn handle(
+        &self,
+        state: &mut TextFieldState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &TextFieldPrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TextFieldAction> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+
+        match event {
+            RoutedEvent::Key(key) => self.handle_key(state, &key.key, key.modifiers, cx),
+            RoutedEvent::Text(text) => self.commit(state, EditOp::InsertText(text.clone()), cx),
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                local,
+                mods,
+                ..
+            } => {
+                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                cx.request_focus(None);
+                match layout.hit_test(x, y) {
+                    TextFieldHit::Clear => {
+                        state.cursor = Some(0);
+                        state.anchor = None;
+                        if self.value.is_empty() {
+                            Handled::Consumed
+                        } else {
+                            Handled::Event(TextFieldAction::Changed(String::new()))
+                        }
+                    }
+                    TextFieldHit::Text => {
+                        // A single-line field is always line 0; `col` is
+                        // the char column the shared bridge converts back
+                        // into a byte offset.
+                        let col = layout.char_offset_at(x);
+                        self.commit(
+                            state,
+                            EditOp::SetCursor {
+                                line: 0,
+                                col,
+                                extend: mods.shift,
+                            },
+                            cx,
+                        )
+                    }
+                    TextFieldHit::Miss => Handled::Consumed,
+                }
+            }
+            RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
+                cx.request_focus(None);
+                Handled::Consumed
+            }
+            RoutedEvent::FocusIn(_) => {
+                // Re-seed from the descriptor: the app may have moved the
+                // caret while this field was unfocused.
+                state.cursor = Some(self.cursor.unwrap_or(self.value.len()));
+                state.anchor = self.selection_anchor;
+                Handled::Consumed
+            }
+            RoutedEvent::FocusOut => {
+                state.cursor = None;
+                state.anchor = None;
+                Handled::Consumed
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+/// [`crate::interactive::SubTarget`] for the clear (×) button — see
+/// [`crate::interactive::Interactive::sub_regions`].
+const SUB_CLEAR: u64 = 0;
+/// [`crate::interactive::SubTarget`] for the text column.
+const SUB_TEXT: u64 = 1;
+
+/// Routes a headless `TuiDriver` test can't reach: the
+/// assistive-technology action path, a host-driven focus transition, the
+/// widget-local `sub_regions` translation, and word motion.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::event::{Key, MouseButton, NamedKey, Point};
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::types::Modifiers;
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock — the same shape every other widget
+    /// module's own `Interactive` tests use.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+        emitted: Vec<crate::UiEvent>,
+        redraws: usize,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {
+            self.redraws += 1;
+        }
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn field(value: &str) -> TextField {
+        TextField::new(WidgetId::new("tf"))
+            .with_value(value)
+            .with_has_focus(true)
+    }
+
+    fn area() -> Rect {
+        Rect::new(0.0, 0.0, 14.0, 1.0)
+    }
+
+    fn layout_of(tf: &TextField) -> TextFieldPrimitiveLayout {
+        Primitive::layout(tf, &LayoutCtx::new(1.0, 1.0, false), area())
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        })
+    }
+
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        }
+    }
+
+    fn click(x: f32, mods: Modifiers) -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(x, 0.0),
+            mods,
+        }
+    }
+
+    #[test]
+    fn a_text_field_is_one_focus_stop() {
+        assert_eq!(Interactive::focus(&field("a")), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn sub_regions_name_the_clear_button_before_the_text_column() {
+        let tf = field("abc").with_clearable(true);
+        let layout = layout_of(&tf);
+        let regions = Interactive::sub_regions(&tf, &layout);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].1, SubTarget(0));
+        assert_eq!(regions[1].1, SubTarget(1));
+        // Local space: the text column starts one bracket column in,
+        // never at the absolute origin.
+        assert_eq!(regions[1].0.x, 1.0);
+    }
+
+    #[test]
+    fn enter_commits_the_current_value_without_inserting_a_newline() {
+        let tf = field("query");
+        let layout = layout_of(&tf);
+        let mut host = MockHost::default();
+        let mut state = TextFieldState::default();
+        let mut cx = EventCx::new(tf.id, &mut host);
+        let handled = Interactive::handle(
+            &tf,
+            &mut state,
+            &key(Key::Named(NamedKey::Enter), Modifiers::default()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(TextFieldAction::Committed("query".into()))
+        );
+    }
+
+    #[test]
+    fn ctrl_x_emits_the_copy_alongside_the_shortened_value() {
+        let tf = field("query");
+        let layout = layout_of(&tf);
+        let mut host = MockHost::default();
+        let mut state = TextFieldState::default();
+        let mut cx = EventCx::new(tf.id, &mut host);
+        Interactive::handle(
+            &tf,
+            &mut state,
+            &key(Key::Char('a'), ctrl()),
+            &layout,
+            &mut cx,
+        );
+        let handled = Interactive::handle(
+            &tf,
+            &mut state,
+            &key(Key::Char('x'), ctrl()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(TextFieldAction::Changed(String::new()))
+        );
+        assert_eq!(
+            host.emitted,
+            vec![crate::UiEvent::TextCopied("query".into())]
+        );
+    }
+
+    #[test]
+    fn ctrl_left_moves_the_caret_a_whole_word() {
+        let tf = field("foo_bar baz");
+        let layout = layout_of(&tf);
+        let mut host = MockHost::default();
+        let mut state = TextFieldState::default();
+        let mut cx = EventCx::new(tf.id, &mut host);
+        let handled = Interactive::handle(
+            &tf,
+            &mut state,
+            &key(Key::Named(NamedKey::Left), ctrl()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(state.cursor, Some(8));
+        assert_eq!(host.redraws, 1);
+    }
+
+    #[test]
+    fn a_click_on_the_clear_button_empties_the_field() {
+        let tf = field("abc").with_clearable(true);
+        let layout = layout_of(&tf);
+        let clear = layout
+            .layout
+            .clear_rect
+            .expect("clearable, non-empty value");
+        let mut host = MockHost::default();
+        let mut state = TextFieldState::default();
+        let mut cx = EventCx::new(tf.id, &mut host);
+        let handled = Interactive::handle(
+            &tf,
+            &mut state,
+            &click(clear.x + 0.5, Modifiers::default()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(TextFieldAction::Changed(String::new()))
+        );
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn a_shift_click_extends_the_selection_to_the_clicked_character() {
+        let tf = field("alpha");
+        let layout = layout_of(&tf);
+        let text_x = layout.layout.text_rect.x;
+        let mut host = MockHost::default();
+        let mut state = TextFieldState::default();
+        let mut cx = EventCx::new(tf.id, &mut host);
+        Interactive::handle(
+            &tf,
+            &mut state,
+            &click(text_x + 1.0, Modifiers::default()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.cursor, Some(1));
+        Interactive::handle(
+            &tf,
+            &mut state,
+            &click(
+                text_x + 4.0,
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.cursor, Some(4));
+        assert_eq!(state.anchor, Some(1));
+    }
+
+    #[test]
+    fn an_a11y_focus_action_requests_focus_on_the_field_itself() {
+        let tf = field("a");
+        let layout = layout_of(&tf);
+        let mut host = MockHost::default();
+        let mut state = TextFieldState::default();
+        let mut cx = EventCx::new(tf.id, &mut host);
+        let handled = Interactive::handle(
+            &tf,
+            &mut state,
+            &RoutedEvent::Action(A11yAction::Focus),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn focus_in_seeds_the_caret_from_the_descriptor_and_focus_out_releases_it() {
+        let tf = field("alpha").with_cursor(Some(2));
+        let layout = layout_of(&tf);
+        let mut host = MockHost::default();
+        let mut state = TextFieldState {
+            cursor: Some(5),
+            anchor: Some(4),
+        };
+        let mut cx = EventCx::new(tf.id, &mut host);
+        Interactive::handle(
+            &tf,
+            &mut state,
+            &RoutedEvent::FocusIn(None),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.cursor, Some(2));
+        assert_eq!(state.anchor, None);
+
+        Interactive::handle(&tf, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx);
+        assert_eq!(state.cursor, None);
+    }
+
+    #[test]
+    fn a_pixel_layout_resolves_a_click_with_the_backends_char_width() {
+        let tf = field("alpha");
+        let layout = Primitive::layout(
+            &tf,
+            &LayoutCtx::new(16.0, 8.0, false),
+            Rect::new(0.0, 0.0, 160.0, 20.0),
+        );
+        assert_eq!(layout.char_width, 8.0);
+        assert_eq!(layout.char_offset_at(layout.layout.text_rect.x + 24.0), 3);
+    }
+
+    #[test]
+    fn measure_reports_one_row_and_the_value_plus_its_chrome_columns() {
+        let tf = field("abc").with_clearable(true);
+        let size = Primitive::measure(
+            &tf,
+            &LayoutCtx::new(1.0, 1.0, false),
+            crate::primitive::Size::new(40.0, 40.0),
+        );
+        // Two brackets + one clear column + three value columns.
+        assert_eq!(size.width, Some(6.0));
+        assert_eq!(size.height, Some(1.0));
+    }
+}
+
+/// Cell-grid paint tests for [`cell_paint`], driven through
+/// [`crate::tui::draw_text_field`] — the delegate that owns the
+/// `Buffer` → [`crate::CellSurface`] adapter the painter needs.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use crate::primitives::text_field::TextField;
+    use crate::theme::Theme;
+    use crate::tui::draw_text_field;
+    use crate::types::{Color, Icon, WidgetId};
+
+    fn theme() -> Theme {
+        Theme::default()
+    }
+
+    /// The ratatui colour `crate::tui`'s own cell writers land for a
+    /// quadraui [`Color`] — spelled here because that crate-private
+    /// conversion isn't reachable from a widget module.
+    fn qc(c: Color) -> ratatui::style::Color {
+        ratatui::style::Color::Rgb(c.r, c.g, c.b)
+    }
+
+    /// Paint/click round-trip (`PRIMITIVE_RULES.md` rule 4): paint, find
+    /// the painted glyphs, hit_test those exact coordinates, assert
+    /// paint and click identify the same region.
+    #[test]
+    fn paint_click_round_trip_text_and_clear() {
+        let tf = TextField::new(WidgetId::new("search"))
+            .with_value("abc")
+            .with_clearable(true)
+            .with_leading_icon(Icon::new("S", "S"))
+            .with_has_focus(true);
+        let area = Rect::new(2, 1, 12, 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        let layout = draw_text_field(&mut buf, area, &tf, &theme(), false);
+
+        // Clear glyph painted where the layout says it should be.
+        let clear_rect = layout.clear_rect.expect("clearable + non-empty value");
+        let cell = &buf[(clear_rect.x as u16, clear_rect.y as u16)];
+        assert_eq!(cell.symbol(), "\u{00D7}");
+        assert_eq!(
+            layout.hit_test(clear_rect.x + 0.5, clear_rect.y + 0.5),
+            super::TextFieldHit::Clear
+        );
+
+        // Text glyph painted where the layout says it should be.
+        let text_rect = layout.text_rect;
+        let cell = &buf[(text_rect.x as u16, text_rect.y as u16)];
+        assert_eq!(cell.symbol(), "a");
+        assert_eq!(
+            layout.hit_test(text_rect.x + 0.5, text_rect.y + 0.5),
+            super::TextFieldHit::Text
+        );
+
+        // Brackets at the row's own edges.
+        assert_eq!(buf[(area.x, area.y)].symbol(), "[");
+        assert_eq!(buf[(area.x + area.width - 1, area.y)].symbol(), "]");
+    }
+
+    #[test]
+    fn placeholder_renders_dimmed_when_value_is_empty() {
+        let tf = TextField::new(WidgetId::new("search")).with_placeholder("Search");
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(area);
+        draw_text_field(&mut buf, area, &tf, &theme(), false);
+        let cell = &buf[(1, 0)];
+        assert_eq!(cell.symbol(), "S");
+        assert_eq!(cell.fg, qc(theme().muted_fg));
+    }
+
+    #[test]
+    fn narrow_rect_drops_clear_then_icon_when_painting() {
+        let tf = TextField::new(WidgetId::new("search"))
+            .with_value("hi")
+            .with_clearable(true)
+            .with_leading_icon(Icon::new("S", "S"));
+        let area = Rect::new(0, 0, 3, 1);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_text_field(&mut buf, area, &tf, &theme(), false);
+        assert!(layout.clear_rect.is_none());
+        assert!(layout.icon_rect.is_none());
+        // Only the brackets + one text column fit; the painted glyph at
+        // the sole text column is the value's first (and only visible)
+        // character.
+        assert_eq!(buf[(1, 0)].symbol(), "h");
+    }
+
+    #[test]
+    fn cursor_scrolled_into_view_paints_in_the_last_text_column() {
+        let tf = TextField::new(WidgetId::new("search"))
+            .with_value("0123456789")
+            .with_cursor(Some(10))
+            .with_has_focus(true);
+        let area = Rect::new(0, 0, 10, 1); // 8 text cols after brackets
+        let mut buf = Buffer::empty(area);
+        let layout = draw_text_field(&mut buf, area, &tf, &theme(), false);
+        assert_eq!(layout.resolved_scroll_chars, 3);
+        // Visible window is "3456789" clipped to 8 cols -> "3456789" (7
+        // chars, cursor sits one past the last char at the 8th column).
+        assert_eq!(buf[(1, 0)].symbol(), "3");
     }
 }
 
