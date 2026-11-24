@@ -353,7 +353,7 @@ pub enum NumberInputEvent {
 impl WidgetAction for NumberInputEvent {
     /// Every outcome rides [`crate::UiEvent::Form`] under the field's own
     /// id: [`crate::FormEvent`]'s four `Number*` variants name exactly
-    /// this primitive's four outcomes, one for one, with the same
+    /// the four outcomes resolved above, one for one, with the same
     /// "stepper/arrow steps immediately, a typed draft waits for
     /// Enter" split. A standalone `NumberInput` therefore reaches an app
     /// through the same event vocabulary an embedded one does, so a host

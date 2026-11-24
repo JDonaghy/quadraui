@@ -386,7 +386,7 @@ pub enum ComboBoxEvent {
 impl WidgetAction for ComboBoxEvent {
     /// Every outcome rides [`crate::UiEvent::Form`] under the box's own
     /// id: [`crate::FormEvent`]'s four `ComboBox*` variants name exactly
-    /// this primitive's four outcomes, one for one, with the same
+    /// the four outcomes resolved above, one for one, with the same
     /// "typing fires every keystroke, Enter fires once" split. A
     /// standalone `ComboBox` therefore reaches an app through the same
     /// event vocabulary an embedded one does, and the apply contract
@@ -595,9 +595,9 @@ impl ComboBox {
     /// the box's own, unchanged — because its documented apply contract
     /// is exactly "set `text`, and set `open = true`", which is the whole
     /// of what opening needs. There is no second "open" event to add
-    /// alongside the four this primitive already has, and reusing this
-    /// one keeps the standalone box and a `Form` row applying the same
-    /// vocabulary.
+    /// alongside the four [`ComboBoxEvent`] already names, and reusing
+    /// this one keeps the standalone box and a `Form` row applying the
+    /// same vocabulary.
     fn open_request(&self) -> Handled<ComboBoxEvent> {
         Handled::Event(ComboBoxEvent::TextChanged {
             id: self.id,
