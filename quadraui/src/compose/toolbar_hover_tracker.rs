@@ -45,7 +45,7 @@
 //! ```
 
 use crate::primitives::list::{ListViewHit, ListViewLayout};
-use crate::primitives::toolbar::{ToolbarHit, ToolbarLayout};
+use crate::primitives::toolbar::ToolbarLayout;
 use crate::primitives::tree::{TreeViewHit, TreeViewLayout};
 use crate::types::WidgetId;
 
@@ -113,18 +113,14 @@ impl ToolbarHoverTracker {
     /// toolbar layout. Returns `true` if the hovered button changed
     /// (caller should redraw), `false` if it stayed the same.
     pub fn update(&mut self, layout: &ToolbarLayout, x: f32, y: f32) -> bool {
-        let new_hover = match layout.hit_test(x, y) {
-            // `MenuButton` hovers the same way an `Action` does (its own
-            // id drives the hover-highlight paint); `Field` reports its
-            // id too, though no rasteriser reads it for a hover tint
-            // today — a text field has no separate hover state from
-            // its own `has_focus`.
-            ToolbarHit::Button(id) | ToolbarHit::MenuButton(id) | ToolbarHit::Field(id) => Some(id),
-            // The `»` affordance has no `WidgetId` of its own to hover —
-            // same "no specific button" reading as `Empty`.
-            ToolbarHit::Empty | ToolbarHit::Overflow => None,
-        };
-        self.core.set(new_hover)
+        // The widget's own hit-to-hovered-button classification, shared
+        // with `impl Interactive for Toolbar`'s pointer arms so a host on
+        // the legacy `Backend` path and one on the widget contract can
+        // never highlight different cells — see that function's doc for
+        // which hits hover and which don't.
+        self.core.set(crate::primitives::toolbar::hover_target(
+            &layout.hit_test(x, y),
+        ))
     }
 
     /// Clear the hover state — call from `MouseLeft` handlers (or
