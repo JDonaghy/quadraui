@@ -511,6 +511,11 @@ pub fn cell_layout(tf: &TextField, rect: Rect) -> TextFieldLayout {
 /// the two can never drift apart on cursor/selection math. The field's
 /// brackets/icon/clear button paint separately from `Form`'s row because
 /// only `TextField` scrolls — `Form`'s row truncates instead.
+/// `#[cfg(feature = "tui")]`: `crate::tui`'s own delegate is this
+/// painter's only caller, so a pixel-only or featureless build would
+/// compile it unused — and CI's `-D warnings` legs turn that into a hard
+/// error.
+#[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
     use super::{TextField, TextFieldLayout};
     use crate::cell_surface::{CellStyle, CellSurface};

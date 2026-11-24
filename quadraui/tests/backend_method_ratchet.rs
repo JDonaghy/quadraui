@@ -183,6 +183,17 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Toolbar", "draw_toolbar_with_overflow"),
     ("Toolbar", "toolbar_layout"),
     ("Toolbar", "toolbar_layout_with_overflow"),
+    // Group-B ports keep these until the group's cleanup deletes them
+    // together with their wrapper files and `Surface` variants.
+    ("TextInput", "draw_text_input"),
+    ("TextInput", "text_input_layout"),
+    ("TextField", "draw_text_field"),
+    ("TextField", "text_field_layout"),
+    ("CommandLine", "draw_command_line"),
+    ("CommandLine", "draw_command_line_selection"),
+    ("CommandLine", "command_line_layout"),
+    ("TextDisplay", "draw_text_display"),
+    ("TextDisplay", "text_display_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
