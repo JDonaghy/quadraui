@@ -147,6 +147,9 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Completions", "draw_completions"),
     ("RichTextPopup", "draw_rich_text_popup"),
     ("RichTextPopup", "draw_rich_text_popup_with_font_role"),
+    ("Dialog", "draw_dialog"),
+    ("ToastOverlay", "draw_toast_overlay"),
+    ("ToastOverlay", "toast_stack_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
