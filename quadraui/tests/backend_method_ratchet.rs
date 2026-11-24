@@ -150,6 +150,9 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Dialog", "draw_dialog"),
     ("ToastOverlay", "draw_toast_overlay"),
     ("ToastOverlay", "toast_stack_layout"),
+    ("NumberInput", "draw_number_input"),
+    ("ComboBox", "draw_combo_box"),
+    ("DatePicker", "draw_date_picker"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
