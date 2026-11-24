@@ -3277,14 +3277,15 @@ impl crate::primitive::Primitive for TabBar {
             .iter()
             .map(|t| crate::primitives::layout_metrics::TextMeasure::width_of(&measure, &t.label))
             .collect();
-        // Icon glyphs are measured through the same chrome-font measurer
-        // as the labels. A pixel rasteriser that owns a real font handle
-        // swaps to a Nerd-Font family for this pass (see
-        // `gtk::tab_bar::tab_icon_extras`), so an icon whose glyph the
-        // chrome font cannot cover can still measure slightly differently
-        // here than it paints.
+        // Icon glyphs are measured in the font the rasteriser paints them
+        // in, which is not always the chrome font: GTK appends a Nerd Font
+        // fallback family for this pass (`gtk::tab_bar::tab_icon_font`).
+        let icon_measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+            ctx,
+            role: crate::FontRole::Icon,
+        };
         let tab_icon_extras = crate::primitives::layout_metrics::pixel_tab_icon_extras(
-            &measure,
+            &icon_measure,
             self.tabs.len(),
             &self.icons,
         );

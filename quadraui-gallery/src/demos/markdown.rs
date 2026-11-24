@@ -136,10 +136,10 @@ impl MarkdownDemo {
             (end - start) as f32 * col_w
         });
         match self.popup.font_role {
-            FontRole::Chrome => backend.draw_rich_text_popup(&popup, &layout),
             FontRole::Editor => {
                 backend.draw_rich_text_popup_with_font_role(&popup, &layout, FontRole::Editor)
             }
+            FontRole::Chrome | FontRole::Icon => backend.draw_rich_text_popup(&popup, &layout),
         }
     }
 
@@ -260,7 +260,7 @@ impl Demo for MarkdownDemo {
                     }
                     Key::Char('f') => {
                         self.popup.font_role = match self.popup.font_role {
-                            FontRole::Chrome => FontRole::Editor,
+                            FontRole::Chrome | FontRole::Icon => FontRole::Editor,
                             FontRole::Editor => FontRole::Chrome,
                         };
                         Reaction::Redraw
@@ -287,6 +287,7 @@ impl Demo for MarkdownDemo {
                 "font_role": match self.popup.font_role {
                     FontRole::Chrome => "Chrome",
                     FontRole::Editor => "Editor",
+                    FontRole::Icon => "Icon",
                 },
             }),
         }
