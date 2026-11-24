@@ -45,7 +45,14 @@ pub struct RenderFrame {
     pub data_table: Option<DataTable>,
     // TODO(#2977): fold this slot, its [`draw_bands`] paint arm, `host.rs`'s
     // `SLOT_TAB_BAR` arms and `semantic.rs`'s per-kind routing into the
-    // generic `widgets` map below, with every other fixed slot.
+    // generic `widgets` map below, with every other fixed slot. The paint
+    // already goes through the widget contract ([`paint_tab_bar`]); what
+    // the fixed slot still carries that the generic arm cannot is the
+    // *hit*: it records [`PaintedHit::TabBar`] with the resolved
+    // [`TabBarLayout`], so a click resolves to a tab index or a close
+    // glyph, where the `widgets` arm records [`PaintedHit::Widget`] with
+    // an area and no sub-region detail. Folding needs a hit seam on
+    // [`DynWidget`] first, which is that issue's own first deliverable.
     pub tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name.
     pub extra: HashMap<String, Rc<dyn ExtraPaint>>,
@@ -169,10 +176,10 @@ pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
 /// [`quadraui::TabBarLayout`] it resolved, the space
 /// [`PaintedHit::TabBar`]'s own hit test subtracts `area`'s origin from.
 ///
-/// Both tab-bar paint paths here (the fixed `"tab_bar"` slot in
-/// [`draw_bands`] and [`LeafDescriptor::TabBar`] in [`paint_leaf`]) share
-/// this one call, so neither reaches for a `Backend::draw_tab_bar*`
-/// method of its own.
+/// All three tab-bar paint paths here (the fixed `"tab_bar"` slot in
+/// [`draw_bands`], [`LayoutNode::Tabs`]'s strip in [`paint_layout`] and
+/// [`LeafDescriptor::TabBar`] in [`paint_leaf`]) share this one call, so
+/// none reaches for a `Backend::draw_tab_bar*` method of its own.
 ///
 /// An empty layout is the fallback when `draw_dyn` hands back a layout of
 /// some other concrete type, which means nothing measured a tab bar: the
@@ -523,7 +530,7 @@ fn text_display_region(
 /// (the same divider paint/hit-test every backend already shares for the
 /// Rust-side `Split` primitive) and recurses into each with its resolved
 /// bounds. A `Tabs` reserves a top band for its tab strip (painted via
-/// `Backend::draw_tab_bar_layout`, the same strip every backend already
+/// [`paint_tab_bar`], the `TabBar` widget contract every backend already
 /// shares for the Rust-side `TabBar` primitive) and recurses into the
 /// remaining area with the selected tab's content, so a tab group is just a
 /// `Split` whose panes are each a `Tabs`. A `SidebarPanel` paints its

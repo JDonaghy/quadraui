@@ -2,13 +2,13 @@
 //! [`TabIcon`] glyphs — VS Code's coloured
 //! language/file-type badge ahead of each tab label.
 //!
-//! The point of the demo is the **sidecar**: icons are passed to
-//! [`Backend::draw_tab_bar_icons`] as a slice parallel to `bar.tabs`
-//! rather than as a `TabItem` field, so the same `TabBar` value paints
-//! with or without decoration. Pressing `i` toggles the sidecar between
-//! the real icon list and `&[]`, which is exactly the comparison a human
-//! wants to eyeball: label positions shift right by the icon reservation
-//! and nothing else moves.
+//! The point of the demo is the **sidecar**: icons ride on
+//! [`TabBar::icons`] as a list parallel to `bar.tabs` rather than as a
+//! [`TabItem`] field, so the same tabs paint with or without decoration.
+//! Pressing `i` toggles the sidecar between the real icon list and an
+//! empty one, which is exactly the comparison a human wants to eyeball:
+//! label positions shift right by the icon reservation and nothing else
+//! moves.
 //!
 //! Glyphs are ASCII on purpose (`R`, `T`, `M`) — a Nerd Font codepoint
 //! renders as a blank box in a terminal without a patched font, which

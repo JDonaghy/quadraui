@@ -4,10 +4,13 @@
 //! label.
 //!
 //! The point of the demo is the **sidecar + declarative click routing**:
-//! the bracket framing is requested via [`Backend::draw_tab_bar_with_chrome`]
-//! (never baked into [`TabItem::label`] as a string), and a click still
-//! resolves through [`Backend::tab_bar_layout_with_chrome`]'s `close_bounds` /
-//! `slot_positions`, never a hand-rolled character scan for `×`.
+//! the bracket framing is requested through the descriptor's own
+//! [`TabBar::chrome`] field (never baked into [`TabItem::label`] as a
+//! string) and painted by [`quadraui::DrawsPrimitives::draw_dyn`], and a
+//! click resolves through the same primitive layout that paint used —
+//! [`quadraui::DrawsPrimitives::layout_primitive`] plus
+//! [`quadraui::TabBarLayout::hit_test`] — never a hand-rolled character
+//! scan for `×`.
 //!
 //! Only the active tab is closable (`is_closable` tracks `is_active`), so
 //! its `×` — and, since chrome frames it, its `]` — are the only

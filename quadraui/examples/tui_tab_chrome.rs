@@ -1,9 +1,9 @@
 //! `TabChromeDemo` `AppLogic` + `quadraui::tui::run` example.
 //!
-//! Active-tab bracket framing: `Backend::draw_tab_bar_with_chrome`
+//! Active-tab bracket framing: the bar's own `TabBar::chrome` field
 //! encloses the active tab's label *and* close glyph in `[` / `]`, and
-//! clicks resolve through `Backend::tab_bar_layout_with_chrome`'s
-//! `close_bounds` — never a hand-rolled scan for `×` in the label string.
+//! clicks resolve through the painted `TabBarLayout`'s `hit_test` — never
+//! a hand-rolled scan for `×` in the label string.
 //! Click the `×` to close the active tab, click the other tab (or press
 //! `tab`) to activate it, `q` quits.
 //!
