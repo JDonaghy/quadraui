@@ -3504,7 +3504,8 @@ pub fn schema() -> Vec<DefJson> {
             ("ColorChanged", id_value_color),
             ("DropdownChanged", id_selected_idx.clone()),
             ("SegmentedControlChanged", id_selected_idx),
-            ("DateChanged", id_value_date),
+            ("DateChanged", id_value_date.clone()),
+            ("DateFocusMoved", id_value_date),
             ("FocusChanged", id_payload.clone()),
             ("ButtonClicked", id_payload.clone()),
             ("ToolbarButtonClicked", toolbar_button_clicked_form_payload),
@@ -4056,6 +4057,7 @@ mod coverage {
                 selected_idx: _,
             } => {}
             FormEvent::DateChanged { id: _, value: _ } => {}
+            FormEvent::DateFocusMoved { id: _, value: _ } => {}
             FormEvent::FocusChanged { id: _ } => {}
             FormEvent::ButtonClicked { id: _ } => {}
             FormEvent::ToolbarButtonClicked {

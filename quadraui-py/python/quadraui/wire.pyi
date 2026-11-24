@@ -2242,6 +2242,7 @@ class FormEvent(TypedDict):
     DropdownChanged: NotRequired[_IdSelectedIdxPayload]
     SegmentedControlChanged: NotRequired[_IdSelectedIdxPayload]
     DateChanged: NotRequired[_IdValueDatePayload]
+    DateFocusMoved: NotRequired[_IdValueDatePayload]
     FocusChanged: NotRequired[_IdPayload]
     ButtonClicked: NotRequired[_IdPayload]
     ToolbarButtonClicked: NotRequired[_FormToolbarButtonClickedPayload]

@@ -1,4 +1,11 @@
-//! `DatePicker` primitive: a month-grid calendar with optional time field.
+//! `DatePicker` primitive: a month-grid calendar with optional time
+//! field, its keyboard model, and both rasterisers.
+//!
+//! The whole widget contract lives here: [`Primitive`] resolves the
+//! layout and paints it ([`native_surface_paint`] on a pixel surface,
+//! [`cell_paint`] on a cell grid), and [`Interactive`] answers pointer,
+//! keyboard and assistive-technology input. A host reaches all of it
+//! type-erased through [`crate::frame::Surface::Widget`].
 //!
 //! Distinct from a plain text `Editor`/`TextInput` bound to a date string:
 //! `DatePicker` owns the calendar math (which day falls on which weekday,
@@ -23,8 +30,14 @@
 //! `days_from_civil` / `civil_from_days`), good for any date a `u8` month
 //! (1-12) and `u8` day (1-31) pairing with an `i32` year can express.
 
-use crate::event::{Point, Rect};
+use crate::a11y::A11yAction;
+use crate::event::{Key, Point, Rect};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+};
+use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::types::WidgetId;
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// Day of the week. `index()` maps `Sunday` to `0`, matching the
@@ -554,6 +567,513 @@ pub enum DatePickerEvent {
     FocusMoved(CalendarDate),
     /// `Enter` or a click on a day confirmed that date as `selected`.
     DateSelected(CalendarDate),
+}
+
+impl WidgetAction for DatePickerEvent {
+    /// Both outcomes ride [`crate::UiEvent::Form`] under the picker's own
+    /// id, on the two [`crate::FormEvent`] date channels that already
+    /// name them: [`crate::FormEvent::DateChanged`] for a confirmed date
+    /// and [`crate::FormEvent::DateFocusMoved`] for the arrow-key
+    /// scrubbing that precedes it. A standalone `DatePicker` therefore
+    /// reaches an app through the same event vocabulary an embedded one
+    /// does, with the same "scrubbing fires every keystroke, confirming
+    /// fires once" split, and each channel's apply contract spells out
+    /// which descriptor fields to write.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        let event = match self {
+            DatePickerEvent::FocusMoved(value) => crate::FormEvent::DateFocusMoved { id, value },
+            DatePickerEvent::DateSelected(value) => crate::FormEvent::DateChanged { id, value },
+        };
+        crate::UiEvent::Form(id, event)
+    }
+}
+
+/// Columns one day cell is wide on a cell grid: two digits framed by the
+/// focus ring's own two columns, which [`cell_paint::paint`] insets the
+/// digits inside so the ring never overwrites them.
+const CELL_COLUMNS: f32 = 4.0;
+
+/// [`DatePicker`]'s fully-resolved widget-contract layout: the absolute
+/// `area` the calendar was laid out in, the cell metrics it was resolved
+/// against, and the calendar-local [`DatePickerLayout`] itself.
+///
+/// `#[non_exhaustive]`: produced by [`Primitive::layout`], never built by
+/// a consumer via struct literal — the same convention
+/// [`DatePickerLayout`] itself follows.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct DatePickerPrimitiveLayout {
+    /// The rect [`Primitive::layout`] was called with: the month header
+    /// on top, six week rows under it, and the time field (when
+    /// [`DatePicker::time`] is set) under those.
+    pub area: Rect,
+    /// One day cell's resolved size.
+    pub cell_size: Size,
+    /// The resolved calendar layout. Its rects are in the same absolute
+    /// space as [`Self::area`].
+    pub layout: DatePickerLayout,
+}
+
+impl DatePickerPrimitiveLayout {
+    /// Hit-test at a position relative to [`Self::area`]'s own origin —
+    /// the space [`RoutedEvent::Pointer`]'s `local` field uses.
+    pub fn hit_test_local(&self, x: f32, y: f32) -> DatePickerHit {
+        self.layout.hit_test(self.area.x + x, self.area.y + y)
+    }
+}
+
+impl Primitive for DatePicker {
+    type Layout = DatePickerPrimitiveLayout;
+    type Event = DatePickerEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// Seven day columns wide, and a month header plus six week rows
+    /// tall, plus the time field's own row when [`DatePicker::time`] is
+    /// set — the grid is always six complete weeks (see
+    /// [`DatePicker::month_grid`]), so this never depends on which month
+    /// is on screen.
+    fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
+        let cell_width = match ctx.units() {
+            Units::Cells => CELL_COLUMNS,
+            _ => ctx.text_width("00", crate::FontRole::Chrome) + 2.0 * ctx.char_width,
+        };
+        let rows = 1.0 + 6.0 + if self.time.is_some() { 1.0 } else { 0.0 };
+        crate::NaturalSize::new(Some(cell_width * 7.0), Some(rows * ctx.line_height))
+    }
+
+    /// Divides `rect` into the header row, the 7×6 day grid and the
+    /// optional time row, then resolves the cells through
+    /// [`DatePicker::layout`] — so paint, hit-testing and the legacy
+    /// `Backend::draw_date_picker` path can never disagree about which
+    /// day sits where.
+    ///
+    /// On a cell grid the day cells are floored to whole columns and
+    /// rows (a terminal cannot paint a 3.5-column cell), with a
+    /// one-cell floor so a box too small for the whole calendar still
+    /// paints a readable, clipped one rather than nothing.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> DatePickerPrimitiveLayout {
+        let row_height = if ctx.line_height > 0.0 {
+            ctx.line_height
+        } else {
+            1.0
+        };
+        let cells = matches!(ctx.units(), Units::Cells);
+        let header_height = row_height.min(rect.height);
+        let time_height = if self.time.is_some() {
+            row_height.min((rect.height - header_height).max(0.0))
+        } else {
+            0.0
+        };
+        let grid_height = (rect.height - header_height - time_height).max(0.0);
+        let quantise = |raw: f32| -> f32 {
+            if cells {
+                raw.floor().max(1.0)
+            } else {
+                raw.max(1.0)
+            }
+        };
+        let cell_width = quantise(rect.width / 7.0);
+        let cell_height = quantise(grid_height / 6.0);
+        DatePickerPrimitiveLayout {
+            area: rect,
+            cell_size: Size::new(cell_width, cell_height),
+            layout: self.layout(
+                rect.x,
+                rect.y,
+                cell_width,
+                cell_height,
+                header_height,
+                time_height,
+            ),
+        }
+    }
+
+    /// The shared pixel painter — the same
+    /// [`native_surface_paint::paint`] every pixel backend's
+    /// `draw_date_picker` wrapper calls.
+    fn paint(
+        &self,
+        layout: &DatePickerPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(self, &layout.layout, surface, theme);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_date_picker`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &DatePickerPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_date_picker(buf, self, &layout.layout, theme);
+    }
+}
+
+impl DatePicker {
+    /// Resolve a keystroke through [`DatePicker::navigate`], the one
+    /// place this widget's calendar keyboard model lives — so a
+    /// standalone picker and a `Form` row holding one answer every key
+    /// identically.
+    fn key(&self, key: &Key) -> Handled<DatePickerEvent> {
+        let Key::Named(named) = key else {
+            return Handled::Ignored;
+        };
+        match self.navigate(&named.name()) {
+            Some(event) => Handled::Event(event),
+            None => Handled::Ignored,
+        }
+    }
+}
+
+impl Interactive for DatePicker {
+    /// Nothing: the cursor ([`DatePicker::focused`]), the month on screen
+    /// ([`DatePicker::visible_month`]) and the confirmed date
+    /// ([`DatePicker::selected`]) all live on the descriptor, which the
+    /// host updates from the two events above — so this widget has no
+    /// interaction state the descriptor doesn't already carry.
+    type State = ();
+    type Action = DatePickerEvent;
+
+    /// One focus stop as a whole: the calendar moves its own cursor
+    /// through [`Self::handle`]'s key dispatch rather than declaring a
+    /// stop per day. [`DatePicker::has_focus`] is not consulted — it is
+    /// the host's record of what it already focused, and gating on it
+    /// would leave a never-yet-focused picker unreachable by the
+    /// click-to-focus step.
+    fn focus(&self) -> FocusSpec {
+        FocusSpec::Stop
+    }
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &RoutedEvent,
+        layout: &DatePickerPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<DatePickerEvent> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                local,
+                ..
+            } => match layout.hit_test_local(local.x, local.y) {
+                // The two header controls page the month the same amount
+                // `PageUp`/`PageDown` do, so both affordances resolve
+                // through one calendar model.
+                DatePickerHit::PrevMonth => {
+                    cx.request_focus(None);
+                    Handled::Event(DatePickerEvent::FocusMoved(self.focused.add_months(-1)))
+                }
+                DatePickerHit::NextMonth => {
+                    cx.request_focus(None);
+                    Handled::Event(DatePickerEvent::FocusMoved(self.focused.add_months(1)))
+                }
+                DatePickerHit::Day(date) => {
+                    cx.request_focus(None);
+                    // A day in the month on screen is confirmed outright;
+                    // one of the leading/trailing days that fill out the
+                    // grid only moves the cursor (and, through
+                    // `FocusMoved`'s apply contract, the month on screen)
+                    // — the split [`DatePickerEvent::FocusMoved`]'s own
+                    // doc describes.
+                    if self.is_in_visible_month(date) {
+                        Handled::Event(DatePickerEvent::DateSelected(date))
+                    } else {
+                        Handled::Event(DatePickerEvent::FocusMoved(date))
+                    }
+                }
+                // The time field has no editing model of its own yet, but
+                // the calendar still owns the click rather than letting it
+                // fall through to whatever is painted behind it.
+                DatePickerHit::Time => {
+                    cx.request_focus(None);
+                    Handled::Consumed
+                }
+                DatePickerHit::Empty => Handled::Ignored,
+            },
+            RoutedEvent::Key(key) => self.key(&key.key),
+            // `A11yAction` names no day through this generic seam, so
+            // `Click` confirms whichever day the cursor is on — the same
+            // one Enter confirms, matching the assistive-technology
+            // default-action convention.
+            RoutedEvent::Action(A11yAction::Click) => {
+                Handled::Event(DatePickerEvent::DateSelected(self.focused))
+            }
+            _ => Handled::Ignored,
+        }
+    }
+
+    fn a11y_actions(&self, _state: &()) -> Vec<A11yAction> {
+        vec![A11yAction::Click]
+    }
+
+    /// One sub-part per day cell, addressed by its index into
+    /// [`DatePickerLayout::day_cells`] (row-major, top-left first), after
+    /// the two header controls — most-specific first, so a header control
+    /// wins over the header row it sits in.
+    fn sub_regions(&self, layout: &DatePickerPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        let local =
+            |r: Rect| Rect::new(r.x - layout.area.x, r.y - layout.area.y, r.width, r.height);
+        let mut regions: Vec<(Rect, SubTarget)> = Vec::new();
+        if let Some(prev) = layout.layout.prev_bounds {
+            regions.push((local(prev), SubTarget(SUB_PREV_MONTH)));
+        }
+        if let Some(next) = layout.layout.next_bounds {
+            regions.push((local(next), SubTarget(SUB_NEXT_MONTH)));
+        }
+        regions.extend(
+            layout
+                .layout
+                .day_cells
+                .iter()
+                .enumerate()
+                .map(|(i, cell)| (local(cell.bounds), SubTarget(SUB_DAY_BASE + i as u64))),
+        );
+        if let Some(time) = layout.layout.time_bounds {
+            regions.push((local(time), SubTarget(SUB_TIME)));
+        }
+        regions
+    }
+}
+
+/// [`Interactive::sub_regions`]'s tag for the header's previous-month
+/// control.
+const SUB_PREV_MONTH: u64 = 0;
+/// [`Interactive::sub_regions`]'s tag for the header's next-month
+/// control.
+const SUB_NEXT_MONTH: u64 = 1;
+/// [`Interactive::sub_regions`]'s tag for the time field.
+const SUB_TIME: u64 = 2;
+/// [`Interactive::sub_regions`]'s tag for day cell `n`, offset past the
+/// three fixed tags above.
+const SUB_DAY_BASE: u64 = 3;
+
+/// The cell-grid painter for [`DatePicker`], written against
+/// [`crate::CellSurface`].
+///
+/// The month/year header with its `<`/`>` controls, then the 42-cell day
+/// grid (a focus ring on `is_focused`, a selection wash on
+/// `is_selected`, dimmed digits for the leading/trailing days outside
+/// `in_visible_month`), then the time field when
+/// [`DatePickerLayout::time_bounds`] is `Some`. The same content
+/// [`native_surface_paint::paint`] puts on a pixel surface, degraded onto
+/// the cell grid (see [`crate::paint_surface`]'s module doc, "Why TUI
+/// stays out").
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{DatePicker, DatePickerLayout};
+    use crate::cell_surface::{solid_style, CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    /// Fill `rect` and draw `text` on its first row, either left-aligned
+    /// or centred. The header label is centred so it does not collide
+    /// with the `<`/`>` glyphs painted into the header's edge columns.
+    fn fill_text_aligned(
+        surface: &mut dyn CellSurface,
+        rect: Rect,
+        text: &str,
+        style: CellStyle,
+        centered: bool,
+    ) {
+        surface.fill(rect, style);
+        let x0 = rect.x.round() as u16;
+        let y0 = rect.y.round() as u16;
+        let w = rect.width.round() as u16;
+        let len = crate::text_util::display_width(text) as u16;
+        let start = if centered && len < w {
+            (w - len) / 2
+        } else {
+            0
+        };
+        surface.put_str_clipped(
+            x0.saturating_add(start),
+            y0,
+            text,
+            w.saturating_sub(start),
+            style,
+        );
+    }
+
+    /// The four corner glyphs of a box around `rect`, and nothing else —
+    /// the focus ring a day cell wears, which leaves the cell's own
+    /// edges unpainted so neighbouring cells stay legible.
+    fn stroke_corners(surface: &mut dyn CellSurface, rect: Rect, style: CellStyle) {
+        let x0 = rect.x.round() as u16;
+        let y0 = rect.y.round() as u16;
+        let w = rect.width.round() as u16;
+        let h = rect.height.round() as u16;
+        if w == 0 || h == 0 {
+            return;
+        }
+        let x1 = x0.saturating_add(w.saturating_sub(1));
+        let y1 = y0.saturating_add(h.saturating_sub(1));
+        surface.put_char(x0, y0, '┌', style);
+        if x1 != x0 {
+            surface.put_char(x1, y0, '┐', style);
+        }
+        if y1 != y0 {
+            surface.put_char(x0, y1, '└', style);
+            if x1 != x0 {
+                surface.put_char(x1, y1, '┘', style);
+            }
+        }
+    }
+
+    /// Fill `rect` and draw `text` left-aligned on its first row, then —
+    /// when `ring` is `Some` — decorate it.
+    ///
+    /// `bg` of `None` leaves every cell on the terminal's own default
+    /// background instead of naming a colour, which is what an
+    /// unselected day cell wants.
+    ///
+    /// The ring's corner glyphs must never land on a digit, so the text
+    /// is inset one column either side and the ring drawn through
+    /// [`stroke_corners`]. When `rect` is too narrow to spare those
+    /// columns, the ring degrades to reverse video over the text rather
+    /// than destroying it.
+    fn fill_text_with_ring(
+        surface: &mut dyn CellSurface,
+        rect: Rect,
+        text: &str,
+        fg: Color,
+        bg: Option<Color>,
+        ring: Option<Color>,
+    ) {
+        let style = CellStyle {
+            fg: Some(fg),
+            bg,
+            ..CellStyle::default()
+        };
+        surface.fill(rect, style);
+        let x0 = rect.x.round() as u16;
+        let y0 = rect.y.round() as u16;
+        let w = rect.width.round() as u16;
+        let len = crate::text_util::display_width(text) as u16;
+        let has_inset_ring = ring.is_some() && w >= 3 && w >= len.saturating_add(2);
+        let text_start = u16::from(has_inset_ring);
+        let text_w = if has_inset_ring { w - 2 } else { w };
+        surface.put_str_clipped(x0.saturating_add(text_start), y0, text, text_w, style);
+        let Some(ring_fg) = ring else {
+            return;
+        };
+        if has_inset_ring {
+            stroke_corners(
+                surface,
+                rect,
+                CellStyle {
+                    fg: Some(ring_fg),
+                    bg,
+                    ..CellStyle::default()
+                },
+            );
+        } else if w > 0 {
+            surface.put_str_clipped(
+                x0,
+                y0,
+                text,
+                w,
+                CellStyle {
+                    fg: bg,
+                    bg: Some(ring_fg),
+                    ..CellStyle::default()
+                },
+            );
+        }
+    }
+
+    /// Paint `date_picker` at its resolved `layout` onto `surface`.
+    pub(crate) fn paint(
+        date_picker: &DatePicker,
+        layout: &DatePickerLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let header_style = solid_style(theme.header_fg, theme.header_bg);
+
+        if let Some(header) = layout.header_bounds {
+            if header.width > 0.0 && header.height > 0.0 {
+                let label = format!(
+                    "{:04}-{:02}",
+                    date_picker.visible_month.year, date_picker.visible_month.month
+                );
+                fill_text_aligned(surface, header, &label, header_style, true);
+            }
+        }
+        for (bounds, glyph) in [(layout.prev_bounds, "<"), (layout.next_bounds, ">")] {
+            if let Some(bounds) = bounds {
+                if bounds.width > 0.0 && bounds.height > 0.0 {
+                    fill_text_aligned(surface, bounds, glyph, header_style, false);
+                }
+            }
+        }
+
+        for cell in &layout.day_cells {
+            if cell.bounds.width <= 0.0 || cell.bounds.height <= 0.0 {
+                continue;
+            }
+            // An unselected cell keeps the terminal's own background
+            // (`CellStyle`'s `None`), so the calendar sits on whatever
+            // the host painted behind it.
+            let cell_bg = if cell.is_selected {
+                Some(theme.selected_bg)
+            } else {
+                None
+            };
+            let fg = if cell.in_visible_month {
+                theme.surface_fg
+            } else {
+                theme.muted_fg
+            };
+            fill_text_with_ring(
+                surface,
+                cell.bounds,
+                &cell.date.day.to_string(),
+                fg,
+                cell_bg,
+                cell.is_focused.then_some(theme.accent_fg),
+            );
+        }
+
+        if let Some(time) = layout.time_bounds {
+            if time.width > 0.0 && time.height > 0.0 {
+                let text = date_picker.time.map(|t| t.format()).unwrap_or_default();
+                fill_text_with_ring(
+                    surface,
+                    time,
+                    &text,
+                    theme.surface_fg,
+                    Some(theme.input_bg),
+                    Some(theme.border_fg),
+                );
+            }
+        }
+    }
 }
 
 /// Shared-paint executor for [`DatePicker`] — a rasteriser calls into
@@ -1128,5 +1648,363 @@ mod tests {
             layout.hit_test(top_right.bounds.x + 1.0, top_right.bounds.y + 1.0),
             DatePickerHit::Day(top_right.date)
         );
+    }
+
+    // ── Cell-path paint (`cell_paint::paint`) ───────────────────────────
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::*;
+        use crate::theme::Theme;
+        use crate::tui::draw_date_picker;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+        }
+
+        fn mk_date_picker() -> DatePicker {
+            let mut picker = DatePicker::new(WidgetId::new("date"), CalendarDate::new(2024, 3, 15));
+            picker.has_focus = true;
+            picker
+        }
+
+        fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+            let date_picker = mk_date_picker();
+            let layout = date_picker.layout(origin_x as f32, origin_y as f32, 4.0, 1.0, 1.0, 0.0);
+
+            let rect = RRect::new(0, 0, 80, 24);
+            let mut buf = Buffer::empty(rect);
+            draw_date_picker(&mut buf, &date_picker, &layout, &Theme::default());
+
+            // Header label is centered in the header row, clear of the
+            // prev/next glyphs painted into the header's edge columns.
+            let header = layout.header_bounds.expect("header is reserved");
+            let label_len = 7u16; // "2024-03"
+            let label_x = header.x as u16 + (header.width as u16 - label_len) / 2;
+            assert_eq!(cell_char(&buf, label_x, origin_y), '2');
+            // Prev/next glyphs still own the header's edge columns.
+            assert_eq!(cell_char(&buf, origin_x, origin_y), '<');
+
+            let focused_cell = layout
+                .day_cells
+                .iter()
+                .find(|c| c.is_focused)
+                .expect("focused day is in the grid");
+            let fx = focused_cell.bounds.x as u16;
+            let fy = focused_cell.bounds.y as u16;
+            // Focused day's top-left corner gets the focus-ring glyph,
+            // but the digits it decorates stay readable: they are inset
+            // by one column so the ring glyph never overwrites them.
+            assert_eq!(cell_char(&buf, fx, fy), '┌');
+            for (i, ch) in focused_cell.date.day.to_string().chars().enumerate() {
+                assert_eq!(cell_char(&buf, fx + 1 + i as u16, fy), ch);
+            }
+
+            assert_eq!(
+                layout.hit_test(focused_cell.bounds.x + 1.0, focused_cell.bounds.y),
+                DatePickerHit::Day(focused_cell.date)
+            );
+        }
+
+        #[test]
+        fn paint_and_click_round_trip() {
+            paint_and_click_round_trip_at(0, 0);
+        }
+
+        /// Paint and hit-test must work correctly when the control is not
+        /// at the screen origin.
+        #[test]
+        fn paint_and_click_round_trip_at_nonzero_origin() {
+            paint_and_click_round_trip_at(7, 3);
+        }
+
+        #[test]
+        fn days_outside_the_visible_month_paint_muted() {
+            let picker = mk_date_picker();
+            let layout = picker.layout(0.0, 0.0, 4.0, 1.0, 1.0, 0.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 80, 24));
+            draw_date_picker(&mut buf, &picker, &layout, &Theme::default());
+
+            let outside = layout
+                .day_cells
+                .iter()
+                .find(|c| !c.in_visible_month)
+                .expect("a complete grid has leading or trailing days");
+            let cell = &buf[(outside.bounds.x as u16, outside.bounds.y as u16)];
+            assert_eq!(
+                cell.fg,
+                crate::tui::ratatui_color(Theme::default().muted_fg),
+                "{:?} should be muted",
+                outside.date
+            );
+        }
+
+        #[test]
+        fn the_time_field_paints_its_clock_when_one_is_set() {
+            let mut picker = mk_date_picker();
+            picker.time = Some(TimeOfDay::new(9, 30));
+            let layout = picker.layout(0.0, 0.0, 4.0, 1.0, 1.0, 1.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 80, 24));
+            draw_date_picker(&mut buf, &picker, &layout, &Theme::default());
+
+            let time = layout.time_bounds.expect("time row is reserved");
+            let painted: String = (0..5)
+                .map(|i| cell_char(&buf, time.x as u16 + 1 + i, time.y as u16))
+                .collect();
+            assert_eq!(painted, "09:30");
+        }
+    }
+}
+
+/// [`Interactive`] dispatch, driven directly the way an out-of-process
+/// binding host reaches a widget — the in-runtime leg is
+/// `tests/widget_contract_date_picker.rs`.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::event::NamedKey;
+    use crate::interactive::{EventHost, KeyEvent};
+    use crate::types::Modifiers;
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock: records every call so a test can
+    /// assert on what [`Interactive::handle`] asked for.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    const AREA: Rect = Rect::new(3.0, 2.0, 28.0, 7.0);
+
+    fn picker() -> DatePicker {
+        let mut p = DatePicker::new(WidgetId::new("due-date"), CalendarDate::new(2024, 3, 15));
+        p.has_focus = true;
+        p
+    }
+
+    fn layout_for(p: &DatePicker) -> DatePickerPrimitiveLayout {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        Primitive::layout(p, &ctx, AREA)
+    }
+
+    fn dispatch(p: &DatePicker, event: &RoutedEvent) -> Handled<DatePickerEvent> {
+        let layout = layout_for(p);
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        p.handle(&mut (), event, &layout, &mut cx)
+    }
+
+    fn key(named: NamedKey) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key: Key::Named(named),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    }
+
+    fn pointer_down(rect: Rect, layout: &DatePickerPrimitiveLayout) -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind: PointerKind::Down(crate::MouseButton::Left),
+            sub: None,
+            local: Point::new(
+                rect.x + rect.width / 2.0 - layout.area.x,
+                rect.y + rect.height / 2.0 - layout.area.y,
+            ),
+            mods: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn the_calendar_is_one_focus_stop() {
+        assert_eq!(picker().focus(), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn layout_quantises_day_cells_to_whole_cells_on_a_cell_grid() {
+        let layout = layout_for(&picker());
+        // 28 columns / 7 days = 4 columns; 7 rows minus the header row
+        // leaves 6, one per week row.
+        assert_eq!(layout.cell_size, Size::new(4.0, 1.0));
+        assert_eq!(layout.layout.day_cells.len(), 42);
+        assert_eq!(
+            layout.layout.header_bounds,
+            Some(Rect::new(3.0, 2.0, 28.0, 1.0))
+        );
+        assert_eq!(layout.layout.time_bounds, None, "no time field by default");
+    }
+
+    #[test]
+    fn a_time_field_reserves_its_own_row_under_the_grid() {
+        let mut p = picker();
+        p.time = Some(TimeOfDay::new(7, 5));
+        let layout = layout_for(&p);
+        let time = layout.layout.time_bounds.expect("time row is reserved");
+        assert_eq!(time.height, 1.0);
+        // Six week rows of a now-shorter cell height sit above it.
+        assert_eq!(layout.cell_size.height, 1.0);
+    }
+
+    #[test]
+    fn arrow_keys_move_the_cursor_by_a_day_and_a_week() {
+        let p = picker();
+        for (named, expected) in [
+            (NamedKey::Left, CalendarDate::new(2024, 3, 14)),
+            (NamedKey::Right, CalendarDate::new(2024, 3, 16)),
+            (NamedKey::Up, CalendarDate::new(2024, 3, 8)),
+            (NamedKey::Down, CalendarDate::new(2024, 3, 22)),
+        ] {
+            assert_eq!(
+                dispatch(&p, &key(named)),
+                Handled::Event(DatePickerEvent::FocusMoved(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn page_keys_move_the_cursor_by_a_month_and_enter_confirms_it() {
+        let p = picker();
+        assert_eq!(
+            dispatch(&p, &key(NamedKey::PageDown)),
+            Handled::Event(DatePickerEvent::FocusMoved(CalendarDate::new(2024, 4, 15)))
+        );
+        assert_eq!(
+            dispatch(&p, &key(NamedKey::PageUp)),
+            Handled::Event(DatePickerEvent::FocusMoved(CalendarDate::new(2024, 2, 15)))
+        );
+        assert_eq!(
+            dispatch(&p, &key(NamedKey::Enter)),
+            Handled::Event(DatePickerEvent::DateSelected(CalendarDate::new(
+                2024, 3, 15
+            )))
+        );
+        // An unrecognised key stays unhandled, so a host's own binding
+        // still sees it.
+        assert_eq!(dispatch(&p, &key(NamedKey::Escape)), Handled::Ignored);
+    }
+
+    #[test]
+    fn the_header_controls_page_the_month_the_same_amount_the_page_keys_do() {
+        let p = picker();
+        let layout = layout_for(&p);
+        let prev = layout.layout.prev_bounds.expect("header is reserved");
+        let next = layout.layout.next_bounds.expect("header is reserved");
+        assert_eq!(
+            dispatch(&p, &pointer_down(prev, &layout)),
+            Handled::Event(DatePickerEvent::FocusMoved(CalendarDate::new(2024, 2, 15)))
+        );
+        assert_eq!(
+            dispatch(&p, &pointer_down(next, &layout)),
+            Handled::Event(DatePickerEvent::FocusMoved(CalendarDate::new(2024, 4, 15)))
+        );
+    }
+
+    #[test]
+    fn clicking_a_day_confirms_it_but_an_adjacent_month_day_only_moves_the_cursor() {
+        let p = picker();
+        let layout = layout_for(&p);
+        let inside = layout
+            .layout
+            .day_cells
+            .iter()
+            .find(|c| c.in_visible_month)
+            .expect("the month on screen has days");
+        assert_eq!(
+            dispatch(&p, &pointer_down(inside.bounds, &layout)),
+            Handled::Event(DatePickerEvent::DateSelected(inside.date))
+        );
+
+        let outside = layout
+            .layout
+            .day_cells
+            .iter()
+            .find(|c| !c.in_visible_month)
+            .expect("a complete grid has leading or trailing days");
+        assert_eq!(
+            dispatch(&p, &pointer_down(outside.bounds, &layout)),
+            Handled::Event(DatePickerEvent::FocusMoved(outside.date))
+        );
+    }
+
+    #[test]
+    fn a_day_click_also_takes_keyboard_focus() {
+        let p = picker();
+        let layout = layout_for(&p);
+        let cell = layout.layout.day_cells[10].bounds;
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        let _ = p.handle(&mut (), &pointer_down(cell, &layout), &layout, &mut cx);
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn the_a11y_click_action_confirms_the_day_under_the_cursor() {
+        let p = picker();
+        assert_eq!(
+            dispatch(&p, &RoutedEvent::Action(A11yAction::Click)),
+            Handled::Event(DatePickerEvent::DateSelected(CalendarDate::new(
+                2024, 3, 15
+            )))
+        );
+        assert_eq!(p.a11y_actions(&()), vec![A11yAction::Click]);
+    }
+
+    #[test]
+    fn sub_regions_name_the_header_controls_then_every_day_cell() {
+        let p = picker();
+        let layout = layout_for(&p);
+        let regions = p.sub_regions(&layout);
+        assert_eq!(regions.len(), 2 + 42);
+        assert_eq!(regions[0].1, SubTarget(SUB_PREV_MONTH));
+        assert_eq!(regions[1].1, SubTarget(SUB_NEXT_MONTH));
+        assert_eq!(regions[2].1, SubTarget(SUB_DAY_BASE));
+        for (rect, _) in &regions {
+            assert!(rect.x >= 0.0 && rect.y >= 0.0, "{rect:?} is not local");
+        }
+    }
+
+    #[test]
+    fn both_outcomes_ride_the_two_form_date_channels_under_the_pickers_id() {
+        let id = WidgetId::new("due-date");
+        let date = CalendarDate::new(2024, 3, 16);
+        assert_eq!(
+            DatePickerEvent::DateSelected(date).into_ui_event(id),
+            crate::UiEvent::Form(id, crate::FormEvent::DateChanged { id, value: date })
+        );
+        assert_eq!(
+            DatePickerEvent::FocusMoved(date).into_ui_event(id),
+            crate::UiEvent::Form(id, crate::FormEvent::DateFocusMoved { id, value: date })
+        );
+    }
+
+    #[test]
+    fn measure_reports_seven_day_columns_and_a_header_plus_six_week_rows() {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let size = Primitive::measure(&picker(), &ctx, Size::new(80.0, 24.0));
+        assert_eq!(size.width, Some(CELL_COLUMNS * 7.0));
+        assert_eq!(size.height, Some(7.0));
+
+        let mut timed = picker();
+        timed.time = Some(TimeOfDay::new(0, 0));
+        let size = Primitive::measure(&timed, &ctx, Size::new(80.0, 24.0));
+        assert_eq!(size.height, Some(8.0), "the time field adds a row");
     }
 }
