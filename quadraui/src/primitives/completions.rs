@@ -376,7 +376,7 @@ impl Completions {
     ///
     /// The shared core of [`Self::layout`] — which picks `bounds` against
     /// a cursor anchor first — and
-    /// [`Primitive::layout`](crate::primitive::Primitive::layout), which
+    /// [`Primitive::layout`], which
     /// is handed the already-placed box by its caller. Rows stop at the
     /// box's bottom edge; the last one is clipped to whatever height is
     /// left rather than overflowing it.
@@ -439,7 +439,7 @@ pub enum CompletionsEvent {
     /// Keyboard navigation, or a single click on a row, moved the
     /// highlight to `idx`. The host writes it onto
     /// [`Completions::selected_idx`]; the next
-    /// [`Primitive::layout`](crate::primitive::Primitive::layout) scrolls
+    /// [`Primitive::layout`] scrolls
     /// it back into view on its own, so there is no companion
     /// scroll-offset event to apply.
     SelectionChanged { idx: usize },
@@ -486,13 +486,13 @@ impl WidgetAction for CompletionsEvent {
 /// and the popup-local [`CompletionsLayout`] itself.
 ///
 /// `#[non_exhaustive]`: produced by
-/// [`Primitive::layout`](crate::primitive::Primitive::layout), never built
+/// [`Primitive::layout`], never built
 /// by a consumer via struct literal — same convention
 /// [`CompletionsLayout`] itself follows.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct CompletionsPrimitiveLayout {
-    /// The rect [`Primitive::layout`](crate::primitive::Primitive::layout)
+    /// The rect [`Primitive::layout`]
     /// was called with — the popup's whole box, already placed by the
     /// host.
     pub area: Rect,
@@ -728,7 +728,7 @@ impl Completions {
 impl Interactive for Completions {
     /// Nothing: the highlight lives on [`Completions::selected_idx`] and
     /// the scroll offset is derived in
-    /// [`Primitive::layout`](crate::primitive::Primitive::layout), so this
+    /// [`Primitive::layout`], so this
     /// widget has no interaction state the descriptor doesn't already
     /// carry.
     type State = ();
