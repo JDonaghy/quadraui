@@ -4963,11 +4963,15 @@ pub enum FormEvent {
     ///
     /// Applying this event means writing `value` onto the picker's
     /// `focused`, and — when `value` falls outside the month on screen —
-    /// its `visible_month` too, the same pair
-    /// `FormController` keeps cached while a field is being scrubbed.
-    /// `id` is the **`FormField`'s** id for an embedded picker and the
-    /// widget's own id for a standalone one, the same convention
-    /// [`Self::DateChanged`] follows.
+    /// its `visible_month` too.
+    ///
+    /// `id` names the picker the same way [`Self::DateChanged`]'s does:
+    /// the widget's own id for a standalone picker reached through
+    /// [`crate::frame::Surface::Widget`], the **`FormField`'s** id for
+    /// one embedded in a `Form`. Only the standalone path reports it;
+    /// `FormController` keeps an embedded picker's scrub position in its
+    /// own cache (`date_edit`) and surfaces only
+    /// [`Self::DateChanged`].
     DateFocusMoved {
         id: WidgetId,
         value: crate::primitives::date_picker::CalendarDate,
