@@ -881,6 +881,7 @@ pub(crate) fn cell_toast_stack_layout(stack: &ToastOverlay, area: Rect) -> Toast
 /// body rows, the `×` itself near the top-right, and the action row at
 /// the bottom-right. [`ToastOverlay::focus`], when it names a control on
 /// a box, inverts that control into `theme.link_fg`.
+#[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
     use super::{
         cell_body_lines, severity_bg_cells, truncate_line, Toast, ToastFocus, ToastFocusTarget,
@@ -1118,6 +1119,7 @@ pub(crate) mod cell_paint {
 /// `Info` stays on the neutral `theme.surface_bg` panel colour rather
 /// than `Theme::info_bg`'s accent tint — see
 /// `native_surface_paint::severity_bg`'s own doc for why.
+#[cfg(feature = "tui")]
 pub(crate) fn severity_bg_cells(severity: ToastSeverity, theme: &crate::theme::Theme) -> Color {
     match severity {
         ToastSeverity::Info => theme.surface_bg,
@@ -2191,9 +2193,9 @@ impl ToastOverlayPrimitiveLayout {
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToastOverlayState {
-    /// The focused toast and control, or `None` while the stack is
-    /// unfocused. A host paints the ring by threading this back onto the
-    /// next frame's [`ToastOverlay::focus`].
+    /// Which toast and control currently hold focus, or `None` while the
+    /// stack is unfocused. A host paints the ring by threading this back
+    /// onto the next frame's [`ToastOverlay::focus`].
     pub focus: Option<ToastFocus>,
 }
 
@@ -2207,14 +2209,14 @@ pub enum ToastOverlayAction {
     /// identically whether the action was reached by mouse or keyboard.
     ActionActivated(WidgetId),
     /// A toast was dismissed — its `×` was clicked, Enter activated the
-    /// focused `×`, or Escape dismissed the focused toast. Carries the
-    /// toast's own [`Toast::id`], matching [`ToastHit::Dismiss`]'s shape.
+    /// `×` holding focus, or Escape dismissed whichever box held focus.
+    /// Carries that [`Toast::id`], matching [`ToastHit::Dismiss`]'s shape.
     /// The host removes that toast from the next frame's descriptor; this
     /// widget never mutates the stack it was handed.
     Dismissed(WidgetId),
     /// Escape cleared focus with no toast left to dismiss — reachable
-    /// when the focused toast already vanished from the descriptor by
-    /// some other path (an expiry timer, a click elsewhere).
+    /// when the box holding focus already vanished from the descriptor
+    /// by some other path (an expiry timer, a click elsewhere).
     FocusReturned,
 }
 
@@ -2277,18 +2279,18 @@ impl ToastOverlay {
     /// [`crate::compose::ToastStackController::handle_event`] so both
     /// agree on every key.
     ///
-    /// Tab/Shift-Tab and Left/Right cycle the focused toast's controls
-    /// (dismiss `×` first, then each action, wrapping at either end);
-    /// Up/Down move between toasts in [`Self::toasts`] order, clamping at
-    /// either end and resetting the in-toast cursor to the dismiss
-    /// button; Enter activates the focused control; Escape dismisses the
-    /// focused toast *and* clears focus. Every other key, and every key
-    /// while `focus` is `None`, is [`Handled::Ignored`] — the stack never
-    /// claims a key it isn't the target of.
+    /// Tab/Shift-Tab and Left/Right cycle the controls of whichever box
+    /// holds focus (dismiss `×` first, then each action, wrapping at
+    /// either end); Up/Down move between toasts in [`Self::toasts`]
+    /// order, clamping at either end and resetting the in-toast cursor to
+    /// the dismiss button; Enter activates the control holding focus;
+    /// Escape dismisses that box *and* clears focus. Every other key, and
+    /// every key while `focus` is `None`, is [`Handled::Ignored`] — the
+    /// stack never claims a key it isn't the target of.
     ///
-    /// A `focus` naming a toast that is no longer in the descriptor is
-    /// cleared first, so a host that keeps feeding keys after an expiry
-    /// never gets an action for a toast that no longer exists.
+    /// A `focus` naming a toast absent from the descriptor is cleared
+    /// first, so a host that keeps feeding keys after an expiry never
+    /// gets an action for a box that has already gone.
     pub(crate) fn handle_focus_key(
         &self,
         focus: &mut Option<ToastFocus>,
