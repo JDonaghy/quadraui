@@ -24,9 +24,9 @@
 use quadraui::tui::ratatui_color;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, ContextMenu, ContextMenuItem, ContextMenuPlacement, FrameTree,
-    ListViewEvent, NamedKey, Reaction, Rect, ScreenLayout, StyledText, Surface, Theme, UiEvent,
-    WidgetId,
+    AppLogic, Backend, ContextMenu, ContextMenuGlyphs, ContextMenuItem, ContextMenuPlacement,
+    FrameTree, Icon, ListViewEvent, NamedKey, Reaction, Rect, ScreenLayout, StyledText, Surface,
+    Theme, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 40;
@@ -77,6 +77,7 @@ impl ContextMenuApp {
                 selected_idx: 0,
                 bg: None,
                 placement: ContextMenuPlacement::AnchorPoint,
+                glyphs: Default::default(),
             },
             activated: Vec::new(),
             submenus_opened: Vec::new(),
@@ -322,6 +323,65 @@ fn right_opens_the_highlighted_submenu_parent_and_left_closes_the_popup() {
 
     driver.press_named(NamedKey::Left);
     assert!(driver.app().dismissed);
+}
+
+/// `Primitive::paint_cells` takes no glyph argument, so the only route an
+/// app-supplied check mark / submenu arrow has onto the screen is the
+/// descriptor's own `ContextMenu::glyphs`.
+#[test]
+fn descriptor_glyphs_replace_the_default_marks_on_screen() {
+    let mut app = ContextMenuApp::new();
+    app.menu.items[0] = ContextMenuItem {
+        checked: Some(true),
+        ..leaf("copy", "Copy")
+    };
+    app.menu.glyphs = ContextMenuGlyphs::new()
+        .with_checked_glyph("V")
+        .with_submenu_arrow_glyph(">");
+    let driver = TuiDriver::new(app, COLS, ROWS);
+
+    let copy = driver.find_bounds("Copy").expect("row 0 painted");
+    let checked_row = row_chars(&driver, copy.y);
+    assert_eq!(
+        checked_row[POPUP.x as usize + 1],
+        'V',
+        "{}",
+        driver.screen()
+    );
+
+    let share = driver.find_bounds("Share").expect("row 4 painted");
+    let share_row = row_chars(&driver, share.y);
+    assert_eq!(
+        share_row[(POPUP.x + POPUP.width) as usize - 2],
+        '>',
+        "{}",
+        driver.screen()
+    );
+    assert!(!driver.screen_contains("▶"), "{}", driver.screen());
+    assert!(!driver.screen_contains("✓"), "{}", driver.screen());
+}
+
+/// The Nerd Font half of an item's own icon: the headless driver's
+/// backend reports `nerd_fonts_enabled == false`, so the cell path takes
+/// the ASCII fallback — and it takes it from the live `LayoutCtx` flag the
+/// resolved layout carries, not from a constant baked into the paint
+/// entry point.
+#[test]
+fn an_item_icon_resolves_against_the_hosts_own_nerd_font_flag() {
+    let mut app = ContextMenuApp::new();
+    app.menu.items[0] = ContextMenuItem {
+        icon: Some(Icon::new("G", "F")),
+        ..leaf("copy", "Copy")
+    };
+    let driver = TuiDriver::new(app, COLS, ROWS);
+    assert!(
+        !driver.backend().nerd_fonts_enabled(),
+        "the headless driver has no Nerd Font face registered"
+    );
+
+    let copy = driver.find_bounds("Copy").expect("row 0 painted");
+    let row = row_chars(&driver, copy.y);
+    assert_eq!(row[POPUP.x as usize + 1], 'F', "{}", driver.screen());
 }
 
 #[test]

@@ -92,6 +92,7 @@ impl ContextMenuDemo {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         }
     }
 

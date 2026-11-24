@@ -7278,6 +7278,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let menu_layout = menu.layout(
             2.0,

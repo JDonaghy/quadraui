@@ -275,6 +275,7 @@ fn context_menu_exposes_items_checks_and_separators() {
         selected_idx: 2,
         bg: None,
         placement: Default::default(),
+        glyphs: Default::default(),
     };
     let layout = menu.layout(2.0, 2.0, VIEWPORT, 20.0, |_| {
         ContextMenuItemMeasure::new(1.0)

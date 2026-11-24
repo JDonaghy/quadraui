@@ -1610,6 +1610,7 @@ impl InteractionEngine {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         menu.selected_idx = menu.first_selectable();
         if let Some(Overlay::ContextMenu(controller)) = self

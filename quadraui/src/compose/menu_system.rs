@@ -732,6 +732,7 @@ impl MenuSystem {
             selected_idx: self.dropdown_selected,
             bg: None,
             placement: ContextMenuPlacement::Below,
+            glyphs: Default::default(),
         }
     }
 
@@ -820,6 +821,9 @@ impl MenuSystem {
                 selected_idx: selected,
                 bg: None,
                 placement: ContextMenuPlacement::AnchorPoint,
+                // A child popup paints the parent's own marks, so one
+                // override set applies to the whole cascade.
+                glyphs: stack[depth].0.glyphs.clone(),
             };
 
             let sub_layout = sub_menu.layout(anchor_x, anchor_y, vp, menu_width, |i| {

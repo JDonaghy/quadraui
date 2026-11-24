@@ -6946,6 +6946,7 @@ mod service_default_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         assert_eq!(
             services.set_dock_menu(&menu),

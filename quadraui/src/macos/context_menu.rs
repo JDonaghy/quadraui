@@ -86,6 +86,7 @@ mod tests {
             ],
             selected_idx: 1,
             placement: ContextMenuPlacement::Below,
+            glyphs: Default::default(),
             bg: None,
         }
     }
