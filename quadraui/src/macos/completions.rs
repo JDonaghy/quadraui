@@ -1,19 +1,24 @@
-//! macOS rasteriser for [`crate::Completions`].
-//!
-//! Mirrors [`crate::gtk::completions::draw_completions`]: bordered
-//! popup, per-item rows with the selected row highlighted in
-//! `completion_selected_bg`.
+//! macOS entry point for [`crate::Completions`] — a thin delegate onto
+//! the widget's own shared pixel painter,
+//! [`crate::primitives::completions::native_surface_paint::paint`], which
+//! documents the popup chrome and row content it paints. This module only
+//! adapts a Core Graphics context plus its font into the
+//! [`crate::PaintSurface`] that painter takes.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::draw_text;
-use crate::primitives::completions::{Completions, CompletionsLayout};
+use crate::primitives::completions::{native_surface_paint, Completions, CompletionsLayout};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Paint a [`Completions`] popup at its resolved layout.
+///
+/// Kind icons paint their [`crate::Icon::fallback`] text: this entry
+/// point carries no Nerd-Font toggle of its own, so it passes
+/// `nerd_fonts_enabled: false`. A caller that wants the Nerd-Font glyph
+/// instead paints the popup through
+/// [`crate::DrawsPrimitives::draw_primitive`](crate::backend::DrawsPrimitives::draw_primitive),
+/// which resolves the toggle from the live backend.
 ///
 /// # Safety
 ///
@@ -26,106 +31,18 @@ pub unsafe fn draw_completions(
     layout: &CompletionsLayout,
     theme: &Theme,
 ) {
-    let bounds = layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return;
-    }
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-
-    fill_rect(ctx, bx, by, bw, bh, theme.completion_bg);
-    stroke_rect(ctx, bx, by, bw, bh, theme.completion_border, 1.0);
-
-    for vis in &layout.visible_items {
-        let Some(item) = completions.items.get(vis.item_idx) else {
-            continue;
-        };
-        let item_x = vis.bounds.x as f64;
-        let item_y = vis.bounds.y as f64;
-        let item_w = vis.bounds.width as f64;
-        let item_h = vis.bounds.height as f64;
-
-        if vis.item_idx == completions.selected_idx {
-            fill_rect(
-                ctx,
-                item_x,
-                item_y,
-                item_w,
-                item_h,
-                theme.completion_selected_bg,
-            );
-        }
-
-        let label = item
-            .label
-            .spans
-            .first()
-            .map(|s| s.text.as_str())
-            .unwrap_or("");
-        let display = format!(" {label}");
-        draw_text(
-            ctx,
-            font,
-            &display,
-            item_x,
-            item_y,
-            color_to_cg(theme.completion_fg),
-        );
-    }
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-unsafe fn stroke_rect(
-    ctx: CGContextRef,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    c: Color,
-    line_width: f64,
-) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
-    CGContextSetLineWidth(ctx, line_width);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextStrokeRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    native_surface_paint::paint(
+        completions,
+        layout,
+        &mut surface,
+        theme,
+        &crate::style::Style::default(),
+        /* nerd_fonts_enabled */ false,
     );
-    fn CGContextSetRGBStrokeColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetLineWidth(c: CGContextRef, w: core_graphics::base::CGFloat);
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
-    fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

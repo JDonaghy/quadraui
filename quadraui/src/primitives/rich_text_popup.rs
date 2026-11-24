@@ -54,10 +54,23 @@
 //! [`crate::Backend::draw_tooltip_with_chrome`]'s [`crate::TooltipChrome`]
 //! precedent.
 
-use crate::event::Rect;
+use crate::event::{Key, MouseButton, NamedKey, Rect};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+};
 use crate::layout::{Anchor, Side};
+use crate::primitive::{LayoutCtx, Primitive, Size, Units};
+use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta};
 use crate::types::{Color, StyledText, WidgetId};
+use crate::Handled;
 use serde::{Deserialize, Serialize};
+
+/// Width of the popup's frame, in the host's own units — one cell on a
+/// terminal, one pixel on a GUI surface — on each of the four sides.
+/// Shared by the box-sizing in [`RichTextPopup::layout`] and the
+/// content-area inset in [`RichTextPopup::resolve_at`] so the two can
+/// never disagree.
+const BORDER: f32 = 1.0;
 
 /// Declarative description of a rich-text popup.
 ///
@@ -379,42 +392,12 @@ impl RichTextPopup {
     where
         W: Fn(usize, usize, usize) -> f32,
     {
-        let total_lines = self.lines.len();
         let max_rows = self.max_visible_rows.max(1);
-        // Clamp scroll FIRST so a stale `scroll_top` past `max_scroll`
-        // still produces a valid visible window (last full screen).
-        let max_scroll = total_lines.saturating_sub(max_rows);
-        let resolved_scroll_offset = self.scroll_top.min(max_scroll);
-        let visible_count = total_lines
-            .saturating_sub(resolved_scroll_offset)
-            .min(max_rows);
-
-        // Per-row height. Fixed-cell backends (`scale_rows == false`,
-        // e.g. TUI) keep every row at `row_height`; scaling backends
-        // (GTK) reserve `row_height * line_scales[i]` so larger heading
-        // glyphs don't overlap the rows below. Scales below 1.0 are
-        // clamped so a stray small scale can't shrink a row.
-        let row_height_at = |line_idx: usize| -> f32 {
-            let scale = if measure.scale_rows {
-                self.line_scales
-                    .get(line_idx)
-                    .copied()
-                    .unwrap_or(1.0)
-                    .max(1.0)
-            } else {
-                1.0
-            };
-            measure.row_height * scale
-        };
-
-        // Total content height = sum of the visible window's row heights
-        // (varies with which rows are scrolled into view when scales differ).
-        let content_h: f32 = (0..visible_count)
-            .map(|i| row_height_at(resolved_scroll_offset + i))
-            .sum();
+        let (resolved_scroll_offset, visible_count) = self.scroll_window(max_rows);
+        let content_h = self.content_height(measure, resolved_scroll_offset, visible_count);
 
         let pad = self.padding.max(0.0);
-        let border = 1.0; // 1 cell / 1 pixel each side
+        let border = BORDER; // 1 cell / 1 pixel each side
         let outer_w = measure.content_width + pad * 2.0 + border * 2.0;
         let outer_h = content_h + pad * 2.0 + border * 2.0;
 
@@ -446,13 +429,83 @@ impl RichTextPopup {
         let anchor_rect = Rect::new(ax, anchor_y, outer_w, measure.row_height);
         let (origin, _resolved_side) =
             Anchor::new(anchor_rect, side).resolve((outer_w, outer_h), viewport);
-        let x = origin.x;
-        let y = origin.y;
+        let bounds = Rect::new(origin.x, origin.y, outer_w, outer_h);
 
-        let bounds = Rect::new(x, y, outer_w, outer_h);
+        self.resolve_at(bounds, max_rows, measure, link_widths)
+    }
+
+    /// The visible window for a `max_rows`-row viewport: the scroll
+    /// offset clamped so a stale [`Self::scroll_top`] still lands on the
+    /// last full screen, and how many lines that window shows.
+    fn scroll_window(&self, max_rows: usize) -> (usize, usize) {
+        let total_lines = self.lines.len();
+        // Clamp scroll FIRST so a stale `scroll_top` past `max_scroll`
+        // still produces a valid visible window (last full screen).
+        let max_scroll = total_lines.saturating_sub(max_rows);
+        let resolved_scroll_offset = self.scroll_top.min(max_scroll);
+        let visible_count = total_lines
+            .saturating_sub(resolved_scroll_offset)
+            .min(max_rows);
+        (resolved_scroll_offset, visible_count)
+    }
+
+    /// Height of one row. Fixed-cell backends (`scale_rows == false`,
+    /// e.g. TUI) keep every row at `measure.row_height`; scaling backends
+    /// (GTK) reserve `row_height * line_scales[i]` so larger heading
+    /// glyphs don't overlap the rows below. Scales below 1.0 are clamped
+    /// so a stray small scale can't shrink a row.
+    fn row_height_at(&self, measure: RichTextPopupMeasure, line_idx: usize) -> f32 {
+        let scale = if measure.scale_rows {
+            self.line_scales
+                .get(line_idx)
+                .copied()
+                .unwrap_or(1.0)
+                .max(1.0)
+        } else {
+            1.0
+        };
+        measure.row_height * scale
+    }
+
+    /// Total content height = sum of the visible window's row heights
+    /// (varies with which rows are scrolled into view when scales differ).
+    fn content_height(
+        &self,
+        measure: RichTextPopupMeasure,
+        resolved_scroll_offset: usize,
+        visible_count: usize,
+    ) -> f32 {
+        (0..visible_count)
+            .map(|i| self.row_height_at(measure, resolved_scroll_offset + i))
+            .sum()
+    }
+
+    /// Resolve the content area, visible rows, scrollbar and link hit
+    /// zones for a popup box already placed at `bounds`.
+    ///
+    /// The shared core of [`Self::layout`] — which picks `bounds` against
+    /// an anchor first — and
+    /// [`Primitive::layout`](crate::primitive::Primitive::layout), which
+    /// is handed the already-placed box by its caller.
+    fn resolve_at<W>(
+        &self,
+        bounds: Rect,
+        max_rows: usize,
+        measure: RichTextPopupMeasure,
+        link_widths: W,
+    ) -> RichTextPopupLayout
+    where
+        W: Fn(usize, usize, usize) -> f32,
+    {
+        let total_lines = self.lines.len();
+        let (resolved_scroll_offset, visible_count) = self.scroll_window(max_rows);
+        let content_h = self.content_height(measure, resolved_scroll_offset, visible_count);
+        let pad = self.padding.max(0.0);
+        let border = BORDER;
+
         let content_bounds = Rect::new(
-            x + border + pad,
-            y + border + pad,
+            bounds.x + border + pad,
+            bounds.y + border + pad,
             measure.content_width,
             content_h,
         );
@@ -463,7 +516,7 @@ impl RichTextPopup {
         let mut row_y = content_bounds.y;
         for i in 0..visible_count {
             let line_idx = resolved_scroll_offset + i;
-            let row_h = row_height_at(line_idx);
+            let row_h = self.row_height_at(measure, line_idx);
             visible_lines.push(VisibleRichTextLine {
                 line_idx,
                 bounds: Rect::new(content_bounds.x, row_y, content_bounds.width, row_h),
@@ -530,6 +583,520 @@ impl RichTextPopup {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+
+/// The semantic outcomes a [`RichTextPopup`] reports — its
+/// [`Interactive::Action`].
+///
+/// [`RichTextPopup`] stays purely declarative: neither variant mutates
+/// the popup. Each reports the state the host should write back onto its
+/// own `RichTextPopup` before the next frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RichTextPopupEvent {
+    /// A clickable [`RichTextLink`] was activated — the host opens
+    /// `url`.
+    LinkClicked { url: String },
+    /// A wheel gesture or a Page key scrolled the body. The host writes
+    /// `new_offset` onto [`RichTextPopup::scroll_top`].
+    Scrolled { new_offset: usize },
+}
+
+impl WidgetAction for RichTextPopupEvent {
+    /// Both outcomes have an exact [`crate::UiEvent`] of their own:
+    /// [`crate::UiEvent::RichTextLinkClicked`] for a link, and the
+    /// cross-primitive [`crate::UiEvent::ScrollOffsetChanged`] for the
+    /// body offset — the same generic carrier every other scrollable
+    /// primitive's offset rides.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            RichTextPopupEvent::LinkClicked { url } => crate::UiEvent::RichTextLinkClicked(id, url),
+            RichTextPopupEvent::Scrolled { new_offset } => crate::UiEvent::ScrollOffsetChanged {
+                widget: id,
+                new_offset,
+            },
+        }
+    }
+}
+
+/// [`RichTextPopup`]'s fully-resolved widget-contract layout: the
+/// absolute `area` the popup was laid out in, the row pitch it was
+/// resolved against, how many rows that box shows, and the
+/// [`RichTextPopupLayout`] itself.
+///
+/// `#[non_exhaustive]`: produced by
+/// [`Primitive::layout`](crate::primitive::Primitive::layout), never
+/// built by a consumer via struct literal — same convention
+/// [`RichTextPopupLayout`] itself follows.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct RichTextPopupPrimitiveLayout {
+    /// The rect [`Primitive::layout`](crate::primitive::Primitive::layout)
+    /// was called with — the popup's whole box, already placed by the
+    /// host.
+    pub area: Rect,
+    /// Row pitch the rows were resolved at, from
+    /// [`crate::LayoutCtx::line_height`].
+    pub row_height: f32,
+    /// Advance of one character in the font the rows are measured in,
+    /// from [`crate::LayoutCtx::char_width`] —
+    /// [`RichTextPopupLayout::char_at`]'s `col_width`.
+    pub char_width: f32,
+    /// How many body rows the box shows at once — the page size a Page
+    /// key scrolls by, and the window [`Self::max_scroll`] measures
+    /// against.
+    pub visible_rows: usize,
+    /// The resolved popup layout. Its
+    /// `bounds`/`content_bounds`/`visible_lines`/`scrollbar`/
+    /// `link_hit_regions` are in the same absolute space as
+    /// [`Self::area`].
+    pub layout: RichTextPopupLayout,
+}
+
+impl RichTextPopupPrimitiveLayout {
+    /// Hit-test at a position relative to [`Self::area`]'s own origin —
+    /// the space [`RoutedEvent::Pointer`]'s `local` field uses.
+    pub fn hit_test_local(&self, x: f32, y: f32) -> RichTextPopupHit {
+        self.layout.hit_test(self.area.x + x, self.area.y + y)
+    }
+
+    /// [`RichTextPopupLayout::char_at`] at a position relative to
+    /// [`Self::area`]'s own origin, measured against the font this
+    /// layout was resolved in.
+    pub fn char_at_local(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        self.layout
+            .char_at(self.area.x + x, self.area.y + y, self.char_width)
+    }
+
+    /// The largest [`RichTextPopup::scroll_top`] that still fills the
+    /// box — scrolling stops at the last full screen rather than running
+    /// off the end into blank rows.
+    pub fn max_scroll(&self, total_lines: usize) -> usize {
+        total_lines.saturating_sub(self.visible_rows.max(1))
+    }
+}
+
+impl Primitive for RichTextPopup {
+    type Layout = RichTextPopupPrimitiveLayout;
+    type Event = RichTextPopupEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::RichTextPopup(self.clone())
+    }
+
+    /// The box that shows every line the popup is willing to show at
+    /// once ([`RichTextPopup::max_visible_rows`], capped by the line
+    /// count): the widest line's own measured width plus
+    /// [`RichTextPopup::padding`] and the [`BORDER`] frame on each side.
+    fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
+        let cells = matches!(ctx.units(), Units::Cells);
+        let width_of = |text: &str| -> f32 {
+            if cells {
+                crate::text_util::display_width(text) as f32
+            } else {
+                ctx.text_width(text, self.font_role())
+            }
+        };
+        let content_w = self
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| width_of(&s.text)).sum::<f32>())
+            .fold(0.0_f32, f32::max);
+
+        let max_rows = self.max_visible_rows.max(1);
+        let measure = RichTextPopupMeasure::new(content_w, ctx.line_height).with_scale_rows(!cells);
+        let (offset, count) = self.scroll_window(max_rows);
+        let content_h = self.content_height(measure, offset, count);
+
+        let chrome = 2.0 * (BORDER + self.padding.max(0.0));
+        crate::NaturalSize::new(Some(content_w + chrome), Some(content_h + chrome))
+    }
+
+    /// `rect` is the popup's final box — the `bounds` a host already
+    /// resolved through [`RichTextPopup::layout`]'s anchored placement —
+    /// so the content area, rows, scrollbar and link zones are resolved
+    /// inside it rather than re-placed.
+    ///
+    /// The row count comes from the box itself (how many
+    /// `ctx.line_height` rows fit inside the frame and padding), capped
+    /// by [`RichTextPopup::max_visible_rows`], so a box shorter than the
+    /// popup asked for shows what it can hold instead of overflowing.
+    /// Link hit zones are measured with `ctx`'s own text measurer, so
+    /// they line up with the glyphs the backend paints.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> RichTextPopupPrimitiveLayout {
+        let cells = matches!(ctx.units(), Units::Cells);
+        let row_height = if ctx.line_height > 0.0 {
+            ctx.line_height
+        } else {
+            1.0
+        };
+        let chrome = 2.0 * (BORDER + self.padding.max(0.0));
+        let inner_h = (rect.height - chrome).max(0.0);
+        let rows_that_fit = (inner_h / row_height).floor().max(1.0) as usize;
+        let max_rows = self.max_visible_rows.max(1).min(rows_that_fit);
+        let measure = RichTextPopupMeasure::new((rect.width - chrome).max(0.0), row_height)
+            .with_scale_rows(!cells);
+
+        let role = self.font_role();
+        let link_widths = |line: usize, start: usize, end: usize| -> f32 {
+            let Some(text) = self.line_text.get(line) else {
+                return 0.0;
+            };
+            let slice = text.get(start..end).unwrap_or("");
+            if cells {
+                crate::text_util::display_width(slice) as f32
+            } else {
+                ctx.text_width(slice, role)
+            }
+        };
+
+        let layout = self.resolve_at(rect, max_rows, measure, link_widths);
+        RichTextPopupPrimitiveLayout {
+            area: rect,
+            row_height,
+            char_width: ctx.char_width,
+            visible_rows: max_rows,
+            layout,
+        }
+    }
+
+    /// The shared pixel painter — the same
+    /// [`native_surface_paint::paint`] the macOS and Windows
+    /// `draw_rich_text_popup` wrappers call. GTK's own wrapper keeps a
+    /// Pango `AttrList` painter of its own (see that module's doc for
+    /// why); this seam paints GTK through the shared per-span painter
+    /// like every other pixel surface.
+    fn paint(
+        &self,
+        layout: &RichTextPopupPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        let _ = style;
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            // The painter's return value is the per-link hit rectangles
+            // it measured; this seam hit-tests through
+            // `layout.link_hit_regions`, which `Self::layout` already
+            // measured with the same backend's text measurer.
+            let _ = native_surface_paint::paint(self, &layout.layout, surface, theme);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_rich_text_popup`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &RichTextPopupPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_rich_text_popup(buf, self, &layout.layout, theme);
+    }
+}
+
+impl RichTextPopup {
+    /// Whether the body is taller than the box shows — the one condition
+    /// that makes this popup keyboard-navigable on its own.
+    fn overflows(&self, layout: &RichTextPopupPrimitiveLayout) -> bool {
+        self.lines.len() > layout.visible_rows
+    }
+
+    /// Scroll the body by `delta` rows, clamped to the last full screen,
+    /// and report the new offset — or [`Handled::Consumed`] when the
+    /// gesture lands on an offset the popup already shows (it still owns
+    /// the gesture, so an editor behind it never scrolls too).
+    fn scroll_by(
+        &self,
+        delta: isize,
+        layout: &RichTextPopupPrimitiveLayout,
+    ) -> Handled<RichTextPopupEvent> {
+        if !self.overflows(layout) {
+            return Handled::Ignored;
+        }
+        let max = layout.max_scroll(self.lines.len());
+        let current = self.scroll_top.min(max);
+        let new_offset = scroll_by_clamped(current, delta, max);
+        if new_offset == self.scroll_top {
+            Handled::Consumed
+        } else {
+            Handled::Event(RichTextPopupEvent::Scrolled { new_offset })
+        }
+    }
+}
+
+impl Interactive for RichTextPopup {
+    /// Nothing: the scroll offset lives on
+    /// [`RichTextPopup::scroll_top`] and the focused link on
+    /// [`RichTextPopup::focused_link`], so this widget has no
+    /// interaction state the descriptor doesn't already carry.
+    type State = ();
+    type Action = RichTextPopupEvent;
+
+    /// One focus stop as a whole whenever there is something to drive —
+    /// a body that overflows its box (Page keys scroll it) or at least
+    /// one clickable link. A short, link-free popup is pure content, so
+    /// it stays out of the tab order.
+    fn focus(&self) -> FocusSpec {
+        if self.links.is_empty() && self.lines.len() <= self.max_visible_rows.max(1) {
+            FocusSpec::None
+        } else {
+            FocusSpec::Stop
+        }
+    }
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &RoutedEvent,
+        layout: &RichTextPopupPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<RichTextPopupEvent> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                local,
+                ..
+            } => match layout.hit_test_local(local.x, local.y) {
+                RichTextPopupHit::Link(idx) => {
+                    cx.request_focus(None);
+                    match self.links.get(idx) {
+                        Some(link) => Handled::Event(RichTextPopupEvent::LinkClicked {
+                            url: link.url.clone(),
+                        }),
+                        None => Handled::Consumed,
+                    }
+                }
+                // A click anywhere else inside the box (body text, a
+                // character, the scrollbar) belongs to the popup: it
+                // takes focus and swallows the click rather than letting
+                // it reach the editor behind it. A click outside is not
+                // the popup's business at all — the host's own
+                // dismiss-on-outside-click policy owns that.
+                RichTextPopupHit::Char(..)
+                | RichTextPopupHit::Body
+                | RichTextPopupHit::ScrollbarTrack
+                | RichTextPopupHit::ScrollbarThumb => {
+                    cx.request_focus(None);
+                    Handled::Consumed
+                }
+                RichTextPopupHit::Outside => Handled::Ignored,
+            },
+            RoutedEvent::Wheel { dy, .. } => self.scroll_by(wheel_row_delta(*dy, 1.0), layout),
+            RoutedEvent::Key(KeyEvent { key, .. }) => match key {
+                Key::Named(NamedKey::PageDown) => {
+                    self.scroll_by(layout.visible_rows.max(1) as isize, layout)
+                }
+                Key::Named(NamedKey::PageUp) => {
+                    self.scroll_by(-(layout.visible_rows.max(1) as isize), layout)
+                }
+                // Escape is deliberately not claimed: dismissing the
+                // popup is the host's policy, not the popup's, so the
+                // keystroke must keep travelling.
+                _ => Handled::Ignored,
+            },
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// One sub-part per clickable link, addressed by its index into
+    /// [`RichTextPopup::links`], in [`Self::handle`]'s own local space.
+    /// Body rows carry no sub-target: they are addressed by `(line,
+    /// col)` through [`RichTextPopupPrimitiveLayout::char_at_local`],
+    /// which a [`SubTarget`]'s single opaque `u64` cannot name without
+    /// colliding with a link index.
+    fn sub_regions(&self, layout: &RichTextPopupPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        layout
+            .layout
+            .link_hit_regions
+            .iter()
+            .map(|(rect, idx)| {
+                (
+                    Rect::new(
+                        rect.x - layout.area.x,
+                        rect.y - layout.area.y,
+                        rect.width,
+                        rect.height,
+                    ),
+                    SubTarget(*idx as u64),
+                )
+            })
+            .collect()
+    }
+}
+
+/// The cell-grid painter for [`RichTextPopup`], written against
+/// [`crate::CellSurface`].
+///
+/// A closed box — `┌─┐`/`└─┘` and `│` sides — tinted
+/// [`crate::Theme::link_fg`] when [`RichTextPopup::has_focus`], else
+/// [`crate::Theme::hover_border`]. Inside it, each visible line's styled
+/// spans paint cell by cell with the selection inverted (`fg`/`bg`
+/// swapped), the focused link's characters underlined, and the row padded
+/// out to the content width so a short line still carries the popup's own
+/// background. A scrollbar replaces the right border column when the
+/// content overflows: `█` over the thumb's rows, `░` over the rest of the
+/// track.
+///
+/// Per-popup `popup.fg`/`popup.bg` overrides win over
+/// [`crate::Theme::hover_fg`]/[`crate::Theme::hover_bg`].
+/// [`RichTextPopup::line_scales`] is ignored — a terminal cannot change
+/// cell size mid-render.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{RichTextPopup, RichTextPopupLayout};
+    use crate::cell_surface::{BorderSet, CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    fn style(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `popup` at its resolved `layout` onto `surface`.
+    pub(crate) fn paint(
+        popup: &RichTextPopup,
+        layout: &RichTextPopupLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let bx = layout.bounds.x.round() as u16;
+        let by = layout.bounds.y.round() as u16;
+        let bw = layout.bounds.width.round() as u16;
+        let bh = layout.bounds.height.round() as u16;
+        if bw == 0 || bh == 0 {
+            return;
+        }
+
+        let bg = popup.bg.unwrap_or(theme.hover_bg);
+        let fg = popup.fg.unwrap_or(theme.hover_fg);
+        let border = if popup.has_focus {
+            theme.link_fg
+        } else {
+            theme.hover_border
+        };
+
+        // Content wash first, then the frame on top of it, so the inner
+        // rows start from the popup's own background.
+        surface.fill(
+            Rect::new(bx as f32, by as f32, bw as f32, bh as f32),
+            style(fg, bg),
+        );
+        surface.draw_border(
+            Rect::new(bx as f32, by as f32, bw as f32, bh as f32),
+            BorderSet::Square,
+            style(border, bg),
+        );
+
+        for vis in &layout.visible_lines {
+            let row_y = vis.bounds.y.round() as u16;
+            let line_x = vis.bounds.x.round() as u16;
+            let line_w = vis.bounds.width.round() as u16;
+            if bh > 0 && row_y >= by + bh - 1 {
+                break;
+            }
+
+            let line_idx = vis.line_idx;
+            let focused_link_range = popup.focused_link.and_then(|fi| {
+                popup
+                    .links
+                    .get(fi)
+                    .filter(|l| l.line == line_idx)
+                    .map(|l| (l.start_byte, l.end_byte))
+            });
+
+            let mut col_off: u16 = 0;
+            let mut byte_pos: usize = 0;
+            if let Some(styled) = popup.lines.get(line_idx) {
+                for span in &styled.spans {
+                    let span_fg = span.fg.unwrap_or(fg);
+                    let span_bg = span.bg.unwrap_or(bg);
+                    for ch in span.text.chars() {
+                        if col_off >= line_w {
+                            break;
+                        }
+                        let char_col = col_off as usize;
+                        // Selection inverts the cell's own colours.
+                        let in_selection = popup
+                            .selection
+                            .map(|s| s.contains(line_idx, char_col))
+                            .unwrap_or(false);
+                        let (cell_fg, cell_bg) = if in_selection {
+                            (bg, span_fg)
+                        } else {
+                            (span_fg, span_bg)
+                        };
+                        let mut cell_style = style(cell_fg, cell_bg);
+                        cell_style.bold = span.bold;
+                        cell_style.italic = span.italic;
+                        if popup.has_focus
+                            && !in_selection
+                            && focused_link_range
+                                .map(|(s, e)| byte_pos >= s && byte_pos < e)
+                                .unwrap_or(false)
+                        {
+                            cell_style.underline = Some(cell_fg);
+                        }
+                        surface.put_char(line_x + col_off, row_y, ch, cell_style);
+                        col_off += 1;
+                        byte_pos += ch.len_utf8();
+                    }
+                }
+            }
+            // Pad the rest of the line with the popup background, still
+            // honouring a selection that runs past the line's own text.
+            while col_off < line_w {
+                let in_selection = popup
+                    .selection
+                    .map(|s| s.contains(line_idx, col_off as usize))
+                    .unwrap_or(false);
+                let cell_bg = if in_selection { fg } else { bg };
+                surface.put_char(line_x + col_off, row_y, ' ', style(fg, cell_bg));
+                col_off += 1;
+            }
+        }
+
+        // Scrollbar thumb on the right border, when present.
+        if let Some(sb) = layout.scrollbar {
+            let track_x = sb.track.x.round() as u16;
+            let track_y = sb.track.y.round() as u16;
+            let track_h = sb.track.height.round() as u16;
+            let thumb_y = sb.thumb.y.round() as u16;
+            let thumb_h = sb.thumb.height.round() as u16;
+            for r in 0..track_h {
+                let cy = track_y + r;
+                let in_thumb = cy >= thumb_y && cy < thumb_y + thumb_h;
+                let ch = if in_thumb { '█' } else { '░' };
+                let cell_fg = if in_thumb { border } else { fg };
+                surface.put_char(track_x, cy, ch, style(cell_fg, bg));
+            }
+        }
+    }
+}
+
 /// Visible width of the rich-text-popup scrollbar, shared by
 /// [`native_surface_paint::paint`] and each backend's own hit-testing
 /// constant of the same value
@@ -558,12 +1125,16 @@ pub(crate) const SB_WIDTH: f32 = 8.0;
 ))]
 pub(crate) const SB_INSET: f32 = 1.0;
 
-// Shared painting implementation for macOS and Windows rasterisers.
-// GTK uses a separate implementation in `gtk::rich_text_popup::draw_rich_text_popup`
+// Shared painting implementation for every pixel surface — the painter
+// `Primitive::paint` runs on GTK, macOS and Windows alike, and the one
+// `macos::rich_text_popup`/`win::rich_text_popup` delegate to.
+//
+// `gtk::rich_text_popup::draw_rich_text_popup` keeps a painter of its own
 // because it shapes entire lines with Pango's `AttrList` to avoid glyph-position
 // drift from kerning/ligatures that occurs when spans are shaped and advanced
-// separately — GTK only reaches into this file for the scrollbar geometry
-// constants above (re-exported as
+// separately, and derives its link rects from `index_to_pos` — neither of which
+// `PaintSurface`'s per-run verbs can express. That wrapper also reaches into
+// this file for the scrollbar geometry constants above (re-exported as
 // `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET`, same derivation
 // `macos::rich_text_popup` already uses), so its own paint stays in sync with
 // macOS/Windows's scrollbar geometry without duplicating the constant.
@@ -579,8 +1150,11 @@ pub(crate) const SB_INSET: f32 = 1.0;
 //
 // Font scaling per row (via `RichTextPopup::line_scales`) is not implemented
 // — it requires per-row font swaps that would need backend-specific capabilities.
-#[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
-#[allow(dead_code)]
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) mod native_surface_paint {
     use super::{RichTextPopup, RichTextPopupLayout, TextSelection};
     // `pub(crate)` (not a plain `use`) so `native_surface_paint::SB_WIDTH`/
@@ -1169,5 +1743,462 @@ mod tests {
         assert_eq!(layout.bounds.x, 116.0);
         // Flips above: y = anchor_y - outer_h = 190 - 34 = 156.
         assert_eq!(layout.bounds.y, 156.0);
+    }
+
+    // ── Cell-path paint (`cell_paint::paint`) ───────────────────────────
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::*;
+        use crate::theme::Theme;
+        use crate::tui::{draw_rich_text_popup, ratatui_color};
+        use crate::types::{Color, StyledSpan};
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+        }
+
+        fn cell_at(buf: &Buffer, x: u16, y: u16) -> &ratatui::buffer::Cell {
+            &buf[(x, y)]
+        }
+
+        /// A popup whose box lands at `(0, 0)`: `PopupPlacement::Below`
+        /// with the anchor one row above the viewport's top edge, so the
+        /// tests below can index `buf` directly by row.
+        fn layout_at_origin(p: &RichTextPopup, w: f32, h: f32) -> RichTextPopupLayout {
+            let viewport = Rect::new(0.0, 0.0, w, h);
+            p.layout(
+                0.0,
+                -1.0,
+                viewport,
+                RichTextPopupMeasure::new(w - 2.0 - 2.0 * p.padding.max(0.0), 1.0),
+                |_, s, e| (e - s) as f32,
+            )
+        }
+
+        fn popup(lines: &[&str]) -> RichTextPopup {
+            RichTextPopup {
+                id: WidgetId::new("rtp:cells"),
+                lines: lines.iter().map(|l| StyledText::plain(*l)).collect(),
+                line_text: lines.iter().map(|l| (*l).to_string()).collect(),
+                line_scales: Vec::new(),
+                scroll_top: 0,
+                max_visible_rows: 10,
+                has_focus: false,
+                selection: None,
+                links: Vec::new(),
+                focused_link: None,
+                placement: PopupPlacement::Below,
+                padding: 0.0,
+                fg: None,
+                bg: None,
+            }
+        }
+
+        #[test]
+        fn paints_a_closed_box_around_the_content() {
+            let p = popup(&["hello"]);
+            let l = layout_at_origin(&p, 12.0, 10.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            draw_rich_text_popup(&mut buf, &p, &l, &Theme::default());
+
+            let w = l.bounds.width.round() as u16;
+            let h = l.bounds.height.round() as u16;
+            assert_eq!(cell_char(&buf, 0, 0), '┌');
+            assert_eq!(cell_char(&buf, w - 1, 0), '┐');
+            assert_eq!(cell_char(&buf, 0, h - 1), '└');
+            assert_eq!(cell_char(&buf, w - 1, h - 1), '┘');
+            assert_eq!(cell_char(&buf, 1, 0), '─');
+            assert_eq!(cell_char(&buf, 0, 1), '│');
+        }
+
+        #[test]
+        fn paints_each_visible_line_inside_the_border() {
+            let p = popup(&["alpha", "beta"]);
+            let l = layout_at_origin(&p, 12.0, 10.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            draw_rich_text_popup(&mut buf, &p, &l, &Theme::default());
+
+            let row0: String = (1..6).map(|x| cell_char(&buf, x, 1)).collect();
+            let row1: String = (1..5).map(|x| cell_char(&buf, x, 2)).collect();
+            assert_eq!(row0, "alpha");
+            assert_eq!(row1, "beta");
+        }
+
+        /// A focused popup tints its frame with `link_fg`; an unfocused
+        /// one uses `hover_border`.
+        #[test]
+        fn focus_tints_the_border() {
+            let theme = Theme::default();
+            let mut p = popup(&["hi"]);
+            let l = layout_at_origin(&p, 10.0, 10.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            draw_rich_text_popup(&mut buf, &p, &l, &theme);
+            assert_eq!(cell_at(&buf, 0, 0).fg, ratatui_color(theme.hover_border));
+
+            p.has_focus = true;
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            draw_rich_text_popup(&mut buf, &p, &l, &theme);
+            assert_eq!(cell_at(&buf, 0, 0).fg, ratatui_color(theme.link_fg));
+        }
+
+        #[test]
+        fn a_selected_character_inverts_its_colours() {
+            let theme = Theme::default();
+            let mut p = popup(&["abcdef"]);
+            p.selection = Some(TextSelection {
+                start_line: 0,
+                start_col: 1,
+                end_line: 0,
+                end_col: 3,
+            });
+            let l = layout_at_origin(&p, 12.0, 10.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            draw_rich_text_popup(&mut buf, &p, &l, &theme);
+
+            // Columns 1..3 of the content row are selected: fg/bg swap.
+            let selected = cell_at(&buf, 2, 1);
+            assert_eq!(selected.fg, ratatui_color(theme.hover_bg));
+            assert_eq!(selected.bg, ratatui_color(theme.hover_fg));
+            let plain = cell_at(&buf, 4, 1);
+            assert_eq!(plain.fg, ratatui_color(theme.hover_fg));
+            assert_eq!(plain.bg, ratatui_color(theme.hover_bg));
+        }
+
+        #[test]
+        fn the_focused_links_characters_are_underlined() {
+            let mut p = popup(&["see docs"]);
+            p.has_focus = true;
+            p.links = vec![RichTextLink {
+                line: 0,
+                start_byte: 4,
+                end_byte: 8,
+                url: "https://example.com".into(),
+            }];
+            p.focused_link = Some(0);
+            let l = layout_at_origin(&p, 14.0, 10.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            draw_rich_text_popup(&mut buf, &p, &l, &Theme::default());
+
+            let underlined = |x: u16| {
+                cell_at(&buf, x, 1)
+                    .modifier
+                    .contains(ratatui::style::Modifier::UNDERLINED)
+            };
+            assert!(underlined(5), "'d' of \"docs\" must be underlined");
+            assert!(!underlined(1), "'s' of \"see\" must not be");
+        }
+
+        #[test]
+        fn an_overflowing_body_paints_a_thumb_scrollbar() {
+            let lines: Vec<String> = (0..20).map(|i| format!("line{i}")).collect();
+            let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let mut p = popup(&refs);
+            p.max_visible_rows = 4;
+            let l = layout_at_origin(&p, 12.0, 20.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 20));
+            draw_rich_text_popup(&mut buf, &p, &l, &Theme::default());
+
+            let sb = l.scrollbar.expect("overflowing body scrolls");
+            let track_x = sb.track.x.round() as u16;
+            let painted: Vec<char> = (0..sb.track.height.round() as u16)
+                .map(|r| cell_char(&buf, track_x, sb.track.y.round() as u16 + r))
+                .collect();
+            assert!(painted.contains(&'█'), "thumb glyph: {painted:?}");
+            assert!(painted.contains(&'░'), "track glyph: {painted:?}");
+        }
+
+        #[test]
+        fn a_per_span_foreground_override_wins_over_the_theme() {
+            let mut p = popup(&["ab"]);
+            p.lines = vec![StyledText {
+                spans: vec![
+                    StyledSpan {
+                        fg: Some(Color::rgb(10, 200, 30)),
+                        ..StyledSpan::plain("a")
+                    },
+                    StyledSpan::plain("b"),
+                ],
+            }];
+            let l = layout_at_origin(&p, 10.0, 10.0);
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            draw_rich_text_popup(&mut buf, &p, &l, &Theme::default());
+            assert_eq!(
+                cell_at(&buf, 1, 1).fg,
+                ratatui_color(Color::rgb(10, 200, 30))
+            );
+        }
+    }
+
+    // ── Widget contract: `Primitive` + `Interactive` ────────────────────
+
+    mod contract {
+        use super::*;
+        use crate::interactive::{EventHost, FocusSpec, PointerKind, SubTarget};
+        use crate::primitive::{LayoutCtx, Primitive, Size, Units};
+        use crate::types::Modifiers;
+        use crate::{Point, PointerShape};
+
+        #[derive(Debug, Default)]
+        struct MockHost {
+            focus_requests: Vec<Option<SubTarget>>,
+        }
+
+        impl EventHost for MockHost {
+            fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+                false
+            }
+            fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+                self.focus_requests.push(sub);
+            }
+            fn capture_pointer(&mut self, _id: &WidgetId) {}
+            fn release_pointer(&mut self) {}
+            fn set_cursor(&mut self, _cursor: PointerShape) {}
+            fn request_redraw(&mut self) {}
+            fn emit(&mut self, _event: crate::UiEvent) {}
+            fn units(&self) -> Units {
+                Units::Cells
+            }
+        }
+
+        fn ctx() -> LayoutCtx<'static> {
+            LayoutCtx::new(1.0, 1.0, false)
+        }
+
+        fn popup(lines: usize, max_visible: usize, scroll: usize) -> RichTextPopup {
+            let mut p = make_rich_popup(lines, max_visible, scroll);
+            p.padding = 0.0;
+            p
+        }
+
+        fn layout_for(p: &RichTextPopup, rect: Rect) -> RichTextPopupPrimitiveLayout {
+            Primitive::layout(p, &ctx(), rect)
+        }
+
+        fn handle(
+            p: &RichTextPopup,
+            event: &RoutedEvent,
+            layout: &RichTextPopupPrimitiveLayout,
+        ) -> (Handled<RichTextPopupEvent>, MockHost) {
+            let mut host = MockHost::default();
+            let mut cx = EventCx::new(p.id, &mut host);
+            let out = Interactive::handle(p, &mut (), event, layout, &mut cx);
+            (out, host)
+        }
+
+        fn key(named: NamedKey) -> RoutedEvent {
+            RoutedEvent::Key(KeyEvent {
+                key: Key::Named(named),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            })
+        }
+
+        fn down_at(x: f32, y: f32) -> RoutedEvent {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(x, y),
+                mods: Modifiers::default(),
+            }
+        }
+
+        #[test]
+        fn layout_resolves_inside_the_host_placed_box() {
+            let p = popup(10, 4, 0);
+            let layout = layout_for(&p, Rect::new(3.0, 5.0, 20.0, 6.0));
+            assert_eq!(layout.area, Rect::new(3.0, 5.0, 20.0, 6.0));
+            assert_eq!(layout.layout.bounds, layout.area);
+            // One border row/column of chrome on each side.
+            assert_eq!(layout.layout.content_bounds.x, 4.0);
+            assert_eq!(layout.layout.content_bounds.y, 6.0);
+            assert_eq!(layout.layout.content_bounds.width, 18.0);
+            assert_eq!(layout.visible_rows, 4);
+            assert_eq!(layout.layout.visible_lines.len(), 4);
+        }
+
+        /// A box shorter than `max_visible_rows` shows only the rows it
+        /// can hold rather than overflowing its own frame.
+        #[test]
+        fn a_short_box_caps_the_row_count() {
+            let p = popup(10, 8, 0);
+            let layout = layout_for(&p, Rect::new(0.0, 0.0, 20.0, 5.0));
+            assert_eq!(layout.visible_rows, 3);
+            assert_eq!(layout.layout.visible_lines.len(), 3);
+        }
+
+        #[test]
+        fn measure_reports_the_widest_line_plus_chrome() {
+            let p = popup(3, 8, 0);
+            let natural = Primitive::measure(&p, &ctx(), Size::new(80.0, 24.0));
+            // "line 00" is 7 cells wide, plus one border column each side.
+            assert_eq!(natural.width, Some(9.0));
+            assert_eq!(natural.height, Some(5.0));
+        }
+
+        #[test]
+        fn a_link_free_short_popup_is_not_a_focus_stop() {
+            assert_eq!(Interactive::focus(&popup(3, 8, 0)), FocusSpec::None);
+            assert_eq!(Interactive::focus(&popup(30, 8, 0)), FocusSpec::Stop);
+            let mut linked = popup(3, 8, 0);
+            linked.links.push(RichTextLink {
+                line: 0,
+                start_byte: 0,
+                end_byte: 4,
+                url: "https://example.com".into(),
+            });
+            assert_eq!(Interactive::focus(&linked), FocusSpec::Stop);
+        }
+
+        #[test]
+        fn a_click_on_a_link_reports_its_url_and_takes_focus() {
+            let mut p = popup(3, 8, 0);
+            p.links.push(RichTextLink {
+                line: 1,
+                start_byte: 0,
+                end_byte: 4,
+                url: "https://example.com".into(),
+            });
+            let layout = layout_for(&p, Rect::new(0.0, 0.0, 20.0, 5.0));
+            let hit = layout.layout.link_hit_regions[0].0;
+            let (out, host) = handle(&p, &down_at(hit.x + 0.5, hit.y + 0.5), &layout);
+            assert_eq!(
+                out,
+                Handled::Event(RichTextPopupEvent::LinkClicked {
+                    url: "https://example.com".into()
+                })
+            );
+            assert_eq!(host.focus_requests, vec![None]);
+        }
+
+        #[test]
+        fn a_click_on_the_body_is_consumed_and_a_click_outside_is_not() {
+            let p = popup(3, 8, 0);
+            let layout = layout_for(&p, Rect::new(0.0, 0.0, 20.0, 5.0));
+            let (inside, host) = handle(&p, &down_at(2.0, 1.5), &layout);
+            assert_eq!(inside, Handled::Consumed);
+            assert_eq!(host.focus_requests, vec![None]);
+            let (outside, _) = handle(&p, &down_at(2.0, 40.0), &layout);
+            assert_eq!(outside, Handled::Ignored);
+        }
+
+        #[test]
+        fn char_at_local_resolves_a_line_and_column() {
+            let p = popup(3, 8, 0);
+            let layout = layout_for(&p, Rect::new(4.0, 4.0, 20.0, 5.0));
+            assert_eq!(layout.char_at_local(1.0, 1.5), Some((0, 0)));
+            assert_eq!(layout.char_at_local(4.0, 2.5), Some((1, 3)));
+            assert_eq!(layout.char_at_local(1.0, 40.0), None);
+        }
+
+        #[test]
+        fn a_wheel_gesture_scrolls_the_body() {
+            let p = popup(30, 4, 0);
+            let layout = layout_for(&p, Rect::new(0.0, 0.0, 20.0, 6.0));
+            let wheel = |dy: f32| RoutedEvent::Wheel {
+                dx: 0.0,
+                dy,
+                local: Point::new(1.0, 1.0),
+                mods: Modifiers::default(),
+            };
+            // `UiEvent::Scroll`'s convention is positive-y-is-up, so a
+            // downward notch (-1.0) scrolls the body forward.
+            let (down, _) = handle(&p, &wheel(-1.0), &layout);
+            assert_eq!(
+                down,
+                Handled::Event(RichTextPopupEvent::Scrolled { new_offset: 1 })
+            );
+            // Already at the top: the popup owns the gesture but reports
+            // nothing to apply.
+            let (up, _) = handle(&p, &wheel(1.0), &layout);
+            assert_eq!(up, Handled::Consumed);
+        }
+
+        #[test]
+        fn page_keys_scroll_by_the_rows_actually_on_screen() {
+            let p = popup(30, 4, 0);
+            let layout = layout_for(&p, Rect::new(0.0, 0.0, 20.0, 6.0));
+            assert_eq!(layout.visible_rows, 4);
+            let (down, _) = handle(&p, &key(NamedKey::PageDown), &layout);
+            assert_eq!(
+                down,
+                Handled::Event(RichTextPopupEvent::Scrolled { new_offset: 4 })
+            );
+        }
+
+        /// Scrolling never runs off the end into blank rows: a Page key
+        /// at the bottom pins the offset to the last full screen, and a
+        /// stale `scroll_top` past it is reported back clamped.
+        #[test]
+        fn scrolling_stops_at_the_last_full_screen() {
+            let layout = layout_for(&popup(30, 4, 0), Rect::new(0.0, 0.0, 20.0, 6.0));
+            assert_eq!(layout.max_scroll(30), 26);
+
+            let at_bottom = popup(30, 4, 26);
+            let (pinned, _) = handle(&at_bottom, &key(NamedKey::PageDown), &layout);
+            assert_eq!(pinned, Handled::Consumed);
+
+            let stale = popup(30, 4, 99);
+            let (corrected, _) = handle(&stale, &key(NamedKey::PageDown), &layout);
+            assert_eq!(
+                corrected,
+                Handled::Event(RichTextPopupEvent::Scrolled { new_offset: 26 })
+            );
+        }
+
+        #[test]
+        fn a_body_that_fits_ignores_scroll_gestures() {
+            let p = popup(3, 8, 0);
+            let layout = layout_for(&p, Rect::new(0.0, 0.0, 20.0, 10.0));
+            let (out, _) = handle(&p, &key(NamedKey::PageDown), &layout);
+            assert_eq!(out, Handled::Ignored);
+        }
+
+        /// Escape must keep travelling: dismissing the popup is the
+        /// host's policy, not the widget's.
+        #[test]
+        fn escape_is_not_claimed() {
+            let p = popup(30, 4, 0);
+            let layout = layout_for(&p, Rect::new(0.0, 0.0, 20.0, 6.0));
+            let (out, _) = handle(&p, &key(NamedKey::Escape), &layout);
+            assert_eq!(out, Handled::Ignored);
+        }
+
+        #[test]
+        fn sub_regions_name_every_visible_link_in_local_space() {
+            let mut p = popup(3, 8, 0);
+            p.links.push(RichTextLink {
+                line: 0,
+                start_byte: 0,
+                end_byte: 4,
+                url: "https://example.com".into(),
+            });
+            let layout = layout_for(&p, Rect::new(5.0, 5.0, 20.0, 5.0));
+            let regions = Interactive::sub_regions(&p, &layout);
+            assert_eq!(regions.len(), 1);
+            assert_eq!(regions[0].1, SubTarget(0));
+            assert_eq!(regions[0].0, Rect::new(1.0, 1.0, 4.0, 1.0));
+        }
+
+        #[test]
+        fn actions_map_onto_the_crates_own_ui_events() {
+            let id = WidgetId::new("rtp:test");
+            assert_eq!(
+                RichTextPopupEvent::LinkClicked {
+                    url: "https://example.com".into()
+                }
+                .into_ui_event(id),
+                crate::UiEvent::RichTextLinkClicked(id, "https://example.com".into())
+            );
+            assert_eq!(
+                RichTextPopupEvent::Scrolled { new_offset: 7 }.into_ui_event(id),
+                crate::UiEvent::ScrollOffsetChanged {
+                    widget: id,
+                    new_offset: 7
+                }
+            );
+        }
     }
 }
