@@ -11,15 +11,7 @@
 //! module docs.
 
 use crate::event::Rect;
-use crate::primitives::text_display::{TextDisplay, TextDisplayLayout, TextDisplayLineMeasure};
-
-/// Scrollbar gutter width in DIPs. Matches the GTK/macOS rasterisers'
-/// 12-DIP gutter so the body width — and therefore the resolved layout
-/// — stays parity-equivalent across every pixel backend.
-const SCROLLBAR_GUTTER_DIP: f32 = 12.0;
-
-/// Minimum scrollbar thumb length in DIPs.
-const SCROLLBAR_MIN_THUMB_DIP: f32 = 8.0;
+use crate::primitives::text_display::{TextDisplay, TextDisplayLayout};
 
 /// Compute the layout the Win-GUI rasteriser produces for `display` at
 /// `rect` with the supplied `line_height`. Hosts call this to drive
@@ -43,33 +35,5 @@ pub fn win_text_display_layout(
     line_height: f32,
     char_width: f32,
 ) -> TextDisplayLayout {
-    let body_h = if display.title.is_some() {
-        (rect.height - line_height).max(0.0)
-    } else {
-        rect.height
-    };
-    if body_h <= 0.0 {
-        return display.layout(0.0, 0.0, |_| TextDisplayLineMeasure::new(line_height));
-    }
-    let body_width_px = if display.show_scrollbar {
-        (rect.width - SCROLLBAR_GUTTER_DIP).max(0.0)
-    } else {
-        rect.width
-    };
-    let col_budget = crate::primitives::text_display::px_to_cols(body_width_px, char_width);
-    let measure = |i: usize| {
-        let rows = crate::primitives::text_display::wrap_row_count(&display.lines[i], col_budget);
-        TextDisplayLineMeasure::new(rows as f32 * line_height)
-    };
-    if display.show_scrollbar {
-        display.layout_with_scrollbar(
-            rect.width,
-            body_h,
-            SCROLLBAR_GUTTER_DIP,
-            SCROLLBAR_MIN_THUMB_DIP,
-            measure,
-        )
-    } else {
-        display.layout(rect.width, body_h, measure)
-    }
+    crate::primitives::text_display::pixel_layout(display, rect, line_height, char_width).layout
 }

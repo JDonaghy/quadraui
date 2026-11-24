@@ -12,7 +12,7 @@
 //! (`GtkBackend::text_display_layout`) and painting
 //! (`GtkBackend::draw_text_display`, via `Backend::text_display_layout`).
 
-use crate::primitives::text_display::{TextDisplay, TextDisplayLayout, TextDisplayLineMeasure};
+use crate::primitives::text_display::{TextDisplay, TextDisplayLayout};
 use crate::theme::Theme;
 
 /// Draw a [`TextDisplay`] into `(x, y, w, h)` on `cr`.
@@ -71,32 +71,13 @@ pub fn gtk_text_display_layout(
     line_height: f64,
     char_width: f64,
 ) -> TextDisplayLayout {
-    let body_h = if display.title.is_some() {
-        (rect.height as f64 - line_height).max(0.0)
-    } else {
-        rect.height as f64
-    };
-    if body_h <= 0.0 {
-        return display.layout(0.0, 0.0, |_| {
-            TextDisplayLineMeasure::new(line_height as f32)
-        });
-    }
-    let gutter_px = 12.0_f32;
-    let body_width_px = if display.show_scrollbar {
-        (rect.width - gutter_px).max(0.0)
-    } else {
-        rect.width
-    };
-    let col_budget = crate::primitives::text_display::px_to_cols(body_width_px, char_width as f32);
-    let measure = |i: usize| {
-        let rows = crate::primitives::text_display::wrap_row_count(&display.lines[i], col_budget);
-        TextDisplayLineMeasure::new(rows as f32 * line_height as f32)
-    };
-    if display.show_scrollbar {
-        display.layout_with_scrollbar(rect.width, body_h as f32, gutter_px, 8.0, measure)
-    } else {
-        display.layout(rect.width, body_h as f32, measure)
-    }
+    crate::primitives::text_display::pixel_layout(
+        display,
+        rect,
+        line_height as f32,
+        char_width as f32,
+    )
+    .layout
 }
 
 #[cfg(test)]
