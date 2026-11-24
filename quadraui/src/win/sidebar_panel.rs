@@ -105,6 +105,7 @@ mod tests {
                 buttons: vec![mk_action("a", "Refine"), mk_action("b", "Drop")],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             }),
             toolbar_height: None,
         }

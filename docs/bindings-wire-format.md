@@ -445,6 +445,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ToolbarButtonMenuButtonWrapper`](#wire-_toolbarbuttonmenubuttonwrapper)
 - [`ToolbarButtonDescriptor`](#wire-toolbarbuttondescriptor)
 - [`ToolbarOverflow`](#wire-toolbaroverflow)
+- [`ToolbarOrientation`](#wire-toolbarorientation)
+- [`ToolbarVAlign`](#wire-toolbarvalign)
 - [`ToolbarOverflowPriorityEntry`](#wire-toolbaroverflowpriorityentry)
 - [`ToolbarDescriptor`](#wire-toolbardescriptor)
 - [`PaddingAxis`](#wire-paddingaxis)
@@ -1529,9 +1531,23 @@ Alias for `("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButt
 <a id="wire-toolbaroverflow"></a>
 #### `ToolbarOverflow`
 
-How a `"toolbar"` extra's buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance.
+How a `"toolbar"`'s buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance.
 
 Alias for `"Clip" | "Wrap" | "Menu"`.
+
+<a id="wire-toolbarorientation"></a>
+#### `ToolbarOrientation`
+
+Main-axis direction a `"toolbar"`'s buttons flow along: "Horizontal" (default) left-to-right, "Vertical" top-to-bottom, one item per line.
+
+Alias for `"Horizontal" | "Vertical"`.
+
+<a id="wire-toolbarvalign"></a>
+#### `ToolbarVAlign`
+
+Where a `"toolbar"`'s button/label text sits within a slot taller than one text row: "Top" (default), "Center" or "Bottom". No effect on a single-row bar.
+
+Alias for `"Top" | "Center" | "Bottom"`.
 
 <a id="wire-toolbaroverflowpriorityentry"></a>
 #### `ToolbarOverflowPriorityEntry`
@@ -1550,8 +1566,11 @@ Alias for `"Clip" | "Wrap" | "Menu"`.
 | `buttons` | `ToolbarButtonDescriptor[]` | yes |  |
 | `bg` | `Color \| null` | no |  |
 | `focused_index` | `number \| null` | no |  |
+| `orientation` | `ToolbarOrientation` | no |  |
 | `overflow` | `ToolbarOverflow` | no |  |
+| `pin_trailing_overflow_to_origin` | `boolean` | no |  |
 | `overflow_priorities` | `ToolbarOverflowPriorityEntry[]` | no |  |
+| `valign` | `ToolbarVAlign` | no |  |
 
 <a id="wire-paddingaxis"></a>
 #### `PaddingAxis`

@@ -485,8 +485,14 @@ export interface _ToolbarButtonMenuButtonWrapper {
 /** One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, `{"Group": {...}}`, `{"Field": {...}}` (an embedded `TextFieldDescriptor`), or `{"MenuButton": {...}}` (a pull-down; `menu` is a list of `ContextMenuItem`). */
 export type ToolbarButtonDescriptor = ("Separator" | "Spacer") | _ToolbarButtonActionWrapper | _ToolbarButtonLabelWrapper | _ToolbarButtonGroupWrapper | _ToolbarButtonFieldWrapper | _ToolbarButtonMenuButtonWrapper;
 
-/** How a `"toolbar"` extra's buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance. */
+/** How a `"toolbar"`'s buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance. */
 export type ToolbarOverflow = "Clip" | "Wrap" | "Menu";
+
+/** Main-axis direction a `"toolbar"`'s buttons flow along: "Horizontal" (default) left-to-right, "Vertical" top-to-bottom, one item per line. */
+export type ToolbarOrientation = "Horizontal" | "Vertical";
+
+/** Where a `"toolbar"`'s button/label text sits within a slot taller than one text row: "Top" (default), "Center" or "Bottom". No effect on a single-row bar. */
+export type ToolbarVAlign = "Top" | "Center" | "Bottom";
 
 export interface ToolbarOverflowPriorityEntry {
   id: WidgetId;
@@ -498,8 +504,11 @@ export interface ToolbarDescriptor {
   buttons: ToolbarButtonDescriptor[];
   bg?: Color | null;
   focused_index?: number | null;
+  orientation?: ToolbarOrientation;
   overflow?: ToolbarOverflow;
+  pin_trailing_overflow_to_origin?: boolean;
   overflow_priorities?: ToolbarOverflowPriorityEntry[];
+  valign?: ToolbarVAlign;
 }
 
 export interface PaddingAxis {

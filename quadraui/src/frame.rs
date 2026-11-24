@@ -2554,6 +2554,7 @@ mod tests {
             buttons: Vec::new(),
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
 
         let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
