@@ -68,6 +68,7 @@ use crate::event::{Point, Rect};
 use crate::style::Style;
 use crate::types::WidgetId;
 use crate::undo::UndoStack;
+use crate::Handled;
 
 /// Multi-line text input. Text is stored as one entry per line — empty
 /// lines are empty strings. Cursor is `(line, col)` in *char columns*
@@ -230,7 +231,6 @@ struct TextInputSnapshot {
     cursor_col: usize,
     selection_anchor: Option<(usize, usize)>,
 }
-
 
 /// Bounded so a long-lived editor (e.g. a persistent chat input, or a
 /// large commit-message buffer) doesn't accumulate unbounded history —
@@ -1067,6 +1067,1065 @@ mod native_surface_paint {
 ))]
 #[allow(unused_imports)]
 pub(crate) use native_surface_paint::paint;
+
+// ── Cell-grid layout + paint ───────────────────────────────────────────
+
+/// Resolve this input's layout in **whole cell** units — the one
+/// cell-grid entry point [`crate::primitive::Primitive::layout`] and
+/// [`crate::tui::tui_text_input_layout`] share, so the widget contract
+/// and the legacy `Backend::draw_text_input` path can never disagree
+/// about where a row or the caret sits.
+pub fn cell_layout(ti: &TextInput, rect: Rect) -> TextInputLayout {
+    ti.layout(rect, TextInputMeasure::new(1.0, 1.0))
+}
+
+/// `TextInput`'s cell-grid rasteriser, written against
+/// [`crate::CellSurface`]'s verbs — the cell-grid twin of
+/// [`native_surface_paint::paint`].
+///
+/// Paints a 1-cell square border (tinted [`crate::Theme::accent_fg`]
+/// while focused, [`crate::Theme::border_fg`] otherwise), the visible
+/// lines sliced at [`TextInputLayout::resolved_scroll_col`], or the
+/// placeholder in [`crate::Theme::muted_fg`] when
+/// [`TextInputLayout::placeholder_active`], and — only while focused — a
+/// block caret made by swapping the caret cell's own foreground and
+/// background.
+///
+/// [`crate::CellSurface::draw_border`] is deliberately not used: it
+/// paints nothing under 2×2 cells, while a one-row or one-column input
+/// still paints a degenerate frame here, so the glyphs go down with
+/// [`crate::CellSurface::put_char`] one at a time.
+pub(crate) mod cell_paint {
+    use super::{TextInput, TextInputLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::event::Rect;
+    use crate::theme::Theme;
+
+    /// Paint `ti` at the already-resolved `layout` onto `surface`.
+    pub(crate) fn paint(
+        ti: &TextInput,
+        layout: &TextInputLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let rect = layout.bounds;
+        if rect.width < 1.0 || rect.height < 1.0 {
+            return;
+        }
+        let plain = CellStyle {
+            fg: Some(theme.foreground),
+            bg: Some(theme.background),
+            ..CellStyle::default()
+        };
+        let muted = CellStyle {
+            fg: Some(theme.muted_fg),
+            ..plain
+        };
+        let border = CellStyle {
+            fg: Some(if ti.has_focus {
+                theme.accent_fg
+            } else {
+                theme.border_fg
+            }),
+            ..plain
+        };
+
+        surface.fill(rect, plain);
+
+        let x0 = rect.x as u16;
+        let y0 = rect.y as u16;
+        let x1 = x0 + (rect.width as u16).saturating_sub(1);
+        let y1 = y0 + (rect.height as u16).saturating_sub(1);
+        for x in x0..=x1 {
+            surface.put_char(x, y0, '─', border);
+            if y1 != y0 {
+                surface.put_char(x, y1, '─', border);
+            }
+        }
+        for y in y0..=y1 {
+            surface.put_char(x0, y, '│', border);
+            if x1 != x0 {
+                surface.put_char(x1, y, '│', border);
+            }
+        }
+        surface.put_char(x0, y0, '┌', border);
+        surface.put_char(x1, y0, '┐', border);
+        surface.put_char(x0, y1, '└', border);
+        surface.put_char(x1, y1, '┘', border);
+
+        if layout.placeholder_active {
+            if let (Some(text), Some(first)) =
+                (ti.placeholder.as_ref(), layout.visible_lines.first())
+            {
+                put_row(surface, first.bounds, text, 0, muted);
+            }
+        } else {
+            let h_scroll = layout.resolved_scroll_col;
+            for vis in &layout.visible_lines {
+                let line = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
+                put_row(surface, vis.bounds, line, h_scroll, plain);
+            }
+        }
+
+        // Block caret: swap the caret cell's own colours, so the glyph
+        // already painted there stays legible in reverse video.
+        if ti.has_focus {
+            if let Some(cb) = layout.cursor_bounds {
+                let (cx, cy) = (cb.x as u16, cb.y as u16);
+                let (ch, under) = surface.get(cx, cy).unwrap_or((' ', plain));
+                surface.put_char(
+                    cx,
+                    cy,
+                    ch,
+                    CellStyle {
+                        fg: under.bg.or(Some(theme.background)),
+                        bg: under.fg.or(Some(theme.foreground)),
+                        ..under
+                    },
+                );
+            }
+        }
+    }
+
+    /// Paint `text`, with its first `skip` characters scrolled out of
+    /// view, into one row's `bounds`.
+    fn put_row(
+        surface: &mut dyn CellSurface,
+        bounds: Rect,
+        text: &str,
+        skip: usize,
+        style: CellStyle,
+    ) {
+        let visible: String = text.chars().skip(skip).collect();
+        surface.put_str_clipped(
+            bounds.x as u16,
+            bounds.y as u16,
+            &visible,
+            bounds.width as u16,
+            style,
+        );
+    }
+}
+
+// ── Widget contract ────────────────────────────────────────────────────
+
+/// [`crate::primitive::Primitive::Layout`] for [`TextInput`]: the
+/// absolute area the input was laid out into, the resolved
+/// [`TextInputLayout`], and the char-column width the laying-out backend
+/// measured with.
+///
+/// `char_width` is carried because [`crate::interactive::Interactive`]
+/// gets no [`crate::primitive::LayoutCtx`] of its own, and resolving a
+/// click's *column* inside a row needs the same advance the layout
+/// positioned glyphs with.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextInputPrimitiveLayout {
+    /// The absolute rect the input was laid out into.
+    pub area: Rect,
+    /// The resolved input layout, in absolute coordinates.
+    pub layout: TextInputLayout,
+    /// One character's advance, in the laying-out backend's units.
+    pub char_width: f32,
+}
+
+impl TextInputPrimitiveLayout {
+    /// Classify an absolute point against this input — see
+    /// [`TextInputLayout::hit_test`].
+    pub fn hit_test(&self, x: f32, y: f32) -> TextInputHit {
+        self.layout.hit_test(x, y)
+    }
+
+    /// The `(line, char_column)` an absolute point resolves to, or `None`
+    /// when it lands outside every text row.
+    ///
+    /// The column is rounded to the *nearest* boundary rather than
+    /// floored, so a click on a glyph's right half puts the caret after
+    /// it — what every native text editor does.
+    pub fn caret_at(&self, x: f32, y: f32) -> Option<(usize, usize)> {
+        let TextInputHit::Line { line_idx } = self.layout.hit_test(x, y) else {
+            return None;
+        };
+        let char_w = self.char_width.max(1.0);
+        let offset = ((x - self.layout.content_bounds.x) / char_w)
+            .round()
+            .max(0.0) as usize;
+        Some((line_idx, self.layout.resolved_scroll_col + offset))
+    }
+}
+
+impl crate::primitive::Primitive for TextInput {
+    type Layout = TextInputPrimitiveLayout;
+    type Event = TextInputHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::TextInput(self.clone())
+    }
+
+    /// One row per buffer line plus the two border rows, and — as a
+    /// width — the longest line plus the border/padding inset
+    /// [`TextInput::layout`] reserves on both sides.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let char_w = ctx.char_width.max(1.0);
+        let row_h = ctx.line_height.max(1.0);
+        // One border cell/pixel on each edge, the same inset
+        // `TextInput::layout` reserves — a terminal row and a pixel
+        // surface both spend exactly one unit on it.
+        let border = 1.0;
+        let longest = self
+            .lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0) as f32;
+        let width = (longest * char_w + content_x_inset(char_w) * 2.0).min(avail.width);
+        let height = self.lines.len().max(1) as f32 * row_h + border * 2.0;
+        crate::NaturalSize::new(Some(width), Some(height))
+    }
+
+    /// `rect` is the input's own box. On a cell grid the layout comes
+    /// from [`cell_layout`]; on a pixel surface from
+    /// [`TextInput::layout`] with the backend's own line height and
+    /// character advance.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextInputPrimitiveLayout {
+        let (layout, char_width) = match ctx.units() {
+            crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0),
+            _ => (
+                self.layout(rect, TextInputMeasure::new(ctx.line_height, ctx.char_width)),
+                ctx.char_width.max(1.0),
+            ),
+        };
+        TextInputPrimitiveLayout {
+            area: rect,
+            layout,
+            char_width,
+        }
+    }
+
+    /// The shared pixel painter — the same one every pixel backend's
+    /// `draw_text_input` routes through.
+    fn paint(
+        &self,
+        layout: &TextInputPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(self, &layout.layout, surface, theme, style);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_text_input`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`. That
+    /// entry point re-resolves the layout from the same area through the
+    /// same [`cell_layout`] this `Primitive` laid out with, so the glyphs
+    /// land exactly where `layout` says they do.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &TextInputPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = layout.area;
+        crate::tui::draw_text_input(
+            buf,
+            ratatui::layout::Rect::new(
+                area.x as u16,
+                area.y as u16,
+                area.width as u16,
+                area.height as u16,
+            ),
+            self,
+            theme,
+        );
+    }
+}
+
+/// [`crate::interactive::Interactive::State`] for [`TextInput`]: the
+/// caret and selection anchor this widget's own key handling moves.
+///
+/// # Why the caret lives here
+///
+/// A widget descriptor is rebuilt from the app's own fields every frame
+/// (see [`crate::widget_state`]'s module doc), so `TextInput`'s
+/// `cursor_line`/`cursor_col` fields are whatever the *app* last set.
+/// The caret a run of keystrokes walks is interaction state, which is
+/// exactly what this type is for: [`Self::caret`] is seeded from the
+/// descriptor on [`crate::interactive::RoutedEvent::FocusIn`] and from
+/// the hit-tested position on a click, then owned by this widget until
+/// focus leaves. Content changes are reported to the app as
+/// [`TextInputAction::Changed`]; the app owns the buffer.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextInputState {
+    /// The caret this widget's own editing has moved to, or `None` while
+    /// it still follows the descriptor's own
+    /// `cursor_line`/`cursor_col`.
+    pub caret: Option<(usize, usize)>,
+    /// The selection's fixed end, if a selection is active —
+    /// `TextInput` itself carries no field for this, by design (see that
+    /// type's doc).
+    pub anchor: Option<(usize, usize)>,
+}
+
+/// What a [`TextInput`]'s own [`crate::interactive::Interactive::handle`]
+/// resolves one gesture to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextInputAction {
+    /// The buffer changed. Carries the whole new text, lines joined with
+    /// `'\n'` — the shape
+    /// [`crate::primitives::form::FormEvent::TextInputChanged`] already
+    /// names, so an app routes a standalone input through the handler it
+    /// already has for a `Form` row.
+    Changed(String),
+    /// Ctrl-C (or the copy half of Ctrl-X) put the selection on the
+    /// clipboard.
+    Copied(String),
+}
+
+impl crate::interactive::WidgetAction for TextInputAction {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            TextInputAction::Changed(value) => crate::UiEvent::Form(
+                id,
+                crate::primitives::form::FormEvent::TextInputChanged { id, value },
+            ),
+            TextInputAction::Copied(text) => crate::UiEvent::TextCopied(text),
+        }
+    }
+}
+
+impl TextInput {
+    /// The caret one `handle` call starts from: whatever this widget's
+    /// own state has walked to, else the descriptor's own cursor —
+    /// clamped into the buffer either way.
+    fn effective_caret(&self, state: &TextInputState) -> (usize, usize) {
+        let (line, col) = state.caret.unwrap_or((self.cursor_line, self.cursor_col));
+        let line = line.min(self.lines.len().saturating_sub(1));
+        let col = col.min(self.lines.get(line).map_or(0, |l| l.chars().count()));
+        (line, col)
+    }
+
+    /// Apply one [`EditOp`] against the descriptor's buffer and the
+    /// caret/anchor in `state`, writing the resulting caret back into
+    /// `state`.
+    ///
+    /// Returns the new buffer text when content changed, `None` when the
+    /// op only moved the caret or the selection.
+    fn apply_op(&self, state: &mut TextInputState, op: &EditOp) -> Option<String> {
+        let mut lines = if self.lines.is_empty() {
+            vec![String::new()]
+        } else {
+            self.lines.clone()
+        };
+        let (mut line, mut col) = self.effective_caret(state);
+        let mut anchor = state.anchor;
+        let changed = text_edit::EditView {
+            lines: &mut lines,
+            cursor_line: &mut line,
+            cursor_col: &mut col,
+            anchor: &mut anchor,
+        }
+        .apply(op);
+        state.caret = Some((line, col));
+        state.anchor = anchor;
+        if changed && lines != self.lines {
+            Some(lines.join("\n"))
+        } else {
+            None
+        }
+    }
+
+    /// The selected text, as [`text_edit::EditView::selected_text`]
+    /// resolves it against this descriptor's buffer and `state`'s
+    /// caret/anchor.
+    fn selection_text(&self, state: &TextInputState) -> Option<String> {
+        let (start, end) = text_edit::selection_range(self.effective_caret(state), state.anchor)?;
+        Some(text_edit::text_in_range(&self.lines, start, end))
+    }
+}
+
+impl crate::interactive::Interactive for TextInput {
+    type State = TextInputState;
+    type Action = TextInputAction;
+
+    /// One focus stop as a whole: a multi-line input routes every
+    /// keystroke itself rather than declaring a stop per line.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// One region per visible text row, keyed by its buffer line index,
+    /// translated into the widget-local space this method answers in.
+    fn sub_regions(
+        &self,
+        layout: &TextInputPrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let (ox, oy) = (layout.area.x, layout.area.y);
+        layout
+            .layout
+            .visible_lines
+            .iter()
+            .map(|vis| {
+                (
+                    Rect::new(
+                        vis.bounds.x - ox,
+                        vis.bounds.y - oy,
+                        vis.bounds.width,
+                        vis.bounds.height,
+                    ),
+                    crate::interactive::SubTarget(vis.line_idx as u64),
+                )
+            })
+            .collect()
+    }
+
+    /// A screen reader can focus the input and replace its whole value
+    /// ([`crate::a11y::A11yAction::SetValue`] — see
+    /// [`crate::a11y::A11yActionValue::Text`]).
+    fn a11y_actions(&self, _state: &TextInputState) -> Vec<crate::a11y::A11yAction> {
+        vec![
+            crate::a11y::A11yAction::Focus,
+            crate::a11y::A11yAction::SetValue,
+        ]
+    }
+
+    /// Keystrokes go through [`EditOp::from_key`] and the shared
+    /// [`text_edit::EditView`] mutator, so this widget and
+    /// [`TextEditor`] can never disagree about what a key means.
+    /// Ctrl-A selects all, Ctrl-C copies the selection, Ctrl-X cuts it
+    /// (emitting [`crate::UiEvent::TextCopied`] alongside the change),
+    /// and committed IME text inserts verbatim. A left click moves the
+    /// caret to the clicked column and takes focus; a shift-click
+    /// extends the selection to it.
+    fn handle(
+        &self,
+        state: &mut TextInputState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &TextInputPrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TextInputAction> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+
+        match event {
+            RoutedEvent::Key(key) => self.handle_key(state, &key.key, key.modifiers, cx),
+            RoutedEvent::Text(text) => self.commit(state, &EditOp::InsertText(text.clone()), cx),
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                local,
+                mods,
+                ..
+            } => {
+                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                match layout.caret_at(x, y) {
+                    Some((line, col)) => {
+                        cx.request_focus(None);
+                        self.commit(
+                            state,
+                            &EditOp::SetCursor {
+                                line,
+                                col,
+                                extend: mods.shift,
+                            },
+                            cx,
+                        )
+                    }
+                    None => {
+                        cx.request_focus(None);
+                        Handled::Consumed
+                    }
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                local,
+                ..
+            } => {
+                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                cx.set_cursor(layout.layout.pointer_shape(x, y));
+                Handled::Ignored
+            }
+            RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
+                cx.request_focus(None);
+                Handled::Consumed
+            }
+            RoutedEvent::FocusIn(_) => {
+                // Re-seed from the descriptor: the app may have moved the
+                // caret while this input was unfocused.
+                state.caret = Some((self.cursor_line, self.cursor_col));
+                state.anchor = None;
+                Handled::Consumed
+            }
+            RoutedEvent::FocusOut => {
+                state.caret = None;
+                state.anchor = None;
+                Handled::Consumed
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+impl TextInput {
+    /// One keystroke, with the Ctrl-chorded clipboard/select-all keys
+    /// claimed ahead of [`EditOp::from_key`] (which would otherwise read
+    /// `Ctrl+A` as typing an `a`).
+    fn handle_key(
+        &self,
+        state: &mut TextInputState,
+        key: &crate::event::Key,
+        modifiers: crate::types::Modifiers,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TextInputAction> {
+        use crate::event::Key;
+
+        if modifiers.ctrl || modifiers.cmd {
+            match key {
+                Key::Char('a') | Key::Char('A') => {
+                    return self.commit(state, &EditOp::SelectAll, cx);
+                }
+                Key::Char('c') | Key::Char('C') => {
+                    return match self.selection_text(state) {
+                        Some(text) => Handled::Event(TextInputAction::Copied(text)),
+                        None => Handled::Consumed,
+                    };
+                }
+                Key::Char('x') | Key::Char('X') => {
+                    return match self.selection_text(state) {
+                        Some(text) => {
+                            cx.emit(crate::UiEvent::TextCopied(text));
+                            self.commit(state, &EditOp::DeleteSelection, cx)
+                        }
+                        None => Handled::Consumed,
+                    };
+                }
+                // Paste is the host's: the clipboard text arrives as
+                // `UiEvent::ClipboardPaste`, which a host feeds back in
+                // as `RoutedEvent::Text`.
+                Key::Char('v') | Key::Char('V') => return Handled::Ignored,
+                _ => {}
+            }
+        }
+        match EditOp::from_key(key, modifiers) {
+            Some(op) => self.commit(state, &op, cx),
+            None => Handled::Ignored,
+        }
+    }
+
+    /// Apply `op` and report it: a content change as
+    /// [`TextInputAction::Changed`], a caret-only move as
+    /// [`Handled::Consumed`] plus a redraw request.
+    fn commit(
+        &self,
+        state: &mut TextInputState,
+        op: &EditOp,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TextInputAction> {
+        match self.apply_op(state, op) {
+            Some(value) => Handled::Event(TextInputAction::Changed(value)),
+            None => {
+                cx.request_redraw();
+                Handled::Consumed
+            }
+        }
+    }
+}
+
+/// Routes a headless `TuiDriver` test can't reach: the
+/// assistive-technology action path, a host-driven focus transition, the
+/// widget-local `sub_regions` translation, and word motion.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::event::{Key, MouseButton, NamedKey, Point};
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::types::Modifiers;
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock — the same shape every other widget
+    /// module's own `Interactive` tests use.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+        emitted: Vec<crate::UiEvent>,
+        cursors: Vec<PointerShape>,
+        redraws: usize,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, cursor: PointerShape) {
+            self.cursors.push(cursor);
+        }
+        fn request_redraw(&mut self) {
+            self.redraws += 1;
+        }
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn sample(lines: &[&str]) -> TextInput {
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.lines = lines.iter().map(|l| l.to_string()).collect();
+        ti.has_focus = true;
+        ti
+    }
+
+    fn area() -> Rect {
+        Rect::new(0.0, 0.0, 20.0, 5.0)
+    }
+
+    fn layout_of(ti: &TextInput) -> TextInputPrimitiveLayout {
+        Primitive::layout(ti, &LayoutCtx::new(1.0, 1.0, false), area())
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        })
+    }
+
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_text_input_is_one_focus_stop() {
+        assert_eq!(Interactive::focus(&sample(&["a"])), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn sub_regions_name_each_visible_row_in_widget_local_space() {
+        let ti = sample(&["alpha", "beta"]);
+        let layout = layout_of(&ti);
+        let regions = Interactive::sub_regions(&ti, &layout);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].1, SubTarget(0));
+        assert_eq!(regions[1].1, SubTarget(1));
+        // Local space: the first row sits one border row down and one
+        // border + one pad column in, never at the absolute origin.
+        assert_eq!((regions[0].0.x, regions[0].0.y), (2.0, 1.0));
+    }
+
+    #[test]
+    fn an_a11y_focus_action_requests_focus_on_the_widget_itself() {
+        let ti = sample(&["a"]);
+        let layout = layout_of(&ti);
+        let mut host = MockHost::default();
+        let mut state = TextInputState::default();
+        let mut cx = EventCx::new(ti.id, &mut host);
+        let handled = Interactive::handle(
+            &ti,
+            &mut state,
+            &RoutedEvent::Action(A11yAction::Focus),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn focus_in_seeds_the_caret_from_the_descriptor_and_focus_out_releases_it() {
+        let mut ti = sample(&["alpha"]);
+        ti.cursor_col = 3;
+        let layout = layout_of(&ti);
+        let mut host = MockHost::default();
+        let mut state = TextInputState {
+            caret: Some((0, 0)),
+            anchor: Some((0, 1)),
+        };
+        let mut cx = EventCx::new(ti.id, &mut host);
+        Interactive::handle(
+            &ti,
+            &mut state,
+            &RoutedEvent::FocusIn(None),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.caret, Some((0, 3)));
+        assert_eq!(state.anchor, None);
+
+        Interactive::handle(&ti, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx);
+        assert_eq!(state.caret, None);
+    }
+
+    #[test]
+    fn ctrl_right_moves_the_caret_a_whole_word() {
+        let ti = sample(&["foo_bar baz"]);
+        let layout = layout_of(&ti);
+        let mut host = MockHost::default();
+        let mut state = TextInputState::default();
+        let mut cx = EventCx::new(ti.id, &mut host);
+        let handled = Interactive::handle(
+            &ti,
+            &mut state,
+            &key(Key::Named(NamedKey::Right), ctrl()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(state.caret, Some((0, 7)));
+        assert_eq!(host.redraws, 1);
+    }
+
+    #[test]
+    fn ctrl_backspace_deletes_the_word_before_the_caret() {
+        let mut ti = sample(&["let foo_bar"]);
+        ti.cursor_col = 11;
+        let layout = layout_of(&ti);
+        let mut host = MockHost::default();
+        let mut state = TextInputState::default();
+        let mut cx = EventCx::new(ti.id, &mut host);
+        let handled = Interactive::handle(
+            &ti,
+            &mut state,
+            &key(Key::Named(NamedKey::Backspace), ctrl()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(TextInputAction::Changed("let ".into()))
+        );
+    }
+
+    #[test]
+    fn committed_ime_text_inserts_verbatim() {
+        let ti = sample(&[""]);
+        let layout = layout_of(&ti);
+        let mut host = MockHost::default();
+        let mut state = TextInputState::default();
+        let mut cx = EventCx::new(ti.id, &mut host);
+        let handled = Interactive::handle(
+            &ti,
+            &mut state,
+            &RoutedEvent::Text("日本".into()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(TextInputAction::Changed("日本".into()))
+        );
+    }
+
+    #[test]
+    fn a_shift_click_extends_the_selection_to_the_clicked_column() {
+        let ti = sample(&["alpha"]);
+        let layout = layout_of(&ti);
+        let mut host = MockHost::default();
+        let mut state = TextInputState::default();
+        let mut cx = EventCx::new(ti.id, &mut host);
+        // Park the caret at column 1 with a plain click first.
+        Interactive::handle(
+            &ti,
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(3.0, 1.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.caret, Some((0, 1)));
+        assert_eq!(state.anchor, None);
+
+        Interactive::handle(
+            &ti,
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(6.0, 1.0),
+                mods: Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            },
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.caret, Some((0, 4)));
+        assert_eq!(state.anchor, Some((0, 1)));
+    }
+
+    #[test]
+    fn a_pointer_move_over_the_text_asks_for_an_i_beam() {
+        let ti = sample(&["alpha"]);
+        let layout = layout_of(&ti);
+        let mut host = MockHost::default();
+        let mut state = TextInputState::default();
+        let mut cx = EventCx::new(ti.id, &mut host);
+        Interactive::handle(
+            &ti,
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                sub: None,
+                local: Point::new(3.0, 1.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(host.cursors, vec![PointerShape::Text]);
+    }
+
+    #[test]
+    fn a_pixel_layout_measures_its_caret_column_with_the_backends_char_width() {
+        let ti = sample(&["alpha"]);
+        let layout = Primitive::layout(
+            &ti,
+            &LayoutCtx::new(16.0, 8.0, false),
+            Rect::new(0.0, 0.0, 200.0, 48.0),
+        );
+        assert_eq!(layout.char_width, 8.0);
+        // Three char advances into the content column resolves to column 3.
+        let x = layout.layout.content_bounds.x + 8.0 * 3.0;
+        assert_eq!(
+            layout.caret_at(x, layout.layout.content_bounds.y + 1.0),
+            Some((0, 3))
+        );
+    }
+
+    #[test]
+    fn measure_reports_a_row_per_line_plus_the_two_border_rows() {
+        let ti = sample(&["alpha", "beta", "gamma"]);
+        let size = Primitive::measure(
+            &ti,
+            &LayoutCtx::new(1.0, 1.0, false),
+            crate::primitive::Size::new(40.0, 40.0),
+        );
+        assert_eq!(size.height, Some(5.0));
+        assert_eq!(size.width, Some(9.0));
+    }
+}
+
+/// Cell-grid paint tests for [`cell_paint`], driven through
+/// [`crate::tui::draw_text_input`] — the delegate that owns the
+/// `Buffer` → [`crate::CellSurface`] adapter the painter needs.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use crate::event::Point;
+    use crate::primitives::text_input::{TextInput, TextInputHit};
+    use crate::theme::Theme;
+    use crate::tui::draw_text_input;
+    use crate::types::{Color, WidgetId};
+
+    /// The ratatui colour `crate::tui`'s own cell writers land for a
+    /// quadraui [`Color`] — spelled here because that crate-private
+    /// conversion isn't reachable from a widget module.
+    fn qc(c: Color) -> ratatui::style::Color {
+        ratatui::style::Color::Rgb(c.r, c.g, c.b)
+    }
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn mk_input(lines: Vec<&str>) -> TextInput {
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.lines = lines.into_iter().map(String::from).collect();
+        ti.has_focus = true;
+        ti
+    }
+
+    // Parametrized over the area's origin: layout helpers must return
+    // coords in the same frame across backends. `tui_text_input_layout`
+    // bakes `rect.x`/`rect.y` straight into `ti.layout`'s returned bounds
+    // (absolute frame: `TextInput::layout` computes
+    // `content_x = rect.x + border + pad_x`), so this test verifies a full
+    // paint+hit_test round trip at a non-zero origin.
+    fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let rect = Rect::new(origin_x, origin_y, 10, 4);
+        let mut buf = Buffer::empty(rect);
+        let ti = mk_input(vec!["hello"]);
+        let layout = draw_text_input(&mut buf, rect, &ti, &Theme::default());
+
+        // Border top-left corner paints at the absolute origin.
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '┌');
+
+        // Content starts after the 1-cell border + 1-char horizontal
+        // padding, at the absolute screen position.
+        let content_x = origin_x + 2;
+        let content_y = origin_y + 1;
+        assert_eq!(cell_char(&buf, content_x, content_y), 'h');
+
+        // hit_test: a click at the first content cell (absolute coords)
+        // should resolve to the (only) visible line.
+        let p = Point::new(content_x as f32 + 0.5, content_y as f32 + 0.5);
+        let hit = layout
+            .hit_regions
+            .iter()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, h)| h.clone());
+        assert_eq!(hit, Some(TextInputHit::Line { line_idx: 0 }));
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Paint and hit-test must work correctly when the input is not at the
+    /// screen origin.
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// TUI's focus treatment for a `TextInput`: the border tints to
+    /// `theme.accent_fg` while `has_focus` is `true`, and back to
+    /// `theme.border_fg` while it's `false`. This is the "existing
+    /// treatment" the primitive's focus-ring seam defers to rather than
+    /// adding a TUI-side ring stroke.
+    #[test]
+    fn border_tints_to_accent_when_focused_and_back_when_not() {
+        let theme = Theme::default();
+        let rect = Rect::new(0, 0, 10, 4);
+
+        let mut focused = mk_input(vec!["hi"]);
+        focused.has_focus = true;
+        let mut buf_focused = Buffer::empty(rect);
+        draw_text_input(&mut buf_focused, rect, &focused, &theme);
+
+        let mut unfocused = mk_input(vec!["hi"]);
+        unfocused.has_focus = false;
+        let mut buf_unfocused = Buffer::empty(rect);
+        draw_text_input(&mut buf_unfocused, rect, &unfocused, &theme);
+
+        // Sample the top border edge (not a corner, not content) in both
+        // buffers.
+        let focused_border_fg = buf_focused[(1, 0)].fg;
+        let unfocused_border_fg = buf_unfocused[(1, 0)].fg;
+
+        assert_eq!(focused_border_fg, qc(theme.accent_fg));
+        assert_eq!(unfocused_border_fg, qc(theme.border_fg));
+        assert_ne!(
+            focused_border_fg, unfocused_border_fg,
+            "focus must change the painted border colour"
+        );
+    }
+
+    /// A headless, end-to-end proof that [`draw_text_input`]'s border-tint
+    /// treatment (above) reflects [`crate::focus::FocusTree`]'s real
+    /// Tab-vs-click `:focus-visible` convention — composed as
+    /// `tree.is_focused(id, None) && tree.is_focus_visible()`, the bool a
+    /// host assigns to [`TextInput::has_focus`] — not just a literal
+    /// `true`/`false` this test assigns itself.
+    #[test]
+    fn focused_text_input_paints_a_different_border_after_tab_than_after_click() {
+        use crate::focus::FocusTree;
+
+        let id = WidgetId::new("search:input");
+        let mut tree = FocusTree::new();
+        tree.sync_tab_order(&[(id, crate::event::Rect::new(0.0, 0.0, 0.0, 0.0))]);
+        let mut input = mk_input(vec!["hi"]);
+        let theme = Theme::default();
+        let rect = Rect::new(0, 0, 10, 3);
+        // Sample the top border edge, not a corner (paints the same
+        // colour) and not the content row.
+        let border_fg = |buf: &Buffer| buf[(1, 0)].fg;
+
+        // Tab: `focus_next()` is the real keyboard-move path, not just
+        // construction's initial state.
+        tree.focus_next();
+        input.has_focus = tree.is_focused(&id, None) && tree.is_focus_visible();
+        assert!(
+            input.has_focus,
+            "a Tab-reached text input must report focus-visible"
+        );
+        let mut buf_tab = Buffer::empty(rect);
+        draw_text_input(&mut buf_tab, rect, &input, &theme);
+
+        // Click: `set_focus` re-focuses the same widget via the pointer path.
+        tree.set_focus(Some((id, None)));
+        input.has_focus = tree.is_focused(&id, None) && tree.is_focus_visible();
+        assert!(
+            tree.is_focused(&id, None),
+            "the click did move focus to this input"
+        );
+        assert!(
+            !input.has_focus,
+            "a mouse click must suppress the text input's focus-visible ring"
+        );
+        let mut buf_click = Buffer::empty(rect);
+        draw_text_input(&mut buf_click, rect, &input, &theme);
+
+        assert_ne!(
+            border_fg(&buf_tab),
+            border_fg(&buf_click),
+            "the painted border colour must differ between the Tab-reached \
+             and clicked states"
+        );
+
+        // Shift+Tab afterwards restores both the composed bool and the
+        // painted border.
+        tree.focus_prev();
+        input.has_focus = tree.is_focused(&id, None) && tree.is_focus_visible();
+        assert!(
+            input.has_focus,
+            "a subsequent keyboard move restores focus-visible"
+        );
+        let mut buf_retreat = Buffer::empty(rect);
+        draw_text_input(&mut buf_retreat, rect, &input, &theme);
+        assert_eq!(
+            border_fg(&buf_tab),
+            border_fg(&buf_retreat),
+            "Shift+Tab repaints the same focus-visible border Tab did"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
