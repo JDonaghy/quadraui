@@ -1994,8 +1994,8 @@ mod cell_paint_tests {
         assert!(found_check, "expected default '✓' check glyph");
         assert!(found_arrow, "expected default '▶' submenu arrow");
 
-        // Override: the app's own glyphs replace the defaults, and the
-        // defaults no longer appear anywhere in the buffer.
+        // Override: the app's own glyphs replace the defaults, which
+        // then appear nowhere in the buffer.
         let glyphs = ContextMenuGlyphs::new()
             .with_checked_glyph("+")
             .with_submenu_arrow_glyph(">");
