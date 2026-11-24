@@ -200,6 +200,88 @@ pub trait CellSurface {
     }
 }
 
+/// A [`CellStyle`] that names both colours and no modifiers — the style
+/// almost every cell painter's plain glyph wants.
+///
+/// `#[cfg(feature = "tui")]`: every caller is a widget's `cell_paint`
+/// module, and TUI is the only backend with a cell grid to paint onto.
+#[cfg(feature = "tui")]
+pub(crate) fn solid_style(fg: Color, bg: Color) -> CellStyle {
+    CellStyle {
+        fg: Some(fg),
+        bg: Some(bg),
+        ..CellStyle::default()
+    }
+}
+
+/// Write `text` on `rect`'s first row, clipped to `rect`'s width — the
+/// cell-grid counterpart of
+/// [`crate::PaintSurface::surface_draw_text_run`] for a single-line
+/// control.
+///
+/// `#[cfg(feature = "tui")]` for the same reason [`solid_style`] is.
+#[cfg(feature = "tui")]
+pub(crate) fn draw_text_row(
+    surface: &mut dyn CellSurface,
+    rect: Rect,
+    text: &str,
+    style: CellStyle,
+) {
+    let x0 = rect.x.round() as u16;
+    let y0 = rect.y.round() as u16;
+    let w = rect.width.round() as u16;
+    surface.put_str_clipped(x0, y0, text, w, style);
+}
+
+/// Stroke a single-cell `┌─┐│└─┘` frame around `rect`, degrading
+/// gracefully when `rect` is too small for a real box: a one-row rect
+/// gets `┌─┐`, a one-column rect gets the left edge's glyphs, and a 1×1
+/// rect gets `┌`.
+///
+/// Not [`CellSurface::draw_border`]: that verb paints nothing under 2×2
+/// cells, which is exactly the size an input field's chrome collapses to
+/// on a cell grid — a single-row [`crate::ComboBox`] field, a
+/// [`crate::NumberInput`] stepper cell on a two-row control — and the
+/// frame is the affordance that makes those read as controls at all.
+/// Lives here rather than in either widget so the two cell painters
+/// share one frame routine.
+///
+/// `#[cfg(feature = "tui")]` for the same reason [`solid_style`] is.
+#[cfg(feature = "tui")]
+pub(crate) fn stroke_square_frame(surface: &mut dyn CellSurface, rect: Rect, style: CellStyle) {
+    let x0 = rect.x.round() as u16;
+    let y0 = rect.y.round() as u16;
+    let w = rect.width.round() as u16;
+    let h = rect.height.round() as u16;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let x1 = x0 + w.saturating_sub(1);
+    let y1 = y0 + h.saturating_sub(1);
+    for x in x0..=x1 {
+        surface.put_char(x, y0, '─', style);
+        if y1 != y0 {
+            surface.put_char(x, y1, '─', style);
+        }
+    }
+    for y in y0..=y1 {
+        surface.put_char(x0, y, '│', style);
+        if x1 != x0 {
+            surface.put_char(x1, y, '│', style);
+        }
+    }
+    surface.put_char(x0, y0, '┌', style);
+    if x1 != x0 {
+        surface.put_char(x1, y0, '┐', style);
+    }
+    if y1 != y0 {
+        surface.put_char(x0, y1, '└', style);
+        if x1 != x0 {
+            surface.put_char(x1, y1, '┘', style);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

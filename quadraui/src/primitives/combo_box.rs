@@ -1,9 +1,13 @@
 //! `ComboBox` primitive: a free-text field backed by a fixed list of
 //! options, with a type-ahead filtered dropdown — layout, hit-test,
-//! keyboard handling and validation/commit/cancel events. Shared logic
-//! only; no backend painter lives here (see `docs/PRIMITIVE_RULES.md`'s
-//! cross-backend commitment — a rasteriser follows in a later,
-//! backend-scoped issue).
+//! keyboard handling, validation/commit/cancel events, and both
+//! rasterisers.
+//!
+//! The whole widget contract lives here: [`Primitive`] resolves the
+//! layout and paints it ([`native_surface_paint`] on a pixel surface,
+//! [`cell_paint`] on a cell grid), and [`Interactive`] answers pointer,
+//! keyboard and assistive-technology input. A host reaches all of it
+//! type-erased through [`crate::frame::Surface::Widget`].
 //!
 //! Additive alongside [`crate::TextInput`], which is untouched — a
 //! `ComboBox` isn't a `TextInput` with a dropdown bolted on, it's its
@@ -51,14 +55,20 @@
 //! [`crate::Switch::click`]'s "a pointer click doesn't require prior
 //! keyboard focus" contract.
 
+use crate::a11y::A11yAction;
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::behaviour::typeahead::Typeahead;
 use crate::event::{Key, NamedKey, Point, Rect};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+};
+use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::primitives::completions::{
     CompletionItem, CompletionItemMeasure, CompletionKind, Completions, CompletionsHit,
     CompletionsLayout,
 };
 use crate::types::{Modifiers, StyledText, WidgetId};
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of an editable combo box: free text plus a
@@ -371,6 +381,501 @@ pub enum ComboBoxEvent {
     HighlightChanged { id: WidgetId, index: usize },
     Committed { id: WidgetId, value: String },
     Cancelled { id: WidgetId },
+}
+
+impl WidgetAction for ComboBoxEvent {
+    /// Every outcome rides [`crate::UiEvent::Form`] under the box's own
+    /// id: [`crate::FormEvent`]'s four `ComboBox*` variants name exactly
+    /// this primitive's four outcomes, one for one, with the same
+    /// "typing fires every keystroke, Enter fires once" split. A
+    /// standalone `ComboBox` therefore reaches an app through the same
+    /// event vocabulary an embedded one does, and the apply contract
+    /// each variant documents — `TextChanged` also sets `open = true`,
+    /// `Cancelled` reverts `text` to `committed` and closes — is the
+    /// same on both paths.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        let event = match self {
+            ComboBoxEvent::TextChanged { id, text } => {
+                crate::FormEvent::ComboBoxTextChanged { id, value: text }
+            }
+            ComboBoxEvent::HighlightChanged { id, index } => {
+                crate::FormEvent::ComboBoxHighlightChanged { id, index }
+            }
+            ComboBoxEvent::Committed { id, value } => {
+                crate::FormEvent::ComboBoxCommitted { id, value }
+            }
+            ComboBoxEvent::Cancelled { id } => crate::FormEvent::ComboBoxCancelled { id },
+        };
+        crate::UiEvent::Form(id, event)
+    }
+}
+
+/// [`ComboBox`]'s fully-resolved widget-contract layout: the absolute
+/// `area` the box was laid out in, the row pitch its field and dropdown
+/// rows were resolved at, and the box-local [`ComboBoxLayout`] itself.
+///
+/// `#[non_exhaustive]`: produced by [`Primitive::layout`], never built by
+/// a consumer via struct literal — the same convention
+/// [`ComboBoxLayout`] itself follows.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ComboBoxPrimitiveLayout {
+    /// The rect [`Primitive::layout`] was called with: the field on its
+    /// first row, and the room the open dropdown drops into below.
+    pub area: Rect,
+    /// Row pitch the field and every dropdown row were resolved at, from
+    /// [`crate::LayoutCtx::line_height`].
+    pub row_height: f32,
+    /// The resolved box layout. Its `field_bounds`/`dropdown` are in the
+    /// same absolute space as [`Self::area`].
+    pub layout: ComboBoxLayout,
+}
+
+impl ComboBoxPrimitiveLayout {
+    /// Hit-test at a position relative to [`Self::area`]'s own origin —
+    /// the space [`RoutedEvent::Pointer`]'s `local` field uses.
+    pub fn hit_test_local(&self, x: f32, y: f32) -> ComboBoxHit {
+        self.layout
+            .hit_test(Point::new(self.area.x + x, self.area.y + y))
+    }
+}
+
+impl ComboBox {
+    /// The widest option's own content, in the units `ctx` measures in.
+    fn widest_option(&self, ctx: &LayoutCtx) -> f32 {
+        let cells = matches!(ctx.units(), Units::Cells);
+        self.options
+            .iter()
+            .map(|option| {
+                if cells {
+                    crate::text_util::display_width(option) as f32
+                } else {
+                    ctx.text_width(option, crate::FontRole::Chrome)
+                }
+            })
+            .fold(0.0_f32, f32::max)
+    }
+}
+
+impl Primitive for ComboBox {
+    type Layout = ComboBoxPrimitiveLayout;
+    type Event = ComboBoxEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// The widest option plus the chrome a dropdown row frames it with,
+    /// and one row for the field plus one per currently-filtered option
+    /// while [`ComboBox::open`] — so a container that sizes this box to
+    /// its content leaves the dropdown somewhere to drop into.
+    fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
+        let cells = matches!(ctx.units(), Units::Cells);
+        // Two side borders plus the one-column pad a dropdown row insets
+        // its label by.
+        let chrome = if cells { 3.0 } else { 3.0 * ctx.char_width };
+        let rows = if self.open {
+            1.0 + self.filtered_indices().len() as f32
+        } else {
+            1.0
+        };
+        crate::NaturalSize::new(
+            Some(self.widest_option(ctx) + chrome),
+            Some(rows * ctx.line_height),
+        )
+    }
+
+    /// `rect` is the whole box: the field occupies its first row and the
+    /// open dropdown drops into the rest, clipped to `rect` as its own
+    /// viewport. Placement itself is
+    /// [`crate::Completions`]'s algorithm, reached through
+    /// [`ComboBox::layout`] — the dropdown flips above the field when
+    /// the room below it runs out, exactly as it does on the legacy
+    /// `Backend::draw_combo_box` path.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> ComboBoxPrimitiveLayout {
+        let row_height = if ctx.line_height > 0.0 {
+            ctx.line_height
+        } else {
+            1.0
+        };
+        let field_height = row_height.min(rect.height);
+        let field_bounds = Rect::new(rect.x, rect.y, rect.width, field_height);
+        let max_popup_height = (rect.height - field_height).max(0.0);
+        let layout = self.layout(field_bounds, rect, rect.width, max_popup_height, |_| {
+            CompletionItemMeasure::new(row_height)
+        });
+        ComboBoxPrimitiveLayout {
+            area: rect,
+            row_height,
+            layout,
+        }
+    }
+
+    /// The shared pixel painter — the same
+    /// [`native_surface_paint::paint`] every pixel backend's
+    /// `draw_combo_box` wrapper calls.
+    fn paint(
+        &self,
+        layout: &ComboBoxPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(self, &layout.layout, surface, theme);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_combo_box`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &ComboBoxPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_combo_box(buf, self, &layout.layout, theme);
+    }
+}
+
+/// [`ComboBox`]'s own interaction state: the debounced typeahead buffer
+/// that lets a few quick keystrokes jump the dropdown highlight to the
+/// best prefix match, plus the monotonic origin its 500ms debounce
+/// window is measured from.
+///
+/// Everything else a `ComboBox` renders — `text`, `committed`, `open`,
+/// `highlighted` — lives on the descriptor, which the host updates from
+/// [`ComboBoxEvent`]; only the keystroke *timing* can't, since it is not
+/// something a frame paints.
+#[derive(Debug, Default)]
+pub struct ComboBoxState {
+    typeahead: Typeahead,
+    origin: Option<std::time::Instant>,
+}
+
+impl ComboBoxState {
+    /// Milliseconds since this state's first keystroke — the clock
+    /// [`Typeahead::push`]'s debounce window reads. Seeded on first use,
+    /// so a state that never sees a keystroke never reads a clock.
+    fn now_ms(&mut self) -> u64 {
+        let origin = *self.origin.get_or_insert_with(std::time::Instant::now);
+        origin.elapsed().as_millis() as u64
+    }
+}
+
+impl ComboBox {
+    /// This box with `text` replaced — the post-edit box a typed
+    /// character's own typeahead jump resolves against, so the
+    /// highlighted index names a row of the filter the host is about to
+    /// apply rather than the one being replaced.
+    fn with_text(&self, text: String) -> ComboBox {
+        let mut next = self.clone();
+        next.text = text;
+        next
+    }
+
+    /// Ask the host to show the dropdown.
+    ///
+    /// [`ComboBoxEvent::TextChanged`] carries no edit here — the text is
+    /// the box's own, unchanged — because its documented apply contract
+    /// is exactly "set `text`, and set `open = true`", which is the whole
+    /// of what opening needs. There is no second "open" event to add
+    /// alongside the four this primitive already has, and reusing this
+    /// one keeps the standalone box and a `Form` row applying the same
+    /// vocabulary.
+    fn open_request(&self) -> Handled<ComboBoxEvent> {
+        Handled::Event(ComboBoxEvent::TextChanged {
+            id: self.id,
+            text: self.text.clone(),
+        })
+    }
+}
+
+impl Interactive for ComboBox {
+    type State = ComboBoxState;
+    type Action = ComboBoxEvent;
+
+    /// One focus stop as a whole — the box navigates its dropdown
+    /// internally through [`Self::handle`]'s own key dispatch rather
+    /// than declaring a stop per option. [`FocusSpec::None`] while
+    /// [`ComboBox::disabled`], matching the "disabled means inert, not
+    /// hidden" contract every method here follows.
+    fn focus(&self) -> FocusSpec {
+        if self.disabled {
+            FocusSpec::None
+        } else {
+            FocusSpec::Stop
+        }
+    }
+
+    fn handle(
+        &self,
+        state: &mut ComboBoxState,
+        event: &RoutedEvent,
+        layout: &ComboBoxPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ComboBoxEvent> {
+        if self.disabled {
+            return Handled::Ignored;
+        }
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                local,
+                ..
+            } => match layout.hit_test_local(local.x, local.y) {
+                // Choosing an option commits it, the same thing Enter
+                // does to the highlighted one.
+                ComboBoxHit::DropdownItem(index) => {
+                    match self.click(ComboBoxHit::DropdownItem(index)) {
+                        Some(event) => Handled::Event(event),
+                        None => Handled::Ignored,
+                    }
+                }
+                // Clicking the field focuses it and drops the list open,
+                // the affordance that makes the closed box look clickable
+                // at all.
+                ComboBoxHit::Field => {
+                    cx.request_focus(None);
+                    if self.open {
+                        Handled::Consumed
+                    } else {
+                        self.open_request()
+                    }
+                }
+                ComboBoxHit::Outside => Handled::Ignored,
+            },
+            RoutedEvent::Key(key) => self.handle_routed_key(state, key, cx),
+            // `A11yAction` names no option through this generic seam, so
+            // `Click` activates whichever option is highlighted — the
+            // same one Enter commits — and opens the list when there is
+            // none, matching the assistive-technology default-action
+            // convention.
+            RoutedEvent::Action(A11yAction::Click) => {
+                if self.open {
+                    Handled::Event(self.commit())
+                } else {
+                    self.open_request()
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+
+    fn a11y_actions(&self, _state: &ComboBoxState) -> Vec<A11yAction> {
+        if self.disabled {
+            Vec::new()
+        } else {
+            vec![A11yAction::Click]
+        }
+    }
+
+    /// One sub-part per visible dropdown option, addressed by its index
+    /// into the *filtered* list, then the field itself — most-specific
+    /// first, so an option that overlaps the field's own row wins.
+    fn sub_regions(&self, layout: &ComboBoxPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        let local =
+            |r: Rect| Rect::new(r.x - layout.area.x, r.y - layout.area.y, r.width, r.height);
+        let mut regions: Vec<(Rect, SubTarget)> = layout
+            .layout
+            .dropdown
+            .iter()
+            .flat_map(|dropdown| dropdown.visible_items.iter())
+            .map(|vis| {
+                (
+                    local(vis.bounds),
+                    SubTarget(SUB_OPTION_BASE + vis.item_idx as u64),
+                )
+            })
+            .collect();
+        regions.push((local(layout.layout.field_bounds), SubTarget(SUB_FIELD)));
+        regions
+    }
+}
+
+/// [`Interactive::sub_regions`]'s tag for the editable field row.
+const SUB_FIELD: u64 = 0;
+/// [`Interactive::sub_regions`]'s tag for dropdown option `n`, offset
+/// past [`SUB_FIELD`] so the field's own tag stays `0`.
+const SUB_OPTION_BASE: u64 = 1;
+
+impl ComboBox {
+    /// [`Interactive::handle`]'s `Key` arm.
+    ///
+    /// Dispatch order mirrors what the keystroke means to a *closed* box
+    /// versus an open one, and everything a key means in both states is
+    /// resolved by the one shared [`ComboBox::handle_key`] so the
+    /// standalone box and a `Form` row can never disagree:
+    ///
+    /// - `Alt+Down` and, while closed, `Down`/`Enter` drop the list open.
+    ///   (`Space`, like every other printable character, types — and
+    ///   [`ComboBoxEvent::TextChanged`]'s apply contract opens the list
+    ///   as a result, so it opens too.)
+    /// - While open, `Up`/`Down` move the highlight through
+    ///   [`crate::behaviour::nav::FlatNav`], `Enter` commits the
+    ///   highlighted option and `Escape` cancels the edit — all of them
+    ///   [`ComboBox::handle_key`]'s own answers.
+    /// - A printable character edits `text` *and* jumps the highlight to
+    ///   the best prefix match in the filter the edit produces, through
+    ///   [`crate::behaviour::typeahead::Typeahead`]'s debounced buffer.
+    ///   The jump is reported on [`EventCx::emit`] alongside the returned
+    ///   edit, since one keystroke changes two independent descriptor
+    ///   fields.
+    fn handle_routed_key(
+        &self,
+        state: &mut ComboBoxState,
+        key: &KeyEvent,
+        cx: &mut EventCx,
+    ) -> Handled<ComboBoxEvent> {
+        let opens = match key.key {
+            Key::Named(NamedKey::Down) => key.modifiers.alt || !self.open,
+            Key::Named(NamedKey::Enter) => !self.open,
+            _ => false,
+        };
+        if opens {
+            return self.open_request();
+        }
+
+        if let Key::Char(ch) = key.key {
+            let Some(ComboBoxEvent::TextChanged { text, .. }) =
+                self.handle_key(&key.key, &key.modifiers)
+            else {
+                return Handled::Ignored;
+            };
+            let edited = self.with_text(text.clone());
+            let now_ms = state.now_ms();
+            if let Some(index) = edited.typeahead_highlight(&mut state.typeahead, ch, now_ms) {
+                if self.highlighted != Some(index) {
+                    cx.emit(
+                        ComboBoxEvent::HighlightChanged { id: self.id, index }
+                            .into_ui_event(self.id),
+                    );
+                }
+            }
+            return Handled::Event(ComboBoxEvent::TextChanged { id: self.id, text });
+        }
+
+        match self.handle_key(&key.key, &key.modifiers) {
+            Some(event) => Handled::Event(event),
+            None => Handled::Ignored,
+        }
+    }
+}
+
+/// The cell-grid painter for [`ComboBox`], written against
+/// [`crate::CellSurface`].
+///
+/// The field first — a box-drawing frame around [`ComboBox::text`], the
+/// same chrome `crate::tui::text_input` paints — then, when
+/// `layout.dropdown` is `Some`, the filtered option list beneath it in
+/// the same row chrome `crate::primitives::completions::cell_paint`
+/// paints: side `│` borders either edge of every row, and the
+/// highlighted row's background tinted. Row labels resolve through
+/// [`ComboBox::filtered_indices`] back into `combo_box.options`, the
+/// same index chase [`native_surface_paint::paint`] does.
+///
+/// Colours: [`crate::Theme::input_bg`] washes the field,
+/// [`crate::Theme::accent_fg`] replaces [`crate::Theme::border_fg`] on a
+/// focused box and [`crate::Theme::muted_fg`] replaces
+/// [`crate::Theme::surface_fg`] on a disabled one; the dropdown uses the
+/// `completion_*` family. A dropdown narrower than three columns (two
+/// borders plus one content column) paints no list.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{ComboBox, ComboBoxLayout};
+    use crate::cell_surface::{draw_text_row, solid_style, stroke_square_frame, CellSurface};
+    use crate::theme::Theme;
+
+    /// Paint `combo_box` at its resolved `layout` onto `surface`.
+    pub(crate) fn paint(
+        combo_box: &ComboBox,
+        layout: &ComboBoxLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let bg = theme.background;
+        let field = layout.field_bounds;
+        if field.width > 0.0 && field.height > 0.0 {
+            let border = if combo_box.disabled || !combo_box.focused {
+                theme.border_fg
+            } else {
+                theme.accent_fg
+            };
+            let fg = if combo_box.disabled {
+                theme.muted_fg
+            } else {
+                theme.surface_fg
+            };
+            let field_style = solid_style(fg, theme.input_bg);
+            surface.fill(field, field_style);
+            stroke_square_frame(surface, field, solid_style(border, bg));
+            if !combo_box.text.is_empty() {
+                draw_text_row(surface, field, &combo_box.text, field_style);
+            }
+        }
+
+        let Some(dropdown) = &layout.dropdown else {
+            return;
+        };
+        if dropdown.bounds.width <= 0.0 || dropdown.bounds.height <= 0.0 {
+            return;
+        }
+
+        let pop_bg = theme.completion_bg;
+        let sel_bg = theme.completion_selected_bg;
+        let pop_fg = theme.completion_fg;
+        let border = theme.completion_border;
+
+        let x = dropdown.bounds.x.round() as u16;
+        let y = dropdown.bounds.y.round() as u16;
+        let w = dropdown.bounds.width.round() as u16;
+        if w < 3 {
+            return;
+        }
+
+        let filtered = combo_box.filtered_indices();
+        for visible in &dropdown.visible_items {
+            let row_y = y + (visible.bounds.y - dropdown.bounds.y).round() as u16;
+            let is_selected = combo_box.highlighted == Some(visible.item_idx);
+            let row_bg = if is_selected { sel_bg } else { pop_bg };
+            let row_style = solid_style(pop_fg, row_bg);
+
+            surface.fill(
+                crate::Rect::new(x as f32, row_y as f32, w as f32, 1.0),
+                row_style,
+            );
+            let border_style = solid_style(border, pop_bg);
+            surface.put_char(x, row_y, '│', border_style);
+            surface.put_char(x + w - 1, row_y, '│', border_style);
+
+            if let Some(&option_idx) = filtered.get(visible.item_idx) {
+                // One leading pad column, and the trailing border column
+                // the label must stop short of.
+                surface.put_str_clipped(
+                    x + 1,
+                    row_y,
+                    &format!(" {}", combo_box.options[option_idx]),
+                    w - 2,
+                    row_style,
+                );
+            }
+        }
+    }
 }
 
 /// Shared-paint executor for [`ComboBox`] — a rasteriser calls into
@@ -959,5 +1464,447 @@ mod tests {
         assert_eq!(c.highlighted, None);
         assert!(!c.disabled);
         assert!(!c.focused);
+    }
+
+    // ── Cell-path paint (`cell_paint::paint`) ───────────────────────────
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::*;
+        use crate::theme::Theme;
+        use crate::tui::draw_combo_box;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+        }
+
+        fn mk_combo_box() -> ComboBox {
+            ComboBox {
+                id: WidgetId::new("combo"),
+                options: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+                text: String::new(),
+                committed: String::new(),
+                open: true,
+                highlighted: Some(0),
+                disabled: false,
+                focused: true,
+            }
+        }
+
+        fn measure(_idx: usize) -> CompletionItemMeasure {
+            CompletionItemMeasure { height: 1.0 }
+        }
+
+        fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+            let field_bounds = Rect::new(origin_x as f32, origin_y as f32, 20.0, 1.0);
+            let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+            let combo_box = mk_combo_box();
+            let layout = combo_box.layout(field_bounds, viewport, 20.0, 10.0, measure);
+
+            let rect = RRect::new(0, 0, 80, 24);
+            let mut buf = Buffer::empty(rect);
+            draw_combo_box(&mut buf, &combo_box, &layout, &Theme::default());
+
+            // Field border top-left corner paints at the absolute origin.
+            assert_eq!(cell_char(&buf, origin_x, origin_y), '┌');
+
+            let dropdown = layout.dropdown.as_ref().expect("dropdown should be open");
+            let first_item = dropdown
+                .visible_items
+                .first()
+                .expect("at least one filtered option");
+            let row_y = first_item.bounds.y as u16;
+            let row_x = dropdown.bounds.x as u16;
+
+            // First option label ("alpha") renders inside the dropdown
+            // row, after the left border + 1-cell pad.
+            assert_eq!(cell_char(&buf, row_x + 2, row_y), 'a');
+
+            // hit_test: a click on the first dropdown row resolves to the
+            // DropdownItem variant for that filtered index.
+            let p = Point::new(
+                first_item.bounds.x + 1.0,
+                first_item.bounds.y + first_item.bounds.height / 2.0,
+            );
+            assert_eq!(layout.hit_test(p), ComboBoxHit::DropdownItem(0));
+        }
+
+        #[test]
+        fn paint_and_click_round_trip() {
+            paint_and_click_round_trip_at(0, 0);
+        }
+
+        /// Paint and hit-test must work correctly when the control is not
+        /// at the screen origin.
+        #[test]
+        fn paint_and_click_round_trip_at_nonzero_origin() {
+            paint_and_click_round_trip_at(7, 3);
+        }
+
+        #[test]
+        fn the_dropdown_frames_every_row_with_side_borders() {
+            let c = mk_combo_box();
+            let layout = c.layout(
+                Rect::new(0.0, 0.0, 20.0, 1.0),
+                Rect::new(0.0, 0.0, 80.0, 24.0),
+                20.0,
+                10.0,
+                measure,
+            );
+            let mut buf = Buffer::empty(RRect::new(0, 0, 80, 24));
+            draw_combo_box(&mut buf, &c, &layout, &Theme::default());
+
+            let dropdown = layout.dropdown.as_ref().expect("open");
+            let w = dropdown.bounds.width.round() as u16;
+            for visible in &dropdown.visible_items {
+                let y = visible.bounds.y as u16;
+                let x = dropdown.bounds.x as u16;
+                assert_eq!(cell_char(&buf, x, y), '│');
+                assert_eq!(cell_char(&buf, x + w - 1, y), '│');
+            }
+        }
+
+        #[test]
+        fn a_closed_dropdown_paints_only_the_field() {
+            let mut c = mk_combo_box();
+            c.open = false;
+            c.text = "alpha".into();
+            let layout = c.layout(
+                Rect::new(0.0, 0.0, 20.0, 1.0),
+                Rect::new(0.0, 0.0, 80.0, 24.0),
+                20.0,
+                10.0,
+                measure,
+            );
+            let mut buf = Buffer::empty(RRect::new(0, 0, 80, 24));
+            draw_combo_box(&mut buf, &c, &layout, &Theme::default());
+
+            assert_eq!(cell_char(&buf, 0, 0), 'a', "text paints over the frame");
+            // Nothing lands on the row the dropdown would have used.
+            assert_eq!(cell_char(&buf, 0, 1), ' ');
+        }
+    }
+}
+
+/// [`Interactive`] dispatch, driven directly the way an out-of-process
+/// binding host reaches a widget — the in-runtime leg is
+/// `tests/widget_contract_combo_box.rs`.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::interactive::EventHost;
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock: records every call so a test can
+    /// assert on what [`Interactive::handle`] asked for.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+        emitted: Vec<crate::UiEvent>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    const AREA: Rect = Rect::new(2.0, 1.0, 20.0, 6.0);
+
+    fn combo(open: bool) -> ComboBox {
+        let mut c = ComboBox::new(
+            WidgetId::new("form:fruit"),
+            vec!["Apple".into(), "Apricot".into(), "Banana".into()],
+        );
+        c.focused = true;
+        c.open = open;
+        c
+    }
+
+    fn layout_for(c: &ComboBox) -> ComboBoxPrimitiveLayout {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        Primitive::layout(c, &ctx, AREA)
+    }
+
+    fn dispatch(c: &ComboBox, event: &RoutedEvent) -> (Handled<ComboBoxEvent>, MockHost) {
+        let layout = layout_for(c);
+        let mut state = ComboBoxState::default();
+        let mut host = MockHost::default();
+        let handled = {
+            let mut cx = EventCx::new(c.id, &mut host);
+            c.handle(&mut state, event, &layout, &mut cx)
+        };
+        (handled, host)
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        })
+    }
+
+    fn pointer_down(local_x: f32, local_y: f32) -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind: PointerKind::Down(crate::MouseButton::Left),
+            sub: None,
+            local: Point::new(local_x, local_y),
+            mods: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn an_enabled_box_is_one_focus_stop_and_a_disabled_one_is_none() {
+        assert_eq!(combo(false).focus(), FocusSpec::Stop);
+        let mut disabled = combo(false);
+        disabled.disabled = true;
+        assert_eq!(disabled.focus(), FocusSpec::None);
+        assert_eq!(
+            dispatch(&disabled, &key(Key::Char('a'), Modifiers::default())).0,
+            Handled::Ignored
+        );
+    }
+
+    #[test]
+    fn the_layout_drops_the_dropdown_below_the_field_row() {
+        let layout = layout_for(&combo(true));
+        assert_eq!(layout.row_height, 1.0);
+        assert_eq!(layout.layout.field_bounds, Rect::new(2.0, 1.0, 20.0, 1.0));
+        let dropdown = layout.layout.dropdown.as_ref().expect("open");
+        assert_eq!(dropdown.bounds.y, 2.0, "one row below the field");
+        assert_eq!(dropdown.visible_items.len(), 3);
+    }
+
+    #[test]
+    fn alt_down_and_a_closed_box_enter_ask_the_host_to_open_the_list() {
+        let c = combo(false);
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let expected = Handled::Event(ComboBoxEvent::TextChanged {
+            id: c.id,
+            text: String::new(),
+        });
+        assert_eq!(
+            dispatch(&c, &key(Key::Named(NamedKey::Down), alt)).0,
+            expected
+        );
+        assert_eq!(
+            dispatch(&c, &key(Key::Named(NamedKey::Down), Modifiers::default())).0,
+            expected
+        );
+        assert_eq!(
+            dispatch(&c, &key(Key::Named(NamedKey::Enter), Modifiers::default())).0,
+            expected
+        );
+    }
+
+    #[test]
+    fn an_open_box_navigates_the_filtered_list_and_commits_on_enter() {
+        let mut c = combo(true);
+        assert_eq!(
+            dispatch(&c, &key(Key::Named(NamedKey::Down), Modifiers::default())).0,
+            Handled::Event(ComboBoxEvent::HighlightChanged { id: c.id, index: 0 })
+        );
+        c.highlighted = Some(1);
+        assert_eq!(
+            dispatch(&c, &key(Key::Named(NamedKey::Enter), Modifiers::default())).0,
+            Handled::Event(ComboBoxEvent::Committed {
+                id: c.id,
+                value: "Apricot".into()
+            })
+        );
+        assert_eq!(
+            dispatch(&c, &key(Key::Named(NamedKey::Escape), Modifiers::default())).0,
+            Handled::Event(ComboBoxEvent::Cancelled { id: c.id })
+        );
+    }
+
+    #[test]
+    fn a_typed_character_edits_the_text_and_jumps_the_highlight_by_typeahead() {
+        let c = combo(true);
+        let (handled, host) = dispatch(&c, &key(Key::Char('b'), Modifiers::default()));
+        assert_eq!(
+            handled,
+            Handled::Event(ComboBoxEvent::TextChanged {
+                id: c.id,
+                text: "b".into()
+            })
+        );
+        // "b" narrows the filter to ["Banana"], whose only index is 0 —
+        // the highlight follows the edit rather than pointing into the
+        // list that was just replaced.
+        assert_eq!(
+            host.emitted,
+            vec![crate::UiEvent::Form(
+                c.id,
+                crate::FormEvent::ComboBoxHighlightChanged { id: c.id, index: 0 }
+            )]
+        );
+    }
+
+    #[test]
+    fn typeahead_accumulates_across_keystrokes_within_the_debounce_window() {
+        let c = combo(true);
+        let layout = layout_for(&c);
+        let mut state = ComboBoxState::default();
+        let mut host = MockHost::default();
+        let mut typed = c.clone();
+        for ch in ['a', 'p', 'r'] {
+            let mut cx = EventCx::new(typed.id, &mut host);
+            let handled = typed.handle(
+                &mut state,
+                &key(Key::Char(ch), Modifiers::default()),
+                &layout,
+                &mut cx,
+            );
+            let Handled::Event(ComboBoxEvent::TextChanged { text, .. }) = handled else {
+                panic!("a typed character edits the text");
+            };
+            typed.text = text;
+        }
+        // "apr" filters to ["Apricot"]; the buffered "apr" prefix-matches
+        // it at filtered index 0.
+        assert_eq!(typed.text, "apr");
+        assert_eq!(typed.filtered_indices(), vec![1]);
+        assert_eq!(
+            host.emitted.last(),
+            Some(&crate::UiEvent::Form(
+                typed.id,
+                crate::FormEvent::ComboBoxHighlightChanged {
+                    id: typed.id,
+                    index: 0
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_dropdown_row_commits_that_option() {
+        let c = combo(true);
+        let layout = layout_for(&c);
+        let row = layout.layout.dropdown.as_ref().expect("open").visible_items[2].bounds;
+        let local_x = row.x + 1.0 - layout.area.x;
+        let local_y = row.y + row.height / 2.0 - layout.area.y;
+        assert_eq!(
+            dispatch(&c, &pointer_down(local_x, local_y)).0,
+            Handled::Event(ComboBoxEvent::Committed {
+                id: c.id,
+                value: "Banana".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_field_focuses_it_and_opens_a_closed_list() {
+        let c = combo(false);
+        let (handled, host) = dispatch(&c, &pointer_down(1.0, 0.0));
+        assert_eq!(
+            handled,
+            Handled::Event(ComboBoxEvent::TextChanged {
+                id: c.id,
+                text: String::new()
+            })
+        );
+        assert_eq!(host.focus_requests, vec![None]);
+
+        // Already open: the click only focuses.
+        let (handled, _) = dispatch(&combo(true), &pointer_down(1.0, 0.0));
+        assert_eq!(handled, Handled::Consumed);
+    }
+
+    #[test]
+    fn the_a11y_click_action_commits_when_open_and_opens_when_closed() {
+        let mut open = combo(true);
+        open.highlighted = Some(0);
+        assert_eq!(
+            dispatch(&open, &RoutedEvent::Action(A11yAction::Click)).0,
+            Handled::Event(ComboBoxEvent::Committed {
+                id: open.id,
+                value: "Apple".into()
+            })
+        );
+        assert_eq!(
+            dispatch(&combo(false), &RoutedEvent::Action(A11yAction::Click)).0,
+            Handled::Event(ComboBoxEvent::TextChanged {
+                id: open.id,
+                text: String::new()
+            })
+        );
+        assert_eq!(
+            combo(false).a11y_actions(&ComboBoxState::default()),
+            vec![A11yAction::Click]
+        );
+    }
+
+    #[test]
+    fn sub_regions_name_every_visible_option_before_the_field() {
+        let c = combo(true);
+        let layout = layout_for(&c);
+        let regions = c.sub_regions(&layout);
+        assert_eq!(
+            regions.iter().map(|(_, s)| s.0).collect::<Vec<_>>(),
+            vec![
+                SUB_OPTION_BASE,
+                SUB_OPTION_BASE + 1,
+                SUB_OPTION_BASE + 2,
+                SUB_FIELD
+            ]
+        );
+        for (rect, _) in &regions {
+            assert!(rect.x >= 0.0 && rect.y >= 0.0, "{rect:?} is not local");
+        }
+    }
+
+    #[test]
+    fn every_outcome_rides_the_form_event_channel_under_the_boxes_id() {
+        let id = WidgetId::new("form:fruit");
+        assert_eq!(
+            ComboBoxEvent::Committed {
+                id,
+                value: "Apple".into()
+            }
+            .into_ui_event(id),
+            crate::UiEvent::Form(
+                id,
+                crate::FormEvent::ComboBoxCommitted {
+                    id,
+                    value: "Apple".into()
+                }
+            )
+        );
+        assert_eq!(
+            ComboBoxEvent::Cancelled { id }.into_ui_event(id),
+            crate::UiEvent::Form(id, crate::FormEvent::ComboBoxCancelled { id })
+        );
+    }
+
+    #[test]
+    fn measure_reports_the_widest_option_plus_chrome_and_one_row_per_match() {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let closed = Primitive::measure(&combo(false), &ctx, Size::new(40.0, 10.0));
+        // "Apricot" is seven columns wide, plus two borders and the pad.
+        assert_eq!(closed.width, Some(7.0 + 3.0));
+        assert_eq!(closed.height, Some(1.0));
+
+        let open = Primitive::measure(&combo(true), &ctx, Size::new(40.0, 10.0));
+        assert_eq!(open.height, Some(4.0), "field row plus three matches");
     }
 }
