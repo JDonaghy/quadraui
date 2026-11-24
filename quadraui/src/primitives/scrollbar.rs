@@ -656,21 +656,12 @@ impl ScrollbarLayout {
 
     /// Classify a widget-local point against the painted thumb — the
     /// [`Scrollbar::press_zone`] of a resolved layout.
-    pub fn press_zone(&self, local: crate::Point) -> PressZone {
-        self.press_zone_at(local, self.local_thumb_start())
-    }
-
-    /// [`Self::press_zone`] against a thumb whose leading edge is
-    /// `thumb_start` track units along the track, rather than the one
-    /// this layout was painted with.
     ///
-    /// A gesture that moves the thumb resolves several presses before
-    /// the host repaints with an updated descriptor, so
-    /// [`crate::interactive::Interactive::handle`] classifies against
-    /// the thumb position *it* last resolved — otherwise a second page
-    /// in the same frame would be measured against a thumb that has
-    /// already moved out from under the cursor.
-    pub fn press_zone_at(&self, local: crate::Point, thumb_start: f32) -> PressZone {
+    /// Both the zone and the thumb come from the same resolved layout,
+    /// so a press can never be classified against a thumb other than
+    /// the one the painters drew.
+    pub fn press_zone(&self, local: crate::Point) -> PressZone {
+        let thumb_start = self.local_thumb_start();
         let pos = self.axis_pos(local);
         if pos < thumb_start {
             PressZone::Before
@@ -699,15 +690,12 @@ impl ScrollbarLayout {
 /// geometry-only descriptor.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ScrollbarState {
-    /// Pointer is inside the track. Mirrored onto the descriptor's own
-    /// [`Scrollbar::hovered`] by a host that wants the brighter paint.
+    /// Whether the pointer is inside the track, so a hover transition
+    /// asks for exactly one redraw instead of one per pointer event.
     pub hovered: bool,
     /// The live thumb drag, started by a press on
     /// [`PressZone::Thumb`] and ended on button-up.
     pub drag: Option<ThumbDrag>,
-    /// The thumb leading edge the last resolved gesture produced, in
-    /// track units. `None` until a gesture moves the thumb.
-    pub thumb_start: Option<f32>,
 }
 
 /// The semantic event a [`Scrollbar`] gesture resolves to.
@@ -730,26 +718,33 @@ impl crate::interactive::WidgetAction for ScrollbarEvent {
 }
 
 impl Scrollbar {
-    /// Resolve `thumb_start` to a [`ScrollbarEvent::Moved`], recording
-    /// it in `state` so a following gesture starts from where this one
-    /// left off.
-    fn move_thumb(
-        layout: &ScrollbarLayout,
-        state: &mut ScrollbarState,
-        thumb_start: f32,
-    ) -> crate::Handled<ScrollbarEvent> {
+    /// Resolve a requested thumb leading edge (in track units) to a
+    /// [`ScrollbarEvent::Moved`] fraction, clamped to the track's
+    /// travel.
+    ///
+    /// Nothing about the move is remembered: the host owns the scroll
+    /// offset the fraction maps onto, and the next gesture reads the
+    /// thumb position back off the rebuilt descriptor, so a bar driven
+    /// by the keyboard or by its region's own scrolling can never
+    /// disagree with the position it was painted at.
+    fn move_thumb(layout: &ScrollbarLayout, thumb_start: f32) -> crate::Handled<ScrollbarEvent> {
         let clamped = thumb_start.clamp(0.0, layout.travel());
-        state.thumb_start = Some(clamped);
         crate::Handled::Event(ScrollbarEvent::Moved {
             fraction: layout.fraction_at(clamped),
         })
     }
 
-    /// The thumb's current leading edge in track units: whatever the
-    /// last gesture resolved, else the descriptor's own painted
-    /// position.
-    fn live_thumb_start(&self, state: &ScrollbarState) -> f32 {
-        state.thumb_start.unwrap_or(self.thumb_start)
+    /// Record the pointer entering or leaving the track, asking for a
+    /// redraw only when that actually changed.
+    fn set_hovered(
+        state: &mut ScrollbarState,
+        hovered: bool,
+        cx: &mut crate::interactive::EventCx,
+    ) {
+        if state.hovered != hovered {
+            state.hovered = hovered;
+            cx.request_redraw();
+        }
     }
 }
 
@@ -885,6 +880,14 @@ impl crate::interactive::Interactive for Scrollbar {
     /// - **Wheel** moves by
     ///   [`SCROLLBAR_WHEEL_VIEWPORTS_PER_NOTCH`] of a viewport per
     ///   notch.
+    ///
+    /// Every gesture that is not a live drag measures from
+    /// [`ScrollbarLayout::local_thumb_start`] — the thumb `layout`
+    /// resolved for *this* event — never from a position a previous
+    /// gesture resolved. The host owns the scroll offset the emitted
+    /// fraction maps onto and rebuilds the descriptor before the next
+    /// event, so measuring off the layout is what keeps a bar in step
+    /// with a region scrolled by the keyboard or by the host itself.
     fn handle(
         &self,
         state: &mut ScrollbarState,
@@ -900,16 +903,14 @@ impl crate::interactive::Interactive for Scrollbar {
                 kind: PointerKind::Enter,
                 ..
             } => {
-                state.hovered = true;
-                cx.request_redraw();
+                Self::set_hovered(state, true, cx);
                 Handled::Consumed
             }
             RoutedEvent::Pointer {
                 kind: PointerKind::Leave,
                 ..
             } => {
-                state.hovered = false;
-                cx.request_redraw();
+                Self::set_hovered(state, false, cx);
                 Handled::Consumed
             }
             RoutedEvent::Pointer {
@@ -918,8 +919,8 @@ impl crate::interactive::Interactive for Scrollbar {
                 ..
             } => {
                 let pos = layout.axis_pos(*local);
-                let thumb_start = self.live_thumb_start(state);
-                match layout.press_zone_at(*local, thumb_start) {
+                let thumb_start = layout.local_thumb_start();
+                match layout.press_zone(*local) {
                     PressZone::Thumb => {
                         cx.capture_pointer();
                         state.drag = Some(ThumbDrag::begin(
@@ -930,12 +931,8 @@ impl crate::interactive::Interactive for Scrollbar {
                         ));
                         Handled::Consumed
                     }
-                    PressZone::Before => {
-                        Self::move_thumb(layout, state, thumb_start - layout.thumb_len())
-                    }
-                    PressZone::After => {
-                        Self::move_thumb(layout, state, thumb_start + layout.thumb_len())
-                    }
+                    PressZone::Before => Self::move_thumb(layout, thumb_start - layout.thumb_len()),
+                    PressZone::After => Self::move_thumb(layout, thumb_start + layout.thumb_len()),
                 }
             }
             RoutedEvent::Pointer {
@@ -944,11 +941,11 @@ impl crate::interactive::Interactive for Scrollbar {
                 ..
             } => match state.drag {
                 Some(drag) => match drag.offset_at(layout.axis_pos(*local)) {
-                    Some(thumb_start) => Self::move_thumb(layout, state, thumb_start),
+                    Some(thumb_start) => Self::move_thumb(layout, thumb_start),
                     None => Handled::Consumed,
                 },
                 None => {
-                    state.hovered = true;
+                    Self::set_hovered(state, true, cx);
                     Handled::Ignored
                 }
             },
@@ -971,7 +968,7 @@ impl crate::interactive::Interactive for Scrollbar {
                 if step == 0.0 {
                     return Handled::Ignored;
                 }
-                Self::move_thumb(layout, state, self.live_thumb_start(state) + step)
+                Self::move_thumb(layout, layout.local_thumb_start() + step)
             }
             _ => Handled::Ignored,
         }
@@ -1896,6 +1893,17 @@ mod interactive_tests {
         )
     }
 
+    /// [`vertical_bar`] repainted with its thumb `thumb_start` track
+    /// cells down — what a host rebuilds the descriptor as once it has
+    /// applied a [`ScrollbarEvent::Moved`], or scrolled the region by
+    /// any other means.
+    fn vertical_bar_at(thumb_start: f32) -> Scrollbar {
+        Scrollbar {
+            thumb_start,
+            ..vertical_bar()
+        }
+    }
+
     fn layout_of(sb: &Scrollbar) -> ScrollbarLayout {
         let ctx = LayoutCtx::new(1.0, 1.0, false);
         Primitive::layout(sb, &ctx, sb.track)
@@ -1977,10 +1985,11 @@ mod interactive_tests {
         let layout = layout_of(&sb);
         let mut state = ScrollbarState::default();
         let (handled, host) = route(&sb, &mut state, &layout, down_at(1.0));
+        // `Consumed` rather than an `Event`: a press on the thumb opens
+        // the drag without scrolling anything yet.
         assert!(matches!(handled, Handled::Consumed), "{handled:?}");
         assert_eq!(host.captures, vec![sb.id]);
         assert!(state.drag.is_some());
-        assert_eq!(state.thumb_start, None, "a press alone must not scroll");
     }
 
     #[test]
@@ -2022,7 +2031,6 @@ mod interactive_tests {
         let (handled, _) = route(&sb, &mut state, &layout, move_to(10.0));
         assert!(matches!(handled, Handled::Ignored), "{handled:?}");
         assert!(state.hovered);
-        assert_eq!(state.thumb_start, None);
     }
 
     #[test]
@@ -2040,13 +2048,68 @@ mod interactive_tests {
             "a track page is not a drag — no capture"
         );
 
-        // A second page accumulates from where the first left off.
+        // A second page accumulates from the thumb the host repainted
+        // after applying the first.
+        let sb = vertical_bar_at(page);
+        let layout = layout_of(&sb);
         let (handled, _) = route(&sb, &mut state, &layout, down_at(19.0));
         assert_eq!(fraction(&handled), 2.0 * page / travel);
 
-        // Paging back from there returns to the top and clamps there.
+        // Paging back from there returns to where the first page left
+        // the thumb.
+        let sb = vertical_bar_at(2.0 * page);
+        let layout = layout_of(&sb);
         let (handled, _) = route(&sb, &mut state, &layout, down_at(0.0));
         assert_eq!(fraction(&handled), page / travel);
+    }
+
+    /// The descriptor — not anything the widget remembers — decides
+    /// where the thumb is. A host that scrolls the region by some other
+    /// means (its arrow/page keys, a jump-to-match) rebuilds the bar
+    /// with a new `thumb_start`, and the next gesture must measure from
+    /// *that*, or a press just above the painted thumb pages the wrong
+    /// way and a thumb grab jumps.
+    #[test]
+    fn a_scroll_between_two_gestures_is_measured_from_the_repainted_thumb() {
+        let sb = vertical_bar();
+        let layout = layout_of(&sb);
+        let travel = layout.travel();
+        let page = layout.thumb_len();
+        let mut state = ScrollbarState::default();
+
+        // Gesture one: a wheel notch from the top of the track.
+        let notch = page * SCROLLBAR_WHEEL_VIEWPORTS_PER_NOTCH;
+        let (handled, _) = route(
+            &sb,
+            &mut state,
+            &layout,
+            RoutedEvent::Wheel {
+                dx: 0.0,
+                dy: -1.0,
+                local: Point::new(0.0, 5.0),
+                mods: Default::default(),
+            },
+        );
+        assert_eq!(fraction(&handled), notch / travel);
+
+        // The host now scrolls the region to the bottom on its own, so
+        // the thumb is repainted at the end of its travel.
+        let sb = vertical_bar_at(travel);
+        let layout = layout_of(&sb);
+        assert_eq!(layout.local_thumb_start(), travel);
+
+        // A press above the painted thumb pages *back*, against the
+        // repainted position — not forward against the wheel notch.
+        let (handled, _) = route(&sb, &mut state, &layout, down_at(0.0));
+        assert_eq!(fraction(&handled), (travel - page) / travel);
+
+        // And a press on the painted thumb grabs it there: dragging one
+        // page back from the grab point lands exactly one page back.
+        let (handled, host) = route(&sb, &mut state, &layout, down_at(travel + 1.0));
+        assert!(matches!(handled, Handled::Consumed), "{handled:?}");
+        assert_eq!(host.captures, vec![sb.id]);
+        let (handled, _) = route(&sb, &mut state, &layout, move_to(travel + 1.0 - page));
+        assert_eq!(fraction(&handled), (travel - page) / travel);
     }
 
     #[test]

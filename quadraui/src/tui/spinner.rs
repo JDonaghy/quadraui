@@ -133,4 +133,22 @@ mod tests {
         let _layout = draw_spinner(&mut buf, Rect::new(0, 0, 0, 0), &spinner, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
+
+    /// An area with columns but no rows has nowhere to put the glyph
+    /// row, so it paints nothing — the height half of the no-op above,
+    /// which a width-only clamp would have let through.
+    #[test]
+    fn zero_height_is_a_no_op() {
+        let buf_area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(buf_area);
+        let spinner = mk_spinner("Test", 0);
+        let layout = draw_spinner(
+            &mut buf,
+            Rect::new(0, 0, 10, 0),
+            &spinner,
+            &Theme::default(),
+        );
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+        assert_eq!(layout.bounds.height, 0.0);
+    }
 }

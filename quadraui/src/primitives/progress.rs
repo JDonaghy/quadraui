@@ -388,6 +388,12 @@ pub(crate) mod cell_paint {
         // Label overlay, left-aligned with one cell of padding. Each
         // glyph keeps whatever background the track/fill left under it,
         // so the label reads against both halves of a partly-filled bar.
+        //
+        // The loops above always write an opaque background across the
+        // whole bar first, so `track_bg` is only a fallback for a cell
+        // whose recovered background is not a concrete colour. Painting
+        // the label without the track would therefore flatten the
+        // label's background to `track_bg` rather than leave it alone.
         if !bar.label.is_empty() {
             for (col, ch) in (bx + 1..).zip(bar.label.chars()) {
                 if col >= bar_end {
