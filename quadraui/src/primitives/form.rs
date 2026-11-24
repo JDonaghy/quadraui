@@ -4955,6 +4955,23 @@ pub enum FormEvent {
         id: WidgetId,
         value: crate::primitives::date_picker::CalendarDate,
     },
+    /// A `DatePicker`'s keyboard cursor moved to a different day without
+    /// confirming it — the arrow-key / `PageUp` / `PageDown` scrubbing
+    /// [`crate::primitives::date_picker::DatePickerEvent::FocusMoved`]
+    /// reports. Mirrors `TextInputChanged`'s "fires every keystroke"
+    /// shape, where [`Self::DateChanged`] is the confirm-only channel.
+    ///
+    /// Applying this event means writing `value` onto the picker's
+    /// `focused`, and — when `value` falls outside the month on screen —
+    /// its `visible_month` too, the same pair
+    /// `FormController` keeps cached while a field is being scrubbed.
+    /// `id` is the **`FormField`'s** id for an embedded picker and the
+    /// widget's own id for a standalone one, the same convention
+    /// [`Self::DateChanged`] follows.
+    DateFocusMoved {
+        id: WidgetId,
+        value: crate::primitives::date_picker::CalendarDate,
+    },
     /// Keyboard focus moved to a different field.
     FocusChanged { id: WidgetId },
     /// A `Button` was clicked or activated with Enter / Space.

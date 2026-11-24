@@ -4434,6 +4434,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `DropdownChanged` | `_IdSelectedIdxPayload` |  |
 | `SegmentedControlChanged` | `_IdSelectedIdxPayload` |  |
 | `DateChanged` | `_IdValueDatePayload` |  |
+| `DateFocusMoved` | `_IdValueDatePayload` |  |
 | `FocusChanged` | `_IdPayload` |  |
 | `ButtonClicked` | `_IdPayload` |  |
 | `ToolbarButtonClicked` | `_FormToolbarButtonClickedPayload` |  |
