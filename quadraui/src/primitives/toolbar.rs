@@ -705,15 +705,21 @@ pub enum ToolbarEvent {
     /// click anywhere on its pill (body or `▾` affordance), or
     /// Enter/Space while the keyboard cursor sits on it. The host opens a
     /// [`crate::ContextMenu`] built from that button's own `menu`,
-    /// anchored at its [`VisibleToolbarItem::bounds`]; this primitive
-    /// owns no menu state of its own.
+    /// anchored at its [`VisibleToolbarItem::bounds`]; a `Toolbar` owns
+    /// no menu state of its own.
     MenuRequested { id: WidgetId },
     /// The trailing `»` affordance a [`ToolbarOverflow::Menu`] layout
     /// paints was activated. The host opens a [`crate::ContextMenu`]
-    /// built from [`ToolbarLayout::overflowed_items`]. Carries no id —
-    /// the affordance is the layout's, not a [`Toolbar::buttons`] entry's
-    /// (see [`TOOLBAR_OVERFLOW_ITEM_IDX`]).
-    OverflowRequested,
+    /// built from [`ToolbarLayout::overflowed_items`].
+    ///
+    /// `id` is the affordance's own sentinel id —
+    /// [`overflow_indicator_button`]'s, the one every `»` entry shares —
+    /// not a [`Toolbar::buttons`] entry's, since the affordance belongs
+    /// to the resolved layout rather than the descriptor (see
+    /// [`TOOLBAR_OVERFLOW_ITEM_IDX`]). It carries one anyway so every
+    /// variant of this enum names what was activated, the same way
+    /// [`Self::ButtonClicked`] does.
+    OverflowRequested { id: WidgetId },
 }
 
 /// Which button a [`ToolbarHit`] hovers or presses — the one
@@ -1189,6 +1195,43 @@ impl ToolbarLayout {
             }
         }
         max_edge - start
+    }
+
+    /// Mark every item whose line starts at or past `cross_edge`
+    /// un-clickable (its [`ToolbarButton::Group`] children too), while
+    /// leaving it in `visible_items` — the demotion every
+    /// [`ToolbarOverflow::Wrap`] layout owes its caller.
+    ///
+    /// A wrapped line stacked at or past the bottom of the area the
+    /// caller actually painted into was never drawn (every rasteriser
+    /// clips to that area), so [`Self::hit_test`] must not report a hit
+    /// on it either; the entry stays in `visible_items` so a host
+    /// probing with a one-line area can still discover
+    /// [`Self::cross_extent`] and re-paint into a taller one.
+    ///
+    /// A no-op for any `options` other than a horizontal
+    /// [`ToolbarOverflow::Wrap`]: a single-line [`ToolbarOverflow::Clip`]/
+    /// [`ToolbarOverflow::Menu`] layout never stacks a second line, and
+    /// [`ToolbarOrientation::Vertical`] wrapping has no analogous "ran
+    /// past the bottom" edge along its own axis.
+    ///
+    /// `cross_edge` is in the same unit and space as this layout's own
+    /// bounds — `area.y + area.height` in cells for a terminal, `y + h`
+    /// in px/DIPs for a pixel backend.
+    pub(crate) fn demote_lines_past(&mut self, options: ToolbarLayoutOptions, cross_edge: f32) {
+        if options.overflow != ToolbarOverflow::Wrap
+            || options.orientation != ToolbarOrientation::Horizontal
+        {
+            return;
+        }
+        for vis in &mut self.visible_items {
+            if vis.bounds.y >= cross_edge {
+                vis.clickable = false;
+                for child in &mut vis.group_children {
+                    child.clickable = false;
+                }
+            }
+        }
     }
 
     /// Every top-level `Action`/`Group` [`ToolbarOverflow::Menu`] dropped
@@ -2196,7 +2239,7 @@ where
 /// `None` before returning the layout (see [`Toolbar::layout_menu`]) — it
 /// only needs to be *some* id so [`measure_button`]/a backend's own
 /// measure closure sizes it through the ordinary `Action` formula.
-fn toolbar_overflow_widget_id() -> WidgetId {
+pub(crate) fn toolbar_overflow_widget_id() -> WidgetId {
     WidgetId::new("quadraui:toolbar-overflow")
 }
 

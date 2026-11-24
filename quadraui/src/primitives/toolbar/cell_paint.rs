@@ -1235,8 +1235,8 @@ mod tests {
         );
 
         // Re-render with "Columns" the only active child (the host's own
-        // response to the click above) and confirm it now paints
-        // reversed/selected while "Icons" no longer does.
+        // response to the click above) and confirm the reversed/selected
+        // treatment follows it, leaving "Icons" plain.
         let mut buf2 = Buffer::empty(area);
         let bar_active = Toolbar {
             id: WidgetId::new("tb"),

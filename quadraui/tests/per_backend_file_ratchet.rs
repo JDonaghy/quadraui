@@ -103,17 +103,17 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "gtk",
         file_count: 52,
-        non_test_lines: 19690,
+        non_test_lines: 19678,
     },
     BackendBaseline {
         dir: "macos",
         file_count: 55,
-        non_test_lines: 18397,
+        non_test_lines: 18385,
     },
     BackendBaseline {
         dir: "win",
         file_count: 54,
-        non_test_lines: 23562,
+        non_test_lines: 23548,
     },
 ];
 
@@ -379,7 +379,7 @@ fn primitive_impl_type_names(root: &Path) -> std::collections::HashSet<String> {
 /// quadraui#2803 landed this ratchet. **May only shrink** — see the
 /// module doc for why a growth here is a review-time catch, not just a
 /// "nice to migrate eventually" note.
-const PRIMITIVE_COVERAGE_GAP_BASELINE: usize = 38;
+const PRIMITIVE_COVERAGE_GAP_BASELINE: usize = 27;
 
 #[test]
 fn primitive_coverage_gap_may_only_grow_smaller() {

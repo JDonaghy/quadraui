@@ -3426,6 +3426,14 @@ pub fn schema() -> Vec<DefJson> {
         "_ToolbarFieldClearedPayload",
         vec![field("id", re("WidgetId"))],
     ));
+    let toolbar_menu_requested_payload = b.define(obj(
+        "_ToolbarMenuRequestedPayload",
+        vec![field("id", re("WidgetId"))],
+    ));
+    let toolbar_overflow_requested_payload = b.define(obj(
+        "_ToolbarOverflowRequestedPayload",
+        vec![field("id", re("WidgetId"))],
+    ));
     b.define(flat(
         "ToolbarEvent",
         &[
@@ -3434,6 +3442,8 @@ pub fn schema() -> Vec<DefJson> {
             ("FieldChanged", toolbar_field_changed_payload),
             ("FieldCommitted", toolbar_field_committed_payload),
             ("FieldCleared", toolbar_field_cleared_payload),
+            ("MenuRequested", toolbar_menu_requested_payload),
+            ("OverflowRequested", toolbar_overflow_requested_payload),
         ],
         vec![],
     ));
@@ -6575,7 +6585,9 @@ mod coverage {
                 "GroupSelected",
                 "FieldChanged",
                 "FieldCommitted",
-                "FieldCleared"
+                "FieldCleared",
+                "MenuRequested",
+                "OverflowRequested"
             ]
         );
 

@@ -2300,7 +2300,15 @@ export interface _ToolbarFieldClearedPayload {
   id: WidgetId;
 }
 
-export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload; } | { GroupSelected: _ToolbarGroupSelectedPayload; } | { FieldChanged: _ToolbarFieldChangedPayload; } | { FieldCommitted: _ToolbarFieldCommittedPayload; } | { FieldCleared: _ToolbarFieldClearedPayload; };
+export interface _ToolbarMenuRequestedPayload {
+  id: WidgetId;
+}
+
+export interface _ToolbarOverflowRequestedPayload {
+  id: WidgetId;
+}
+
+export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload; } | { GroupSelected: _ToolbarGroupSelectedPayload; } | { FieldChanged: _ToolbarFieldChangedPayload; } | { FieldCommitted: _ToolbarFieldCommittedPayload; } | { FieldCleared: _ToolbarFieldClearedPayload; } | { MenuRequested: _ToolbarMenuRequestedPayload; } | { OverflowRequested: _ToolbarOverflowRequestedPayload; };
 
 export interface CalendarDate {
   year: number;

@@ -48,6 +48,9 @@ use super::{
 /// affordance — the two cells `super::cell_item_width`'s own
 /// `MenuButton` arm reserves (`" ▾"`), the cell-grid counterpart of
 /// [`MENU_BUTTON_CARET_PX`].
+// Read by the cell-grid `Primitive::layout` branch, so a build with no
+// terminal backend compiled in has no caller for it.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
 const MENU_BUTTON_CARET_CELLS: f32 = 2.0;
 
 /// [`Primitive::Layout`] for [`Toolbar`]: the resolved
@@ -138,10 +141,13 @@ impl Primitive for Toolbar {
     /// that sizes a toolbar to its content gets a strip exactly as wide
     /// as the buttons it holds.
     fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        // Both arms are unit-agnostic code in the widget module: the
+        // cell measurer is `cell_item_width` (which needs no terminal
+        // backend compiled in), the pixel one the `measure_button`
+        // formula every GUI wrapper shares.
         let total: f32 = match ctx.units() {
-            #[cfg(feature = "tui")]
             Units::Cells => self.buttons.iter().map(super::cell_item_width).sum(),
-            _ => {
+            Units::Pixels => {
                 let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
                     ctx,
                     role: crate::FontRole::Chrome,
@@ -153,9 +159,8 @@ impl Primitive for Toolbar {
             }
         };
         let row = match ctx.units() {
-            #[cfg(feature = "tui")]
             Units::Cells => 1.0,
-            _ => ctx.line_height,
+            Units::Pixels => ctx.line_height,
         };
         crate::NaturalSize::new(Some(total.min(avail.width)), Some(row))
     }
@@ -536,8 +541,14 @@ impl Interactive for Toolbar {
         cx: &mut EventCx,
     ) -> Handled<ToolbarEvent> {
         match event {
+            // Both kinds carry a live `local` position, and both mean
+            // "the button under the cursor may have changed": a
+            // `Move` while this bar holds the pointer capture, an
+            // `Enter` when the cursor crosses into the strip (the only
+            // within-bar position the routing engine delivers to an
+            // uncaptured widget — see `runtime::route_widget_hover`).
             RoutedEvent::Pointer {
-                kind: PointerKind::Move,
+                kind: PointerKind::Move | PointerKind::Enter,
                 local,
                 ..
             } => {
@@ -615,7 +626,9 @@ impl Interactive for Toolbar {
                     }
                     ToolbarHit::Overflow => {
                         cx.request_focus(None);
-                        Handled::Event(ToolbarEvent::OverflowRequested)
+                        Handled::Event(ToolbarEvent::OverflowRequested {
+                            id: super::toolbar_overflow_widget_id(),
+                        })
                     }
                     // A separator, an inline label, a spacer, a disabled
                     // action: inside the bar but not actionable, so the
@@ -921,6 +934,7 @@ mod tests {
     /// Both unit regimes this build can resolve — the pixel one always,
     /// the cell one when `tui` is compiled in.
     fn layouts(bar: &Toolbar) -> Vec<ToolbarPrimitiveLayout> {
+        #[allow(unused_mut)] // `mut` is only needed with `tui` compiled in
         let mut out = vec![pixel_layout_of(bar)];
         #[cfg(feature = "tui")]
         out.push(cell_layout_of(bar));
@@ -1017,37 +1031,36 @@ mod tests {
         assert_eq!(ToolbarSubPart::from_sub_target(SubTarget(0)), None);
     }
 
+    /// Both position-carrying pointer kinds track hover: a `Move` while
+    /// the bar holds the capture, an `Enter` when the cursor crosses
+    /// into the strip.
     #[test]
-    fn pointer_move_tracks_the_hovered_button_and_leave_clears_it() {
+    fn a_positioned_pointer_tracks_the_hovered_button_and_leave_clears_it() {
+        for kind in [PointerKind::Move, PointerKind::Enter] {
+            pointer_hover_round_trip(kind);
+        }
+    }
+
+    fn pointer_hover_round_trip(kind: PointerKind) {
         let bar = bar();
         let layout = pixel_layout_of(&bar);
         let mut host = MockHost::new(Units::Pixels);
         let mut state = ToolbarState::default();
 
         let mut cx = EventCx::new(bar.id, &mut host);
-        let out = Interactive::handle(
-            &bar,
-            &mut state,
-            &pointer(PointerKind::Move, 2.0, 2.0),
-            &layout,
-            &mut cx,
-        );
-        assert!(out.is_consumed());
+        let out = Interactive::handle(&bar, &mut state, &pointer(kind, 2.0, 2.0), &layout, &mut cx);
+        assert!(out.is_consumed(), "{kind:?} tracks hover");
         assert_eq!(state.hovered_item, Some(0));
         assert_eq!(state.hovered_id, Some(WidgetId::new("tb:a")));
         assert_eq!(state.hovered_idx(), Some(0), "PaintState reads the index");
         assert_eq!(state.hovered_id(&bar), Some(&WidgetId::new("tb:a")));
 
-        // A second move inside the same button changes nothing.
+        // A second position inside the same button changes nothing.
         let mut cx = EventCx::new(bar.id, &mut host);
-        assert!(Interactive::handle(
-            &bar,
-            &mut state,
-            &pointer(PointerKind::Move, 3.0, 2.0),
-            &layout,
-            &mut cx
-        )
-        .is_ignored());
+        assert!(
+            Interactive::handle(&bar, &mut state, &pointer(kind, 3.0, 2.0), &layout, &mut cx)
+                .is_ignored()
+        );
 
         let mut cx = EventCx::new(bar.id, &mut host);
         assert!(Interactive::handle(
@@ -1320,7 +1333,9 @@ mod tests {
                 &primitive_layout,
                 &mut cx,
             ),
-            Handled::Event(ToolbarEvent::OverflowRequested),
+            Handled::Event(ToolbarEvent::OverflowRequested {
+                id: super::super::toolbar_overflow_widget_id(),
+            }),
         );
     }
 }

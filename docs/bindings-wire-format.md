@@ -716,6 +716,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ToolbarFieldChangedPayload`](#wire-_toolbarfieldchangedpayload)
 - [`_ToolbarFieldCommittedPayload`](#wire-_toolbarfieldcommittedpayload)
 - [`_ToolbarFieldClearedPayload`](#wire-_toolbarfieldclearedpayload)
+- [`_ToolbarMenuRequestedPayload`](#wire-_toolbarmenurequestedpayload)
+- [`_ToolbarOverflowRequestedPayload`](#wire-_toolbaroverflowrequestedpayload)
 - [`ToolbarEvent`](#wire-toolbarevent)
 - [`CalendarDate`](#wire-calendardate)
 - [`_IdValueBoolPayload`](#wire-_idvalueboolpayload)
@@ -4308,6 +4310,20 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `id` | `WidgetId` | yes |  |
 
+<a id="wire-_toolbarmenurequestedpayload"></a>
+#### `_ToolbarMenuRequestedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+
+<a id="wire-_toolbaroverflowrequestedpayload"></a>
+#### `_ToolbarOverflowRequestedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+
 <a id="wire-toolbarevent"></a>
 #### `ToolbarEvent`
 
@@ -4320,6 +4336,8 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `FieldChanged` | `_ToolbarFieldChangedPayload` |  |
 | `FieldCommitted` | `_ToolbarFieldCommittedPayload` |  |
 | `FieldCleared` | `_ToolbarFieldClearedPayload` |  |
+| `MenuRequested` | `_ToolbarMenuRequestedPayload` |  |
+| `OverflowRequested` | `_ToolbarOverflowRequestedPayload` |  |
 
 <a id="wire-calendardate"></a>
 #### `CalendarDate`

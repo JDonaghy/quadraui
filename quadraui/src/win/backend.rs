@@ -174,9 +174,7 @@ pub(super) fn toolbar_layout_with_overflow_via(
     options: crate::primitives::toolbar::ToolbarLayoutOptions,
     priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
 ) -> crate::primitives::toolbar::ToolbarLayout {
-    use crate::primitives::toolbar::{
-        measure_button, ToolbarItemMeasure, ToolbarOrientation, ToolbarOverflow,
-    };
+    use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure, ToolbarOverflow};
 
     let line_h = if options.overflow == ToolbarOverflow::Wrap {
         line_height
@@ -193,19 +191,7 @@ pub(super) fn toolbar_layout_with_overflow_via(
         |btn| ToolbarItemMeasure::new(measure_button(measure, btn)),
     );
 
-    if options.overflow == ToolbarOverflow::Wrap
-        && options.orientation == ToolbarOrientation::Horizontal
-    {
-        let area_bottom = rect.y + rect.height;
-        for vis in &mut layout.visible_items {
-            if vis.bounds.y >= area_bottom {
-                vis.clickable = false;
-                for child in &mut vis.group_children {
-                    child.clickable = false;
-                }
-            }
-        }
-    }
+    layout.demote_lines_past(options, rect.y + rect.height);
 
     layout
 }
