@@ -1231,37 +1231,46 @@ mod interactive_tests {
         };
         let mut state = CommandLineState::default();
         let mut cx = EventCx::new(cmd.id, &mut host);
-        Interactive::handle(
-            &cmd,
-            &mut state,
-            &pointer(
-                PointerKind::Down(MouseButton::Left),
-                1.0,
-                Modifiers::default(),
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &pointer(
+                    PointerKind::Down(MouseButton::Left),
+                    1.0,
+                    Modifiers::default(),
+                ),
+                &layout,
+                &mut cx,
             ),
-            &layout,
-            &mut cx,
+            Handled::Consumed
         );
         assert_eq!(state.cursor, Some(1));
-        Interactive::handle(
-            &cmd,
-            &mut state,
-            &pointer(PointerKind::Move, 4.0, Modifiers::default()),
-            &layout,
-            &mut cx,
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &pointer(PointerKind::Move, 4.0, Modifiers::default()),
+                &layout,
+                &mut cx,
+            ),
+            Handled::Consumed
         );
         assert_eq!(state.cursor, Some(4));
         assert_eq!(state.anchor, Some(1));
-        Interactive::handle(
-            &cmd,
-            &mut state,
-            &pointer(
-                PointerKind::Up(MouseButton::Left),
-                4.0,
-                Modifiers::default(),
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &pointer(
+                    PointerKind::Up(MouseButton::Left),
+                    4.0,
+                    Modifiers::default(),
+                ),
+                &layout,
+                &mut cx,
             ),
-            &layout,
-            &mut cx,
+            Handled::Consumed
         );
         assert_eq!((host.captures, host.releases), (1, 1));
     }
@@ -1273,18 +1282,21 @@ mod interactive_tests {
         let mut host = MockHost::default();
         let mut state = CommandLineState::default();
         let mut cx = EventCx::new(cmd.id, &mut host);
-        Interactive::handle(
-            &cmd,
-            &mut state,
-            &key(
-                Key::Char('a'),
-                Modifiers {
-                    ctrl: true,
-                    ..Default::default()
-                },
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &key(
+                    Key::Char('a'),
+                    Modifiers {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                ),
+                &layout,
+                &mut cx,
             ),
-            &layout,
-            &mut cx,
+            Handled::Consumed
         );
         let handled = Interactive::handle(
             &cmd,
@@ -1337,16 +1349,22 @@ mod interactive_tests {
             anchor: Some(2),
         };
         let mut cx = EventCx::new(cmd.id, &mut host);
-        Interactive::handle(
-            &cmd,
-            &mut state,
-            &RoutedEvent::FocusIn(None),
-            &layout,
-            &mut cx,
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &RoutedEvent::FocusIn(None),
+                &layout,
+                &mut cx
+            ),
+            Handled::Consumed
         );
         assert_eq!(state.cursor, Some(1));
         assert_eq!(state.anchor, None);
-        Interactive::handle(&cmd, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx);
+        assert_eq!(
+            Interactive::handle(&cmd, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx),
+            Handled::Consumed
+        );
         assert_eq!(state.cursor, None);
     }
 
