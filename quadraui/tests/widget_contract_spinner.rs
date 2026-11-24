@@ -16,8 +16,8 @@
 use quadraui::primitive::{LayoutCtx, Primitive, Size};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, FrameTree, Reaction, Rect, ScreenLayout, Spinner, SpinnerHit, Surface,
-    UiEvent, WidgetId,
+    AppLogic, Backend, FrameTree, Point, Reaction, Rect, ScreenLayout, ScrollDelta, Spinner,
+    SpinnerHit, Surface, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 40;
@@ -127,6 +127,45 @@ fn clicking_a_spinner_is_routed_but_never_consumed() {
             .iter()
             .any(|e| matches!(e, UiEvent::FocusChanged(Some(_)))),
         "a decorative spinner must not take focus: {events:?}"
+    );
+}
+
+/// `UiEvent::Scroll` is hit-tested into the widget contract as
+/// `RoutedEvent::Wheel`, so every contract widget under the cursor is
+/// offered the gesture first. A widget that ignores it — which is every
+/// widget but `Scrollbar` — must leave the plain `UiEvent::Scroll`
+/// reaching the app untouched, or routing the wheel into the contract
+/// would silently break wheel handling in existing apps.
+#[test]
+fn a_wheel_over_a_widget_that_ignores_it_still_reaches_the_app() {
+    let mut driver = TuiDriver::new(SpinnerApp::new("Indexing"), COLS, ROWS);
+    let delta = ScrollDelta::new(0.0, -1.0);
+    let position = Point::new(SPIN.x + 1.0, SPIN.y);
+    driver.dispatch(UiEvent::Scroll {
+        widget: None,
+        delta,
+        position,
+    });
+
+    let events = &driver.app().events;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, UiEvent::Scroll { .. }))
+            .count(),
+        1,
+        "the plain scroll must reach the app exactly once: {events:?}"
+    );
+    assert!(
+        matches!(
+            events.last(),
+            Some(UiEvent::Scroll {
+                widget: None,
+                delta: d,
+                position: p,
+            }) if *d == delta && *p == position
+        ),
+        "unchanged, not rewritten by the router: {events:?}"
     );
 }
 

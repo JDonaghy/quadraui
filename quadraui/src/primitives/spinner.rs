@@ -198,13 +198,18 @@ impl Spinner {
 /// Resolve `spinner`'s layout for a cell grid: a single row, as wide as
 /// [`Spinner::inline_cols`] but never wider than `rect`.
 ///
+/// Both extents clamp to `rect`, so a spinner given a zero-height area
+/// resolves zero-height bounds and the cell painter draws nothing —
+/// a glyph row in an area with no rows is worse than no spinner.
+///
 /// Bounds are in the absolute frame `rect` is expressed in, matching
 /// what the pixel path reports, so a
 /// [`SpinnerLayout::hit_test`] against either takes the same
 /// coordinates the host painted at.
 pub(crate) fn cell_spinner_layout(spinner: &Spinner, rect: Rect) -> SpinnerLayout {
     let cols = (spinner.inline_cols() as f32).min(rect.width.max(0.0));
-    spinner.layout(rect.x, rect.y, SpinnerMeasure::new(cols, 1.0))
+    let rows = rect.height.clamp(0.0, 1.0);
+    spinner.layout(rect.x, rect.y, SpinnerMeasure::new(cols, rows))
 }
 
 impl crate::primitive::Primitive for Spinner {
