@@ -74,7 +74,26 @@
 //! and calls [`ToolbarIcons::apply`] to bake the right half into the
 //! `Toolbar` it hands to the backend.
 
+// The cell-grid half of this widget, split out of one file because the
+// terminal rasteriser is the largest single painter here: `cell_layout`
+// measures and packs in whole cells, `cell_paint` picks the glyphs.
+//
+// `pub` rather than `pub(crate)` so a consumer writing its own cell-grid
+// renderer can reach the same layout/painter pair
+// `Primitive::layout`/`Primitive::paint_cells` use. `#[doc(hidden)]`
+// keeps them off the documented surface, the same way every
+// `crate::tui::draw_*` rasteriser re-export is hidden.
+#[cfg(feature = "tui")]
+#[doc(hidden)]
+pub mod cell_layout;
+#[cfg(feature = "tui")]
+#[doc(hidden)]
+pub mod cell_paint;
+mod contract;
+
 use std::borrow::Cow;
+
+pub use contract::{toolbar_part_center, ToolbarPrimitiveLayout, ToolbarState, ToolbarSubPart};
 
 use crate::event::Rect;
 use crate::text_util::display_width;
@@ -682,6 +701,39 @@ pub enum ToolbarEvent {
     /// Escape was pressed while it had focus and a non-empty value — the
     /// field's value is now empty.
     FieldCleared { id: WidgetId },
+    /// A [`ToolbarButton::MenuButton`]'s pull-down was asked for — a
+    /// click anywhere on its pill (body or `▾` affordance), or
+    /// Enter/Space while the keyboard cursor sits on it. The host opens a
+    /// [`crate::ContextMenu`] built from that button's own `menu`,
+    /// anchored at its [`VisibleToolbarItem::bounds`]; this primitive
+    /// owns no menu state of its own.
+    MenuRequested { id: WidgetId },
+    /// The trailing `»` affordance a [`ToolbarOverflow::Menu`] layout
+    /// paints was activated. The host opens a [`crate::ContextMenu`]
+    /// built from [`ToolbarLayout::overflowed_items`]. Carries no id —
+    /// the affordance is the layout's, not a [`Toolbar::buttons`] entry's
+    /// (see [`TOOLBAR_OVERFLOW_ITEM_IDX`]).
+    OverflowRequested,
+}
+
+/// Which button a [`ToolbarHit`] hovers or presses — the one
+/// classification [`compose::ToolbarHoverTracker`](crate::compose::ToolbarHoverTracker)
+/// and [`crate::interactive::Interactive::handle`]'s own pointer arms
+/// share, so a host driving the legacy `Backend` path and one driving the
+/// widget contract highlight the same cell.
+///
+/// A [`ToolbarButton::MenuButton`] hovers the same way an
+/// [`ToolbarButton::Action`] does (its own id drives the hover-highlight
+/// paint); a [`ToolbarButton::Field`] reports its id too, though no
+/// rasteriser reads it for a hover tint today — a text field has no
+/// separate hover state from its own `has_focus`. The `»` affordance has
+/// no [`WidgetId`] of its own to hover, the same "no specific button"
+/// reading as landing on empty space.
+pub(crate) fn hover_target(hit: &ToolbarHit) -> Option<WidgetId> {
+    match hit {
+        ToolbarHit::Button(id) | ToolbarHit::MenuButton(id) | ToolbarHit::Field(id) => Some(*id),
+        ToolbarHit::Empty | ToolbarHit::Overflow => None,
+    }
 }
 
 // ── Nerd-Font icon overrides ─────────────────────────────────────────────────
