@@ -3715,14 +3715,12 @@ pub trait Backend: sealed::Sealed {
     /// glyphs actually painted, while another popup instance (e.g.
     /// settings help text) keeps the chrome font.
     ///
-    /// Added rather than folded into [`Self::draw_rich_text_popup`]'s
-    /// signature, and given a default body, so that this capability
-    /// breaks no existing `Backend` implementor and no existing call
-    /// site — a new required field on [`RichTextPopup`] itself would
-    /// break every downstream consumer constructing one with an
-    /// exhaustive literal (see `CLAUDE.md`'s *Downstream consumers*
-    /// section). Mirrors [`Self::draw_tooltip_with_chrome`]'s
-    /// [`crate::TooltipChrome`] precedent for the same reason.
+    /// The widget-contract equivalent is [`RichTextPopup::font_role`],
+    /// which [`crate::Primitive::font_role`] reports and
+    /// [`crate::Primitive::measure`]/[`crate::Primitive::layout`]
+    /// measure through — a host rendering the popup as
+    /// [`crate::frame::Surface::Widget`] sets the field instead of
+    /// reaching for this method.
     ///
     /// The default body **ignores `role`** and delegates to
     /// `draw_rich_text_popup`, i.e. always paints the chrome font. That

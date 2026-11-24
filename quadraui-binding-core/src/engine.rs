@@ -8481,6 +8481,7 @@ mod tests {
                 padding: 1.0,
                 fg: None,
                 bg: None,
+                font_role: Default::default(),
             },
             Point::new(2.0, 2.0),
         );
@@ -8601,6 +8602,7 @@ mod tests {
                 padding: 1.0,
                 fg: None,
                 bg: None,
+                font_role: Default::default(),
             },
             Point::new(2.0, 2.0),
         );
@@ -8651,6 +8653,7 @@ mod tests {
                 padding: 1.0,
                 fg: None,
                 bg: None,
+                font_role: Default::default(),
             },
             Point::new(2.0, 2.0),
         );
