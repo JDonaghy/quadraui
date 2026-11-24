@@ -40,7 +40,10 @@ mod chart;
 pub mod color;
 mod combo_box;
 mod command_center;
-mod command_line;
+// `pub(crate)` rather than private: `CommandLine`'s own
+// `Primitive::paint_cells` reaches this module's `Buffer` →
+// `CellSurface` adapter, which cannot be built outside `crate::tui`.
+pub(crate) mod command_line;
 mod completions;
 mod context_menu;
 mod data_table;

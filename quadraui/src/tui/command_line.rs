@@ -1,34 +1,41 @@
-//! TUI rasteriser for [`crate::primitives::command_line::CommandLine`].
-//!
-//! [`draw_command_line_selection`] paints
-//! [`CommandLineLayout::selection_bounds`]'s rect as a per-cell
-//! background highlight; [`draw_command_line`] is unchanged and
-//! delegates to it with `selection: None`.
+//! TUI entry points for [`crate::primitives::command_line::CommandLine`]
+//! — thin delegates onto the widget's own cell painter,
+//! `crate::primitives::command_line::cell_paint`, which documents the
+//! bar fill, the right-align shift, the selection highlight and the
+//! block cursor. This module only adapts a raw ratatui [`Buffer`] into
+//! the [`crate::CellSurface`] that painter takes.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{ratatui_color, set_cell};
-use crate::primitives::command_line::{CommandLine, CommandLineLayout, CommandLineMeasure};
-use crate::text_util::safe_prefix;
+use super::cell_surface::TuiCellSurface;
+use crate::backend::ColorDepth;
+use crate::primitives::command_line::{cell_layout, cell_paint, CommandLine, CommandLineLayout};
 use crate::theme::Theme;
 
 /// Compute [`CommandLineLayout`] for `cmd` in `area` — one cell per
 /// character column.
+///
+/// Delegates to [`crate::primitives::command_line::cell_layout`], the
+/// one cell-units layout every cell-grid caller shares, so paint and
+/// hit-test agree on every column.
 pub fn tui_command_line_layout(cmd: &CommandLine, area: Rect) -> CommandLineLayout {
-    let rect = crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    );
-    cmd.layout(rect, CommandLineMeasure::new(1.0))
+    cell_layout(
+        cmd,
+        crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ),
+    )
 }
 
-/// Paint `cmd` into `buf` at `area` and return the [`CommandLineLayout`]
-/// used to place its glyphs — the same value `tui_command_line_layout`
-/// would compute, handed back so callers never have to re-derive it and
-/// risk it drifting from what was actually painted.
+/// Paint `cmd` into `buf` at `area` and return the
+/// [`CommandLineLayout`] used to place its glyphs — the same value
+/// `tui_command_line_layout` would compute, handed back so callers never
+/// have to re-derive it and risk it drifting from what was actually
+/// painted.
 pub fn draw_command_line(
     buf: &mut Buffer,
     area: Rect,
@@ -43,9 +50,12 @@ pub fn draw_command_line(
 /// resolves for `selection` with `theme.selection` as the cell
 /// background.
 ///
-/// A sibling function, not a new parameter on `draw_command_line` — see
-/// this module's and `crate::primitives::command_line`'s doc comments
-/// for why `CommandLine` gained no new field for this.
+/// Both entry points reach the same painter, which takes the selection
+/// as a parameter — this is the `Backend::draw_command_line_selection`
+/// signature's own shape, not a second rasteriser. Also what
+/// [`crate::primitive::Primitive::paint_cells`] reaches the painter
+/// through, since the `Buffer` → [`crate::CellSurface`] adapter is
+/// private to this module's parent.
 pub fn draw_command_line_selection(
     buf: &mut Buffer,
     area: Rect,
@@ -54,194 +64,8 @@ pub fn draw_command_line_selection(
     selection: Option<(usize, usize)>,
 ) -> CommandLineLayout {
     let layout = tui_command_line_layout(cmd, area);
-    let fg = ratatui_color(theme.command_line_fg);
-    let bg = ratatui_color(theme.command_line_bg);
-    let sel_bg = ratatui_color(theme.selection);
-
-    // Absolute (area-relative-origin) column range covered by the
-    // selection, if any — `char_width` is `1.0` here (one cell per
-    // character), so `CommandLineLayout::selection_bounds`'s rect `x`/
-    // `width` are already whole cell columns.
-    let sel_cols = selection.and_then(|sel| {
-        layout.selection_bounds(sel).map(|r| {
-            let start = r.x.round() as u16;
-            let end = (r.x + r.width).round() as u16;
-            (start, end)
-        })
-    });
-    let bg_for = |x: u16| match sel_cols {
-        Some((start, end)) if x >= start && x < end => sel_bg,
-        _ => bg,
-    };
-
-    for x in area.x..area.x + area.width {
-        set_cell(buf, x, area.y, ' ', fg, bg_for(x));
-    }
-
-    if cmd.text.is_empty() {
-        return layout;
-    }
-
-    if cmd.right_align {
-        let chars: Vec<char> = cmd.text.chars().collect();
-        let len = chars.len() as u16;
-        if len <= area.width {
-            for (x, &ch) in (area.x + area.width - len..).zip(chars.iter()) {
-                if x >= area.x + area.width {
-                    break;
-                }
-                set_cell(buf, x, area.y, ch, fg, bg_for(x));
-            }
-        }
-    } else {
-        for (x, ch) in (area.x..).zip(cmd.text.chars()) {
-            if x >= area.x + area.width {
-                break;
-            }
-            set_cell(buf, x, area.y, ch, fg, bg_for(x));
-        }
-    }
-
-    if let Some(offset) = cmd.cursor_offset {
-        let cursor_col = safe_prefix(&cmd.text, offset).chars().count() as u16;
-        let cx = area.x + cursor_col.min(area.width.saturating_sub(1));
-        if cx < area.x + area.width {
-            let cell = &mut buf[(cx, area.y)];
-            let old_fg = cell.fg;
-            let old_bg = cell.bg;
-            cell.set_fg(old_bg).set_bg(old_fg);
-        }
-    }
-
+    let mut cursor_sink = None;
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    cell_paint::paint(cmd, &layout, &mut surface, theme, selection);
     layout
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::WidgetId;
-
-    /// `cursor_offset` is a host-supplied byte offset with no guarantee it
-    /// lands on a char boundary; it must be validated to avoid slicing into
-    /// a multibyte character.
-    #[test]
-    fn draw_command_line_with_multibyte_cursor_does_not_panic() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
-        let theme = Theme::default();
-
-        // ":éditer" — byte 2 sits inside the 2-byte 'é' (starts at byte 1).
-        let text = ":éditer";
-        assert!(!text.is_char_boundary(2));
-        let cmd = CommandLine {
-            id: WidgetId::new("cmdline"),
-            text: text.into(),
-            cursor_offset: Some(2),
-            right_align: false,
-        };
-
-        // Must not panic.
-        draw_command_line(&mut buf, Rect::new(0, 0, 20, 1), &cmd, &theme);
-    }
-
-    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
-        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
-    }
-
-    /// Paint and click round-trip: paint via the real `draw_command_line`
-    /// rasteriser, read back the actual painted cell character from the
-    /// `Buffer`, then `hit_test` that exact painted coordinate and assert it
-    /// resolves to that character's byte offset. This verifies that
-    /// `draw_command_line`'s glyph placement stays in sync with
-    /// `CommandLine::layout`'s column formula.
-    ///
-    /// Tested at a nonzero origin (`area.x == 5`) to verify that `hit_test`
-    /// correctly ignores clicks left of the bar and maps columns starting at
-    /// `area.x`, not `0`.
-    #[test]
-    fn tui_command_line_paint_and_click_round_trip_at_nonzero_origin() {
-        let area = Rect::new(5, 3, 20, 1);
-        let mut buf = Buffer::empty(area);
-        let theme = Theme::default();
-        let cmd = CommandLine {
-            id: WidgetId::new("cmdline"),
-            text: ":wq".into(),
-            cursor_offset: None,
-            right_align: false,
-        };
-
-        let layout = draw_command_line(&mut buf, area, &cmd, &theme);
-
-        // Column 0 (':') is actually painted at the absolute origin.
-        assert_eq!(cell_char(&buf, 5, 3), ':');
-        // Column 1 ('w') is actually painted one cell to the right.
-        assert_eq!(cell_char(&buf, 6, 3), 'w');
-
-        // hit_test at the real painted position of 'w' (a click lands
-        // somewhere inside the cell, not necessarily at its left edge)
-        // must resolve to 'w's byte offset (1) in ":wq".
-        assert_eq!(layout.hit_test(6.5), 1);
-
-        // A click left of the bar clamps to the first column's byte offset.
-        assert_eq!(layout.hit_test(0.0), 0);
-        // Column 0 starts at x == area.x == 5.
-        assert_eq!(layout.hit_test(5.0), 0);
-    }
-
-    /// `draw_command_line_selection` highlights exactly the selected
-    /// cells with `theme.selection` as background, leaves the rest at
-    /// `theme.command_line_bg`, and `draw_command_line` (no selection
-    /// argument) stays unaffected.
-    #[test]
-    fn tui_command_line_selection_highlights_only_selected_cells() {
-        let area = Rect::new(5, 3, 20, 1);
-        let mut buf = Buffer::empty(area);
-        let theme = Theme::default();
-        let cmd = CommandLine {
-            id: WidgetId::new("cmdline"),
-            text: ":wq!".into(),
-            cursor_offset: None,
-            right_align: false,
-        };
-
-        // Select ":w" -> byte offsets 0..2 -> columns 0,1 -> cells x=5,6.
-        let layout = draw_command_line_selection(&mut buf, area, &cmd, &theme, Some((0, 2)));
-        assert_eq!(cell_char(&buf, 5, 3), ':');
-        assert_eq!(cell_char(&buf, 6, 3), 'w');
-
-        let sel_bg = ratatui_color(theme.selection);
-        let plain_bg = ratatui_color(theme.command_line_bg);
-        assert_eq!(
-            buf[(5, 3)].bg,
-            sel_bg,
-            "selected column 0 should carry the selection bg"
-        );
-        assert_eq!(
-            buf[(6, 3)].bg,
-            sel_bg,
-            "selected column 1 should carry the selection bg"
-        );
-        assert_eq!(
-            buf[(7, 3)].bg,
-            plain_bg,
-            "unselected column 2 ('q') should keep the plain command-line bg"
-        );
-        assert_eq!(
-            buf[(8, 3)].bg,
-            plain_bg,
-            "unselected column 3 ('!') should keep the plain command-line bg"
-        );
-
-        // Sanity: the returned layout's own geometry agrees.
-        let r = layout.selection_bounds((0, 2)).unwrap();
-        assert_eq!((r.x, r.width), (5.0, 2.0));
-
-        // `draw_command_line` (no selection) must remain unaffected.
-        let mut buf2 = Buffer::empty(area);
-        draw_command_line(&mut buf2, area, &cmd, &theme);
-        assert_eq!(
-            buf2[(5, 3)].bg,
-            plain_bg,
-            "draw_command_line (no selection arg) must not highlight anything"
-        );
-    }
 }

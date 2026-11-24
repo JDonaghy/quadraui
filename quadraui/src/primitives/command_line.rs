@@ -15,6 +15,7 @@
 
 use crate::event::Rect;
 use crate::types::WidgetId;
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a command line surface.
@@ -513,6 +514,1010 @@ pub(crate) mod native_surface_paint {
                 None,
             );
         }
+    }
+}
+
+// ── Cell-grid layout + paint ───────────────────────────────────────────
+
+/// Resolve this bar's layout in **whole cell** units — the one cell-grid
+/// entry point [`crate::primitive::Primitive::layout`] and
+/// [`crate::tui::command_line::tui_command_line_layout`] share, so the widget contract
+/// and the legacy `Backend::draw_command_line` path can never disagree
+/// about which column a character sits in.
+pub fn cell_layout(cmd: &CommandLine, rect: Rect) -> CommandLineLayout {
+    cmd.layout(rect, CommandLineMeasure::new(1.0))
+}
+
+/// `CommandLine`'s cell-grid rasteriser, written against
+/// [`crate::CellSurface`]'s verbs — the cell-grid twin of
+/// [`native_surface_paint::paint`].
+///
+/// One borderless row filled with [`crate::Theme::command_line_bg`], the
+/// text painted in [`crate::Theme::command_line_fg`] (pushed to the far
+/// edge when [`CommandLine::right_align`]), the cell columns a selection
+/// covers tinted [`crate::Theme::selection`], and a block cursor at
+/// [`CommandLine::cursor_offset`] made by swapping that cell's own
+/// foreground and background.
+///
+/// The selection is a parameter rather than a second entry point: one
+/// painter, driven by whatever selection state its caller holds.
+pub(crate) mod cell_paint {
+    use super::{CommandLine, CommandLineLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::text_util::safe_prefix;
+    use crate::theme::Theme;
+
+    /// Paint `cmd` at the already-resolved `layout` onto `surface`,
+    /// highlighting the columns `selection` (a `(start, end)` byte-offset
+    /// pair, either order) covers.
+    pub(crate) fn paint(
+        cmd: &CommandLine,
+        layout: &CommandLineLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+        selection: Option<(usize, usize)>,
+    ) {
+        let area = layout.bounds;
+        if area.width < 1.0 || area.height < 1.0 {
+            return;
+        }
+        let fg = theme.command_line_fg;
+        let bg = theme.command_line_bg;
+        let sel_bg = theme.selection;
+
+        // Absolute (area-relative-origin) column range covered by the
+        // selection, if any — `char_width` is `1.0` here (one cell per
+        // character), so `CommandLineLayout::selection_bounds`'s rect
+        // `x`/`width` are already whole cell columns.
+        let sel_cols = selection.and_then(|sel| {
+            layout.selection_bounds(sel).map(|r| {
+                let start = r.x.round() as u16;
+                let end = (r.x + r.width).round() as u16;
+                (start, end)
+            })
+        });
+        let style_for = |x: u16| CellStyle {
+            fg: Some(fg),
+            bg: Some(match sel_cols {
+                Some((start, end)) if x >= start && x < end => sel_bg,
+                _ => bg,
+            }),
+            ..CellStyle::default()
+        };
+
+        let x0 = area.x as u16;
+        let row_y = area.y as u16;
+        let cols = area.width as u16;
+        for x in x0..x0 + cols {
+            surface.put_char(x, row_y, ' ', style_for(x));
+        }
+
+        if cmd.text.is_empty() {
+            return;
+        }
+
+        let chars: Vec<char> = cmd.text.chars().collect();
+        let start_x = if cmd.right_align {
+            let len = chars.len() as u16;
+            if len > cols {
+                // Too wide to right-align: the legacy rasteriser paints
+                // nothing rather than cropping a right-aligned run.
+                return;
+            }
+            x0 + cols - len
+        } else {
+            x0
+        };
+        for (x, &ch) in (start_x..).zip(chars.iter()) {
+            if x >= x0 + cols {
+                break;
+            }
+            surface.put_char(x, row_y, ch, style_for(x));
+        }
+
+        // Block cursor: swap the cell's own colours, so the glyph already
+        // painted there stays legible in reverse video.
+        if let Some(offset) = cmd.cursor_offset {
+            let cursor_col = safe_prefix(&cmd.text, offset).chars().count() as u16;
+            let cx = x0 + cursor_col.min(cols.saturating_sub(1));
+            if cx < x0 + cols {
+                let fallback = CellStyle {
+                    fg: Some(fg),
+                    bg: Some(bg),
+                    ..CellStyle::default()
+                };
+                let (ch, under) = surface.get(cx, row_y).unwrap_or((' ', fallback));
+                surface.put_char(
+                    cx,
+                    row_y,
+                    ch,
+                    CellStyle {
+                        fg: under.bg.or(Some(bg)),
+                        bg: under.fg.or(Some(fg)),
+                        ..under
+                    },
+                );
+            }
+        }
+    }
+}
+
+// ── Widget contract ────────────────────────────────────────────────────
+
+/// [`crate::primitive::Primitive::Layout`] for [`CommandLine`]: the
+/// absolute area the bar was laid out into, the resolved
+/// [`CommandLineLayout`], and the selection the paint path highlights.
+///
+/// # Why `selection` is always `None` here
+///
+/// A selection range is host state ([`CommandLine`] itself carries no
+/// field for one — see that type's doc), and
+/// [`crate::primitive::Primitive::layout`] sees only the descriptor. A
+/// host that tracks a drag-selection paints it by resolving
+/// [`CommandLine::layout`] itself and calling the selection-aware painter
+/// ([`crate::Backend::draw_command_line_selection`], which is the same
+/// painter with the range filled in). The field exists on this layout so
+/// that painter has exactly one source for the range, rather than a
+/// second draw entry point.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandLinePrimitiveLayout {
+    /// The absolute rect the bar was laid out into.
+    pub area: Rect,
+    /// The resolved bar layout, in absolute coordinates.
+    pub layout: CommandLineLayout,
+    /// The selection to highlight, as a `(start, end)` byte-offset pair.
+    pub selection: Option<(usize, usize)>,
+}
+
+impl CommandLinePrimitiveLayout {
+    /// The byte offset into [`CommandLine::text`] an absolute `x`
+    /// resolves to — see [`CommandLineLayout::hit_test`].
+    pub fn hit_test(&self, x: f32) -> usize {
+        self.layout.hit_test(x)
+    }
+}
+
+impl crate::a11y::A11yPrimitive for CommandLinePrimitiveLayout {
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        crate::a11y::A11yInfo::default()
+    }
+}
+
+impl crate::primitive::Primitive for CommandLine {
+    type Layout = CommandLinePrimitiveLayout;
+    type Event = usize;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::CommandLine(self.clone())
+    }
+
+    /// Exactly one row tall, as wide as the text — a command bar
+    /// normally stretches, so the width is advisory only.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let width = self.text.chars().count() as f32 * ctx.char_width.max(1.0);
+        crate::NaturalSize::new(Some(width.min(avail.width)), Some(ctx.line_height.max(1.0)))
+    }
+
+    /// `rect` is the bar's own one-row strip. On a cell grid the layout
+    /// comes from [`cell_layout`]; on a pixel surface from
+    /// [`CommandLine::layout`] with the backend's own monospace advance.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> CommandLinePrimitiveLayout {
+        let layout = match ctx.units() {
+            crate::primitive::Units::Cells => cell_layout(self, rect),
+            _ => self.layout(rect, CommandLineMeasure::new(ctx.char_width)),
+        };
+        CommandLinePrimitiveLayout {
+            area: rect,
+            layout,
+            selection: None,
+        }
+    }
+
+    /// The shared pixel painter — the same one every pixel backend's
+    /// `draw_command_line`/`draw_command_line_selection` routes through,
+    /// with the selection taken from the layout rather than a separate
+    /// draw call.
+    fn paint(
+        &self,
+        layout: &CommandLinePrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(
+                self,
+                surface,
+                theme,
+                layout.area,
+                layout.layout.char_width,
+                layout.selection,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::command_line::draw_command_line_selection`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`. That
+    /// entry point re-resolves the layout from the same area through the
+    /// same [`cell_layout`] this `Primitive` laid out with, so the glyphs
+    /// land exactly where `layout` says they do.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &CommandLinePrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = layout.area;
+        crate::tui::command_line::draw_command_line_selection(
+            buf,
+            ratatui::layout::Rect::new(
+                area.x as u16,
+                area.y as u16,
+                area.width as u16,
+                area.height as u16,
+            ),
+            self,
+            theme,
+            layout.selection,
+        );
+    }
+}
+
+/// [`crate::interactive::Interactive::State`] for [`CommandLine`]: the
+/// caret and selection anchor this widget's own key handling moves, as
+/// byte offsets into [`CommandLine::text`].
+///
+/// Same division of labour as
+/// [`crate::primitives::text_input::TextInputState`] — see that type's
+/// doc for why the caret is interaction state rather than something read
+/// back off the descriptor.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CommandLineState {
+    /// The caret byte offset this widget's own editing has moved to, or
+    /// `None` while it still follows [`CommandLine::cursor_offset`].
+    pub cursor: Option<usize>,
+    /// The selection's fixed end, as a byte offset.
+    pub anchor: Option<usize>,
+}
+
+/// What a [`CommandLine`]'s own
+/// [`crate::interactive::Interactive::handle`] resolves one gesture to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandLineAction {
+    /// The text changed — a keystroke or a cut. Carries the whole new
+    /// text, the shape
+    /// [`crate::primitives::form::FormEvent::TextInputChanged`] already
+    /// names.
+    Changed(String),
+    /// Enter submitted the command.
+    Submitted(String),
+    /// Escape abandoned the command.
+    Cancelled,
+    /// Ctrl-C (or the copy half of Ctrl-X) put the selection on the
+    /// clipboard.
+    Copied(String),
+}
+
+impl crate::interactive::WidgetAction for CommandLineAction {
+    /// Edits and submission ride [`crate::UiEvent::Form`]'s
+    /// `TextInputChanged`/`TextInputCommitted` — the crate's one "a text
+    /// field was edited / answered" channel. Escape has no such variant,
+    /// so it reports as the unconsumed-key passthrough
+    /// [`crate::primitives::form::FormEvent::KeyPressed`], which is what
+    /// a `Form` does with a key it declines.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        use crate::primitives::form::FormEvent;
+        match self {
+            CommandLineAction::Changed(value) => {
+                crate::UiEvent::Form(id, FormEvent::TextInputChanged { id, value })
+            }
+            CommandLineAction::Submitted(value) => {
+                crate::UiEvent::Form(id, FormEvent::TextInputCommitted { id, value })
+            }
+            CommandLineAction::Cancelled => crate::UiEvent::Form(
+                id,
+                FormEvent::KeyPressed {
+                    key: "Escape".into(),
+                    modifiers: crate::types::Modifiers::default(),
+                },
+            ),
+            CommandLineAction::Copied(text) => crate::UiEvent::TextCopied(text),
+        }
+    }
+}
+
+impl CommandLine {
+    /// The caret one `handle` call starts from: whatever this widget's
+    /// own state has walked to, else [`Self::cursor_offset`], else the
+    /// end of the text — snapped to a char boundary either way.
+    fn effective_cursor(&self, state: &CommandLineState) -> usize {
+        let raw = state
+            .cursor
+            .or(self.cursor_offset)
+            .unwrap_or(self.text.len())
+            .min(self.text.len());
+        crate::text_util::snap_to_char_boundary(&self.text, raw)
+    }
+
+    /// Apply one [`crate::EditOp`] against this bar's text and the
+    /// caret/anchor in `state`, writing the resulting caret back.
+    ///
+    /// Returns the new text when it changed, `None` when the op only
+    /// moved the caret or the selection.
+    fn apply_op(&self, state: &mut CommandLineState, op: crate::EditOp) -> Option<String> {
+        let (text, cursor, anchor) = crate::behaviour::text_edit::apply_flat_edit_op(
+            &self.text,
+            self.effective_cursor(state),
+            state.anchor,
+            op,
+        );
+        state.cursor = Some(cursor);
+        state.anchor = anchor;
+        (text != self.text).then_some(text)
+    }
+
+    /// The selected text, as the shared flat-value selection span
+    /// resolves it against this bar's text and `state`'s caret/anchor.
+    fn selection_text(&self, state: &CommandLineState) -> Option<String> {
+        let (lo, hi) = crate::behaviour::text_edit::flat_selection_range(
+            &self.text,
+            self.effective_cursor(state),
+            state.anchor,
+        )?;
+        Some(self.text[lo..hi].to_string())
+    }
+
+    /// Apply `op` and report it: a text change as
+    /// [`CommandLineAction::Changed`], a caret-only move as
+    /// [`Handled::Consumed`] plus a redraw request.
+    fn commit(
+        &self,
+        state: &mut CommandLineState,
+        op: crate::EditOp,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<CommandLineAction> {
+        match self.apply_op(state, op) {
+            Some(text) => Handled::Event(CommandLineAction::Changed(text)),
+            None => {
+                cx.request_redraw();
+                Handled::Consumed
+            }
+        }
+    }
+
+    /// One keystroke, with Enter/Escape and the Ctrl-chorded clipboard /
+    /// select-all keys claimed ahead of [`crate::EditOp::from_key`]
+    /// (which maps Enter to a newline and would read `Ctrl+A` as typing
+    /// an `a`).
+    fn handle_key(
+        &self,
+        state: &mut CommandLineState,
+        key: &crate::event::Key,
+        modifiers: crate::types::Modifiers,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<CommandLineAction> {
+        use crate::event::{Key, NamedKey};
+        use crate::EditOp;
+
+        if modifiers.ctrl || modifiers.cmd {
+            match key {
+                Key::Char('a') | Key::Char('A') => {
+                    return self.commit(state, EditOp::SelectAll, cx);
+                }
+                Key::Char('c') | Key::Char('C') => {
+                    return match self.selection_text(state) {
+                        Some(text) => Handled::Event(CommandLineAction::Copied(text)),
+                        None => Handled::Consumed,
+                    };
+                }
+                Key::Char('x') | Key::Char('X') => {
+                    return match self.selection_text(state) {
+                        Some(text) => {
+                            cx.emit(crate::UiEvent::TextCopied(text));
+                            self.commit(state, EditOp::DeleteSelection, cx)
+                        }
+                        None => Handled::Consumed,
+                    };
+                }
+                // Paste is the host's: the clipboard text arrives as
+                // `UiEvent::ClipboardPaste`, which a host feeds back in
+                // as `RoutedEvent::Text`.
+                Key::Char('v') | Key::Char('V') => return Handled::Ignored,
+                _ => {}
+            }
+        }
+        match key {
+            // A command bar is one line: Enter submits rather than
+            // splitting the text, so the newline `EditOp::from_key`
+            // would resolve never reaches the buffer.
+            Key::Named(NamedKey::Enter) => {
+                Handled::Event(CommandLineAction::Submitted(self.text.clone()))
+            }
+            Key::Named(NamedKey::Escape) => Handled::Event(CommandLineAction::Cancelled),
+            _ => match EditOp::from_key(key, modifiers) {
+                Some(op) => self.commit(state, op, cx),
+                None => Handled::Ignored,
+            },
+        }
+    }
+}
+
+impl crate::interactive::Interactive for CommandLine {
+    type State = CommandLineState;
+    type Action = CommandLineAction;
+
+    /// One focus stop as a whole — the bar routes every keystroke
+    /// itself.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// A screen reader can focus the bar and replace its whole text.
+    fn a11y_actions(&self, _state: &CommandLineState) -> Vec<crate::a11y::A11yAction> {
+        vec![
+            crate::a11y::A11yAction::Focus,
+            crate::a11y::A11yAction::SetValue,
+        ]
+    }
+
+    /// Keystrokes go through [`crate::EditOp::from_key`] and the shared
+    /// flat-value bridge, so this bar, [`crate::TextField`] and
+    /// [`crate::TextEditor`] can never disagree about what a key means.
+    /// Enter submits, Escape cancels, Ctrl-A/C/X select-all/copy/cut, a
+    /// click parks the caret at the clicked character and a shift-click
+    /// (or a drag) extends the selection to it.
+    fn handle(
+        &self,
+        state: &mut CommandLineState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &CommandLinePrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<CommandLineAction> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+
+        match event {
+            RoutedEvent::Key(key) => self.handle_key(state, &key.key, key.modifiers, cx),
+            RoutedEvent::Text(text) => {
+                self.commit(state, crate::EditOp::InsertText(text.clone()), cx)
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                local,
+                mods,
+                ..
+            } => {
+                cx.request_focus(None);
+                cx.capture_pointer();
+                let offset = layout.hit_test(layout.area.x + local.x);
+                self.move_caret_to(state, offset, mods.shift, cx)
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                local,
+                ..
+            } if cx.is_focused(None) => {
+                // A drag with the button still down extends the
+                // selection; the engine only routes a move here while
+                // this widget holds the pointer capture taken above.
+                let offset = layout.hit_test(layout.area.x + local.x);
+                self.move_caret_to(state, offset, true, cx)
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Up(crate::event::MouseButton::Left),
+                ..
+            } => {
+                cx.release_pointer();
+                Handled::Consumed
+            }
+            RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
+                cx.request_focus(None);
+                Handled::Consumed
+            }
+            RoutedEvent::FocusIn(_) => {
+                // Re-seed from the descriptor: the host may have moved
+                // the caret while this bar was unfocused.
+                state.cursor = Some(self.cursor_offset.unwrap_or(self.text.len()));
+                state.anchor = None;
+                Handled::Consumed
+            }
+            RoutedEvent::FocusOut => {
+                state.cursor = None;
+                state.anchor = None;
+                Handled::Consumed
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+impl CommandLine {
+    /// Park the caret at byte offset `offset`, extending the selection
+    /// when `extend`.
+    fn move_caret_to(
+        &self,
+        state: &mut CommandLineState,
+        offset: usize,
+        extend: bool,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<CommandLineAction> {
+        let (_, col) = crate::behaviour::text_edit::byte_offset_to_line_col(&self.text, offset);
+        self.commit(
+            state,
+            crate::EditOp::SetCursor {
+                line: 0,
+                col,
+                extend,
+            },
+            cx,
+        )
+    }
+}
+
+/// Routes a headless `TuiDriver` test can't reach: the
+/// assistive-technology action path, a host-driven focus transition, and
+/// the drag that extends a selection.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::event::{Key, MouseButton, NamedKey, Point};
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::types::Modifiers;
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock — the same shape every other widget
+    /// module's own `Interactive` tests use. `focused` answers
+    /// [`EventHost::is_focused`] so the drag arm, which only runs while
+    /// the bar holds focus, is reachable.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+        emitted: Vec<crate::UiEvent>,
+        captures: usize,
+        releases: usize,
+        focused: bool,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            self.focused
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {
+            self.captures += 1;
+        }
+        fn release_pointer(&mut self) {
+            self.releases += 1;
+        }
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn bar(text: &str) -> CommandLine {
+        CommandLine {
+            id: WidgetId::new("cmdline"),
+            text: text.into(),
+            cursor_offset: Some(text.len()),
+            right_align: false,
+        }
+    }
+
+    fn area() -> Rect {
+        Rect::new(0.0, 23.0, 40.0, 1.0)
+    }
+
+    fn layout_of(cmd: &CommandLine) -> CommandLinePrimitiveLayout {
+        Primitive::layout(cmd, &LayoutCtx::new(1.0, 1.0, false), area())
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        })
+    }
+
+    fn pointer(kind: PointerKind, x: f32, mods: Modifiers) -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind,
+            sub: None,
+            local: Point::new(x, 0.0),
+            mods,
+        }
+    }
+
+    #[test]
+    fn a_command_line_is_one_focus_stop() {
+        assert_eq!(Interactive::focus(&bar(":wq")), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn enter_submits_and_escape_cancels() {
+        let cmd = bar(":wq");
+        let layout = layout_of(&cmd);
+        let mut host = MockHost::default();
+        let mut state = CommandLineState::default();
+        let mut cx = EventCx::new(cmd.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &key(Key::Named(NamedKey::Enter), Modifiers::default()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(CommandLineAction::Submitted(":wq".into()))
+        );
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &key(Key::Named(NamedKey::Escape), Modifiers::default()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(CommandLineAction::Cancelled)
+        );
+    }
+
+    #[test]
+    fn typing_appends_at_the_caret() {
+        let cmd = bar(":w");
+        let layout = layout_of(&cmd);
+        let mut host = MockHost::default();
+        let mut state = CommandLineState::default();
+        let mut cx = EventCx::new(cmd.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &key(Key::Char('q'), Modifiers::default()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(CommandLineAction::Changed(":wq".into()))
+        );
+    }
+
+    #[test]
+    fn a_drag_extends_the_selection_from_the_press_position() {
+        let cmd = bar(":wqall");
+        let layout = layout_of(&cmd);
+        let mut host = MockHost {
+            focused: true,
+            ..Default::default()
+        };
+        let mut state = CommandLineState::default();
+        let mut cx = EventCx::new(cmd.id, &mut host);
+        Interactive::handle(
+            &cmd,
+            &mut state,
+            &pointer(
+                PointerKind::Down(MouseButton::Left),
+                1.0,
+                Modifiers::default(),
+            ),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.cursor, Some(1));
+        Interactive::handle(
+            &cmd,
+            &mut state,
+            &pointer(PointerKind::Move, 4.0, Modifiers::default()),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.cursor, Some(4));
+        assert_eq!(state.anchor, Some(1));
+        Interactive::handle(
+            &cmd,
+            &mut state,
+            &pointer(
+                PointerKind::Up(MouseButton::Left),
+                4.0,
+                Modifiers::default(),
+            ),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!((host.captures, host.releases), (1, 1));
+    }
+
+    #[test]
+    fn ctrl_x_emits_the_copy_alongside_the_shortened_text() {
+        let cmd = bar(":wq");
+        let layout = layout_of(&cmd);
+        let mut host = MockHost::default();
+        let mut state = CommandLineState::default();
+        let mut cx = EventCx::new(cmd.id, &mut host);
+        Interactive::handle(
+            &cmd,
+            &mut state,
+            &key(
+                Key::Char('a'),
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &layout,
+            &mut cx,
+        );
+        let handled = Interactive::handle(
+            &cmd,
+            &mut state,
+            &key(
+                Key::Char('x'),
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(CommandLineAction::Changed(String::new()))
+        );
+        assert_eq!(host.emitted, vec![crate::UiEvent::TextCopied(":wq".into())]);
+    }
+
+    #[test]
+    fn an_a11y_focus_action_requests_focus_on_the_bar_itself() {
+        let cmd = bar(":wq");
+        let layout = layout_of(&cmd);
+        let mut host = MockHost::default();
+        let mut state = CommandLineState::default();
+        let mut cx = EventCx::new(cmd.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &cmd,
+                &mut state,
+                &RoutedEvent::Action(A11yAction::Focus),
+                &layout,
+                &mut cx
+            ),
+            Handled::Consumed
+        );
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn focus_in_seeds_the_caret_from_the_descriptor_and_focus_out_releases_it() {
+        let mut cmd = bar(":wq");
+        cmd.cursor_offset = Some(1);
+        let layout = layout_of(&cmd);
+        let mut host = MockHost::default();
+        let mut state = CommandLineState {
+            cursor: Some(3),
+            anchor: Some(2),
+        };
+        let mut cx = EventCx::new(cmd.id, &mut host);
+        Interactive::handle(
+            &cmd,
+            &mut state,
+            &RoutedEvent::FocusIn(None),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(state.cursor, Some(1));
+        assert_eq!(state.anchor, None);
+        Interactive::handle(&cmd, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx);
+        assert_eq!(state.cursor, None);
+    }
+
+    #[test]
+    fn the_contract_layout_carries_no_selection_of_its_own() {
+        let cmd = bar(":wq");
+        assert_eq!(layout_of(&cmd).selection, None);
+    }
+
+    #[test]
+    fn a_pixel_layout_hit_tests_with_the_backends_char_width() {
+        let cmd = bar(":wq");
+        let layout = Primitive::layout(
+            &cmd,
+            &LayoutCtx::new(16.0, 8.0, false),
+            Rect::new(0.0, 0.0, 320.0, 20.0),
+        );
+        assert_eq!(layout.layout.char_width, 8.0);
+        assert_eq!(layout.hit_test(8.0), 1);
+    }
+
+    #[test]
+    fn measure_reports_one_row_and_the_texts_own_width() {
+        let cmd = bar(":wq");
+        let size = Primitive::measure(
+            &cmd,
+            &LayoutCtx::new(1.0, 1.0, false),
+            crate::primitive::Size::new(40.0, 40.0),
+        );
+        assert_eq!(size.width, Some(3.0));
+        assert_eq!(size.height, Some(1.0));
+    }
+}
+
+/// Cell-grid paint tests for [`cell_paint`], driven through
+/// [`crate::tui::command_line::draw_command_line`] — the delegate that
+/// owns the `Buffer` → [`crate::CellSurface`] adapter the painter needs.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use crate::primitives::command_line::CommandLine;
+    use crate::theme::Theme;
+    use crate::tui::command_line::{draw_command_line, draw_command_line_selection};
+    use crate::types::{Color, WidgetId};
+
+    /// The ratatui colour `crate::tui`'s own cell writers land for a
+    /// quadraui [`Color`] — spelled here because that crate-private
+    /// conversion isn't reachable from a widget module.
+    fn ratatui_color(c: Color) -> ratatui::style::Color {
+        ratatui::style::Color::Rgb(c.r, c.g, c.b)
+    }
+
+    /// `cursor_offset` is a host-supplied byte offset with no guarantee it
+    /// lands on a char boundary; it must be validated to avoid slicing into
+    /// a multibyte character.
+    #[test]
+    fn draw_command_line_with_multibyte_cursor_does_not_panic() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let theme = Theme::default();
+
+        // ":éditer" — byte 2 sits inside the 2-byte 'é' (starts at byte 1).
+        let text = ":éditer";
+        assert!(!text.is_char_boundary(2));
+        let cmd = CommandLine {
+            id: WidgetId::new("cmdline"),
+            text: text.into(),
+            cursor_offset: Some(2),
+            right_align: false,
+        };
+
+        // Must not panic.
+        draw_command_line(&mut buf, Rect::new(0, 0, 20, 1), &cmd, &theme);
+    }
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    /// Paint and click round-trip: paint via the real `draw_command_line`
+    /// rasteriser, read back the actual painted cell character from the
+    /// `Buffer`, then `hit_test` that exact painted coordinate and assert it
+    /// resolves to that character's byte offset. This verifies that
+    /// `draw_command_line`'s glyph placement stays in sync with
+    /// `CommandLine::layout`'s column formula.
+    ///
+    /// Tested at a nonzero origin (`area.x == 5`) to verify that `hit_test`
+    /// correctly ignores clicks left of the bar and maps columns starting at
+    /// `area.x`, not `0`.
+    #[test]
+    fn tui_command_line_paint_and_click_round_trip_at_nonzero_origin() {
+        let area = Rect::new(5, 3, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let cmd = CommandLine {
+            id: WidgetId::new("cmdline"),
+            text: ":wq".into(),
+            cursor_offset: None,
+            right_align: false,
+        };
+
+        let layout = draw_command_line(&mut buf, area, &cmd, &theme);
+
+        // Column 0 (':') is actually painted at the absolute origin.
+        assert_eq!(cell_char(&buf, 5, 3), ':');
+        // Column 1 ('w') is actually painted one cell to the right.
+        assert_eq!(cell_char(&buf, 6, 3), 'w');
+
+        // hit_test at the real painted position of 'w' (a click lands
+        // somewhere inside the cell, not necessarily at its left edge)
+        // must resolve to 'w's byte offset (1) in ":wq".
+        assert_eq!(layout.hit_test(6.5), 1);
+
+        // A click left of the bar clamps to the first column's byte offset.
+        assert_eq!(layout.hit_test(0.0), 0);
+        // Column 0 starts at x == area.x == 5.
+        assert_eq!(layout.hit_test(5.0), 0);
+    }
+
+    /// `draw_command_line_selection` highlights exactly the selected
+    /// cells with `theme.selection` as background, leaves the rest at
+    /// `theme.command_line_bg`, and `draw_command_line` (no selection
+    /// argument) stays unaffected.
+    #[test]
+    fn tui_command_line_selection_highlights_only_selected_cells() {
+        let area = Rect::new(5, 3, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let cmd = CommandLine {
+            id: WidgetId::new("cmdline"),
+            text: ":wq!".into(),
+            cursor_offset: None,
+            right_align: false,
+        };
+
+        // Select ":w" -> byte offsets 0..2 -> columns 0,1 -> cells x=5,6.
+        let layout = draw_command_line_selection(&mut buf, area, &cmd, &theme, Some((0, 2)));
+        assert_eq!(cell_char(&buf, 5, 3), ':');
+        assert_eq!(cell_char(&buf, 6, 3), 'w');
+
+        let sel_bg = ratatui_color(theme.selection);
+        let plain_bg = ratatui_color(theme.command_line_bg);
+        assert_eq!(
+            buf[(5, 3)].bg,
+            sel_bg,
+            "selected column 0 should carry the selection bg"
+        );
+        assert_eq!(
+            buf[(6, 3)].bg,
+            sel_bg,
+            "selected column 1 should carry the selection bg"
+        );
+        assert_eq!(
+            buf[(7, 3)].bg,
+            plain_bg,
+            "unselected column 2 ('q') should keep the plain command-line bg"
+        );
+        assert_eq!(
+            buf[(8, 3)].bg,
+            plain_bg,
+            "unselected column 3 ('!') should keep the plain command-line bg"
+        );
+
+        // Sanity: the returned layout's own geometry agrees.
+        let r = layout.selection_bounds((0, 2)).unwrap();
+        assert_eq!((r.x, r.width), (5.0, 2.0));
+
+        // `draw_command_line` (no selection) must remain unaffected.
+        let mut buf2 = Buffer::empty(area);
+        draw_command_line(&mut buf2, area, &cmd, &theme);
+        assert_eq!(
+            buf2[(5, 3)].bg,
+            plain_bg,
+            "draw_command_line (no selection arg) must not highlight anything"
+        );
     }
 }
 
