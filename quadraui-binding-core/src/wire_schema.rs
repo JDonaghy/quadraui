@@ -6725,6 +6725,7 @@ mod coverage {
                 "DropdownChanged",
                 "SegmentedControlChanged",
                 "DateChanged",
+                "DateFocusMoved",
                 "FocusChanged",
                 "ButtonClicked",
                 "ToolbarButtonClicked",
