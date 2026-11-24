@@ -650,68 +650,8 @@ const SUB_DECREMENT: u64 = 2;
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
     use super::{NumberInput, NumberInputLayout};
-    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::cell_surface::{draw_text_row, solid_style, stroke_square_frame, CellSurface};
     use crate::theme::Theme;
-    use crate::types::Color;
-    use crate::Rect;
-
-    fn style(fg: Color, bg: Color) -> CellStyle {
-        CellStyle {
-            fg: Some(fg),
-            bg: Some(bg),
-            ..CellStyle::default()
-        }
-    }
-
-    /// Paint a single-cell box-drawing frame around `rect`.
-    ///
-    /// Not [`CellSurface::draw_border`]: that verb paints nothing for a
-    /// box under 2×2 cells, while a stepper cell collapses to a single
-    /// row whenever the control is only two rows tall, and the frame it
-    /// draws there (`┌─┐`) is the affordance that makes the `+`/`-`
-    /// glyph read as a button at all.
-    fn stroke_rect(surface: &mut dyn CellSurface, rect: Rect, fg: Color, bg: Color) {
-        let st = style(fg, bg);
-        let x0 = rect.x.round() as u16;
-        let y0 = rect.y.round() as u16;
-        let w = rect.width.round() as u16;
-        let h = rect.height.round() as u16;
-        if w == 0 || h == 0 {
-            return;
-        }
-        let x1 = x0 + w.saturating_sub(1);
-        let y1 = y0 + h.saturating_sub(1);
-        for x in x0..=x1 {
-            surface.put_char(x, y0, '─', st);
-            if y1 != y0 {
-                surface.put_char(x, y1, '─', st);
-            }
-        }
-        for y in y0..=y1 {
-            surface.put_char(x0, y, '│', st);
-            if x1 != x0 {
-                surface.put_char(x1, y, '│', st);
-            }
-        }
-        surface.put_char(x0, y0, '┌', st);
-        if x1 != x0 {
-            surface.put_char(x1, y0, '┐', st);
-        }
-        if y1 != y0 {
-            surface.put_char(x0, y1, '└', st);
-            if x1 != x0 {
-                surface.put_char(x1, y1, '┘', st);
-            }
-        }
-    }
-
-    /// Draw `text` on `rect`'s first row, clipped to its width.
-    fn draw_text(surface: &mut dyn CellSurface, rect: Rect, text: &str, fg: Color, bg: Color) {
-        let x0 = rect.x.round() as u16;
-        let y0 = rect.y.round() as u16;
-        let w = rect.width.round() as u16;
-        surface.put_str_clipped(x0, y0, text, w, style(fg, bg));
-    }
 
     /// Paint `number_input` at its resolved `layout` onto `surface`.
     pub(crate) fn paint(
@@ -737,18 +677,22 @@ pub(crate) mod cell_paint {
             theme.surface_fg
         };
 
-        surface.fill(layout.text_area, style(fg, input_bg));
-        stroke_rect(surface, layout.bounds, border, bg);
+        let text_style = solid_style(fg, input_bg);
+        let border_style = solid_style(border, bg);
+        let glyph_style = solid_style(fg, bg);
+
+        surface.fill(layout.text_area, text_style);
+        stroke_square_frame(surface, layout.bounds, border_style);
 
         let text = number_input.display_text();
         if !text.is_empty() {
-            draw_text(surface, layout.text_area, &text, fg, input_bg);
+            draw_text_row(surface, layout.text_area, &text, text_style);
         }
 
-        stroke_rect(surface, layout.increment, border, bg);
-        stroke_rect(surface, layout.decrement, border, bg);
-        draw_text(surface, layout.increment, "+", fg, bg);
-        draw_text(surface, layout.decrement, "-", fg, bg);
+        stroke_square_frame(surface, layout.increment, border_style);
+        stroke_square_frame(surface, layout.decrement, border_style);
+        draw_text_row(surface, layout.increment, "+", glyph_style);
+        draw_text_row(surface, layout.decrement, "-", glyph_style);
     }
 }
 
